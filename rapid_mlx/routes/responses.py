@@ -3231,6 +3231,12 @@ async def _stream_responses(
             else StreamingToolCallFilter(enabled=filter_tools)
         )
 
+        from ..tool_parsers.streaming import streaming_output_filter
+
+        tool_filter = streaming_output_filter(
+            cfg, openai_request.model_dump(), filter_tools, tool_filter
+        )
+
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
         # forces a tool_choice (``required`` or named-function), the
         # message item MUST NOT be emitted if synthesis fires after
@@ -3760,7 +3766,7 @@ async def _stream_responses(
             released_content = _append_reasoning(text)
             if not released_content:
                 return
-            content = strip_special_tokens(released_content)
+            content = released_content
             if not content:
                 return
             filtered = tool_filter.process(content)
@@ -3899,9 +3905,7 @@ async def _stream_responses(
                     # reasoning overflow reclassified via
                     # _account_for_reasoning below).
                     reasoning_block_closed = True
-                    content = strip_special_tokens(
-                        _transition_reasoning_to_content(delta_text)
-                    )
+                    content = _transition_reasoning_to_content(delta_text)
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -3947,9 +3951,7 @@ async def _stream_responses(
                     # unending silent reasoning stream. Without the cap
                     # the chunk drops as before (v1 Responses contract).
                     if overflow:
-                        content = strip_special_tokens(
-                            _sanitize_reasoning_overflow(overflow)
-                        )
+                        content = _sanitize_reasoning_overflow(overflow)
                         if content:
                             filtered = tool_filter.process(content)
                             if filtered:
@@ -4121,9 +4123,7 @@ async def _stream_responses(
                         # via the initial assignment above).
                         raw_overflow_content = overflow
                 if delta_msg.content:
-                    content = strip_special_tokens(
-                        _transition_reasoning_to_content(delta_msg.content)
-                    )
+                    content = _transition_reasoning_to_content(delta_msg.content)
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -4133,7 +4133,7 @@ async def _stream_responses(
                     sanitized_overflow_content = _sanitize_reasoning_overflow(
                         raw_overflow_content
                     )
-                    content = strip_special_tokens(sanitized_overflow_content)
+                    content = sanitized_overflow_content
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -4149,7 +4149,7 @@ async def _stream_responses(
 
             # Default path: text-only stream with think_router stripping
             # ``<think>...</think>`` from the text channel.
-            content = strip_special_tokens(delta_text)
+            content = delta_text
             if not content:
                 continue
             filtered = tool_filter.process(content)
@@ -4267,9 +4267,7 @@ async def _stream_responses(
                 )
                 final_inject = None
             if final_inject is not None and getattr(final_inject, "content", None):
-                content = strip_special_tokens(
-                    _transition_reasoning_to_content(final_inject.content)
-                )
+                content = _transition_reasoning_to_content(final_inject.content)
                 if content:
                     filtered = tool_filter.process(content)
                     if filtered:
@@ -4320,9 +4318,7 @@ async def _stream_responses(
                 else None
             )
             if final_msg and final_msg.content:
-                content = strip_special_tokens(
-                    _transition_reasoning_to_content(final_msg.content)
-                )
+                content = _transition_reasoning_to_content(final_msg.content)
                 if content:
                     # Flush below, after the sanitizer's final tail has also
                     # passed through this same filter, preserving split markers.
@@ -4352,7 +4348,7 @@ async def _stream_responses(
 
         sanitized_overflow_tail = _flush_reasoning_sanitizer()
         if sanitized_overflow_tail:
-            content = strip_special_tokens(sanitized_overflow_tail)
+            content = sanitized_overflow_tail
             if content:
                 filtered = tool_filter.process(content)
                 if filtered:

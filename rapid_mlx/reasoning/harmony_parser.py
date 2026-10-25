@@ -17,6 +17,7 @@ contains the user-facing response.
 
 import re
 
+from ..streaming_markers import StreamingMarkerBuffer
 from .base import DeltaMessage, ReasoningParser
 
 # Analysis channel blocks: <|channel|>analysis<|message|>...<|end|>
@@ -75,6 +76,17 @@ class HarmonyReasoningParser(ReasoningParser):
         super().__init__(tokenizer)
         self._current_channel: str | None = None
         self._in_message: bool = False
+        self._stream_buffer = ""
+        self._markers = StreamingMarkerBuffer(
+            (
+                "<|start|>",
+                "<|channel|>",
+                "<|message|>",
+                "<|end|>",
+                "<|return|>",
+                "<|call|>",
+            )
+        )
 
     def extract_reasoning(
         self,
@@ -131,67 +143,70 @@ class HarmonyReasoningParser(ReasoningParser):
         Returns:
             DeltaMessage with reasoning and/or content, or None.
         """
-        # Detect channel switches in the delta
-        if "<|channel|>" in delta_text:
-            if "analysis" in delta_text:
-                self._current_channel = "analysis"
-                self._in_message = False
-                return None
-            elif "final" in delta_text:
-                self._current_channel = "final"
-                self._in_message = False
-                return None
-            elif "commentary" in delta_text:
-                self._current_channel = "commentary"
-                self._in_message = False
-                # Pass through so tool parser can see the channel marker
-                return DeltaMessage(content=delta_text)
+        self._stream_buffer += self._markers.process(delta_text)
+        reasoning: list[str] = []
+        content: list[str] = []
+        while self._stream_buffer:
+            text = self._stream_buffer
+            if text.startswith(("<|start|>", "<|channel|>")):
+                end = text.find("<|message|>")
+                if end < 0:
+                    channel = re.search(
+                        r"<\|channel\|>(analysis|final|commentary)(?:\s|$)", text
+                    )
+                    if channel:
+                        self._current_channel = channel[1]
+                        if channel[1] == "commentary":
+                            content.append(text)
+                            self._stream_buffer = ""
+                            self._in_message = True
+                    break
+                header = text[:end]
+                channel = header.split("<|channel|>")[-1].split()
+                self._current_channel = channel[0] if channel else None
+                self._in_message = True
+                self._stream_buffer = text[end + len("<|message|>") :]
+                if self._current_channel == "commentary":
+                    content.append(text[: end + len("<|message|>")])
+                continue
+            match = re.search(r"<\|(?:start|channel|message|end|return|call)\|>", text)
+            end = match.start() if match else len(text)
+            body = text[:end]
+            if self._current_channel == "analysis" and self._in_message:
+                reasoning.append(body)
+            elif self._current_channel in {"final", "commentary"} and self._in_message:
+                content.append(body)
+            self._stream_buffer = text[end:]
+            if not match:
+                break
+            token = match[0]
+            if token in {"<|start|>", "<|channel|>"}:
+                continue
+            if self._current_channel == "commentary":
+                content.append(token)
+            self._in_message = token == "<|message|>"
+            self._stream_buffer = self._stream_buffer[len(token) :]
+        if any(reasoning) or any(content):
+            return DeltaMessage(
+                reasoning="".join(reasoning) or None, content="".join(content) or None
+            )
+        return None
 
-        # Detect channel from full context if not yet determined
-        if self._current_channel is None and "<|channel|>" in current_text:
-            last_channel = current_text.rfind("<|channel|>")
-            after = current_text[last_channel + len("<|channel|>") :]
-            if after.startswith("analysis"):
-                self._current_channel = "analysis"
-            elif after.startswith("final"):
-                self._current_channel = "final"
-            elif after.startswith("commentary"):
-                self._current_channel = "commentary"
-
-        # Commentary channel: pass everything through as content
-        # so the tool parser can accumulate and detect tool calls.
-        if self._current_channel == "commentary":
-            return DeltaMessage(content=delta_text)
-
-        # Handle message start (analysis/final channels only)
-        if "<|message|>" in delta_text:
-            self._in_message = True
-            # Don't emit the token itself
-            return None
-
-        # Handle channel/message end tokens
-        if any(
-            token in delta_text
-            for token in ("<|end|>", "<|return|>", "<|call|>", "<|start|>")
-        ):
-            self._in_message = False
-            return None
-
-        # Skip control tokens
-        if delta_text.strip().startswith("<|") and delta_text.strip().endswith("|>"):
-            return None
-
-        # Emit content based on current channel
-        if self._in_message and self._current_channel == "analysis":
-            return DeltaMessage(reasoning=delta_text)
-
-        if self._in_message and self._current_channel == "final":
-            return DeltaMessage(content=delta_text)
-
-        # Unknown channel, suppress
+    def finalize_streaming(
+        self, accumulated_text: str, **kwargs
+    ) -> DeltaMessage | None:
+        """Drain an ordinary body suffix without publishing an unfinished header."""
+        tail = self._markers.flush()
+        if tail == "<" and not self._stream_buffer and self._in_message:
+            if self._current_channel == "analysis":
+                return DeltaMessage(reasoning=tail)
+            if self._current_channel in {"final", "commentary"}:
+                return DeltaMessage(content=tail)
         return None
 
     def reset_state(self):
         """Reset streaming state for a new request."""
         self._current_channel = None
         self._in_message = False
+        self._stream_buffer = ""
+        self._markers.flush()

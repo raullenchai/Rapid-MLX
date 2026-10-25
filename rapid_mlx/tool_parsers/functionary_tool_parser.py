@@ -166,7 +166,7 @@ class FunctionaryToolParser(ToolParser):
         """
         Extract tool calls from streaming Functionary model output.
         """
-        markers = ["<|recipient|>", "<function=", "["]
+        markers = ["<|from|>", "<|recipient|>", "<function=", "["]
         has_marker = any(m in current_text for m in markers)
 
         if not has_marker:

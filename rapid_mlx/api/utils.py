@@ -536,7 +536,11 @@ def _tail(text: str, size: int) -> str:
 class StreamingContentSanitizer:
     """Hold unresolved markup so content sanitization ignores chunking (#4925)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, strip_tool_markup: bool = True) -> None:
+        self._strip_tool_markup = strip_tool_markup
+        self._pattern = (
+            _FINAL_SANITIZER if strip_tool_markup else _FINAL_SANITIZER_NO_TOOL_MARKUP
+        )
         self._pending = ""
         #: Held chunks of an open suppressed block, waiting for its closer.
         #: Kept as a list so a long unclosed block is not rescanned or
@@ -576,12 +580,13 @@ class StreamingContentSanitizer:
                 continue
             # A complete opener may still become a full suppressed block.
             if (
-                text.startswith("<|tool_call>", cut)
+                self._strip_tool_markup
+                and text.startswith("<|tool_call>", cut)
                 and text.find("<tool_call|>", cut + len("<|tool_call>")) < 0
             ):
                 self._open_closer = "<tool_call|>"
                 break
-            match = _FINAL_SANITIZER.match(text, cut)
+            match = self._pattern.match(text, cut)
             if match:
                 # The optional ] lets this greedy match grow until closed.
                 if text.startswith("[Calling", cut) and not match[0].endswith("]"):
@@ -602,7 +607,7 @@ class StreamingContentSanitizer:
             self._open_tail = _tail(text[cut:], len(self._open_closer) - 1)
         else:
             self._pending = text[cut:]
-        return sanitize_content_for_stream(text[:cut])
+        return _sanitize_for_stream(text[:cut], self._pattern)
 
     @property
     def holding(self) -> bool:
@@ -611,7 +616,7 @@ class StreamingContentSanitizer:
 
     def flush(self) -> str:
         """Resolve any trailing prefix at the end of a content segment."""
-        return sanitize_content_for_stream(self._take_held())
+        return _sanitize_for_stream(self._take_held(), self._pattern)
 
 
 def _sanitize_for_stream(text: str | None, pattern: re.Pattern[str]) -> str:
@@ -978,7 +983,10 @@ class StreamingToolCallFilter:
         extra_tags: list[tuple[str, str]] | None = None,
         *,
         enabled: bool = True,
+        is_complete=None,
     ):
+        self._is_complete = is_complete
+        self._open_tag = ""
         self._enabled = enabled
         self._buffer = ""
         self._in_block = False
@@ -1006,13 +1014,22 @@ class StreamingToolCallFilter:
     def _scan_for_open(self) -> str:
         """Scan buffer for tool call open tags. Emit safe text."""
         # Check for complete open tags
-        for open_tag, close_tag in self._tags:
+        for open_tag, close_tag in sorted(
+            self._tags,
+            key=lambda pair: (
+                self._buffer.find(pair[0])
+                if pair[0] in self._buffer
+                else len(self._buffer),
+                -len(pair[0]),
+            ),
+        ):
             idx = self._buffer.find(open_tag)
             if idx >= 0:
                 # Found an open tag - emit text before it, enter block mode
                 emit = self._buffer[:idx]
                 self._buffer = self._buffer[idx + len(open_tag) :]
                 self._in_block = True
+                self._open_tag = open_tag
                 self._close_tag = close_tag
                 # Process remainder in case close tag is already in buffer
                 after = self._consume_block()
@@ -1041,6 +1058,12 @@ class StreamingToolCallFilter:
         """Consume content inside a tool call block. Returns empty string
         unless the block closes and there's text after it."""
         idx = self._buffer.find(self._close_tag)
+        while idx >= 0 and self._is_complete is not None:
+            candidate = self._open_tag + self._buffer[: idx + len(self._close_tag)]
+            if self._is_complete(candidate):
+                break
+            # A closer inside an argument is data, not an envelope boundary.
+            idx = self._buffer.find(self._close_tag, idx + len(self._close_tag))
         if idx >= 0:
             # Block closed - discard content up to and including close tag
             self._buffer = self._buffer[idx + len(self._close_tag) :]

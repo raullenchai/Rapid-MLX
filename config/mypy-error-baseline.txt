@@ -98,7 +98,7 @@ rapid_mlx/reasoning/hy3_parser.py 1
 rapid_mlx/reasoning/minimax_parser.py 1
 rapid_mlx/reasoning/think_parser.py 2
 rapid_mlx/repetition_guard.py 2
-rapid_mlx/routes/anthropic.py 7
+rapid_mlx/routes/anthropic.py 6
 rapid_mlx/routes/audio.py 6
 rapid_mlx/routes/chat.py 39
 rapid_mlx/routes/completions.py 1

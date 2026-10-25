@@ -2190,6 +2190,12 @@ async def _stream_anthropic_messages(
         if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
         else StreamingToolCallFilter(enabled=filter_tools)
     )
+    from ..tool_parsers.streaming import streaming_output_filter
+
+    tool_filter = streaming_output_filter(
+        cfg, openai_request.model_dump(), filter_tools, tool_filter
+    )
+
     # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
     # guard predated the abstract declaration and is the same silent-skip
     # shape that produced #500. The inner ``chat_template`` guard stays
@@ -2526,7 +2532,7 @@ async def _stream_anthropic_messages(
                     # call (model-generated commentary channel) gets
                     # suppressed from text the same way it would on
                     # the non-routed path.
-                    content = strip_special_tokens(delta_text)
+                    content = delta_text
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -2709,7 +2715,7 @@ async def _stream_anthropic_messages(
                                 if filtered:
                                     pieces.append(("text", filtered))
                 if delta_msg.content:
-                    content = strip_special_tokens(delta_msg.content)
+                    content = delta_msg.content
                     if content:
                         # Tool tags only appear in the content channel —
                         # filter still applies, but reasoning bypasses it.
@@ -2730,10 +2736,7 @@ async def _stream_anthropic_messages(
 
             # No reasoning_parser path — keep the existing think_router
             # heuristic that detects `<think>` tags in the raw stream.
-            content = strip_special_tokens(delta_text)
-            if content:
-                content = strip_special_tokens(content)
-
+            content = delta_text
             if content:
                 filtered = tool_filter.process(content)
                 if not filtered:
@@ -2850,7 +2853,7 @@ async def _stream_anthropic_messages(
             )
             final_inject = None
         if final_inject is not None and getattr(final_inject, "content", None):
-            inject_content = strip_special_tokens(final_inject.content)
+            inject_content = final_inject.content
             if inject_content:
                 filtered = tool_filter.process(inject_content)
                 if filtered:
@@ -3029,9 +3032,8 @@ async def _stream_anthropic_messages(
                     # circuits.
                     final_msg = None
         if final_msg and final_msg.content:
-            # Keep the raw fallback for structured extraction; only the visible
-            # lane passes through the same filter as ordinary streaming deltas.
-            content = strip_special_tokens(final_msg.content)
+            # Keep raw markers until the content filter recognizes their role.
+            content = final_msg.content
             if content:
                 accumulated_text = content
                 content = tool_filter.process(content) + tool_filter.flush()

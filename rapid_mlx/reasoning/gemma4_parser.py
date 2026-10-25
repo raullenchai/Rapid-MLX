@@ -11,6 +11,7 @@ The parser separates thinking from content by tracking the active channel.
 
 import re
 
+from ..streaming_markers import StreamingMarkerBuffer
 from .base import DeltaMessage, ReasoningParser
 
 # Match full thought blocks in complete text
@@ -56,12 +57,20 @@ class Gemma4ReasoningParser(ReasoningParser):
         self._in_thought = False
         self._in_content = False
         self._saw_any_channel = False
+        self._stream_buffer = ""
+        self._markers = StreamingMarkerBuffer(
+            ("<|channel>", "<channel|>", "<|turn>", "<turn|>")
+        )
 
     def reset_state(self):
         super().reset_state()
         self._in_thought = False
         self._in_content = False
         self._saw_any_channel = False
+        self._stream_buffer = ""
+        self._markers = StreamingMarkerBuffer(
+            ("<|channel>", "<channel|>", "<|turn>", "<turn|>")
+        )
 
     def extract_reasoning(
         self,
@@ -313,93 +322,36 @@ class Gemma4ReasoningParser(ReasoningParser):
         if not delta_text:
             return None
 
-        # Snapshot pre-update state so we can detect a thought-to-content
-        # flip that happened DURING this delta (issue #219).
-        was_in_thought = self._in_thought
-
-        # Track channel state based on accumulated text
-        # Check if we just entered thought channel
-        if "<|channel>thought" in current_text and not self._in_content:
-            self._in_thought = True
-            self._saw_any_channel = True
-
-        # Check if we just entered content channel
-        if "<|channel>content" in current_text or "<|channel>final" in current_text:
+        self._stream_buffer += self._markers.process(delta_text)
+        reasoning: list[str] = []
+        content: list[str] = []
+        while self._stream_buffer:
+            text = self._stream_buffer
+            if text.startswith("<|channel>"):
+                header = re.match(r"<\|channel>([A-Za-z0-9_-]+)(\n|(?=<))", text)
+                if not header:
+                    break
+                self._saw_any_channel = True
+                self._in_content = header[1] in {"content", "final"}
+                self._in_thought = not self._in_content
+                self._stream_buffer = text[header.end() :]
+                continue
+            match = re.search(r"<\|channel>|<channel\|>|<\|turn>|<turn\|>", text)
+            end = match.start() if match else len(text)
+            (reasoning if self._in_thought else content).append(text[:end])
+            self._stream_buffer = text[end:]
+            if not match:
+                break
+            if match[0] == "<|channel>":
+                continue
             self._in_thought = False
             self._in_content = True
-
-        # Check if thought ended (first <channel|> after thought start)
-        if self._in_thought and "<channel|>" in current_text:
-            thought_starts = current_text.count("<|channel>thought")
-            channel_ends = current_text.count("<channel|>")
-            if channel_ends >= thought_starts:
-                self._in_thought = False
-                # If no explicit content channel follows, switch to content mode
-                if (
-                    "<|channel>content" not in current_text
-                    and "<|channel>final" not in current_text
-                ):
-                    self._in_content = True
-
-        # If a thought-to-content flip happened DURING this delta and a
-        # state-flipping marker is fully visible in delta_text, split the
-        # delta so reasoning bytes that arrived before the marker stay in
-        # delta.reasoning instead of being misrouted into delta.content.
-        # Pre-fix (#219), the whole-delta classifier below tagged the entire
-        # delta as content whenever should_send() flushed a buffered delta
-        # straddling the channel transition.
-        if was_in_thought and not self._in_thought:
-            flip_pos = -1
-            for marker in ("<channel|>", "<|channel>content", "<|channel>final"):
-                idx = delta_text.find(marker)
-                if idx >= 0 and (flip_pos < 0 or idx < flip_pos):
-                    flip_pos = idx
-            if flip_pos >= 0:
-                pre = delta_text[:flip_pos]
-                post = delta_text[flip_pos:]
-                for m in (
-                    "<|channel>",
-                    "<channel|>",
-                    "<|turn>",
-                    "<turn|>",
-                    "thought\n",
-                    "content\n",
-                    "final\n",
-                ):
-                    pre = pre.replace(m, "")
-                    post = post.replace(m, "")
-                if pre or post:
-                    return DeltaMessage(
-                        reasoning=pre if pre else None,
-                        content=post if post else None,
-                    )
-
-        # Filter out channel markers from delta
-        clean = delta_text
-        for marker in [
-            "<|channel>",
-            "<channel|>",
-            "<|turn>",
-            "<turn|>",
-            "thought\n",
-            "content\n",
-            "final\n",
-        ]:
-            clean = clean.replace(marker, "")
-
-        if not clean:
-            return None  # pure marker token, skip
-
-        if self._in_thought:
-            return DeltaMessage(reasoning=clean)
-        elif self._in_content:
-            return DeltaMessage(content=clean)
-        elif not self._saw_any_channel:
-            # No channel tokens seen — plain content (no thinking)
-            return DeltaMessage(content=clean)
-        else:
-            # Between channels — treat as reasoning
-            return DeltaMessage(reasoning=clean)
+            self._stream_buffer = self._stream_buffer[len(match[0]) :]
+        if reasoning or content:
+            return DeltaMessage(
+                reasoning="".join(reasoning) or None, content="".join(content) or None
+            )
+        return None
 
     def finalize_streaming(
         self,
@@ -409,14 +361,14 @@ class Gemma4ReasoningParser(ReasoningParser):
         prompt_thinking_active: bool = False,
         finish_reason: str | None = None,
     ) -> DeltaMessage | None:
-        """Handle end of stream — emit any remaining content.
-
-        ``matched_stop``, ``prompt_thinking_active`` and
-        ``finish_reason`` are accepted for API symmetry with the
-        ``<think>``-family parsers (PR #799 D-STOP-THINK). Gemma4's
-        channel-grammar variant has a separate plug in
-        ``extract_reasoning`` so this finalize is a no-op.
-        """
+        """Keep a literal less-than sign; discard unfinished control headers."""
+        tail = self._markers.flush()
+        if tail == "<" and not self._stream_buffer:
+            return (
+                DeltaMessage(reasoning=tail)
+                if self._in_thought
+                else DeltaMessage(content=tail)
+            )
         return None
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
