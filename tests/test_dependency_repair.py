@@ -357,7 +357,7 @@ def test_telemetry_closed_and_opt_out(monkeypatch):
     repair.record_outcome("repaired")
     emit.assert_not_called()
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve"])
-    for outcome in ("repaired", "command_shown", "declined", "failed"):
+    for outcome in sorted(repair._OUTCOMES):
         repair.record_outcome(outcome)
         event, props = emit.call_args.args
         registry.validate(event, props)
@@ -368,7 +368,7 @@ def test_telemetry_closed_and_opt_out(monkeypatch):
             "failure_stage",
         }
     repair.record_outcome("arbitrary")
-    assert emit.call_count == 4
+    assert emit.call_count == len(repair._OUTCOMES)
     emit.side_effect = ImportError()
     repair.record_outcome("failed")
 
@@ -620,3 +620,12 @@ def test_declared_modules_survives_missing_packaging(monkeypatch):
         "packaging",
         "mlx",
     }
+
+
+def test_declared_modules_survives_malformed_requirement(monkeypatch):
+    monkeypatch.setattr(
+        repair.metadata,
+        "requires",
+        lambda _name: ["mlx>=0.30; sys_platform ==", "numpy>=1"],
+    )
+    assert repair.declared_modules(active_only=True) == {"mlx", "numpy"}

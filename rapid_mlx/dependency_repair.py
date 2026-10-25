@@ -12,6 +12,9 @@ import subprocess
 import sys
 
 _RETRY = "RAPID_MLX_DEPENDENCY_REPAIR_RETRIED"
+_OUTCOMES = frozenset(
+    {"repaired", "command_shown", "declined", "no_answer", "interrupted", "failed"}
+)
 _MISSING_SYMBOL = re.compile(r"cannot import name ['\"]([^'\"]+)['\"] from")
 _DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _SYMBOL_NAME = re.compile(r"[A-Za-z_]\w*")
@@ -42,7 +45,12 @@ def declared_modules(*, active_only: bool = False) -> set[str]:
                 # requirement rather than crash while auditing it.
                 Requirement = None
             if Requirement is not None:
-                marker = Requirement(requirement).marker
+                try:
+                    marker = Requirement(requirement).marker
+                except Exception:
+                    # Malformed metadata: keep the name so the damage is
+                    # diagnosed instead of crashing the audit.
+                    marker = None
                 if marker is not None and not marker.evaluate():
                     continue
         match = re.match(r"[\w.-]+", requirement)
@@ -137,7 +145,7 @@ def record_outcome(outcome: str) -> None:
     try:
         from rapid_mlx.telemetry.track import track
 
-        if outcome in {"repaired", "command_shown", "declined", "failed"}:
+        if outcome in _OUTCOMES:
             track(
                 "model_serve_failed",
                 {
