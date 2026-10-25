@@ -139,10 +139,10 @@ class TestStreamingToolCallFilter(unittest.TestCase):
         chunk = "x" * 10000
         for _ in range(_MAX_TOOL_BUFFER_BYTES // 10000 + 2):
             f.process(chunk)
-        # After cap, filter should have exited the block
-        assert not f._in_block
-        # New text should pass through
-        assert f.process("after") == "after"
+        assert f._in_block
+        assert len(f._buffer) < len(f._close_tag)
+        assert f.process("after</minimax:") == ""
+        assert f.process("tool_call>Answer") == "Answer"
 
 
 class TestStreamingToolCallFilterGemma4(unittest.TestCase):
@@ -249,9 +249,10 @@ class TestStreamingToolCallFilterGemma4(unittest.TestCase):
         chunk = "x" * 10000
         for _ in range(_MAX_TOOL_BUFFER_BYTES // 10000 + 2):
             f.process(chunk)
-        # After cap, filter has exited the block and recovers
-        assert not f._in_block
-        assert f.process("after") == "after"
+        assert f._in_block
+        assert len(f._buffer) < len(f._close_tag)
+        assert f.process("after<tool_") == ""
+        assert f.process("call|>Answer") == "Answer"
 
     def test_gemma4_does_not_swallow_unrelated_text(self):
         """A bare ``<|`` in unrelated text must not accidentally swallow

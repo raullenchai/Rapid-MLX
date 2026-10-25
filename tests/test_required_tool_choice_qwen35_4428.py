@@ -306,7 +306,7 @@ def test_named_stream_wrong_function_cannot_satisfy_choice(monkeypatch):
         if line.startswith("data: ") and line != "data: [DONE]"
     ]
     assert [ch["error"]["code"] for ch in chunks if "error" in ch] == [
-        "tool_choice_violation"
+        "invalid_tool_arguments"
     ]
     assert not [
         tc

@@ -238,7 +238,7 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         if not self._saw_any_tag and accumulated_text:
             if getattr(self, "_prompt_primed_thinking", False):
                 return None
-            if finish_reason == "length" and prompt_thinking_active:
+            if prompt_thinking_active:
                 # Prompt-injected mid-think + max_tokens cut — route to
                 # reasoning to suppress D-STOP-THINK duplication. This
                 # must run before the no-tag content threshold: long

@@ -368,8 +368,8 @@ class TestStopMidThinkExplicitOpener:
             accumulated, matched_stop=None, finish_reason=None
         )
         assert result is not None
-        assert result.content == "just a thought that the model gave up on"
-        assert result.reasoning is None
+        assert result.reasoning == "just a thought that the model gave up on"
+        assert result.content is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",
@@ -636,12 +636,12 @@ class TestPromptInjectedMidThinkDiscriminator:
                 assert result is not None, (
                     f"[{name}] thinking={thinking} finish={finish!r}: no rescue emitted"
                 )
-                assert result.content == trace, (
+                assert (result.reasoning if thinking else result.content) == trace, (
                     f"[{name}] thinking={thinking} finish={finish!r}: "
                     f"#569 regression — natural-EOS answer "
                     f"suppressed: {result!r}"
                 )
-                assert result.reasoning is None
+                assert (result.content if thinking else result.reasoning) is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",

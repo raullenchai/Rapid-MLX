@@ -31,18 +31,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Issue #1359 — bound how many bytes the streaming tool-call parser may
-# suppress while inside an unclosed tool-call block before we give up and
-# release the withheld text as content. Without a bound,
-# ``extract_tool_calls_streaming`` returns ``None`` for every delta as long as
-# the block stays open, so a block that never closes (a literal
-# ``<tool_call>``/``<function=`` in generated code that skews the open/close
-# balance, oversized/degenerate arguments, or a repetition loop) suppresses
-# content forever — the client then sees only SSE keepalives and no client
-# timeout can ever fire. 64 KB is far above any legitimate tool call (a few
-# hundred bytes; incremental-argument parsers emit tool_call deltas well
-# before this, which also trips the ``_tool_calls_emitted_to_wire`` guard) yet
-# bounds the stall to ~16 K tokens.
+# Bound only prefixes for which the parser cannot establish call viability.
 _MAX_TOOL_SUPPRESSION_BYTES = 65536
 
 
@@ -476,15 +465,8 @@ class StreamingPostProcessor:
         self._undeclared_indices: set[int] = set()
         self._declared_indices: dict[int, int] = {}
         self._last_anchor_dropped = False
-        # Issue #1359 — bound tool-call streaming suppression.
-        # ``_tool_suppressed_buffer`` accumulates only the deltas the parser
-        # withheld (returned ``None``) while inside an unclosed tool-call block;
-        # if it passes ``_MAX_TOOL_SUPPRESSION_BYTES`` before any tool call has
-        # reached the wire, we release it as content and latch
-        # ``_tool_suppression_released`` so the rest of the turn streams as
-        # plain content instead of wedging behind SSE keepalives.
-        self._tool_suppressed_buffer: str = ""
-        self._tool_suppression_released: bool = False
+        self._tool_suppressed_buffer = ""
+        self._tool_suppression_released = False
         self.tool_markup_possible = False
         # R10-C8 (Mira r10-R1): tool-prose-prefix hold-back. When the
         # request declares ``tools`` and the model emits a UI-TARS-style
@@ -2023,6 +2005,18 @@ class StreamingPostProcessor:
 
     def _filter_declared_calls(self, calls, *, incremental=False):
         """Authorize anchors and retain the decision for argument continuations."""
+        from .helpers import _InvalidToolArgumentsError
+
+        for call in calls:
+            function = call.get("function", call)
+            arguments = function.get("arguments", "") or ""
+            if isinstance(arguments, str) and arguments.startswith(
+                ("<malformed_json_arguments>", "<malformed_function_body>")
+            ):
+                raise _InvalidToolArgumentsError(
+                    status_code=400,
+                    detail="Tool call arguments must be valid JSON; retry the request.",
+                )
         declared = self._tool_authorization_names
         if declared is None:
             declared = declared_names(self.request)
@@ -4042,15 +4036,38 @@ class StreamingPostProcessor:
         if (
             self.tool_parser
             and _fallback_text
-            and not self.tool_calls_detected
-            # Issue #1359 — once the suppression budget released the block as
-            # content, don't re-surface it as a tool call at finalize.
+            and (
+                not self.tool_calls_detected
+                or self.cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
+            )
             and not self._tool_suppression_released
             and _has_plausible_markup
         ):
             result = self.tool_parser.extract_tool_calls(
                 _fallback_text, request=self.request
             )
+            if self.tool_calls_detected:
+                emitted = getattr(self.tool_parser, "_emitted_structured_calls", 0)
+                result.tool_calls = result.tool_calls[emitted:]
+                result.tools_called = bool(result.tool_calls)
+            if (
+                not result.tools_called
+                and not self.tool_calls_detected
+                and (self.request or {}).get("tool_choice")
+                not in (None, "auto", "none")
+                and self.cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
+                and re.search(r"<tool_call>\s*\{", _fallback_text)
+            ):
+                from .helpers import _InvalidToolArgumentsError
+
+                body = _fallback_text.split("<tool_call>", 1)[1].lstrip()
+                try:
+                    json.JSONDecoder().raw_decode(body)
+                except json.JSONDecodeError:
+                    raise _InvalidToolArgumentsError(
+                        status_code=400,
+                        detail="The requested tool call was not valid JSON.",
+                    ) from None
             if result.tools_called:
                 # F-200: forced ``tool_choice`` filter on the finalize
                 # ``extract_tool_calls`` recovery path. The parser
@@ -4107,7 +4124,10 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            elif not getattr(self.tool_parser, "_undeclared_dropped", 0):
+            elif not getattr(self.tool_parser, "_undeclared_dropped", 0) and not (
+                self.cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
+                and "<tool_call>" in _cross_format_text
+            ):
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
                 # scans every known format and recovers calls the per-parser path
@@ -4226,6 +4246,18 @@ class StreamingPostProcessor:
                 if isinstance(final_content, str) and final_content:
                     events.append(StreamEvent(type="content", content=final_content))
 
+        # A partial reasoning marker after a closed thought is literal answer
+        # text at EOF. Qwen's finalizer releases only its un-emitted suffix.
+        from ..reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        if (
+            isinstance(self.reasoning_parser, Qwen3ReasoningParser)
+            and self.reasoning_parser.end_token in self.accumulated_text
+        ):
+            final_msg = self.reasoning_parser.finalize_streaming(self.accumulated_text)
+            if final_msg is not None and final_msg.content:
+                events.append(StreamEvent(type="content", content=final_msg.content))
+
         # Release any prefix-held content trailing the stream. Hermes
         # and harmony streaming parsers hold back partial sentinel
         # suffixes (``<``, ``<|``, ``<func``...) so per-char streaming
@@ -4239,7 +4271,12 @@ class StreamingPostProcessor:
         if (
             self.tool_parser
             and self.tool_accumulated_text
-            and (not self.tool_calls_detected or self._preserve_post_tool_content)
+            and not self._tool_suppression_released
+            and (
+                not self.tool_calls_detected
+                or self._preserve_post_tool_content
+                or self.cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
+            )
         ):
             # After a call, only the parser can distinguish visible suffixes
             # from unfinished call wire or a later implicit reasoning lane.
@@ -4247,6 +4284,14 @@ class StreamingPostProcessor:
             if self.tool_calls_detected:
                 parser_text += marker_tail
             held = self.tool_parser.flush_held_content(parser_text)
+            if (
+                not held
+                and not self.tool_calls_detected
+                and "<tool_call>" in self._tool_suppressed_buffer
+                and not getattr(self.tool_parser, "SUPPORTS_NATIVE_TOOL_FORMAT", False)
+            ):
+                held = self._tool_suppressed_buffer
+            self._tool_suppressed_buffer = ""
             # Strict-string check: ``flush_held_content`` is part of the
             # parser interface and must return a real ``str``. Defending
             # against accidental ``None`` / non-string returns avoids a
@@ -4358,6 +4403,35 @@ class StreamingPostProcessor:
             tool_calls_detected=True,
         )
 
+    def _tool_prefix_viable(self) -> bool:
+        """Whether the parser recognizes this pending body as a possible call."""
+        from ..tool_parsers.glm47_tool_parser import Glm47ToolParser
+        from ..tool_parsers.hermes_tool_parser import HermesToolParser
+
+        pending = self.tool_accumulated_text
+        if isinstance(self.tool_parser, HermesToolParser):
+            pending = pending[len(self.tool_parser._stream_consumed or "") :]
+            for opener in re.finditer(r"<tool_call>", pending):
+                body = pending[opener.end() :]
+                decision = self.tool_parser.classify_tool_call_prefix(
+                    "<tool_call>", body, self.request
+                )
+                if (
+                    decision is False
+                    or body.lstrip().startswith("{")
+                    and decision is None
+                ):
+                    return True
+            return False
+        if isinstance(self.tool_parser, Glm47ToolParser):
+            match = re.search(r"<tool_call>\s*([\w.:-]+)\s*<arg_key>", pending)
+            names = declared_names(self.request)
+            return bool(match and (names is None or match.group(1) in names))
+        classifier = getattr(self.tool_parser, "classify_tool_call_prefix", None)
+        if not callable(classifier) or "<tool_call>" not in pending:
+            return False
+        return classifier("<tool_call>", pending.split("<tool_call>", 1)[1]) is False
+
     def _detect_tool_calls(self, content: str) -> dict | None:
         """Run incremental tool call detection.
 
@@ -4370,9 +4444,6 @@ class StreamingPostProcessor:
             return None
 
         if self._tool_suppression_released:
-            # Issue #1359 — a prior unclosed tool-call block blew the
-            # suppression budget; tool detection is disabled for the rest of
-            # this turn so content streams instead of wedging behind keepalives.
             self.tool_accumulated_text += content
             return {"content": content}
 
@@ -4427,34 +4498,19 @@ class StreamingPostProcessor:
         )
 
         if tool_result is None:
-            # Inside an (as yet) unclosed tool-call block — normally suppressed.
-            # Bound the suppression (issue #1359): if the block never closes,
-            # returning ``None`` for every delta wedges the stream behind SSE
-            # keepalives with no client timeout able to fire. Once we've
-            # withheld more than the budget WITHOUT any tool call reaching the
-            # wire, give up on tool detection for this turn and release the
-            # buffered text as content so the stream makes visible progress.
-            # Only the withheld (``None``) deltas are buffered here, so nothing
-            # already emitted as content is re-sent; the ``emitted_to_wire``
-            # guard leaves genuine (incrementally-streamed) tool calls alone.
-            if self._tool_calls_emitted_to_wire == 0:
+            # Viable calls may be arbitrarily large. Keep the historical
+            # fallback only when the parser cannot establish viability.
+            if self._tool_calls_emitted_to_wire == 0 and not self._tool_prefix_viable():
                 self._tool_suppressed_buffer += content
                 if len(self._tool_suppressed_buffer) > _MAX_TOOL_SUPPRESSION_BYTES:
                     released = self._tool_suppressed_buffer
-                    self._tool_suppression_released = True
                     self._tool_suppressed_buffer = ""
-                    logger.warning(
-                        "Tool-call streaming suppression exceeded %d bytes "
-                        "without a closing tag; releasing buffered content as "
-                        "text and disabling tool detection for this request "
-                        "(issue #1359).",
-                        _MAX_TOOL_SUPPRESSION_BYTES,
-                    )
+                    self._tool_suppression_released = True
                     return {"content": released}
-            return None  # inside tool markup
+            else:
+                self._tool_suppressed_buffer = ""
+            return None
 
-        # Parser made progress (emitted content or resolved the block) — drop
-        # any partial suppression buffer so a later block is bounded afresh.
         self._tool_suppressed_buffer = ""
 
         if "tool_calls" in tool_result:
@@ -4475,6 +4531,8 @@ class StreamingPostProcessor:
             self.tool_calls_detected = True
             return tool_result
 
+        if tool_result.get("preserve_post_tool_content"):
+            self._preserve_post_tool_content = True
         return {"content": tool_result.get("content", "")}
 
     def _compute_finish_reason(self, output: GenerationOutput) -> str | None:

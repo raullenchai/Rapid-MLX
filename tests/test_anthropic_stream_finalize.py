@@ -44,6 +44,7 @@ from rapid_mlx.routes.anthropic import (
     _split_tool_input_json,
     router,
 )
+from rapid_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -304,22 +305,8 @@ class _ZeroOutputEngine:
 # ---------------------------------------------------------------------------
 
 
-def test_c08_vibethinker_preamble_length_truncation_no_duplicate_emit():
-    """C-08 byte-faithful predicate covers VibeThinker's preamble-
-    before-tag pattern. Codex r2 REQUIRED specifically called out
-    this case: the parser streams a chatty multi-sentence preamble
-    as ``thinking_delta`` BEFORE ``<think>`` ever appears, so the
-    tag-heuristic version of the C-08 fix
-    (``"<think>" in accumulated_raw``) would let the duplicate
-    re-emit through. Byte-faithful comparison catches it.
-
-    The mocked stream emits a ~30-char preamble (well under the
-    VibeThinker 1024-char threshold) then gets truncated by length.
-    With the VibeThinker parser active, those bytes stream as
-    reasoning and ``finalize_streaming`` Case-1 (no tags AND short)
-    returns the same bytes as content. The fixed predicate
-    suppresses the duplicate emit.
-    """
+def test_c08_nonpriming_short_answer_survives_length_with_preamble_parser():
+    """Preserve genuine short answers under a non-priming template."""
     # VibeThinker is registered under the ``vibethinker`` parser
     # name; if the registry doesn't surface it on this build, fall
     # back to the deepseek_r1 base parser (which exhibits the same
@@ -374,35 +361,13 @@ def test_c08_vibethinker_preamble_length_truncation_no_duplicate_emit():
         f"by this test"
     )
     # And the wire MUST carry these bytes exactly once.
-    assert thinking_joined not in text_joined, (
-        "VibeThinker / DeepSeek-R1 preamble-before-tag length truncation: "
-        "byte-faithful duplicate detected — the C-08 predicate must catch "
-        "this codex r2 REQUIRED case"
+    assert text_joined == thinking_joined == "1, 2", (
+        "A tentative short answer from a non-priming template must remain visible"
     )
 
 
-def test_c08_implicit_think_length_truncation_no_duplicate_emit():
-    """C-08 byte-faithful predicate — when the chunk loop already
-    shipped bytes as ``thinking_delta`` AND the engine truncated
-    with ``length``, the finalize ``content`` correction MUST be
-    suppressed regardless of which parser produced it.
-
-    Codex r2 REQUIRED — VibeThinker / DeepSeek-R1 preamble parsers
-    stream reasoning BEFORE the literal ``<think>`` opener; a length-
-    truncated preamble has the SAME shape this test exercises (no
-    ``<think>`` in buffer, thinking already on the wire, ``length``
-    finish). Both the C-08 mei scenario AND the preamble scenario
-    must converge on "do not duplicate bytes". The codex r1
-    discussion of "implicit-think conservative bucketing" framed the
-    correction as RIGHT, but its corrective text block is byte-equal
-    to what was already shipped — emitting it would re-introduce the
-    same data-duplication failure mode C-08 closes.
-
-    The natural-stop path (``finish_reason="stop"``, exercised by the
-    existing ``test_no_think_tags_yields_text_delta``) is unaffected
-    because the suppression predicate gates on
-    ``stream_finish_reason == "length"``.
-    """
+def test_c08_nonpriming_short_answer_survives_length_with_qwen():
+    """Preserve genuine short answers under a non-priming template."""
     engine = _NoTagsLengthTruncatedEngine()
     client = _make_client(engine, reasoning_parser_name="qwen3")
     r = client.post(
@@ -439,7 +404,7 @@ def test_c08_implicit_think_length_truncation_no_duplicate_emit():
     # surface (suppress the thinking_delta in the first place), NOT
     # to emit a corrective text delta on top of the thinking ones.
     if thinking_joined:
-        assert thinking_joined not in text_joined, (
+        assert text_joined == thinking_joined == "1, 2", (
             "byte-faithful duplicate detected: finalize correction re-encoded "
             "already-streamed thinking as text"
         )
@@ -449,20 +414,8 @@ def test_c08_implicit_think_length_truncation_no_duplicate_emit():
     assert message_delta["delta"]["stop_reason"] == "max_tokens", message_delta
 
 
-def test_c08_special_tokens_in_thinking_dont_break_duplicate_detection():
-    """C-08 byte-faithful predicate when thinking deltas contain
-    special tokens. Codex r3 REQUIRED #1 worried that the
-    streaming-side accumulator and the finalize probe might
-    normalize differently. They do not in current code: every
-    in-loop emission site runs ``strip_special_tokens`` on the
-    bytes that eventually reach ``streamed_thinking_text``, and
-    the probe normalizes its content via the same helper before
-    the comparison. This test pins that invariant.
-
-    Engine delta carries a leading special token (``<|endoftext|>``)
-    inside the reasoning bytes; both sides strip it identically, so
-    the equality check fires and the duplicate is suppressed.
-    """
+def test_c08_special_tokens_in_thinking_do_not_enter_static_notice():
+    """Private truncated reasoning may only produce a static visible notice."""
     # The qwen3 parser's streaming branch hands deltas through
     # ``strip_special_tokens`` before they become ``thinking``
     # pieces (see ``rapid_mlx/routes/anthropic.py`` lines 2051 +
@@ -489,36 +442,15 @@ def test_c08_special_tokens_in_thinking_dont_break_duplicate_detection():
         if d.get("type") == "content_block_delta"
         and d.get("delta", {}).get("type") == "text_delta"
     ]
-    assert text_chunks == [], (
+    assert text_chunks == [REASONING_CUTOFF_SENTINEL], (
         "phantom text emitted despite special-token-laced thinking — "
         "the streaming accumulator and the finalize probe must remain "
         "byte-comparable through strip_special_tokens"
     )
 
 
-def test_c08_no_phantom_text_block_on_thinking_max_tokens_truncation():
-    """Stream + thinking + max_tokens must NOT re-encode the thinking
-    buffer as a fresh text content_block.
-
-    Pre-fix wire trace (the bug):
-      message_start
-      content_block_start(thinking)
-      thinking_delta * N
-      content_block_stop
-      content_block_start(text)         <-- phantom
-      text_delta "<all-thinking-bytes>" <-- duplicate of above
-      content_block_stop
-      message_delta (end_turn)
-      message_stop
-
-    Post-fix:
-      message_start
-      content_block_start(thinking)
-      thinking_delta * N
-      content_block_stop
-      message_delta (max_tokens)
-      message_stop
-    """
+def test_c08_thinking_max_tokens_emits_only_static_notice():
+    """Private truncated reasoning may only produce a static visible notice."""
     engine = _ThinkingTruncatedEngine(["Okay", ",", " the"])
     client = _make_client(engine, reasoning_parser_name="qwen3")
     r = client.post(
@@ -549,11 +481,11 @@ def test_c08_no_phantom_text_block_on_thinking_max_tokens_truncation():
     assert thinking_chunks == ["Okay", ",", " the"], (
         "thinking bytes must reach the wire as thinking_delta events"
     )
-    assert text_chunks == [], (
-        "no text_delta may be emitted — phantom re-encoding regression"
+    assert text_chunks == [REASONING_CUTOFF_SENTINEL], (
+        "Only the static cutoff notice may enter the text lane"
     )
-    assert "text" not in block_types, (
-        "no fresh text content_block may open after the thinking close"
+    assert block_types.count("text") == 1, (
+        "Exactly one text block must carry the static cutoff notice"
     )
     message_delta = next(d for _, d in events if d.get("type") == "message_delta")
     assert message_delta["delta"]["stop_reason"] == "max_tokens", (

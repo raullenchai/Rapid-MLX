@@ -990,13 +990,17 @@ class TestValidateToolCallParams:
             self._make_tools(),
         )
 
-    def test_invalid_json_no_crash(self):
+    def test_invalid_json_is_rejected(self):
+        from fastapi import HTTPException
+
         from rapid_mlx.server import _validate_tool_call_params
 
-        _validate_tool_call_params(
-            self._make_tool_calls(arguments="not json {"),
-            self._make_tools(),
-        )
+        with pytest.raises(HTTPException, match="valid JSON") as error:
+            _validate_tool_call_params(
+                self._make_tool_calls(arguments="not json {"),
+                self._make_tools(),
+            )
+        assert error.value.status_code == 400
 
     def test_missing_required_argument_raises_400(self):
         from fastapi import HTTPException

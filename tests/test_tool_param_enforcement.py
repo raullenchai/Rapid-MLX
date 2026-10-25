@@ -335,7 +335,9 @@ class TestDeferredPassThrough:
 
         tools = [_tool("f", {"x": {"type": "string"}})]
         tools[0]["function"]["parameters"]["required"] = ["x"]
-        with pytest.raises(HTTPException, match="JSON object"):
+        with pytest.raises(
+            HTTPException, match="valid JSON" if not arguments else "JSON object"
+        ):
             _validate_tool_call_params(
                 [_call("f", arguments)], tools, enforce_required=True
             )

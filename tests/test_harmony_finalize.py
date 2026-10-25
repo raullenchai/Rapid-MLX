@@ -46,6 +46,7 @@ This file exercises:
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
 from rapid_mlx.service.helpers import _rescue_silent_drop_from_reasoning
 
@@ -78,29 +79,18 @@ def test_rescue_skipped_when_harmony_cut_short_finish_length():
 
 
 def test_rescue_skipped_when_harmony_cut_short_finish_stop():
-    """``stop:["Mars"]`` match mid-analysis.
-
-    Live repro: POST chat with a prompt that mentions Mars and
-    ``stop=["Mars"]`` → finish_reason=stop, raw_text carries
-    ``<|channel|>analysis<|message|>…`` ending just before the
-    stop-string token. The engine populated ``reasoning_text`` and
-    left ``content`` empty. Pre-fix, the rescue fired (its ``length``
-    gate didn't match) and surfaced the analysis prefix as content.
-    Post-fix, the harmony gate is finish_reason-agnostic and
-    suppresses the rescue.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     raw = "<|channel|>analysis<|message|>Let me think about "
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="Let me think about ",
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text=raw,
-    )
-    assert rescued is None, (
-        "D-HARMONY-LEAK: rescue must NOT fire on harmony cut short "
-        f"by stop-string mid-analysis; got rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="Let me think about ",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text=raw,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_fires_on_happy_path_with_final_channel_present():
@@ -152,81 +142,53 @@ def test_rescue_fires_on_truncation_mid_final_channel():
 
 
 def test_rescue_skipped_when_harmony_cut_short_finish_unknown():
-    """The harmony gate is finish_reason-agnostic. A caller that
-    doesn't thread ``finish_reason`` (legacy or non-streaming early-
-    return path) still gets the suppression — the discriminator is the
-    raw_text channel state, not the wire finish signal.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     raw = "<|channel|>analysis<|message|>still thinking"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="still thinking",
-        tool_calls=None,
-        finish_reason=None,
-        raw_text=raw,
-    )
-    assert rescued is None, (
-        f"D-HARMONY-LEAK gate must be finish_reason-agnostic; got rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="still thinking",
+            tool_calls=None,
+            finish_reason=None,
+            raw_text=raw,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_suppressed_on_commentary_tool_call_marker_only():
-    """Codex r1 BLOCKING #1 counter-test: when ``<|call|>`` is present
-    in raw_text but ``tool_calls`` is None (parser failed to extract
-    the structured call — malformed args, downstream filter dropped
-    the entry, the helper was invoked by a third-party caller that
-    doesn't thread the parsed-calls list), the harmony gate must
-    STILL suppress the rescue. Promoting the analysis body to
-    ``content`` in this state would leak ``reasoning_content`` bytes
-    onto the user-visible channel, which is the exact mojibake
-    D-HARMONY-LEAK exists to prevent.
-
-    The helper's contract: analysis-present + final-absent suppresses
-    REGARDLESS of ``<|call|>`` presence. The earlier
-    ``if tool_calls:`` branch already preserves successfully-parsed
-    tool calls (it returns the original ``final_content`` before
-    reaching this gate). The two branches are independent — a parsed
-    call short-circuits early; an unparsed-but-marker-present call
-    falls into this gate, which still refuses to leak the analysis.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     raw = (
         "<|channel|>analysis<|message|>need weather<|end|>"
         '<|channel|>commentary to=functions.get_weather<|message|>{"city":"SF"}<|call|>'
     )
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="need weather",
-        tool_calls=None,  # parser dropped the call somewhere downstream
-        finish_reason="stop",
-        raw_text=raw,
-    )
-    assert rescued is None, (
-        "D-HARMONY-LEAK BLOCKING #1: harmony gate must suppress even "
-        "when <|call|> is present but tool_calls is empty; "
-        f"got rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="need weather",
+            tool_calls=None,  # parser dropped the call somewhere downstream
+            finish_reason="stop",
+            raw_text=raw,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 # ── Existing #569 / VibeThinker rescue still fire — additive gate ────
 
 
 def test_rescue_still_fires_for_gemma4_stuck_thought_no_harmony_markers():
-    """Counter-test: the original #569 failure (gemma-4 stuck inside
-    ``<|channel>thought\\n…`` — note ``<|channel>`` not ``<|channel|>``,
-    a DIFFERENT marker family) does NOT match the harmony gate's
-    marker substring. The rescue still fires.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="The user wants weather for SF",
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text="The user wants weather for SF",  # no harmony markers
-    )
-    assert rescued == "The user wants weather for SF", (
-        "gemma-4 #569 rescue must still fire when no harmony markers "
-        f"are present; got rescued={rescued!r}"
-    )
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="The user wants weather for SF",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text="The user wants weather for SF",  # no harmony markers
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_still_skipped_for_vibethinker_truncated_think():
@@ -403,10 +365,7 @@ def test_end_to_end_harmony_cut_short_keeps_content_null():
 
 
 def test_end_to_end_harmony_stop_match_keeps_content_null():
-    """End-to-end: ``stop:["Mars"]`` match mid-analysis. Same shape as
-    length cut from the helper chain's perspective — the rescue's gate
-    suppresses regardless of finish_reason.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     raw = "<|channel|>analysis<|message|>Let me think about "
@@ -422,17 +381,16 @@ def test_end_to_end_harmony_stop_match_keeps_content_null():
         reasoning_max_tokens=None,
     )
 
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=cleaned_text or None,
-        reasoning_text=reasoning_text,
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text=raw,
-    )
-    assert rescued is None, (
-        "stop-string match mid-analysis must NOT promote reasoning "
-        f"to content; got {rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=cleaned_text or None,
+            reasoning_text=reasoning_text,
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text=raw,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 # ── Streaming surface: SSE terminal-chunk gate for harmony ───────────

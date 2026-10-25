@@ -152,6 +152,14 @@ def test_flint_routes(
         url = "/v1/responses"
     try:
         response = TestClient(app).post(url, json=body)
+        if (
+            raw == "Private thought.</think>"
+            and surface in ("chat", "messages")
+            and not stream
+        ):
+            assert response.status_code == 422
+            assert response.json()["detail"]["error"]["code"] == "model_no_final_answer"
+            return
         assert response.status_code == 200, response.text
         packets = (
             [
@@ -320,7 +328,7 @@ def test_glm_malformed_markup_is_not_content(raw):
 
 
 def test_responses_finalize_preserves_plain_text():
-    test_flint_routes("responses", True, False, "Done.", 1)
+    test_flint_routes("responses", True, False, "</think>Done.", 1)
 
 
 def test_glm_interrupted_name_requires_arguments():
@@ -356,7 +364,9 @@ def test_glm_stream_flush(raw, expected):
 
 @pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>"])
 def test_responses_finalize_flushes_literal_prefix(text):
-    test_flint_routes("responses", True, False, text, 1, expected_literal=text)
+    test_flint_routes(
+        "responses", True, False, "</think>" + text, 1, expected_literal=text
+    )
 
 
 @pytest.mark.parametrize("name", ["run_shell_command", "unknown"])
@@ -525,8 +535,10 @@ def test_glm_orphan_segments_preserve_following_answer(prefix):
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>", "Plain <"])
 def test_messages_finalization_preserves_literal_prefix(stream, text):
-    test_flint_routes("messages", stream, False, text, 1, expected_literal=text)
+    test_flint_routes(
+        "messages", stream, False, "</think>" + text, 1, expected_literal=text
+    )
 
 
 def test_messages_bare_tool_envelope_preserves_surrounding_prose():
-    test_flint_routes("messages", True, True, "Ready." + CALL + "Done.", 1)
+    test_flint_routes("messages", True, True, "</think>Ready." + CALL + "Done.", 1)

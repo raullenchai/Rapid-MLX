@@ -23,6 +23,7 @@ When ``final_content`` is empty/None AND no ``tool_calls`` fired AND
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
 from rapid_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
 from rapid_mlx.service.helpers import (
@@ -34,32 +35,27 @@ from rapid_mlx.service.helpers import (
 
 
 def test_rescue_fires_when_content_none_no_tools_with_reasoning():
-    """Exact #569 production failure: ``final_content`` empty/None,
-    ``tool_calls`` empty/None, ``reasoning_text`` non-empty. The
-    rescue surfaces reasoning as content so the assistant message is
-    non-empty for OpenAI-compat clients.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="The user wants weather for SF. I should call get_weather",
-        tool_calls=None,
-    )
-    assert rescued == ("The user wants weather for SF. I should call get_weather"), (
-        "rescue must surface reasoning trace when content+tool_calls are both empty"
-    )
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="The user wants weather for SF. I should call get_weather",
+            tool_calls=None,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_fires_when_content_empty_string():
-    """Empty-string ``final_content`` (downstream sanitization
-    collapsed everything to empty) is treated the same as ``None`` —
-    the user-visible field is silently empty either way.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content="",
-        reasoning_text="Some reasoning trace",
-        tool_calls=None,
-    )
-    assert rescued == "Some reasoning trace"
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content="",
+            reasoning_text="Some reasoning trace",
+            tool_calls=None,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_noop_when_content_present():
@@ -146,62 +142,39 @@ def test_rescue_noop_when_reasoning_is_whitespace_only():
 
 
 def test_rescue_noop_when_final_content_is_whitespace_only():
-    """Codex round-3 NIT on #676: whitespace-only ``final_content``
-    (``"   \\n"``) is semantically empty to OpenAI-compat clients —
-    the assistant turn shows as blank even though the field is a
-    non-empty string. Pre-fix the helper's early-exit predicate was
-    a plain truthiness check (``if final_content: return …``), so a
-    whitespace-only string blocked the rescue and the client saw an
-    empty assistant turn despite the engine having produced a
-    legitimate reasoning trace.
-
-    Post-fix the predicate strips before returning: whitespace-only
-    ``final_content`` is treated identically to ``None`` / ``""``,
-    so the rescue FIRES and the reasoning trace surfaces as content.
-    Pins the contract: any ``final_content`` that ``.strip()``s to
-    empty must NOT block the rescue when reasoning is present.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content="   \n",
-        reasoning_text="Real reasoning trace that should be rescued",
-        tool_calls=None,
-    )
-    assert rescued == "Real reasoning trace that should be rescued", (
-        "whitespace-only final_content must be treated as semantically "
-        f"absent so rescue can fire; got {rescued!r}"
-    )
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content="   \n",
+            reasoning_text="Real reasoning trace that should be rescued",
+            tool_calls=None,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_preserves_leading_trailing_whitespace_in_rescued_content():
-    """The whitespace-only gate must use ``.strip()`` on the
-    predicate only — the assigned content stays untouched so a
-    legitimately-padded thought trace (``"  Thought.  "``) keeps its
-    original framing. The predicate sees non-empty content via
-    ``.strip()``; the returned value is the raw original.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="  Real thought.  ",
-        tool_calls=None,
-    )
-    assert rescued == "  Real thought.  ", (
-        "predicate must use strip() but the returned value must be "
-        f"the original (un-stripped) reasoning text; got {rescued!r}"
-    )
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="  Real thought.  ",
+            tool_calls=None,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_noop_when_tool_calls_empty_list():
-    """``tool_calls`` is sometimes an empty list rather than
-    ``None`` (parser returned no matches). Treat it as falsy — the
-    rescue fires when content is empty AND there are no actual
-    calls, regardless of whether the field is ``None`` or ``[]``.
-    """
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="Some thought",
-        tool_calls=[],
-    )
-    assert rescued == "Some thought"
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="Some thought",
+            tool_calls=[],
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 # ── Integration: parser-level repro of the truncated thought ─────────
@@ -243,15 +216,7 @@ def test_gemma4_parser_returns_reasoning_on_unterminated_thought():
 
 
 def test_finalize_plus_rescue_recovers_stuck_gemma4_thought():
-    """End-to-end stitching of the helpers chain that the chat route
-    executes. Simulates the engine path for gemma-4-26b-4bit stuck
-    mid-thought: the token-level ``OutputRouter`` populated
-    ``engine_reasoning_text`` (token-routed reasoning trace) and
-    cleared ``cleaned_text``. ``_finalize_content_and_reasoning``
-    short-circuits on the non-empty ``engine_reasoning_text`` and
-    returns ``("", reasoning)``. ``_rescue_silent_drop_from_reasoning``
-    then surfaces the reasoning as content.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     engine_reasoning = (
         "Need to figure out what weather tool wants. The city is SF. "
         "Let me think about format"
@@ -274,13 +239,12 @@ def test_finalize_plus_rescue_recovers_stuck_gemma4_thought():
         final_content = cleaned_text
 
     # Apply the rescue.
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content, reasoning_text, tool_calls=None
-    )
-    assert rescued == engine_reasoning, (
-        "end-to-end rescue must surface the engine-routed reasoning trace "
-        "as content when the model got stuck mid-thought"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content, reasoning_text, tool_calls=None
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_finalize_plus_rescue_preserves_happy_path():
@@ -376,21 +340,15 @@ def fake_chat_finalize():
 
 
 def test_assistant_message_non_empty_when_only_reasoning_fired(fake_chat_finalize):
-    """Pins the issue #569 contract at the assembly layer: when the
-    model produced only a reasoning trace, the AssistantMessage MUST
-    have ``content`` populated (so Cline/Cursor/Codex CLI don't see
-    an empty turn). ``reasoning_content`` stays populated unchanged.
-    """
-    content, reasoning = fake_chat_finalize(
-        cleaned_text="",
-        reasoning_text="The user wants weather. I should call get_weather",
-        tool_calls=None,
-    )
-    assert content is not None and content != "", (
-        "issue #569: assistant turn must not be silently empty"
-    )
-    assert "weather" in content
-    assert reasoning == "The user wants weather. I should call get_weather"
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
+    with pytest.raises(HTTPException) as caught:
+        fake_chat_finalize(
+            cleaned_text="",
+            reasoning_text="The user wants weather. I should call get_weather",
+            tool_calls=None,
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_assistant_message_truly_empty_when_nothing_fired(fake_chat_finalize):
@@ -520,25 +478,12 @@ def test_streaming_rescue_surfaces_reasoning_as_terminal_content():
         events = _parse_sse(resp.text)
         assert events, "expected at least the terminal SSE chunk"
 
-        terminal_events = [
-            e
-            for e in events
-            if any(ch.get("finish_reason") is not None for ch in e.get("choices", []))
-        ]
-        assert terminal_events, "expected an SSE chunk with finish_reason set"
-        terminal = terminal_events[-1]
-        delta = terminal["choices"][0].get("delta", {})
-
-        # #569: terminal chunk surfaces accumulated reasoning as content
-        # so the content stream is non-empty for clients that ignore
-        # reasoning_content.
-        terminal_content = delta.get("content")
-        assert terminal_content, (
-            f"#569 streaming: terminal chunk MUST carry rescued content; "
-            f"got {terminal_content!r}"
+        assert any("model_no_final_answer" in str(event) for event in events)
+        assert not any(
+            choice.get("delta", {}).get("content")
+            for event in events
+            for choice in event.get("choices", [])
         )
-        # The rescued content is the accumulated reasoning trace.
-        assert "weather query" in terminal_content
     finally:
         reset_config()
 
@@ -1065,10 +1010,7 @@ def test_rescue_still_fires_on_length_when_raw_text_lacks_open_think():
         finish_reason="length",
         raw_text="reasoning that got truncated",  # no <think> opener
     )
-    assert rescued == "reasoning that got truncated", (
-        "rescue MUST fire for #569 gemma-4 failure mode even when "
-        "finish_reason=length, when raw_text does not start with <think>"
-    )
+    assert rescued is None
 
 
 def test_rescue_skipped_on_truncated_think_when_finish_is_stop_with_matched_stop():
@@ -1092,18 +1034,16 @@ def test_rescue_skipped_on_truncated_think_when_finish_is_stop_with_matched_stop
     matched_stop-supplied case.
     """
     raw = "<think>just a thought"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="just a thought",
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text=raw,
-        matched_stop="STOP",
-    )
-    assert rescued is None, (
-        f"D-STOP-THINK regression — rescue surfaced trace as content "
-        f"under stop-mid-think with matched_stop set: rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="just a thought",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text=raw,
+            matched_stop="STOP",
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
@@ -1128,18 +1068,16 @@ def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
     anthropic.py now accumulate ``output.matched_stop`` per chunk).
     """
     raw = "<think>just a thought"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="just a thought",
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text=raw,
-        matched_stop=None,
-    )
-    assert rescued == "just a thought", (
-        f"#569 regression — natural-EOS with unclosed <think> "
-        f"silently dropped instead of rescued: rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="just a thought",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text=raw,
+            matched_stop=None,
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_skipped_on_truncated_think_under_finish_stop_with_matched_stop():
@@ -1155,31 +1093,26 @@ def test_rescue_skipped_on_truncated_think_under_finish_stop_with_matched_stop()
     natural EOS (rescue).
     """
     raw = "<think>still thinking when stop fired"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="still thinking when stop fired",
-        tool_calls=None,
-        finish_reason="stop",
-        raw_text=raw,
-        matched_stop="STOP",
-    )
-    assert rescued is None, (
-        f"D-STOP-THINK regression — engine stop with matched_stop "
-        f"should suppress; got rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="still thinking when stop fired",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text=raw,
+            matched_stop="STOP",
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
-def test_rescue_still_fires_on_truncated_think_when_finish_unknown():
-    """Counter-test: when ``finish_reason`` is ``None`` (legacy caller
-    that doesn't thread the kwarg), the gate is conservative and
-    rescue still fires. The kwarg defaults to ``None`` for back-
-    compat with existing callers."""
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text="just a thought",
-        tool_calls=None,
-    )
-    assert rescued == "just a thought"
+def test_reasoning_without_finish_reason_is_explicit_failure():
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="just a thought",
+            tool_calls=None,
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_skipped_when_closed_think_block_truncated_after():
@@ -1196,9 +1129,7 @@ def test_rescue_skipped_when_closed_think_block_truncated_after():
         finish_reason="length",
         raw_text=raw,
     )
-    # </think> is in raw_text, so the gate does NOT fire → rescue runs
-    # normally and surfaces the reasoning.
-    assert rescued == "complete thought"
+    assert rescued is None
 
 
 # Codex r3 P1 — streaming rescue must skip truncated `<think>`.
@@ -1250,9 +1181,7 @@ def test_streaming_rescue_still_fires_for_gemma4_stuck_thought_shape():
         # because ``_saw_any_tag`` was False on the (non-think) parser.
         raw_text=trace,
     )
-    assert rescued == trace, (
-        f"gemma-4 #569 failure mode must still rescue — got rescued={rescued!r}"
-    )
+    assert rescued is None
 
 
 # Bug C / Bug 3 cross-cut: PR #715 bundle live-test repro for
@@ -1295,18 +1224,7 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
 
 
 def test_rescue_fires_when_case4_and_finish_is_stop_natural_eos():
-    """D-STOP-THINK codex round-2 BLOCKING fix: scope the Case-4 +
-    ``stop`` suppression to require explicit truncation evidence
-    (``matched_stop`` set or unclosed-``<think>`` opener in raw_text).
-
-    Natural-EOS Case-4 (``matched_stop=None``, no opener) is the
-    VibeThinker / PR #715 fuzz finding C path: the model finishes
-    its casual non-thinking answer with the model's own EOS token
-    AND the parser routes the whole body to reasoning (Case-4
-    blanking). The pre-fix rescue surfaced the reasoning trace as
-    ``content`` — correct for #569. Suppressing on Case-4 alone
-    would silently drop the assistant turn.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     trace = "casual non-thinking answer that finished cleanly at EOS"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
@@ -1318,11 +1236,7 @@ def test_rescue_fires_when_case4_and_finish_is_stop_natural_eos():
         reasoning_is_case4=True,
         matched_stop=None,  # natural-EOS — no user-supplied stop fired
     )
-    assert rescued == trace, (
-        f"#569 regression — rescue suppressed natural-EOS case-4 "
-        f"reasoning trace under finish=stop with no opener evidence: "
-        f"rescued={rescued!r}"
-    )
+    assert rescued == trace
 
 
 def test_rescue_skipped_when_case4_stop_user_stop_matched_and_thinking_active():
@@ -1334,34 +1248,23 @@ def test_rescue_skipped_when_case4_stop_user_stop_matched_and_thinking_active():
     answer ALSO has it set).
     """
     trace = "thought in progress when STOP fired"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text=trace,
-        tool_calls=None,
-        finish_reason="stop",
-        # No literal ``<think>`` in raw_text — prompt-injected shape.
-        raw_text=trace,
-        reasoning_is_case4=True,
-        matched_stop="STOP",  # user-supplied stop fired mid-thought
-        prompt_thinking_active=True,  # chat template injected <think>
-    )
-    assert rescued is None, (
-        f"D-STOP-THINK regression — rescue surfaced prompt-injected "
-        f"truncated thought as content: rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text=trace,
+            tool_calls=None,
+            finish_reason="stop",
+            # No literal ``<think>`` in raw_text — prompt-injected shape.
+            raw_text=trace,
+            reasoning_is_case4=True,
+            matched_stop="STOP",  # user-supplied stop fired mid-thought
+            prompt_thinking_active=True,  # chat template injected <think>
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_fires_when_case4_stop_matched_stop_but_thinking_not_active():
-    """Codex round-5 BLOCKING counter-test: casual stop-terminated
-    answer (matched_stop set, prompt_thinking_active=False) must
-    still rescue per #569 — the OpenAI client must see the answer
-    on ``message.content``.
-
-    Example: ``"The answer is STOP"`` under ``stop=["STOP"]`` with
-    a non-thinking model. The engine sets matched_stop and the
-    parser may route the whole thing to reasoning (Case-4), but
-    suppressing the rescue here would silently drop the answer.
-    """
+    """Preserve genuine answers and reject completed private-reasoning-only turns."""
     answer = "The answer is 12"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
@@ -1373,10 +1276,7 @@ def test_rescue_fires_when_case4_stop_matched_stop_but_thinking_not_active():
         matched_stop="STOP",  # user-supplied stop fired
         prompt_thinking_active=False,  # chat template did NOT inject <think>
     )
-    assert rescued == answer, (
-        f"#569 regression — casual stop-terminated answer suppressed: "
-        f"rescued={rescued!r}"
-    )
+    assert rescued == answer
 
 
 def test_rescue_skipped_when_case4_stop_and_unclosed_think_opener():
@@ -1394,21 +1294,18 @@ def test_rescue_skipped_when_case4_stop_and_unclosed_think_opener():
     leak suppression that the test name implies.
     """
     trace = "thought in progress when STOP fired"
-    rescued = _rescue_silent_drop_from_reasoning(
-        final_content=None,
-        reasoning_text=trace,
-        tool_calls=None,
-        finish_reason="stop",
-        # Unclosed ``<think>`` opener — D-STOP-THINK explicit shape.
-        raw_text="<think>\n" + trace,
-        reasoning_is_case4=True,
-        matched_stop="STOP",
-    )
-    assert rescued is None, (
-        f"D-STOP-THINK regression — rescue surfaced unclosed-think "
-        f"trace as content under finish=stop + matched_stop: "
-        f"rescued={rescued!r}"
-    )
+    with pytest.raises(HTTPException) as caught:
+        _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text=trace,
+            tool_calls=None,
+            finish_reason="stop",
+            # Unclosed ``<think>`` opener — D-STOP-THINK explicit shape.
+            raw_text="<think>\n" + trace,
+            reasoning_is_case4=True,
+            matched_stop="STOP",
+        )
+    assert caught.value.detail["error"]["code"] == "model_no_final_answer"
 
 
 def test_rescue_fires_when_length_but_not_case4():
@@ -1425,4 +1322,4 @@ def test_rescue_fires_when_length_but_not_case4():
         raw_text=trace,
         reasoning_is_case4=False,
     )
-    assert rescued == trace
+    assert rescued is None

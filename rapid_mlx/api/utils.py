@@ -6,9 +6,11 @@ Utility functions for text processing and model detection.
 import json
 import logging
 import re
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, TextIO
 
 from packaging.version import InvalidVersion, Version
 
@@ -22,6 +24,9 @@ from ..model_metadata import (
 )
 from ..recommendations import physical_ram_gb
 from .models import Message
+
+if TYPE_CHECKING:
+    from ..tool_parsers.json_prefix import ToolJSONPrefix
 
 logger = logging.getLogger(__name__)
 
@@ -898,10 +903,8 @@ def _is_balanced(text: str, open_char: str, close_char: str) -> bool:
 # Streaming Tool Call Filter
 # =============================================================================
 
-# Safety cap for tool call buffer (bytes). If a tool call block never closes,
-# the buffer is capped to prevent unbounded memory growth. In practice, the
-# buffer is bounded by max_tokens (~100KB at 32768 tokens), but this cap
-# protects against pathological cases.
+# Historical threshold retained for compatibility and regression tests.
+# Suppression now retains only the possible closing-delimiter suffix.
 _MAX_TOOL_BUFFER_BYTES = 1_048_576  # 1 MB
 
 # Tags that delimit tool call blocks in streaming output.
@@ -966,6 +969,13 @@ def get_tool_call_tags() -> list[tuple[str, str]]:
     return list(_TOOL_CALL_TAGS)
 
 
+class ToolProbeStorageError(RuntimeError):
+    """Safe terminal failure when a literal-prefix probe cannot be stored."""
+
+    rapid_mlx_error_code = "tool_parse_storage_error"
+    public_message = "Tool parsing storage is unavailable; retry the request."
+
+
 class StreamingToolCallFilter:
     """Buffer streaming text to suppress tool call markup.
 
@@ -991,8 +1001,33 @@ class StreamingToolCallFilter:
         *,
         enabled: bool = True,
         is_complete=None,
+        classify_prefix=None,
+        parser_name: str | None = None,
+        request=None,
     ):
         self._is_complete = is_complete
+        if classify_prefix is None and parser_name:
+            from ..tool_parsers import ToolParserManager
+
+            parser_class = ToolParserManager.get_tool_parser(parser_name)
+            classify_prefix = getattr(parser_class, "classify_tool_call_prefix", None)
+        from ..tool_parsers.hermes_tool_parser import HermesToolParser
+
+        # Bind request context to the JSON classifier itself, independently of
+        # registry aliases. Native XML classifiers keep their two-argument API.
+        self._json_enabled = (
+            classify_prefix == HermesToolParser.classify_tool_call_prefix
+        )
+        if self._json_enabled:
+            classifier = classify_prefix
+            classify_prefix = lambda opener, body: classifier(opener, body, request)
+        self._json_prefix: ToolJSONPrefix | None = None
+        self._json_parts: list[str] = []
+        self._json_request = request
+        self._classify_prefix = classify_prefix
+        self._prefix_pending = False
+        self._prefix_whitespace: TextIO | None = None
+        self._prefix_whitespace_size = 0
         self._open_tag = ""
         self._enabled = enabled
         self._buffer = ""
@@ -1009,14 +1044,22 @@ class StreamingToolCallFilter:
 
     def process(self, delta: str) -> str:
         """Process a streaming delta. Returns text to emit (may be empty)."""
-        if not self._enabled:
-            return delta
-        self._buffer += delta
+        try:
+            if not self._enabled:
+                return delta
+            self._buffer += delta
 
-        if self._in_block:
-            return self._consume_block()
-        else:
-            return self._scan_for_open()
+            if self._in_block:
+                return self._consume_block()
+            else:
+                return self._scan_for_open()
+        except OSError:
+            try:
+                self.close()
+            finally:
+                raise ToolProbeStorageError(
+                    ToolProbeStorageError.public_message
+                ) from None
 
     def _scan_for_open(self) -> str:
         """Scan buffer for tool call open tags. Emit safe text."""
@@ -1037,6 +1080,7 @@ class StreamingToolCallFilter:
                 self._buffer = self._buffer[idx + len(open_tag) :]
                 self._in_block = True
                 self._open_tag = open_tag
+                self._prefix_pending = True
                 self._close_tag = close_tag
                 # Process remainder in case close tag is already in buffer
                 after = self._consume_block()
@@ -1064,6 +1108,72 @@ class StreamingToolCallFilter:
     def _consume_block(self) -> str:
         """Consume content inside a tool call block. Returns empty string
         unless the block closes and there's text after it."""
+        if self._json_prefix is not None:
+            return self._consume_json()
+        if (
+            self._json_enabled
+            and self._open_tag == "<tool_call>"
+            and self._buffer.lstrip().startswith("{")
+            and self._prefix_whitespace_size
+            + len(self._buffer)
+            - len(self._buffer.lstrip())
+            <= 65536
+        ):
+            from ..tool_parsers.hermes_tool_parser import _field
+            from ..tool_parsers.json_prefix import ToolJSONPrefix
+
+            tools = _field(self._json_request, "tools", []) or []
+            names = (
+                {_field(_field(t, "function"), "name") for t in tools}
+                if tools
+                else None
+            )
+            names = _field(self._json_request, "_tool_authorization_names", names)
+            self._json_prefix = ToolJSONPrefix(names)
+            return self._consume_json()
+        if self._prefix_pending and self._classify_prefix is not None:
+            literal = self._classify_prefix(self._open_tag, self._buffer)
+            if (
+                self._prefix_whitespace_size
+                + len(self._buffer)
+                - len(self._buffer.lstrip())
+                > 65536
+            ):
+                literal = True
+            if literal is None:
+                # Keep viable JSON intact for a later literal/EOF decision.
+                # Only the still-undecided leading whitespace uses probe storage.
+                leading = len(self._buffer) - len(self._buffer.lstrip())
+                if leading > 8192:
+                    if self._prefix_whitespace is None:
+                        self._prefix_whitespace = tempfile.TemporaryFile(
+                            mode="w+t", encoding="utf-8"
+                        )
+                    self._prefix_whitespace.write(self._buffer[:leading])
+                    self._prefix_whitespace_size += leading
+                    self._buffer = self._buffer[leading:]
+                return ""
+            json_body = self._buffer.lstrip().startswith("{")
+            if not literal and json_body:
+                import json
+
+                _, end = json.JSONDecoder().raw_decode(self._buffer.lstrip())
+                start = len(self._buffer) - len(self._buffer.lstrip()) + end
+                idx = self._buffer.find(self._close_tag, start)
+                if idx < 0:
+                    return ""
+                self._drain_prefix_whitespace(emit=False)
+                self._buffer = self._buffer[idx + len(self._close_tag) :]
+                self._in_block = False
+                self._close_tag = ""
+                return self._scan_for_open()
+            whitespace = self._drain_prefix_whitespace(emit=literal)
+            self._prefix_pending = False
+            if literal:
+                opener = self._open_tag + whitespace
+                self._in_block = False
+                self._close_tag = ""
+                return opener + self._scan_for_open()
         idx = self._buffer.find(self._close_tag)
         while idx >= 0 and self._is_complete is not None:
             candidate = self._open_tag + self._buffer[: idx + len(self._close_tag)]
@@ -1080,24 +1190,114 @@ class StreamingToolCallFilter:
             if self._buffer:
                 return self._scan_for_open()
             return ""
-        # Still inside block - suppress everything but cap buffer size
-        if len(self._buffer) > _MAX_TOOL_BUFFER_BYTES:
-            logger.warning(
-                f"Tool call buffer exceeded {_MAX_TOOL_BUFFER_BYTES} bytes, "
-                f"discarding and exiting block"
-            )
-            self._buffer = ""
-            self._in_block = False
-            self._close_tag = ""
+        # Retain only the suffix needed to recognize a split closing tag.
+        # Discarding payload must not relinquish ownership of the open block.
+        if self._is_complete is None:
+            self._buffer = self._buffer[-(len(self._close_tag) - 1) :]
         return ""
+
+    def _consume_json(self) -> str:
+        """Validate each delta once; retain chunks until the wire decision."""
+        prefix = self._json_prefix
+        assert prefix is not None
+        end = prefix.feed(self._buffer)
+        self._json_parts.append(self._buffer[:end])
+        self._buffer = self._buffer[end:]
+        if prefix.viable and not prefix.complete:
+            return ""
+        if prefix.viable:
+            leading = len(self._buffer) - len(self._buffer.lstrip())
+            self._json_parts.append(self._buffer[:leading])
+            self._buffer = self._buffer[leading:]
+            if self._buffer.startswith(self._close_tag):
+                self._drain_prefix_whitespace(emit=False)
+                self._buffer = self._buffer[len(self._close_tag) :]
+                self._json_parts.clear()
+                self._json_prefix = None
+                self._in_block = False
+                self._close_tag = ""
+                return self._scan_for_open()
+            if self._close_tag.startswith(self._buffer):
+                return ""
+        self._buffer = "".join(self._json_parts) + self._buffer
+        self._json_parts.clear()
+        self._json_prefix = None
+        whitespace = self._drain_prefix_whitespace(emit=True)
+        self._in_block = False
+        self._close_tag = ""
+        return self._open_tag + whitespace + self._scan_for_open()
+
+    def _drain_prefix_whitespace(self, *, emit: bool) -> str:
+        pending = self._prefix_whitespace
+        self._prefix_whitespace = None
+        self._prefix_whitespace_size = 0
+        if pending is None:
+            return ""
+        try:
+            if emit:
+                pending.seek(0)
+                return pending.read()
+            return ""
+        finally:
+            pending.close()
+
+    def close(self) -> None:
+        """Release pending probe storage; safe on every stream exit."""
+        self._json_parts.clear()
+        self._json_prefix = None
+        self._buffer = ""
+        try:
+            self._drain_prefix_whitespace(emit=False)
+        except OSError:
+            raise ToolProbeStorageError(ToolProbeStorageError.public_message) from None
+
+    def close_after_stream(self) -> None:
+        """Best-effort cleanup after cancellation or a handled stream failure.
+
+        Normal EOF drains storage in flush(), inside the route's error handler.
+        Cleanup must not mask an active exception or yield after disconnect.
+        """
+        try:
+            self.close()
+        except ToolProbeStorageError:
+            logger.warning("Tool probe cleanup failed after stream termination")
 
     def flush(self) -> str:
         """Flush remaining buffer at end of stream."""
-        if self._in_block:
-            # Unterminated tool call block - discard
+        try:
+            whitespace = self._drain_prefix_whitespace(emit=True)
+        except OSError:
+            raise ToolProbeStorageError(ToolProbeStorageError.public_message) from None
+        if self._json_prefix is not None:
+            emit = (
+                ""
+                if self._json_prefix.complete
+                else (
+                    self._open_tag
+                    + whitespace
+                    + "".join(self._json_parts)
+                    + self._buffer
+                )
+            )
+            self._json_parts.clear()
+            self._json_prefix = None
             self._buffer = ""
             self._in_block = False
-            return ""
+            return emit
+        if self._in_block:
+            literal = (
+                self._classify_prefix(self._open_tag, self._buffer)
+                if self._classify_prefix is not None
+                else False
+            )
+            emit = (
+                self._open_tag + whitespace + self._buffer
+                if literal is not False
+                else ""
+            )
+            self._buffer = ""
+            self._in_block = False
+            return emit
         emit = self._buffer
         self._buffer = ""
         return emit

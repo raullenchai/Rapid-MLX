@@ -102,9 +102,9 @@ class StreamingToolContentFilter:
         )
         if result and result.get("tool_calls"):
             self._tools_seen = True
-            self._preserve_post_tool_content = bool(
-                result.get("preserve_post_tool_content")
-            )
+            self._preserve_post_tool_content = False
+        if result and result.get("preserve_post_tool_content"):
+            self._preserve_post_tool_content = True
         return cast(str, (result or {}).get("content") or "")
 
     def flush(self) -> str:
@@ -146,6 +146,12 @@ class StreamingOutputFilter:
 
         text = self.special.process(self.tool_filter.process(delta))
         return self.sanitizer.process(strip_special_tokens(text))
+
+    def close_after_stream(self) -> None:
+        """Release provisional storage through the request's content wrapper."""
+        close = getattr(self.tool_filter, "close_after_stream", None)
+        if callable(close):
+            close()
 
     def flush(self) -> str:
         from ..api.utils import strip_special_tokens

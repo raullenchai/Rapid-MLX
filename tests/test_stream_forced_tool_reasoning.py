@@ -32,6 +32,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
@@ -985,6 +987,16 @@ class TestR11AInvariantHoldsAcrossSuite:
                 '<tool_call>\n{"name": "format_date", "arguments": ' + args + "}\n"
                 "</tool_call>"
             )
+            if label == "bare_unquoted_prose":
+                from rapid_mlx.service.helpers import _InvalidToolArgumentsError
+
+                with pytest.raises(_InvalidToolArgumentsError, match="valid JSON"):
+                    pp.process_chunk(
+                        _make_output(text=scratch, finished=True, finish_reason="stop")
+                    )
+                    pp.finalize()
+                assert pp._tool_calls_emitted_to_wire == 0
+                continue
             events = pp.process_chunk(
                 _make_output(text=scratch, finished=True, finish_reason="stop")
             )

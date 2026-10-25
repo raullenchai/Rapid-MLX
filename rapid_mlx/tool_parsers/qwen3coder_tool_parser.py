@@ -655,6 +655,17 @@ class Qwen3CoderToolParser(ToolParser):
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("qwen3_coder_xml_named", "tool_call_xml_body")
 
+    @classmethod
+    def classify_tool_call_prefix(cls, opener: str, body: str) -> bool | None:
+        """Release literal wrappers only after XML-call syntax is ruled out."""
+        if opener != "<tool_call>":
+            return False
+        body = body.lstrip()
+        prefix = "<function="
+        if body.startswith(prefix):
+            return False
+        return None if prefix.startswith(body) else True
+
     # Grammar-CAPABLE (#558 "做全"): overrides ``structure_info`` below to emit
     # the Qwen3-Coder XML arg body. Only ``<tool_call>``/``</tool_call>`` are
     # single special tokens on the Qwen3-Coder tokenizer (verified on
@@ -1631,6 +1642,11 @@ class Qwen3CoderToolParser(ToolParser):
             if not positions:
                 break
             pos = min(positions)
+            if current_text.startswith(self.tool_call_start_token, pos):
+                body = current_text[pos + len(self.tool_call_start_token) :]
+                if self.classify_tool_call_prefix(self.tool_call_start_token, body):
+                    cursor = pos + len(self.tool_call_start_token)
+                    continue
             if not self._code_tracker.inside_fence(
                 self._stream_text, self._undeclared_offset + pos
             ):
@@ -2109,6 +2125,15 @@ class Qwen3CoderToolParser(ToolParser):
         # value can't corrupt the slice.
         function_starts = self._function_start_positions(current_text)
         if self.current_tool_index >= len(function_starts):
+            if self._pending_tool_wrapped and self._pending_tool_start is not None:
+                held = current_text[self._pending_tool_start :]
+                body = held[len(self.tool_call_start_token) :]
+                if (
+                    self.classify_tool_call_prefix(self.tool_call_start_token, body)
+                    is True
+                ):
+                    self._advance_past(0)
+                    return {"content": held}
             if self._pending_partial_opener and self._pending_tool_start is not None:
                 held = current_text[self._pending_tool_start :]
                 if not self.tool_call_prefix.startswith(held):

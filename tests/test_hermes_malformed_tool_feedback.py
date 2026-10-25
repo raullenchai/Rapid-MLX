@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
@@ -91,15 +92,9 @@ def test_stream_does_not_wedge_on_undeclared_malformed_function():
 def test_parser_surfaces_declared_malformed_json_call_for_executor_feedback():
     result = HermesToolParser(None).extract_tool_calls(MALFORMED_JSON, request=REQUEST)
 
-    assert result.tools_called is True
-    assert result.content is None
-    assert result.tool_calls[0]["name"] == "browse"
-    try:
-        json.loads(result.tool_calls[0]["arguments"])
-    except json.JSONDecodeError:
-        pass
-    else:
-        raise AssertionError("malformed JSON unexpectedly became executable")
+    assert not result.tools_called
+    assert result.content == MALFORMED_JSON
+    assert result.tool_calls == []
 
 
 def test_parser_does_not_promote_name_nested_inside_malformed_arguments():
@@ -122,17 +117,8 @@ def test_stream_finalize_emits_standard_tool_call_not_raw_xml():
     processor = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
     processor.reset()
 
-    streamed = processor.process_chunk(_make_output(MALFORMED))
-    finalized = processor.finalize()
-    events = [*streamed, *finalized]
-
-    tool_events = [event for event in events if event.type == "tool_call"]
-    assert len(tool_events) == 1
-    call = tool_events[0].tool_calls[0]
-    assert call["function"]["name"] == "browse"
-    assert MALFORMED not in "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(_make_output(MALFORMED))
 
 
 def test_stream_preserves_trailing_prose_once_when_it_shares_the_close_chunk():
@@ -142,15 +128,8 @@ def test_stream_preserves_trailing_prose_once_when_it_shares_the_close_chunk():
     processor = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
     processor.reset()
 
-    events = processor.process_chunk(_make_output(MALFORMED + "\nAfterward."))
-    events.extend(processor.finalize())
-
-    assert len([event for event in events if event.type == "tool_call"]) == 1
-    content = "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
-    assert content == "\nAfterward."
-    assert MALFORMED not in content
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(_make_output(MALFORMED + "\nAfterward."))
 
 
 def test_stream_preserves_trailing_prose_once_when_it_arrives_later():
@@ -160,16 +139,8 @@ def test_stream_preserves_trailing_prose_once_when_it_arrives_later():
     processor = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
     processor.reset()
 
-    events = processor.process_chunk(_make_output(MALFORMED))
-    events.extend(processor.process_chunk(_make_output("\nAfterward.")))
-    events.extend(processor.finalize())
-
-    assert len([event for event in events if event.type == "tool_call"]) == 1
-    content = "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
-    assert content == "\nAfterward."
-    assert MALFORMED not in content
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(_make_output(MALFORMED))
 
 
 def test_stream_valid_call_after_malformed_call_restores_prose_suppression():
@@ -178,26 +149,9 @@ def test_stream_valid_call_after_malformed_call_restores_prose_suppression():
     )
     processor = StreamingPostProcessor(cfg, tools_requested=True, request=REQUEST)
     processor.reset()
-    valid = (
-        '\n<tool_call>{"name":"browse","arguments":'
-        '{"url":"https://example.com"}}</tool_call>'
-    )
 
-    events = processor.process_chunk(_make_output(MALFORMED))
-    events.extend(processor.process_chunk(_make_output(valid)))
-    events.extend(processor.process_chunk(_make_output("\nSuppressed.")))
-    events.extend(processor.finalize())
-
-    assert (
-        sum(
-            len(event.tool_calls or []) for event in events if event.type == "tool_call"
-        )
-        == 2
-    )
-    content = "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
-    assert "Suppressed." not in content
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(_make_output(MALFORMED))
 
 
 def test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose():
@@ -232,21 +186,10 @@ def test_stream_malformed_then_valid_in_one_chunk_suppresses_only_final_prose():
         '{"url":"https://example.com"}}</tool_call>'
     )
 
-    events = processor.process_chunk(
-        _make_output(MALFORMED + "\nBetween.\n" + valid + "\nSuppressed.")
-    )
-    events.extend(processor.finalize())
-
-    assert (
-        sum(
-            len(event.tool_calls or []) for event in events if event.type == "tool_call"
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(
+            _make_output(MALFORMED + "\nBetween.\n" + valid + "\nSuppressed.")
         )
-        == 2
-    )
-    content = "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
-    assert content == "\nBetween.\n"
 
 
 @pytest.mark.parametrize("mode", ["standard", "channel", "reasoning"])
@@ -266,15 +209,5 @@ def test_stream_preserves_later_prose_across_processing_modes(mode, finished):
     )
     processor.reset()
 
-    events = processor.process_chunk(_make_output(MALFORMED, channel=channel))
-    events.extend(
-        processor.process_chunk(
-            _make_output("\nAfterward.", finished=finished, channel=channel)
-        )
-    )
-    events.extend(processor.finalize())
-
-    content = "".join(
-        event.content or "" for event in events if event.type in {"content", "finish"}
-    )
-    assert content == "\nAfterward."
+    with pytest.raises(HTTPException, match="valid JSON"):
+        processor.process_chunk(_make_output(MALFORMED, channel=channel))

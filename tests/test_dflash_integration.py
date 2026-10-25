@@ -1767,8 +1767,7 @@ def test_chat_completions_truncated_tool_after_reasoning(
     content = choice["message"]["content"]
     if generation_tokens == 16:
         assert choice["finish_reason"] == "length"
-        assert content.strip() == "Let me check."
-        assert "<tool_call>" not in content
+        assert content == visible
     else:
         assert choice["finish_reason"] == "stop"
         assert content == visible

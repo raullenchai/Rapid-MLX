@@ -3215,6 +3215,12 @@ def _repair_forced_call_arguments(tool_calls, raw_text, target, tools):
     string (caller 422s) or ``None``.
     """
 
+    for call in tool_calls or []:
+        arguments = call.function.arguments
+        if isinstance(arguments, str) and arguments.startswith(
+            ("<malformed_json_arguments>", "<malformed_function_body>")
+        ):
+            return "Tool call arguments must be valid JSON; retry the request."
     broken = []
     for tc in tool_calls or []:
         args = tc.function.arguments
@@ -8489,7 +8495,7 @@ async def stream_chat_completion(
             # at chat.py:~1285), because it depends on per-request
             # ``response_format`` which the rescue helper has no
             # access to.
-            already_streamed_content = bool(processor.accumulated_text)
+            already_streamed_content = bool(streamed_content.strip())
             visible_content_streamed = bool(streamed_content.strip())
             has_any_tool_calls = bool(fallback_tool_calls) or (
                 finish_event.finish_reason == "tool_calls"
@@ -8604,7 +8610,8 @@ async def stream_chat_completion(
                     rp
                     and not getattr(rp, "_saw_any_tag", False)
                     and processor.accumulated_reasoning
-                    and not processor.accumulated_text
+                    and not streamed_content
+                    and processor.accumulated_text == processor.accumulated_reasoning
                 )
                 # D-STOP-THINK codex round-5 BLOCKING (PR #799):
                 # compute ``prompt_thinking_active`` for the streaming

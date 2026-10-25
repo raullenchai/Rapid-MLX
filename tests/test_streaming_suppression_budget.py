@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for issue #1359 — streaming tool-call suppression must be
-bounded.
+"""Unknown tool prefixes retain the historical suppression fallback.
 
-A streaming ``/v1/chat/completions`` request whose model opens a tool-call
-block that never closes (a literal ``<tool_call>``/``<function=`` in generated
-code that skews the open/close balance, oversized/degenerate arguments, or a
-repetition loop) used to have every subsequent content delta suppressed
-forever — the tool parser returns ``None`` for each chunk, the SSE generator
-yields nothing, and the keepalive layer emits only ``: keepalive`` comments,
-so no client timeout can fire (2207 tokens generated, 1 chunk on the wire,
-518s). The postprocessor now bounds the suppression and releases the buffered
-content as text once the budget is exceeded.
-
-Pure-logic: a stub tool parser drives ``StreamingPostProcessor.process_chunk``.
-No model, no GPU.
+Viable tool prefixes are covered separately by the parser-policy regressions.
+Pure-logic stubs exercise streaming without a model or GPU.
 """
 
 from __future__ import annotations
@@ -21,9 +10,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from rapid_mlx.service.postprocessor import (
-    _MAX_TOOL_SUPPRESSION_BYTES,
     StreamingPostProcessor,
 )
+
+_MAX_TOOL_SUPPRESSION_BYTES = 65536  # Historical threshold used by the regression.
 
 
 def _make_cfg(**overrides):
@@ -105,37 +95,35 @@ def test_unclosed_block_suppressed_under_budget():
     # well under it), and nothing is released yet.
     body = "The quick brown fox. " * 100  # ~2 KB
     assert _content(pp.process_chunk(_make_output(body))) == ""
-    assert pp._tool_suppression_released is False
 
 
-def test_unclosed_block_released_after_budget():
+def test_unknown_block_releases_after_budget():
     pp = _pp()
     pp.process_chunk(_make_output("<tool_call>"))
-    # One body past the budget must release the withheld text as content.
+    # An unclassified body retains the historical bounded fallback.
     big = "The quick brown fox. " * (_MAX_TOOL_SUPPRESSION_BYTES // 20 + 10)
     emitted = _content(pp.process_chunk(_make_output(big)))
-    assert pp._tool_suppression_released is True
-    assert "fox" in emitted  # the withheld content reached the wire
+    assert emitted == "<tool_call>" + big
 
 
-def test_stream_resumes_as_content_after_release():
+def test_later_deltas_visible_after_unknown_budget():
     pp = _pp()
     pp.process_chunk(_make_output("<tool_call>"))
     pp.process_chunk(_make_output("x" * (_MAX_TOOL_SUPPRESSION_BYTES + 32)))
-    assert pp._tool_suppression_released is True
-    # Once released, tool detection is off for the turn: later deltas stream
-    # straight through as content instead of wedging.
-    assert "recovered" in _content(pp.process_chunk(_make_output("recovered tail")))
+    # Later deltas remain visible after releasing the unknown prefix.
+    assert (
+        _content(pp.process_chunk(_make_output("recovered tail"))) == "recovered tail"
+    )
 
 
-def test_reset_clears_release_latch():
+def test_reset_clears_accumulated_tool_wire():
     pp = _pp()
     pp.process_chunk(_make_output("<tool_call>"))
     pp.process_chunk(_make_output("y" * (_MAX_TOOL_SUPPRESSION_BYTES + 32)))
-    assert pp._tool_suppression_released is True
     pp.reset()
-    assert pp._tool_suppression_released is False
-    assert pp._tool_suppressed_buffer == ""
+    assert pp.tool_accumulated_text == ""
+    assert not pp._tool_suppression_released
+    assert not pp._tool_suppressed_buffer
 
 
 def test_legit_short_tool_call_not_released():
@@ -169,16 +157,11 @@ def test_legit_short_tool_call_not_released():
     pp.process_chunk(_make_output('<tool_call>{"name":"f",'))
     pp.process_chunk(_make_output('"arguments":{}}'))
     pp.process_chunk(_make_output("</tool_call>"))
-    assert pp._tool_suppression_released is False
     assert pp.tool_calls_detected is True
 
 
 def test_no_release_once_a_tool_call_reached_the_wire():
-    """The ``_tool_calls_emitted_to_wire == 0`` guard: once a tool call has
-    streamed to the wire, a large following buffered block is a legitimate
-    continuation (e.g. a second call whose args stream), not a wedge — the
-    budget must NOT release, and nothing is accumulated into the suppression
-    buffer at all."""
+    """A second call stays suppressed even after the first reached the wire."""
 
     class _EmitThenBufferParser(_NeverClosingToolParser):
         def __init__(self):
@@ -212,5 +195,17 @@ def test_no_release_once_a_tool_call_reached_the_wire():
     pp.process_chunk(_make_output("<tool_call>"))
     assert pp._tool_calls_emitted_to_wire > 0
     pp.process_chunk(_make_output("z" * (_MAX_TOOL_SUPPRESSION_BYTES + 100)))
-    assert pp._tool_suppression_released is False  # guard held
-    assert pp._tool_suppressed_buffer == ""  # never accumulated past the guard
+
+
+def test_unknown_prefix_is_not_dropped_at_eof():
+    pp = _pp()
+    raw = "<tool_call>undecided"
+    assert not _content(pp.process_chunk(_make_output(raw)))
+    assert _content(pp.finalize()) == raw
+
+
+def test_released_unknown_prefix_does_not_replay_at_eof():
+    pp = _pp()
+    raw = "<tool_call>" + "x" * (_MAX_TOOL_SUPPRESSION_BYTES + 1)
+    assert _content(pp.process_chunk(_make_output(raw))) == raw
+    assert not _content(pp.finalize())

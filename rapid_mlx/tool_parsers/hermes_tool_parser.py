@@ -145,10 +145,14 @@ class HermesToolParser(ToolParser):
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         self._emitted_structured_calls = 0
+        self._stream_consumed: str | None = None
+        self._stream_request: dict[str, Any] | None = None
 
     def reset(self) -> None:
         super().reset()
         self._emitted_structured_calls = 0
+        self._stream_consumed = None
+        self._stream_request = None
 
     # Standard format: <tool_call>{"name": ..., "arguments": ...}</tool_call>
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -170,7 +174,7 @@ class HermesToolParser(ToolParser):
         r"<tool_call>\s*<function=([^>]+)>(.*?)</tool_call>", re.DOTALL
     )
     MALFORMED_JSON_INTENT_PATTERN = re.compile(
-        r'^\{\s*"name"\s*:\s*"([A-Za-z0-9_.:-]+)"\s*,\s*"arguments"\s*:'
+        r'^\{\s*"name"\s*:\s*"([A-Za-z0-9_.:-]+)"\s*,'
     )
     CLOSED_TOOL_WRAPPER_PATTERN = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
     PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
@@ -198,7 +202,7 @@ class HermesToolParser(ToolParser):
 
     @classmethod
     def _scan_tool_call_shapes(
-        cls, text: str, request: dict[str, Any] | None = None
+        cls, text: str, request: dict[str, Any] | None = None, *, final: bool = False
     ) -> tuple[list[tuple[int, int, str, str]], str]:
         """Unified left-to-right scan over the three wire shapes.
 
@@ -258,7 +262,9 @@ class HermesToolParser(ToolParser):
             # Emit prefix between cursor and earliest_pos as residual.
             residual_parts.append(text[cursor:earliest_pos])
 
-            consumed = cls._try_consume_at(text, earliest_pos, shape, request)
+            consumed = cls._try_consume_at(
+                text, earliest_pos, shape, request, final=final
+            )
             if consumed is None:
                 # Opener at ``earliest_pos`` didn't form a complete block.
                 # For a ``<tool_call>`` opener that didn't close yet, skip
@@ -296,7 +302,13 @@ class HermesToolParser(ToolParser):
 
     @classmethod
     def _try_consume_at(
-        cls, text: str, pos: int, shape: str, request: dict[str, Any] | None = None
+        cls,
+        text: str,
+        pos: int,
+        shape: str,
+        request: dict[str, Any] | None = None,
+        *,
+        final: bool = False,
     ) -> tuple[int, str, str] | None:
         """Anchor the given shape's full pattern at ``pos`` and parse.
 
@@ -310,18 +322,29 @@ class HermesToolParser(ToolParser):
             while body_start < len(text) and text[body_start].isspace():
                 body_start += 1
             if body_start < len(text) and text[body_start] == "{":
+                if (
+                    cls.classify_tool_call_prefix(
+                        "<tool_call>", text[pos + len("<tool_call>") :], request
+                    )
+                    is True
+                ):
+                    return None
                 try:
                     data, body_end = json.JSONDecoder().raw_decode(text, body_start)
                 except json.JSONDecodeError:
                     data = None
                 else:
                     closing = text.find("</tool_call>", body_end)
-                    if closing >= 0 and not text[body_end:closing].strip():
+                    if (closing >= 0 and not text[body_end:closing].strip()) or (
+                        final and "</tool_call>".startswith(text[body_end:].strip())
+                    ):
                         name = data.get("name", "") if isinstance(data, dict) else ""
                         if name:
                             arguments = data.get("arguments", {})
                             return (
-                                closing + len("</tool_call>"),
+                                closing + len("</tool_call>")
+                                if closing >= 0
+                                else len(text),
                                 name,
                                 json.dumps(arguments, ensure_ascii=False)
                                 if isinstance(arguments, dict)
@@ -373,33 +396,6 @@ class HermesToolParser(ToolParser):
                     raw_body = malformed.group(2).strip()
                     arguments = f"<malformed_function_body>{raw_body}"
                     return (malformed.end(), name, arguments)
-            # Same contract for the canonical JSON-body envelope: an outer
-            # close plus an advertised name and an arguments key establishes
-            # intent, but invalid JSON must remain invalid for the executor.
-            wrapper_end = text.find("</tool_call>", pos)
-            if wrapper_end >= 0:
-                # A delimiter-looking substring inside an unfinished JSON
-                # string is payload. The real wrapper close may arrive later.
-                escaped = False
-                in_string = False
-                for char in text[body_start:wrapper_end]:
-                    if escaped:
-                        escaped = False
-                    elif char == "\\" and in_string:
-                        escaped = True
-                    elif char == '"':
-                        in_string = not in_string
-                if in_string:
-                    return None
-                end = wrapper_end + len("</tool_call>")
-                body = text[pos + len("<tool_call>") : wrapper_end].strip()
-                intent_match = cls.MALFORMED_JSON_INTENT_PATTERN.match(body)
-                if intent_match is not None and intent_match.group(1) in declared_names:
-                    return (
-                        end,
-                        intent_match.group(1),
-                        f"<malformed_json_arguments>{body}",
-                    )
             return None
         if shape == "function_eq":
             # Shape #3: <function=NAME>...</function>
@@ -485,7 +481,11 @@ class HermesToolParser(ToolParser):
         return _info
 
     def extract_tool_calls(
-        self, model_output: str, request: dict[str, Any] | None = None
+        self,
+        model_output: str,
+        request: dict[str, Any] | None = None,
+        *,
+        _final: bool = True,
     ) -> ExtractedToolCallInformation:
         """
         Extract tool calls from a complete Hermes model response.
@@ -505,7 +505,9 @@ class HermesToolParser(ToolParser):
         # residual text is what's left when each matched span is blanked
         # out; we collapse whitespace below to recover the content
         # surface.
-        scan_matches, residual = self._scan_tool_call_shapes(cleaned_text, request)
+        scan_matches, residual = self._scan_tool_call_shapes(
+            cleaned_text, request, final=_final
+        )
         for _start, _end, name, args_json in scan_matches:
             tool_calls.append(
                 {
@@ -521,7 +523,7 @@ class HermesToolParser(ToolParser):
             cleaned_text = re.sub(r"\s+", " ", residual).strip()
 
         # Fallback: try lenient pattern for malformed tags like <tool_call without >
-        if not tool_calls:
+        if not tool_calls and "<tool_call>" not in cleaned_text:
             lenient_matches = self.TOOL_CALL_LENIENT_PATTERN.findall(cleaned_text)
             for match in lenient_matches[:1]:  # Only first to avoid hallucinations
                 try:
@@ -548,7 +550,7 @@ class HermesToolParser(ToolParser):
 
         # Fallback: try raw JSON format if no tagged tool calls found
         # Only parse the FIRST valid tool call to avoid hallucinated multiple calls
-        if not tool_calls:
+        if not tool_calls and "<tool_call>" not in cleaned_text:
             raw_matches = self.RAW_JSON_TOOL_PATTERN.findall(cleaned_text)
             if raw_matches:
                 name, args_str = raw_matches[0]
@@ -682,7 +684,10 @@ class HermesToolParser(ToolParser):
 
         if request is not None and request.get("tool_choice") == "none":
             return text
-        return _strip_trailing_tool_envelope(text)
+        cleaned = _strip_trailing_tool_envelope(text)
+        if re.match(r"<tool_call>\s*\{", text[len(cleaned) :].lstrip()):
+            return text
+        return cleaned
 
     def flush_held_content(self, full_text: str) -> str:
         """Release the prefix-held suffix at stream end.
@@ -695,7 +700,58 @@ class HermesToolParser(ToolParser):
         ``abc<`` would surface as ``abc`` to the user (codex round-3
         CRITICAL).
         """
+        if self._stream_consumed is None:
+            return full_text[len(self._safe_content_prefix(full_text)) :]
+        consumed = self._stream_consumed
+        pending = full_text[len(self._safe_content_prefix(consumed)) :]
+        if re.search(r"<tool_call>\s*\{", pending):
+            matches, residual = self._scan_tool_call_shapes(
+                pending, self._stream_request, final=True
+            )
+            return residual.strip() if matches else pending
         return full_text[len(self._safe_content_prefix(full_text)) :]
+
+    @classmethod
+    def classify_tool_call_prefix(
+        cls, opener: str, body: str, request=None
+    ) -> bool | None:
+        """True means literal prose, False means call wire, None means undecided."""
+        if opener != "<tool_call>":
+            return False
+        if len(body) - len(body.lstrip()) > 65536:
+            return True
+        body = body.lstrip()
+        if body.startswith("{"):
+            from .json_prefix import tool_json_prefix
+
+            tools = _field(request, "tools", []) or []
+            names = (
+                {_field(_field(t, "function"), "name") for t in tools}
+                if tools
+                else None
+            )
+            names = _field(request, "_tool_authorization_names", names)
+            viable, end = tool_json_prefix(body, names)
+            if not viable:
+                return True
+            if end is None:
+                return None
+            tail = body[end:].lstrip()
+            if (
+                tail
+                and not "</tool_call>".startswith(tail)
+                and not tail.startswith("</tool_call>")
+            ):
+                return True
+            return False
+        prefixes = ("<function=", "<function>")
+        if not body:
+            return None
+        if any(body.startswith(prefix) for prefix in prefixes):
+            return False
+        if any(prefix.startswith(body) for prefix in prefixes):
+            return None
+        return True
 
     @classmethod
     def _has_incomplete_structured_block(
@@ -709,15 +765,17 @@ class HermesToolParser(ToolParser):
         # wrapper. Keep holding until the JSON document and its real closer
         # arrive, even if a naive open/close tag count appears balanced.
         completed, _ = cls._scan_tool_call_shapes(text, request)
-        last_wrapper = text.rfind("<tool_call>")
-        if last_wrapper >= 0 and not any(
-            start < last_wrapper < end for start, end, _, _ in completed
-        ):
-            body_start = last_wrapper + len("<tool_call>")
+        for opener in re.finditer(r"<tool_call>", text):
+            wrapper = opener.start()
+            if any(start <= wrapper < end for start, end, _, _ in completed):
+                continue
             if (
-                text[body_start:].lstrip().startswith("{")
-                and cls._try_consume_at(text, last_wrapper, "tool_call", request)
-                is None
+                text[opener.end() :].lstrip().startswith("{")
+                and cls.classify_tool_call_prefix(
+                    "<tool_call>", text[opener.end() :], request
+                )
+                is not True
+                and cls._try_consume_at(text, wrapper, "tool_call", request) is None
             ):
                 return True
 
@@ -732,6 +790,18 @@ class HermesToolParser(ToolParser):
         # closed protocol boundary here to avoid wedging streaming forever on
         # the unmatched inner ``<function=...>`` marker.
         text = cls.CLOSED_TOOL_WRAPPER_PATTERN.sub("", text)
+
+        # Once the body cannot begin any supported call shape, an opener is
+        # literal prose. Release it without a size threshold; JSON/XML prefixes
+        # remain owned by the parser until completion or final validation.
+        for match in reversed(list(re.finditer(r"<tool_call>", text))):
+            if (
+                cls.classify_tool_call_prefix(
+                    "<tool_call>", text[match.end() :], request
+                )
+                is True
+            ):
+                text = text[: match.start()] + text[match.end() :]
 
         # Shape #1 + #2 (<tool_call> wrapper)
         if text.count("<tool_call>") > text.count("</tool_call>"):
@@ -794,6 +864,38 @@ class HermesToolParser(ToolParser):
         return "".join(residual)
 
     def extract_tool_calls_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+        previous_token_ids: Sequence[int] | None = None,
+        current_token_ids: Sequence[int] | None = None,
+        delta_token_ids: Sequence[int] | None = None,
+        request: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        self._stream_request = request
+        if not previous_text or self._stream_consumed is None:
+            self._stream_consumed = previous_text
+        # A withheld probe may later prove to be prose. Compare against the
+        # last consumed prefix, not the previous (still suppressed) input.
+        result = self._extract_tool_calls_streaming(
+            self._stream_consumed,
+            current_text,
+            delta_text,
+            previous_token_ids,
+            current_token_ids,
+            delta_token_ids,
+            request,
+        )
+        if result is not None:
+            if self._emitted_structured_calls and "<tool_call>" in result.get(
+                "content", ""
+            ):
+                result["preserve_post_tool_content"] = True
+            self._stream_consumed = current_text
+        return result
+
+    def _extract_tool_calls_streaming(
         self,
         previous_text: str,
         current_text: str,
@@ -866,28 +968,29 @@ class HermesToolParser(ToolParser):
                 # get the WIRE-ORDERED list of completed tool calls in
                 # the dict form the streaming emitter expects, then
                 # slice past the count already emitted.
-                result = self.extract_tool_calls(current_text, request)
+                result = self.extract_tool_calls(current_text, request, _final=False)
                 if result.tools_called and len(result.tool_calls) > already_emitted:
                     new_calls = result.tool_calls[already_emitted:]
                     if new_calls:
                         formatted = self._format_streaming_tool_calls(
                             new_calls, start_index=already_emitted
                         )
-                        malformed_prefixes = (
-                            "<malformed_function_body>",
-                            "<malformed_json_arguments>",
+                        cursor = len(self._safe_content_prefix(previous_text))
+                        residual = []
+                        for start, end, _, _ in current_matches:
+                            if end <= cursor:
+                                continue
+                            residual.append(current_text[cursor : max(cursor, start)])
+                            cursor = end
+                        residual.append(
+                            self._safe_content_prefix(current_text[cursor:])
                         )
-                        final_call_is_malformed = new_calls[-1]["arguments"].startswith(
-                            malformed_prefixes
+                        formatted["content"] = "".join(residual)
+                        if "<tool_call>" not in formatted["content"]:
+                            formatted.pop("content")
+                        formatted["preserve_post_tool_content"] = (
+                            "<tool_call>" in formatted.get("content", "")
                         )
-                        new_matches = current_matches[already_emitted:]
-                        residual = self._residual_after_malformed_calls(
-                            current_text, new_matches, new_calls
-                        )
-                        if residual:
-                            formatted["content"] = residual
-                        if final_call_is_malformed:
-                            formatted["preserve_post_tool_content"] = True
                         self._emitted_structured_calls = len(result.tool_calls)
                         return formatted
 
@@ -899,7 +1002,7 @@ class HermesToolParser(ToolParser):
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:
             if delta_text.rstrip().endswith("}"):
-                result = self.extract_tool_calls(current_text, request)
+                result = self.extract_tool_calls(current_text, request, _final=False)
                 if result.tools_called:
                     return self._format_streaming_tool_calls(result.tool_calls)
             return None

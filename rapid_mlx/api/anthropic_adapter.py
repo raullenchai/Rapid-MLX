@@ -723,8 +723,13 @@ def openai_to_anthropic(
             for tc in choice.message.tool_calls:
                 try:
                     tool_input = json.loads(tc.function.arguments)
-                except (json.JSONDecodeError, AttributeError):
-                    tool_input = {}
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    from ..service.helpers import _InvalidToolArgumentsError
+
+                    raise _InvalidToolArgumentsError(
+                        status_code=400,
+                        detail="Tool call arguments must be valid JSON; retry the request.",
+                    ) from None
 
                 # R6-M2: when the upstream parser is UI-TARS (the only
                 # parser whose ``computer`` tool emits the canonical

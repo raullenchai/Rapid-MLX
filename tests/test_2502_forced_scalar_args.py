@@ -401,8 +401,8 @@ class TestRepairForcedCallArgumentsScalar:
             "</parameter></function>"
         )
         err = _repair_forced_call_arguments([tc], "", "weather", [_WEATHER])
-        assert err is not None
-        assert tc.function.arguments == "{}"
+        assert err is not None and "valid JSON" in err
+        assert tc.function.arguments.startswith("<malformed_json_arguments>")
 
 
 class TestSalvageRejectsNonFinite:
