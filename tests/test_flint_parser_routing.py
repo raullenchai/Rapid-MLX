@@ -52,6 +52,7 @@ class Engine(BaseEngine):
     [
         CALL,
         "Private thought.</think>" + CALL[:-12],
+        "Private thought.</think>",
         "Private thought.</think>Done.",
         "Private thought.</think>Literal <arg_",
         "Private thought.</think>" + CALL,
@@ -232,6 +233,10 @@ def test_glm_interrupted_name_requires_arguments():
     raw = "<tool_call>run_shell_command</think></tool_call>"
     assert not parser.extract_tool_calls(raw, {"tools": TOOLS}).tools_called
     assert parser.flush_held_content("") == ""
+    parser.reset()
+    delta = parser.extract_tool_calls_streaming("", raw, raw, request={"tools": TOOLS})
+    assert not delta or not delta.get("tool_calls")
+    assert parser.flush_held_content(raw) == ""
 
 
 @pytest.mark.parametrize(
@@ -261,3 +266,32 @@ def test_glm_repair_preserves_implicit_reasoning_boundary(name):
     result = Glm47ToolParser().extract_tool_calls(raw, {"tools": TOOLS})
     assert not result.content
     assert result.tools_called == (name == "run_shell_command")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use <tool_call> as the opening marker.",
+        "An example is <arg_key>name</arg_key><arg_value>value</arg_value> in prose.",
+        "The marker is <function=f> here.",
+        "Close the arg with </arg_value>.",
+    ],
+)
+def test_glm_literal_examples_survive_buffered_and_streamed(text):
+    from rapid_mlx.api.utils import sanitize_output
+
+    assert sanitize_output(text) == text
+    parser = Glm47ToolParser()
+    assert parser.extract_tool_calls(text, {"tools": TOOLS}).content == text
+    for split in range(1, len(text)):
+        parser.reset()
+        messages = [
+            parser.extract_tool_calls_streaming(
+                "", text[:split], text[:split], request={"tools": TOOLS}
+            ),
+            parser.extract_tool_calls_streaming(
+                text[:split], text, text[split:], request={"tools": TOOLS}
+            ),
+        ]
+        visible = "".join(m.get("content", "") for m in messages if m)
+        assert visible + parser.flush_held_content(text) == text

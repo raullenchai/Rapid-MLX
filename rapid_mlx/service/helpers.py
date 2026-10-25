@@ -1093,13 +1093,9 @@ def _rescue_silent_drop_from_reasoning(
         return final_content
     if not reasoning_text or not reasoning_text.strip():
         return final_content
-    # A discarded malformed GLM call is not an unfinished answer. Restoring
-    # the closed thought here would leak reasoning after wire sanitization.
-    if (
-        raw_text
-        and "</think>" in raw_text
-        and any(tag in raw_text for tag in ("<arg_key>", "<arg_value>", "</arg_value>"))
-    ):
+    # An implicit close positively identifies the private reasoning prefix.
+    # An empty answer after it must not restore that prefix as visible text.
+    if raw_text and "</think>" in raw_text and "<think>" not in raw_text:
         return final_content
     # 2026-06-17 VibeThinker live test: when the model was truncated
     # D-STOP-THINK rescue gate. The #569 rescue normally copies
@@ -3585,6 +3581,13 @@ def _clean_final_content_tool_envelope(
     """Preserve finalized content unless cleanup removes a trailing envelope."""
     if content is None:
         return None
+    # Run GLM cleanup after reasoning extraction, when leading orphan arguments
+    # have structural context. Do not strip argument examples in global prose.
+    if get_config().tool_call_parser in ("glm47", "glm4"):
+        from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+        content_filter = Glm47ContentFilter()
+        return content_filter.process(content) + content_filter.flush()
     cleaned = _strip_trailing_tool_envelope(
         content, request, reasoning_source=reasoning_source, finish_reason=finish_reason
     )

@@ -24,6 +24,65 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+class Glm47ContentFilter:
+    """Hide confirmed GLM envelopes and leading orphan arguments, not prose."""
+
+    _OPEN = "<tool_call>"
+    _CLOSE = "</tool_call>"
+    _ORPHANS = ("<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>")
+    _HEADER = re.compile(r"<tool_call>\s*[\w.:-]*\s*")
+
+    def __init__(self):
+        self._buffer = ""
+        self._in_wire = False
+        self._at_start = True
+
+    def process(self, delta: str) -> str:
+        self._buffer += delta
+        visible = []
+        while self._buffer:
+            if self._in_wire:
+                end = self._buffer.find(self._CLOSE)
+                if end < 0:
+                    # Only the possible closing-marker suffix needs retaining.
+                    self._buffer = self._buffer[-len(self._CLOSE) + 1 :]
+                    break
+                self._buffer = self._buffer[end + len(self._CLOSE) :]
+                self._in_wire = False
+                continue
+            markers = (self._OPEN,) + (self._ORPHANS if self._at_start else ())
+            if any(
+                len(self._buffer) < len(marker) and marker.startswith(self._buffer)
+                for marker in markers
+            ):
+                break
+            if self._at_start and self._buffer.startswith(self._ORPHANS):
+                self._in_wire = True
+                continue
+            if self._buffer.startswith(self._OPEN):
+                header = self._HEADER.match(self._buffer)
+                tail = self._buffer[header.end() :]
+                boundaries = ("<arg_key>", self._CLOSE)
+                if tail.startswith(boundaries):
+                    self._in_wire = True
+                    continue
+                if not tail or any(marker.startswith(tail) for marker in boundaries):
+                    break
+            next_marker = self._buffer.find("<", 1)
+            end = next_marker if next_marker >= 0 else len(self._buffer)
+            text, self._buffer = self._buffer[:end], self._buffer[end:]
+            visible.append(text)
+            if text.strip():
+                self._at_start = False
+        return "".join(visible)
+
+    def flush(self) -> str:
+        visible = "" if self._in_wire else self._buffer
+        self._buffer = ""
+        self._in_wire = False
+        return visible
+
+
 @ToolParserManager.register_module(["glm47", "glm4"])
 class Glm47ToolParser(ToolParser):
     """
@@ -63,23 +122,10 @@ class Glm47ToolParser(ToolParser):
     _INTERRUPTED_NAME = re.compile(
         r"(<tool_call>\s*[\w.:-]+)\s*</think>\s*(?=<arg_key>)"
     )
-    ORPHAN_TAGS = [
-        (tag, "</tool_call>")
-        for tag in (
-            "<arg_key>",
-            "</arg_key>",
-            "<arg_value>",
-            "</arg_value>",
-        )
-    ]
 
     def reset(self) -> None:
         super().reset()
-        from ..api.utils import StreamingToolCallFilter
-
-        self._content_filter = StreamingToolCallFilter(
-            tags=[("<tool_call>", "</tool_call>")] + self.ORPHAN_TAGS
-        )
+        self._content_filter = Glm47ContentFilter()
 
     def flush_held_content(self, full_text: str) -> str:
         """Release an incomplete literal prefix, but discard open wire blocks."""
@@ -167,20 +213,8 @@ class Glm47ToolParser(ToolParser):
                 content=None,
             )
         else:
-            # Preserve literal tag examples on a miss. Suppression needs a
-            # call opener, a leading orphan, or an actual key/value pair.
-            content = cleaned_text
-            if (
-                "<tool_call>" in cleaned_text
-                or re.match(r"</?arg_(?:key|value)>", cleaned_text)
-                or self.ARG_PATTERN.search(cleaned_text)
-            ):
-                from ..api.utils import StreamingToolCallFilter
-
-                content_filter = StreamingToolCallFilter(
-                    tags=[("<tool_call>", "</tool_call>")] + self.ORPHAN_TAGS
-                )
-                content = content_filter.process(cleaned_text) + content_filter.flush()
+            content_filter = Glm47ContentFilter()
+            content = content_filter.process(cleaned_text) + content_filter.flush()
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=content
             )
@@ -234,7 +268,6 @@ class Glm47ToolParser(ToolParser):
                             )
                         ]
                     }
-            return None
 
         delta_text = filtered_delta
 

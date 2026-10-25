@@ -3220,14 +3220,15 @@ async def _stream_responses(
         # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
         last_finish_reason: str | None = None
         last_response_metrics = None
-        from ..tool_parsers.glm47_tool_parser import Glm47ToolParser
+        from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
 
-        tool_filter = StreamingToolCallFilter(
-            extra_tags=Glm47ToolParser.ORPHAN_TAGS
-            if cfg.tool_call_parser in ("glm47", "glm4")
-            else None,
-            enabled=bool(chat_kwargs.get("tools"))
-            and openai_request.tool_choice != "none",
+        filter_tools = (
+            bool(chat_kwargs.get("tools")) and openai_request.tool_choice != "none"
+        )
+        tool_filter = (
+            Glm47ContentFilter()
+            if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
+            else StreamingToolCallFilter(enabled=filter_tools)
         )
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
