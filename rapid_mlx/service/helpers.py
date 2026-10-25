@@ -1093,6 +1093,14 @@ def _rescue_silent_drop_from_reasoning(
         return final_content
     if not reasoning_text or not reasoning_text.strip():
         return final_content
+    # A discarded malformed GLM call is not an unfinished answer. Restoring
+    # the closed thought here would leak reasoning after wire sanitization.
+    if (
+        raw_text
+        and "</think>" in raw_text
+        and any(tag in raw_text for tag in ("<arg_key>", "<arg_value>", "</arg_value>"))
+    ):
+        return final_content
     # 2026-06-17 VibeThinker live test: when the model was truncated
     # D-STOP-THINK rescue gate. The #569 rescue normally copies
     # reasoning-only output into ``content`` so clients do not see an

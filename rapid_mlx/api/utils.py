@@ -152,7 +152,13 @@ _FINAL_SANITIZER_ALTERNATIVES = (
 
 #: CONTENT channel. ``</tool_call>`` is deliberately absent — see the
 #: block above.
-_FINAL_SANITIZER = re.compile(_FINAL_SANITIZER_ALTERNATIVES, re.DOTALL)
+_FINAL_SANITIZER = re.compile(
+    _FINAL_SANITIZER_ALTERNATIVES
+    # Orphaned GLM arguments are wire residue, including a missing close.
+    + r"|<tool_call>\s*[\w.:-]+\s*<arg_key>.*?(?:</tool_call>|$)"
+    r"|</?arg_(?:key|value)>.*?(?:</tool_call>|$)",
+    re.DOTALL,
+)
 
 # Preserve tool-call markup when the request cannot turn it into a call. The
 # negative lookaheads keep the two asymmetric tool-call tokens out of the
@@ -1005,18 +1011,20 @@ class StreamingToolCallFilter:
 
     def _scan_for_open(self) -> str:
         """Scan buffer for tool call open tags. Emit safe text."""
-        # Check for complete open tags
-        for open_tag, close_tag in self._tags:
-            idx = self._buffer.find(open_tag)
-            if idx >= 0:
-                # Found an open tag - emit text before it, enter block mode
-                emit = self._buffer[:idx]
-                self._buffer = self._buffer[idx + len(open_tag) :]
-                self._in_block = True
-                self._close_tag = close_tag
-                # Process remainder in case close tag is already in buffer
-                after = self._consume_block()
-                return emit + after
+        # Consume the earliest marker, including an orphan argument closer
+        # before a later argument opener in the same delta.
+        matches = [
+            (idx, open_tag, close_tag)
+            for open_tag, close_tag in self._tags
+            if (idx := self._buffer.find(open_tag)) >= 0
+        ]
+        if matches:
+            idx, open_tag, close_tag = min(matches)
+            emit = self._buffer[:idx]
+            self._buffer = self._buffer[idx + len(open_tag) :]
+            self._in_block = True
+            self._close_tag = close_tag
+            return emit + self._consume_block()
 
         # No complete open tag found. Check if buffer ends with a partial
         # match of any open tag - hold that back to avoid emitting a fragment.

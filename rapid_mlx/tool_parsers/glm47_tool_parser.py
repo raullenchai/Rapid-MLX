@@ -59,6 +59,26 @@ class Glm47ToolParser(ToolParser):
         r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>", re.DOTALL
     )
 
+    # A delayed reasoning close may interrupt the name, before arguments begin.
+    _INTERRUPTED_NAME = re.compile(
+        r"(<tool_call>\s*[\w.:-]+)\s*</think>\s*(?=<arg_key>|</tool_call>)"
+    )
+    ORPHAN_TAGS = [
+        (tag, "</tool_call>")
+        for tag in (
+            "<arg_key>",
+            "</arg_key>",
+            "<arg_value>",
+            "</arg_value>",
+        )
+    ]
+
+    def reset(self) -> None:
+        super().reset()
+        from ..api.utils import StreamingToolCallFilter
+
+        self._content_filter = StreamingToolCallFilter(extra_tags=self.ORPHAN_TAGS)
+
     def _deserialize(self, value: str) -> Any:
         """Convert string value to appropriate Python type.
 
@@ -90,6 +110,7 @@ class Glm47ToolParser(ToolParser):
 
         # Strip think tags using the base class method (handles both
         # full <think>...</think> and implicit ...</think> patterns)
+        model_output = self._INTERRUPTED_NAME.sub(r"\1", model_output)
         cleaned_text = self.strip_think_tags(model_output)
 
         # Get valid tool names for validation
@@ -139,8 +160,12 @@ class Glm47ToolParser(ToolParser):
                 content=None,
             )
         else:
+            from ..api.utils import StreamingToolCallFilter
+
+            content_filter = StreamingToolCallFilter(extra_tags=self.ORPHAN_TAGS)
+            content = content_filter.process(cleaned_text) + content_filter.flush()
             return ExtractedToolCallInformation(
-                tools_called=False, tool_calls=[], content=cleaned_text
+                tools_called=False, tool_calls=[], content=content
             )
 
     def extract_tool_calls_streaming(
@@ -187,6 +212,11 @@ class Glm47ToolParser(ToolParser):
                         ]
                     }
             return None
+
+        # Suppress split or orphaned argument markup as well as full envelopes.
+        if not hasattr(self, "_content_filter"):
+            self.reset()
+        delta_text = self._content_filter.process(delta_text)
 
         # No tool call detected yet; emit content delta.
         # Only strip think tags if they're actually present (avoid .strip()

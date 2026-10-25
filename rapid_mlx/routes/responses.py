@@ -3220,9 +3220,14 @@ async def _stream_responses(
         # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
         last_finish_reason: str | None = None
         last_response_metrics = None
+        from ..tool_parsers.glm47_tool_parser import Glm47ToolParser
+
         tool_filter = StreamingToolCallFilter(
+            extra_tags=Glm47ToolParser.ORPHAN_TAGS
+            if cfg.tool_call_parser in ("glm47", "glm4")
+            else None,
             enabled=bool(chat_kwargs.get("tools"))
-            and openai_request.tool_choice != "none"
+            and openai_request.tool_choice != "none",
         )
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
@@ -4318,8 +4323,10 @@ async def _stream_responses(
                     _transition_reasoning_to_content(final_msg.content)
                 )
                 if content:
-                    async for ev in _emit_text_delta(content):
-                        yield ev
+                    filtered = tool_filter.process(content)
+                    if filtered:
+                        async for ev in _emit_text_delta(filtered):
+                            yield ev
             # R11-B (R11-M-F1): tap any reasoning bytes the finalize pass
             # surfaces, but ONLY if the in-loop ``extract_reasoning_streaming``
             # accumulator didn't already capture them. Qwen3 / deepseek /

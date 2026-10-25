@@ -519,7 +519,12 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 return self._handle_multi_block_after_close(
                     previous_text, current_text, delta_text
                 )
-            return self._handle_implicit_think(delta_text, end_in_prev, end_in_delta)
+            # Include withheld bytes when the implicit closer straddles deltas.
+            # The phase walker consumes the complete marker and resets holdback.
+            self._streaming_phase = "reasoning"
+            return self._handle_multi_block_after_close(
+                previous_text, current_text, delta_text
+            )
 
         # Case 3: No think tags seen yet
         # We can't know if <think> was in the prompt, so we must make a choice:
@@ -1382,6 +1387,20 @@ class BaseThinkingReasoningParser(ReasoningParser):
         """
         if msg is None:
             return None
+
+        # GLM names are plain text, but an argument opener immediately after
+        # the reasoning boundary proves this is a spanning call, not prose.
+        if (
+            msg.reasoning
+            and msg.content
+            and msg.content.lstrip().startswith("<arg_key>")
+        ):
+            named = re.search(r"<tool_call>\s*[\w.:-]+\s*$", msg.reasoning)
+            if named:
+                msg = DeltaMessage(
+                    reasoning=msg.reasoning[: named.start()] or None,
+                    content=named.group(0) + msg.content,
+                )
 
         # Walk the per-channel state machine for both chunked and whole-output
         # deltas so source ordering is retained uniformly.
