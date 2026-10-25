@@ -78,7 +78,6 @@ def test_flint_routes(
     app.include_router(anthropic.router)
     app.include_router(chat.router)
     app.include_router(responses.router)
-    app.include_router(anthropic.router)
     history = [{"role": "user", "content": "Build life.py and run it."}]
     if later:
         history += [
@@ -101,20 +100,13 @@ def test_flint_routes(
         tools=TOOLS,
         chat_template_kwargs={"enable_thinking": enable_thinking},
     )
-    if surface == "messages":
-        body["messages"] = history
-        body["max_tokens"] = 512
-        body["tools"] = [
-            {"name": "run_shell_command", "input_schema": {"type": "object"}}
-        ]
-        url = "/v1/messages"
-    elif surface == "chat":
+    if surface == "chat":
         body["messages"] = history
         url = "/v1/chat/completions"
     elif surface == "messages":
         body.pop("chat_template_kwargs")
         body["max_tokens"] = 1024
-        body["thinking"] = {"type": "enabled"}
+        body["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
         body["messages"] = history[:1]
         body["tools"] = [
             {"name": "run_shell_command", "input_schema": {"type": "object"}}
@@ -170,42 +162,7 @@ def test_flint_routes(
             if stream
             else [response.json()]
         )
-        if surface == "messages":
-            if stream:
-                visible = "".join(
-                    p.get("delta", {}).get("text", "")
-                    for p in packets
-                    if p.get("type") == "content_block_delta"
-                )
-                starts = [
-                    p["content_block"]
-                    for p in packets
-                    if p.get("type") == "content_block_start"
-                ]
-                calls = [
-                    {
-                        "name": b["name"],
-                        "arguments": "".join(
-                            p.get("delta", {}).get("partial_json", "")
-                            for p in packets
-                            if p.get("type") == "content_block_delta"
-                        ),
-                    }
-                    for b in starts
-                    if b["type"] == "tool_use"
-                ]
-            else:
-                visible = "".join(
-                    b.get("text", "")
-                    for b in packets[0]["content"]
-                    if b["type"] == "text"
-                )
-                calls = [
-                    {"name": b["name"], "arguments": json.dumps(b["input"])}
-                    for b in packets[0]["content"]
-                    if b["type"] == "tool_use"
-                ]
-        elif surface == "chat":
+        if surface == "chat":
             messages = [
                 p["choices"][0].get("delta", p["choices"][0].get("message", {}))
                 for p in packets

@@ -13,6 +13,7 @@ from tests.test_flint_parser_routing import test_flint_routes as run_route
 @pytest.mark.parametrize(
     "raw",
     [
+        CALL,
         "<think>Private thought.</think>Done.",
         "Private thought.</think>Done.",
         "Private thought.</think>" + CALL,
@@ -36,7 +37,7 @@ def test_thinking_off_plain_answer(surface, stream, step, raw):
     )
 
 
-@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_thinking_off_bare_tool_call(surface, stream):
     run_route(surface, stream, False, CALL, 1, enable_thinking=False)
@@ -83,7 +84,7 @@ def test_thinking_off_parser_every_split(text):
         assert "Secret." in "".join(m.reasoning or "" for m in messages if m)
 
 
-@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_thinking_off_tool_result_turn(surface, stream):
     run_route(
