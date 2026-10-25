@@ -17,9 +17,16 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.16.9] — 2026-10-25
+
+Desktop stays responsive while you browse models during a reply, verifies its bundled engine before launch, and offers to connect your coding tools after your first successful chat.
+
 ### Desktop
 
-- Newsletter and GitHub invitations now share a local successful-use counter and a quiet, one-card-per-launch schedule. The newsletter is also available from About.
+- **Responsive model picker**: opening or dismissing the picker during a streamed reply no longer rebuilds unchanged model rows. ([#5176](https://github.com/raullenchai/Rapid-MLX/pull/5176))
+- **Verified bundled engine**: Desktop checks its bundled engine before launch and shows full-app recovery guidance when it cannot be verified; upgrades keep existing model caches. ([#5164](https://github.com/raullenchai/Rapid-MLX/pull/5164))
+- **Connect tools after a successful chat**: a one-time card offers to connect a coding tool once chat has worked. ([#5243](https://github.com/raullenchai/Rapid-MLX/pull/5243))
+- Newsletter and GitHub invitations now share a local successful-use counter and a quiet, one-card-per-launch schedule. The newsletter is also available from About. ([#5139](https://github.com/raullenchai/Rapid-MLX/pull/5139))
 
 ## [0.16.8] — 2026-10-22
 
@@ -4508,7 +4515,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.9...HEAD
+[0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
 [0.16.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.6...rapid-mac-v0.16.7
 [0.16.6]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.5...rapid-mac-v0.16.6
