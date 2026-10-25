@@ -404,3 +404,29 @@ def test_glm_reasoning_does_not_consume_leading_orphan_state(parts):
             visible.append(message.get("content", ""))
         previous = current
     assert "".join(visible) + parser.flush_held_content(previous) == ""
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "<arg_key>x</arg_key>",
+        "<arg_value>private value</arg_value>",
+        "</arg_value><arg_key>x</arg_key><arg_value>private value</arg_value></tool_call>",
+    ],
+)
+def test_glm_orphan_segments_preserve_following_answer(prefix):
+    raw = prefix + "Final answer"
+    parser = Glm47ToolParser()
+    assert parser.extract_tool_calls(raw, {"tools": TOOLS}).content == "Final answer"
+    for split in range(1, len(raw)):
+        parser.reset()
+        messages = [
+            parser.extract_tool_calls_streaming(
+                "", raw[:split], raw[:split], request={"tools": TOOLS}
+            ),
+            parser.extract_tool_calls_streaming(
+                raw[:split], raw, raw[split:], request={"tools": TOOLS}
+            ),
+        ]
+        visible = "".join(m.get("content", "") for m in messages if m)
+        assert visible + parser.flush_held_content(raw) == "Final answer"

@@ -36,6 +36,7 @@ class Glm47ContentFilter:
         self.enabled = True
         self._buffer = ""
         self._in_wire = False
+        self._wire_end = self._CLOSE
         self._at_start = True
 
     def process(self, delta: str) -> str:
@@ -45,12 +46,12 @@ class Glm47ContentFilter:
         visible = []
         while self._buffer:
             if self._in_wire:
-                end = self._buffer.find(self._CLOSE)
+                end = self._buffer.find(self._wire_end)
                 if end < 0:
                     # Only the possible closing-marker suffix needs retaining.
-                    self._buffer = self._buffer[-len(self._CLOSE) + 1 :]
+                    self._buffer = self._buffer[-len(self._wire_end) + 1 :]
                     break
-                self._buffer = self._buffer[end + len(self._CLOSE) :]
+                self._buffer = self._buffer[end + len(self._wire_end) :]
                 self._in_wire = False
                 continue
             markers = (self._OPEN,) + (self._ORPHANS if self._at_start else ())
@@ -60,7 +61,11 @@ class Glm47ContentFilter:
             ):
                 break
             if self._at_start and self._buffer.startswith(self._ORPHANS):
-                self._in_wire = True
+                marker = next(m for m in self._ORPHANS if self._buffer.startswith(m))
+                self._buffer = self._buffer[len(marker) :]
+                if not marker.startswith("</"):
+                    self._in_wire = True
+                    self._wire_end = marker.replace("<", "</", 1)
                 continue
             if self._buffer.startswith(self._OPEN):
                 header = self._HEADER.match(self._buffer)
@@ -69,6 +74,7 @@ class Glm47ContentFilter:
                 boundaries = ("<arg_key>", self._CLOSE)
                 if tail.startswith(boundaries):
                     self._in_wire = True
+                    self._wire_end = self._CLOSE
                     continue
                 if not tail or any(marker.startswith(tail) for marker in boundaries):
                     break
