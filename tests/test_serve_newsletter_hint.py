@@ -26,7 +26,10 @@ from tests.test_serve_listen_fd import (  # noqa: F401
 @pytest.fixture
 def terminal(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
+    # Pin the terminal environment: the runner's TERM/NO_COLOR must not decide
+    # whether the hint is dimmed.
     monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     monkeypatch.delenv("RAPID_MLX_WATCHDOG_PPID", raising=False)
@@ -223,14 +226,29 @@ def test_state_failure_does_not_affect_serve(terminal, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_dim_and_no_color(terminal, monkeypatch, capsys):
-    monkeypatch.delenv("NO_COLOR")
+@pytest.mark.parametrize(
+    ("term", "no_color", "dimmed"),
+    [
+        ("xterm-256color", None, True),
+        (None, None, True),
+        ("dumb", None, False),
+        ("xterm-256color", "1", False),
+        ("xterm-256color", "", False),  # Presence, even empty, disables color.
+    ],
+)
+def test_dim_and_no_color(terminal, monkeypatch, capsys, term, no_color, dimmed):
+    if term is None:
+        monkeypatch.delenv("TERM", raising=False)
+    else:
+        monkeypatch.setenv("TERM", term)
+    if no_color is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
     maybe_print_newsletter_hint()
-    assert capsys.readouterr().out == f"\x1b[2m{NEWSLETTER_TEXT}\x1b[0m\n"
-    terminal.unlink()
-    monkeypatch.setenv("TERM", "dumb")
-    maybe_print_newsletter_hint()
-    assert capsys.readouterr().out == NEWSLETTER_TEXT + "\n"
+    expected = f"\x1b[2m{NEWSLETTER_TEXT}\x1b[0m" if dimmed else NEWSLETTER_TEXT
+    assert capsys.readouterr().out == expected + "\n"
+    assert terminal.exists()
 
 
 @pytest.mark.parametrize("announced", ["0.9.0", None])
