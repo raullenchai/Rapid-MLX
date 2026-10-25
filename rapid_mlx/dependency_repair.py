@@ -12,6 +12,9 @@ import subprocess
 import sys
 
 _RETRY = "RAPID_MLX_DEPENDENCY_REPAIR_RETRIED"
+_MISSING_SYMBOL = re.compile(r"cannot import name ['\"]([^'\"]+)['\"] from")
+_DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+_SYMBOL_NAME = re.compile(r"[A-Za-z_]\w*")
 _ALIASES = {
     "pyyaml": "yaml",
     "pillow": "PIL",
@@ -55,6 +58,26 @@ def dependency_failure(exc: ImportError) -> bool:
     except metadata.PackageNotFoundError:
         # An import failure plus absent own metadata is a damaged installation.
         return True
+
+
+def missing_symbol(exc: ImportError) -> str | None:
+    """Return the failed ``from module import name`` target, when recorded."""
+    message = getattr(exc, "msg", None) or str(exc)
+    match = _MISSING_SYMBOL.search(message)
+    return match.group(1) if match else None
+
+
+def _verification_argv(module: str, symbol: str | None) -> list[str]:
+    if not _DOTTED_NAME.fullmatch(module):
+        return [
+            sys.executable,
+            "-c",
+            "import importlib,sys; importlib.import_module(sys.argv[1])",
+            module,
+        ]
+    if symbol is not None and _SYMBOL_NAME.fullmatch(symbol):
+        return [sys.executable, "-c", f"from {module} import {symbol}"]
+    return [sys.executable, "-c", f"import {module}"]
 
 
 def repair_argv() -> list[str] | None:
@@ -124,7 +147,9 @@ def record_outcome(outcome: str) -> None:
         pass
 
 
-def recover(*, allow_run: bool = True, module: str | None = None) -> bool:
+def recover(
+    *, allow_run: bool = True, module: str | None = None, symbol: str | None = None
+) -> bool:
     """Return true only after an explicitly accepted installer succeeds."""
     argv = repair_argv()
     print(
@@ -165,12 +190,7 @@ def recover(*, allow_run: bool = True, module: str | None = None) -> bool:
         try:
             verified = (
                 subprocess.run(
-                    [
-                        sys.executable,
-                        "-c",
-                        "import importlib,sys; importlib.import_module(sys.argv[1])",
-                        module,
-                    ],
+                    _verification_argv(module, symbol),
                     capture_output=True,
                     timeout=60,
                     check=False,
@@ -213,7 +233,11 @@ def cli_entrypoint() -> None:
     except ImportError as exc:
         if not dependency_failure(exc):
             raise
-        if recover(allow_run=not retried, module=exc.name):
+        if recover(
+            allow_run=not retried,
+            module=exc.name,
+            symbol=missing_symbol(exc),
+        ):
             os.environ[_RETRY] = "1"
             # The tool manager may replace the running venv. Exec its lexical
             # interpreter path, preserving the original invocation and flags.

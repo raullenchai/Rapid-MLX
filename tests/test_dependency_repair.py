@@ -140,7 +140,64 @@ def test_installer_success_requires_fresh_import(environment, monkeypatch, verif
     success = isinstance(verify, subprocess.CompletedProcess) and verify.returncode == 0
     assert repair.recover(module="tiktoken") is success
     assert environment == ["repaired" if success else "failed"]
-    assert run.call_args.args[0][-1] == "tiktoken"
+    assert run.call_args.args[0][-1] == "import tiktoken"
+
+
+def test_missing_symbol_verification_reproduces_from_import(environment, monkeypatch):
+    stdin(monkeypatch)
+    verify = subprocess.CompletedProcess([], 1)
+    run = Mock(side_effect=[subprocess.CompletedProcess([], 0), verify])
+    monkeypatch.setattr(repair.subprocess, "run", run)
+    assert not repair.recover(module="package", symbol="removed_symbol")
+    assert run.call_args.args[0] == [
+        sys.executable,
+        "-c",
+        "from package import removed_symbol",
+    ]
+    assert environment == ["failed"]
+
+    stdin(monkeypatch)
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 0),
+        ]
+    )
+    monkeypatch.setattr(repair.subprocess, "run", run)
+    assert repair.recover(module="package", symbol="removed_symbol")
+    assert environment == ["failed", "repaired"]
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (
+            ImportError("cannot import name 'removed_symbol' from 'package'"),
+            "removed_symbol",
+        ),
+        (ModuleNotFoundError("No module named 'package'", name="package"), None),
+        (ImportError("broken", name="tiktoken"), None),
+    ],
+)
+def test_missing_symbol_extraction(error, expected):
+    assert repair.missing_symbol(error) == expected
+
+
+def test_cli_entrypoint_verifies_missing_symbol(environment, monkeypatch):
+    fake = types.ModuleType("rapid_mlx.cli")
+    error = ImportError("cannot import name 'removed_symbol' from 'tiktoken'")
+    error.name = "tiktoken"
+    fake.cli_entrypoint = Mock(side_effect=error)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.cli", fake)
+    calls = []
+    monkeypatch.setattr(
+        repair, "recover", lambda **kwargs: calls.append(kwargs) or False
+    )
+    with pytest.raises(SystemExit):
+        repair.cli_entrypoint()
+    assert calls == [
+        {"allow_run": True, "module": "tiktoken", "symbol": "removed_symbol"}
+    ]
 
 
 def test_reexec_once(environment, monkeypatch):
@@ -349,6 +406,35 @@ def test_doctor_plans_and_verifies_dependency_repair(environment, monkeypatch):
         assert apply_repairs(actions, run=run)[0].status == "failed"
     monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: True)
     assert plan_repairs(report) == []
+
+
+def test_doctor_plans_dependency_then_service_repair(environment):
+    from rapid_mlx.doctor.env_health import Check, CheckStatus, Report, Section
+    from rapid_mlx.doctor.repairs import plan_repairs
+
+    report = Report(
+        sections=[
+            Section(
+                "Required",
+                [
+                    Check(
+                        "missing", CheckStatus.FAIL, id="packages.required.dependencies"
+                    )
+                ],
+            ),
+            Section(
+                "Always-on Service",
+                [
+                    Check("registered", CheckStatus.OK, id="service.registration"),
+                    Check("process", CheckStatus.FAIL, id="service.process"),
+                ],
+            ),
+        ]
+    )
+    assert [action.id for action in plan_repairs(report)] == [
+        "repair.dependencies",
+        "repair.service.kickstart",
+    ]
 
 
 def test_doctor_required_probe_uses_shared_repair(environment, monkeypatch):

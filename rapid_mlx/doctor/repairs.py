@@ -36,13 +36,14 @@ class RepairResult:
 def plan_repairs(report: Report) -> list[RepairAction]:
     """Return only repairs with a bounded action and objective verifier."""
     checks = {check.id: check for check in report.all_checks()}
+    actions: list[RepairAction] = []
     dependencies = checks.get("packages.required.dependencies")
     if dependencies is not None and dependencies.status is CheckStatus.FAIL:
         from rapid_mlx.dependency_repair import repair_argv
 
         command = repair_argv()
         if command is not None:
-            return [
+            actions.append(
                 RepairAction(
                     "repair.dependencies",
                     "restore required Python dependencies",
@@ -50,7 +51,7 @@ def plan_repairs(report: Report) -> list[RepairAction]:
                     tuple(command[1:] if command[0] == "sudo" else command),
                     requires_root=command[0] == "sudo",
                 )
-            ]
+            )
     registration = checks.get("service.registration")
     process = checks.get("service.process")
     liveness = checks.get("service.endpoint.liveness")
@@ -59,7 +60,7 @@ def plan_repairs(report: Report) -> list[RepairAction]:
         for check in (process, liveness)
     )
     if unhealthy and registration is not None and registration.status is CheckStatus.OK:
-        return [
+        actions.append(
             RepairAction(
                 id="repair.service.kickstart",
                 summary="restart the registered Always-on service",
@@ -71,8 +72,8 @@ def plan_repairs(report: Report) -> list[RepairAction]:
                 ),
                 requires_root=True,
             )
-        ]
-    return []
+        )
+    return actions
 
 
 def apply_repairs(
