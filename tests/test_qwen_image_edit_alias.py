@@ -74,7 +74,7 @@ def test_cold_load_fetches_the_pinned_revision(monkeypatch) -> None:
     monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
     calls = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or "/pinned/model",
     )
 

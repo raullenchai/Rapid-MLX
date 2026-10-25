@@ -310,17 +310,16 @@ def test_json_metadata_local_remote_and_invalid_shapes(
 
     downloaded = tmp_path / "downloaded.json"
     downloaded.write_text('{"remote":true}')
-    import huggingface_hub
 
     monkeypatch.setattr(
-        huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: downloaded
+        "rapid_mlx.model_downloads.hf_hub_download",
+        lambda *_args, **_kwargs: downloaded,
     )
     assert processor_patch._load_json("org/model", "config.json") == {"remote": True}
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     monkeypatch.setattr(
-        huggingface_hub,
-        "hf_hub_download",
+        "rapid_mlx.model_downloads.hf_hub_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             LocalEntryNotFoundError("offline")
         ),
@@ -330,7 +329,7 @@ def test_json_metadata_local_remote_and_invalid_shapes(
     malformed = tmp_path / "malformed.json"
     malformed.write_text("{")
     monkeypatch.setattr(
-        huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: malformed
+        "rapid_mlx.model_downloads.hf_hub_download", lambda *_args, **_kwargs: malformed
     )
     with pytest.raises(ValueError):
         processor_patch._load_json("org/model", "config.json")
@@ -392,7 +391,6 @@ def test_from_pretrained_builds_local_processor(monkeypatch, tmp_path: Path) -> 
 def test_from_pretrained_forwards_hub_identity_to_all_metadata(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import huggingface_hub
 
     metadata = tmp_path / "metadata.json"
     metadata.write_text("{}")
@@ -404,7 +402,7 @@ def test_from_pretrained_forwards_hub_identity_to_all_metadata(
         return metadata
 
     tokenizer = _TokenizerStub()
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr("rapid_mlx.model_downloads.hf_hub_download", fake_download)
     monkeypatch.setattr(
         processor_patch.AutoTokenizer,
         "from_pretrained",

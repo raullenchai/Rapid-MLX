@@ -119,13 +119,19 @@ def test_e4b_real_config_detection(tmp_path, monkeypatch, model):
     def download(repo_id, filename, **kwargs):
         assert repo_id == (profile.hf_path if profile else model)
         assert filename == "config.json"
-        assert kwargs.get("revision") == (profile.revision if profile else None)
+        assert kwargs.get("revision") == profile.revision
         return str(config)
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
-    assert is_gemma4_family_model(model) is True
-    assert gemma4_load_plan(model) == ("nonunified", True)
-    assert _needs_tokenizer_fallback(model) is False
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
+    # Uncataloged upstream identities are provisioned locally; only reviewed
+    # catalog identities may fetch routing metadata implicitly.
+    target = model if profile else str(tmp_path)
+    assert is_gemma4_family_model(target) is True
+    assert gemma4_load_plan(target) == ("nonunified", True)
+    assert _needs_tokenizer_fallback(target) is False
     # The same architecture must work after revision resolution to a snapshot.
     assert is_gemma4_family_model(tmp_path) is True
     assert _needs_tokenizer_fallback(str(tmp_path)) is False

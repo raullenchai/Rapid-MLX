@@ -410,6 +410,11 @@ def test_token_dense_prompt_fails_before_the_17gb_loader(
 ) -> None:
     from transformers import AutoTokenizer
 
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *a, **k: "/verified/tokenizer",
+    )
+
     class DenseTokenizer:
         boi_token = None
         tms_token = None
@@ -448,8 +453,8 @@ def test_token_dense_prompt_fails_before_the_17gb_loader(
 
     assert tokenizer_calls == [
         (
-            REPO,
-            {"trust_remote_code": False, "revision": REVISION},
+            "/verified/tokenizer",
+            {"trust_remote_code": False, "local_files_only": True},
         )
     ]
 
@@ -459,6 +464,11 @@ def test_prompt_tokenizer_failures_are_clean_runtime_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from transformers import AutoTokenizer
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *a, **k: "/verified/tokenizer",
+    )
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
@@ -489,6 +499,11 @@ def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from transformers import AutoTokenizer
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda *a, **k: "/verified/tokenizer",
+    )
 
     class Tokenizer:
         boi_token = "<boi>"
@@ -526,7 +541,6 @@ def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
 def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import huggingface_hub
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
@@ -538,8 +552,7 @@ def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     )
     calls = []
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda model, **kwargs: calls.append((model, kwargs)) or "/pinned/snapshot",
     )
 

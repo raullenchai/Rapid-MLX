@@ -123,6 +123,8 @@ class MusicEngine:
 
         if to_fetch:
             try:
+                from huggingface_hub import try_to_load_from_cache
+
                 from rapid_mlx.model_downloads import hf_hub_download
             except ImportError as e:
                 raise RuntimeError(
@@ -133,8 +135,6 @@ class MusicEngine:
 
             for name in to_fetch:
                 if model_downloads.disabled():
-                    from huggingface_hub import try_to_load_from_cache
-
                     if not isinstance(
                         try_to_load_from_cache(
                             _SA3_REPO_ID, f"MLX/{name}", revision=_SA3_REVISION

@@ -140,9 +140,9 @@ def test_serve_resolves_a_pulled_bits_variant(monkeypatch, tmp_path, marker_path
         seen["allow_patterns"] = kwargs.get("allow_patterns")
         return str(snapshot)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
 
     # Record what the pull would have persisted (``_variant_name == "4bit"``).
     _download_gate.persist_pulled_variant(RAW_REPO, "4bit")
@@ -177,9 +177,9 @@ def test_pulled_variant_overrides_catalog_default(monkeypatch, tmp_path, marker_
         seen["allow_patterns"] = kwargs.get("allow_patterns")
         return str(snapshot)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
     _download_gate.persist_pulled_variant(CATALOG_REPO, "8bit")
 
     resolved = _resolve_subfolder_checkpoint(CATALOG_REPO)
@@ -208,9 +208,9 @@ def test_explicit_alias_overrides_repo_variant_marker(
         seen["allow_patterns"] = kwargs.get("allow_patterns")
         return str(snapshot)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
     _download_gate.persist_pulled_variant(CATALOG_REPO, "8bit")
 
     resolved = _resolve_subfolder_checkpoint(CATALOG_ALIAS)
@@ -224,8 +224,6 @@ def test_serving_checkpoint_resolves_explicit_alias_before_lane_selection(
 ):
     """The server checkpoint choke point retains CLI alias precedence."""
     from types import SimpleNamespace
-
-    import huggingface_hub
 
     from rapid_mlx import server
 
@@ -241,7 +239,9 @@ def test_serving_checkpoint_resolves_explicit_alias_before_lane_selection(
         seen["allow_patterns"] = kwargs.get("allow_patterns")
         return str(snapshot)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
     monkeypatch.setattr(
         server, "_prefetch_routing_metadata", lambda _name: str(checkpoint)
     )
@@ -270,11 +270,8 @@ def test_serve_uses_format_marker_folder(monkeypatch, tmp_path, marker_path):
     (snapshot / "mxfp4" / "config.json").write_text("{}")
     (snapshot / "mxfp4" / "model.safetensors").write_bytes(b"\x00" * 16)
 
-    import huggingface_hub
-
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, **kw: str(snapshot),
     )
     _download_gate.persist_pulled_variant(RAW_REPO, "mxfp4")
@@ -315,6 +312,7 @@ def test_serve_escapes_format_marker_glob_metacharacters(
             return_value=[RepoFolder(path=variant, oid="variant")],
         ),
         patch("huggingface_hub.snapshot_download", fake_snapshot_download),
+        patch("rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download),
     ):
         cli.pull_command(args)
         resolved = _resolve_subfolder_checkpoint(RAW_REPO)
@@ -355,11 +353,8 @@ def test_incomplete_variant_raises_actionable_message(
     # Only config.json — no weights. Incomplete, so it must be refused.
     (snapshot / "4bit" / "config.json").write_text("{}")
 
-    import huggingface_hub
-
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, **kw: str(snapshot),
     )
     _download_gate.persist_pulled_variant(RAW_REPO, "4bit")
@@ -373,11 +368,8 @@ def test_absent_variant_raises_actionable_message(monkeypatch, tmp_path, marker_
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
 
-    import huggingface_hub
-
     monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, **kw: str(snapshot),
     )
     _download_gate.persist_pulled_variant(RAW_REPO, "4bit")

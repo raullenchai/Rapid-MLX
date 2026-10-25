@@ -146,7 +146,9 @@ def test_model_path_for_mflux_forces_pinned_revision_on_cold_pull(
         calls.append((repo_id, revision))
         return "/fake/snapshot/dir"
 
-    monkeypatch.setattr("huggingface_hub.snapshot_download", _fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", _fake_snapshot_download
+    )
 
     assert engine._model_path_for_mflux() == "/fake/snapshot/dir"
     assert calls == [(repo, pinned_sha)]
@@ -204,7 +206,7 @@ def test_model_path_for_mflux_verifies_a_freshly_pinned_download(
     cache_root = tmp_path / "hf-cache"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, revision=None: _seed_pinned_download(
             cache_root, repo_id, revision
         ),
@@ -228,7 +230,7 @@ def test_model_path_for_mflux_rejects_a_freshly_pinned_incomplete_download(
     cache_root = tmp_path / "hf-cache"
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, revision=None: _seed_pinned_download(
             cache_root, repo_id, revision, omit_shard=True
         ),

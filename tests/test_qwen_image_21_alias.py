@@ -109,7 +109,7 @@ def test_cold_load_uses_pinned_snapshot(monkeypatch):
     monkeypatch.setattr(engine, "_verify_weights_complete", lambda: None)
     calls = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo_id, **kwargs: calls.append((repo_id, kwargs)) or "/pinned/model",
     )
     assert engine._model_path_for_mflux() == "/pinned/model"  # noqa: SLF001

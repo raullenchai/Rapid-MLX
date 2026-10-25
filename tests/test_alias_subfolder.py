@@ -288,9 +288,9 @@ def test_joins_the_subfolder_onto_the_snapshot(monkeypatch, tmp_path):
         seen["allow_patterns"] = kwargs.get("allow_patterns")
         return str(snapshot)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
 
     out = _resolve_subfolder_checkpoint(REPO)
 
@@ -330,7 +330,6 @@ def test_warm_complete_subfolder_never_touches_the_network(
     A verified-complete on-disk checkpoint must now short-circuit before any
     networked call is made.
     """
-    import huggingface_hub
 
     snapshot = tmp_path / "snap"
     ckpt = snapshot / "4bit"
@@ -353,7 +352,7 @@ def test_warm_complete_subfolder_never_touches_the_network(
             )
         return str(snapshot)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline_first)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", offline_first)
 
     resolved = _resolve_subfolder_checkpoint(REPO)
     assert resolved == str(ckpt)
@@ -372,7 +371,6 @@ def test_incomplete_cached_subfolder_falls_through_to_the_hub(
     """A half-pulled cache must NOT short-circuit — it still hits the Hub to
     finish the download, rather than loading a shard-less checkpoint that
     would fail (or render garbage). Only a *complete* offline resolve wins."""
-    import huggingface_hub
 
     partial = tmp_path / "partial"
     complete = tmp_path / "complete"
@@ -392,7 +390,7 @@ def test_incomplete_cached_subfolder_falls_through_to_the_hub(
         return str(partial) if local_only else str(complete)
 
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", offline_incomplete_then_online
+        "rapid_mlx.model_downloads.snapshot_download", offline_incomplete_then_online
     )
 
     resolved = _resolve_subfolder_checkpoint(REPO)
@@ -423,10 +421,9 @@ def test_missing_subfolder_after_download_raises(
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
 
-    import huggingface_hub
-
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", lambda repo_id, **kw: str(snapshot)
+        "rapid_mlx.model_downloads.snapshot_download",
+        lambda repo_id, **kw: str(snapshot),
     )
     with pytest.raises(RuntimeError, match="reorganized the repo"):
         _resolve_subfolder_checkpoint(REPO)
@@ -669,7 +666,6 @@ def test_alias_spelling_downloads_the_repo_not_the_alias(monkeypatch, tmp_path):
     ``resolve_subfolder`` answers for both spellings, so the subfolder is
     detected either way — but the Hub only knows the repo id, and asking it
     for "lfm2.5-2.6b-4bit" is a 404."""
-    import huggingface_hub
 
     snapshot = tmp_path / "snap"
     ckpt = snapshot / "4bit"
@@ -682,7 +678,7 @@ def test_alias_spelling_downloads_the_repo_not_the_alias(monkeypatch, tmp_path):
         asked.append(repo_id)
         return str(snapshot)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake)
+    monkeypatch.setattr("rapid_mlx.model_downloads.snapshot_download", fake)
 
     out = _resolve_subfolder_checkpoint(ALIAS)
     assert out == os.path.join(str(snapshot), "4bit")
@@ -815,7 +811,6 @@ def test_incomplete_cached_checkpoint_is_rejected(
     An earlier pull that ran out of disk leaves ``4bit/`` present with its
     shards missing. Returning that path produces a confusing mid-load
     failure inside mlx-lm instead of "your cache is incomplete"."""
-    import huggingface_hub
 
     snapshot = tmp_path / "snap"
     (snapshot / "4bit").mkdir(parents=True)
@@ -826,7 +821,9 @@ def test_incomplete_cached_checkpoint_is_rejected(
             raise OSError("no network")
         return str(snapshot)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline_then_cache)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", offline_then_cache
+    )
 
     with pytest.raises(RuntimeError, match="incomplete"):
         _resolve_subfolder_checkpoint(REPO)
@@ -899,14 +896,13 @@ def test_completeness_is_checked_on_the_success_path_too(monkeypatch, tmp_path):
     """A publisher who reorganizes the repo can leave ``config.json`` with no
     weights beside it. That arrives via a perfectly SUCCESSFUL download, so
     checking only after the offline fallback would let it through."""
-    import huggingface_hub
 
     snapshot = tmp_path / "snap"
     (snapshot / "4bit").mkdir(parents=True)
     (snapshot / "4bit" / "config.json").write_text("{}")  # no shards
 
     monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", lambda rid, **kw: str(snapshot)
+        "rapid_mlx.model_downloads.snapshot_download", lambda rid, **kw: str(snapshot)
     )
     with pytest.raises(RuntimeError, match="incomplete"):
         _resolve_subfolder_checkpoint(REPO)
@@ -920,7 +916,6 @@ def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
     A fail-fast fake asserts the resolve requests the cache (never the Hub) and
     that the returned local path is what the loader is handed.
     """
-    import huggingface_hub
 
     from rapid_mlx.utils import tokenizer as tok
 
@@ -931,7 +926,9 @@ def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
         assert repo_id == "org/warm-repo"
         return "/cache/models--org--warm-repo/snapshots/abc"
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(
+        "rapid_mlx.model_downloads.snapshot_download", fake_snapshot_download
+    )
     monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _name: True)
 
     resolved = tok._local_snapshot_if_cached("org/warm-repo")

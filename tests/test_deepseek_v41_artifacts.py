@@ -196,7 +196,7 @@ def test_programmatic_server_memory_gate_returns_detected_capacity(monkeypatch):
 def test_artifact_download_helpers_pin_revisions_and_subset(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda *args, **kwargs: calls.append((args, kwargs)) or str(tmp_path),
     )
     monkeypatch.setattr(artifacts, "verify_mtp_snapshot", lambda path: Path(path))

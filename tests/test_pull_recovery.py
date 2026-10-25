@@ -343,6 +343,8 @@ def test_transient_mirror_failure_falls_back_to_hub(
 
 
 def test_serve_transient_mirror_failure_falls_back_to_hub(monkeypatch, capsys):
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_revision", lambda _: "a" * 40)
+
     def mirror(*_args, **_kwargs):
         raise httpx.RemoteProtocolError("mirror closed with secret URL")
 
@@ -359,7 +361,7 @@ def test_serve_transient_mirror_failure_falls_back_to_hub(monkeypatch, capsys):
     monkeypatch.setattr("rapid_mlx._download_gate.pin_main_ref", lambda *_a: None)
     calls = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo, **kwargs: calls.append((repo, kwargs)) or "/tmp/fake-snapshot",
     )
     cli._ensure_model_downloaded("owner/repo")

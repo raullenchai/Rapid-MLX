@@ -175,7 +175,7 @@ def test_glm_target_download_and_layout_gates(monkeypatch, tmp_path: Path) -> No
 
     seen = []
     monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
+        "rapid_mlx.model_downloads.snapshot_download",
         lambda repo, *, revision: (seen.append((repo, revision)), str(target))[1],
     )
     assert adapter.download_qualified_target() == str(target)
