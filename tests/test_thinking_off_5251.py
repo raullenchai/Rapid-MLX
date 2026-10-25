@@ -94,3 +94,11 @@ def test_thinking_off_tool_result_turn(surface, stream):
         1,
         enable_thinking=False,
     )
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("step", [1, 7, 10000])
+def test_thinking_off_unclosed_stream_does_not_republish_reasoning(surface, step):
+    run_route(
+        surface, True, False, "<think>Private thought.", step, enable_thinking=False
+    )

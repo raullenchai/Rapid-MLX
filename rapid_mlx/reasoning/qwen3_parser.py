@@ -385,8 +385,12 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            that shape. The bare-text-preamble label fallback still
            routes to ``reasoning`` (preserves #570).
         """
-        if getattr(self, "_thinking_disabled", False) and not self._boundary_seen:
-            return self.finish_stream()
+        if getattr(self, "_thinking_disabled", False):
+            if not self._boundary_seen:
+                return self.finish_stream()
+            # A generated opener is evidence of private reasoning even if
+            # generation ends before its closer. It was already routed above.
+            return None
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None
