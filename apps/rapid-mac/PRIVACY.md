@@ -1,6 +1,6 @@
 # Rapid-MLX Desktop — Privacy Policy
 
-Last updated: 2026-10-19.
+Last updated: 2026-10-24.
 
 Rapid-MLX Desktop ("the App") is a local-first SwiftUI Mac client for the
 `rapid-mlx` inference server. We designed it so that your prompts,
@@ -46,7 +46,10 @@ counted as two installs. The current engine reports:
 * `capability_rejected` (closed `capability`, `model_type`, optional model and
   caller, plus a closed `reject_reason` only for structured-output/context
   rejections) and `inference_bucket_reached`;
-* `agent_configured` and `agent_configure_failed`; and
+* `agent_configured` and `agent_configure_failed`;
+* `onboarding_next_step_shown` (no event-specific properties) and
+  `first_integration` (closed `agent` label only) for the one-time CLI
+  connection tip after `rapid-mlx serve` first becomes ready; and
 * `telemetry_opted_in` and `telemetry_opted_out`.
 
 These v2 events contain only registry-approved enums, booleans, UUIDs, version
@@ -118,6 +121,11 @@ service:
     privacy-reduced keys and timestamps on the device so a restart loop
     re-running `rapid-mlx serve` every few seconds cannot flood duplicate
     `server_start_state` or `app_opened` events; both files are never sent.
+  * `first_integration` is sent at most once, only for the first successful
+    `rapid-mlx launch` or agent configuration within 24 hours of the first CLI
+    server readiness. Two empty marker files, `~/.rapid-mlx/first_serve_success`
+    and `~/.rapid-mlx/first_integration_seen`, record that on the device; they
+    are never sent, and no endpoint, path, key, or model name is included.
   * For a failed model serve caused by a missing optional runtime, the closed
     extra name (`vision`, `video`, `audio`, or `image`) and a closed recovery
     outcome (`accepted`, `declined`, `no_answer`, `interrupted`,

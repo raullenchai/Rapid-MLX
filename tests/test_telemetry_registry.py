@@ -104,6 +104,8 @@ def test_release_one_event_set_is_present():
             "inference_bucket_reached",
             "agent_configured",
             "agent_configure_failed",
+            "onboarding_next_step_shown",
+            "first_integration",
             "telemetry_opted_out",
             "telemetry_opted_in",
         }

@@ -38,8 +38,8 @@ struct TelemetryRegistryTests {
             "server_start_state",
             "model_served", "model_serve_failed", "capability_rejected",
             "inference_bucket_reached", "agent_configured",
-            "agent_configure_failed", "telemetry_opted_out",
-            "telemetry_opted_in"
+            "agent_configure_failed", "onboarding_next_step_shown",
+            "first_integration", "telemetry_opted_out", "telemetry_opted_in"
         ] {
             #expect(registry.events[name] != nil, "missing event \(name)")
         }
