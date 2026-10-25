@@ -172,3 +172,76 @@ def test_pinned_alias_resolved_to_configured_local_folder_stays_local(
         lambda name: pytest.fail("local checkpoint must not resolve a Hub revision"),
     )
     assert _resolve_subfolder_checkpoint("flint-40b-a2.5b-4bit") == str(tmp_path)
+
+
+def test_stt_pin_adapter_without_optional_backend(monkeypatch, tmp_path):
+    """Exercise the adapter on CI hosts without the optional audio runtime."""
+    import huggingface_hub
+
+    from rapid_mlx.audio.stt import STTEngine
+
+    common = ModuleType("mlx_audio.utils")
+    common.DEFAULT_ALLOW_PATTERNS = ["*.json", "*.safetensors"]
+    parts = ("sensevoice", "small")
+    common.get_model_name_parts = lambda name: parts
+    backend = ModuleType("mlx_audio.stt.utils")
+    loaded = []
+    model = SimpleNamespace(config=SimpleNamespace(model_type="sensevoice"))
+    backend.load_model = lambda path, **kwargs: loaded.append((path, kwargs)) or model
+    monkeypatch.setitem(sys.modules, "mlx_audio.utils", common)
+    monkeypatch.setitem(sys.modules, "mlx_audio.stt.utils", backend)
+    calls = []
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or str(tmp_path),
+    )
+    engine = STTEngine("mlx-community/SenseVoiceSmall")
+    engine.load()
+    assert engine.model is model
+    assert loaded == [(str(tmp_path), {"model_name_parts": parts})]
+    assert calls == [
+        (
+            (engine.model_name,),
+            {
+                "allow_patterns": common.DEFAULT_ALLOW_PATTERNS,
+                "revision": registry.resolve_audio_revision(engine.model_name),
+            },
+        )
+    ]
+
+
+def test_f5_pin_adapter_without_optional_backend(monkeypatch):
+    """Keep adapter wiring covered independently of native loader availability."""
+    import huggingface_hub
+
+    from rapid_mlx.audio.tts import TTSEngine
+
+    package = ModuleType("f5_tts_mlx")
+    utils = ModuleType("f5_tts_mlx.utils")
+    cfm = ModuleType("f5_tts_mlx.cfm")
+    package.utils = utils
+    cfm.F5TTS = SimpleNamespace(
+        from_pretrained=lambda repo: utils.snapshot_download(repo)
+    )
+    for module in (package, utils, cfm):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    calls = []
+    model = "/pinned-f5-snapshot"
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or model,
+    )
+    engine = TTSEngine("lucasnewman/f5-tts-mlx")
+    engine.load()
+    assert engine.model == model
+    assert utils.snapshot_download is model_downloads.snapshot_download
+    assert calls == [
+        (
+            (engine.model_name,),
+            {"revision": registry.resolve_audio_revision(engine.model_name)},
+        )
+    ]
