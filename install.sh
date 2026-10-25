@@ -2,10 +2,10 @@
 # Rapid-MLX — OpenAI- and Anthropic-compatible LLM server and Mac app for Apple Silicon, built on MLX, focused on reliable tool calling for coding agents.
 # Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
 #        curl ... | bash -s -- 0.12.15     # specific version
-#        curl ... | bash -s latest         # latest from GitHub (pre-release)
+#        RAPID_MLX_GIT_COMMIT=<full SHA> bash install.sh latest # reviewed source
 set -euo pipefail
 
-TARGET="${1:-stable}"  # stable (PyPI) | latest (GitHub HEAD) | x.y.z (specific version)
+TARGET="${1:-stable}"  # stable (PyPI) | latest (explicit Git commit) | x.y.z (specific version)
 
 INSTALL_DIR="${HOME}/.rapid-mlx"
 BIN_DIR="${HOME}/.local/bin"
@@ -276,6 +276,50 @@ print_quick_start_commands() {
     echo "    $(leaderboard_mac_url "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)" "$RAM_GB")"
 }
 
+# Validate before changing the environment or downloading dependencies.
+validate_target() {
+    case "$TARGET" in
+        stable) ;;
+        latest)
+            if [[ ! "${RAPID_MLX_GIT_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                err "latest requires RAPID_MLX_GIT_COMMIT set to a reviewed full 40-character Git commit SHA."
+                return 1
+            fi
+            ;;
+        *)
+            # Keep version syntax compatible; the package manager validates it.
+            # Reject whitespace and requirement/URL separators before any work.
+            if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.+_-]*$ ]]; then
+                err "Usage: install.sh [stable|latest|VERSION]"
+                return 1
+            fi
+            ;;
+    esac
+}
+
+install_package() {
+    case "$TARGET" in
+        stable)
+            run_install_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" || {
+                err "Package-index install failed; refusing to fall back to GitHub. Check the error above and retry."
+                return 1
+            }
+            ;;
+        latest)
+            validate_target || return 1
+            info "Installing reviewed Git commit ${RAPID_MLX_GIT_COMMIT}..."
+            run_install_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT}"
+            ;;
+        *)
+            info "Installing version ${TARGET}..."
+            run_install_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" || {
+                err "Requested version unavailable from the package index; refusing to change sources."
+                return 1
+            }
+            ;;
+    esac
+}
+
 # When sourced by the test harness we only want the definitions above, not the
 # installer itself. `return` succeeds only in a sourced context; the `|| exit 0`
 # keeps an accidental `RAPID_INSTALL_LIB=1 bash install.sh` from erroring out.
@@ -283,14 +327,7 @@ if [ "${RAPID_INSTALL_LIB:-0}" = "1" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
-# Validate target
-if [[ "$TARGET" != "stable" ]] && [[ "$TARGET" != "latest" ]] && [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-    echo "Usage: install.sh [stable|latest|VERSION]" >&2
-    echo "  stable   Install from PyPI (default)" >&2
-    echo "  latest   Install from GitHub HEAD" >&2
-    echo "  x.y.z    Install specific version from PyPI" >&2
-    exit 1
-fi
+validate_target
 
 # ── Banner ───────────────────────────────────────────────────────────────────
 
@@ -448,21 +485,7 @@ if command -v uv >/dev/null 2>&1; then
     dim "Using uv for fast install"
 fi
 
-case "$TARGET" in
-    stable)
-        run_install_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" -q 2>/dev/null \
-            || { dim "PyPI unavailable, installing from GitHub..."; run_install_command "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}" ; }
-        ;;
-    latest)
-        info "Installing latest from GitHub..."
-        run_install_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}"
-        ;;
-    *)
-        info "Installing version ${TARGET}..."
-        run_install_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" -q 2>/dev/null \
-            || { dim "Version ${TARGET} not on PyPI, trying GitHub tag..."; run_install_command "${INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@v${TARGET}" ; }
-        ;;
-esac
+install_package
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and
 # falls back to the RAM baseline; never scrape the human table or cache paths.
@@ -518,7 +541,7 @@ echo "  ╰───────────────────────
 echo ""
 print_quick_start_commands
 echo ""
-dim "Upgrade:    curl -fsSL https://rapidmlx.com/install.sh | bash"
+dim "Upgrade:    rapid-mlx upgrade"
 dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
 echo ""
 
