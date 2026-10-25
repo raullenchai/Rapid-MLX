@@ -30,7 +30,7 @@ def test_audio_desktop_extra_stays_bounded() -> None:
 
     assert names == {"mlx-audio", "soundfile"}
     assert "mlx-audio>=0.5.3,<0.6" in specs
-    assert "soundfile>=0.12.0" in specs
+    assert "soundfile>=0.12.0,<0.15" in specs
 
 
 def test_full_audio_extra_remains_independent_and_complete() -> None:
