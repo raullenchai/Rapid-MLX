@@ -32,6 +32,47 @@ _POST_STRETCH_FAMILIES = frozenset({"qwen3_tts", "chatterbox", "indextts"})
 logger = logging.getLogger(__name__)
 
 _QWEN_SAMPLER_PATCH_LOCK = threading.RLock()
+_SNAPSHOT_DOWNLOAD_LOCK = threading.Lock()
+
+
+@contextmanager
+def _scoped_snapshot_download(module):
+    """Route one third-party module's Hub downloads through the pin gate.
+
+    The module binding is process-global, so the swap is serialized and always
+    restored. Concurrent loads cannot race on the binding, and later/unrelated
+    users never inherit our download semantics.
+    """
+    from .. import model_downloads
+
+    with _SNAPSHOT_DOWNLOAD_LOCK:
+        had_original = hasattr(module, "snapshot_download")
+        original = getattr(module, "snapshot_download", None)
+        module.snapshot_download = model_downloads.snapshot_download
+        try:
+            yield
+        finally:
+            if had_original:
+                module.snapshot_download = original
+            else:
+                del module.snapshot_download
+
+
+def _first_result_scoped(results, module):
+    """Iterate *results*, applying the pin adapter only until the first result.
+
+    Kokoro fetches voice files lazily before it can synthesize the first chunk.
+    Scoping only that step keeps the global swap lock from being held across
+    yields, so concurrent or abandoned streams cannot block other loads.
+    """
+    iterator = iter(results)
+    with _scoped_snapshot_download(module):
+        try:
+            first = next(iterator)
+        except StopIteration:
+            return
+    yield first
+    yield from iterator
 
 
 @contextmanager
@@ -654,10 +695,10 @@ class TTSEngine:
             from f5_tts_mlx.cfm import F5TTS
 
             # This loader has no revision argument and always resolves through
-            # its imported Hub helper. Bind that helper to the shared pin gate.
-            f5_utils.snapshot_download = model_downloads.snapshot_download
-
-            self.model = F5TTS.from_pretrained(self.model_name)
+            # its imported Hub helper. Bind that helper to the shared pin gate
+            # for the duration of the load, then restore it.
+            with _scoped_snapshot_download(f5_utils):
+                self.model = F5TTS.from_pretrained(self.model_name)
             self._loaded = True
             logger.info(f"TTS model loaded (f5): {self.model_name}")
             return
@@ -671,16 +712,20 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
+            kokoro_pipeline = None
             if self._model_family == "kokoro":
                 from mlx_audio.tts.models.kokoro import pipeline
 
-                pipeline.snapshot_download = model_downloads.snapshot_download
+                kokoro_pipeline = pipeline
             model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
             legacy_vae = model_path / "audiovae.pth"
             if legacy_vae.exists() or legacy_vae.is_symlink():
                 from .voxcpm_security import load_voxcpm_checkpoint
 
                 self.model = load_voxcpm_checkpoint(model_path)
+            elif kokoro_pipeline is not None:
+                with _scoped_snapshot_download(kokoro_pipeline):
+                    self.model = load_model(model_path)
             else:
                 self.model = load_model(model_path)
             self._loaded = True
@@ -848,7 +893,7 @@ class TTSEngine:
                         "voice_seed is supported only by Qwen3-TTS VoiceDesign"
                     )
             with _qwen_seeded_sampling(self.model, voice_seed):
-                for result in self.model.generate(**gen_kwargs):
+                for result in self._generate_results(gen_kwargs):
                     audio_data = result.audio
                     if hasattr(result, "sample_rate"):
                         sample_rate = result.sample_rate
@@ -1002,6 +1047,14 @@ class TTSEngine:
             audio=out, sample_rate=SAMPLE_RATE, duration=len(out) / SAMPLE_RATE
         )
 
+    def _generate_results(self, gen_kwargs):
+        results = self.model.generate(**gen_kwargs)
+        if self._model_family != "kokoro":
+            return results
+        from mlx_audio.tts.models.kokoro import pipeline
+
+        return _first_result_scoped(results, pipeline)
+
     def stream_generate(
         self,
         text: str,
@@ -1034,7 +1087,7 @@ class TTSEngine:
         buffered: list[np.ndarray] = []
         sample_rate = buffered_rate = 24000
 
-        for result in self.model.generate(**gen_kwargs):
+        for result in self._generate_results(gen_kwargs):
             audio_data = result.audio
             if hasattr(result, "sample_rate"):
                 sample_rate = result.sample_rate

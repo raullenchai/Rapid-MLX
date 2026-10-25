@@ -92,8 +92,7 @@ def test_f5_loader_uses_shared_pin_gate(monkeypatch):
 
     utils = pytest.importorskip("f5_tts_mlx.utils")
     pytest.importorskip("f5_tts_mlx.cfm")
-    # Preserve the module binding after TTSEngine installs its adapter.
-    monkeypatch.setattr(utils, "snapshot_download", utils.snapshot_download)
+    original = utils.snapshot_download
     calls = []
 
     class BoundaryReachedError(Exception):
@@ -110,6 +109,8 @@ def test_f5_loader_uses_shared_pin_gate(monkeypatch):
     assert calls[0][0] == engine.model_name
     assert calls[0][1]["revision"] == registry.resolve_audio_revision(engine.model_name)
     assert "model_v1.safetensors" in calls[0][1]["allow_patterns"]
+    # The adapter is scoped to the load and must not leak process-globally.
+    assert utils.snapshot_download is original
 
 
 def test_kokoro_implicit_assets_use_pin_gate(monkeypatch, tmp_path):
@@ -118,7 +119,7 @@ def test_kokoro_implicit_assets_use_pin_gate(monkeypatch, tmp_path):
     from rapid_mlx.audio import tts
 
     pipeline = pytest.importorskip("mlx_audio.tts.models.kokoro.pipeline")
-    monkeypatch.setattr(pipeline, "snapshot_download", pipeline.snapshot_download)
+    original = pipeline.snapshot_download
     generate = ModuleType("mlx_audio.tts.generate")
     generate.load_model = lambda path: path
     monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", generate)
@@ -134,11 +135,27 @@ def test_kokoro_implicit_assets_use_pin_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "load_voice_tensor", lambda path: marker)
     engine = tts.TTSEngine("mlx-community/Kokoro-82M-bf16")
     engine.load()
+    # load_model itself does not fetch voices; the adapter must not leak.
+    assert pipeline.snapshot_download is original
     voice_loader = pipeline.KokoroPipeline.__new__(pipeline.KokoroPipeline)
     voice_loader.repo_id = "prince-canuma/Kokoro-82M"
     voice_loader.voices = {}
     voice_loader.lang_code = "a"
-    assert voice_loader.load_single_voice("af_heart") is marker
+
+    class _Result:
+        audio = SimpleNamespace(tolist=lambda: [0.0])
+
+    class _Model:
+        def generate(self, **kwargs):
+            # Voices are fetched lazily on generate(), under the pin adapter.
+            assert pipeline.snapshot_download is model_downloads.snapshot_download
+            assert voice_loader.load_single_voice("af_heart") is marker
+            yield _Result()
+
+    engine.model = _Model()
+    engine._loaded = True
+    engine.generate("hello", voice="af_heart")
+    assert pipeline.snapshot_download is original
     assert len(calls) == 2  # local miss followed by the online request
     for repo, kwargs in calls:
         assert repo == voice_loader.repo_id
@@ -222,6 +239,8 @@ def test_f5_pin_adapter_without_optional_backend(monkeypatch):
     utils = ModuleType("f5_tts_mlx.utils")
     cfm = ModuleType("f5_tts_mlx.cfm")
     package.utils = utils
+    original = lambda repo: pytest.fail("unpatched snapshot_download called")
+    utils.snapshot_download = original
     cfm.F5TTS = SimpleNamespace(
         from_pretrained=lambda repo: utils.snapshot_download(repo)
     )
@@ -238,10 +257,37 @@ def test_f5_pin_adapter_without_optional_backend(monkeypatch):
     engine = TTSEngine("lucasnewman/f5-tts-mlx")
     engine.load()
     assert engine.model == model
-    assert utils.snapshot_download is model_downloads.snapshot_download
+    # The adapter was installed during from_pretrained() and restored after.
+    assert utils.snapshot_download is original
     assert calls == [
         (
             (engine.model_name,),
             {"revision": registry.resolve_audio_revision(engine.model_name)},
         )
     ]
+
+
+def test_kokoro_scope_covers_only_first_result(monkeypatch):
+    import types
+
+    from rapid_mlx import model_downloads
+    from rapid_mlx.audio import tts
+
+    original = object()
+    module = types.SimpleNamespace(snapshot_download=original)
+    seen = []
+
+    def results():
+        seen.append(module.snapshot_download)
+        yield 1
+        seen.append(module.snapshot_download)
+        yield 2
+
+    stream = tts._first_result_scoped(results(), module)
+    assert next(stream) == 1
+    # Restored before the first result reaches the caller; lock is free.
+    assert module.snapshot_download is original
+    assert tts._SNAPSHOT_DOWNLOAD_LOCK.acquire(blocking=False)
+    tts._SNAPSHOT_DOWNLOAD_LOCK.release()
+    assert list(stream) == [2]
+    assert seen == [model_downloads.snapshot_download, original]
