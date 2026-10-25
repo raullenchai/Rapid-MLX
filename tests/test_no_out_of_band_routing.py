@@ -130,6 +130,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # the one-shot readiness token. It is set only by the parent for its own
         # child and is not user-facing.
         "RAPID_MLX_LTX25_READY_FD",
+        # Process-internal one-retry guard for required-dependency recovery:
+        # set only before re-exec after an accepted repair so the retried CLI
+        # never prompts or installs again. It selects no model or serving lane.
+        "RAPID_MLX_DEPENDENCY_REPAIR_RETRIED",
         # Process-internal pool capability policy: changes unsupported-request
         # HTTP status (400 vs retryable 503) on the already-selected TensorFold
         # backend. It selects no model, parser, engine, or serving lane.

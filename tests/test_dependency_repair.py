@@ -435,3 +435,71 @@ def test_missing_distribution_metadata(environment, monkeypatch):
 
     monkeypatch.setattr(rapid_mlx, "__version__", "0.0.0")
     assert repair.repair_argv()[-1] == "rapid-mlx"
+
+
+@pytest.mark.parametrize("module", ["yaml._yaml", "tiktoken._tiktoken"])
+def test_declared_package_internals_qualify(environment, module):
+    assert repair.dependency_failure(ImportError(name=module))
+
+
+@pytest.mark.parametrize("module", ["mlx_lm.models.newarch", "mlx_vlm.models.x"])
+def test_unknown_model_architecture_is_not_repaired(monkeypatch, module):
+    monkeypatch.setattr(repair.metadata, "requires", lambda _: ["mlx-lm", "mlx-vlm"])
+    assert not repair.dependency_failure(ImportError(name=module))
+    assert repair.dependency_failure(ImportError(name="mlx_lm.generate"))
+
+
+def test_retry_guard_survives_startup_handoff(environment, monkeypatch):
+    fake = types.ModuleType("rapid_mlx.cli")
+    observed = []
+    fake.cli_entrypoint = lambda: observed.append(repair.os.environ.get(repair._RETRY))
+    monkeypatch.setitem(sys.modules, "rapid_mlx.cli", fake)
+    monkeypatch.setenv(repair._RETRY, "1")
+    repair.cli_entrypoint()
+    assert observed == ["1"]
+    assert repair._RETRY not in repair.os.environ
+
+
+def test_doctor_names_failed_checks_when_nothing_is_missing(environment, monkeypatch):
+    from rapid_mlx.doctor import env_health as eh
+
+    monkeypatch.setattr(eh, "REQUIRED_PACKAGES", [("mlx", "mlx")])
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+    monkeypatch.setattr(eh, "_module_available", lambda *_, **__: False)
+    monkeypatch.setattr(repair, "missing_modules", lambda: [])
+    section = eh.section_required_packages()
+    summary = next(
+        c for c in section.checks if c.id == "packages.required.dependencies"
+    )
+    assert "broken: ;" not in summary.label
+    assert "mlx" in summary.label.split(";")[0]
+
+
+def test_doctor_global_pipx_repair_is_never_run_with_double_sudo(
+    environment, monkeypatch
+):
+    from rapid_mlx.doctor.env_health import Check, CheckStatus, Report, Section
+    from rapid_mlx.doctor.repairs import apply_repairs, plan_repairs
+
+    monkeypatch.setattr(
+        version_check,
+        "detect_install_method",
+        lambda: version_check.InstallInfo(
+            "unknown", "sudo pipx upgrade --global rapid-mlx", []
+        ),
+    )
+    report = Report(
+        sections=[
+            Section(
+                "Required",
+                [Check("x", CheckStatus.FAIL, id="packages.required.dependencies")],
+            )
+        ]
+    )
+    (action,) = plan_repairs(report)
+    assert action.requires_root and action.command[0] == "pipx"
+    run = Mock()
+    (result,) = apply_repairs([action], run=run, geteuid=lambda: 501)
+    run.assert_not_called()
+    assert result.status == "not_applied"
+    assert result.command == ["sudo", "pipx", "reinstall", "--global", "rapid-mlx"]

@@ -46,7 +46,8 @@ def plan_repairs(report: Report) -> list[RepairAction]:
                 RepairAction(
                     "repair.dependencies",
                     "restore required Python dependencies",
-                    tuple(command),
+                    # apply_repairs re-adds sudo only in its not-applied hint.
+                    tuple(command[1:] if command[0] == "sudo" else command),
                     requires_root=command[0] == "sudo",
                 )
             ]

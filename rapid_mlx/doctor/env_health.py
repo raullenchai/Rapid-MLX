@@ -2234,7 +2234,10 @@ def section_required_packages() -> Section:
         from rapid_mlx.dependency_repair import missing_modules, repair_argv
 
         missing = missing_modules()
-        if missing or any(check.status is CheckStatus.FAIL for check in s.checks):
+        failures = [
+            check.label for check in s.checks if check.status is CheckStatus.FAIL
+        ]
+        if missing or failures:
             command = repair_argv()
             hint = (
                 shlex.join(command)
@@ -2243,7 +2246,7 @@ def section_required_packages() -> Section:
             )
             s.add(
                 "Required Python dependencies are missing or broken: "
-                + ", ".join(missing)
+                + ", ".join(missing or failures)
                 + "; repair with: "
                 + hint,
                 CheckStatus.FAIL,

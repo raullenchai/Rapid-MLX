@@ -47,9 +47,11 @@ def declared_modules(*, active_only: bool = False) -> set[str]:
 def dependency_failure(exc: ImportError) -> bool:
     """Only declared imports qualify; model/plugin import bugs are not repaired."""
     try:
-        return bool(
-            exc.name and (exc.name in declared_modules() or exc.name == "mlx.core")
-        )
+        # Unknown model architectures are plugin selection failures, not a
+        # damaged dependency. Native and other package internals still qualify.
+        if exc.name and exc.name.startswith(("mlx_lm.models.", "mlx_vlm.models.")):
+            return False
+        return bool(exc.name and exc.name.partition(".")[0] in declared_modules())
     except metadata.PackageNotFoundError:
         # An import failure plus absent own metadata is a damaged installation.
         return True
@@ -202,11 +204,12 @@ def missing_modules() -> list[str]:
 
 def cli_entrypoint() -> None:
     """Catch failures even while importing the CLI, then retry in fresh Python."""
-    retried = os.environ.pop(_RETRY, None) == "1"
+    retried = os.environ.get(_RETRY) == "1"
     try:
         from rapid_mlx.cli import cli_entrypoint as run
 
         run()
+        os.environ.pop(_RETRY, None)
     except ImportError as exc:
         if not dependency_failure(exc):
             raise
