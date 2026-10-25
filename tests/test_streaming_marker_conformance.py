@@ -476,3 +476,23 @@ def test_eof_marker_tail_follows_older_sanitizer_tail(parser):
         assert request_result(
             "chat", raw, chunks, parser=parser, names=["get_weather"]
         ) == (raw, "", [])
+
+
+def test_post_call_marker_suffix_uses_parser_eof_content_policy():
+    from tests.test_postprocessor import StreamingPostProcessor, _make_cfg, _make_output
+
+    wire = "<tool_call><function=get_weather>oops</tool_call>Tail <"
+    request = {"tools": [{"type": "function", "function": {"name": "get_weather"}}]}
+    for chunks in partitions(wire):
+        processor = StreamingPostProcessor(
+            _make_cfg(enable_auto_tool_choice=True, tool_call_parser="hermes"),
+            request=request,
+        )
+        events = []
+        for chunk in chunks:
+            events.extend(processor.process_chunk(_make_output(chunk)))
+        events.extend(processor.finalize())
+        assert "".join(event.content or "" for event in events) == "Tail <"
+        calls = [call for event in events for call in event.tool_calls or []]
+        assert len(calls) == 1
+        assert calls[0]["function"]["arguments"] == "<malformed_function_body>oops"

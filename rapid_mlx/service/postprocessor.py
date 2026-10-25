@@ -4235,12 +4235,18 @@ class StreamingPostProcessor:
         # be silently dropped (codex round-3 CRITICAL on the streaming-
         # parser cluster PR). When a tool call DID fire, the held
         # bytes are part of the tool-call body and stay suppressed.
+        marker_tail = self._tool_marker_buffer.flush()
         if (
             self.tool_parser
             and self.tool_accumulated_text
             and (not self.tool_calls_detected or self._preserve_post_tool_content)
         ):
-            held = self.tool_parser.flush_held_content(self.tool_accumulated_text)
+            # After a call, only the parser can distinguish visible suffixes
+            # from unfinished call wire or a later implicit reasoning lane.
+            parser_text = self.tool_accumulated_text
+            if self.tool_calls_detected:
+                parser_text += marker_tail
+            held = self.tool_parser.flush_held_content(parser_text)
             # Strict-string check: ``flush_held_content`` is part of the
             # parser interface and must return a real ``str``. Defending
             # against accidental ``None`` / non-string returns avoids a
@@ -4249,7 +4255,6 @@ class StreamingPostProcessor:
             if isinstance(held, str) and held:
                 events.append(StreamEvent(type="content", content=held))
 
-        marker_tail = self._tool_marker_buffer.flush()
         if marker_tail and not self.tool_calls_detected:
             # Queue for the shared sanitizer pass below; do not emit directly.
             # Its older held bytes must precede this later marker suffix.
