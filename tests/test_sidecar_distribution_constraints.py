@@ -32,7 +32,7 @@ def constraints():
 def test_emitted_constraints_are_stable_and_complete(constraints) -> None:
     emitted = constraints.emit_constraints().splitlines()
     assert emitted[0].startswith("# Release-tested versions")
-    assert emitted[1:] == [
+    assert emitted[1:22] == [
         "mlx==0.32.3",
         "tensorfold==0.6.6",
         "transformers==5.15.1",
@@ -166,3 +166,101 @@ def test_arsenal_dependency_matches_release_tested_sidecar(constraints):
         assert not requirement.marker.evaluate(
             {"platform_system": "Linux", "python_version": "3.12"}
         )
+
+
+def test_all_base_requirements_have_reviewed_upper_bounds():
+    from importlib import import_module
+
+    tomllib = import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads((SCRIPT.parents[3] / "pyproject.toml").read_text())[
+        "project"
+    ]
+    for raw in project["dependencies"]:
+        requirement = Requirement(raw)
+        assert any(
+            s.operator in ("<", "<=", "==", "~=") for s in requirement.specifier
+        ), raw
+        if requirement.name == "torch":
+            assert "2.10.0" in requirement.specifier
+            assert "2.9.1" not in requirement.specifier
+
+
+def test_hash_lock_covers_base_and_desktop_extras():
+    import re
+    from importlib import import_module
+
+    tomllib = import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    lock = (SCRIPT.parent / "sidecar-requirements.lock").read_text()
+    entries = lock.replace("\\\n", "").splitlines()
+    pins = {}
+    for entry in entries:
+        if not entry.strip() or entry.startswith("#"):
+            continue
+        requirement, *hashes = entry.split("--hash=sha256:")
+        parsed = Requirement(requirement.strip())
+        specs = list(parsed.specifier)
+        assert len(specs) == 1 and specs[0].operator == "=="
+        assert hashes and all(re.fullmatch(r"[0-9a-f]{64}", h.strip()) for h in hashes)
+        name = canonicalize_name(parsed.name)
+        assert name not in pins
+        pins[name] = specs[0].version
+
+    constraints = {}
+    for line in (SCRIPT.parent / "sidecar-constraints.txt").read_text().splitlines():
+        if line and not line.startswith("#"):
+            name, version = line.split("==")
+            constraints[canonicalize_name(name)] = version
+    assert {k: v for k, v in constraints.items() if k != "tensorfold"} == pins
+    assert pins["tiktoken"] == "0.13.0"
+    assert pins["safetensors"] == "0.8.0"
+    assert {
+        "regex",
+        "requests",
+        "charset-normalizer",
+        "idna",
+        "urllib3",
+        "certifi",
+    } <= pins.keys()
+
+    project = tomllib.loads((SCRIPT.parents[3] / "pyproject.toml").read_text())[
+        "project"
+    ]
+    environment = {
+        "platform_system": "Darwin",
+        "sys_platform": "darwin",
+        "platform_machine": "arm64",
+        "python_version": "3.12",
+    }
+    for raw in (
+        project["dependencies"]
+        + project["optional-dependencies"]["audio-desktop"]
+        + project["optional-dependencies"]["computer-use"]
+    ):
+        requirement = Requirement(raw)
+        if requirement.marker is None or requirement.marker.evaluate(environment):
+            assert pins[canonicalize_name(requirement.name)] in requirement.specifier, (
+                raw
+            )
+
+
+def test_sidecar_source_installs_cannot_resolve_outside_hash_lock():
+    import shlex
+
+    script = (SCRIPT.parent / "build-sidecar.sh").read_text().replace("\\\n", "")
+    installs = [
+        shlex.split(line) for line in script.splitlines() if "-m pip install" in line
+    ]
+    assert len(installs) == 2
+    locked, source = installs
+    assert "--require-hashes" in locked
+    assert locked[locked.index("--requirement") + 1] == "$SIDECAR_LOCK"
+    assert "--only-binary=:all:" in locked
+    assert locked[locked.index("--platform") + 1] == "macosx_14_0_arm64"
+    assert "--no-deps" in source
+    assert "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]" in source
+    assert "$TENSORFOLD_RUNTIME_SPEC" in source

@@ -28,7 +28,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "tiktoken>=0.5.0",  # Native Kimi tokenizer
+    # Public installs retain compatible ranges; Desktop locks the complete graph
+    # with hashes. See docs/engineering/operations/sidecar-dependencies.md.
+    "tiktoken>=0.5.0,<0.14",  # Native Kimi tokenizer
     # Core — these are all you need for `rapid-mlx serve <text-model>`
     # Floor bump to 0.31.2 (mlx) + 0.31.3 (mlx-lm) for #720 take-2 — see
     # tests/test_mllm_cross_thread_stream_contract.py for the empirical
@@ -81,40 +83,40 @@ dependencies = [
     # introduces an HY3-specific regression, we tighten the floor with a
     # dedicated bump PR + Phase-0 re-audit rather than pinning here.
     "transformers>=5.0.0,!=5.13.0,<5.16",
-    "tokenizers>=0.19.0",
-    "huggingface-hub>=1.1.0",
-    "numpy>=1.24.0",
+    "tokenizers>=0.19.0,<0.23",
+    "huggingface-hub>=1.1.0,<2",
+    "numpy>=1.24.0,<3",
     # Imported directly by the vendored LTX-2.5 runtime; also a transitive
     # dependency of mlx-lm, but the runtime contract is declared here.
-    "safetensors>=0.4.0",
-    "pypdf>=5.0.0",  # Local-search text extraction; imported lazily.
-    "tqdm>=4.66.0",
-    "pyyaml>=6.0",
+    "safetensors>=0.4.0,<0.9",
+    "pypdf>=5.0.0,<7",  # Local-search text extraction; imported lazily.
+    "tqdm>=4.66.0,<5",
+    "pyyaml>=6.0,<7",
     # Writing TOML, so ``rapid-mlx agents codex --setup`` can deep-merge into
     # an existing ~/.codex/config.toml instead of replacing it (#1532).
     # Reading is stdlib ``tomllib`` on our supported floor; only the write
     # side needs a package, and this is the companion to the ``tomli`` the
     # [test] extra already pins. Pure Python, no transitive deps.
-    "tomli-w>=1.0.0",
+    "tomli-w>=1.0.0,<2",
     # The read side is stdlib ``tomllib`` from 3.11; 3.10 is still a supported
     # floor and has no ``tomllib``, so the merge path needs the backport there.
     # It was a [test]-only pin before, which would have made `codex --setup`
     # abort with ModuleNotFoundError on 3.10 — and only when a config already
     # existed, so every fresh-write test would still have passed.
-    'tomli>=2.0.1; python_version < "3.11"',
-    "requests>=2.28.0",
-    "certifi>=2024.2.2",
-    "rich>=13.8.0",
-    "tabulate>=0.9.0",
-    "psutil>=5.9.0",
-    "fastapi>=0.100.0",
-    "uvicorn>=0.23.0",
-    "mcp>=1.9.3",  # ClientSessionGroup: official multi-server lifecycle for chat
-    "jsonschema>=4.18.0",
+    'tomli>=2.0.1,<3; python_version < "3.11"',
+    "requests>=2.28.0,<3",
+    "certifi>=2024.2.2,<2027",
+    "rich>=13.8.0,<16",
+    "tabulate>=0.9.0,<0.11",
+    "psutil>=5.9.0,<8",
+    "fastapi>=0.100.0,<0.163",
+    "uvicorn>=0.23.0,<0.55",
+    "mcp>=1.9.3,<2",  # ClientSessionGroup: official multi-server lifecycle for chat
+    "jsonschema>=4.18.0,<5",
     # Direct import used by the packaged atomic contract registry. jsonschema
     # also depends on it today, but keeping the direct dependency explicit
     # prevents a resolver change from breaking `rapid-mlx models --json`.
-    "referencing>=0.28.4",
+    "referencing>=0.28.4,<0.38",
     # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
     # pure-Python package (~50 KB) wired into argparse via the magic
     # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
@@ -130,18 +132,18 @@ dependencies = [
     # argcomplete <3.6 subclasses that hook with only 3 positional args,
     # so the very first Tab raises TypeError mid-handshake and the shell
     # silently shows nothing. 3.6.0 ships the variadic signature fix.
-    "argcomplete>=3.6",
+    "argcomplete>=3.6,<4",
     # WebSocket client for ``rapid-mlx share`` — connects to the
     # rapidserver Worker as the reverse-tunnel transport. Pure Python,
     # ~200 KB. Replaces the prior frpc Go binary download.
-    "websockets>=12.0",
+    "websockets>=12.0,<18",
     # openai-harmony — official harmony-protocol streaming parser. Used
     # by ``HarmonyStreamingRouter`` (output_router_harmony.py) to route
     # gpt-oss tool calls correctly (issue #513 / cluster #444 #455
     # #468 #480). Same library vLLM and SGLang delegate to for gpt-oss
     # tool calling. Soft-imported at runtime; the legacy custom state
     # machine remains the fallback if the dep is unavailable.
-    "openai-harmony>=0.0.8",
+    "openai-harmony>=0.0.8,<0.1",
     # llguidance — grammar-constrained decoding engine (native MLX Metal
     # mask kernel via ``llguidance.mlx``). PROMOTED FROM THE [guided] EXTRA
     # TO CORE in 0.10.15 (#558 fix-slot follow-up to PR-5). Rationale: #558
@@ -157,7 +159,7 @@ dependencies = [
     # ``is_guided_available()`` guards in api/guided.py + api/tool_grammar.py
     # are RETAINED as defense-in-depth (a broken/incompatible install still
     # degrades gracefully rather than crashing).
-    "llguidance>=1.7.6",
+    "llguidance>=1.7.6,<2",
     # Vision, image- and video-generation runtimes ship in the base install so
     # the first serve of a multimodal alias (Qwen3.5+/Gemma 4) accepts images
     # and an image/video-gen alias starts without an extra-install round trip.
@@ -176,19 +178,19 @@ dependencies = [
     # mlx-vlm stays exactly pinned to the signed Desktop sidecar's validated
     # runtime; moving it is a gated coherence event (#1248).
     "mlx-vlm==0.7.2",
-    "opencv-python>=4.8.0",
-    "torch>=2.10.0",
-    "torchvision>=0.18.0",
+    "opencv-python>=4.8.0,<5",
+    "torch>=2.10.0,<3",
+    "torchvision>=0.18.0,<0.30",
     "pillow>=10.0.0,<13",
     "mflux>=0.20.0,<0.21; platform_system == 'Darwin' and python_version >= '3.11'",
-    "sentencepiece>=0.2.0; platform_system == 'Darwin'",
+    "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin'",
     # Video-generation runtime (LTX-2.3 / Wan). Upstream requires Python
     # >=3.11; the video-lane preflight gives 3.10 users an upgrade diagnostic.
     # imageio[ffmpeg] brings a self-contained ffmpeg wheel — no system ffmpeg.
     "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
     # Keep automatic installs aligned with the release-tested sidecar.
     "mlx-arsenal==0.12.1; platform_system == 'Darwin' and python_version >= '3.11'",
-    "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    "imageio[ffmpeg]>=2.34.0,<3; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -207,9 +209,9 @@ vision = [
     # constraints and can also advance CLI users beyond the Desktop's validated
     # lane. Updating this exact pin is a gated coherence event (#1248).
     "mlx-vlm==0.7.2",
-    "opencv-python>=4.8.0",
-    "torch>=2.10.0",
-    "torchvision>=0.18.0",
+    "opencv-python>=4.8.0,<5",
+    "torch>=2.10.0,<3",
+    "torchvision>=0.18.0,<0.30",
     # rapid_mlx imports PIL directly on vision paths (mllm.py, benchmark.py
     # image mode); mlx-vlm requires it too — listed for explicitness.
     "pillow>=10.0.0,<13",
@@ -285,9 +287,9 @@ all = [
     "pyobjc-framework-Quartz==12.2.2; platform_system == 'Darwin'",
     # vision
     "mlx-vlm==0.7.2",
-    "opencv-python>=4.8.0",
-    "torch>=2.10.0",
-    "torchvision>=0.18.0",
+    "opencv-python>=4.8.0,<5",
+    "torch>=2.10.0,<3",
+    "torchvision>=0.18.0,<0.30",
     "pillow>=10.0.0,<13",
     # chat
     "gradio>=4.0.0",
@@ -301,10 +303,10 @@ all = [
     "mlx-audio>=0.5.3,<0.6",
     "f5-tts-mlx==0.2.6",
     "sounddevice>=0.4.0",
-    "soundfile>=0.12.0",
+    "soundfile>=0.12.0,<0.15",
     "scipy>=1.10.0",
     "numba>=0.57.0",
-    "tiktoken>=0.5.0",
+    "tiktoken>=0.5.0,<0.14",
     "misaki[zh,ja]>=0.5.0",
     "spacy>=3.7.0",
     "num2words>=0.5.0",
@@ -336,7 +338,7 @@ test = [
     # Community protocol tests use jsonschema's external Registry API. Keep
     # this explicit so a partial/no-deps test install fails instead of skipping
     # the complete contract suite.
-    "referencing>=0.28.4",
+    "referencing>=0.28.4,<0.38",
     # pytest-asyncio is REQUIRED — pytest.ini sets `asyncio_mode = auto`,
     # which means every `async def test_*` is collected as an asyncio
     # test. Without the plugin, those tests fail at collection with
@@ -353,7 +355,7 @@ test = [
     # supported floor (codex round-2 BLOCKING — without this, CI on 3.10
     # would module-skip the entire lock-in suite and let a future
     # refactor silently drop the ``[vision]`` extra).
-    'tomli>=2.0.1; python_version < "3.11"',
+    'tomli>=2.0.1,<3; python_version < "3.11"',
     # Full-unit imports / runs optional-surface tests too. Keep these in
     # [test] so pr_validate can rebuild a venv that actually runs
     # ``pytest tests/`` without hand-installed local extras.
@@ -397,7 +399,7 @@ test = [
 # pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
 # then adds test-only packages required by automatically discovered modules.
 ci-linux = [
-    "tiktoken>=0.5.0",
+    "tiktoken>=0.5.0,<0.14",
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
@@ -412,38 +414,38 @@ ci-linux = [
     # and silently diverge from what macOS is shipping (the drift test in
     # tests/test_ci_apple_coverage_union.py fails closed on any gap).
     "pydantic",
-    "fastapi>=0.100.0",
-    "jsonschema>=4.18.0",
-    "referencing>=0.28.4",
+    "fastapi>=0.100.0,<0.163",
+    "jsonschema>=4.18.0,<5",
+    "referencing>=0.28.4,<0.38",
     "httpx",
-    "psutil>=5.9.0",
+    "psutil>=5.9.0,<8",
     "transformers>=5.0.0,!=5.13.0,<5.16",
-    "tokenizers>=0.19.0",
-    "huggingface-hub>=1.1.0",
-    "numpy>=1.24.0",
+    "tokenizers>=0.19.0,<0.23",
+    "huggingface-hub>=1.1.0,<2",
+    "numpy>=1.24.0,<3",
     # Imported directly by the vendored LTX-2.5 runtime; also a transitive
     # dependency of mlx-lm, but the runtime contract is declared here.
-    "safetensors>=0.4.0",
-    "pypdf>=5.0.0",  # Local-search text extraction; imported lazily.
-    "tqdm>=4.66.0",
-    "requests>=2.28.0",
-    "pyyaml>=6.0",
-    "tomli-w>=1.0.0",
-    'tomli>=2.0.1; python_version < "3.11"',
-    "rich>=13.8.0",
-    "tabulate>=0.9.0",
+    "safetensors>=0.4.0,<0.9",
+    "pypdf>=5.0.0,<7",  # Local-search text extraction; imported lazily.
+    "tqdm>=4.66.0,<5",
+    "requests>=2.28.0,<3",
+    "pyyaml>=6.0,<7",
+    "tomli-w>=1.0.0,<2",
+    'tomli>=2.0.1,<3; python_version < "3.11"',
+    "rich>=13.8.0,<16",
+    "tabulate>=0.9.0,<0.11",
     "python-multipart",
-    "uvicorn>=0.23.0",
-    "mcp>=1.9.3",
-    "argcomplete>=3.6",
-    "websockets>=12.0",
-    "openai-harmony>=0.0.8",
-    "llguidance>=1.7.6",
+    "uvicorn>=0.23.0,<0.55",
+    "mcp>=1.9.3,<2",
+    "argcomplete>=3.6,<4",
+    "websockets>=12.0,<18",
+    "openai-harmony>=0.0.8,<0.1",
+    "llguidance>=1.7.6,<2",
     "jinja2",
     "aiohttp>=3.9.0",
     "pillow>=10.0.0,<13",
     # Mirrors the base runtime dependency for CPU video-decoding contracts.
-    "opencv-python>=4.8.0",
+    "opencv-python>=4.8.0,<5",
 ]
 # `ci-apple` = the pytest + coverage set the `test-apple-silicon` lane installs
 # on top of `[vision]`. Same test-infra floors as `[ci-linux]`; the lane's MLX
@@ -466,10 +468,10 @@ dev = [
     # day one).
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
-    "referencing>=0.28.4",
+    "referencing>=0.28.4,<0.38",
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
-    'tomli>=2.0.1; python_version < "3.11"',
+    'tomli>=2.0.1,<3; python_version < "3.11"',
     "aiohttp>=3.9.0",
     "pillow>=10.0.0,<13",
     "mlx-vlm==0.7.2; platform_system == 'Darwin'",
@@ -504,7 +506,7 @@ dev = [
 # codebase's established duplicate-pin convention (mlx-vlm is likewise
 # repeated across [vision]/[dflash]/[all]/[test]/[dev]).
 guided = [
-    "llguidance>=1.7.6",
+    "llguidance>=1.7.6,<2",
 ]
 # Audio dependencies for TTS/STT (mlx-audio)
 audio = [
@@ -518,10 +520,10 @@ audio = [
     # mlx_audio family) — wired directly in audio/tts.py's `f5` branch.
     "f5-tts-mlx==0.2.6",
     "sounddevice>=0.4.0",
-    "soundfile>=0.12.0",
+    "soundfile>=0.12.0,<0.15",
     "scipy>=1.10.0",
     "numba>=0.57.0",
-    "tiktoken>=0.5.0",
+    "tiktoken>=0.5.0,<0.14",
     "misaki[zh,ja]>=0.5.0",  # Chinese (zh) and Japanese (ja) support
     "spacy>=3.7.0",
     "num2words>=0.5.0",
@@ -565,7 +567,7 @@ audio = [
 audio-desktop = [
     "mlx-audio>=0.5.3,<0.6",
     # rapid_mlx.audio.tts encodes the in-memory result with libsndfile.
-    "soundfile>=0.12.0",
+    "soundfile>=0.12.0,<0.15",
 ]
 # Video-generation runtime. Already part of the base install on macOS
 # (Python 3.11+); kept as an accepted no-op alias for existing docs/scripts.
@@ -579,9 +581,9 @@ video = [
     # upgrade diagnostic.
     "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
     "mlx-arsenal==0.12.1; platform_system == 'Darwin' and python_version >= '3.11'",
-    "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    "imageio[ffmpeg]>=2.34.0,<3; platform_system == 'Darwin' and python_version >= '3.11'",
     "pillow>=10.0.0,<13; platform_system == 'Darwin' and python_version >= '3.11'",
-    "sentencepiece>=0.2.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 # Image-generation runtime. Already part of the base install on macOS; kept as
 # an accepted no-op alias for existing docs, scripts and installers.
@@ -604,7 +606,7 @@ image = [
     # mflux. SD3.5's reviewed local T5 tokenizer additionally needs
     # sentencepiece on that same floor.
     "pillow>=10.0.0,<13; platform_system == 'Darwin'",
-    "sentencepiece>=0.2.0; platform_system == 'Darwin'",
+    "sentencepiece>=0.2.0,<0.3; platform_system == 'Darwin'",
 ]
 
 [project.urls]

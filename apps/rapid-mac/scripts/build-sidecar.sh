@@ -159,6 +159,7 @@ RAPID_MLX_SOURCE="${RAPID_MLX_SOURCE:-${ENGINE_ROOT}}"
 # fresh text-lane venv. Local builds retain the source-tree fallback.
 RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}"
 SIDECAR_CONSTRAINTS="${REPO_ROOT}/scripts/sidecar-constraints.txt"
+SIDECAR_LOCK="${REPO_ROOT}/scripts/sidecar-requirements.lock"
 PYOBJC_LICENSE="${REPO_ROOT}/licenses/PyObjC-MIT.txt"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/build/sidecar-stage}"
 DEVELOPER_ID="${DEVELOPER_ID:--}"
@@ -398,24 +399,22 @@ fi
 # Its pip is present during assembly and stripped only after both installs,
 # keeping wheel selection tied to the exact ABI that ships in the bundle.
 #
-# transformers upper-bound pin (release-blocker, v0.8.20): rapid-mlx pulls
-# transformers transitively via mlx-lm (0.31.3 → `transformers>=5.0.0`) and
-# mlx-vlm (0.6.3 → `transformers>=5.5.0`), neither of which caps the upper
-# bound. transformers 5.13.0 tightened `AutoTokenizer.register` to deref
-# `key.__module__`, but mlx-lm 0.31.3 registers tokenizers with *string*
-# class names (mlx_lm/tokenizer_utils.py:505), so a fresh resolve to 5.13.0
-# throws `AttributeError: 'str' object has no attribute '__module__'` at
-# `import mlx_vlm` → every gemma-4 / DiffusionGemma launch would crash. The
-# CI sidecar smoke (step 6) caught it. 5.5.0–5.12.x import cleanly (pip
-# currently resolves 5.12.1); <5.13 is the working range. Passing the
-# constraint as a top-level requirement makes
-# pip's resolver honor it for the transitive dep too. Revisit when mlx-lm /
-# mlx-vlm or transformers ship a compatible fix (tracked upstream in rapid-mlx).
-#
-# The engine's base install carries the full vision (mlx-vlm + torch +
-# OpenCV), image (mflux) and video (mlx-video + imageio) runtimes, and the
-# Desktop ships them unchanged: the same dependency graph as
-# ``pip install rapid-mlx``, made deterministic by sidecar-constraints.txt.
+# Install the reviewed index closure with hashes before the source packages.
+# Target macOS 14 for every native wheel, including MLX's metallib payload.
+# No source distribution or unlisted transitive dependency may enter the bundle.
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --platform macosx_14_0_arm64 \
+    --only-binary=:all: \
+    --require-hashes \
+    --no-warn-script-location \
+    --no-compile \
+    --upgrade \
+    --constraint "$SIDECAR_CONSTRAINTS" \
+    --requirement "$SIDECAR_LOCK"
+
+# The local application and immutable runtime source are installed separately;
+# --no-deps prevents either from bypassing the reviewed index closure.
 # Compute / Earn's Qwen27 default needs the immutable, qualified runtime.
 # Derive its source pin from the adapter policy rather than duplicating it.
 TENSORFOLD_RUNTIME_SPEC="$(python3 - "$RAPID_MLX_SOURCE" <<'PY'
@@ -433,37 +432,17 @@ PY
     --no-compile \
     --upgrade \
     --constraint "$SIDECAR_CONSTRAINTS" \
+    --no-deps \
     "${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]" \
-    "$TENSORFOLD_RUNTIME_SPEC" \
-    'mlx' \
-    'transformers'
+    "$TENSORFOLD_RUNTIME_SPEC"
 
-# pip normally selects wheels for the BUILD host. A sidecar assembled on
-# macOS 26 therefore receives mlx / mlx-metal's macosx_26 wheels even though
-# the Desktop app's deployment target is macOS 14. Moving that otherwise
-# valid app to a macOS 14/15 Mac then fails at the first Metal operation with
-# "metallib language version 4.0 is not supported on this OS". Reinstall the
-# exact versions selected above from their macOS 14 wheels: those wheels run
-# on newer systems too, making the packaged runtime match the app contract.
+# Verify the locked MLX pair targets the minimum supported macOS.
 MLX_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
     "$STAGE/python/bin/python3.12" -c \
     'from importlib.metadata import version; print(version("mlx"))')"
 MLX_METAL_VERSION="$(PYTHONPATH="$STAGE/site-packages" \
     "$STAGE/python/bin/python3.12" -c \
     'from importlib.metadata import version; print(version("mlx-metal"))')"
-echo "==> pinning MLX wheels to Desktop's macOS 14 deployment target"
-"$STAGE/python/bin/python3.12" -m pip install \
-    --target "$STAGE/site-packages" \
-    --platform macosx_14_0_arm64 \
-    --only-binary=:all: \
-    --no-warn-script-location \
-    --no-compile \
-    --no-deps \
-    --upgrade \
-    --force-reinstall \
-    "mlx==${MLX_VERSION}" \
-    "mlx-metal==${MLX_METAL_VERSION}"
-
 for wheel in \
     "$STAGE/site-packages/mlx-${MLX_VERSION}.dist-info/WHEEL" \
     "$STAGE/site-packages/mlx_metal-${MLX_METAL_VERSION}.dist-info/WHEEL"; do

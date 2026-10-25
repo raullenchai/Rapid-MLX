@@ -110,9 +110,11 @@ struct SidecarBuildScriptTests {
                 "A newer build host must not make the sidecar require that host's macOS.")
         #expect(script.contains("^Tag: .*macosx_14_0_arm64$"),
                 "The build must fail closed if pip does not install the requested compatible wheels.")
-        #expect(script.contains(#""mlx==${MLX_VERSION}""#))
-        #expect(script.contains(#""mlx-metal==${MLX_METAL_VERSION}""#),
-                "Core and metallib wheels must be replaced as one matched pair.")
+        #expect(script.contains("--require-hashes"))
+        #expect(script.contains(#"--requirement "$SIDECAR_LOCK""#),
+                "All index dependencies must come from the reviewed hash lock.")
+        #expect(script.contains("--no-deps"),
+                "Source installs must not resolve dependencies outside the lock.")
     }
 
     @Test("Desktop image stack is pinned and the full mflux runtime is proven")
@@ -154,7 +156,7 @@ struct SidecarBuildScriptTests {
         #expect(pyproject.contains("\naudio-desktop = ["),
                 "The bounded desktop audio dependency group must remain separately installable.")
         #expect(pyproject.contains(#""mlx-audio>=0.5.3,<0.6""#))
-        #expect(pyproject.contains(#""soundfile>=0.12.0""#))
+        #expect(pyproject.contains(#""soundfile>=0.12.0,<0.15""#))
         #expect(script.contains(#""${RAPID_MLX_INSTALL_TARGET}[audio-desktop,computer-use]""#),
                 "The desktop sidecar must install the bounded audio and Computer Use dependency sets.")
         #expect(script.contains(#"RAPID_MLX_WHEEL="${RAPID_MLX_WHEEL:-}""#),
