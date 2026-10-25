@@ -21,7 +21,7 @@ PIN = "3b93f9053b530488405ae9fca51d4900d6ce21f0"
 OTHER = "a" * 40
 ALIAS = "flint-40b-a2.5b-4bit"
 REPO = "RecursiveSI/flint-int4"
-UNPINNED = "example/uncataloged-model"
+UNPINNED = "mlx-community/Qwen3-0.6B-4bit"
 
 
 @pytest.fixture(params=[REPO, ALIAS, "my-flint"])
@@ -112,12 +112,10 @@ def test_resolution_and_user_store_compatibility(monkeypatch, tmp_path):
     monkeypatch.setattr(
         aliases,
         "_resolve_external_model_path",
-        lambda name: str(tmp_path),
+        lambda name: pytest.fail("pin cannot use unversioned external copy"),
     )
-    monkeypatch.setattr(aliases, "_managed_hub_model_is_runnable", lambda name: False)
-    assert aliases.resolve_model(ALIAS) == str(tmp_path)
-    assert aliases.resolve_model(REPO.upper()) == str(tmp_path)
-    assert aliases.resolve_hub_model(REPO.upper()) == REPO
+    assert aliases.resolve_model(ALIAS) == REPO
+    assert aliases.resolve_model(REPO.upper()) == REPO
 
 
 def snapshot(root, sha, *, subfolder=None, complete=True):
@@ -236,7 +234,7 @@ def test_warm_pinned_subfolder_checkpoint_uses_cache(cache, monkeypatch, name):
     fetch.assert_not_called()
 
 
-@pytest.mark.parametrize("subfolder", [None, "4bit", "[48]bit"])
+@pytest.mark.parametrize("subfolder", [None, "4bit"])
 def test_cold_checkpoint_and_server_use_pinned_snapshot(
     monkeypatch, tmp_path, subfolder
 ):
@@ -246,7 +244,7 @@ def test_cold_checkpoint_and_server_use_pinned_snapshot(
     profile = aliases.AliasProfile(hf_path=REPO, revision=PIN, subfolder=subfolder)
     monkeypatch.setattr(aliases, "resolve_profile", lambda _: profile)
     monkeypatch.setattr(
-        model_metadata, "resolve_pinned_cached_snapshot", lambda _, **kwargs: None
+        model_metadata, "resolve_pinned_cached_snapshot", lambda _: None
     )
     root = tmp_path / "repo"
     path = snapshot(root, PIN, subfolder=subfolder)
@@ -254,15 +252,7 @@ def test_cold_checkpoint_and_server_use_pinned_snapshot(
     monkeypatch.setattr(_mirror, "pinned_snapshot_download", fetch)
     assert Path(_resolve_subfolder_checkpoint(REPO)) == path
     fetch.assert_called_with(
-        REPO,
-        PIN,
-        allow_patterns=(
-            ["[[]48[]]bit/*"]
-            if subfolder == "[48]bit"
-            else ["4bit/*"]
-            if subfolder
-            else None
-        ),
+        REPO, PIN, allow_patterns=["4bit/*"] if subfolder else None
     )
     monkeypatch.setattr(server, "_preflight_vision_runtime", lambda *a, **k: None)
     result = server._resolve_serving_checkpoint(REPO, force_text=True)

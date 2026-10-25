@@ -61,10 +61,9 @@ def write_model(
 
 def snapshot(cache, repo, **kwargs):
     root = cache / ("models--" + repo.replace("/", "--"))
-    revision = ma.resolve_revision(repo) or "a" * 40
-    directory = write_model(root / "snapshots" / revision, **kwargs)
+    directory = write_model(root / "snapshots" / ("a" * 40), **kwargs)
     (root / "refs").mkdir()
-    (root / "refs" / "main").write_text(revision)
+    (root / "refs" / "main").write_text("a" * 40)
     return directory
 
 

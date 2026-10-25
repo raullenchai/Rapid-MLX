@@ -1619,9 +1619,7 @@ def _check_disk_space(
     # Text checkpoints retain the selective-loader fast path below.
     from rapid_mlx._download_gate import mflux_missing_weights
 
-    if (
-        revision_override is None or revision_override == catalog_revision
-    ) and mflux_missing_weights(model_name) == []:
+    if revision_override is None and mflux_missing_weights(model_name) == []:
         return
 
     # Which directory inside the repo this alias actually needs. Resolved
@@ -9636,14 +9634,15 @@ def _cache_runnability(repo: str) -> bool | None:
             is_repo_cached,
         )
         from rapid_mlx.audio.registry import resolve_audio_alias
-        from rapid_mlx.model_aliases import resolve_hub_model
+        from rapid_mlx.model_aliases import resolve_revision
         from rapid_mlx.model_metadata import (
             resolve_offline_cached_snapshot,
             resolve_unreferenced_cached_snapshot,
         )
         from rapid_mlx.video.wan import WAN_REVISIONS
 
-        repo = resolve_hub_model(repo)
+        if resolve_revision(repo) is not None:
+            return is_repo_cached(repo)
         audio_entry = resolve_audio_alias(repo)
         if audio_entry is not None and audio_entry.family in ("whisper", "kokoro"):
             # Audio repos don't share the text ``model*.safetensors`` layout;
@@ -11767,7 +11766,6 @@ def pull_command(args):
         _pull_repository(
             dependency_args,
             allow_patterns_override=list(asset.allow_patterns),
-            revision_override=asset.revision,
         )
     for requirement in runtime_requirements_for(primary_repo):
         print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")

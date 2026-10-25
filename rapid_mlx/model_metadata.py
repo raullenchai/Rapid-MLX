@@ -280,9 +280,7 @@ def _complete_cached_checkpoint(
         return None
 
 
-def resolve_pinned_cached_snapshot(
-    model_name: str, *, checkpoint_subfolder: str | None = None
-) -> Path | None:
+def resolve_pinned_cached_snapshot(model_name: str) -> Path | None:
     """Return only the catalog's complete immutable checkpoint, never main."""
     from huggingface_hub.constants import HF_HUB_CACHE
 
@@ -294,10 +292,7 @@ def resolve_pinned_cached_snapshot(
     repo_id = resolve_hub_model(model_name)
     repo_root = Path(HF_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
     return _complete_cached_checkpoint(
-        repo_root,
-        repo_root / "snapshots" / revision,
-        model_name,
-        checkpoint_subfolder=checkpoint_subfolder,
+        repo_root, repo_root / "snapshots" / revision, model_name
     )
 
 

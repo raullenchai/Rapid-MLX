@@ -479,9 +479,7 @@ def test_cached_view_recognizes_complete_mapped_whisper_npz(
     repo = "mlx-community/whisper-medium-mlx"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-medium-mlx"
-    from rapid_mlx.model_aliases import resolve_revision
-
-    sha = resolve_revision(repo)
+    sha = "whisper123"
     snapshot = repo_root / "snapshots" / sha
     snapshot.mkdir(parents=True)
     (snapshot / "config.json").write_text("{}")
@@ -508,16 +506,13 @@ def test_cached_view_recognizes_complete_mapped_whisper_npz(
 # --- #2406 part A: _cache_entry_is_runnable routes audio families -----------
 
 
-@pytest.mark.parametrize("name", ["kokoro", "mlx-community/Kokoro-82M-bf16"])
-def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch, name):
+def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
     """A cached Kokoro repo (``kokoro-v1_0.safetensors``) is runnable — the
     audio-family branch, not the text ``model*.safetensors`` probe."""
     repo = "mlx-community/Kokoro-82M-bf16"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
-    from rapid_mlx.model_aliases import resolve_revision
-
-    sha = resolve_revision(repo)
+    sha = "kokoro123"
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -527,7 +522,7 @@ def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch, name):
     (refs / "main").write_text(sha)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert cli._cache_entry_is_runnable(name) is True
+    assert cli._cache_entry_is_runnable(repo) is True
 
 
 def _seed_wan_hf_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> None:
@@ -579,9 +574,7 @@ def test_cache_entry_runnable_for_cached_whisper_turbo(tmp_path, monkeypatch):
     repo = "mlx-community/whisper-large-v3-turbo"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--whisper-large-v3-turbo"
-    from rapid_mlx.model_aliases import resolve_revision
-
-    sha = resolve_revision(repo)
+    sha = "w12345"
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
@@ -600,9 +593,7 @@ def test_cache_entry_not_runnable_for_metadata_only_kokoro(tmp_path, monkeypatch
     repo = "mlx-community/Kokoro-82M-bf16"
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--Kokoro-82M-bf16"
-    from rapid_mlx.model_aliases import resolve_revision
-
-    sha = resolve_revision(repo)
+    sha = "kokoro-stub"
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")

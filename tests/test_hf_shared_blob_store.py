@@ -21,7 +21,6 @@ from pathlib import Path
 import pytest
 
 from rapid_mlx import _download_gate as gate
-from rapid_mlx.model_aliases import resolve_revision
 
 SHA = "a" * 40
 
@@ -291,13 +290,12 @@ def test_shared_blob_probe_rejects_a_rebound_blob_directory(hub):
 
 def _seed_audio_repo(hub: Path, repo_id: str, weight: str) -> Path:
     repo_root = hub / f"models--{repo_id.replace('/', '--')}"
-    revision = resolve_revision(repo_id)
-    snap = repo_root / "snapshots" / revision
+    snap = repo_root / "snapshots" / SHA
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
     (snap / weight).write_bytes(b"w" * 64)
     (repo_root / "refs").mkdir()
-    (repo_root / "refs" / "main").write_text(revision)
+    (repo_root / "refs" / "main").write_text(SHA)
     return repo_root
 
 
@@ -318,15 +316,14 @@ def test_audio_gate_accepts_shared_blob_store(hub):
 def test_split_model_gate_accepts_shared_blob_store(hub):
     repo = "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
     repo_root = hub / f"models--{repo.replace('/', '--')}"
-    revision = resolve_revision(repo)
-    snap = repo_root / "snapshots" / revision
+    snap = repo_root / "snapshots" / SHA
     snap.mkdir(parents=True)
     components = ["transformer", "text_encoder", "vae"]
     (snap / "split_model.json").write_text(json.dumps({"components": components}))
     for component in components:
         (snap / f"{component}.safetensors").write_bytes(b"w" * 64)
     (repo_root / "refs").mkdir()
-    (repo_root / "refs" / "main").write_text(revision)
+    (repo_root / "refs" / "main").write_text(SHA)
     _share_all(hub, repo_root)
 
     assert gate.split_model_local_snapshot(repo) == str(snap)
