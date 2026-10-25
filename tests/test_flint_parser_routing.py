@@ -218,7 +218,9 @@ def test_glm_malformed_markup_is_not_content(raw):
                 raw[:split], raw, raw[split:], request={"tools": TOOLS}
             ),
         ]
-        assert not "".join(m.get("content", "") for m in messages if m)
+        visible = "".join(m.get("content", "") for m in messages if m)
+        visible += parser.flush_held_content(raw)
+        assert not visible
 
 
 def test_responses_finalize_preserves_plain_text():
@@ -251,3 +253,11 @@ def test_glm_stream_flush(raw, expected):
 
 def test_responses_finalize_flushes_literal_prefix():
     test_flint_routes("responses", True, False, "Literal <arg_", 1)
+
+
+@pytest.mark.parametrize("name", ["run_shell_command", "unknown"])
+def test_glm_repair_preserves_implicit_reasoning_boundary(name):
+    raw = f"Private thought.<tool_call>{name}</think><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>"
+    result = Glm47ToolParser().extract_tool_calls(raw, {"tools": TOOLS})
+    assert not result.content
+    assert result.tools_called == (name == "run_shell_command")

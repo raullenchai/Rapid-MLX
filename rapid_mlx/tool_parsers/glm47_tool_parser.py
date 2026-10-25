@@ -115,7 +115,7 @@ class Glm47ToolParser(ToolParser):
 
         # Strip think tags using the base class method (handles both
         # full <think>...</think> and implicit ...</think> patterns)
-        model_output = self._INTERRUPTED_NAME.sub(r"\1", model_output)
+        model_output = self._INTERRUPTED_NAME.sub(r"</think>\1", model_output)
         cleaned_text = self.strip_think_tags(model_output)
 
         # Get valid tool names for validation
@@ -186,6 +186,12 @@ class Glm47ToolParser(ToolParser):
         """
         Extract tool calls from streaming GLM-4.7 model output.
         """
+        # Feed every delta, including complete envelopes, so a prefix held on
+        # the preceding chunk cannot survive after that envelope is consumed.
+        if not hasattr(self, "_content_filter"):
+            self.reset()
+        filtered_delta = self._content_filter.process(delta_text)
+
         # Skip thinking content in streaming
         if "<think>" in current_text and "</think>" not in current_text:
             return None
@@ -218,10 +224,7 @@ class Glm47ToolParser(ToolParser):
                     }
             return None
 
-        # Suppress split or orphaned argument markup as well as full envelopes.
-        if not hasattr(self, "_content_filter"):
-            self.reset()
-        delta_text = self._content_filter.process(delta_text)
+        delta_text = filtered_delta
 
         # No tool call detected yet; emit content delta.
         # Only strip think tags if they're actually present (avoid .strip()
