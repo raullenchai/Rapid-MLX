@@ -2408,6 +2408,21 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     return "".join(pieces)
 
 
+def is_flint_chat_template(
+    template_applicator, *, tools=None, chat_template_kwargs=None
+):
+    """Match the validated native template, including local copies and overrides."""
+    template = (chat_template_kwargs or {}).get("chat_template")
+    if template is None:
+        template = getattr(template_applicator, "chat_template", None)
+    sources = _chat_template_strings(template, tools=tools)
+    return (
+        len(sources) == 1
+        and hashlib.sha256(sources[0].encode("utf-8")).hexdigest()
+        == "7940f4ffa3275c36caa4a582f845aaad79da11018b3961e8fbcad6ae29733466"
+    )
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -2441,16 +2456,9 @@ def apply_chat_template(
     # Match the exact upstream template, not the model/path name: local
     # copies work and custom or future templates keep their own semantics.
     if enable_thinking is False and add_generation_prompt and isinstance(prompt, str):
-        template = (chat_template_kwargs or {}).get("chat_template")
-        if template is None:
-            template = getattr(template_applicator, "chat_template", None)
-        sources = _chat_template_strings(template, tools=tools)
-        if (
-            len(sources) == 1
-            and hashlib.sha256(sources[0].encode("utf-8")).hexdigest()
-            == "7940f4ffa3275c36caa4a582f845aaad79da11018b3961e8fbcad6ae29733466"
-            and prompt.endswith("<|assistant|>")
-        ):
+        if is_flint_chat_template(
+            template_applicator, tools=tools, chat_template_kwargs=chat_template_kwargs
+        ) and prompt.endswith("<|assistant|>"):
             prompt += "<think>\n</think>\n"
     return prompt
 

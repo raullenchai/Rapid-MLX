@@ -5016,6 +5016,19 @@ async def _create_chat_completion_impl(
             "'We should respond...' or 'Let me think...'. Be concise."
         )
 
+    # Flint's native template already teaches tool use. The generic auto
+    # instruction makes this checkpoint deny tools are available (#5257).
+    # Keep explicit required/named constraints and custom templates unchanged.
+    if _inject_suffix == _TOOL_USE_SYSTEM_SUFFIX:
+        from ..utils.chat_template import is_flint_chat_template
+
+        if is_flint_chat_template(
+            getattr(engine, "tokenizer", None),
+            tools=request.tools,
+            chat_template_kwargs=request.chat_template_kwargs,
+        ):
+            _inject_suffix = None
+
     if _inject_suffix:
         has_system = any(
             (m.get("role") if isinstance(m, dict) else getattr(m, "role", None))
