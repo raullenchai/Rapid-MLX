@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from rapid_mlx.routes import chat, responses
+from rapid_mlx.routes import anthropic, chat, responses
 from rapid_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
 from tests.test_rejected_tool_diagnostics import TOOLS
 from tests.test_rejected_tool_diagnostics import Engine as BaseEngine
@@ -44,7 +44,7 @@ class Engine(BaseEngine):
 
 
 @pytest.mark.parametrize("step", [1, 7, 10000])
-@pytest.mark.parametrize("surface", ["chat", "responses"])
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("later", [False, True])
 @pytest.mark.parametrize(
@@ -73,6 +73,7 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
     cfg.engine.step = step
     cfg.engine.tokenizer = SimpleNamespace(chat_template=TEMPLATE)
     app = FastAPI()
+    app.include_router(anthropic.router)
     app.include_router(chat.router)
     app.include_router(responses.router)
     history = [{"role": "user", "content": "Build life.py and run it."}]
@@ -100,6 +101,39 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
     if surface == "chat":
         body["messages"] = history
         url = "/v1/chat/completions"
+    elif surface == "messages":
+        body.pop("chat_template_kwargs")
+        body["max_tokens"] = 1024
+        body["thinking"] = {"type": "enabled"}
+        body["messages"] = history[:1]
+        body["tools"] = [
+            {"name": "run_shell_command", "input_schema": {"type": "object"}}
+        ]
+        if later:
+            body["messages"] += [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_old",
+                            "name": "run_shell_command",
+                            "input": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_old",
+                            "content": "ok",
+                        }
+                    ],
+                },
+            ]
+        url = "/v1/messages"
     else:
         body["input"] = history[:1]
         if later:
@@ -134,6 +168,29 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
             ]
             visible = "".join(m.get("content") or "" for m in messages)
             calls = [c for m in messages for c in m.get("tool_calls", [])]
+        elif surface == "messages":
+            if stream:
+                visible = "".join(
+                    p["delta"]["text"]
+                    for p in packets
+                    if p.get("delta", {}).get("type") == "text_delta"
+                )
+                calls = []
+                for p in packets:
+                    block = p.get("content_block", {})
+                    if block.get("type") == "tool_use":
+                        calls.append({"name": block["name"], "arguments": ""})
+                    if p.get("delta", {}).get("type") == "input_json_delta":
+                        calls[-1]["arguments"] += p["delta"]["partial_json"]
+            else:
+                visible = "".join(
+                    b["text"] for b in packets[0]["content"] if b["type"] == "text"
+                )
+                calls = [
+                    {"name": b["name"], "arguments": json.dumps(b["input"])}
+                    for b in packets[0]["content"]
+                    if b["type"] == "tool_use"
+                ]
         elif stream:
             visible = "".join(
                 p.get("delta", "")
@@ -169,8 +226,10 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
                 "</tool_call>",
             ]
         )
-        if "<tool_call>" in raw and raw.endswith("</tool_call>"):
+        if "<tool_call>" in raw and "</tool_call>" in raw:
             assert calls
+            if "Ready." in raw:
+                assert visible == "Ready.Done."
             functions = (
                 [call["function"] for call in calls] if surface == "chat" else calls
             )
@@ -439,3 +498,13 @@ def test_glm_orphan_segments_preserve_following_answer(prefix):
         ]
         visible = "".join(m.get("content", "") for m in messages if m)
         assert visible + parser.flush_held_content(raw) == "Final answer"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>", "Plain <"])
+def test_messages_finalization_preserves_literal_prefix(stream, text):
+    test_flint_routes("messages", stream, False, text, 1, expected_literal=text)
+
+
+def test_messages_bare_tool_envelope_preserves_surrounding_prose():
+    test_flint_routes("messages", True, True, "Ready." + CALL + "Done.", 1)

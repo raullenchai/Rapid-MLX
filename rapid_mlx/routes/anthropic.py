@@ -2180,7 +2180,14 @@ async def _stream_anthropic_messages(
     # non-streaming branch uses (PR #515 codex round-12/14 BLOCKING
     # closure).
     accumulated_structured_tool_calls: list[dict] = []
-    tool_filter = StreamingToolCallFilter(enabled=bool(chat_kwargs.get("tools")))
+    from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+    filter_tools = bool(chat_kwargs.get("tools")) and openai_request.tool_choice != "none"
+    tool_filter = (
+        Glm47ContentFilter()
+        if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
+        else StreamingToolCallFilter(enabled=filter_tools)
+    )
     # ``tokenizer`` is on the BaseEngine contract; the old ``hasattr``
     # guard predated the abstract declaration and is the same silent-skip
     # shape that produced #500. The inner ``chat_template`` guard stays
@@ -3020,9 +3027,13 @@ async def _stream_anthropic_messages(
                     # circuits.
                     final_msg = None
         if final_msg and final_msg.content:
+            # Keep the raw fallback for structured extraction; only the visible
+            # lane passes through the same filter as ordinary streaming deltas.
             content = strip_special_tokens(final_msg.content)
             if content:
                 accumulated_text = content
+                content = tool_filter.process(content) + tool_filter.flush()
+            if content:
                 for raw_event in (
                     f"event: content_block_start\ndata: "
                     f"{json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n",
