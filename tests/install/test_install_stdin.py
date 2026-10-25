@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Upper bound for one installer run; real stdin hangs never finish.
+_STDIN_HANG_BUDGET_S = 60
 INSTALL_SH = Path(__file__).resolve().parents[2] / "install.sh"
 
 
@@ -164,8 +166,9 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 "TMPDIR": os.environ.get("TMPDIR", work),
             }
             # Newly generated executables can incur macOS first-launch validation.
-            # Establish fixture readiness before the installer's stdin-hang budget;
-            # the installer itself retains the same ten-second timeout below.
+            # Establish fixture readiness before the installer's stdin-hang budget.
+            # A consumed-stdin hang blocks forever, so the budget below only has
+            # to be finite; it is generous enough for loaded parallel runs.
             for path in binaries.iterdir():
                 if path.is_symlink():
                     continue
@@ -188,7 +191,7 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
                 text=True,
                 capture_output=True,
                 env=env,
-                timeout=10,
+                timeout=_STDIN_HANG_BUDGET_S,
             )
             log = events.read_text() if events.exists() else ""
             if fallback:
@@ -303,7 +306,7 @@ run_install_command /bin/bash -c 'IFS= read -r reply; printf "%s" "$reply"'
                 stdin=slave,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=_STDIN_HANG_BUDGET_S,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "interactive-input")
