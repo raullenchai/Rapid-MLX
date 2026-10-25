@@ -9636,12 +9636,14 @@ def _cache_runnability(repo: str) -> bool | None:
             is_repo_cached,
         )
         from rapid_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.model_aliases import resolve_hub_model
         from rapid_mlx.model_metadata import (
             resolve_offline_cached_snapshot,
             resolve_unreferenced_cached_snapshot,
         )
         from rapid_mlx.video.wan import WAN_REVISIONS
 
+        repo = resolve_hub_model(repo)
         audio_entry = resolve_audio_alias(repo)
         if audio_entry is not None and audio_entry.family in ("whisper", "kokoro"):
             # Audio repos don't share the text ``model*.safetensors`` layout;

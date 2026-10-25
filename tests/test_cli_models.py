@@ -508,7 +508,8 @@ def test_cached_view_recognizes_complete_mapped_whisper_npz(
 # --- #2406 part A: _cache_entry_is_runnable routes audio families -----------
 
 
-def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["kokoro", "mlx-community/Kokoro-82M-bf16"])
+def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch, name):
     """A cached Kokoro repo (``kokoro-v1_0.safetensors``) is runnable — the
     audio-family branch, not the text ``model*.safetensors`` probe."""
     repo = "mlx-community/Kokoro-82M-bf16"
@@ -526,7 +527,7 @@ def test_cache_entry_runnable_for_cached_kokoro(tmp_path, monkeypatch):
     (refs / "main").write_text(sha)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
-    assert cli._cache_entry_is_runnable(repo) is True
+    assert cli._cache_entry_is_runnable(name) is True
 
 
 def _seed_wan_hf_snapshot(repo_root, pinned_sha: str, files: dict[str, bytes]) -> None:
