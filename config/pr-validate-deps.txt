@@ -4,7 +4,7 @@
 # CI pipeline runs against exactly the declared test dependencies (no ad hoc
 # list). Re-run ``python scripts/render_pr_validate_deps.py`` after changing
 # ``[ci-linux]``; ``--check`` (wired into pr-validate CI) fails on a stale copy.
-tiktoken>=0.5.0
+tiktoken>=0.5.0,<0.14
 pytest>=7.0.0
 pytest-xdist>=3.8.0
 pytest-asyncio>=0.21.0
@@ -12,32 +12,32 @@ pytest-cov>=4.0.0
 hypothesis>=6.100.0
 prometheus_client>=0.16.0
 pydantic
-fastapi>=0.100.0
-jsonschema>=4.18.0
-referencing>=0.28.4
+fastapi>=0.100.0,<0.163
+jsonschema>=4.18.0,<5
+referencing>=0.28.4,<0.38
 httpx
-psutil>=5.9.0
+psutil>=5.9.0,<8
 transformers>=5.0.0,!=5.13.0,<5.16
-tokenizers>=0.19.0
-huggingface-hub>=1.1.0
-numpy>=1.24.0
-safetensors>=0.4.0
-pypdf>=5.0.0
-tqdm>=4.66.0
-requests>=2.28.0
-pyyaml>=6.0
-tomli-w>=1.0.0
-tomli>=2.0.1; python_version < "3.11"
-rich>=13.8.0
-tabulate>=0.9.0
+tokenizers>=0.19.0,<0.23
+huggingface-hub>=1.1.0,<2
+numpy>=1.24.0,<3
+safetensors>=0.4.0,<0.9
+pypdf>=5.0.0,<7
+tqdm>=4.66.0,<5
+requests>=2.28.0,<3
+pyyaml>=6.0,<7
+tomli-w>=1.0.0,<2
+tomli>=2.0.1,<3; python_version < "3.11"
+rich>=13.8.0,<16
+tabulate>=0.9.0,<0.11
 python-multipart
-uvicorn>=0.23.0
-mcp>=1.9.3
-argcomplete>=3.6
-websockets>=12.0
-openai-harmony>=0.0.8
-llguidance>=1.7.6
+uvicorn>=0.23.0,<0.55
+mcp>=1.9.3,<2
+argcomplete>=3.6,<4
+websockets>=12.0,<18
+openai-harmony>=0.0.8,<0.1
+llguidance>=1.7.6,<2
 jinja2
 aiohttp>=3.9.0
 pillow>=10.0.0,<13
-opencv-python>=4.8.0
+opencv-python>=4.8.0,<5
