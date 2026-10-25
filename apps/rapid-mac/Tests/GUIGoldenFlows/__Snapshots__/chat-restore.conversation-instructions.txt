@@ -21,11 +21,6 @@ AXApplication title="Rapid-MLX"
           AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXStaticText value=text enabled=true
-          AXButton id="Chat.AgentTip.DismissButton" desc="Dismiss agent tip" enabled=true
-          AXStaticText value=text enabled=true
-          AXButton id="Chat.AgentTip.CopyDetailsButton" desc="Copy URL + model" enabled=true
-          AXButton id="Chat.AgentTip.SetupButton" desc="Agent setup" enabled=true
           AXScrollArea
             AXStaticText value=text enabled=true
             AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true

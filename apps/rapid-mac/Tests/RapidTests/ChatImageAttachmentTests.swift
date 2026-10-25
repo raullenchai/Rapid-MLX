@@ -381,6 +381,7 @@ struct ChatImageAttachmentTests {
         defer { defaults.removePersistentDomain(forName: name) }
         let prompt = PromptScheduler(defaults: defaults, quietWindow: .zero)
         var telemetryValues: [ProductValueKind] = []
+        let toolPrompt = ToolConnectionPrompt(defaults: defaults, report: { _ in })
         let image = try ChatImageAttachment(
             filename: "photo.png", mimeType: "image/png", data: Data("photo".utf8)
         )
@@ -389,7 +390,10 @@ struct ChatImageAttachmentTests {
                                      session: ImageSuccessProtocol.session()),
             persistsConversations: false,
             onProductValueDelivered: { telemetryValues.append($0) },
-            onImageReplyDelivered: { prompt.productValueDelivered(.chatReply) }
+            onImageReplyDelivered: {
+                prompt.productValueDelivered(.chatReply)
+                toolPrompt.recordSuccess()
+            }
         )
         model.send("Describe", alias: "vision-model", supportsImageInput: true,
                    imageAttachments: [image])
@@ -397,6 +401,7 @@ struct ChatImageAttachmentTests {
         #expect(model.messages.last?.status == .complete)
         #expect(EffectiveUse(defaults: defaults).count(.chatReply) == 1)
         #expect(telemetryValues.isEmpty)
+        #expect(toolPrompt.shouldPresent(isStreaming: model.isStreaming))
     }
 
     @Test("a second terminal image failure quarantines only that image turn")

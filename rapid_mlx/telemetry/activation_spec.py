@@ -15,6 +15,11 @@ ACTIVATION_FIRST_CHAT_REPLY = "first_chat_reply"
 ACTIVATION_FIRST_VISION_REPLY = "first_vision_reply"
 ACTIVATION_FIRST_DICTATION = "first_dictation"
 ACTIVATION_FIRST_IMAGE = "first_image"
+ACTIVATION_TOOL_CARD_SHOWN = "tool_card_shown"
+ACTIVATION_TOOL_CARD_COPY_URL = "tool_card_copy_url"
+ACTIVATION_TOOL_CARD_COPY_COMMAND = "tool_card_copy_command"
+ACTIVATION_TOOL_CARD_LAUNCH = "tool_card_launch"
+ACTIVATION_TOOL_CARD_DISMISSED = "tool_card_dismissed"
 
 # Where the milestone happened. ``cli`` = the interactive REPL / a CLI
 # subcommand; ``api`` = the HTTP server serving an external caller;
@@ -32,6 +37,11 @@ ACTIVATION_KIND_SURFACE_PAIRS: frozenset[tuple[str, str]] = frozenset(
         (ACTIVATION_FIRST_VISION_REPLY, SURFACE_DESKTOP),
         (ACTIVATION_FIRST_DICTATION, SURFACE_DESKTOP),
         (ACTIVATION_FIRST_IMAGE, SURFACE_DESKTOP),
+        (ACTIVATION_TOOL_CARD_SHOWN, SURFACE_DESKTOP),
+        (ACTIVATION_TOOL_CARD_COPY_URL, SURFACE_DESKTOP),
+        (ACTIVATION_TOOL_CARD_COPY_COMMAND, SURFACE_DESKTOP),
+        (ACTIVATION_TOOL_CARD_LAUNCH, SURFACE_DESKTOP),
+        (ACTIVATION_TOOL_CARD_DISMISSED, SURFACE_DESKTOP),
     }
 )
 ACTIVATION_KINDS: frozenset[str] = frozenset(

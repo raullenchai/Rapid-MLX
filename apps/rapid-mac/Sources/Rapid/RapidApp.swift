@@ -309,10 +309,12 @@ struct RapidApp: App {
             memoryStore: memoryStore,
             server: manager,
             onProductValueDelivered: { [weak telemetryLifecycle, weak starPromptCoordinator] kind in
+                if kind == .chatReply { ToolConnectionPrompt.shared.recordSuccess() }
                 telemetryLifecycle?.productValueDelivered(kind)
                 starPromptCoordinator?.productValueDelivered(kind)
             },
             onImageReplyDelivered: { [weak starPromptCoordinator] in
+                ToolConnectionPrompt.shared.recordSuccess()
                 starPromptCoordinator?.productValueDelivered(.chatReply)
             }
         )

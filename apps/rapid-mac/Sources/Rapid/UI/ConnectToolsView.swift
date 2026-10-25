@@ -65,6 +65,8 @@ struct ConnectToolsView: View {
     /// snapshot harness, which has no live server to resolve against.
     var readiness: ModelReadiness? = nil
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
+    var inlinePrompt = false
+    var onConnectionAction: (ToolConnectionPrompt.Action) -> Void = { _ in }
     @State private var integrationTargets: [IntegrationTarget] = []
     @State private var showsMoreIntegrations = false
     @State private var showsServerSettings = false
@@ -160,7 +162,21 @@ struct ConnectToolsView: View {
         return "Start a model to fill in the model name."
     }
 
+    @ViewBuilder
     var body: some View {
+        if inlinePrompt {
+            ScrollView {
+                toolsSection(tools.filter { IntegrationCatalog.isolatedAgentIDs.contains($0.id) },
+                             title: "Coding agents")
+            }
+            .frame(height: 150)
+            .task { integrationTargets = await IntegrationCatalog.load(binary: binaryPath) }
+        } else {
+            fullPage
+        }
+    }
+
+    private var fullPage: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
@@ -466,7 +482,8 @@ struct ConnectToolsView: View {
                     ConnectToolRow(
                         tool: tool,
                         isReady: configReady,
-                        onPersistentLaunch: { server.preserveAgentConnection() }
+                        onPersistentLaunch: { server.preserveAgentConnection() },
+                        compact: inlinePrompt, onConnectionAction: onConnectionAction
                     )
                 }
             }
@@ -821,6 +838,8 @@ private struct ConnectToolRow: View {
     /// half-filled snippet is worse than not offering it.
     var isReady: Bool = true
     var onPersistentLaunch: () -> Bool = { true }
+    var compact = false
+    var onConnectionAction: (ToolConnectionPrompt.Action) -> Void = { _ in }
     @State private var copied = false
     @State private var showsCommand = false
     @State private var launchError: String?
@@ -873,6 +892,7 @@ private struct ConnectToolRow: View {
                                               userInfo: [NSLocalizedDescriptionKey: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."])
                             }
                             try TerminalAgentLauncher.open(command: tool.snippet)
+                            onConnectionAction(.launch)
                         }
                         catch { launchError = error.localizedDescription }
                     }
@@ -884,82 +904,84 @@ private struct ConnectToolRow: View {
 
             }
 
-            // Description and snippet share the title's column.
-            VStack(alignment: .leading, spacing: 0) {
-                Text(tool.blurb)
-                    .font(RapidFont.secondary)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // Capped so a one-line blurb can't stretch to the
-                    // card edge and break after a single trailing word.
-                    .frame(maxWidth: 420, alignment: .leading)
-                    .padding(.top, RapidTheme.Space.sm)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        showsCommand.toggle()
-                    }
-                } label: {
-                    HStack(spacing: RapidTheme.Space.xs) {
-                        Image(systemName: showsCommand ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(showsCommand ? "Hide command" : "Show command")
-                            .font(RapidFont.secondary)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, RapidTheme.Space.sm)
-                .accessibilityIdentifier("Launch.Integration.Command.\(tool.id)")
-
-                if showsCommand {
-                    // Masked form only — the real key never touches the screen,
-                    // so a screenshot of this page can't leak the bearer. Copy
-                    // still puts the real key (``tool.snippet``) on the clipboard.
-                    Text(tool.displaySnippet)
-                        .font(RapidFont.code)
+            if !compact {
+                // Description and snippet share the title's column.
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(tool.blurb)
+                        .font(RapidFont.secondary)
                         .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, RapidTheme.Space.md)
-                        .padding(.vertical, RapidTheme.Space.md - 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
-                                .fill(RapidTheme.surfaceCode)
-                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                        // Capped so a one-line blurb can't stretch to the
+                        // card edge and break after a single trailing word.
+                        .frame(maxWidth: 420, alignment: .leading)
                         .padding(.top, RapidTheme.Space.sm)
-                        .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
-                }
-                if let dayTwoSnippet = tool.dayTwoSnippet {
-                    HStack(spacing: RapidTheme.Space.sm) {
-                        Text("Next time: \(dayTwoSnippet)")
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            showsCommand.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: RapidTheme.Space.xs) {
+                            Image(systemName: showsCommand ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(showsCommand ? "Hide command" : "Show command")
+                                .font(RapidFont.secondary)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, RapidTheme.Space.sm)
+                    .accessibilityIdentifier("Launch.Integration.Command.\(tool.id)")
+
+                    if showsCommand {
+                        // Masked form only — the real key never touches the screen,
+                        // so a screenshot of this page can't leak the bearer. Copy
+                        // still puts the real key (``tool.snippet``) on the clipboard.
+                        Text(tool.displaySnippet)
                             .font(RapidFont.code)
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(3)
                             .textSelection(.enabled)
-                        Button("Copy") {
+                            .padding(.horizontal, RapidTheme.Space.md)
+                            .padding(.vertical, RapidTheme.Space.md - 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                                    .fill(RapidTheme.surfaceCode)
+                            )
+                            .padding(.top, RapidTheme.Space.sm)
+                            .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
+                    }
+                    if let dayTwoSnippet = tool.dayTwoSnippet {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            Text("Next time: \(dayTwoSnippet)")
+                                .font(RapidFont.code)
+                                .textSelection(.enabled)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(dayTwoSnippet, forType: .string)
+                            }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("Launch.Integration.DayTwoCopy.\(tool.id)")
+                        }
+                        .padding(.top, RapidTheme.Space.sm)
+                    }
+                    if let sessionSnippet = tool.sessionSnippet {
+                        Button("Copy one-session command") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(dayTwoSnippet, forType: .string)
+                            NSPasteboard.general.setString(sessionSnippet, forType: .string)
                         }
                         .buttonStyle(.link)
-                        .accessibilityIdentifier("Launch.Integration.DayTwoCopy.\(tool.id)")
+                        .disabled(!isReady)
+                        .padding(.top, RapidTheme.Space.sm)
+                        .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
                     }
-                    .padding(.top, RapidTheme.Space.sm)
                 }
-                if let sessionSnippet = tool.sessionSnippet {
-                    Button("Copy one-session command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(sessionSnippet, forType: .string)
-                    }
-                    .buttonStyle(.link)
-                    .disabled(!isReady)
-                    .padding(.top, RapidTheme.Space.sm)
-                    .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
-                }
+                .padding(.leading, Self.textInset)
             }
-            .padding(.leading, Self.textInset)
         }
         .padding(.horizontal, RapidTheme.Space.xl - 4)
-        .padding(.vertical, RapidTheme.Space.lg + 1)
+        .padding(.vertical, compact ? RapidTheme.Space.xs : RapidTheme.Space.lg + 1)
         .alert("Couldn’t open Terminal", isPresented: Binding(
             get: { launchError != nil },
             set: { if !$0 { launchError = nil } }
@@ -1004,7 +1026,8 @@ private struct ConnectToolRow: View {
             return
         }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(tool.snippet, forType: .string)
+        guard NSPasteboard.general.setString(tool.snippet, forType: .string) else { return }
+        onConnectionAction(.copyCommand)
         withAnimation { copied = true }
         Task {
             try? await Task.sleep(nanoseconds: 1_600_000_000)

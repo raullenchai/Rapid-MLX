@@ -798,40 +798,38 @@ assert_one_telemetry_request() {
 assert_share_activation_requests() {
     local stage="$1"
     local expected_kind="$2"
+    local additional_kind="${3:-}"
+    local expected_count=2
+    [[ -z "$additional_kind" ]] || expected_count=3
     local evidence="$OUT/telemetry-$stage.json"
     local count=0
     for _ in {1..120}; do
         kill -0 "$TELEMETRY_SINK_PID" 2>/dev/null \
             || die "loopback telemetry sink exited during $stage"
         count="$(wc -l < "$TELEMETRY_SINK_LOG" | tr -d '[:space:]')"
-        [[ "$count" -ge 2 ]] && break
+        [[ "$count" -ge "$expected_count" ]] && break
         sleep 0.05
     done
-    # A short quiet period turns "the two expected requests arrived" into
-    # "exactly those two requests arrived" rather than racing a third send.
     sleep 0.5
     count="$(wc -l < "$TELEMETRY_SINK_LOG" | tr -d '[:space:]')"
     jq -s --arg stage "$stage" --arg log "$TELEMETRY_SINK_LOG" \
-        --arg expected_kind "$expected_kind" \
+        --arg expected_kind "$expected_kind" --arg additional_kind "$additional_kind" \
         '{stage: $stage, request_count: length, request_log: $log,
-          expected_activation_kind: $expected_kind, requests: .}' \
+          expected_activation_kinds: ([$expected_kind, $additional_kind] | map(select(. != "")) | sort),
+          requests: .}' \
         "$TELEMETRY_SINK_LOG" > "$evidence"
-    [[ "$count" == 2 ]] \
-        || die "$stage produced $count telemetry requests instead of session_start plus one activation"
+    [[ "$count" == "$expected_count" ]] \
+        || die "$stage produced $count telemetry requests instead of $expected_count"
     jq -e '. as $evidence |
         ([.requests[] | select(.event == "session_start")] | length) == 1
-        and ([.requests[] | select(.event == "activation")] | length) == 1
-        and ([.requests[] | select(
-            .event == "activation"
-            and .method == "POST"
-            and .path == "/v1/events"
-            and .bytes > 0
-            and .activation_kind == $evidence.expected_activation_kind
+        and ([.requests[] | select(.event == "activation") | .activation_kind] | sort)
+            == .expected_activation_kinds
+        and all(.requests[] | select(.event == "activation");
+            .method == "POST" and .path == "/v1/events" and .bytes > 0
             and .activation_surface == "desktop"
-            and .activation_keys == ["activation_kind", "surface"]
-        )] | length) == 1' \
+            and .activation_keys == ["activation_kind", "surface"])' \
         "$evidence" >/dev/null \
-        || die "$stage did not produce exactly one valid $expected_kind Desktop activation"
+        || die "$stage did not produce exactly the expected Desktop milestones"
 }
 
 trap finish EXIT
@@ -2262,12 +2260,11 @@ flow_fresh_install() {
         || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
 
     # Default-on activation follows launch policy application without a prompt.
-    # The sink must receive exactly session_start plus the one
-    # content-free first-chat milestone.
+    # The sink receives session_start, first-chat success, and the tool card shown.
     start_model
     send_prompt "Say hello in one short sentence." "default-on-activation"
     wait_send_idle "$OUT/default-on-activation-complete.json"
-    assert_share_activation_requests default-on-activation first_chat_reply
+    assert_share_activation_requests default-on-activation first_chat_reply tool_card_shown
     [[ -f "$PERSONA/home/.rapid-mlx/activation_seen_desktop_first_chat_reply" ]] \
         || die "accepted first_chat_reply did not claim its once-per-install marker"
     cleanup_persona
@@ -2790,7 +2787,26 @@ flow_chat_restore() {
         sleep 0.2
         see_main "$OUT/chat-settled.json"
     done
-    baseline chat-restore.answered "$OUT/chat-settled.json"
+    wait_identifier Chat.AgentTip.CopyDetailsButton "$OUT/tool-card.json"
+    for _ in {1..60}; do
+        jq -e '[.data.ui_elements[]? | select((.identifier // "")
+               | startswith("Launch.Integration.Copy."))] | length == 9' \
+            "$OUT/tool-card.json" >/dev/null && break
+        sleep 0.1
+        see_main "$OUT/tool-card.json"
+    done
+    assert_tree_text "$OUT/tool-card.json" "Use this model in your tools"
+    jq -e '[.data.ui_elements[]? | select((.identifier // "")
+           | startswith("Launch.Integration.Copy."))] | length == 9' \
+        "$OUT/tool-card.json" >/dev/null || die "tool card must reuse all nine primary rows"
+    baseline chat-restore.answered "$OUT/tool-card.json"
+    press "$OUT/tool-card.json" Chat.AgentTip.CopyDetailsButton "$OUT/tool-card-copy.json"
+    local expected_api_url
+    expected_api_url="$(jq -sr '[.[] | select(.event == "server_started")] | last | "http://127.0.0.1:\(.port)/v1"' "$OUT/fake-events.jsonl")"
+    [[ "$(pbpaste)" == "$expected_api_url" ]] || die "tool card copied an invalid API base URL"
+    see_main "$OUT/tool-card-completed.json"
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Chat.AgentTip.CopyDetailsButton")] | length == 0' \
+        "$OUT/tool-card-completed.json" >/dev/null || die "copy must retire the tool card"
     press "$OUT/chat-settled.json" ChatView.ConversationInstructions "$OUT/conversation-instructions-open-press.json"
     wait_identifier ChatView.ConversationInstructions.Editor "$OUT/conversation-instructions-open.json"
     "$AX_DRIVER" set-value "$APP_PID" ChatView.ConversationInstructions.Editor \
@@ -2803,6 +2819,8 @@ flow_chat_restore() {
     dismiss_first_run
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
     assert_tree_text "$OUT/chat-restored.json" "golden restore marker"
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Chat.AgentTip.CopyDetailsButton")] | length == 0' \
+        "$OUT/chat-restored.json" >/dev/null || die "completed tool card returned after relaunch"
     # Relaunch restarts the fake model too. Search results are a modal overlay
     # on the whole window, so its structural baseline otherwise races the
     # transient readiness band and residency controls behind the panel.

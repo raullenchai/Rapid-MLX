@@ -77,7 +77,11 @@ service:
   * App version + macOS version + a short context label (e.g.
     `chat_send`, `download_install`).
 * `activation` — once per install for each first successful text chat reply,
-  delivered dictation transcript, or generated image. A vision-reply milestone
+  delivered dictation transcript, or generated image. The one-time tool connection
+  card also reports shown, dismissed, or the chosen action (copy API URL, copy
+  setup command, or launch). It never reports the chosen tool, API URL, model,
+  command, or key. Card presentation and dismissal preferences stay local and
+  work independently of telemetry consent. A vision-reply milestone
   is reserved in the event schema but is not sent by this version. The
   event-specific payload contains only the closed milestone name and
   `surface: desktop`; it contains no model, timing, count, prompt, response,

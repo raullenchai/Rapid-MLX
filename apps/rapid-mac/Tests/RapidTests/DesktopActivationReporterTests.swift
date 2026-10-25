@@ -48,8 +48,9 @@ struct DesktopActivationReporterTests {
         #expect(json["session"] == nil)
     }
 
-    @Test("Declined consent touches no event, network, identity, marker, or directory")
-    func disabledDoesNothing() async {
+    @Test("Declined consent touches no event, network, identity, marker, or directory",
+          arguments: TelemetryEvent.Activation.Kind.allCases)
+    func disabledDoesNothing(kind: TelemetryEvent.Activation.Kind) async {
         let directory = temporaryDirectory("disabled")
         let probe = ActivationReporterProbe()
         let reporter = DesktopActivationReporter(
@@ -65,7 +66,7 @@ struct DesktopActivationReporterTests {
             markerDirectory: directory
         )
 
-        await reporter.report(.firstChatReply)
+        await reporter.report(kind)
 
         #expect(probe.buildCount == 0)
         #expect(await probe.sentCount == 0)

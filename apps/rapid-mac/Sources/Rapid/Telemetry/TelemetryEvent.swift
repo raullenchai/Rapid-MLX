@@ -46,6 +46,11 @@ struct TelemetryEvent: Codable, Sendable {
             case firstChatReply = "first_chat_reply"
             case firstDictation = "first_dictation"
             case firstImage = "first_image"
+            case toolCardShown = "tool_card_shown"
+            case toolCardCopyURL = "tool_card_copy_url"
+            case toolCardCopyCommand = "tool_card_copy_command"
+            case toolCardLaunch = "tool_card_launch"
+            case toolCardDismissed = "tool_card_dismissed"
         }
 
         enum Surface: String, Codable, Sendable {

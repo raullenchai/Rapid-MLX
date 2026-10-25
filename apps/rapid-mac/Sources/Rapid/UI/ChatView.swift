@@ -294,8 +294,7 @@ struct ChatView: View {
     @State private var loadStatusAttention = false
     @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
-    @AppStorage("chatAgentTipEligible") private var chatAgentTipEligible = false
-    @AppStorage("chatAgentTipDismissed") private var chatAgentTipDismissed = false
+    @State private var toolConnectionPrompt = ToolConnectionPrompt.shared
     /// Keeps the new composer action visibly busy during the fresh residency
     /// check, before ``ServerManager`` enters its own operating state.
     @State private var isUnloadingResidentModels = false
@@ -351,7 +350,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if chatAgentTipEligible && !chatAgentTipDismissed {
+            if toolConnectionPrompt.shouldPresent(isStreaming: viewModel.isStreaming) {
                 agentTip
             }
             transcript
@@ -375,11 +374,6 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.startAndSendIntent) { _, _ in resolveStartAndSend() }
         .onChange(of: viewModel.isStreaming) { _, _ in resolveStartAndSend() }
-        .onChange(of: messages.map { $0.status.rawValue }, initial: true) { _, _ in
-            if Self.hasSuccessfulReply(messages) {
-                chatAgentTipEligible = true
-            }
-        }
         .onChange(of: attachmentDraft.isImportingFiles) { _, _ in resolveStartAndSend() }
         .onDisappear {
             // Normal startup keeps ChatView mounted: idle/starting/ready all map to .chat.
@@ -415,55 +409,51 @@ struct ChatView: View {
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
     }
 
-    static func hasSuccessfulReply(_ messages: [ChatMessage]) -> Bool {
-        messages.contains {
-            $0.role == .assistant && $0.status == .complete
-                && $0.wireVisibility == .model && !$0.content.isEmpty
-                && $0.errorMessage != "Stopped."
-        }
-    }
+    private var toolAPIBaseURL: String { "http://127.0.0.1:\(server.activePort)/v1" }
 
     private var agentTip: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            HStack(spacing: RapidTheme.Space.md) {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .accessibilityHidden(true)
-                Text("Use this model in your editor/agent")
+            HStack {
+                Text("Use this model in your tools")
                     .font(.headline)
-                Spacer(minLength: 8)
-                Button {
-                    chatAgentTipDismissed = true
-                } label: {
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button { toolConnectionPrompt.dismiss() } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Dismiss agent tip")
+                .accessibilityLabel("Dismiss tool connection suggestion")
                 .accessibilityIdentifier("Chat.AgentTip.DismissButton")
             }
-            HStack(spacing: RapidTheme.Space.md) {
-                Text("Connect a coding agent or SDK to your local server.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button("Copy URL + model") {
-                    let model = ModelDisplayName.configValue(alias: alias) ?? alias
+            HStack {
+                Text(verbatim: toolAPIBaseURL)
+                    .font(RapidFont.code)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("API base URL, " + toolAPIBaseURL)
+                Spacer()
+                Button("Copy API base URL") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(
-                        "http://127.0.0.1:\(server.activePort)/v1\n\(model)", forType: .string
-                    )
+                    if NSPasteboard.general.setString(
+                        toolAPIBaseURL, forType: .string
+                    ) {
+                        toolConnectionPrompt.complete(.copyURL)
+                    }
                 }
                 .accessibilityIdentifier("Chat.AgentTip.CopyDetailsButton")
                 .disabled(!readiness.sendAllowed)
-                Button("Agent setup") {
-                    chatAgentTipDismissed = true
-                    onOpenAgentSetup()
-                }
-                .accessibilityIdentifier("Chat.AgentTip.SetupButton")
             }
+            ConnectToolsView(
+                host: "127.0.0.1", port: server.activePort,
+                bearer: server.activeBearer ?? "", alias: $alias,
+                server: server, downloads: downloads, binaryPath: server.binaryPath,
+                onClose: {}, showsCloseButton: false, readiness: readiness,
+                inlinePrompt: true, onConnectionAction: { toolConnectionPrompt.complete($0) }
+            )
         }
         .padding(.horizontal, RapidTheme.Space.xl)
         .padding(.vertical, RapidTheme.Space.sm)
         .background(RapidTheme.surfaceCanvas)
+        .onAppear { toolConnectionPrompt.didShow() }
     }
 
     // MARK: - Transcript
