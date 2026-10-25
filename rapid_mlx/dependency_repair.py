@@ -35,11 +35,16 @@ def declared_modules(*, active_only: bool = False) -> set[str]:
         if re.search(r"\bextra\s*[=!]", requirement):
             continue
         if active_only and ";" in requirement:
-            from packaging.requirements import Requirement
-
-            marker = Requirement(requirement).marker
-            if marker is not None and not marker.evaluate():
-                continue
+            try:
+                from packaging.requirements import Requirement
+            except ImportError:
+                # packaging may itself be the broken dependency; keep the
+                # requirement rather than crash while auditing it.
+                Requirement = None
+            if Requirement is not None:
+                marker = Requirement(requirement).marker
+                if marker is not None and not marker.evaluate():
+                    continue
         match = re.match(r"[\w.-]+", requirement)
         if match:
             name = match[0].lower().replace("_", "-")

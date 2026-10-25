@@ -589,3 +589,27 @@ def test_doctor_global_pipx_repair_is_never_run_with_double_sudo(
     run.assert_not_called()
     assert result.status == "not_applied"
     assert result.command == ["sudo", "pipx", "reinstall", "--global", "rapid-mlx"]
+
+
+def test_declared_modules_survives_missing_packaging(monkeypatch):
+    import builtins
+
+    from rapid_mlx import dependency_repair
+
+    monkeypatch.setattr(
+        dependency_repair.metadata,
+        "requires",
+        lambda _name: ["packaging>=23", "mlx>=0.30; sys_platform == 'darwin'"],
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("packaging"):
+            raise ImportError("No module named 'packaging'", name="packaging")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert dependency_repair.declared_modules(active_only=True) == {
+        "packaging",
+        "mlx",
+    }
