@@ -64,6 +64,7 @@ class Glm47ContentFilter:
                 continue
             if self._buffer.startswith(self._OPEN):
                 header = self._HEADER.match(self._buffer)
+                assert header is not None  # The prefix check guarantees a match.
                 tail = self._buffer[header.end() :]
                 boundaries = ("<arg_key>", self._CLOSE)
                 if tail.startswith(boundaries):
