@@ -523,3 +523,26 @@ def test_tool_content_filter_preserves_parser_owned_eof_suffix():
         visible += content_filter.flush()
         assert visible == "Tail <"
         assert content_filter.flush() == ""
+
+
+@pytest.mark.parametrize(
+    "overflow,expected", [("Answer<|im_end|>", "Answer"), ("[Calli", "[Calli")]
+)
+def test_responses_channel_overflow_and_eof_use_shared_filter(
+    monkeypatch, overflow, expected
+):
+    original = Engine.stream_chat
+
+    async def reasoning_channel(self, **kwargs):
+        async for output in original(self, **kwargs):
+            output.channel = "reasoning"
+            yield output
+
+    monkeypatch.setattr(Engine, "stream_chat", reasoning_channel)
+    raw = "abcd" + overflow
+    for chunks in partitions(raw):
+        visible, _, calls = request_result(
+            "responses", raw, chunks, body_updates={"reasoning_max_tokens": 1}
+        )
+        assert visible == expected
+        assert calls == []
