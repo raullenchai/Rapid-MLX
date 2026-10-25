@@ -546,3 +546,29 @@ def test_responses_channel_overflow_and_eof_use_shared_filter(
         )
         assert visible == expected
         assert calls == []
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_harmony_plain_commentary_header_is_not_content(surface):
+    raw = "<|start|>assistant<|channel|>commentary<|message|>Working.<|end|>"
+    for chunks in partitions(raw):
+        assert request_result(surface, raw, chunks, reasoning="harmony") == (
+            "Working.",
+            "",
+            [],
+        )
+
+
+@pytest.mark.parametrize("recipient", ["", " to=functions.get_weather"])
+def test_harmony_incomplete_commentary_header_stays_held(recipient):
+    raw = "<|channel|>commentary" + recipient
+    for chunks in partitions(raw):
+        parser = HarmonyReasoningParser()
+        previous = ""
+        for chunk in chunks:
+            assert (
+                parser.extract_reasoning_streaming(previous, previous + chunk, chunk)
+                is None
+            )
+            previous += chunk
+        assert parser.finalize_streaming(raw) is None

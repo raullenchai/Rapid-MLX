@@ -156,17 +156,17 @@ class HarmonyReasoningParser(ReasoningParser):
                     )
                     if channel:
                         self._current_channel = channel[1]
-                        if channel[1] == "commentary":
-                            content.append(text)
-                            self._stream_buffer = ""
-                            self._in_message = True
                     break
                 header = text[:end]
                 channel = header.split("<|channel|>")[-1].split()
                 self._current_channel = channel[0] if channel else None
                 self._in_message = True
                 self._stream_buffer = text[end + len("<|message|>") :]
-                if self._current_channel == "commentary":
+                if self._current_channel == "commentary" and re.search(
+                    r"\bto=", header
+                ):
+                    # Tool recipients need the complete envelope downstream;
+                    # plain commentary contributes only its body as content.
                     content.append(text[: end + len("<|message|>")])
                 continue
             match = re.search(r"<\|(?:start|channel|message|end|return|call)\|>", text)

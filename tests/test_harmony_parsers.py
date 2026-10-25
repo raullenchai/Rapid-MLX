@@ -452,8 +452,7 @@ class TestHarmonyReasoningParser:
             "<|channel|>commentary to=functions.f\n",
             "<|channel|>commentary to=functions.f\n",
         )
-        assert r is not None
-        assert r.content == "<|channel|>commentary to=functions.f\n"
+        assert r is None  # Hold the header until its message delimiter arrives.
 
         r = parser.extract_reasoning_streaming(
             "<|channel|>commentary to=functions.f\n",
@@ -461,7 +460,7 @@ class TestHarmonyReasoningParser:
             "<|message|>",
         )
         assert r is not None
-        assert r.content == "<|message|>"
+        assert r.content == "<|channel|>commentary to=functions.f\n<|message|>"
 
         r = parser.extract_reasoning_streaming(
             "<|channel|>commentary to=functions.f\n<|message|>",

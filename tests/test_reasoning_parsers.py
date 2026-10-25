@@ -2449,10 +2449,15 @@ class TestHarmonyStreaming:
         result = self.parser.extract_reasoning_streaming(
             "", "<|channel|>commentary", "<|channel|>commentary"
         )
-        # Commentary passes through as content for tool parser
-        assert result is not None
-        assert result.content == "<|channel|>commentary"
+        # A channel name is not a complete header; retain it until the body.
+        assert result is None
         assert self.parser._current_channel == "commentary"
+        result = self.parser.extract_reasoning_streaming(
+            "<|channel|>commentary",
+            "<|channel|>commentary<|message|>Working.",
+            "<|message|>Working.",
+        )
+        assert result.content == "Working."
 
     def test_message_start_skipped(self):
         self.parser._current_channel = "analysis"
