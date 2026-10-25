@@ -441,6 +441,10 @@ struct ChatView: View {
                 }
                 .accessibilityIdentifier("Chat.AgentTip.CopyDetailsButton")
                 .disabled(!readiness.sendAllowed)
+                // The card lists only the primary coding agents; every other
+                // editor and SDK stays one click away on the full setup page.
+                Button("All tools") { onOpenAgentSetup() }
+                    .accessibilityIdentifier("Chat.AgentTip.SetupButton")
             }
             ConnectToolsView(
                 host: "127.0.0.1", port: server.activePort,

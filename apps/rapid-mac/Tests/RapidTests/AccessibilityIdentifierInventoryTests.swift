@@ -576,6 +576,29 @@ struct AccessibilityIdentifierInventoryTests {
         }
     }
 
+    // MARK: - Tool connection card
+
+    /// The `chat-restore` golden journey presses the API URL copy control and
+    /// asserts the card retires; the card's integration rows reuse the
+    /// `Launch.Integration.*` identifiers pinned below.
+    @Test("The first-success tool connection card names every control")
+    func toolConnectionCardIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Chat.AgentTip.DismissButton""#,
+                #""Chat.AgentTip.CopyDetailsButton""#,
+                #""Chat.AgentTip.SetupButton""#,
+            ],
+            in: "Sources/Rapid/UI/ChatView.swift",
+            surface: "First-success tool connection card"
+        )
+        try assertDeclared(
+            [#""Launch.Integration.Run.\(tool.id)""#],
+            in: "Sources/Rapid/UI/ConnectToolsView.swift",
+            surface: "Tool connection card launch rows"
+        )
+    }
+
     // MARK: - Launch integrations
 
     @Test("Launch integration copy buttons are individually addressable")

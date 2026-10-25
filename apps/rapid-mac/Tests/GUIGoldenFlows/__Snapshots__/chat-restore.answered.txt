@@ -25,6 +25,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Chat.AgentTip.DismissButton" desc="Dismiss tool connection suggestion" enabled=true
           AXStaticText value=text enabled=true
           AXButton id="Chat.AgentTip.CopyDetailsButton" desc="Copy API base URL" enabled=true
+          AXButton id="Chat.AgentTip.SetupButton" desc="All tools" enabled=true
           AXScrollArea
             AXHeading desc="Coding agents" enabled=true
             AXStaticText value=text enabled=true

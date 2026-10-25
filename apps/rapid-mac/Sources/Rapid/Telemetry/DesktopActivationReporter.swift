@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Sends the three product-approved Desktop activation milestones through the
+/// Sends the closed set of Desktop activation milestones through the
 /// existing telemetry envelope. Feature models publish a typed success; this
 /// actor owns consent, once-per-install delivery, and marker persistence.
 ///
