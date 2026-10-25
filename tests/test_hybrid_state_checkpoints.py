@@ -502,6 +502,108 @@ class TestMemoryCacheSnap:
         assert remaining == stored[4500:5000]
         assert cache._last_match_type == "prefix"
 
+    @pytest.mark.parametrize(
+        "prefix_length,expected",
+        [(2048, 4096), (4096, 4096), (4500, 4500), (5000, 5000)],
+    )
+    @pytest.mark.parametrize("hybrid", [True, False])
+    def test_longer_restorable_branch_competes_with_stored_prefix(
+        self, prefix_length, expected, hybrid
+    ):
+        cache = self._cache()
+        stored = list(range(1000, 7000))
+        prefix = self._entry(prefix_length, ())
+        branch = self._entry(6000, (2048, 4096))
+        if not hybrid:
+            prefix, branch = prefix[:1], branch[:1]
+            expected = 5000
+        assert cache.store(stored[:prefix_length], prefix, evict_prefixes=False)
+        assert cache.store(stored, branch, evict_prefixes=False)
+        query = stored[:5000] + [7, 8, 9]
+        stats, order = cache.get_stats().copy(), list(cache._entries)
+        source_holder = layer_checkpoints(branch[1]) if hybrid else None
+
+        probe = cache.probe(query)
+        assert probe.matched_tokens == expected
+        assert cache.get_stats() == stats
+        assert list(cache._entries) == order
+        result, remaining = cache.fetch(query)
+        assert result is not None
+        assert remaining == query[expected:]
+        assert result[0].offset == expected
+        assert branch[0].offset == 6000
+        assert prefix[0].offset == prefix_length
+        expected_type = "lcp" if expected > prefix_length else "prefix"
+        assert probe.match_type == cache._last_match_type == expected_type
+        assert cache.get_stats()["hits"] == stats["hits"] + 1
+        assert cache.get_stats()["tokens_saved"] == stats["tokens_saved"] + expected
+        selected = stored if expected_type == "lcp" else stored[:prefix_length]
+        assert list(cache._entries)[-1] == tuple(selected)
+        if hybrid:
+            assert result[1].cache[0][0, 0, 0].item() == expected
+            assert layer_checkpoints(branch[1]) is source_holder
+            assert source_holder.positions == (2048, 4096)
+            assert branch[1].cache[0][0, 0, 0].item() == 6000
+            result[1].cache[0] = None
+            assert branch[1].cache[0] is not None
+            assert prefix[1].cache[0] is not None
+
+    @pytest.mark.parametrize("checkpoints", [(), (1024,), (2048,), (5500,)])
+    def test_unhelpful_branch_keeps_valid_prefix(self, checkpoints):
+        cache = self._cache()
+        stored = list(range(1000, 7000))
+        cache.store(stored[:2048], self._entry(2048, ()), evict_prefixes=False)
+        cache.store(stored, self._entry(6000, checkpoints), evict_prefixes=False)
+        query = stored[:5000] + [7, 8, 9]
+        assert cache.probe(query).matched_tokens == 2048
+        result, remaining = cache.fetch(query)
+        assert result is not None
+        assert remaining == query[2048:]
+        assert cache._last_match_type == "prefix"
+
+    def test_infeasible_kv_rewind_does_not_displace_prefix(self):
+        cache = self._cache()
+        stored = list(range(1000, 7000))
+        prefix = self._entry(2048, ())[:1]
+        branch = self._entry(6000, ())[:1]
+        branch[0].offset = 10  # Cannot rewind the requested 1000 tokens.
+        cache.store(stored[:2048], prefix, evict_prefixes=False)
+        cache.store(stored, branch, evict_prefixes=False)
+        query = stored[:5000] + [7, 8, 9]
+        assert cache.probe(query).matched_tokens == 2048
+        result, remaining = cache.fetch(query)
+        assert result is not None
+        assert remaining == query[2048:]
+        assert cache._last_match_type == "prefix"
+
+    @pytest.mark.parametrize("hybrid", [True, False])
+    def test_preferred_branch_restore_failure_retains_prefix(self, monkeypatch, hybrid):
+        from rapid_mlx import memory_cache as module
+
+        cache = self._cache()
+        stored = list(range(1000, 7000))
+        prefix = self._entry(2048, ())
+        branch = self._entry(6000, (2048, 4096))
+        if not hybrid:
+            prefix, branch = prefix[:1], branch[:1]
+        cache.store(stored[:2048], prefix, evict_prefixes=False)
+        cache.store(stored, branch, evict_prefixes=False)
+        query = stored[:5000] + [7, 8, 9]
+        assert cache.probe(query).matched_tokens == (4096 if hybrid else 5000)
+        # Metadata is feasible but the copy/restore operation refuses.
+        helper = "_snap_hybrid_trim" if hybrid else "_trim_cache_offset"
+        monkeypatch.setattr(module, helper, lambda *args: None)
+        result, remaining = cache.fetch(query)
+        assert result is not None
+        assert result[0].offset == 2048
+        assert remaining == query[2048:]
+        assert cache._last_match_type == "prefix"
+        assert cache.get_stats()["hits"] == 1
+        assert cache.get_stats()["misses"] == 0
+        assert cache.get_stats()["tokens_saved"] == 2048
+        assert list(cache._entries)[-1] == tuple(stored[:2048])
+        assert branch[0].offset == 6000
+
     def test_no_checkpoint_below_divergence_is_still_a_miss(self):
         cache = self._cache()
         stored = list(range(1000, 7000))

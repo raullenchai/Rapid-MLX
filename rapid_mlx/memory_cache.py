@@ -2404,12 +2404,12 @@ class MemoryAwarePrefixCache:
         Unlike ``fetch`` this does not touch the LRU order or statistics, does
         not deep-copy, decompress or trim any cache arrays, and does not set
         ``_last_match_type``.  It walks the same candidate order as
-        ``_fetch_locked`` (exact → supersequence → prefix → LCP) and reports the
-        reusable prefix length.  For matches that would need a rewind it is
+        ``_fetch_locked`` (exact → supersequence → longer restorable LCP → prefix)
+        and reports the reusable prefix length.  For matches that would need a rewind it is
         conservative: it counts them only when the rewind can be shown
         feasible from cache metadata alone (hybrid checkpoints, plain KV
-        layers), so it may report fewer tokens than ``fetch`` would reuse but
-        never more.
+        layers), so it may report fewer tokens than ``fetch`` would reuse. A later
+        restore failure can also make ``fetch`` fall back to a shorter prefix.
         """
         if not tokens:
             return PrefixProbe(0, "miss")
@@ -2446,11 +2446,8 @@ class MemoryAwarePrefixCache:
             else:
                 return PrefixProbe(n_requested, "supersequence")
 
-        if best_match is not None:
-            return PrefixProbe(best_length, "prefix")
-
         best_lcp_entry, best_lcp_length = self._lcp_candidate_locked(tokens_key)
-        if best_lcp_entry is not None and best_lcp_length > 0:
+        if best_lcp_entry is not None and best_lcp_length > best_length:
             has_non_trimmable = any(
                 _layer_forbids_trim(lc) for lc in best_lcp_entry.cache
             )
@@ -2464,8 +2461,11 @@ class MemoryAwarePrefixCache:
                 position = _snap_position(
                     best_lcp_entry.cache, len(best_lcp_entry.tokens), best_lcp_length
                 )
-                if position > 0:
+                if position > best_length:
                     return PrefixProbe(position, "lcp")
+
+        if best_match is not None:
+            return PrefixProbe(best_length, "prefix")
 
         return PrefixProbe(0, "miss")
 
@@ -2700,22 +2700,30 @@ class MemoryAwarePrefixCache:
                 cache_out = self._decompress_cache(cache_out)
                 return cache_out, []
 
-        # --- Prefix match ---
-        if best_match is not None:
-            self._entries.move_to_end(best_match.tokens)
-            self._stats.hits += 1
-            self._stats.tokens_saved += best_length
-            remaining = tokens[best_length:]
-            self._last_match_type = "prefix"
-            cache_out = copy.deepcopy(best_match.cache)
-            cache_out = self._decompress_cache(cache_out)
-            return cache_out, remaining
-
         # --- LCP (Longest Common Prefix) for divergent sequences ---
         # This handles the agentic pattern: same system+context prefix
         # but different final user message.  Use the sorted index to find
         # the nearest neighbor which likely shares the longest prefix.
         best_lcp_entry, best_lcp_length = self._lcp_candidate_locked(tokens_key)
+
+        # Only displace a usable stored prefix when metadata proves the LCP
+        # can resume farther. Keep the prefix candidate intact: restoration
+        # may still fail, in which case it remains our fallback.
+        if best_match is not None and best_lcp_entry is not None:
+            position = 0
+            if best_lcp_length > best_length:
+                if any(_layer_forbids_trim(c) for c in best_lcp_entry.cache):
+                    position = _snap_position(
+                        best_lcp_entry.cache,
+                        len(best_lcp_entry.tokens),
+                        best_lcp_length,
+                    )
+                elif _rewind_feasible(
+                    best_lcp_entry.cache, len(best_lcp_entry.tokens) - best_lcp_length
+                ):
+                    position = best_lcp_length
+            if position <= best_length:
+                best_lcp_entry = None
 
         if best_lcp_entry is not None and best_lcp_length > 0:
             excess = len(best_lcp_entry.tokens) - best_lcp_length
@@ -2780,6 +2788,17 @@ class MemoryAwarePrefixCache:
                     len(best_lcp_entry.tokens),
                     len(tokens),
                 )
+
+        # --- Prefix match ---
+        if best_match is not None:
+            self._entries.move_to_end(best_match.tokens)
+            self._stats.hits += 1
+            self._stats.tokens_saved += best_length
+            remaining = tokens[best_length:]
+            self._last_match_type = "prefix"
+            cache_out = copy.deepcopy(best_match.cache)
+            cache_out = self._decompress_cache(cache_out)
+            return cache_out, remaining
 
         self._stats.misses += 1
         self._last_match_type = "miss"
