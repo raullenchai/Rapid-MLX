@@ -1151,7 +1151,7 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     if (
         not include_external_roots
         or not external_model_root_paths()
-        or resolve_revision(name)
+        or ("/" in name and resolve_revision(name))
     ):
         if "/" in name:
             canonical = _alias_for_hf_path(name)

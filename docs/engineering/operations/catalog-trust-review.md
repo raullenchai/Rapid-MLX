@@ -63,8 +63,9 @@ python scripts/catalog_trust.py --base <exact-base-commit-sha>
 python -m pytest tests/test_catalog_trust.py tests/test_alias_revision.py
 ```
 
-Pinned catalog names select their exact snapshot. To load an independently
-managed local checkpoint, use its explicit filesystem path. Uncataloged repository
+Pinned catalog names select their exact snapshot unless a runnable checkpoint
+is selected from a configured local model folder. Explicit filesystem paths also
+remain local. Hub downloads always use the catalog pin. Uncataloged repository
 IDs retain their existing behavior. No catalog migration downloads weights or
 publishes mirror data.
 

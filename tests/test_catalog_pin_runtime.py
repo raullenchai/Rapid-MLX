@@ -57,6 +57,7 @@ def test_audio_download_pin_reaches_hub(monkeypatch, name, method):
 
 
 def test_stt_implicit_load_uses_pinned_local_snapshot(monkeypatch, tmp_path):
+    pytest.importorskip("mlx_audio.utils")
     import huggingface_hub
 
     from rapid_mlx.audio.stt import STTEngine
@@ -69,61 +70,91 @@ def test_stt_implicit_load_uses_pinned_local_snapshot(monkeypatch, tmp_path):
     )
     utils = ModuleType("mlx_audio.stt.utils")
     loaded = []
-    utils.load_model = lambda path: (
-        loaded.append(path)
+    utils.load_model = lambda path, **kwargs: (
+        loaded.append((path, kwargs))
         or SimpleNamespace(config=SimpleNamespace(model_type="sensevoice"))
     )
     monkeypatch.setitem(sys.modules, "mlx_audio.stt.utils", utils)
     engine = STTEngine("mlx-community/SenseVoiceSmall")
     engine.load()
-    assert loaded == [str(tmp_path)]
+    from mlx_audio.utils import get_model_name_parts
+
+    assert loaded == [
+        (str(tmp_path), {"model_name_parts": get_model_name_parts(engine.model_name)})
+    ]
     assert calls[0][1]["revision"] == registry.resolve_audio_revision(engine.model_name)
 
 
 def test_f5_loader_uses_shared_pin_gate(monkeypatch):
+    import huggingface_hub
+
     from rapid_mlx.audio.tts import TTSEngine
 
-    package = ModuleType("f5_tts_mlx")
-    utils = ModuleType("f5_tts_mlx.utils")
-    cfm = ModuleType("f5_tts_mlx.cfm")
+    utils = pytest.importorskip("f5_tts_mlx.utils")
+    pytest.importorskip("f5_tts_mlx.cfm")
+    # Preserve the module binding after TTSEngine installs its adapter.
+    monkeypatch.setattr(utils, "snapshot_download", utils.snapshot_download)
     calls = []
-    monkeypatch.setattr(
-        model_downloads,
-        "snapshot_download",
-        lambda repo: calls.append(repo) or "/snapshot",
-    )
-    cfm.F5TTS = SimpleNamespace(
-        from_pretrained=lambda repo: utils.snapshot_download(repo)
-    )
-    package.utils = utils
-    for name, module in [
-        ("f5_tts_mlx", package),
-        ("f5_tts_mlx.utils", utils),
-        ("f5_tts_mlx.cfm", cfm),
-    ]:
-        monkeypatch.setitem(sys.modules, name, module)
+
+    class BoundaryReachedError(Exception):
+        pass
+
+    def hub(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        raise BoundaryReachedError
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", hub)
     engine = TTSEngine("lucasnewman/f5-tts-mlx")
-    engine.load()
-    assert engine.model == "/snapshot"
-    assert calls == ["lucasnewman/f5-tts-mlx"]
+    with pytest.raises(BoundaryReachedError):
+        engine.load()
+    assert calls[0][0] == engine.model_name
+    assert calls[0][1]["revision"] == registry.resolve_audio_revision(engine.model_name)
+    assert "model_v1.safetensors" in calls[0][1]["allow_patterns"]
 
 
 def test_kokoro_implicit_assets_use_pin_gate(monkeypatch, tmp_path):
+    import huggingface_hub
+
     from rapid_mlx.audio import tts
 
-    pipeline = ModuleType("mlx_audio.tts.models.kokoro.pipeline")
-    kokoro = ModuleType("mlx_audio.tts.models.kokoro")
-    kokoro.pipeline = pipeline
+    pipeline = pytest.importorskip("mlx_audio.tts.models.kokoro.pipeline")
+    monkeypatch.setattr(pipeline, "snapshot_download", pipeline.snapshot_download)
     generate = ModuleType("mlx_audio.tts.generate")
     generate.load_model = lambda path: path
-    for name, module in [
-        ("mlx_audio.tts.models.kokoro", kokoro),
-        ("mlx_audio.tts.models.kokoro.pipeline", pipeline),
-        ("mlx_audio.tts.generate", generate),
-    ]:
-        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", generate)
     monkeypatch.setattr(tts, "_resolve_safe_tts_checkpoint", lambda name: tmp_path)
+    calls = []
+
+    def hub(repo_id, **kwargs):
+        calls.append((repo_id, kwargs))
+        return str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", hub)
+    marker = object()
+    monkeypatch.setattr(pipeline, "load_voice_tensor", lambda path: marker)
     engine = tts.TTSEngine("mlx-community/Kokoro-82M-bf16")
     engine.load()
-    assert pipeline.snapshot_download is model_downloads.snapshot_download
-    assert engine.model == tmp_path
+    voice_loader = pipeline.KokoroPipeline.__new__(pipeline.KokoroPipeline)
+    voice_loader.repo_id = "prince-canuma/Kokoro-82M"
+    voice_loader.voices = {}
+    voice_loader.lang_code = "a"
+    assert voice_loader.load_single_voice("af_heart") is marker
+    assert len(calls) == 2  # local miss followed by the online request
+    for repo, kwargs in calls:
+        assert repo == voice_loader.repo_id
+        assert kwargs["revision"] == registry.resolve_audio_revision(repo)
+        assert kwargs["allow_patterns"] == ["voices/af_heart.safetensors"]
+
+
+def test_catalog_agrees_with_runtime_artifact_pins():
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx.models.deepseek_v41_native.artifacts import PRODUCT_ARTIFACTS
+    from rapid_mlx.video.wan import WAN_REVISIONS
+
+    for repo, pin in {**IMAGE_MODEL_REVISIONS, **WAN_REVISIONS}.items():
+        if model_aliases.resolve_profile(repo) is not None:
+            assert model_aliases.resolve_revision(repo) == pin
+    for artifact in PRODUCT_ARTIFACTS.values():
+        assert (
+            model_aliases.resolve_revision(artifact.alias) == artifact.target_revision
+        )

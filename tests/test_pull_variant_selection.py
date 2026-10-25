@@ -33,7 +33,10 @@ import pytest
 from huggingface_hub import RepoFile, RepoFolder
 
 from rapid_mlx import cli
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 
 class _FakeResponse:
@@ -424,9 +427,14 @@ def test_user_flag_equal_to_catalog_subfolder_no_override(
 @pytest.fixture
 def variant_snapshot(tmp_path, monkeypatch):
     root = tmp_path / "hub" / "models--LiquidAI--LFM2.5-2.6B-MLX"
+    from rapid_mlx.model_aliases import resolve_revision
+
+    revision = resolve_revision("LiquidAI/LFM2.5-2.6B-MLX")
     for folder in ("4bit", "8bit", "[48]bit"):
-        snapshot = snapshot_tree(root, filename=f"{folder}/model.safetensors")
+        snapshot = snapshot_tree(
+            root, revision=revision, filename=f"{folder}/model.safetensors"
+        )
     (root / "refs").mkdir()
-    (root / "refs" / "main").write_text("a" * 40)
+    (root / "refs" / "main").write_text(revision)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(root.parent))
     return snapshot

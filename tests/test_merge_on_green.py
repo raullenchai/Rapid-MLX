@@ -947,8 +947,8 @@ def test_later_dismissal_revokes_catalog_approval():
 
 def test_catalog_cosmetic_edit_does_not_need_new_approval():
     api = catalog_pr(
-        {"old": {"hf_path": "org/model", "notes": "old"}},
-        {"old": {"hf_path": "org/model", "notes": "new"}},
+        {"old": {"hf_path": "org/model", "revision": "a" * 40, "notes": "old"}},
+        {"old": {"hf_path": "org/model", "revision": "a" * 40, "notes": "new"}},
     )
     assert m.eligibility(api, pull()) == ""
 

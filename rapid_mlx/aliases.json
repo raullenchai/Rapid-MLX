@@ -740,7 +740,7 @@
   },
   "deepseek-v41-flash-reap-2bit": {
     "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
-    "revision": "efa9ce163d0b9dd75eacbaaeb98dc556de22cf6c",
+    "revision": "a25fec277b9e7cedc0e9f3f15da874a5cf9d491b",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -759,7 +759,7 @@
   },
   "deepseek-v41-flash-1017": {
     "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
-    "revision": "f385ddc5cd3bf11582c0c38632223d9338af672b",
+    "revision": "c521050aba97719393865adf611ad745c7f4f551",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "is_hybrid_explicit": true,

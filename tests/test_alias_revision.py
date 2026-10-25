@@ -112,9 +112,14 @@ def test_resolution_and_user_store_compatibility(monkeypatch, tmp_path):
     monkeypatch.setattr(
         aliases,
         "_resolve_external_model_path",
-        lambda name: pytest.fail("pin cannot use unversioned external copy"),
+        lambda name: (
+            str(tmp_path)
+            if name == ALIAS
+            else pytest.fail("repo pin cannot use external copy")
+        ),
     )
-    assert aliases.resolve_model(ALIAS) == REPO
+    monkeypatch.setattr(aliases, "_managed_hub_model_is_runnable", lambda name: False)
+    assert aliases.resolve_model(ALIAS) == str(tmp_path)
     assert aliases.resolve_model(REPO.upper()) == REPO
 
 
