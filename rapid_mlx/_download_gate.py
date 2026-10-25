@@ -760,6 +760,13 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
         if not all(isinstance(shard, str) for shard in shard_values):
             return False
         shard_names = set(shard_values)
+        if _index_names_no_present_shard(snap_dir, shard_names):
+            # Some published repos keep an index from an earlier upload whose
+            # shard names no longer exist (for example a single
+            # ``model.safetensors`` or a different shard count). mlx-lm
+            # ignores the index and globs the root weights, so judge the
+            # snapshot by those weights instead.
+            return _root_weights_are_complete(snap_dir)
         has_root_model_shard = False
         for shard in shard_names:
             parts = _safe_safetensors_manifest_parts(shard)
@@ -791,6 +798,11 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             return False
         return True
 
+    return _root_weights_are_complete(snap_dir)
+
+
+def _root_weights_are_complete(snap_dir: str) -> bool:
+    """Judge a snapshot by the root ``model*.safetensors`` mlx-lm globs."""
     # The index can arrive after the first weight shard. Infer completeness
     # from the standard shard filenames in that window instead of treating
     # shard 1/N as an ordinary single-file checkpoint.
@@ -819,6 +831,24 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
     except OSError:
         pass
     return False
+
+
+def _index_names_no_present_shard(snap_dir: str, shard_names: set[str]) -> bool:
+    """True when every indexed shard is a root entry absent from the snapshot.
+
+    An interrupted pull of a sharded repo leaves at least one indexed shard
+    behind once any weight has landed, so an index that names nothing on
+    disk (not even a dangling link) describes an older upload. The root
+    weights are then judged as for an index-less snapshot, which still
+    rejects a partial numbered set or a snapshot with no weights.
+    """
+    for shard in shard_names:
+        parts = _safe_safetensors_manifest_parts(shard)
+        if parts is None or len(parts) != 1:
+            return False
+        if os.path.lexists(os.path.join(snap_dir, *parts)):
+            return False
+    return True
 
 
 def _safe_safetensors_manifest_parts(value: object) -> tuple[str, ...] | None:

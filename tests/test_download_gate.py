@@ -3873,3 +3873,62 @@ def test_weightless_stub_notice_none_when_not_stub(monkeypatch):
     )
 
     assert gate.weightless_stub_notice("mlx-community/complete-4bit") is None
+
+
+def _stale_index_snapshot(tmp_path):
+    """Snapshot shaped like a repo that kept an index from an older upload."""
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    index = {
+        "weight_map": {
+            "model.embed.weight": "model-00001-of-00012.safetensors",
+            "model.layers.0.weight": "model-00002-of-00012.safetensors",
+        }
+    }
+    (snap / "model.safetensors.index.json").write_text(json.dumps(index))
+    return snap
+
+
+def test_snapshot_complete_accepts_single_file_beside_stale_index(tmp_path):
+    """The loader globs root weights and ignores an index left from an older upload."""
+    snap = _stale_index_snapshot(tmp_path)
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+
+    assert gate._snapshot_is_complete(str(snap)) is True
+
+    (snap / "model.safetensors").write_bytes(b"")
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+
+def test_snapshot_complete_judges_resharded_weights_beside_stale_index(tmp_path):
+    snap = _stale_index_snapshot(tmp_path)
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
+
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+    (snap / "model-00002-of-00002.safetensors").write_bytes(b"y" * 4096)
+    assert gate._snapshot_is_complete(str(snap)) is True
+
+
+def test_snapshot_complete_keeps_index_when_any_indexed_shard_is_present(tmp_path):
+    """A dangling link to an indexed shard marks an interrupted pull, not a stale index."""
+    snap = _stale_index_snapshot(tmp_path)
+    (snap / "model.safetensors").write_bytes(b"x" * 4096)
+    os.symlink(tmp_path / "missing-blob", snap / "model-00001-of-00012.safetensors")
+
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+
+def test_snapshot_complete_rejects_stale_index_without_weights(tmp_path):
+    snap = _stale_index_snapshot(tmp_path)
+
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+
+def test_index_with_nested_entry_is_not_treated_as_stale(tmp_path):
+    snap = _stale_index_snapshot(tmp_path)
+
+    assert (
+        gate._index_names_no_present_shard(str(snap), {"vision/model.safetensors"})
+        is False
+    )
