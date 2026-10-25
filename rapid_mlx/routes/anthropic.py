@@ -2182,7 +2182,9 @@ async def _stream_anthropic_messages(
     accumulated_structured_tool_calls: list[dict] = []
     from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
 
-    filter_tools = bool(chat_kwargs.get("tools")) and openai_request.tool_choice != "none"
+    filter_tools = (
+        bool(chat_kwargs.get("tools")) and openai_request.tool_choice != "none"
+    )
     tool_filter = (
         Glm47ContentFilter()
         if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
