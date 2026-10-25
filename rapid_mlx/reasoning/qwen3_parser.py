@@ -146,6 +146,45 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                             # the raw preamble fall through to the client.
     """
 
+    # A template hint cannot guarantee that the model omits implicit reasoning.
+    # Keep delimiter routing active on every API surface even in thinking-off mode.
+    sanitize_when_thinking_disabled = True
+
+    def configure_request(self, *, enable_thinking: bool | None = None) -> None:
+        self.reset_state()
+        self._thinking_disabled = enable_thinking is False
+
+    def reset_state(self) -> None:
+        super().reset_state()
+        self._thinking_disabled = False
+        self._undecided_text = ""
+        self._boundary_seen = False
+
+    def extract_reasoning_streaming(
+        self, previous_text: str, current_text: str, delta_text: str
+    ) -> DeltaMessage | None:
+        # Without a prompt opener, a bare prefix might be an answer or private
+        # reasoning ending in a later closer. Do not publish it in either lane
+        # until a boundary resolves that ambiguity (or EOF confirms plain text).
+        if getattr(self, "_thinking_disabled", False) and not self._boundary_seen:
+            if (
+                not current_text.lstrip().startswith(self.start_token)
+                and self.end_token not in current_text
+            ):
+                self._undecided_text = current_text
+                return None
+            self._boundary_seen = True
+            self._undecided_text = ""
+            previous_text, delta_text = "", current_text
+        return super().extract_reasoning_streaming(
+            previous_text, current_text, delta_text
+        )
+
+    def finish_stream(self) -> DeltaMessage | None:
+        text = getattr(self, "_undecided_text", "")
+        self._undecided_text = ""
+        return DeltaMessage(content=text) if text else None
+
     @property
     def start_token(self) -> str:
         return "<think>"
@@ -346,6 +385,8 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            that shape. The bare-text-preamble label fallback still
            routes to ``reasoning`` (preserves #570).
         """
+        if getattr(self, "_thinking_disabled", False) and not self._boundary_seen:
+            return self.finish_stream()
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
             return None

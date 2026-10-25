@@ -75,6 +75,7 @@ def _drive(pp: StreamingPostProcessor, deltas: list[str]) -> dict:
     for i, d in enumerate(deltas):
         finished = i == len(deltas) - 1
         all_events.extend(pp.process_chunk(_make_output(d, finished=finished)))
+    all_events.extend(pp.finalize())
     reasoning = "".join(
         getattr(e, "reasoning", "") or "" for e in all_events if e.type == "reasoning"
     )
@@ -282,12 +283,8 @@ class TestR8M2ToolChoiceAutoThinkLeak:
         assert "ink>" not in result["content"]
         assert "thinking" not in result["content"]
 
-    def test_no_think_wrapper_still_bypasses(self):
-        """Sanity: with ``enable_thinking=False`` AND no ``<think>``
-        opener in the output, the bypass must still apply so a plain
-        direct answer flows to ``delta.content`` (this is the
-        original purpose of the bypass — PR #208 closed the empty-
-        content bug). The R8-M2 fix must NOT regress it."""
+    def test_no_think_wrapper_preserves_plain_answer(self):
+        """Thinking-off plain text is released at EOF without becoming reasoning."""
         pp = self._pp(enable_thinking=False)
         result = _drive(pp, ["The answer is ", "Paris."])
         assert result["content"] == "The answer is Paris."
@@ -432,7 +429,7 @@ class TestR8M2ToolChoiceAutoThinkLeak:
         assert "private reasoning" not in result["content"]
         assert "final answer" in result["content"]
         # The R8-M2 latch did promote (correctly).
-        assert pp._explicit_think_seen is True
+        assert pp.reasoning_parser._boundary_seen is True
 
     def test_r10c7_first_token_think_still_latches(self):
         """R10-C7 must NOT regress the original r8-C happy path. When
@@ -463,7 +460,7 @@ class TestR8M2ToolChoiceAutoThinkLeak:
         assert "</think>" not in result["content"]
         assert "The answer is 42." in result["content"]
         # The r8-C latch did promote (correctly).
-        assert pp._explicit_think_seen is True
+        assert pp.reasoning_parser._boundary_seen is True
 
 
 # =====================================================================
@@ -487,14 +484,16 @@ class TestR8M2ResetClearsLatch:
         # First request: explicit <think> triggers promotion.
         pp.process_chunk(_make_output("<think>"))
         pp.process_chunk(_make_output("thinking."))
-        assert pp._explicit_think_seen is True
+        assert pp.reasoning_parser._boundary_seen is True
         # Reset for next request.
         pp.reset()
         assert pp._explicit_think_seen is False
-        # Second request: plain answer; bypass should apply again.
+        assert pp.reasoning_parser._boundary_seen is False
+        # Second request: plain answer is released at EOF.
         result_events = []
         for d in ["The answer is ", "Paris."]:
             result_events.extend(pp.process_chunk(_make_output(d)))
+        result_events.extend(pp.finalize())
         content = "".join(
             getattr(e, "content", "") or ""
             for e in result_events

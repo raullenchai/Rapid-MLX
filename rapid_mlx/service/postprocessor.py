@@ -3942,6 +3942,43 @@ class StreamingPostProcessor:
                             StreamEvent(type="content", content=trailing_content)
                         )
 
+        held_content_events = []
+        # Drain incremental detector state for every parser. Parsers that do
+        # not buffer marker prefixes inherit the no-op base implementation.
+        # This lifecycle is intentionally separate from
+        # ``finalize_streaming(accumulated_text)``: that older hook may
+        # reclassify or re-parse an entire response and is not safe to call
+        # generically.
+        if self.reasoning_parser is not None:
+            try:
+                finish_stream = getattr(self.reasoning_parser, "finish_stream", None)
+                final_msg = finish_stream() if callable(finish_stream) else None
+            except Exception as e:
+                logger.warning(
+                    "Reasoning parser finish_stream raised: %s — buffered "
+                    "trailing bytes may not be emitted for this request",
+                    e,
+                )
+                final_msg = None
+            if final_msg is not None:
+                final_reasoning = getattr(final_msg, "reasoning", None)
+                if isinstance(final_reasoning, str) and final_reasoning:
+                    self.accumulated_reasoning += final_reasoning
+                    events.append(
+                        StreamEvent(type="reasoning", reasoning=final_reasoning)
+                    )
+                final_content = getattr(final_msg, "content", None)
+                if isinstance(final_content, str) and final_content:
+                    from ..engine.base import GenerationOutput
+
+                    # Held content still needs tool parsing and sanitization.
+                    held_content_events.extend(
+                        self._process_standard(
+                            final_content,
+                            GenerationOutput(text="", new_text="", finished=False),
+                        )
+                    )
+
         # Fallback tool call detection: streaming parser missed a tool call
         # that the non-stream parser can recover. The streaming code path of
         # each parser is necessarily simpler than ``extract_tool_calls`` —
@@ -4134,34 +4171,6 @@ class StreamingPostProcessor:
                     )
                     self.tool_calls_detected = True
 
-        # Drain incremental detector state for every parser. Parsers that do
-        # not buffer marker prefixes inherit the no-op base implementation.
-        # This lifecycle is intentionally separate from
-        # ``finalize_streaming(accumulated_text)``: that older hook may
-        # reclassify or re-parse an entire response and is not safe to call
-        # generically.
-        if self.reasoning_parser is not None:
-            try:
-                finish_stream = getattr(self.reasoning_parser, "finish_stream", None)
-                final_msg = finish_stream() if callable(finish_stream) else None
-            except Exception as e:
-                logger.warning(
-                    "Reasoning parser finish_stream raised: %s — buffered "
-                    "trailing bytes may not be emitted for this request",
-                    e,
-                )
-                final_msg = None
-            if final_msg is not None:
-                final_reasoning = getattr(final_msg, "reasoning", None)
-                if isinstance(final_reasoning, str) and final_reasoning:
-                    self.accumulated_reasoning += final_reasoning
-                    events.append(
-                        StreamEvent(type="reasoning", reasoning=final_reasoning)
-                    )
-                final_content = getattr(final_msg, "content", None)
-                if isinstance(final_content, str) and final_content:
-                    events.append(StreamEvent(type="content", content=final_content))
-
         # Dogfood F-R1-04 (codex r5 BLOCKING): UI-TARS reasoning
         # parser-specific EOF flush. The opener-prefix hold-back
         # logic returns ``None`` (no event) while the buffer is a
@@ -4249,6 +4258,8 @@ class StreamingPostProcessor:
             # markup has resolved, so stripped bytes never land here.
             self.accumulated_text += resolved_content
         self._insert_content_before_tool_call(events, resolved_content)
+        # These events already passed through the sanitizer before its EOF tail.
+        events = held_content_events + events
 
         # H-07: ```json fence-strip on the finalize event list AND
         # drain any held tail in the SAME pass. The route's

@@ -61,7 +61,9 @@ class Engine(BaseEngine):
         "Private thought.</think></arg_value><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
     ],
 )
-def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
+def test_flint_routes(
+    surface, stream, later, raw, step, expected_literal=None, enable_thinking=True
+):
     cfg = reset_config()
     cfg.model_name = "flint-40b-a2.5b-4bit"
     cfg.no_thinking = False
@@ -76,6 +78,7 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
     app.include_router(anthropic.router)
     app.include_router(chat.router)
     app.include_router(responses.router)
+    app.include_router(anthropic.router)
     history = [{"role": "user", "content": "Build life.py and run it."}]
     if later:
         history += [
@@ -96,9 +99,16 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
         model=cfg.model_name,
         stream=stream,
         tools=TOOLS,
-        chat_template_kwargs={"enable_thinking": True},
+        chat_template_kwargs={"enable_thinking": enable_thinking},
     )
-    if surface == "chat":
+    if surface == "messages":
+        body["messages"] = history
+        body["max_tokens"] = 512
+        body["tools"] = [
+            {"name": "run_shell_command", "input_schema": {"type": "object"}}
+        ]
+        url = "/v1/messages"
+    elif surface == "chat":
         body["messages"] = history
         url = "/v1/chat/completions"
     elif surface == "messages":
@@ -160,7 +170,42 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
             if stream
             else [response.json()]
         )
-        if surface == "chat":
+        if surface == "messages":
+            if stream:
+                visible = "".join(
+                    p.get("delta", {}).get("text", "")
+                    for p in packets
+                    if p.get("type") == "content_block_delta"
+                )
+                starts = [
+                    p["content_block"]
+                    for p in packets
+                    if p.get("type") == "content_block_start"
+                ]
+                calls = [
+                    {
+                        "name": b["name"],
+                        "arguments": "".join(
+                            p.get("delta", {}).get("partial_json", "")
+                            for p in packets
+                            if p.get("type") == "content_block_delta"
+                        ),
+                    }
+                    for b in starts
+                    if b["type"] == "tool_use"
+                ]
+            else:
+                visible = "".join(
+                    b.get("text", "")
+                    for b in packets[0]["content"]
+                    if b["type"] == "text"
+                )
+                calls = [
+                    {"name": b["name"], "arguments": json.dumps(b["input"])}
+                    for b in packets[0]["content"]
+                    if b["type"] == "tool_use"
+                ]
+        elif surface == "chat":
             messages = [
                 p["choices"][0].get("delta", p["choices"][0].get("message", {}))
                 for p in packets
@@ -211,6 +256,26 @@ def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
                 for c in i["content"]
             )
             calls = [i for i in packets[0]["output"] if i["type"] == "function_call"]
+        if surface == "responses" and stream:
+
+            def message_text(items):
+                return "".join(
+                    c["text"]
+                    for i in items
+                    if i["type"] == "message"
+                    for c in i["content"]
+                )
+
+            for packet in packets:
+                if packet.get("type") == "response.output_text.done":
+                    assert packet["text"] == visible
+                elif (
+                    packet.get("type") == "response.output_item.done"
+                    and packet["item"]["type"] == "message"
+                ):
+                    assert message_text([packet["item"]]) == visible
+                elif packet.get("type") == "response.completed":
+                    assert message_text(packet["response"]["output"]) == visible
         if expected_literal is not None:
             assert visible == expected_literal
             assert not calls
