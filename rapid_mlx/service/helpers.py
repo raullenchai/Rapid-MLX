@@ -3448,6 +3448,15 @@ def _run_tool_parser(
             and re.search(r"<tool_call>\s*\{", output_text)
             and cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
         ):
+            from ..tool_parsers.json_prefix import tool_json_prefix
+
+            body = output_text.split("<tool_call>", 1)[1].lstrip()
+            viable, end = tool_json_prefix(body)
+            if viable and end is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="The response did not contain the required declared tool call.",
+                )
             raise _InvalidToolArgumentsError(
                 status_code=400,
                 detail="The requested tool call was not valid JSON.",
@@ -3482,7 +3491,7 @@ def _run_tool_parser(
                 # exact undeclared/tool_choice=none span it rejected.
                 return result.content or "", None
             return parse_tool_calls(output_text, request_dict)
-    except _InvalidToolArgumentsError:
+    except HTTPException:
         # A parser's explicit rejection must not be bypassed by generic repair.
         raise
     except Exception as e:

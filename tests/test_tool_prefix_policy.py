@@ -436,3 +436,23 @@ def test_eof_only_suffix_uses_stream_authorization():
     assert parser.flush_held_content(final) == final
     parser.reset()
     assert parser._stream_request is None
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_forced_undeclared_name_is_unfulfilled_not_invalid_json(surface):
+    raw = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
+    visible, calls, errors, response = invoke(
+        surface, False, raw, parser=None, choice="required"
+    )
+    assert response.status_code == 422 and errors and not calls and not visible
+    assert "required declared tool call" in json.dumps(errors)
+    assert "valid JSON" not in json.dumps(errors)
+
+
+def test_complete_json_with_visible_suffix_is_released_at_every_split():
+    raw = '<tool_call>{"name":"write_file","arguments":{}}Final answer'
+    for split in range(len(raw) + 1):
+        filt = StreamingToolCallFilter(parser_name="hermes", request={"tools": TOOLS})
+        assert (
+            filt.process(raw[:split]) + filt.process(raw[split:]) + filt.flush() == raw
+        )
