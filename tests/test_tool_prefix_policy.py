@@ -509,3 +509,12 @@ def test_large_call_after_prose_at_each_opener_split():
         calls = [call for event in events for call in event.tool_calls or []]
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"])["content"] == "x" * 140000
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_malformed_native_call_never_becomes_executable(surface, stream):
+    raw = "<tool_call><function=write_file>oops</tool_call>"
+    _, calls, errors, response = invoke(surface, stream, raw, parser=None, step=1)
+    assert errors and not calls, response.text
+    assert "valid JSON" in json.dumps(errors), response.text
