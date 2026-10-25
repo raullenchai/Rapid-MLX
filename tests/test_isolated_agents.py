@@ -13,7 +13,7 @@ import sys
 import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import yaml
@@ -24,6 +24,12 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 from rapid_mlx.agents import isolated
+
+
+def _launch_child(returncode=0):
+    child = Mock()
+    child.wait.return_value = returncode
+    return child
 
 
 @pytest.fixture
@@ -432,7 +438,7 @@ def test_hermes_uses_served_context_ceiling_before_opening(private_home):
         patch("urllib.request.urlopen", return_value=Response()),
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as opened,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as opened,
         pytest.raises(SystemExit, match="0"),
     ):
         launch_command(_launch_args("hermes", "--model", "qwen3.5-9b-4bit"))
@@ -530,7 +536,7 @@ def test_hermes_rejects_served_window_below_minimum(private_home, capsys):
     with (
         patch("urllib.request.urlopen", return_value=Response()),
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
-        patch("rapid_mlx.launch.cli.subprocess.call") as opened,
+        patch("rapid_mlx.launch.cli.Popen") as opened,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(_launch_args("hermes", "--model", "small"))
@@ -548,7 +554,7 @@ def test_hermes_requires_live_limit_at_launch(private_home, capsys):
         ),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
-        patch("rapid_mlx.launch.cli.subprocess.call") as opened,
+        patch("rapid_mlx.launch.cli.Popen") as opened,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(_launch_args("hermes", "--model", "qwen3.5-9b-4bit"))
@@ -605,7 +611,7 @@ def test_hermes_failed_preflight_stops_only_new_server(private_home):
         patch("rapid_mlx.cli._ensure_model_downloaded"),
         patch("rapid_mlx.launch.cli._start_server_background", return_value=12345),
         patch("rapid_mlx.launch.cli._stop_failed_start") as stopped,
-        patch("rapid_mlx.launch.cli.subprocess.call") as opened,
+        patch("rapid_mlx.launch.cli.Popen") as opened,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(
@@ -825,7 +831,7 @@ def test_launch_waits_through_startup_http_error(private_home):
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded"),
         patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as agent,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as agent,
         patch("time.sleep"),
         pytest.raises(SystemExit) as exit_info,
     ):
@@ -1061,7 +1067,7 @@ def test_isolated_run_executes_when_ready(private_home):
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as call,
         pytest.raises(SystemExit, match="0"),
     ):
         launch_command(
@@ -1080,7 +1086,7 @@ def test_claude_launch_explains_folder_trust_without_pretrusting(private_home, c
     with (
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0),
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()),
         pytest.raises(SystemExit, match="0"),
     ):
         launch_command(
@@ -1219,7 +1225,7 @@ def test_short_launch_reuses_compatible_running_model(private_home, capsys):
         ),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._select_model") as select,
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0),
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()),
         pytest.raises(SystemExit, match="0"),
     ):
         launch_command(_launch_args("goose"))
@@ -1241,7 +1247,7 @@ def test_short_launch_preserves_saved_quantization(private_home, capsys, explici
         ),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._select_model") as select,
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as call,
         pytest.raises(SystemExit) as exit_info,
     ):
         launch_command(
@@ -1307,7 +1313,7 @@ def test_short_launch_rejects_unusable_saved_running_model(
             "rapid_mlx.agents.isolated.running_model", return_value="qwen3.5-4b-4bit"
         ),
         patch("rapid_mlx.model_auto_config.detect_model_config", return_value=None),
-        patch("rapid_mlx.launch.cli.subprocess.call") as call,
+        patch("rapid_mlx.launch.cli.Popen") as call,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(
@@ -1334,7 +1340,7 @@ def test_small_selected_model_first_launch_then_repeat(
         patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded") as download,
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as call,
         patch("rapid_mlx.run.cli._confirm_download", return_value=True),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
     ):
@@ -1368,7 +1374,7 @@ def test_small_running_model_without_user_choice_is_not_automatically_reused(
         patch(
             "rapid_mlx.run.cli._select_model", return_value="qwen3.5-9b-4bit"
         ) as select,
-        patch("rapid_mlx.launch.cli.subprocess.call") as call,
+        patch("rapid_mlx.launch.cli.Popen") as call,
         pytest.raises(SystemExit) as result,
     ):
         launch_command(_launch_args("codex"))
@@ -1392,7 +1398,7 @@ def test_short_launch_reuses_saved_model_and_starts_stopped_server(
         patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded") as download,
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as call,
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
         pytest.raises(SystemExit, match="0"),
     ):

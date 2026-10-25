@@ -37,6 +37,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from subprocess import Popen
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -553,11 +554,15 @@ def launch_command(args: argparse.Namespace) -> None:
                 "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
                 flush=True,
             )
-            result = subprocess.call(["/bin/zsh", "-lc", command])
-            if result == 0:
-                from rapid_mlx.onboarding import track_first_integration
+            child = Popen(["/bin/zsh", "-lc", command])
+            from rapid_mlx.onboarding import track_first_integration
 
-                track_first_integration(args.client)
+            track_first_integration(args.client)
+            try:
+                result = child.wait()
+            except KeyboardInterrupt:
+                child.wait()
+                raise
             raise SystemExit(result)
         from rapid_mlx.onboarding import track_first_integration
 

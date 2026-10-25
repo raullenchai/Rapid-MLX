@@ -5,12 +5,18 @@ import shlex
 import subprocess
 from argparse import ArgumentParser
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from rapid_mlx.agents import cli_preflight, get_profile, isolated
 from rapid_mlx.agents.base import AgentProfile, AgentTestingSpec
+
+
+def _launch_child(returncode=0):
+    child = Mock()
+    child.wait.return_value = returncode
+    return child
 
 
 @pytest.fixture
@@ -52,7 +58,7 @@ def test_missing_cli_stops_launch_before_model_work(private_home, capsys, name):
         patch("rapid_mlx.run.cli._select_model") as select,
         patch("rapid_mlx.cli._ensure_model_downloaded") as download,
         patch("rapid_mlx.launch.cli._start_server_background") as start,
-        patch("rapid_mlx.launch.cli.subprocess.call") as call,
+        patch("rapid_mlx.launch.cli.Popen") as call,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(_launch_args(name))
@@ -108,7 +114,10 @@ def test_installed_cli_launches_without_warning(private_home, capsys, exit_code)
         patch.object(cli_preflight, "agent_cli_found", return_value=True),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=exit_code) as call,
+        patch(
+            "rapid_mlx.launch.cli.Popen",
+            return_value=_launch_child(exit_code),
+        ) as call,
         patch("rapid_mlx.onboarding.track_first_integration") as configured,
         pytest.raises(SystemExit, match=str(exit_code)),
     ):
@@ -116,8 +125,36 @@ def test_installed_cli_launches_without_warning(private_home, capsys, exit_code)
             _launch_args("goose", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
     call.assert_called_once()
-    assert configured.call_args_list == ([(("goose",),)] if exit_code == 0 else [])
+    assert configured.call_args_list == [(("goose",),)]
     assert "not installed" not in capsys.readouterr().err
+
+
+def test_integration_is_tracked_before_the_child_exits(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    tracked = []
+    child = Mock()
+
+    def wait():
+        assert tracked == ["goose"]
+        return 1
+
+    child.wait.side_effect = wait
+    with (
+        patch.object(cli_preflight, "agent_cli_found", return_value=True),
+        patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
+        patch("rapid_mlx.run.cli._fits_host", return_value=True),
+        patch("rapid_mlx.launch.cli.Popen", return_value=child),
+        patch(
+            "rapid_mlx.onboarding.track_first_integration",
+            side_effect=tracked.append,
+        ),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(
+            _launch_args("goose", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
+        )
+    assert tracked == ["goose"]
 
 
 @pytest.fixture(autouse=True)

@@ -570,8 +570,9 @@ def test_launch_warm_pinned_cache_has_no_download_label(
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *a: None)
     start = Mock(return_value=12345)
     monkeypatch.setattr(launch_cli, "_start_server_background", start)
-    run = Mock(return_value=0)
-    monkeypatch.setattr(launch_cli.subprocess, "call", run)
+    run = Mock()
+    run.return_value.wait.return_value = 0
+    monkeypatch.setattr(launch_cli, "Popen", run)
     forbidden = Mock(side_effect=AssertionError("warm cache must not download"))
     monkeypatch.setattr(cli, "_check_disk_space", forbidden)
     monkeypatch.setattr("huggingface_hub.snapshot_download", forbidden)
