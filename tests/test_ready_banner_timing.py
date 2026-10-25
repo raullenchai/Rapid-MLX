@@ -32,6 +32,7 @@ def _isolate_server_state(monkeypatch, tmp_path):
     """Snapshot+restore the engine handle and bind fields each test."""
     cfg = get_config()
     monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
     saved = (
         server._engine,
         cfg.bind_host,
@@ -138,9 +139,7 @@ def test_interactive_ready_banner_ends_with_copyable_next(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.index("Ready: http://localhost:8766") < out.index("Next:")
     assert "studio-assistant" in out
-    assert (
-        "OpenAI SDK base_url: http://localhost:8766/v1; model: studio-assistant" in out
-    )
+    assert "OpenAI-compatible base URL: http://localhost:8766/v1" in out
     assert "from openai import OpenAI" in out
 
 
@@ -194,7 +193,7 @@ def test_interactive_ready_banner_uses_configured_key(monkeypatch, capsys):
     server.print_ready_banner()
     out = capsys.readouterr().out
     assert "Set RAPID_MLX_API_KEY to the server key first." in out
-    assert '-H "Authorization: Bearer $RAPID_MLX_API_KEY"' in out
+    assert 'environ["RAPID_MLX_API_KEY"]' in out
     assert "test-key" not in out
 
 
@@ -332,3 +331,30 @@ def test_lifespan_sets_internal_readiness_without_rendering_banner():
     src = inspect.getsource(server.lifespan)
     assert "_cfg.ready = True" in src
     assert "render_banner" not in src
+
+
+@pytest.mark.parametrize(
+    "tty,level", [(True, logging.INFO), (False, logging.INFO), (True, logging.WARNING)]
+)
+def test_onboarding_shown_event_only_for_visible_once_tip(
+    monkeypatch, capsys, tmp_path, tty, level
+):
+    cfg = get_config()
+    cfg.bind_host = "localhost"
+    cfg.bind_port = 8766
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    monkeypatch.setattr(logging.getLogger(), "getEffectiveLevel", lambda: level)
+    monkeypatch.setattr(server.sys.stdout, "isatty", lambda: tty)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.optional_runtime._running_in_desktop_sidecar", lambda: False
+    )
+    events = []
+    monkeypatch.setattr(
+        "rapid_mlx.onboarding.track_next_step", lambda: events.append("shown")
+    )
+    server.print_ready_banner()
+    server.print_ready_banner()
+    visible = tty and level == logging.INFO
+    assert events == (["shown"] if visible else [])
+    assert capsys.readouterr().out.count("Next:") == int(visible)
+    assert (tmp_path / "state" / "first_serve_success").exists()

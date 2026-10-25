@@ -553,7 +553,15 @@ def launch_command(args: argparse.Namespace) -> None:
                 "  Agent ready. Its first reply may take longer while the local prompt is processed; cached replies are faster.",
                 flush=True,
             )
-            raise SystemExit(subprocess.call(["/bin/zsh", "-lc", command]))
+            result = subprocess.call(["/bin/zsh", "-lc", command])
+            if result == 0:
+                from rapid_mlx.agents.telemetry import track_agent_configured
+
+                track_agent_configured(args.client)
+            raise SystemExit(result)
+        from rapid_mlx.agents.telemetry import track_agent_configured
+
+        track_agent_configured(args.client)
         print(f"  If the local server is stopped: {start_hint}")
         return
 
@@ -716,6 +724,9 @@ def launch_command(args: argparse.Namespace) -> None:
             print(f"  {name}: FAILED — {exc}", file=sys.stderr)
             failures.append(name)
             continue
+        from rapid_mlx.agents.telemetry import track_agent_configured
+
+        track_agent_configured(name)
         print(f"  Patched {name} config at {path}")
         notes = getattr(adapter, "post_setup_notes", None)
         if notes is not None:

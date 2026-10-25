@@ -18,6 +18,9 @@ def track_agent_configured(agent: str) -> None:
         from rapid_mlx.telemetry.track import track
 
         track("agent_configured", {"agent": _telemetry_agent(agent)})
+        from rapid_mlx.onboarding import track_first_integration
+
+        track_first_integration(agent)
     except Exception:
         return
 

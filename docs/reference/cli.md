@@ -32,6 +32,15 @@ rapid-mlx serve --help
 
 The server listens on loopback by default and prints its selected port. An explicit `--port` does not fall back to another port. See the [server guide](../guides/server.md) for the API and network setup.
 
+After the first interactive chat-server readiness, `serve` shows a three-line,
+one-time connection tip: installed coding agents with their launch commands,
+or the bound API URL and a Python SDK example. It requires no response and
+can be ignored. Quiet, piped, and Desktop output omit the tip. The existing
+local state directory remembers dismissal. With telemetry enabled, the tip
+records `onboarding_next_step_shown`; the first successful CLI integration
+within 24 hours of first serve readiness records `first_integration` with only
+a closed agent label. Telemetry opt-out suppresses both events.
+
 An interactive `serve` prints a one-time [newsletter pointer](https://rapidmlx.com/newsletter) after its ready banner.
 
 ### TensorFold request lanes

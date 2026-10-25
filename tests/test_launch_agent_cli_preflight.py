@@ -100,20 +100,23 @@ def test_saving_profile_without_run_only_warns(private_home, capsys):
     assert isolated.saved_model("codex") == "qwen3.5-9b-4bit"
 
 
-def test_installed_cli_launches_without_warning(private_home, capsys):
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_installed_cli_launches_without_warning(private_home, capsys, exit_code):
     from rapid_mlx.launch.cli import launch_command
 
     with (
         patch.object(cli_preflight, "agent_cli_found", return_value=True),
         patch("rapid_mlx.agents.isolated.connection_status", return_value="ready"),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
-        patch("rapid_mlx.launch.cli.subprocess.call", return_value=0) as call,
-        pytest.raises(SystemExit, match="0"),
+        patch("rapid_mlx.launch.cli.subprocess.call", return_value=exit_code) as call,
+        patch("rapid_mlx.agents.telemetry.track_agent_configured") as configured,
+        pytest.raises(SystemExit, match=str(exit_code)),
     ):
         launch_command(
             _launch_args("goose", "--isolated", "--run", "--model", "qwen3.5-9b-4bit")
         )
     call.assert_called_once()
+    assert configured.call_args_list == ([(("goose",),)] if exit_code == 0 else [])
     assert "not installed" not in capsys.readouterr().err
 
 

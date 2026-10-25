@@ -89,7 +89,8 @@ def test_render_banner_matches_spec():
     assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
 
 
-def test_serve_next_uses_installed_python_for_sdk():
+def test_serve_next_uses_installed_python_for_sdk(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
     out = connect.render_serve_next(_endpoints())
     assert connect.package_install_command("openai") in out
 
@@ -516,29 +517,24 @@ def test_banner_already_bracketed_host_not_double_bracketed():
     assert "[[::1]]" not in out
 
 
-def test_serve_next_uses_bound_endpoint_served_name_and_auth():
+def test_serve_next_uses_bound_endpoint_served_name_and_auth(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
     ep = connect.ServerEndpoints("::1", 9123, model="my served model")
-    out = connect.render_serve_next(ep, api_key="key with ' quote")
-    assert out.count("Next:") == 1
-    assert out.count("rapid-mlx launch ") == 7
-    assert "curl -i -sS " in out
-    assert "http://[::1]:9123/v1/chat/completions" in out
+    out = connect.render_serve_next(ep, api_key="secret-key")
+    assert len(out.splitlines()) == 3
+    assert "http://[::1]:9123/v1" in out
     assert "my served model" in out
-    assert '-H "Authorization: Bearer $RAPID_MLX_API_KEY"' in out
-    assert "rapid-mlx launch opencode" in out
     assert "Set RAPID_MLX_API_KEY to the server key first." in out
-    assert "key with ' quote" not in out
-    for agent in ("codex", "claude-code", "opencode", "pi", "hermes", "crush", "goose"):
-        assert f"rapid-mlx launch {agent}" in out
-    assert "OpenAI SDK base_url: http://[::1]:9123/v1; model: my served model" in out
-    assert "from openai import OpenAI" in out
+    assert "secret-key" not in out
     assert 'environ["RAPID_MLX_API_KEY"]' in out
+    compile(out.splitlines()[1].strip(), "snippet", "exec")
 
 
-def test_serve_next_has_no_auth_header_without_key():
+def test_serve_next_has_no_auth_header_without_key(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
-    assert "Authorization" not in out
-    assert out.count("rapid-mlx launch ") == 7
+    assert "not-needed" in out
+    assert "rapid-mlx launch" not in out
     assert (
         connect.render_serve_next(connect.ServerEndpoints("", 0, "m", listen_fd=3))
         == ""
@@ -546,10 +542,15 @@ def test_serve_next_has_no_auth_header_without_key():
     assert connect.render_serve_next(connect.ServerEndpoints("localhost", 8765)) == ""
 
 
-def test_serve_next_lists_agents_when_no_setup_profile_is_available(monkeypatch):
-    monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: None)
+def test_serve_next_lists_only_detected_launchable_agents(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.onboarding.detected_launch_agents", lambda: ["codex", "aider"]
+    )
     out = connect.render_serve_next(connect.ServerEndpoints("localhost", 8765, "m"))
-    assert "Coding agent: rapid-mlx launch codex" in out
+    assert len(out.splitlines()) == 3
+    assert "rapid-mlx launch codex ; rapid-mlx launch aider" in out
+    assert "OpenAI" not in out
+    assert "only once" in out
 
 
 # --- #2348: connect must accept/use the live instance base URL ---------------

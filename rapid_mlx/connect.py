@@ -226,64 +226,29 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
     if ep.listen_fd is not None or not ep.model:
         return ""
 
-    body = json.dumps(
-        {
-            "model": ep.model,
-            "messages": [{"role": "user", "content": "Say hello."}],
-            "max_tokens": 32,
-        },
-        separators=(",", ":"),
-    )
-    auth = ' -H "Authorization: Bearer $RAPID_MLX_API_KEY"' if api_key else ""
-    curl = (
-        f"curl -i -sS {shlex.quote(ep.openai_url + '/chat/completions')}"
-        f" -H 'Content-Type: application/json'{auth} -d {shlex.quote(body)}"
-    )
-    from rapid_mlx.agents import get_profile
+    from rapid_mlx.onboarding import detected_launch_agents
 
-    agents = [
-        name
-        for name in (
-            "codex",
-            "claude-code",
-            "opencode",
-            "pi",
-            "hermes",
-            "crush",
-            "goose",
+    agents = detected_launch_agents()
+    if agents:
+        commands = " ; ".join(f"rapid-mlx launch {agent}" for agent in agents)
+        return (
+            "  Next: connect a coding agent (choose one; uses its own local server).\n"
+            f"    {commands}\n"
+            "    This tip appears only once; you can ignore it.\n"
         )
-        if get_profile(name)
-    ]
     python_key = (
         '__import__("os").environ["RAPID_MLX_API_KEY"]'
         if api_key
         else repr("not-needed")
     )
-    lines = ["  Next:"]
-    if api_key:
-        lines.append("    Set RAPID_MLX_API_KEY to the server key first.")
-    lines.append(f"    {curl}")
-    if agents:
-        lines.append(
-            "    Launch a coding agent with its own local server (choose one):"
-        )
-        lines.extend(f"      rapid-mlx launch {agent}" for agent in agents)
-    else:
-        lines.extend(
-            [
-                "    Coding agent: rapid-mlx launch codex",
-            ]
-        )
-    lines.extend(
-        [
-            f"    OpenAI SDK base_url: {ep.openai_url}; model: {ep.model}",
-            f"    Python ({package_install_command('openai')}):",
-            "      from openai import OpenAI",
-            f"      client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key})",
-            f"      print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)",
-        ]
+    auth_note = " Set RAPID_MLX_API_KEY to the server key first." if api_key else ""
+    return (
+        f"  Next: OpenAI-compatible base URL: {ep.openai_url}.{auth_note}\n"
+        "    from openai import OpenAI; "
+        f"client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key}); "
+        f"print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)\n"
+        f"    SDK: {package_install_command('openai')}. This tip appears only once; you can ignore it.\n"
     )
-    return "\n".join(lines) + "\n"
 
 
 def probe_server_alive(host: str, port: int, *, scheme: str = "http") -> bool:

@@ -817,6 +817,16 @@
         "error_class": {"kind": "enum", "enum": "import_error_class", "required": true}
       }
     },
+    "onboarding_next_step_shown": {
+      "_about": "One-time interactive CLI connection tip after serve readiness.",
+      "props": {}
+    },
+    "first_integration": {
+      "_about": "First successful CLI integration within 24 hours of first serve readiness; consent gated.",
+      "props": {
+        "agent": {"kind": "enum", "enum": "agent", "required": true}
+      }
+    },
     "agent_configured": {
       "_about": "Which integrations matter. Emitted only after setup changes configuration and any requested server verification succeeds.",
       "props": {

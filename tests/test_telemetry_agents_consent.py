@@ -965,3 +965,30 @@ def test_confirm_plan_handles_eof(monkeypatch, tmp_path):
         "builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError)
     )
     assert setup.confirm_plan(plan) is False
+
+
+def test_onboarding_events_follow_real_consent(
+    loopback_telemetry, tmp_path, monkeypatch
+):
+    from rapid_mlx import onboarding
+
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(tmp_path / "onboarding"))
+    onboarding.record_serve_success()
+    state.set_cli_kill_switch(True)
+    onboarding.track_next_step()
+    onboarding.track_first_integration("codex")
+    assert not (tmp_path / "onboarding" / "first_integration_seen").exists()
+    posthog_sender.get_sender().flush(2.0)
+    assert _items(loopback_telemetry) == []
+
+    state.set_cli_kill_switch(False)
+    consent_runtime._reset_runtime_state_for_tests()
+    posthog_sender._reset_for_tests()
+    onboarding.track_next_step()
+    onboarding.track_first_integration("codex")
+    onboarding.track_first_integration("codex")
+    posthog_sender.get_sender().flush(2.0)
+    assert [_event_view(item) for item in _items(loopback_telemetry)] == [
+        {"event": "onboarding_next_step_shown", "properties": {}},
+        {"event": "first_integration", "properties": {"agent": "codex"}},
+    ]

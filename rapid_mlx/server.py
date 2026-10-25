@@ -1215,7 +1215,11 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         import logging
 
         from rapid_mlx.audio.registry import is_audio_name
+        from rapid_mlx.onboarding import record_serve_success, track_next_step
         from rapid_mlx.runtime.optional_runtime import _running_in_desktop_sidecar
+
+        if not _running_in_desktop_sidecar():
+            record_serve_success()
 
         interactive = (
             sys.stdout.isatty()
@@ -1234,6 +1238,7 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
                 print(f"  Images: off. {note}")
             if claim_serve_next_tip():
                 print(next_step, end="", flush=True)
+                track_next_step()
         else:
             print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
         from rapid_mlx.newsletter_hint import maybe_print_newsletter_hint
