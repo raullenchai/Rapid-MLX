@@ -4053,8 +4053,7 @@ class StreamingPostProcessor:
             if (
                 not result.tools_called
                 and not self.tool_calls_detected
-                and (self.request or {}).get("tool_choice")
-                not in (None, "auto", "none")
+                and (self._is_tool_choice_required() or self._forced_tool_choice_name())
                 and self.cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
                 and re.search(r"<tool_call>\s*\{", _fallback_text)
             ):

@@ -456,3 +456,56 @@ def test_complete_json_with_visible_suffix_is_released_at_every_split():
         assert (
             filt.process(raw[:split]) + filt.process(raw[split:]) + filt.flush() == raw
         )
+
+
+@pytest.mark.parametrize(
+    "choice",
+    ["auto", "required", {"type": "function", "function": {"name": "write_file"}}],
+)
+def test_typed_request_eof_choice_guard(choice):
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.service.helpers import _InvalidToolArgumentsError
+    from tests.test_postprocessor import StreamingPostProcessor, _make_cfg, _make_output
+
+    request = ChatCompletionRequest(
+        model="test",
+        messages=[{"role": "user", "content": "test"}],
+        tools=TOOLS,
+        tool_choice=choice,
+    )
+    pp = StreamingPostProcessor(
+        _make_cfg(enable_auto_tool_choice=True, tool_call_parser="hermes"),
+        request=request,
+    )
+    raw = '<tool_call>{"name":'
+    pp.process_chunk(_make_output(raw))
+    if choice == "auto":
+        assert "".join(e.content or "" for e in pp.finalize()) == raw
+    else:
+        with pytest.raises(_InvalidToolArgumentsError):
+            pp.finalize()
+
+
+def test_large_call_after_prose_at_each_opener_split():
+    from tests.test_postprocessor import StreamingPostProcessor, _make_cfg, _make_output
+
+    opener = "<tool_call>"
+    body = (
+        json.dumps({"name": "write_file", "arguments": {"content": "x" * 140000}})
+        + "</tool_call>"
+    )
+    for split in range(len(opener) + 1):
+        pp = StreamingPostProcessor(
+            _make_cfg(enable_auto_tool_choice=True, tool_call_parser="hermes"),
+            request={"tools": TOOLS},
+        )
+        events = pp.process_chunk(_make_output("Intro. " + opener[:split]))
+        rest = opener[split:] + body
+        for start in range(0, len(rest), 32768):
+            events.extend(pp.process_chunk(_make_output(rest[start : start + 32768])))
+        events.extend(pp.finalize())
+        assert not pp._tool_suppression_released
+        assert "x" * 100 not in "".join(e.content or "" for e in events)
+        calls = [call for event in events for call in event.tool_calls or []]
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"])["content"] == "x" * 140000
