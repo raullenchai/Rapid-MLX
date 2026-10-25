@@ -412,7 +412,9 @@ def _command(
             f"OPENCODE_CONFIG={config} {invocation}{standalone}"
         )
     if name == "hermes":
-        return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --provider custom --model {quote(model)}"
+        # The CLI rejects custom as a provider argument on some releases.
+        # Let model.provider in the private YAML select the local endpoint.
+        return f"{credential} HERMES_HOME={quote(str(root))} hermes -p rapid chat --model {quote(model)}"
     if name == "goose":
         return f"{credential} XDG_CONFIG_HOME={quote(str(root))} GOOSE_MODEL={quote(model)} goose session --provider custom_rapid_mlx"
     if name == "crush":

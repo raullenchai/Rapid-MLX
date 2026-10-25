@@ -205,6 +205,32 @@ def test_every_runner_refreshes_private_endpoint_after_port_change(private_home)
             assert f"launch {name} --isolated --model qwen3.5-9b-4bit" in runner
 
 
+@pytest.mark.parametrize(
+    "model,port", [("qwen3.5-4b-4bit", 8724), ("local/model", 7660)]
+)
+def test_hermes_provider_is_selected_from_private_config(private_home, model, port):
+    isolated.configure("hermes", model, port=port)
+    root = isolated.connection_dir() / "agents" / "hermes"
+    config = yaml.safe_load((root / "profiles" / "rapid" / "config.yaml").read_text())
+    assert config["model"]["provider"] == "custom"
+    assert config["model"]["default"] == model
+    assert config["model"]["base_url"] == f"http://127.0.0.1:{port}/v1"
+    assert config["model"]["api_key"] == isolated.stable_key()
+    assert config["model"]["context_length"] >= 64000
+    command = shlex.split((root / "run").read_text().splitlines()[-1])
+    assert f"HERMES_HOME={root}" in command
+    # The CLI's provider choices omit custom even though its YAML accepts it.
+    # Omit the override so the private config wins over ambient provider settings.
+    assert command[command.index("hermes") :] == [
+        "hermes",
+        "-p",
+        "rapid",
+        "chat",
+        "--model",
+        model,
+    ]
+
+
 def test_old_opencode_shape_and_hermes_auth(private_home):
     with patch(
         "rapid_mlx.agents.opencode_version.installed_version", return_value="1.0.0"
