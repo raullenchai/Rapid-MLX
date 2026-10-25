@@ -156,7 +156,8 @@ _FINAL_SANITIZER = re.compile(
     _FINAL_SANITIZER_ALTERNATIVES
     # Orphaned GLM arguments are wire residue, including a missing close.
     + r"|<tool_call>\s*[\w.:-]+\s*<arg_key>.*?(?:</tool_call>|$)"
-    r"|</?arg_(?:key|value)>.*?(?:</tool_call>|$)",
+    r"|(?m:^[ \t]*</?arg_(?:key|value)>).*?(?:</tool_call>|$)"
+    r"|<arg_key>[^<]*</arg_key>\s*<arg_value>.*?(?:</tool_call>|$)",
     re.DOTALL,
 )
 
@@ -977,6 +978,7 @@ class StreamingToolCallFilter:
                     per-agent customization without mutating global state.
         enabled: When False, pass deltas through unchanged for requests
                  without declared tools; their markup is ordinary text.
+        tags: Override the default wire families for a format-specific parser.
     """
 
     def __init__(
@@ -984,17 +986,16 @@ class StreamingToolCallFilter:
         extra_tags: list[tuple[str, str]] | None = None,
         *,
         enabled: bool = True,
+        tags: list[tuple[str, str]] | None = None,
     ):
         self._enabled = enabled
         self._buffer = ""
         self._in_block = False
         self._close_tag = ""
         # Merge global tags with per-instance extras
-        self._tags = _TOOL_CALL_TAGS
+        self._tags = _TOOL_CALL_TAGS if tags is None else tags
         if extra_tags:
-            self._tags = _TOOL_CALL_TAGS + [
-                t for t in extra_tags if t not in _TOOL_CALL_TAGS
-            ]
+            self._tags = self._tags + [t for t in extra_tags if t not in self._tags]
         # Longest open tag - used to determine how much buffer to hold back
         self._max_open_len = max(len(t[0]) for t in self._tags)
 

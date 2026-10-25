@@ -77,7 +77,9 @@ class Glm47ToolParser(ToolParser):
         super().reset()
         from ..api.utils import StreamingToolCallFilter
 
-        self._content_filter = StreamingToolCallFilter(extra_tags=self.ORPHAN_TAGS)
+        self._content_filter = StreamingToolCallFilter(
+            tags=[("<tool_call>", "</tool_call>")] + self.ORPHAN_TAGS
+        )
 
     def flush_held_content(self, full_text: str) -> str:
         """Release an incomplete literal prefix, but discard open wire blocks."""
@@ -165,10 +167,20 @@ class Glm47ToolParser(ToolParser):
                 content=None,
             )
         else:
-            from ..api.utils import StreamingToolCallFilter
+            # Preserve literal tag examples on a miss. Suppression needs a
+            # call opener, a leading orphan, or an actual key/value pair.
+            content = cleaned_text
+            if (
+                "<tool_call>" in cleaned_text
+                or re.match(r"</?arg_(?:key|value)>", cleaned_text)
+                or self.ARG_PATTERN.search(cleaned_text)
+            ):
+                from ..api.utils import StreamingToolCallFilter
 
-            content_filter = StreamingToolCallFilter(extra_tags=self.ORPHAN_TAGS)
-            content = content_filter.process(cleaned_text) + content_filter.flush()
+                content_filter = StreamingToolCallFilter(
+                    tags=[("<tool_call>", "</tool_call>")] + self.ORPHAN_TAGS
+                )
+                content = content_filter.process(cleaned_text) + content_filter.flush()
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=content
             )
