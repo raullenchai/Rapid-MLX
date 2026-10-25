@@ -3593,7 +3593,7 @@ def _clean_final_content_tool_envelope(
         from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
 
         content_filter = Glm47ContentFilter()
-        return content_filter.process(content) + content_filter.flush()
+        content = content_filter.process(content) + content_filter.flush()
     cleaned = _strip_trailing_tool_envelope(
         content, request, reasoning_source=reasoning_source, finish_reason=finish_reason
     )
