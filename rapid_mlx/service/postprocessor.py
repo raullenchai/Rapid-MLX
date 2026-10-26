@@ -337,7 +337,9 @@ class StreamingPostProcessor:
                 # Request-aware parser configuration is a safety boundary:
                 # continuing after failure can route implicit scratch text to
                 # content using the parser's constructor defaults.
-                configure_kwargs = {"enable_thinking": enable_thinking}
+                configure_kwargs: dict[str, bool | str | None] = {
+                    "enable_thinking": enable_thinking
+                }
                 try:
                     configure_parameters = inspect.signature(_configure).parameters
                 except (TypeError, ValueError):
@@ -360,6 +362,10 @@ class StreamingPostProcessor:
                             ),
                             tools_requested=self.tools_requested,
                         )
+                    )
+                if "tool_parser_name" in configure_parameters:
+                    configure_kwargs["tool_parser_name"] = (
+                        self.cfg.tool_call_parser if self.tools_requested else None
                     )
                 if "json_mode" in configure_parameters:
                     configure_kwargs["json_mode"] = self.json_mode
@@ -1652,7 +1658,7 @@ class StreamingPostProcessor:
         ("<minimax:tool_call>", "</minimax:tool_call>"),
     )
 
-    def _tool_envelope_in_flight(self) -> bool:
+    def _tool_envelope_in_flight(self, text: str | None = None) -> bool:
         """Return True iff the tool parser is mid-block on an unclosed
         ``<tool_call>``-style envelope.
 
@@ -1670,7 +1676,7 @@ class StreamingPostProcessor:
         ``_TOOL_ENVELOPE_OPENERS`` keeps the openers/closers paired so
         a future wire format can be added in one place.
         """
-        buf = self.tool_accumulated_text
+        buf = self.tool_accumulated_text if text is None else text
         if not buf:
             return False
         for opener, closer in self._TOOL_ENVELOPE_OPENERS:
@@ -2562,7 +2568,9 @@ class StreamingPostProcessor:
         if self.reasoning_parser:
             _configure = getattr(self.reasoning_parser, "configure_request", None)
             if callable(_configure):
-                configure_kwargs = {"enable_thinking": self.enable_thinking}
+                configure_kwargs: dict[str, bool | str | None] = {
+                    "enable_thinking": self.enable_thinking
+                }
                 try:
                     configure_parameters = inspect.signature(_configure).parameters
                 except (TypeError, ValueError):
@@ -2585,6 +2593,10 @@ class StreamingPostProcessor:
                             ),
                             tools_requested=self.tools_requested,
                         )
+                    )
+                if "tool_parser_name" in configure_parameters:
+                    configure_kwargs["tool_parser_name"] = (
+                        self.cfg.tool_call_parser if self.tools_requested else None
                     )
                 if "json_mode" in configure_parameters:
                     configure_kwargs["json_mode"] = self.json_mode
@@ -3406,7 +3418,11 @@ class StreamingPostProcessor:
         # reasoning where they cannot be mis-extracted (mirrors the non-streaming
         # reasoning-first reorder).
         if self.tool_parser and reasoning and not self._line1_gate_engaged:
-            _check = self.tool_accumulated_text + reasoning
+            _check = (
+                self.tool_accumulated_text + reasoning
+                if self._tool_envelope_in_flight(self.accumulated_text)
+                else reasoning
+            )
             if (
                 "<minimax:tool_call>" in _check
                 or "<tool_call>" in _check
@@ -3431,7 +3447,11 @@ class StreamingPostProcessor:
                             tool_calls_detected=self.tool_calls_detected,
                         )
                     ]
-                return []
+                return (
+                    [StreamEvent(type="reasoning", reasoning=reasoning)]
+                    if reasoning
+                    else []
+                )
             if result.get("tool_calls"):
                 self._preserve_post_tool_content = bool(
                     result.get("preserve_post_tool_content")
@@ -3447,6 +3467,8 @@ class StreamingPostProcessor:
                 # markup to the client — codex r7 MAJOR.
                 mixed_content = result.get("content")
                 events: list[StreamEvent] = []
+                if reasoning:
+                    events.append(StreamEvent(type="reasoning", reasoning=reasoning))
                 if isinstance(mixed_content, str) and mixed_content:
                     mixed_content = strip_special_tokens(mixed_content)
                     if mixed_content:
@@ -3523,6 +3545,16 @@ class StreamingPostProcessor:
                 )
                 return events
             content = result.get("content", "")
+
+        if self.tool_calls_detected and reasoning:
+            events = [StreamEvent(type="reasoning", reasoning=reasoning)]
+            if self._preserve_post_tool_content and content:
+                content = self._sanitize_content(content)
+                if content:
+                    events.append(StreamEvent(type="content", content=content))
+            if output.finished:
+                events.append(self._make_finish_event(output))
+            return events
 
         if self.tool_calls_detected:
             if self._preserve_post_tool_content and content:

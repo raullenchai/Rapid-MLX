@@ -321,7 +321,16 @@ def _finalize_content_and_reasoning(
     (anthropic_sdk / langchain / pydantic_ai non-streaming
     integrations, v0.6.64 pr_validate baseline).
     """
+    from ..reasoning.think_parser import BaseThinkingReasoningParser
+
     reasoning_text = None
+    if get_config().tool_call_parser in ("glm47", "glm4") and cleaned_text != raw_text:
+        from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+        if raw_text.lstrip().startswith(Glm47ContentFilter._ORPHANS):
+            # Native leading orphan wire proves a tool/content turn, not an
+            # implicit reasoning continuation. Keep the answer the parser saved.
+            return cleaned_text, None
     # Engine-level token routing is authoritative when present. The
     # ``OutputRouter`` state machine tracks channel boundaries at the
     # token level (same code path the streaming route already trusts),
@@ -472,6 +481,41 @@ def _finalize_content_and_reasoning(
     extract = lambda text: reasoning_parser.extract_reasoning(text, **extract_kwargs)
     if tool_calls:
         reasoning_text, _ = extract(raw_text)
+        if (
+            isinstance(reasoning_parser, BaseThinkingReasoningParser)
+            and reasoning_parser.start_token in cleaned_text
+        ):
+            _, cleaned_text = extract(cleaned_text)
+            cleaned_text = cleaned_text or ""
+        if reasoning_text and (tool_parser_name := get_config().tool_call_parser):
+            # Native tool envelopes belong only to the structured call lane.
+            # Recover reasoning prose with the same parser that recognized the
+            # calls, authorizing only names already present in this response.
+            parser_cls = ToolParserManager.get_tool_parser(tool_parser_name)
+            tool_parser = parser_cls(None)
+            request = {
+                "tools": [
+                    {"type": "function", "function": {"name": call_name(call)}}
+                    for call in tool_calls
+                ]
+            }
+            if set(tool_parser.EXPECTED_WIRE_FORMATS) & {"kimi_native", "hy3_native"}:
+                # These native parsers retain reasoning delimiters in residual
+                # prose. Remove their calls before interpreting any delimiter
+                # literals that may be part of JSON argument strings.
+                residual = (
+                    tool_parser.extract_tool_calls(raw_text, request).content or ""
+                )
+                reasoning_text = None
+                if (
+                    reasoning_parser.start_token in residual
+                    or reasoning_parser.end_token in residual
+                ):
+                    reasoning_text, _ = extract(residual)
+            else:
+                parsed = tool_parser.extract_tool_calls(reasoning_text, request)
+                if parsed.tools_called:
+                    reasoning_text = parsed.content or None
     else:
         # Preserve raw reasoning boundaries; suffix cleanup runs on the visible
         # content after this extraction in each buffered route.
@@ -3304,9 +3348,30 @@ def _parse_tool_calls_with_parser(
     is preserved unchanged.
     """
     _undeclared_tool_dropped_this_parse.set(False)
+    parse_text = output_text
+    cfg = get_config()
+    from ..reasoning.think_parser import BaseThinkingReasoningParser
+
+    if (
+        not structured_tool_calls
+        and isinstance(cfg.reasoning_parser, BaseThinkingReasoningParser)
+        and output_text.lstrip().startswith(cfg.reasoning_parser.start_token)
+        and "<tool_call>" in output_text
+    ):
+        # Streaming promotes calls embedded in reasoning before tool parsing.
+        # Preserve that ordering in buffered routes; finalization still reads
+        # the original raw text to recover reasoning independently.
+        _, promoted = cfg.reasoning_parser.extract_reasoning(output_text)
+        if promoted:
+            parse_text = promoted
+    parse_request = request.model_dump() if hasattr(request, "model_dump") else request
+    if parse_request and parse_text != output_text:
+        parse_request = {**parse_request, "_reasoning_content_extracted": True}
     content, tool_calls = _run_tool_parser(
-        output_text, request, structured_tool_calls=structured_tool_calls
+        parse_text, parse_request, structured_tool_calls=structured_tool_calls
     )
+    if not tool_calls and parse_text != output_text:
+        content = output_text
     if not structured_tool_calls and get_config().reasoning_parser is None:
         request_dict = request.model_dump() if request else None
         if request_dict and request_dict.get("tools"):
@@ -3475,6 +3540,11 @@ def _run_tool_parser(
             ]
             return result.content or "", tool_calls
         else:
+            if cfg.tool_call_parser in ("glm47", "glm4"):
+                from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+                if output_text.lstrip().startswith(Glm47ContentFilter._ORPHANS):
+                    return result.content or "", None
             if (
                 parser._undeclared_dropped
                 or cfg.tool_call_parser == "qwen3_coder_xml"

@@ -114,6 +114,14 @@ class KimiToolParser(ToolParser):
                 )
 
         if tool_calls:
+            content = self.TOOL_CALL_PATTERN.sub("", model_output)
+            for marker in (
+                self.TOOL_CALLS_START,
+                self.TOOL_CALLS_START_ALT,
+                self.TOOL_CALLS_END,
+                self.TOOL_CALLS_END_ALT,
+            ):
+                content = content.replace(marker, "")
             return ExtractedToolCallInformation(
                 tools_called=True,
                 tool_calls=tool_calls,
@@ -140,6 +148,17 @@ class KimiToolParser(ToolParser):
         if not self._has_tool_section(current_text):
             return {"content": delta_text}
 
+        tail = ""
+        last_call_end = max(
+            (m.end() for m in self.TOOL_CALL_PATTERN.finditer(current_text)), default=0
+        )
+        if last_call_end:
+            for marker in (self.TOOL_CALLS_END, self.TOOL_CALLS_END_ALT):
+                end = current_text.find(marker, last_call_end)
+                if end >= 0:
+                    tail = current_text[max(len(previous_text), end + len(marker)) :]
+                    break
+
         if current_text.count(self.TOOL_CALL_END) > previous_text.count(
             self.TOOL_CALL_END
         ):
@@ -148,6 +167,8 @@ class KimiToolParser(ToolParser):
                 previous = self.extract_tool_calls(previous_text)
                 already = len(previous.tool_calls) if previous.tools_called else 0
                 return {
+                    "content": tail,
+                    "preserve_post_tool_content": True,
                     "tool_calls": [
                         {
                             "index": i,
@@ -161,7 +182,7 @@ class KimiToolParser(ToolParser):
                         for i, tc in enumerate(
                             result.tool_calls[already:], start=already
                         )
-                    ]
+                    ],
                 }
 
-        return None
+        return {"content": tail} if tail else None

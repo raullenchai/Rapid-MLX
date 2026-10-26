@@ -188,9 +188,10 @@ class Glm47ToolParser(ToolParser):
         valid_names = self._get_tool_names(request)
 
         # Find all tool call blocks
-        matches = self.FUNC_DETAIL_PATTERN.findall(cleaned_text)
-
-        for match in matches:
+        matches = self.FUNC_DETAIL_PATTERN.finditer(cleaned_text)
+        last_call_end = 0
+        for matched in matches:
+            match = matched.groups()
             func_name = match[0].strip() if match[0] else ""
             args_section = match[1] if len(match) > 1 and match[1] else ""
 
@@ -214,6 +215,7 @@ class Glm47ToolParser(ToolParser):
                     if key:
                         arguments[key] = value
 
+            last_call_end = matched.end()
             tool_calls.append(
                 {
                     "id": generate_tool_id(),
@@ -225,10 +227,13 @@ class Glm47ToolParser(ToolParser):
         # When tool calls are found, don't return reasoning text as content
         # GLM often outputs thinking/reasoning before tool calls without <think> tags
         if tool_calls:
+            content = cleaned_text[last_call_end:]
+            if request and request.get("_reasoning_content_extracted"):
+                content = self.FUNC_DETAIL_PATTERN.sub("", cleaned_text).strip()
             return ExtractedToolCallInformation(
                 tools_called=True,
                 tool_calls=tool_calls,
-                content=None,
+                content=content or None,
             )
         else:
             content_filter = Glm47ContentFilter()
@@ -283,6 +288,8 @@ class Glm47ToolParser(ToolParser):
                     previous = self.extract_tool_calls(previous_text, request)
                     already = len(previous.tool_calls) if previous.tools_called else 0
                     return {
+                        "content": result.content,
+                        "preserve_post_tool_content": True,
                         "tool_calls": [
                             {
                                 "index": i,
@@ -296,7 +303,7 @@ class Glm47ToolParser(ToolParser):
                             for i, tc in enumerate(
                                 result.tool_calls[already:], start=already
                             )
-                        ]
+                        ],
                     }
 
         delta_text = filtered_delta

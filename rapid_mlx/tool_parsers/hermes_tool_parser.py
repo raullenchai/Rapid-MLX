@@ -888,9 +888,7 @@ class HermesToolParser(ToolParser):
             request,
         )
         if result is not None:
-            if self._emitted_structured_calls and "<tool_call>" in result.get(
-                "content", ""
-            ):
+            if self._emitted_structured_calls:
                 result["preserve_post_tool_content"] = True
             self._stream_consumed = current_text
         return result
@@ -986,11 +984,7 @@ class HermesToolParser(ToolParser):
                             self._safe_content_prefix(current_text[cursor:])
                         )
                         formatted["content"] = "".join(residual)
-                        if "<tool_call>" not in formatted["content"]:
-                            formatted.pop("content")
-                        formatted["preserve_post_tool_content"] = (
-                            "<tool_call>" in formatted.get("content", "")
-                        )
+                        formatted["preserve_post_tool_content"] = True
                         self._emitted_structured_calls = len(result.tool_calls)
                         return formatted
 

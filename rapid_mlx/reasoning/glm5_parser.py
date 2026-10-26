@@ -34,11 +34,13 @@ class Glm5ReasoningParser(BaseThinkingReasoningParser):
         *,
         enable_thinking: bool | None = None,
         prompt_thinking_active: bool | None = None,
+        tool_parser_name: str | None = None,
     ) -> None:
         del enable_thinking
         self.reset_state()
         self._prompt_primed_thinking = prompt_thinking_active is True
         self._content_started = False
+        self._configure_tool_parser(tool_parser_name)
 
     def extract_reasoning_streaming(
         self,

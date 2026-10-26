@@ -154,7 +154,7 @@ def test_stream_valid_call_after_malformed_call_restores_prose_suppression():
         processor.process_chunk(_make_output(MALFORMED))
 
 
-def test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose():
+def test_stream_valid_call_preserves_same_chunk_trailing_prose():
     cfg = _make_cfg(
         enable_auto_tool_choice=True, tool_parser_instance=HermesToolParser(None)
     )
@@ -172,7 +172,7 @@ def test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose():
     content = "".join(
         event.content or "" for event in events if event.type in {"content", "finish"}
     )
-    assert "Suppressed." not in content
+    assert "Suppressed." in content
 
 
 def test_stream_malformed_then_valid_in_one_chunk_suppresses_only_final_prose():

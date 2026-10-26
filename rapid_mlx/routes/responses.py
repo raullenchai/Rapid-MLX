@@ -3454,6 +3454,10 @@ async def _stream_responses(
                 configure_parameters: Mapping[str, inspect.Parameter] = (
                     inspect.signature(configure_request).parameters
                 )
+                if "tool_parser_name" in configure_parameters:
+                    configure_kwargs["tool_parser_name"] = (
+                        cfg.tool_call_parser if filter_tools else None
+                    )
                 if "json_mode" in configure_parameters:
                     configure_kwargs["json_mode"] = _is_structured_output_requested(
                         getattr(openai_request, "response_format", None)

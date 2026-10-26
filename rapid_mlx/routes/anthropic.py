@@ -2,6 +2,7 @@
 """Anthropic Messages API endpoints — /v1/messages."""
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -2398,6 +2399,10 @@ async def _stream_anthropic_messages_impl(
                     chat_kwargs.get("enable_thinking"),
                     unconditional=True,
                     tools_requested=bool(chat_kwargs.get("tools")),
+                )
+            if "tool_parser_name" in inspect.signature(configure_request).parameters:
+                configure_kwargs["tool_parser_name"] = (
+                    cfg.tool_call_parser if filter_tools else None
                 )
             configure_request(**configure_kwargs)
         else:

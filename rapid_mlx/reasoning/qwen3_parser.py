@@ -150,15 +150,26 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
     # Keep delimiter routing active on every API surface even in thinking-off mode.
     sanitize_when_thinking_disabled = True
 
-    def configure_request(self, *, enable_thinking: bool | None = None) -> None:
+    def configure_request(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        tool_parser_name: str | None = None,
+    ) -> None:
         self.reset_state()
         self._thinking_disabled = enable_thinking is False
+        self._configure_tool_parser(tool_parser_name)
 
     def reset_state(self) -> None:
         super().reset_state()
         self._thinking_disabled = False
         self._undecided_text = ""
         self._boundary_seen = False
+        self._glm_tools = False
+        self._orphan_mode = False
+        self._orphan_checked = False
+        self._orphan_candidate = ""
+        self._promoted_content_seen = False
 
     def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
@@ -176,12 +187,18 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             self._boundary_seen = True
             self._undecided_text = ""
             previous_text, delta_text = "", current_text
-        return super().extract_reasoning_streaming(
+        result = super().extract_reasoning_streaming(
             previous_text, current_text, delta_text
         )
+        if result and result.content:
+            self._promoted_content_seen = True
+        return result
 
     def finish_stream(self) -> DeltaMessage | None:
-        text = getattr(self, "_undecided_text", "")
+        text = getattr(self, "_orphan_candidate", "") or getattr(
+            self, "_undecided_text", ""
+        )
+        self._orphan_candidate = ""
         self._undecided_text = ""
         return DeltaMessage(content=text) if text else None
 
@@ -282,7 +299,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # ``content`` is None so the empty assistant bubble
             # doesn't leak a wall of meta-cognition to the client.
             if enable_thinking is True:
-                return model_output.strip() or None, None
+                return self._promote_tool_calls(model_output.strip() or None, None)
             # #570 bare-text fallback: even without the explicit
             # ``enable_thinking=True`` signal (e.g. when callers leave
             # the kwarg defaulted), the chat template still injects
@@ -331,7 +348,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         finish_reason: str | None = None,
     ) -> DeltaMessage | None:
         """Flush genuine answer text without promoting an unfinished thought."""
-        if not accumulated_text:
+        if not accumulated_text or getattr(self, "_orphan_mode", False):
             return None
         if self.end_token in accumulated_text:
             held = self._held_tag_suffix_len
@@ -342,6 +359,8 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         if getattr(self, "_thinking_disabled", False):
             if not self._boundary_seen:
                 return self.finish_stream()
+            return None
+        if getattr(self, "_promoted_content_seen", False):
             return None
         stripped = accumulated_text.lstrip()
         if stripped.startswith(self.start_token):

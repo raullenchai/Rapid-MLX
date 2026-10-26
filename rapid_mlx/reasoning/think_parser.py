@@ -11,6 +11,7 @@ Supports three scenarios:
 3. No tags: pure content
 """
 
+import json
 import logging
 import re
 from abc import abstractmethod
@@ -43,6 +44,25 @@ _TOOL_CALL_CLOSED_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 # from being promoted as a faux tool call — a bare ``<tool_call>``
 # followed by free text never matches.
 _TOOL_CALL_UNCLOSED_RE = re.compile(r"<tool_call>\s*[\{<].*$", re.DOTALL)
+
+
+def _tool_call_close_index(text: str) -> int:
+    """Locate a wrapper closer outside a JSON argument string."""
+    first_close = text.find(_TOOL_CALL_END)
+    if first_close < 0:
+        return -1
+    from ..tool_parsers.json_prefix import tool_json_prefix
+
+    body_start = text.index(_TOOL_CALL_START) + len(_TOOL_CALL_START)
+    body = text[body_start:].lstrip()
+    body_start += len(text[body_start:]) - len(body)
+    if body.startswith("{"):
+        viable, end = tool_json_prefix(body)
+        if viable:
+            if end is None:
+                return -1
+            return text.find(_TOOL_CALL_END, body_start + end)
+    return text.find(_TOOL_CALL_END, body_start)
 
 
 def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
@@ -253,6 +273,17 @@ class BaseThinkingReasoningParser(ReasoningParser):
         self._in_tool_call = False
         self._tool_call_buffer = ""
         self._reasoning_carry = ""
+        self._native_openers = ()
+        self._native_envelopes = ()
+        self._native_offset = 0
+        self._orphan_mode = False
+        self._orphan_checked = False
+        self._orphan_candidate = ""
+
+    def finish_stream(self) -> DeltaMessage | None:
+        candidate = getattr(self, "_orphan_candidate", "")
+        self._orphan_candidate = ""
+        return DeltaMessage(content=candidate) if candidate else None
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
         """Return True iff the accumulated text shows an opened but
@@ -396,7 +427,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # bubble doesn't ship a wall of meta-cognition to the UI.
         # See #575.
         if enable_thinking is True:
-            return model_output.strip() or None, None
+            return self._promote_tool_calls(model_output.strip() or None, None)
         return None, model_output
 
     def extract_reasoning_streaming(
@@ -418,10 +449,120 @@ class BaseThinkingReasoningParser(ReasoningParser):
         ``<think>``-tag subclass (Qwen3 / DeepSeek-R1 / Glm4 /
         VibeThinker / …) without per-subclass duplication.
         """
+        handled, routed, previous_text, delta_text = self._route_leading_tool_wire(
+            previous_text, current_text, delta_text
+        )
+        if handled:
+            return routed
         msg = self._extract_reasoning_streaming_inner(
             previous_text, current_text, delta_text
         )
         return self._apply_tool_call_promotion(msg)
+
+    def _configure_tool_parser(self, parser_name: str | None) -> None:
+        from ..tool_parsers import ToolParserManager
+        from ..tool_parsers.streaming import WIRE_ENVELOPES
+
+        self._glm_tools = parser_name in ("glm47", "glm4")
+        formats = (
+            ToolParserManager.get_tool_parser(parser_name).EXPECTED_WIRE_FORMATS
+            if parser_name
+            else ()
+        )
+        self._native_envelopes = tuple(
+            pair for fmt in formats for pair in WIRE_ENVELOPES.get(fmt, ())
+        )
+        if any(
+            fmt in formats
+            for fmt in ("tool_call_json", "tool_call_xml_body", "glm_named_tool_call")
+        ):
+            self._native_envelopes += (("<tool_call>", "</tool_call>"),)
+        if "hy3_native" in formats:
+            self._native_envelopes += (("<tool_call:", "<end_of_tool_call:"),)
+        self._native_openers = tuple(pair[0] for pair in self._native_envelopes)
+        if self._glm_tools:
+            from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+            self._native_openers += Glm47ContentFilter._ORPHANS
+
+    def _route_leading_tool_wire(
+        self, previous_text: str, current_text: str, delta_text: str
+    ) -> tuple[bool, DeltaMessage | None, str, str]:
+        markers = getattr(self, "_native_openers", ())
+        if not markers or self._orphan_checked:
+            return False, None, previous_text, delta_text
+        if self._orphan_mode:
+            return (
+                True,
+                self._route_native_tail(previous_text, current_text, delta_text),
+                previous_text,
+                delta_text,
+            )
+        head = current_text.lstrip()
+        if head.startswith(markers):
+            self._orphan_mode = True
+            self._orphan_candidate = ""
+            return (
+                True,
+                self._route_native_tail("", current_text, current_text),
+                previous_text,
+                delta_text,
+            )
+        if any(marker.startswith(head) for marker in markers):
+            self._orphan_candidate = current_text
+            return True, None, previous_text, delta_text
+        self._orphan_checked = True
+        self._orphan_candidate = ""
+        return False, None, "", current_text
+
+    def _route_native_tail(
+        self, previous_text: str, current_text: str, delta_text: str
+    ) -> DeltaMessage:
+        if not self._native_offset:
+            for opener, closer in self._native_envelopes:
+                if current_text.lstrip().startswith(opener) and closer in current_text:
+                    close_index = (
+                        _tool_call_close_index(current_text)
+                        if opener == _TOOL_CALL_START
+                        else current_text.index(closer)
+                    )
+                    json_start = current_text.find("{", len(opener))
+                    if (
+                        opener.startswith(("<|tool", "<｜tool", "<tool_call:"))
+                        and 0 <= json_start < close_index
+                    ):
+                        try:
+                            _, json_end = json.JSONDecoder().raw_decode(
+                                current_text[json_start:]
+                            )
+                        except json.JSONDecodeError:
+                            continue
+                        close_index = current_text.find(closer, json_start + json_end)
+                    if close_index < 0:
+                        continue
+                    end = close_index + len(closer)
+                    if closer.endswith(":"):
+                        suffix_end = current_text.find(">", end)
+                        if suffix_end < 0:
+                            continue
+                        end = suffix_end + 1
+                    self._native_offset = end
+                    self._streaming_phase = "content"
+                    break
+        offset = self._native_offset
+        if not offset:
+            return DeltaMessage(content=delta_text)
+        wire_delta = current_text[min(len(previous_text), offset) : offset]
+        previous_tail = previous_text[offset:]
+        current_tail = current_text[offset:]
+        tail_delta = current_tail[len(previous_tail) :]
+        tail = self._handle_multi_block_after_close(
+            previous_tail, current_tail, tail_delta
+        )
+        return DeltaMessage(
+            content=wire_delta + ((tail.content or "") if tail else "") or None,
+            reasoning=tail.reasoning if tail else None,
+        )
 
     def _extract_reasoning_streaming_inner(
         self,
@@ -1100,11 +1241,22 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # Then unclosed regex on the already-stripped reasoning.
         closed: list[str] = []
 
-        def _collect_closed(match: re.Match[str]) -> str:
-            closed.append(match.group(0))
-            return ""
-
-        cleaned = _TOOL_CALL_CLOSED_RE.sub(_collect_closed, reasoning)
+        parts = []
+        cursor = 0
+        while True:
+            start = reasoning.find(_TOOL_CALL_START, cursor)
+            if start < 0:
+                parts.append(reasoning[cursor:])
+                break
+            close = _tool_call_close_index(reasoning[start:])
+            if close < 0:
+                parts.append(reasoning[cursor:])
+                break
+            end = start + close + len(_TOOL_CALL_END)
+            parts.append(reasoning[cursor:start])
+            closed.append(reasoning[start:end])
+            cursor = end
+        cleaned = "".join(parts)
 
         unclosed_match = _TOOL_CALL_UNCLOSED_RE.search(cleaned)
         unclosed_block: str | None = None
@@ -1246,8 +1398,23 @@ class BaseThinkingReasoningParser(ReasoningParser):
             # the think block ended mid-tool-call. Flush the buffered head
             # as content first, then append the inner's content.
             if self._reasoning_carry:
-                out_reasoning_parts.append(self._reasoning_carry)
-                source_segments.append(("reasoning", self._reasoning_carry))
+                interrupted_name = (
+                    getattr(self, "_glm_tools", False)
+                    and re.fullmatch(
+                        r"<tool_call>\s*[\w.:-]+\s*", self._reasoning_carry
+                    )
+                    and segment
+                    and (
+                        segment.lstrip().startswith("<arg_key>")
+                        or "<arg_key>".startswith(segment.lstrip())
+                    )
+                )
+                if interrupted_name:
+                    out_content_parts.append(self._reasoning_carry)
+                    source_segments.append(("content", self._reasoning_carry))
+                else:
+                    out_reasoning_parts.append(self._reasoning_carry)
+                    source_segments.append(("reasoning", self._reasoning_carry))
                 self._reasoning_carry = ""
             if self._in_tool_call and self._tool_call_buffer:
                 flushed, trailing_reasoning = _split_unclosed_at_prose_boundary(
@@ -1315,7 +1482,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
             if self._in_tool_call:
                 # Buffering. Look for </tool_call> close.
                 self._tool_call_buffer += remaining
-                end_idx = self._tool_call_buffer.find(_TOOL_CALL_END)
+                end_idx = _tool_call_close_index(self._tool_call_buffer)
                 if end_idx < 0:
                     # Whole chunk consumed by buffer — still open.
                     return
@@ -1373,7 +1540,23 @@ class BaseThinkingReasoningParser(ReasoningParser):
                     source_segments.append(("reasoning", prefix))
                 self._reasoning_carry = remaining[start_idx:]
                 return
-            if probe[j] not in ("{", "<"):
+            native_wire = False
+            if getattr(self, "_glm_tools", False):
+                name = re.match(r"[\w.:-]+\s*", probe[j:])
+                if name:
+                    tail = probe[j + name.end() :]
+                    boundaries = ("<arg_key>", _TOOL_CALL_END)
+                    native_wire = tail.startswith(boundaries)
+                    if not native_wire and any(
+                        marker.startswith(tail) for marker in boundaries
+                    ):
+                        prefix = remaining[:start_idx]
+                        if prefix:
+                            out_reasoning.append(prefix)
+                            source_segments.append(("reasoning", prefix))
+                        self._reasoning_carry = remaining[start_idx:]
+                        return
+            if probe[j] not in ("{", "<") and not native_wire:
                 # Prose mention — emit up to AND INCLUDING the bare
                 # ``<tool_call>`` tag as reasoning and keep scanning
                 # ``remaining`` past the opener for another candidate.

@@ -28,6 +28,15 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         Output: reasoning="reasoning content", content="final answer"
     """
 
+    def configure_request(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        tool_parser_name: str | None = None,
+    ) -> None:
+        self.reset_state()
+        self._configure_tool_parser(tool_parser_name)
+
     @property
     def start_token(self) -> str:
         return "<think>"
@@ -75,7 +84,7 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         # full rationale (#575).
         if self.end_token not in model_output and self.start_token not in model_output:
             if enable_thinking is True:
-                return model_output.strip() or None, None
+                return self._promote_tool_calls(model_output.strip() or None, None)
             return None, model_output
 
         # Use base class for standard case
@@ -117,6 +126,11 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         Returns:
             DeltaMessage with reasoning/content, or None to skip.
         """
+        handled, routed, previous_text, delta_text = self._route_leading_tool_wire(
+            previous_text, current_text, delta_text
+        )
+        if handled:
+            return routed
         # Check if any tags are in the current text
         has_tags = self.start_token in current_text or self.end_token in current_text
 
@@ -144,6 +158,9 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
                     prefix_parts.append(self._tool_call_buffer)
                     self._tool_call_buffer = ""
                     self._in_tool_call = False
+                if self._held_tag_suffix_len:
+                    prefix_parts.append(previous_text[-self._held_tag_suffix_len :])
+                    self._held_tag_suffix_len = 0
                 merged_content = "".join(prefix_parts) + delta_text
                 return DeltaMessage(content=merged_content)
             # Under threshold: delegate to base (defaults to reasoning
@@ -235,6 +252,8 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         Returns:
             DeltaMessage correction, or None if no correction needed.
         """
+        if getattr(self, "_orphan_mode", False):
+            return None
         if not self._saw_any_tag and accumulated_text:
             if getattr(self, "_prompt_primed_thinking", False):
                 return None
@@ -309,10 +328,12 @@ class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
         *,
         enable_thinking: bool | None = None,
         prompt_thinking_active: bool | None = None,
+        tool_parser_name: str | None = None,
     ) -> None:
         del enable_thinking
         self.reset_state()
         self._prompt_primed_thinking = prompt_thinking_active is True
+        self._configure_tool_parser(tool_parser_name)
 
     def extract_reasoning(
         self,

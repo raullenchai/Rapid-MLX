@@ -38,7 +38,7 @@ from tests.test_hermes_malformed_tool_feedback import (  # noqa: F401
     test_stream_preserves_trailing_prose_once_when_it_arrives_later,
     test_stream_preserves_trailing_prose_once_when_it_shares_the_close_chunk,
     test_stream_valid_call_after_malformed_call_restores_prose_suppression,
-    test_stream_valid_call_does_not_preserve_same_chunk_trailing_prose,
+    test_stream_valid_call_preserves_same_chunk_trailing_prose,
 )
 
 
@@ -1890,7 +1890,7 @@ class TestHermesStreamingFixes:
             current_text=first_complete + between,
             delta_text=between,
         )
-        assert r2 == {"content": between}
+        assert r2 == {"content": between, "preserve_post_tool_content": True}
 
         # Second tool call building (inside block, suppress)
         r3 = parser.extract_tool_calls_streaming(
