@@ -132,7 +132,7 @@ class TestBatchedEngineChatTemplateKwargs:
 
         async def generate(**kwargs):
             seen_kwargs.update(kwargs)
-            return "output"
+            return GenerationOutput(text="output")
 
         engine.generate = generate
 
@@ -151,7 +151,7 @@ class TestBatchedEngineChatTemplateKwargs:
 
         async def route_stream(stream, _router):
             stream["consumed"] = True
-            yield "output"
+            yield GenerationOutput(text="output")
 
         engine._stream_with_output_router = route_stream
 
@@ -163,7 +163,7 @@ class TestBatchedEngineChatTemplateKwargs:
             )
         ]
 
-        assert outputs == ["output"]
+        assert [output.text for output in outputs] == ["output"]
         assert received == {"reasoning_effort": "medium"}
 
     async def test_generate_with_schema_forwards_chat_template_kwargs(

@@ -1272,11 +1272,13 @@ class TestGenerationOutputFieldOrder:
             "prompt_compression",
             # #4087 appended request timing after prompt compression.
             "timing_metrics",
+            # Internal prompt evidence preserves all prior positional slots.
+            "prompt_parse_context",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "
             f"→ matched_stop → spec_decode_metrics → prompt_compression "
-            f"→ timing_metrics) "
+            f"→ timing_metrics → prompt_parse_context) "
             f"to preserve "
             f"positional-arg compatibility "
             f"for the pre-v0.6.65 surface. Current trailing fields "

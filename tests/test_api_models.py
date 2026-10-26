@@ -1092,7 +1092,7 @@ class TestStreamingModels:
         from rapid_mlx.engine.base import GenerationOutput
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1136,7 +1136,7 @@ class TestStreamingModels:
         from rapid_mlx.engine.base import GenerationOutput
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1186,7 +1186,7 @@ class TestStreamingModels:
 
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1222,7 +1222,7 @@ class TestStreamingModels:
 
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1259,7 +1259,7 @@ class TestStreamingModels:
         from rapid_mlx.engine.base import GenerationOutput
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1300,7 +1300,7 @@ class TestStreamingModels:
 
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1334,7 +1334,7 @@ class TestStreamingModels:
         from rapid_mlx.engine.base import GenerationOutput
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"
@@ -1374,7 +1374,7 @@ class TestStreamingModels:
 
         from rapid_mlx.engine.batched import BatchedEngine
 
-        engine = BatchedEngine.__new__(BatchedEngine)
+        engine = BatchedEngine("test-model", force_text=True)
         engine._loaded = True
         engine._prepare_cache_stable_messages = lambda messages: (messages, None)
         engine._apply_chat_template = lambda *_args, **_kwargs: "prompt"

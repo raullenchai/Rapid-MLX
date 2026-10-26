@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from rapid_mlx.engine import batched
+from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.engine.batched import BatchedEngine
 from rapid_mlx.prompt_host_cache import PromptHostCache
 from rapid_mlx.prompt_token_reuse import (
@@ -454,7 +455,7 @@ async def test_system_tools_warm_prompt_contains_forced_assistant_prefix():
 
     async def generate(**kwargs):
         seen.update(kwargs)
-        return None
+        return GenerationOutput(text="")
 
     engine.generate = generate
     await engine.chat(messages, tools=tools, forced_assistant_prefix="<tool_call>")
@@ -485,7 +486,7 @@ async def test_native_system_only_chat_boundary_and_forced_prefix():
 
     async def generate(**kwargs):
         seen.update(kwargs)
-        return None
+        return GenerationOutput(text="")
 
     engine.generate = generate
     messages = [{"role": "system", "content": "guidance"}]
