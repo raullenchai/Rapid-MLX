@@ -338,6 +338,23 @@ class BaseThinkingReasoningParser(ReasoningParser):
             _, _, after_start = text.partition(self.start_token)
             # Split on end token
             reasoning, _, content = after_start.partition(self.end_token)
+            if self.start_token in reasoning:
+                # Repeated openers do not introduce a nested reasoning scope.
+                # Match the streaming walk and retain the answer between closers.
+                phase = "reasoning"
+                parts: dict[str, list[str]] = {"reasoning": [], "content": []}
+                pattern = f"({re.escape(self.start_token)}|{re.escape(self.end_token)})"
+                for part in re.split(pattern, after_start):
+                    if part == self.start_token:
+                        phase = "reasoning"
+                    elif part == self.end_token:
+                        phase = "content"
+                    else:
+                        parts[phase].append(part)
+                return self._promote_tool_calls(
+                    "".join(parts["reasoning"]).strip() or None,
+                    "".join(parts["content"]).strip() or None,
+                )
             # Sweep any residual think blocks the naive first-pair
             # partition left in ``content``. The first-pair split
             # consumes ONLY the first ``<think>…</think>`` block, so
@@ -822,227 +839,16 @@ class BaseThinkingReasoningParser(ReasoningParser):
         end_in_prev: bool,
         end_in_delta: bool,
     ) -> DeltaMessage | None:
-        """Handle case where <think> tag is explicitly in the output."""
-        start_in_delta = self.start_token in delta_text
+        """Use the same incremental marker walker for every explicit block.
 
-        if start_in_prev:
-            # We're after the start token. Use emit-by-position
-            # bookkeeping uniformly so held partial-tag bytes from
-            # previous deltas (PR #715 bundle, fuzz finding C — codex
-            # r1 P2 follow-up) are correctly flushed whether the end
-            # tag arrives in this delta, straddles it, or is still
-            # pending.
-            #
-            # ``emitted_so_far`` is the position in ``current_text``
-            # up through which we've already emitted reasoning bytes
-            # on prior deltas. We compute it from the position right
-            # after the start tag (so the ``<think>`` opener bytes
-            # are never counted) PLUS however many bytes after the
-            # opener were already emitted on prior deltas (i.e.
-            # previous_text minus the held-suffix region). When the
-            # opener completed on the previous delta, previous_text
-            # ends exactly at or before the end of ``<think>`` and the
-            # ``max()`` keeps emitted_so_far at the post-opener start.
-            start_idx_cur = current_text.find(self.start_token)
-            after_start_in_current = start_idx_cur + len(self.start_token)
-            prev_held = self._held_tag_suffix_len
-            already_emitted_after_opener = max(
-                0, len(previous_text) - prev_held - after_start_in_current
-            )
-            emitted_so_far = after_start_in_current + already_emitted_after_opener
-            if end_in_prev:
-                # We're past the FIRST ``</think>`` — but the model
-                # may have re-entered reasoning by emitting another
-                # ``<think>`` after the answer (the 2026-06-19
-                # round-1 fuzz repro on phi-4-mini-reasoning-4bit
-                # emits 6–7 think blocks across a single 2 K-token
-                # response when ``reasoning_max_tokens`` truncates
-                # the first one). Delegate to a multi-block-aware
-                # router so subsequent ``<think>…</think>`` pairs
-                # are correctly split instead of leaking the
-                # literal tag bytes into ``content`` via the prior
-                # "all delta = content" fallback.
-                #
-                # Codex r1 BLOCKING on PR #722: do NOT clear
-                # ``_held_tag_suffix_len`` here. The held suffix
-                # from the prior chunk encodes a partial tag that
-                # may STRADDLE into this delta (e.g. prev ended
-                # with ``A<thi``, delta is ``nk>R``) — the router
-                # needs to see the held value to back its scan
-                # window up by that many bytes and recognise the
-                # completed straddle. The router resets the held
-                # value itself based on this delta's trailing
-                # partial-tag suffix.
-                return self._handle_multi_block_after_close(
-                    previous_text, current_text, delta_text
-                )
-            # End tag may be in current_text (delta or straddle) or
-            # still pending.
-            end_idx_cur = current_text.find(self.end_token)
-            if end_idx_cur >= 0:
-                # End tag is complete in current_text. Emit all
-                # un-emitted reasoning bytes up to the end tag, then
-                # any post-tag bytes as content.
-                self._held_tag_suffix_len = 0
-                # Reasoning portion: everything from emitted_so_far up
-                # to the start of the end tag, but clipped so we don't
-                # re-emit prefix bytes that were part of the
-                # ``<think>`` opener (when start_in_prev is True the
-                # opener has already been consumed; if held bytes
-                # were ALSO consumed as part of the now-complete end
-                # tag, those bytes must be excluded from reasoning).
-                reasoning_part = current_text[emitted_so_far:end_idx_cur]
-                content_part = current_text[end_idx_cur + len(self.end_token) :]
-                # ``content_part`` includes everything after the end
-                # tag in current_text — but only the portion in
-                # ``delta_text`` is new. Anything from ``previous_text``
-                # past the end tag was already emitted on a prior
-                # delta. Slice to keep only the new content bytes.
-                prev_len = len(current_text) - len(delta_text)
-                content_start_in_current = end_idx_cur + len(self.end_token)
-                if content_start_in_current < prev_len:
-                    content_part = content_part[prev_len - content_start_in_current :]
-                # ``reasoning_part`` may be empty if the held bytes
-                # turned out to be the start of the end tag (e.g. we
-                # held ``</thi`` and now see ``nk>``); in that case
-                # ``emitted_so_far`` already passes ``end_idx_cur``
-                # and reasoning_part is empty — OK.
-                if end_idx_cur < emitted_so_far:
-                    reasoning_part = ""
-                # F-100: synchronise ``_streaming_phase`` with the
-                # post-close state so a SUBSEQUENT delta routed through
-                # the multi-block dispatch starts from the correct phase
-                # rather than inheriting whatever the SSE-boundary
-                # recovery branch left behind (a split-opener earlier in
-                # the same request would otherwise keep the phase at
-                # ``"reasoning"`` and leak post-``</think>`` bytes into
-                # ``reasoning_content``).
-                self._streaming_phase = "content"
-                return DeltaMessage(
-                    reasoning=reasoning_part or None,
-                    content=content_part or None,
-                )
-            # End tag not yet in current_text. Withhold any trailing
-            # partial-tag suffix so the next delta can complete it.
-            held = self._held_partial_tag_len(current_text)
-            safe_end = len(current_text) - held
-            self._held_tag_suffix_len = held
-            if safe_end <= emitted_so_far:
-                return None
-            emit = current_text[emitted_so_far:safe_end]
-            if not emit:
-                return None
-            return DeltaMessage(reasoning=emit)
-
-        elif start_in_delta:
-            # Start token is in this delta
-            start_idx = delta_text.find(self.start_token)
-
-            if end_in_delta:
-                # Both tokens in this delta. Use the multi-block router
-                # so a delta carrying ``<think>R1</think>A<think>R2</think>B…``
-                # (the model emitted multiple ``<think>`` blocks in a
-                # single SSE chunk — observed on small thinking models
-                # with low ``stream_interval`` settings or fast-batched
-                # output) splits cleanly without leaking the literal
-                # tag bytes of the second-and-later blocks into
-                # ``content``. 2026-06-19 round-1 fuzz follow-on.
-                # Pre-fix the single-pair partition below consumed only
-                # the FIRST opener/closer and emitted the rest as
-                # content verbatim.
-                return self._handle_multi_block_after_close(
-                    previous_text, current_text, delta_text
-                )
-            else:
-                # Only start token - beginning of reasoning
-                reasoning_part = delta_text[start_idx + len(self.start_token) :]
-                return DeltaMessage(
-                    reasoning=reasoning_part if reasoning_part else None
-                )
-
-        # SSE-boundary recovery (PR #715 bundle, fuzz finding C): the
-        # start_token straddles ``previous_text`` and ``delta_text`` —
-        # ``start_in_current=True`` but neither ``start_in_prev`` nor
-        # ``start_in_delta`` is True. The Case-3 withhold in
-        # ``extract_reasoning_streaming`` already held the matching
-        # suffix of the previous delta, so we ONLY need to emit the
-        # portion of ``delta_text`` that lands AFTER the now-complete
-        # start_token. Pre-withhold (without this branch) the trailing
-        # bytes of the tag (e.g. ``nk>``) would fall through to the
-        # old ``return DeltaMessage(content=delta_text)`` fallback and
-        # leak literally into ``content`` — the original live-fuzz
-        # bug shape on phi-4-mini-reasoning / nanbeige4.1.
-        #
-        # Codex r2 P2 follow-up: clear ``_held_tag_suffix_len`` after
-        # consuming the straddle. The held bytes were part of the
-        # start tag (not pending reasoning) and on the NEXT delta the
-        # ``start_in_prev`` branch's emit-by-position bookkeeping uses
-        # the held value to compute ``already_emitted_after_opener``.
-        # Leaving it non-zero would cause the bookkeeping to treat
-        # the just-emitted reasoning bytes as "still un-emitted" and
-        # re-emit them, duplicating the streamed reasoning (codex
-        # caught this with the ``['<thi', 'nk>Okay', ' more']`` repro).
-        start_idx_cur = current_text.find(self.start_token)
-        prev_len = len(current_text) - len(delta_text)
-        # Bytes of delta_text BEFORE the start_token's last char —
-        # these are the tail of an in-progress tag whose head sits in
-        # previous_text. They're tag bytes, not user-visible text;
-        # drop them.
-        after_start_in_current = start_idx_cur + len(self.start_token)
-        # Number of delta_text chars that fall before the end of the
-        # start tag (these are tag chars, drop them).
-        tag_overlap = max(0, after_start_in_current - prev_len)
-        reasoning_part = delta_text[tag_overlap:] if delta_text else ""
-        if end_in_delta:
-            # End tag also lands in this delta — split.
-            end_idx = reasoning_part.find(self.end_token)
-            if end_idx >= 0:
-                content_part = reasoning_part[end_idx + len(self.end_token) :]
-                reasoning_part = reasoning_part[:end_idx]
-                self._held_tag_suffix_len = 0
-                # F-100: synchronise ``_streaming_phase`` with the
-                # post-close state so a SUBSEQUENT delta routed through
-                # the multi-block dispatch (``start_in_prev AND
-                # end_in_prev`` after this) starts from the correct
-                # phase instead of defaulting to ``in_reasoning_prev =
-                # False``. We just emitted the close inside this delta;
-                # post-close state is ``content``.
-                self._streaming_phase = "content"
-                return DeltaMessage(
-                    reasoning=reasoning_part or None,
-                    content=content_part or None,
-                )
-        # Codex r4 P2 follow-up: when the same chunk that completes a
-        # split opener ALSO ends with a partial ``</think>`` (e.g.
-        # chunks ``"<thi"``, ``"nk>OK</thi"``, ``"nk>ans"``), we must
-        # withhold the trailing partial-end-tag bytes so they don't
-        # leak literally into ``reasoning_content``. Reuse the same
-        # ``_held_partial_tag_len`` machinery as the Case-3 / start_in_prev
-        # branches so the next delta's ``start_in_prev`` path can
-        # complete the close cleanly.
-        held = self._held_partial_tag_len(current_text)
-        self._held_tag_suffix_len = held
-        if held > 0 and reasoning_part:
-            # Strip the trailing partial-tag bytes from this emit.
-            # The withhold is measured on ``current_text``; convert to
-            # a slice on ``reasoning_part`` (which is the suffix of
-            # delta_text after the opener overlap).
-            safe_end_in_current = len(current_text) - held
-            # Position in current_text where reasoning_part starts:
-            reasoning_start_in_current = prev_len + tag_overlap
-            keep = max(0, safe_end_in_current - reasoning_start_in_current)
-            reasoning_part = reasoning_part[:keep]
-        # F-100: synchronise ``_streaming_phase`` with the just-opened
-        # block so a SUBSEQUENT delta routed through the multi-block
-        # dispatch (``start_in_prev AND end_in_prev`` after this) starts
-        # from the correct phase. We just emitted the opener inside this
-        # delta; post-opener state is ``reasoning``. Without this seed,
-        # ``_handle_multi_block_after_close`` falls back to
-        # ``in_reasoning_prev = False`` and the next-delta body of a
-        # second ``<think>`` block leaks into ``content`` (F-100 repro
-        # tail: ``Okay`` / ``second think`` after a split second opener).
-        self._streaming_phase = "reasoning"
-        return DeltaMessage(reasoning=reasoning_part or None)
+        Duplicate openers are idempotent: the first closer returns to content.
+        This also withholds partial closers in the chunk containing the opener.
+        """
+        if self._streaming_phase is None:
+            self._streaming_phase = "content" if end_in_prev else "reasoning"
+        return self._handle_multi_block_after_close(
+            previous_text, current_text, delta_text
+        )
 
     def _handle_multi_block_after_close(
         self,
