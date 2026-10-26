@@ -591,7 +591,17 @@ def estimate_repo_size_bytes(repo_id: str) -> int | None:
     scares people away from a download that would have taken seconds.
     """
     try:
-        info = _model_info_with_timeout(repo_id, _HF_API_TIMEOUT_SECONDS)
+        from ._mirror import _packaged_digest_info
+        from .model_aliases import resolve_revision, subfolder_allow_patterns
+
+        pin = resolve_revision(repo_id)
+        info = (
+            _packaged_digest_info(repo_id, pin, subfolder_allow_patterns(repo_id))
+            if pin
+            else None
+        )
+        if info is None:
+            info = _model_info_with_timeout(repo_id, _HF_API_TIMEOUT_SECONDS)
     except Exception:
         return None
 

@@ -1661,11 +1661,25 @@ def _check_disk_space(
         from huggingface_hub import model_info, try_to_load_from_cache
         from huggingface_hub.constants import HF_HUB_CACHE
 
-        info = (
-            model_info(model_name, revision=revision_override, files_metadata=True)
-            if revision_override is not None
-            else model_info(model_name, files_metadata=True)
+        from rapid_mlx._mirror import _packaged_digest_info
+        from rapid_mlx.model_aliases import subfolder_allow_patterns
+
+        selection = (
+            allow_patterns
+            if allow_patterns is not None
+            else subfolder_allow_patterns(model_name)
         )
+        info = (
+            _packaged_digest_info(model_name, revision_override, selection)
+            if revision_override is not None
+            else None
+        )
+        if info is None:
+            info = (
+                model_info(model_name, revision=revision_override, files_metadata=True)
+                if revision_override is not None
+                else model_info(model_name, files_metadata=True)
+            )
         revision = getattr(info, "sha", None)
         if allow_patterns is not None:
             from fnmatch import fnmatchcase
@@ -2700,8 +2714,8 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
             return (
                 f"  Error: the configured mirror cannot verify every file for "
                 f"'{rendered_model_id}' at its pinned revision.\n"
-                "  Check that the mirror has a complete revision manifest and "
-                "matching files, or restore Hub access before retrying."
+                "  Check the packaged model digests and mirror files, "
+                "or restore Hub access before retrying."
             )
 
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
@@ -11168,6 +11182,12 @@ def _resolve_variant_allow_patterns(
     # None/empty/both cases all returned or raised above), so ``requested`` is
     # a real folder name string.
     requested = f"{bits}bit" if bits else (fmt or "")
+    pattern = f"{_escape_glob_literal(requested)}/*"
+    if revision:
+        from rapid_mlx._mirror import _packaged_digest_info
+
+        if _packaged_digest_info(repo_id, revision, [pattern]) is not None:
+            return [pattern]
     try:
         tree = list(
             HfApi().list_repo_tree(
@@ -11181,7 +11201,7 @@ def _resolve_variant_allow_patterns(
         raise VariantNotFoundError(repo_id, requested, available=folders)
     # The folder is validated to exist literally; escape glob metacharacters so
     # a weird folder name can't broaden the match to other siblings.
-    return [f"{_escape_glob_literal(requested)}/*"]
+    return [pattern]
 
 
 class VariantNotFoundError(Exception):

@@ -345,6 +345,9 @@ def test_pull_uses_revision_override_in_existing_pipeline(
 
     from rapid_mlx import _mirror
 
+    # The fixture creates only a minimal synthetic snapshot for this real
+    # alias; keep this test focused on revision plumbing, not its inventory.
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *args: None)
     monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
     monkeypatch.setattr(cli, "_print_pull_summary", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_sync_pulled_variant_marker", lambda *a: None)
@@ -372,7 +375,10 @@ def test_pull_uses_revision_override_in_existing_pipeline(
 def test_metadata_and_variant_probes_use_pin(monkeypatch, cache, pinned_name):
     import huggingface_hub
 
-    from rapid_mlx import server
+    from rapid_mlx import _mirror, server
+
+    # Exercise the legacy Hub metadata probe with a synthetic inventory.
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *args: None)
 
     info = Mock(return_value=SimpleNamespace(sha=OTHER, siblings=[]))
     monkeypatch.setattr(

@@ -306,6 +306,9 @@ def test_subfolder_url_is_joined_once(catalog_base, expected):
 def test_subfolder_catalog_base_downloads_without_hf_fallback(tmp_path, monkeypatch):
     import hashlib
 
+    # This synthetic one-file listing intentionally does not represent the
+    # now-packaged full inventory for the real catalog alias.
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *args: None)
     repo = "LiquidAI/LFM2.5-2.6B-MLX"
     revision = "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
     payload = b"x" * 100

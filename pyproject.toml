@@ -632,6 +632,7 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 [tool.setuptools.package-data]
 rapid_mlx = [
     "aliases.json",
+    "model_digests.json",
     "model_catalog_lock.json",
     "utils/kimi_tokenizer/LICENSE",
     "utils/kimi_tokenizer/PROVENANCE.md",

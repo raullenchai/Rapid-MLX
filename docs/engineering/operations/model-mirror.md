@@ -9,8 +9,9 @@ source is also an error because fallback downloads cannot work.
 
 Checkpoints that clients pull at a pinned commit are audited at that commit,
 not at the default branch. If the pinned commit no longer exists upstream, the
-audit reports `hf_unavailable` with the pinned revision: every cold pull of that
-alias fails, and the fix is a client re-pin, not a mirror re-sync.
+audit reports `hf_unavailable` with the pinned revision. A packaged digest can
+still authorize an exact-byte mirror pull; an unlisted pin needs a client
+re-pin or restored Hub access.
 
 ## Intentionally unmirrored repositories
 
@@ -45,28 +46,37 @@ the commit a pinned client pulls — the catalog alias pin, or the image loader
 pin in `IMAGE_MODEL_REVISIONS` when the alias has none — when `--revision` is
 omitted, and rejects an explicit conflicting revision before listing or
 uploading files. The existing per-file mirror layout and verification remain
-unchanged. Recovery after upstream deletes the commit is separate work (#4994);
-an unavailable pin still fails closed.
+unchanged. Packaged digests allow an exact-byte mirror pull when the Hub pin is
+unavailable; a missing or mismatched mirror file still fails closed.
 
-### Missing upstream image revisions
+### Packaged pinned-model digests
 
-When upstream returns `RevisionNotFoundError` for an immutable pin, the client
-requires `/<owner>/<repo>/.rapid-mlx/revisions/<commit>.json` on the configured
-mirror. The manifest must identify the exact `repo_id` and `revision`, include
-`file_inventory` (the complete list of paths at that revision), and list
-`files`, each with a safe repository-relative `path`, nonnegative integer `size`,
-and either a lowercase `sha256` (file bytes) or `git_oid` (Git blob hash).
-Every inventory path must have exactly one hashed file entry, with no extras or
-duplicates; partial hash manifests are rejected even for wildcard selections.
-The configured mirror is the trust root for this recovery metadata; mutable
-catalog entries and object headers cannot substitute for it. Operators must
-preserve manifests from the original reviewed revision, never reconstruct them
-from a newer upstream revision. This change does not publish manifests or write
-to the mirror.
+`rapid_mlx/model_digests.json` ships with the wheel. For each mirrored pinned
+alias and selected runtime asset, it records the exact commit, selected file
+paths, sizes, and LFS SHA-256 or Git blob IDs. The downloader reads this file
+before any Hub metadata request and verifies every R2 byte against it. The
+mirror catalog still determines the download URL, but neither the catalog nor
+bucket objects may supply expected hashes. `.gitattributes` is omitted because
+it is not runtime data and is absent from some mirror repositories.
+The puller's disk and interactive size checks use the same package inventory
+for pinned aliases, so those preflights do not need a Hub request either.
 
-The existing mirror downloader checks each selected file against these hashes,
-including cached files. Missing or invalid manifests, unavailable mirror files,
-and integrity mismatches fail closed. No moving upstream branch is substituted.
+After changing an alias pin, file selection, or mirror exclusion, regenerate
+while the Hub is reachable:
+
+```bash
+python scripts/build_model_digests.py
+python scripts/build_model_digests.py --check
+```
+
+CI runs `--check` offline and compares selected file paths with
+`scripts/model_digest_inventory.json`; it fails on missing files, missing
+entries, mismatched revisions/selections, or invalid digests. Regeneration
+updates both files from the same Hub snapshot. An
+unlisted or unpinned repository keeps the normal Hub metadata path. A packaged
+pinned pull with a missing, corrupt, or incomplete mirror file fails closed
+when the Hub is unavailable.
+
 The daily mirror workflow separately checks all image checkpoint and auxiliary
 runtime-asset pins upstream in the `image-pin-resolution` job; mirror availability
 cannot hide a dangling upstream pin.

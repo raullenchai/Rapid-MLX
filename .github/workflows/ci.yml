@@ -167,6 +167,9 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check .
 
+      - name: Check packaged model digest coverage offline
+        run: python scripts/build_model_digests.py --check
+
       # PF-3 — all GitHub Actions are immutable 40-char commit SHA pins.
       # Dependabot or a reviewed PR is required to advance an action.
       - name: GitHub Actions SHA pinning

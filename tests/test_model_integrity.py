@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -94,8 +95,8 @@ def test_auth_errors_do_not_use_mirror_recovery(snapshot, monkeypatch, status):
 
     monkeypatch.setattr("huggingface_hub.HfApi.model_info", denied)
     monkeypatch.setattr(
-        "rapid_mlx._mirror._revision_manifest_info",
-        lambda *args: pytest.fail("authentication failure used mirror recovery"),
+        "rapid_mlx._mirror._packaged_digest_info",
+        lambda *args: None,
     )
     with pytest.raises(HfHubHTTPError):
         verify_snapshot("test/integrity", path, revision=path.name)
@@ -193,106 +194,60 @@ def test_offline_unknown_snapshot_never_queries_metadata(snapshot):
 
 
 @pytest.mark.parametrize("commit_argument", ["revision", "resolved_revision"])
-@pytest.mark.parametrize(
-    "failure",
-    [
-        "missing",
-        "timeout",
-        "connect",
-        "requests_connect",
-        "requests_timeout",
-        429,
-        500,
-        502,
-        503,
-        504,
-    ],
-)
-def test_missing_explicit_pin_uses_validated_mirror_manifest(
-    snapshot, monkeypatch, commit_argument, failure
+def test_explicit_pin_uses_packaged_digests_offline(
+    snapshot, monkeypatch, commit_argument
 ):
-    from huggingface_hub.errors import RevisionNotFoundError
-
     from rapid_mlx import _mirror
 
-    path, info, calls = snapshot
-    commit_kwargs = {commit_argument: path.name}
-
-    def missing(*args, **kwargs):
-        import httpx
-        import requests
-        from huggingface_hub.errors import HfHubHTTPError
-
-        if failure == "timeout":
-            raise TimeoutError("metadata deadline exceeded")
-        if failure == "connect":
-            raise httpx.ConnectError("metadata transport unavailable")
-        if failure == "requests_connect":
-            raise requests.ConnectionError("metadata transport unavailable")
-        if failure == "requests_timeout":
-            raise requests.Timeout("metadata transport deadline exceeded")
-        if isinstance(failure, int):
-            raise HfHubHTTPError(
-                "metadata temporarily unavailable",
-                response=httpx.Response(
-                    failure, request=httpx.Request("GET", "https://hub.invalid")
-                ),
-            )
-        raise RevisionNotFoundError(
-            "removed pin",
-            response=httpx.Response(
-                404, request=httpx.Request("GET", "https://hub.invalid")
-            ),
-        )
-
-    monkeypatch.setattr("huggingface_hub.HfApi.model_info", missing)
-    manifest = {
-        "repo_id": "test/integrity",
-        "revision": path.name,
-        "file_inventory": ["model.safetensors", "config.json"],
-        "files": [
-            {
-                "path": "model.safetensors",
-                "size": info.siblings[0].size,
-                "sha256": info.siblings[0].lfs["sha256"],
-            },
-            {"path": "config.json", "size": 2, "git_oid": info.siblings[1].blob_id},
-        ],
+    path, info, _ = snapshot
+    packaged = {
+        "schema_version": 1,
+        "aliases": {
+            "test": {
+                "repo": "test/integrity",
+                "revision": path.name,
+                "allow_patterns": ["*.safetensors"],
+                "files": [
+                    {
+                        "path": "model.safetensors",
+                        "size": info.siblings[0].size,
+                        "sha256": info.siblings[0].lfs["sha256"],
+                    }
+                ],
+            }
+        },
     }
-    requests = []
-    monkeypatch.setattr(_mirror, "_mirror_base", lambda: "https://mirror.invalid")
+    digest_path = path.parent / "model_digests.json"
+    digest_path.write_text(json.dumps(packaged))
+    monkeypatch.setattr(_mirror, "__file__", str(path.parent / "_mirror.py"))
     monkeypatch.setattr(
-        _mirror,
-        "_fetch_json_with_status",
-        lambda url: requests.append(url) or (manifest, 200),
+        "huggingface_hub.HfApi.model_info",
+        lambda *args, **kwargs: pytest.fail("Hub queried"),
     )
-    verify_snapshot(
-        "test/integrity", path, **commit_kwargs, allow_patterns="*.safetensors"
-    )
-    assert requests == [
-        f"https://mirror.invalid/test/integrity/.rapid-mlx/revisions/{path.name}.json"
-    ]
-    # The untouched selected receipt remains usable offline without metadata.
+    kwargs = {commit_argument: path.name, "allow_patterns": "*.safetensors"}
+    verify_snapshot("test/integrity", path, **kwargs, local_files_only=True)
     verify_snapshot(
         "test/integrity",
         path,
-        **commit_kwargs,
-        allow_patterns="*.safetensors",
+        **kwargs,
+        filenames=["model.safetensors"],
         local_files_only=True,
     )
+    weight = path / "model.safetensors"
+    original_weight = weight.read_bytes()
+    weight.unlink()
+    with pytest.raises(ModelIntegrityError, match="packaged files are missing"):
+        verify_snapshot("test/integrity", path, **kwargs, local_files_only=True)
+    weight.write_bytes(original_weight)
+    changed = json.loads(digest_path.read_text())
+    changed["aliases"]["test"]["files"][0]["sha256"] = "0" * 64
+    digest_path.write_text(json.dumps(changed))
+    with pytest.raises(ModelIntegrityError, match="content hash mismatch"):
+        verify_snapshot("test/integrity", path, **kwargs, local_files_only=True)
+    digest_path.write_text(json.dumps(packaged))
     (path / "model.safetensors").write_bytes(b"corruption!")
-    with pytest.raises(ModelIntegrityError):
-        verify_snapshot(
-            "test/integrity", path, **commit_kwargs, allow_patterns="*.safetensors"
-        )
-    count = len(requests)
-    with pytest.raises(ModelIntegrityError, match="Offline integrity"):
-        verify_snapshot("test/integrity", path, **commit_kwargs, local_files_only=True)
-    assert len(requests) == count
-    # Missing inventory or wrong revision cannot authorize recovered content.
-    manifest["file_inventory"].append("missing")
-    with pytest.raises(ModelIntegrityError, match="no valid exact-revision"):
-        verify_snapshot("test/integrity", path, **commit_kwargs)
+    with pytest.raises(ModelIntegrityError, match="content hash mismatch"):
+        verify_snapshot("test/integrity", path, **kwargs, local_files_only=True)
 
 
 @pytest.mark.parametrize(
@@ -598,3 +553,55 @@ def test_invalid_nested_packaged_manifest_is_refused(
     )
     with pytest.raises(ModelIntegrityError, match="repair the installation"):
         verify_snapshot("test/integrity", path)
+
+
+def test_explicit_pin_without_packaged_digests_reports_hub_outage(
+    snapshot, monkeypatch
+):
+    path, _, _ = snapshot
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("blocked")),
+    )
+    with pytest.raises(ModelIntegrityError, match="Hub integrity metadata unavailable"):
+        verify_snapshot("test/integrity", path, revision=path.name)
+
+
+def test_packaged_digests_accept_hub_cache_gitattributes(snapshot, monkeypatch):
+    from rapid_mlx import _mirror
+
+    path, info, _ = snapshot
+    (path / ".gitattributes").write_text("*.safetensors filter=lfs\n")
+    payload = {
+        "aliases": {
+            "test": {
+                "repo": "test/integrity",
+                "revision": path.name,
+                "allow_patterns": None,
+                "files": [
+                    {
+                        "path": "model.safetensors",
+                        "size": info.siblings[0].size,
+                        "sha256": info.siblings[0].lfs["sha256"],
+                    },
+                    {
+                        "path": "config.json",
+                        "size": info.siblings[1].size,
+                        "git_oid": info.siblings[1].blob_id,
+                    },
+                ],
+            }
+        }
+    }
+    (path.parent / "model_digests.json").write_text(json.dumps(payload))
+    monkeypatch.setattr(_mirror, "__file__", str(path.parent / "_mirror.py"))
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info",
+        lambda *args, **kwargs: pytest.fail("Hub queried"),
+    )
+    verify_snapshot("test/integrity", path, revision=path.name, local_files_only=True)
+    (path / "config.json").unlink()
+    with pytest.raises(ModelIntegrityError, match="packaged files are missing"):
+        verify_snapshot(
+            "test/integrity", path, revision=path.name, local_files_only=True
+        )

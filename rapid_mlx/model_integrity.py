@@ -74,6 +74,15 @@ def verify_snapshot(
         if filenames is not None
         else None
     )
+    from rapid_mlx._mirror import _packaged_digest_info
+
+    packaged = _packaged_digest_info(
+        repo_id, commit, patterns if not allow_all else None
+    )
+    if packaged is not None:
+        # Hub-created snapshots may contain LFS tracking rules even though the
+        # mirror's package-owned runtime inventory intentionally omits them.
+        ignored.append(".gitattributes")
     from huggingface_hub.utils import filter_repo_objects
 
     def inventory():
@@ -117,6 +126,20 @@ def verify_snapshot(
             )
 
     local_selected = inventory()
+    if packaged is not None:
+        expected = set(
+            filter_repo_objects(
+                [item.rfilename for item in packaged.siblings],
+                allow_patterns=None if allow_all else patterns,
+                ignore_patterns=ignored,
+            )
+        )
+        if exact is not None:
+            expected.intersection_update(exact)
+        if local_selected != expected:
+            raise ModelIntegrityError(
+                "Downloaded snapshot inventory mismatch: packaged files are missing or unexpected"
+            )
     lock_path = Path(__file__).with_name("model_catalog_lock.json")
     try:
         locked = (
@@ -152,8 +175,21 @@ def verify_snapshot(
         raise ModelIntegrityError(
             "Downloaded snapshot differs from the catalog integrity manifest"
         )
+    digest_identity = (
+        [
+            (
+                item.rfilename,
+                item.size,
+                getattr(item.lfs, "sha256", None),
+                item.blob_id,
+            )
+            for item in packaged.siblings
+        ]
+        if packaged is not None
+        else None
+    )
     lock_identity = hashlib.sha256(
-        json.dumps(locked, sort_keys=True).encode()
+        json.dumps([locked, digest_identity], sort_keys=True).encode()
     ).hexdigest()
     key = hashlib.sha256(
         json.dumps(
@@ -216,6 +252,8 @@ def verify_snapshot(
                 **locked.get("lfs_files", {}),
             }.items()
         ]
+    elif packaged is not None:
+        siblings = packaged.siblings
     else:
         from huggingface_hub import HfApi
 
@@ -253,15 +291,9 @@ def verify_snapshot(
                 raise
             if revision != commit and resolved_revision != commit:
                 raise
-            # Preserve explicit-pin recovery when upstream has lost a commit
-            # or its transport is unavailable. Reuse the strict complete-inventory
-            # validator, then independently hash the installed selected bytes.
-            from rapid_mlx._mirror import _mirror_base, _revision_manifest_info
-
-            try:
-                info = _revision_manifest_info(_mirror_base(), repo_id, commit)
-            except RuntimeError as exc:
-                raise ModelIntegrityError(str(exc)) from exc
+            raise ModelIntegrityError(
+                "Hub integrity metadata unavailable; retry with Hub access"
+            ) from exc
         if _field(info, "sha") != commit:
             raise ModelIntegrityError(
                 "Hub integrity manifest does not match the downloaded commit"

@@ -42,6 +42,14 @@ ABLITERATED_ALIAS = "qwen3.8-27b-abliterated-4bit"
 ABLITERATED_REPO = "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-oQ4e-mtp"
 
 
+@pytest.fixture(autouse=True)
+def synthetic_subfolder_inventory(monkeypatch):
+    """These fixtures use a one-file inventory, unlike the shipped digest."""
+    from rapid_mlx import _mirror
+
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *args: None)
+
+
 @pytest.fixture
 def unpinned_subfolder(monkeypatch):
     """Exercise the supported unpinned subfolder path with a synthetic identity."""

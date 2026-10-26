@@ -522,38 +522,32 @@ def _fetch_json_with_status(
     return data, status
 
 
-def _revision_manifest_info(base: str, repo_id: str, revision: str):
-    """Adapt an exact-revision mirror manifest to the existing integrity path.
-
-    The configured mirror is the trust root when upstream has lost the pin.
-    Never infer a revision or digest from mutable catalog/object metadata.
-    """
+def _packaged_digest_info(
+    repo_id: str, revision: str, allow_patterns: list[str] | None = None
+):
+    """Use package-owned digests for an exact pinned alias selection."""
     from types import SimpleNamespace
 
-    error = MirrorOnlyPullError(
-        f"Pinned revision {repo_id}@{revision} is unavailable upstream; "
-        "no valid exact-revision mirror manifest with per-file hashes exists."
-    )
-    if not base:
-        raise error
-    manifest, status = _fetch_json_with_status(
-        f"{base.rstrip('/')}/{repo_id}/.rapid-mlx/revisions/{revision}.json"
-    )
-    if (
-        status != 200
-        or not manifest
-        or manifest.get("repo_id") != repo_id
-        or manifest.get("revision") != revision
-        or not isinstance(manifest.get("files"), list)
-        or not manifest["files"]
-    ):
-        raise error
-    inventory = manifest.get("file_inventory")
-    if (
-        not isinstance(inventory, list)
-        or not all(isinstance(name, str) for name in inventory)
-        or len(set(inventory)) != len(inventory)
-    ):
+    manifest_path = Path(__file__).with_name("model_digests.json")
+    if not manifest_path.is_file():
+        return None
+    try:
+        aliases = json.loads(manifest_path.read_text())["aliases"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise MirrorOnlyPullError("Cannot read packaged model digests") from exc
+    patterns = sorted(allow_patterns) if allow_patterns is not None else None
+    candidates = [
+        entry
+        for entry in aliases.values()
+        if entry.get("repo") == repo_id
+        and entry.get("revision") == revision
+        and sorted(entry.get("allow_patterns") or []) == (patterns or [])
+    ]
+    if not candidates:
+        return None
+    manifest = candidates[0]
+    error = MirrorOnlyPullError("Invalid packaged model digest inventory")
+    if not isinstance(manifest.get("files"), list) or not manifest["files"]:
         raise error
     siblings = []
     names = set()
@@ -585,8 +579,6 @@ def _revision_manifest_info(base: str, repo_id: str, revision: str):
                 blob_id=oid,
             )
         )
-    if names != set(inventory):
-        raise error
     return SimpleNamespace(sha=revision, siblings=siblings)
 
 
@@ -1619,6 +1611,7 @@ def _hf_fallback_one(
     that path, including when another process populated the blob while this
     call waited on Hub's file lock.
     """
+    import httpx
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
     from huggingface_hub.utils import RepositoryNotFoundError
@@ -1648,6 +1641,7 @@ def _hf_fallback_one(
         EntryNotFoundError,
         RepositoryNotFoundError,
         HfHubHTTPError,
+        httpx.TransportError,
         OSError,
         TimeoutError,
     ):
@@ -1862,7 +1856,8 @@ def download_with_mirror_fallback(
     if pinned and not _is_commit_sha(revision):
         return False
 
-    # HF model_info gives us the canonical revision + per-file sizes.
+    # Packaged digests give pinned mirrored aliases immutable metadata before
+    # any Hub request. Other repositories keep the existing Hub metadata path.
     # We need both — the revision pins the snapshot dir, and the sizes
     # let us validate R2 responses. Without it we can't pin a revision,
     # which would mean writing files under an unknowable sha — so fall
@@ -1884,45 +1879,32 @@ def download_with_mirror_fallback(
     from ._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
 
     mirror_only = False
-    try:
-        # Wrapped in a deadline rather than called bare: this request has no
-        # timeout of its own (huggingface_hub hands httpx an explicit
-        # ``timeout=None``, which disables the client's timeout instead of
-        # inheriting it), so on a blackholed route it hangs indefinitely rather
-        # than failing over to HF. ``TimeoutError`` is already in the except
-        # tuple below, so a lapsed deadline falls through to
-        # ``snapshot_download`` exactly like any other mirror miss.
-        # A pinned pull reads HF's metadata AT the pinned commit: those are
-        # the sizes and digests every mirror object must match byte-for-byte.
-        info = call_with_deadline(
-            model_info,
-            _HF_RESOLVE_TIMEOUT_SECONDS,
-            repo_id,
-            files_metadata=True,
-            **({"revision": revision} if pinned else {}),
-        )
-    except RevisionNotFoundError:
-        if not pinned or revision is None:
-            return False
-        info = _revision_manifest_info(base, repo_id, revision)
+    info = (
+        _packaged_digest_info(repo_id, revision, allow_patterns)
+        if pinned and not hf_only
+        else None
+    )
+    if info is not None:
         mirror_only = True
-    except (httpx.TransportError, OSError, TimeoutError):
-        # A blocked Hub/proxy still permits a pinned pull when the mirror
-        # publishes an exact-revision inventory with hashes for every file.
-        # Without that proof, let the caller report its normal Hub error.
-        if not pinned or revision is None:
-            return False
+    else:
         try:
-            info = _revision_manifest_info(base, repo_id, revision)
-        except RuntimeError:
+            info = call_with_deadline(
+                model_info,
+                _HF_RESOLVE_TIMEOUT_SECONDS,
+                repo_id,
+                files_metadata=True,
+                **({"revision": revision} if pinned else {}),
+            )
+        except (
+            httpx.TransportError,
+            OSError,
+            TimeoutError,
+            EntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+            HfHubHTTPError,
+        ):
             return False
-        mirror_only = True
-    except (
-        EntryNotFoundError,
-        RepositoryNotFoundError,
-        HfHubHTTPError,
-    ):
-        return False
 
     # Reuse the ``revision`` name for the resolved SHA — by now the
     # input parameter has already been validated above (``None`` or
@@ -2053,11 +2035,6 @@ def download_with_mirror_fallback(
         # The PR #647 contract was ``<base>/<owner>/<repo>/<file>``.
         dub = f"/{owner}/{repo}/"
         use_r2 = True
-
-    if mirror_only and not use_r2:
-        raise MirrorOnlyPullError(
-            "Pinned revision unavailable: verified mirror is not accessible"
-        )
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     BOLD = "\x1b[1m" if is_tty else ""
@@ -2406,9 +2383,6 @@ def download_with_mirror_fallback(
                     size = 0
                 return fname, "r2", size
 
-        if mirror_only:
-            return fname, "miss", 0
-
         # Either R2 not eligible or R2 missed — fall back to HF for
         # this file. Let huggingface_hub handle its own cache layout.
         # Mute HF's tqdm for confirmed-small metadata files so it doesn't
@@ -2462,6 +2436,13 @@ def download_with_mirror_fallback(
             out=hf_transfer,
         )
         if ok:
+            if mirror_only and not (
+                _sha256_digest(target) == expected_sha256
+                if expected_sha256 is not None
+                else _warm_file_proven(target, fname)
+            ):
+                _safe_unlink(target)
+                return fname, "miss", 0
             # Hub has installed a complete verified cache file. A failed
             # mirror prefix is no longer useful and would waste disk space.
             _safe_unlink(sidecar_dir / f"{_sidecar_key_for(fname)}.part")
@@ -2649,7 +2630,7 @@ def download_with_mirror_fallback(
     if misses:
         if mirror_only:
             raise MirrorOnlyPullError(
-                "Pinned revision unavailable: mirror files failed integrity verification: "
+                "Pinned files failed integrity verification or download: "
                 + ", ".join(misses)
             )
         # At least one file we couldn't get from either source. Caller

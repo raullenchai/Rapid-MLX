@@ -228,7 +228,7 @@ def test_file_without_a_size_never_touches_the_mirror(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("error", [OSError("offline"), TimeoutError("slow")])
-def test_hf_metadata_unavailable_probes_manifest_then_falls_back(
+def test_hf_metadata_unavailable_falls_back_without_mirror_manifest(
     tmp_path, monkeypatch, error
 ):
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
@@ -242,7 +242,7 @@ def test_hf_metadata_unavailable_probes_manifest_then_falls_back(
             REPO, cache_dir=tmp_path, revision=PIN
         )
     assert ok is False  # caller runs snapshot_download(revision=PIN)
-    assert router.urls == [f"{BASE}/{REPO}/.rapid-mlx/revisions/{PIN}.json"]
+    assert router.urls == []
     assert hf.call_count == 0
 
 
@@ -700,6 +700,7 @@ def test_mirror_built_wan_snapshot_passes_the_wan_readiness_probe(
     with (
         patch("urllib.request.urlopen", side_effect=router),
         patch("huggingface_hub.model_info", return_value=_info(siblings, sha=pin)),
+        patch.object(_mirror, "_packaged_digest_info", return_value=None),
         patch("huggingface_hub.hf_hub_download") as hf,
     ):
         assert _mirror.download_with_mirror_fallback(
@@ -845,301 +846,160 @@ def test_warm_link_outside_the_blob_layout_is_refetched(tmp_path, monkeypatch):
     assert (snap / "config.json").resolve().name == _oid(CONFIG)
 
 
-def _manifest():
-    return {
-        "repo_id": REPO,
-        "revision": PIN,
-        "file_inventory": ["model.safetensors", "config.json"],
-        "files": [
-            {
-                "path": "model.safetensors",
-                "size": len(WEIGHTS),
-                "sha256": _sha256(WEIGHTS),
-            },
-            {"path": "config.json", "size": len(CONFIG), "git_oid": _oid(CONFIG)},
-        ],
+def _install_packaged_digests(tmp_path, monkeypatch, *, patterns=None):
+    payload = {
+        "schema_version": 1,
+        "aliases": {
+            "pinned": {
+                "repo": REPO,
+                "revision": PIN,
+                "allow_patterns": patterns,
+                "files": [
+                    {
+                        "path": "model.safetensors",
+                        "size": len(WEIGHTS),
+                        "sha256": _sha256(WEIGHTS),
+                    },
+                    {
+                        "path": "config.json",
+                        "size": len(CONFIG),
+                        "git_oid": _oid(CONFIG),
+                    },
+                ],
+            }
+        },
     }
+    (tmp_path / "model_digests.json").write_text(json.dumps(payload))
+    monkeypatch.setattr(_mirror, "__file__", str(tmp_path / "_mirror.py"))
 
 
-def _missing_pin_run(
-    tmp_path, monkeypatch, manifest, files=None, *, model_error=None, **kwargs
-):
-    from huggingface_hub.errors import RevisionNotFoundError
-
-    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
-    mirror_files = {"model.safetensors": WEIGHTS, "config.json": CONFIG}
-    if files is not None:
-        mirror_files.update(files)
-    mirror_files[f".rapid-mlx/revisions/{PIN}.json"] = (
-        json.dumps(manifest).encode() if manifest is not None else 404
-    )
-    router = _Router(mirror_files)
-    with (
-        patch("urllib.request.urlopen", side_effect=router),
-        patch(
-            "huggingface_hub.model_info",
-            side_effect=model_error
-            or RevisionNotFoundError(
-                "gone",
-                response=httpx.Response(
-                    404, request=httpx.Request("GET", "https://example.test")
-                ),
-            ),
-        ),
-        patch("huggingface_hub.hf_hub_download") as hf,
-    ):
-        try:
-            return _mirror.download_with_mirror_fallback(
-                REPO, cache_dir=tmp_path, revision=PIN, **kwargs
-            )
-        finally:
-            hf.assert_not_called()
-
-
-def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
-    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
-    assert not (_snap(tmp_path).parents[1] / "refs" / "main").exists()
-
-
-@pytest.mark.parametrize(
-    "model_error",
-    [httpx.ProxyError("403 Forbidden"), TimeoutError("deadline"), OSError("reset")],
-)
-def test_blocked_hub_uses_verified_pinned_manifest(tmp_path, monkeypatch, model_error):
-    assert _missing_pin_run(
-        tmp_path,
-        monkeypatch,
-        _manifest(),
-        model_error=model_error,
-    )
-    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
-
-
-@pytest.mark.parametrize(
-    "model_error",
-    [httpx.ProxyError("403 Forbidden"), TimeoutError("deadline"), OSError("reset")],
-)
-def test_blocked_hub_without_manifest_falls_back_safely(
-    tmp_path, monkeypatch, model_error
-):
-    assert not _missing_pin_run(
-        tmp_path,
-        monkeypatch,
-        None,
-        model_error=model_error,
-    )
-    assert not _snap(tmp_path).exists()
-
-
-def test_blocked_hub_rejects_corrupt_manifest_file(tmp_path, monkeypatch):
-    with pytest.raises(_mirror.MirrorOnlyPullError, match="failed integrity"):
-        _missing_pin_run(
+def test_packaged_digests_cold_pull_never_queries_hub(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch)
+    with patch("huggingface_hub.model_info", side_effect=AssertionError("Hub queried")):
+        ok, router, hf_calls, info = _run(
             tmp_path,
             monkeypatch,
-            _manifest(),
-            {"config.json": b"X" * len(CONFIG)},
-            model_error=httpx.ProxyError("403 Forbidden"),
+            [],
+            {"model.safetensors": WEIGHTS, "config.json": CONFIG},
         )
-    assert not (_snap(tmp_path) / "config.json").exists()
-
-
-def test_blocked_hub_without_pin_skips_manifest(tmp_path, monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
-    with (
-        patch("huggingface_hub.model_info", side_effect=httpx.ProxyError("403")),
-        patch.object(_mirror, "_revision_manifest_info") as manifest,
-    ):
-        assert not _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path)
-        manifest.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda m: None,
-        lambda m: [1],
-        lambda m: "invalid",
-        lambda m: {**m, "revision": "f" * 40},
-        lambda m: {**m, "repo_id": "other/repo"},
-        lambda m: {**m, "file_inventory": None},
-        lambda m: {**m, "file_inventory": [1]},
-        lambda m: {**m, "file_inventory": m["file_inventory"] * 2},
-        lambda m: {**m, "file_inventory": ["config.json"]},
-        lambda m: {**m, "files": m["files"][:1]},
-        lambda m: {**m, "files": []},
-        lambda m: {**m, "files": {}},
-        lambda m: {**m, "files": [None]},
-        lambda m: {**m, "files": m["files"] * 2},
-        *[
-            lambda m, update=update: {**m, "files": [{**m["files"][0], **update}]}
-            for update in [
-                {"path": "../escape"},
-                {"path": None},
-                {"size": True},
-                {"size": -1},
-                {"sha256": None},
-                {"git_oid": _oid(WEIGHTS)},
-                {"sha256": "x" * 64},
-                {"sha256": "a" * 63},
-            ]
-        ],
-    ],
-)
-def test_missing_revision_rejects_unverified_manifest(tmp_path, monkeypatch, mutation):
-    with pytest.raises(RuntimeError, match="no valid exact-revision mirror manifest"):
-        _missing_pin_run(tmp_path, monkeypatch, mutation(_manifest()))
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        {"model.safetensors": b"X" * len(WEIGHTS)},
-        {"config.json": b"X" * len(CONFIG)},
-        {"model.safetensors": 404},
-    ],
-)
-def test_missing_revision_rejects_unverified_bytes(tmp_path, monkeypatch, files):
-    with pytest.raises(RuntimeError, match="failed integrity verification"):
-        _missing_pin_run(tmp_path, monkeypatch, _manifest(), files)
-
-
-def test_missing_revision_hashes_warm_blob_even_with_correct_name(
-    tmp_path, monkeypatch
-):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    (_snap(tmp_path) / "model.safetensors").write_bytes(b"X" * len(WEIGHTS))
-    with pytest.raises(RuntimeError, match="failed integrity verification"):
-        _missing_pin_run(tmp_path, monkeypatch, _manifest(), {"model.safetensors": 404})
-
-
-def test_missing_revision_requires_a_nonempty_selection(tmp_path, monkeypatch):
-    with pytest.raises(RuntimeError, match="no requested files"):
-        _missing_pin_run(
-            tmp_path, monkeypatch, _manifest(), allow_patterns=["absent.json"]
-        )
-    with pytest.raises(RuntimeError, match="no requested files"):
-        _missing_pin_run(tmp_path, monkeypatch, _manifest(), allow_patterns=[])
-    assert _missing_pin_run(
-        tmp_path, monkeypatch, _manifest(), allow_patterns=["config.json"]
-    )
-
-
-def test_missing_revision_disabled_mirror_fails_closed(monkeypatch):
-    with pytest.raises(RuntimeError, match="no valid exact-revision mirror manifest"):
-        _mirror._revision_manifest_info("", REPO, PIN)
-
-
-def test_missing_revision_unavailable_catalog_fails_closed(tmp_path, monkeypatch):
-    with (
-        patch.object(_mirror, "fetch_catalog_with_status", return_value=(None, 503)),
-        pytest.raises(RuntimeError, match="verified mirror is not accessible"),
-    ):
-        _missing_pin_run(tmp_path, monkeypatch, _manifest())
-
-
-def test_default_branch_revision_error_does_not_use_manifest(tmp_path, monkeypatch):
-    from huggingface_hub.errors import RevisionNotFoundError
-
-    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
-    with (
-        patch(
-            "huggingface_hub.model_info",
-            side_effect=RevisionNotFoundError(
-                "gone",
-                response=httpx.Response(
-                    404, request=httpx.Request("GET", "https://example.test")
-                ),
-            ),
-        ),
-        patch.object(_mirror, "_revision_manifest_info") as manifest,
-    ):
-        assert not _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path)
-        manifest.assert_not_called()
-
-
-def test_missing_revision_repairs_corrupt_blob_during_install(tmp_path, monkeypatch):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    (_snap(tmp_path) / "model.safetensors").write_bytes(b"X" * len(WEIGHTS))
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
-
-
-@pytest.mark.parametrize("mirror_config", [CONFIG, 404])
-def test_missing_revision_rehashes_and_repairs_git_blob(
-    tmp_path, monkeypatch, mirror_config
-):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    target = _snap(tmp_path) / "config.json"
-    target.write_bytes(b"X" * len(CONFIG))
-    if mirror_config == CONFIG:
-        assert _missing_pin_run(
-            tmp_path, monkeypatch, _manifest(), {"config.json": mirror_config}
-        )
-        assert target.read_bytes() == CONFIG
-        assert _oid(target.read_bytes()) == _manifest()["files"][1]["git_oid"]
-    else:
-        with pytest.raises(RuntimeError, match="failed integrity verification"):
-            _missing_pin_run(
-                tmp_path, monkeypatch, _manifest(), {"config.json": mirror_config}
-            )
-        assert not target.exists()
-
-
-@pytest.mark.parametrize("patterns", ["*.json", ["*.json"]])
-def test_missing_revision_pattern_forms_select_the_same_files(
-    tmp_path, monkeypatch, patterns
-):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest(), allow_patterns=patterns)
-    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
-    assert not (_snap(tmp_path) / "model.safetensors").exists()
-
-
-def test_resolvable_revision_accepts_a_single_pattern(tmp_path, monkeypatch):
-    siblings = [
-        _sibling("model.safetensors", WEIGHTS, lfs=True),
-        _sibling("config.json", CONFIG, lfs=False),
-    ]
-    ok, _, hf_calls, _ = _run(
-        tmp_path,
-        monkeypatch,
-        siblings,
-        {"config.json": CONFIG},
-        allow_patterns="*.json",
-    )
     assert ok
     assert not hf_calls
-    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
+    info.assert_not_called()
+    assert not any(".rapid-mlx/revisions" in url for url in router.urls)
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
+
+
+def test_packaged_digest_rejects_corrupt_r2_byte(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
+    router = _Router({"model.safetensors": b"X" + WEIGHTS[1:], "config.json": CONFIG})
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.model_info", side_effect=AssertionError("Hub queried")),
+        patch(
+            "huggingface_hub.hf_hub_download",
+            side_effect=httpx.ProxyError("Hub blocked"),
+        ) as hf,
+        pytest.raises(_mirror.MirrorOnlyPullError, match="failed integrity"),
+    ):
+        _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path, revision=PIN)
+    assert hf.called
     assert not (_snap(tmp_path) / "model.safetensors").exists()
 
 
-def test_missing_revision_rejects_incomplete_wildcard_inventory(tmp_path, monkeypatch):
-    manifest = _manifest()
-    manifest["file_inventory"].append("model-00002.safetensors")
-    with pytest.raises(RuntimeError, match="no valid exact-revision mirror manifest"):
-        _missing_pin_run(
-            tmp_path, monkeypatch, manifest, allow_patterns="*.safetensors"
+def test_packaged_digest_selection_must_match(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch, patterns=["*.json"])
+    with (
+        patch("huggingface_hub.model_info", side_effect=httpx.ProxyError("blocked")),
+        patch("urllib.request.urlopen") as mirror,
+    ):
+        assert not _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN
         )
+    mirror.assert_not_called()
 
 
-def test_missing_revision_accepts_verified_warm_bytes_when_objects_are_unavailable(
+def test_packaged_digests_missing_or_malformed(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mirror, "__file__", str(tmp_path / "_mirror.py"))
+    assert _mirror._packaged_digest_info(REPO, PIN) is None
+    (tmp_path / "model_digests.json").write_text("{")
+    with pytest.raises(_mirror.MirrorOnlyPullError, match="Cannot read packaged"):
+        _mirror._packaged_digest_info(REPO, PIN)
+
+
+def test_unwritable_cache_falls_back_before_network(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
+    with (
+        patch.object(Path, "mkdir", side_effect=OSError("denied")),
+        patch("urllib.request.urlopen") as network,
+        patch("huggingface_hub.model_info") as hub,
+    ):
+        assert not _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN
+        )
+    network.assert_not_called()
+    hub.assert_not_called()
+
+
+def test_packaged_pin_respects_force_hub_setting(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    with (
+        patch("huggingface_hub.model_info", return_value=_info([])) as info,
+        patch("urllib.request.urlopen") as mirror,
+    ):
+        assert not _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN
+        )
+    assert info.call_args.kwargs["revision"] == PIN
+    mirror.assert_not_called()
+
+
+def test_packaged_digest_uses_verified_hub_fallback_when_r2_is_corrupt(
     tmp_path, monkeypatch
 ):
-    assert _missing_pin_run(tmp_path, monkeypatch, _manifest())
-    assert _missing_pin_run(
-        tmp_path,
-        monkeypatch,
-        _manifest(),
-        {"model.safetensors": 404, "config.json": 404},
-    )
+    _install_packaged_digests(tmp_path, monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
+    router = _Router({"model.safetensors": b"X" + WEIGHTS[1:], "config.json": CONFIG})
+    hf_calls = []
+
+    def hub_file(repo_id, filename, revision, cache_dir=None, **kwargs):
+        hf_calls.append((filename, revision))
+        target = _snap(tmp_path) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            {"model.safetensors": WEIGHTS, "config.json": CONFIG}[filename]
+        )
+        return str(target)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.model_info", side_effect=AssertionError("Hub queried")),
+        patch("huggingface_hub.hf_hub_download", side_effect=hub_file),
+    ):
+        assert _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN
+        )
+    assert hf_calls == [("model.safetensors", PIN)]
     assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
-    assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
 
 
-def test_missing_revision_patterns_are_optional_or_filters(tmp_path, monkeypatch):
-    assert _missing_pin_run(
-        tmp_path, monkeypatch, _manifest(), allow_patterns=["*.safetensors", "*.absent"]
-    )
-    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
-    assert not (_snap(tmp_path) / "config.json").exists()
+def test_packaged_digest_rejects_corrupt_hub_fallback(tmp_path, monkeypatch):
+    _install_packaged_digests(tmp_path, monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
+    router = _Router({"model.safetensors": b"X" + WEIGHTS[1:], "config.json": CONFIG})
+
+    def hub_file(repo_id, filename, revision, cache_dir=None, **kwargs):
+        target = _snap(tmp_path) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"Y" + WEIGHTS[1:])
+        return str(target)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.hf_hub_download", side_effect=hub_file),
+        pytest.raises(_mirror.MirrorOnlyPullError, match="failed integrity"),
+    ):
+        _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path, revision=PIN)
+    assert not (_snap(tmp_path) / "model.safetensors").exists()
