@@ -5,30 +5,78 @@ import Security
 /// Checking the outer resource seal covers the launcher, Python modules and
 /// native dependencies together, rather than just checking the interpreter.
 enum DesktopRuntimeTrust {
+    /// A successful seal check is session authority for this app-relative
+    /// binary path. Failures are never cached. The lock also joins concurrent
+    /// launch/prewarm checks so they cannot re-hash the same bundle in parallel.
+    /// Residual risk: tampering after success during this running session is
+    /// not detected until relaunch. The bundle is not immutable; this extends
+    /// the accepted same-user verification-to-use race for the session.
+    final class Session: @unchecked Sendable {
+        private let lock = NSLock()
+        private var successful: Set<String> = []
+        private var checks: [String: Int] = [:]
+        private var launches: [String: Int] = [:]
+
+        func authenticate(_ binary: URL, check: () -> Bool) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            let key = binary.standardizedFileURL.path
+            if successful.contains(key) { return true }
+            checks[key, default: 0] += 1
+            guard check() else { return false }
+            successful.insert(key)
+            return true
+        }
+
+        func recordLaunch(_ binary: URL) {
+            lock.lock()
+            defer { lock.unlock() }
+            launches[binary.standardizedFileURL.path, default: 0] += 1
+        }
+
+        func activity(_ binary: URL) -> (checks: Int, launches: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            let key = binary.standardizedFileURL.path
+            return (checks[key, default: 0], launches[key, default: 0])
+        }
+    }
+
+    static let session = Session()
+
+    /// Start before catalog discovery or the first engine launch. A launch
+    /// racing this task joins the same verification and cannot bypass it.
+    static func prewarm(bundleResourceURL: URL? = Bundle.main.resourceURL) {
+        guard let binary = bundleResourceURL?.appendingPathComponent("rapid-mlx/bin/rapid-mlx"),
+              binary.path.hasSuffix(".app/Contents/Resources/rapid-mlx/bin/rapid-mlx") else { return }
+        Task.detached(priority: .userInitiated) { _ = authenticate(binary) }
+    }
+
     struct LaunchRefused: LocalizedError {
         var errorDescription: String? { "The bundled engine could not be verified. Reinstall the full Desktop app." }
     }
 
-    /// Recheck at the synchronous launch boundary, after any asynchronous
+    /// Require session authentication at the launch boundary, after asynchronous
     /// preparation. Other helper executables are not managed engines. Keep the
     /// app-relative path intact so changing a symlink cannot change this policy.
     /// RAPID_BIN is the deliberate, documented developer trust bypass.
     static func verifyBeforeLaunch(
         _ binary: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        authenticateBundle: (URL) -> Bool = authenticate
+        authenticateBundle: (URL) -> Bool = authenticateUncached
     ) throws {
         if let override = environment["RAPID_BIN"], !override.isEmpty,
            URL(fileURLWithPath: override).resolvingSymlinksInPath() == binary.resolvingSymlinksInPath() {
             return
         }
         guard binary.path.hasSuffix(".app/Contents/Resources/rapid-mlx/bin/rapid-mlx") else { return }
-        guard authenticateBundle(binary) else { throw LaunchRefused() }
+        guard session.authenticate(binary, check: { authenticateBundle(binary) }) else { throw LaunchRefused() }
+        session.recordLaunch(binary)
     }
 
     static func run(
         _ process: Process,
-        authenticateBundle: (URL) -> Bool = authenticate
+        authenticateBundle: (URL) -> Bool = authenticateUncached
     ) throws {
         guard let binary = process.executableURL else { throw LaunchRefused() }
         try verifyBeforeLaunch(binary, authenticateBundle: authenticateBundle)
@@ -36,6 +84,10 @@ enum DesktopRuntimeTrust {
     }
 
     static func authenticate(_ binary: URL) -> Bool {
+        session.authenticate(binary) { authenticateUncached(binary) }
+    }
+
+    static func authenticateUncached(_ binary: URL) -> Bool {
         // Public release identity, pinned in source rather than read from the
         // candidate bundle or its writable metadata. Rotation needs review.
         let releaseIdentity = """

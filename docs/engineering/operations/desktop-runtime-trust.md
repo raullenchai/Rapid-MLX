@@ -4,11 +4,15 @@ Desktop selects the engine inside its full application bundle. Before selecting
 it, Desktop validates the app's code signature and resource seal against the
 release Team ID and bundle identifier pinned in source. The seal includes the launcher,
 Python modules and native dependencies. Runtime symlinks must stay inside the
-sealed application. Engine launches recheck the seal synchronously immediately before process creation,
-including server starts, capability probes, catalogs and downloads. The launch
+sealed application. A background launch task warms authentication. Engine launches
+require a successful check for that binary path in the current app session,
+including server starts, capability probes, catalogs and downloads. Concurrent
+callers share that check; failures are never cached. The launch
 path remains inside the app even when the launcher is an internal symlink.
 Missing, changed, unsigned or differently signed bundles are refused.
-Verification reads the bundled payload and adds some startup latency.
+Verification reads the bundled payload once per session and binary path.
+Dictation capture only stats cached snapshot paths resolved by an earlier
+catalog refresh; it neither starts the CLI nor authenticates the bundle.
 
 ## Upgrading a slim installation
 
@@ -55,17 +59,30 @@ is exercised as a subprocess. No model or GPU is required.
 ## Threat model and residual race
 
 Installation remains prompt-free. Desktop verifies the complete application
-signature and resource digests at selection and immediately before execution
-from the app-owned bundle location. An unsigned payload, a different signing
-identity, or a launcher/Python resource changed before that final verification
-is refused. The regression tests replace the launcher or a Python module after
-selection and before launch verification and assert that no child starts.
+signature and resource digests before granting session authority to an
+app-owned binary path. An unsigned payload, a different signing identity, or
+resources changed before the first successful verification are refused.
+Authentication failures are retried, never retained as authority.
 
-The owner-approved threat model excludes a concurrent process already running
-as the same user changing files after the final verification, between checking
-and execution or during later Python imports. Such a process can already modify
-the user-installed application and its data. Static verification does not make
-the bundle immutable or isolate it from that user. This residual race is
-accepted explicitly; this release adds neither a privileged installation helper
-nor administrator authorization. The explicit developer override remains a
-separate, intentional bypass of bundled-engine verification.
+The owner-approved session cache means changes made after successful
+verification during the running session are not detected until relaunch.
+This extends the previously accepted same-user verification-to-use race:
+static verification does not make the bundle immutable or isolate it from
+another process running as the user. Full-app updates should be followed by
+relaunch. No privileged installation helper or administrator authorization is
+introduced, and the pinned requirement and strict/all-architectures/nested-code
+flags are unchanged. The explicit developer override remains separate.
+
+## Dictation latency regression guard
+
+The required Desktop build runs `DesktopRuntimeTrustTests/dictationCaptureLatency`
+as a named CI step as well as in the Swift suite. It drives the real
+`toggleFromUI` controller through recorder start using fake capture, warms a
+real ad-hoc signed app with 24,000 runtime resource files (375 MiB), and asserts
+capture within 300 ms with zero catalog loads, bundled launches, or full
+bundle checks after warm-up. The designated test signature replaces only the
+release identity, not Security.framework validation or its flags. Repeated
+real launches assert that successful validation is reused; deletion of the
+selected cache snapshot must refuse capture without invoking the catalog.
+The budget allows CI scheduling noise; counters catch regressions even on
+hardware that verifies faster than the budget. No GPU or microphone is used.

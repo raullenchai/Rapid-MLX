@@ -294,55 +294,46 @@ struct DictationTests {
     }
 
     @MainActor
-    @Test("a hotkey-boundary refresh observes a model deleted after enabling")
-    func recordingBoundaryRefreshObservesDeletion() async {
-        let state = CatalogState()
-        let entry: (Bool) -> ModelEntry = { cached in
-            ModelEntry(
-                alias: "whisper-small",
-                hfRepo: "mlx-community/whisper-small",
-                sizeOnDisk: cached ? "461 MiB" : nil,
-                cached: cached,
-                kind: .audio,
-                audioCapability: .transcription,
-                audioFamily: "whisper"
-            )
-        }
-        let binary = Self.tempDirectory().appendingPathComponent("rapid-mlx")
+    @Test("recording rejects a deleted snapshot without refreshing the catalog")
+    func recordingBoundaryRefreshObservesDeletion() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var loads = 0
         let controller = DictationController(
-            server: ServerManager(testingState: .idle, binaryPath: binary),
-            audioCatalogLoader: { _ in [entry(state.cached)] }
+            server: ServerManager(testingState: .idle, binaryPath: root.appendingPathComponent("rapid-mlx")),
+            modelCacheRoot: root,
+            audioCatalogLoader: { _ in
+                loads += 1
+                return [cachedAudioEntry(alias: "whisper-small")]
+            }
         )
-
-        #expect(await controller.modelIsOnDiskAfterRefresh("whisper-small"))
-        state.cached = false
-        #expect(await !controller.modelIsOnDiskAfterRefresh("whisper-small"))
+        await controller.refreshModelCacheState()
+        #expect(controller.modelIsOnDisk("whisper-small"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("models--mlx-community--whisper-small/snapshots/revision"))
+        #expect(!controller.modelIsOnDisk("whisper-small"))
+        #expect(loads == 1)
     }
 
     @MainActor
-    @Test("a second hotkey tap cancels a pending disk check")
+    @Test("a second hotkey tap cancels a queued disk check without a catalog load")
     func secondTapCancelsPendingRecordingRequest() async {
-        var continuation: CheckedContinuation<[ModelEntry]?, Never>?
         let controller = DictationController(
             server: ServerManager(
                 testingState: .ready(alias: "whisper-small"),
                 binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
-            testingEnabled: true,
-            testingModelAlias: "whisper-small",
-            testingPhase: .idle,
+            testingEnabled: true, testingModelAlias: "whisper-small", testingPhase: .idle,
+            testingRecorderStart: { Issue.record("Cancelled start must not capture") },
             audioCatalogLoader: { _ in
-                await withCheckedContinuation { continuation = $0 }
+                Issue.record("Hotkey must not load catalog")
+                return []
             }
         )
-
         controller.toggleFromUI()
-        while continuation == nil { await Task.yield() }
         controller.toggleFromUI()
-        continuation?.resume(returning: [])
         await Task.yield()
-
         #expect(controller.phase == .idle)
+        controller.disable()
     }
 
     @MainActor
@@ -873,7 +864,9 @@ struct DictationTests {
 
     @MainActor
     @Test("co-loaded dictation arms and records while the conversation alias stays primary")
-    func coLoadedConversationLaneArmsAndRecords() async {
+    func coLoadedConversationLaneArmsAndRecords() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
         var hotkeyStartCount = 0
         var recorderStartCount = 0
         let entry = cachedAudioEntry(alias: "whisper-small")
@@ -898,6 +891,7 @@ struct DictationTests {
                 return true
             },
             testingRecorderStart: { recorderStartCount += 1 },
+            modelCacheRoot: root,
             audioCatalogLoader: { _ in [entry] }
         )
 
@@ -923,7 +917,9 @@ struct DictationTests {
 
     @MainActor
     @Test("record start fires the page-in probe while capture is running")
-    func recordStartFiresConcurrentWarmupProbe() async {
+    func recordStartFiresConcurrentWarmupProbe() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
         var warmupCount = 0
         var warmupContinuation: CheckedContinuation<Bool, Never>?
         var recorderStartCount = 0
@@ -948,6 +944,7 @@ struct DictationTests {
             },
             testingHotkeyStart: { true },
             testingRecorderStart: { recorderStartCount += 1 },
+            modelCacheRoot: root,
             audioCatalogLoader: { _ in [entry] }
         )
 
@@ -973,7 +970,9 @@ struct DictationTests {
 
     @MainActor
     @Test("disable cancels an in-flight record-start probe")
-    func disableCancelsRecordStartWarmup() async {
+    func disableCancelsRecordStartWarmup() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
         var continuation: CheckedContinuation<Bool, Never>?
         let probeCancellation = CancellationFlag()
         var recorderStartCount = 0
@@ -1001,6 +1000,7 @@ struct DictationTests {
             },
             testingHotkeyStart: { true },
             testingRecorderStart: { recorderStartCount += 1 },
+            modelCacheRoot: root,
             audioCatalogLoader: { _ in [entry] }
         )
 
@@ -1257,7 +1257,9 @@ struct DictationTests {
 
     @MainActor
     @Test("a failed catalog probe preserves the last successful cache snapshot")
-    func failedCatalogProbePreservesCacheSnapshot() async {
+    func failedCatalogProbePreservesCacheSnapshot() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
         let state = CatalogState()
         let entry = ModelEntry(
             alias: "whisper-small",
@@ -1273,12 +1275,15 @@ struct DictationTests {
                 testingState: .idle,
                 binaryPath: Self.tempDirectory().appendingPathComponent("rapid-mlx")
             ),
+            modelCacheRoot: root,
             audioCatalogLoader: { _ in state.cached ? [entry] : nil }
         )
 
-        #expect(await controller.modelIsOnDiskAfterRefresh("whisper-small"))
+        await controller.refreshModelCacheState()
+        #expect(controller.modelIsOnDisk("whisper-small"))
         state.cached = false
-        #expect(await controller.modelIsOnDiskAfterRefresh("whisper-small"))
+        await controller.refreshModelCacheState()
+        #expect(controller.modelIsOnDisk("whisper-small"))
     }
 
 
@@ -1326,6 +1331,15 @@ struct DictationTests {
     }
 
     // MARK: - Helpers
+
+    private static func snapshotCache() throws -> URL {
+        let root = tempDirectory()
+        let repo = root.appendingPathComponent("models--mlx-community--whisper-small")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("snapshots/revision"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
+        try Data("revision".utf8).write(to: repo.appendingPathComponent("refs/main"))
+        return root
+    }
 
     private static func tempDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory

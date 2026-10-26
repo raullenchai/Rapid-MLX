@@ -299,6 +299,12 @@ jobs:
       # (per-suite .timeLimit(.minutes(2)) on the hang-prone suites) or a hung
       # whole run (per-run deadline + /usr/bin/sample + ps + vm_stat artifact)
       # fails fast with a readable reason instead of burning the job timeout.
+      # Real toggleFromUI -> fake audio capture with a 24,000-file signed
+      # runtime. This is part of the required build/desktop-tests gate for
+      # every Desktop PR, including when GUI shards use their fake sidecar.
+      - name: Dictation signed-runtime end-to-end latency guard
+        run: swift test --disable-xctest --filter DesktopRuntimeTrustTests/dictationCaptureLatency
+
       - name: swift test
         env:
           # The GitHub ARM64 image is slower between the two suites that

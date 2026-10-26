@@ -2650,8 +2650,8 @@ final class ServerManager {
         // even when no child exists yet, so a start suspended in any probe
         // cannot resume on the far side of application shutdown.
         guard !didSignalShutdown else { return }
-        // Resolution may predate an app update or an on-disk change. Check
-        // the seal again before any capability probe or engine execution.
+        // Require a successful session seal check before any capability probe
+        // or engine execution (joins launch-time background verification).
         if binaryResolution?.source == .bundled,
            let binary = binaryPath,
            !DesktopRuntimeTrust.authenticate(binary) {

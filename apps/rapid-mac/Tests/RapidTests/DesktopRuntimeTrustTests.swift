@@ -5,6 +5,143 @@ import Testing
 
 @Suite("Desktop runtime authentication")
 struct DesktopRuntimeTrustTests {
+    @Test("Dictation end-to-end capture stays below 300 ms without CLI or authentication after warm-up")
+    @MainActor
+    func dictationCaptureLatency() async throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        // Match the installed runtime's file count. Real resource sealing and
+        // Security.framework verification, not a sleep or a stub verifier.
+        let payload = Data(repeating: 42, count: 16_384)
+        for index in 0..<24_000 {
+            try payload.write(to: fixture.runtime.appendingPathComponent("site-packages/fixture-\(index).dat"))
+        }
+        let requirement = try await fixture.sign()
+        var authentications = 0
+        var spawns = 0
+        var catalogLoads = 0
+        func launch() async throws {
+            let process = Process()
+            process.executableURL = fixture.binary
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try DesktopRuntimeTrust.run(process) {
+                authentications += 1
+                return DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+            }
+            spawns += 1
+            defer { if process.isRunning { process.terminate() } }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while process.isRunning && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            #expect(!process.isRunning)
+            if !process.isRunning { #expect(process.terminationStatus == 0) }
+        }
+        let entry = ModelEntry(alias: "latency-fixture", hfRepo: "test/latency", sizeOnDisk: "1 MiB", cached: true,
+                               kind: .audio, audioCapability: .transcription)
+        let cacheRoot = fixture.root.appendingPathComponent("cache")
+        let repo = cacheRoot.appendingPathComponent("models--test--latency")
+        let snapshot = repo.appendingPathComponent("snapshots/revision")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
+        try Data("revision".utf8).write(to: repo.appendingPathComponent("refs/main"))
+        var captureTime: ContinuousClock.Instant?
+        let controller = DictationController(
+            server: ServerManager(testingState: .ready(alias: entry.alias), binaryPath: fixture.binary),
+            testingEnabled: true, testingModelAlias: entry.alias, testingPhase: .idle,
+            testingWarmup: { true },
+            testingRecorderStart: { captureTime = .now },
+            modelCacheRoot: cacheRoot,
+            audioCatalogLoader: { _ in
+                catalogLoads += 1
+                do { try await launch() } catch { Issue.record("Catalog launch failed: \(error)") }
+                return [entry]
+            }
+        )
+        defer { controller.disable() }
+        await controller.refreshModelCacheState()
+        let warmSpawns = spawns
+        let warmAuthentications = authentications
+        let warmLoads = catalogLoads
+        let warmActivity = DesktopRuntimeTrust.session.activity(fixture.binary)
+        let start = ContinuousClock.now
+        controller.toggleFromUI()
+        while captureTime == nil && ContinuousClock.now - start < .seconds(15) { await Task.yield() }
+        let elapsed = start.duration(to: try #require(captureTime))
+        print("DICTATION_CAPTURE_LATENCY \(elapsed), spawns=\(spawns - warmSpawns), authentications=\(authentications - warmAuthentications)")
+        // 300 ms allows scheduler noise on CI while excluding a full sealed
+        // runtime walk. Counters also fail deterministically on faster disks.
+        #expect(elapsed <= .milliseconds(300))
+        #expect(spawns == warmSpawns)
+        #expect(authentications == warmAuthentications)
+        #expect(catalogLoads == warmLoads)
+        let activity = DesktopRuntimeTrust.session.activity(fixture.binary)
+        #expect(activity.checks == warmActivity.checks)
+        #expect(activity.launches == warmActivity.launches)
+
+        controller.toggleFromUI() // Fake input has no recorded WAV; returns idle.
+        captureTime = nil
+        try FileManager.default.removeItem(at: snapshot)
+        controller.toggleFromUI()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(captureTime == nil)
+        #expect(controller.lastError?.contains("isn't on disk anymore") == true)
+        #expect(catalogLoads == warmLoads)
+        #expect(DesktopRuntimeTrust.session.activity(fixture.binary).launches == warmActivity.launches)
+
+        // The same real signed fixture also guards per-spawn verification:
+        // repeated launches must not perform another resource-seal walk.
+        for _ in 0..<3 { try await launch() }
+        #expect(authentications == warmAuthentications)
+        #expect(DesktopRuntimeTrust.session.activity(fixture.binary).checks == warmActivity.checks)
+    }
+
+    @Test("Concurrent callers authenticate a binary once, and distinct paths have distinct authority")
+    func concurrentSessionAuthentication() async {
+        let session = DesktopRuntimeTrust.Session()
+        let binary = URL(fileURLWithPath: "/fixture/Rapid.app/Contents/Resources/rapid-mlx/bin/rapid-mlx")
+        await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<20 { group.addTask { session.authenticate(binary) { true } } }
+            for await accepted in group { #expect(accepted) }
+        }
+        #expect(session.activity(binary).checks == 1)
+        let other = URL(fileURLWithPath: "/other/Rapid.app/Contents/Resources/rapid-mlx/bin/rapid-mlx")
+        #expect(!session.authenticate(other) { false })
+        #expect(session.activity(other).checks == 1)
+    }
+
+    @Test("Failed real authentication is retried and a repaired signed bundle can launch")
+    func failedAuthenticationIsNotCached() async throws {
+        let fixture = try SignedRuntimeFixture()
+        defer { fixture.remove() }
+        try fixture.populateRuntime()
+        let requirement = try await fixture.sign()
+        let module = fixture.runtime.appendingPathComponent("site-packages/module.py")
+        let original = try Data(contentsOf: module)
+        try fixture.write("tampered", to: module)
+        for _ in 0..<2 {
+            #expect(throws: DesktopRuntimeTrust.LaunchRefused.self) {
+                let process = Process()
+                process.executableURL = fixture.binary
+                try DesktopRuntimeTrust.run(process) {
+                    DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+                }
+            }
+        }
+        #expect(DesktopRuntimeTrust.session.activity(fixture.binary).checks == 2)
+        try original.write(to: module)
+        try DesktopRuntimeTrust.verifyBeforeLaunch(fixture.binary, environment: [:]) {
+            DesktopRuntimeTrust.authenticate($0, requirement: requirement)
+        }
+        #expect(DesktopRuntimeTrust.session.activity(fixture.binary).checks == 3)
+        try DesktopRuntimeTrust.verifyBeforeLaunch(fixture.binary, environment: [:]) { _ in
+            Issue.record("Successful authentication must be reused")
+            return false
+        }
+    }
+
     @Test("A swap after selection but before launch verification is refused", arguments: [
         "bin/rapid-mlx", "site-packages/module.py",
     ])
