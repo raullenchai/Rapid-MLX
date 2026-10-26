@@ -55,6 +55,11 @@ from typing import Any
 # ``RAPID_MLX_MODEL_MIRROR`` env var.
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+
+class MirrorOnlyPullError(RuntimeError):
+    """A pinned mirror cannot prove every requested file without the Hub."""
+
+
 # Cloudflare 403s the default ``Python-urllib/*`` UA — verified by the
 # maintainer. Any plausible browser-ish UA works. Keep ``rapid-mlx`` in
 # the string so the maintainer can spot our traffic in R2 logs.
@@ -525,7 +530,7 @@ def _revision_manifest_info(base: str, repo_id: str, revision: str):
     """
     from types import SimpleNamespace
 
-    error = RuntimeError(
+    error = MirrorOnlyPullError(
         f"Pinned revision {repo_id}@{revision} is unavailable upstream; "
         "no valid exact-revision mirror manifest with per-file hashes exists."
     )
@@ -1973,7 +1978,9 @@ def download_with_mirror_fallback(
         git_oids[rname] = oid if isinstance(oid, str) and len(oid) == 40 else None
     if not revision or not files:
         if mirror_only:
-            raise RuntimeError("Pinned mirror manifest contains no requested files")
+            raise MirrorOnlyPullError(
+                "Pinned mirror manifest contains no requested files"
+            )
         return False
 
     cache_root = cache_dir if cache_dir else _hf_cache_root()
@@ -2050,7 +2057,7 @@ def download_with_mirror_fallback(
         use_r2 = True
 
     if mirror_only and not use_r2:
-        raise RuntimeError(
+        raise MirrorOnlyPullError(
             "Pinned revision unavailable: verified mirror is not accessible"
         )
 
@@ -2643,7 +2650,7 @@ def download_with_mirror_fallback(
 
     if misses:
         if mirror_only:
-            raise RuntimeError(
+            raise MirrorOnlyPullError(
                 "Pinned revision unavailable: mirror files failed integrity verification: "
                 + ", ".join(misses)
             )

@@ -2686,6 +2686,8 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
     )
     from requests import exceptions as requests_exceptions
 
+    from rapid_mlx._mirror import MirrorOnlyPullError
+
     rendered_model_id = _safe_hub_model_id(model_id)
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -2693,6 +2695,14 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
         if current is None or id(current) in seen:
             break
         seen.add(id(current))
+
+        if isinstance(current, MirrorOnlyPullError):
+            return (
+                f"  Error: the configured mirror cannot verify every file for "
+                f"'{rendered_model_id}' at its pinned revision.\n"
+                "  Check that the mirror has a complete revision manifest and "
+                "matching files, or restore Hub access before retrying."
+            )
 
         if isinstance(current, OSError) and current.errno == errno.ENOSPC:
             return (
@@ -11354,8 +11364,20 @@ def _pull_repository(
             )
         )
     except Exception as exc:
+        from rapid_mlx._mirror import MirrorOnlyPullError
         from rapid_mlx.telemetry.model_events import emit_model_pull_failed
 
+        if isinstance(exc, MirrorOnlyPullError):
+            if emit_lifecycle_event:
+                emit_model_pull_failed(
+                    exc, model_ref=repo_id, source=_mirror_out.get("source")
+                )
+            print(f"\n{render_hub_error(exc, repo_id)}\n", file=sys.stderr)
+            retry = getattr(args, "_pull_retry_command", None) or _pull_retry_command(
+                args
+            )
+            print(f"  Retry: {retry}", file=sys.stderr)
+            raise SystemExit(1) from None
         if _is_transient_hub_error(exc):
             mirror_ok = False
             print("  Mirror connection interrupted; trying Hugging Face.")

@@ -921,6 +921,18 @@ def test_blocked_hub_without_manifest_falls_back_safely(tmp_path, monkeypatch):
     assert not _snap(tmp_path).exists()
 
 
+def test_blocked_hub_rejects_corrupt_manifest_file(tmp_path, monkeypatch):
+    with pytest.raises(_mirror.MirrorOnlyPullError, match="failed integrity"):
+        _missing_pin_run(
+            tmp_path,
+            monkeypatch,
+            _manifest(),
+            {"config.json": b"X" * len(CONFIG)},
+            model_error=httpx.ProxyError("403 Forbidden"),
+        )
+    assert not (_snap(tmp_path) / "config.json").exists()
+
+
 def test_blocked_hub_without_pin_skips_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
     with (
