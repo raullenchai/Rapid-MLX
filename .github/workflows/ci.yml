@@ -389,7 +389,7 @@ jobs:
             --ignore=tests/headless_mlx \
             -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
             -o faulthandler_timeout=180 \
-            -v --tb=short \
+            -v --tb=short --durations=30 \
             --cov=rapid_mlx \
             --cov=scripts.sidecar_macho_inventory \
             --cov=scripts.pr_validate.steps.stress_e2e_bench \
@@ -418,7 +418,7 @@ jobs:
           pytest \
             tests/headless_mlx \
             "${headless_ignores[@]}" \
-            -v --tb=short \
+            -v --tb=short --durations=30 \
             --cov=rapid_mlx \
             --cov-append \
             --cov-report=term-missing

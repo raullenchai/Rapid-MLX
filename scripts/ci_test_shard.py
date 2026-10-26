@@ -2,8 +2,9 @@
 """Partition pytest files deterministically without collecting/importing them.
 
 The hosted Linux matrix runs each shard on a separate clean runner.  We balance
-whole files by physical line count so module-scoped fixtures and import state
-never straddle workers, while keeping planning fast and dependency-free.  Both
+whole files by recorded runtime, falling back to physical line count. Module
+fixtures and import state never straddle workers; planning stays dependency-free.
+Both
 repository pytest configurations restrict discovery to ``test_*.py``; a
 contract test keeps that setting synchronized with this planner.
 """
@@ -11,6 +12,7 @@ contract test keeps that setting synchronized with this planner.
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +31,10 @@ def discover(root: Path, suite: str) -> list[TestFile]:
     if not tests_root.is_dir():
         raise ValueError(f"missing tests directory: {tests_root}")
 
+    timing_path = root / "config/ci-test-durations.json"
+    durations = (
+        json.loads(timing_path.read_text())["files"] if timing_path.exists() else {}
+    )
     files: list[TestFile] = []
     for path in tests_root.rglob("test_*.py"):
         relative = path.relative_to(root).as_posix()
@@ -39,6 +45,9 @@ def discover(root: Path, suite: str) -> list[TestFile]:
             continue
         # A one-line floor keeps empty/new placeholder modules represented.
         weight = max(1, sum(1 for _ in path.open(encoding="utf-8")))
+        # Timing weights are milliseconds; unknown files estimate 1 ms/line.
+        # Only weights change: discovery and whole-file isolation stay intact.
+        weight = durations.get(relative, weight)
         files.append(TestFile(relative, weight))
 
     if not files:

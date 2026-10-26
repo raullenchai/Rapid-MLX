@@ -284,3 +284,52 @@ def test_actual_repository_enrollment_detects_planner_omission() -> None:
         _assert_repository_enrollment(
             "ordinary", _configured_repository_shards("ordinary"), incomplete
         )
+
+
+def test_recorded_durations_balance_expensive_files_without_changing_enrollment(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path / "tests/test_short_but_slow.py", 1)
+    _write(tmp_path / "tests/test_long_but_fast.py", 100)
+    _write(tmp_path / "tests/test_new.py", 10)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/ci-test-durations.json").write_text(
+        json.dumps(
+            {
+                "files": {
+                    "tests/test_short_but_slow.py": 1000,
+                    "tests/test_long_but_fast.py": 2,
+                    "tests/test_deleted.py": 9999,
+                }
+            }
+        )
+    )
+    files = discover(tmp_path, "ordinary")
+    assert {item.path: item.weight for item in files} == {
+        "tests/test_short_but_slow.py": 1000,
+        "tests/test_long_but_fast.py": 2,
+        "tests/test_new.py": 10,
+    }
+    shards = partition(files, 2)
+    assert [item.path for item in shards[0]] == ["tests/test_short_but_slow.py"]
+    assert {item.path for item in shards[1]} == {
+        "tests/test_long_but_fast.py",
+        "tests/test_new.py",
+    }
+
+
+def test_recorded_repository_weights_are_positive_and_isolate_heavy_suites() -> None:
+    weights = json.loads((REPO_ROOT / "config/ci-test-durations.json").read_text())[
+        "files"
+    ]
+    assert weights and all(
+        type(value) is int and value > 0 for value in weights.values()
+    )
+    shards = partition(discover(REPO_ROOT, "ordinary"), 3)
+    owners = {item.path: index for index, shard in enumerate(shards) for item in shard}
+    assert (
+        owners["tests/test_streaming_marker_conformance.py"]
+        != owners["tests/test_undeclared_tools_all_parsers.py"]
+    )
+    totals = [sum(item.weight for item in shard) for shard in shards]
+    assert max(totals) / min(totals) < 1.01
