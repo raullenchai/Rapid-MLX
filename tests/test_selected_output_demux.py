@@ -674,10 +674,9 @@ def test_unauthorized_engine_metadata_is_an_explicit_failure():
 
 
 def test_terminal_engine_chunk_drains_before_finish_event():
+    from rapid_mlx.config.server_config import ServerConfig
     from rapid_mlx.engine.base import GenerationOutput
     from rapid_mlx.service.postprocessor import StreamingPostProcessor
-
-    from rapid_mlx.config.server_config import ServerConfig
 
     cfg = ServerConfig(reasoning_parser_name="qwen3", tool_call_parser="hermes")
     processor = StreamingPostProcessor(cfg, tools_requested=False)
