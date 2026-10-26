@@ -852,3 +852,60 @@ def test_private_xml_object_arguments_own_marker_strings_and_large_values(outer,
         content, reasoning, calls, failures = run(raw, parts, channel="reasoning")
         assert not content and not reasoning and not failures
         assert len(calls) == 1 and json.loads(calls[0]["arguments"]) == {"x": value}
+
+
+def test_custom_reasoning_implementation_keeps_native_parser_ownership():
+    cfg = config()
+    cfg.reasoning_parser_name = None
+    cfg.reasoning_parser = object()
+    assert (
+        make_session(cfg, {"tools": [{"type": "function", "function": {"name": "f"}}]})
+        is None
+    )
+
+
+def test_authorized_glm_literal_example_is_not_reported_as_rejected():
+    policy = ToolPolicy("glm47", {"f": {}}, True)
+    grammar = SelectedGrammar(ParseContext(authorized_tools=frozenset({"f"})), policy)
+    assert grammar._rejection_diagnostic({"parts": ["f"]}, 1) == []
+
+
+def test_selected_session_records_rejection_once_without_executing_or_logging_args(
+    caplog,
+):
+    from rapid_mlx import tool_call_diagnostics as diagnostics
+
+    cfg = config()
+    cfg.tool_call_parser = "glm47"
+    records = {}
+    token = diagnostics._rejections.set(records)
+    try:
+        session = make_session(
+            cfg, {"tools": [{"type": "function", "function": {"name": "f"}}]}
+        )
+        raw = "<tool_call>other<arg_key>x</arg_key><arg_value>private-value</arg_value></tool_call>"
+        events = session.feed(
+            output(
+                "",
+                prompt_parse_context=PromptParseContext(
+                    "", (), "content", False, "chatml"
+                ),
+            )
+        )
+        for char in raw:
+            events.extend(session.feed(output(char)))
+        events.extend(session.finish())
+        assert session.finish() == []
+        assert not session.result.calls
+        assert session.result.content == raw
+        assert not [event for event in events if event.type == "tool_call"]
+        assert diagnostics.current_rejected_tool_calls() == [
+            {
+                "name": "other",
+                "raw_arguments": "<arg_key>x</arg_key><arg_value>private-value</arg_value>",
+                "reason": "undeclared_tool",
+            }
+        ]
+        assert "private-value" not in caplog.text
+    finally:
+        diagnostics._rejections.reset(token)
