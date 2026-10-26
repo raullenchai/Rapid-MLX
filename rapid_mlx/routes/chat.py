@@ -77,6 +77,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..parsing.session import parse_buffered, protocol_calls
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -6674,6 +6675,13 @@ async def _create_chat_completion_impl(
     # whereas the regex round-trip lost calls whose JSON arguments
     # contained literal harmony sentinel substrings (PR #515 codex
     # round-12 / round-14 BLOCKING).
+    selected_result = parse_buffered(
+        cfg,
+        output,
+        request,
+        reasoning_max_tokens=_effective_posthoc_reasoning_cap(chat_kwargs, request),
+        promote_reasoning=not _line1_gate_engaged,
+    )
     engine_tool_calls = getattr(output, "tool_calls", None)
     # LINE① (#558, codex r4 #4) — reasoning-first extraction. When the reasoning
     # gate is engaged (and the engine did NOT already produce structured calls via
@@ -6687,26 +6695,34 @@ async def _create_chat_completion_impl(
     # hermes) never engage line①. ``_line1_split_reasoning_for_tool_parse`` FAILS
     # CLOSED (never returns the raw text), so an engaged gate never re-exposes the
     # think span even on a reasoning-parser error (codex r5 #3).
-    if _line1_gate_engaged and engine_tool_calls is None:
-        cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-            _line1_split_reasoning_for_tool_parse(cfg.reasoning_parser, output.text),
-            request,
-            structured_tool_calls=engine_tool_calls,
-            finish_reason=output.finish_reason,
+    if selected_result is not None:
+        cleaned_text, tool_calls = (
+            selected_result.content,
+            protocol_calls(selected_result),
         )
-        if not tool_calls:
-            # No forced call recovered from the post-``</think>`` remainder. Blank
-            # the tool-parser content so ``_finalize_content_and_reasoning`` re-derives
-            # BOTH content and reasoning from the raw text (its ``cleaned_text or
-            # raw_text`` fallback) — identical to today's no-tool-call outcome.
-            cleaned_text = ""
     else:
-        cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-            output.text,
-            request,
-            structured_tool_calls=engine_tool_calls,
-            finish_reason=output.finish_reason,
-        )
+        if _line1_gate_engaged and engine_tool_calls is None:
+            cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+                _line1_split_reasoning_for_tool_parse(
+                    cfg.reasoning_parser, output.text
+                ),
+                request,
+                structured_tool_calls=engine_tool_calls,
+                finish_reason=output.finish_reason,
+            )
+            if not tool_calls:
+                # No forced call recovered from the post-``</think>`` remainder. Blank
+                # the tool-parser content so ``_finalize_content_and_reasoning`` re-derives
+                # BOTH content and reasoning from the raw text (its ``cleaned_text or
+                # raw_text`` fallback) — identical to today's no-tool-call outcome.
+                cleaned_text = ""
+        else:
+            cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+                output.text,
+                request,
+                structured_tool_calls=engine_tool_calls,
+                finish_reason=output.finish_reason,
+            )
     undeclared_tool_dropped = _was_undeclared_tool_dropped()
 
     # r7-A R7-H1: UI-TARS chat-lane coordinate-key parity. The parser
@@ -7001,9 +7017,10 @@ async def _create_chat_completion_impl(
     # (handled by ``_finalize_content_and_reasoning`` returning
     # ``cleaned_text`` that we never mutate after this block).
     if _wire_scrub_active:
-        cleaned_text = _scrub_visible_tool_wire_leaks(
-            cleaned_text, allow_truncated=True
-        )
+        if selected_result is None:
+            cleaned_text = _scrub_visible_tool_wire_leaks(
+                cleaned_text, allow_truncated=True
+            )
 
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
@@ -7011,76 +7028,94 @@ async def _create_chat_completion_impl(
     # _finalize_content_and_reasoning so the regression test suite can exercise
     # the same orchestration without re-implementing it.
     cleaned_text_before_helper = cleaned_text
-    cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        # codex r6 BLOCKING #2: pass the ORIGINAL raw text so the
-        # reasoning parser sees the bytes the engine actually emitted.
-        # Any wire-literal scrub above only touched user-visible
-        # ``cleaned_text`` — reasoning extraction operates on the
-        # untouched ``raw_text``.
-        # A rejected span has already been removed authoritatively. Giving
-        # the reasoning fallback the original raw text would restore it when
-        # cleaned_text is empty (notably zero-argument XML calls).
-        raw_text=(cleaned_text if undeclared_tool_dropped else _raw_text_for_reasoning),
-        cleaned_text=cleaned_text,
-        tool_calls=tool_calls,
-        reasoning_parser=cfg.reasoning_parser,
-        engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
-        # #575 — chat-template-injected ``<think>`` means the model
-        # never emits the start tag; pass the *effective* flag (with
-        # the same ``None`` → ``"coder" not in model_name`` fallback
-        # ``rapid_mlx/utils/chat_template.py:127`` uses for prompt
-        # rendering) so the parser's Case 4 fallback fires on
-        # default-on thinking — codex R1 BLOCKING. Use
-        # ``cfg.model_path`` (the underlying HF path / alias the
-        # engine actually loaded) rather than ``cfg.model_name``,
-        # which can be overridden by ``--served-model-name`` and
-        # would diverge from the prompt-render path's coder check
-        # (codex R2 BLOCKING).
-        enable_thinking=_effective_enable_thinking(
-            resolved_thinking, cfg.model_path or cfg.model_name
-        ),
-        prompt_thinking_active=_should_start_in_thinking(
-            getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
-            resolved_thinking,
-            unconditional=bool(
-                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
-            ),
-            tools_requested=bool(request.tools),
-        ),
-        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
-        # None → back-compat no-op. Suppressed when the generation-time
-        # thinking-budget processor owns this request (#558 single mechanism).
-        reasoning_max_tokens=_effective_posthoc_reasoning_cap(chat_kwargs, request),
-        # r5-D — finalize-on-truncation shared plug needs to know if
-        # generation was cut short so it can re-classify an unclosed
-        # think buffer as ``reasoning_content`` instead of leaking it
-        # into ``content``. ``None`` keeps the pre-r5-D behaviour on
-        # any caller that hasn't been threaded yet.
-        finish_reason=getattr(output, "finish_reason", None),
-        json_mode=_is_structured_output_requested(response_format),
-    )
-    if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
-        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
-    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
-        reasoning_text = _scrub_visible_tool_wire_leaks(
-            reasoning_text, allow_truncated=True
+    if selected_result is not None:
+        cleaned_text, reasoning_text = (
+            selected_result.content,
+            selected_result.reasoning,
         )
+    else:
+        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+            # codex r6 BLOCKING #2: pass the ORIGINAL raw text so the
+            # reasoning parser sees the bytes the engine actually emitted.
+            # Any wire-literal scrub above only touched user-visible
+            # ``cleaned_text`` — reasoning extraction operates on the
+            # untouched ``raw_text``.
+            # A rejected span has already been removed authoritatively. Giving
+            # the reasoning fallback the original raw text would restore it when
+            # cleaned_text is empty (notably zero-argument XML calls).
+            raw_text=(
+                cleaned_text if undeclared_tool_dropped else _raw_text_for_reasoning
+            ),
+            cleaned_text=cleaned_text,
+            tool_calls=tool_calls,
+            reasoning_parser=cfg.reasoning_parser,
+            engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
+            # #575 — chat-template-injected ``<think>`` means the model
+            # never emits the start tag; pass the *effective* flag (with
+            # the same ``None`` → ``"coder" not in model_name`` fallback
+            # ``rapid_mlx/utils/chat_template.py:127`` uses for prompt
+            # rendering) so the parser's Case 4 fallback fires on
+            # default-on thinking — codex R1 BLOCKING. Use
+            # ``cfg.model_path`` (the underlying HF path / alias the
+            # engine actually loaded) rather than ``cfg.model_name``,
+            # which can be overridden by ``--served-model-name`` and
+            # would diverge from the prompt-render path's coder check
+            # (codex R2 BLOCKING).
+            enable_thinking=_effective_enable_thinking(
+                resolved_thinking, cfg.model_path or cfg.model_name
+            ),
+            prompt_thinking_active=_should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+                unconditional=bool(
+                    getattr(
+                        cfg.reasoning_parser, "implicit_reasoning_until_close", False
+                    )
+                ),
+                tools_requested=bool(request.tools),
+            ),
+            # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+            # None → back-compat no-op. Suppressed when the generation-time
+            # thinking-budget processor owns this request (#558 single mechanism).
+            reasoning_max_tokens=_effective_posthoc_reasoning_cap(chat_kwargs, request),
+            # r5-D — finalize-on-truncation shared plug needs to know if
+            # generation was cut short so it can re-classify an unclosed
+            # think buffer as ``reasoning_content`` instead of leaking it
+            # into ``content``. ``None`` keeps the pre-r5-D behaviour on
+            # any caller that hasn't been threaded yet.
+            finish_reason=getattr(output, "finish_reason", None),
+            json_mode=_is_structured_output_requested(response_format),
+        )
+    if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
+        if selected_result is None:
+            cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
+    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
+        if selected_result is None:
+            reasoning_text = _scrub_visible_tool_wire_leaks(
+                reasoning_text, allow_truncated=True
+            )
     if _is_forced_choice and tool_calls:
         # #1676/#1677: a recovered valid DeepSeek call may be followed by a
         # malformed duplicate.  Never expose that native section through the
         # OpenAI content channels; the structured ``tool_calls`` field is the
         # authoritative representation.
         _produced_tool_names = {call.function.name for call in tool_calls}
-        cleaned_text = _strip_truncated_forced_xml_call(
-            _strip_forced_tool_section(cleaned_text), _produced_tool_names
-        )
-        reasoning_text = _strip_truncated_forced_xml_call(
-            _strip_forced_tool_section(reasoning_text), _produced_tool_names
-        )
+        if selected_result is None:
+            cleaned_text = _strip_truncated_forced_xml_call(
+                _strip_forced_tool_section(cleaned_text), _produced_tool_names
+            )
+        if selected_result is None:
+            reasoning_text = _strip_truncated_forced_xml_call(
+                _strip_forced_tool_section(reasoning_text), _produced_tool_names
+            )
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
-        json_input = cleaned_text or output.text
+        json_input = (
+            cleaned_text
+            if selected_result is not None
+            else (cleaned_text or output.text)
+        )
         try:
             _, parsed_json, is_valid, error = parse_json_output(
                 json_input, response_format
@@ -7113,8 +7148,12 @@ async def _create_chat_completion_impl(
     # Clean and strip thinking tags from content
     final_content = None
     if cleaned_text:
-        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        final_content = sanitize_output(final_content)
+        if selected_result is not None:
+            final_content = cleaned_text
+        else:
+            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+        if selected_result is None:
+            final_content = sanitize_output(final_content)
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)
 
@@ -7192,23 +7231,24 @@ async def _create_chat_completion_impl(
             and not final_content
         )
         if not deepseek_v4_mid_think and not undeclared_tool_dropped:
-            final_content = _rescue_silent_drop_from_reasoning(
-                final_content,
-                reasoning_text,
-                tool_calls,
-                finish_reason=finish_reason,
-                raw_text=output.raw_text or output.text,
-                reasoning_is_case4=reasoning_is_case4,
-                matched_stop=getattr(output, "matched_stop", None),
-                prompt_thinking_active=prompt_thinking_active,
-                implicit_reasoning_until_close=bool(
-                    getattr(
-                        cfg.reasoning_parser,
-                        "implicit_reasoning_until_close",
-                        False,
-                    )
-                ),
-            )
+            if selected_result is None:
+                final_content = _rescue_silent_drop_from_reasoning(
+                    final_content,
+                    reasoning_text,
+                    tool_calls,
+                    finish_reason=finish_reason,
+                    raw_text=output.raw_text or output.text,
+                    reasoning_is_case4=reasoning_is_case4,
+                    matched_stop=getattr(output, "matched_stop", None),
+                    prompt_thinking_active=prompt_thinking_active,
+                    implicit_reasoning_until_close=bool(
+                        getattr(
+                            cfg.reasoning_parser,
+                            "implicit_reasoning_until_close",
+                            False,
+                        )
+                    ),
+                )
         # Issue #858: cutoff sentinel is ON by default — restores PR #802
         # (H-01) semantics after the R-01 (#815) opt-in flip produced
         # empty-bubble regressions in every GUI client that only renders
@@ -7218,13 +7258,14 @@ async def _create_chat_completion_impl(
         # owns ALL the predicates (env gate, finish_reason, content
         # emptiness, tool-call gate, reasoning presence) so this call
         # site stays trivial.
-        final_content = _apply_reasoning_cutoff_notice(
-            final_content,
-            reasoning_text,
-            tool_calls,
-            finish_reason,
-            include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
-        )
+        if selected_result is None:
+            final_content = _apply_reasoning_cutoff_notice(
+                final_content,
+                reasoning_text,
+                tool_calls,
+                finish_reason,
+                include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+            )
 
     if (
         undeclared_tool_dropped
@@ -7238,12 +7279,13 @@ async def _create_chat_completion_impl(
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
     if cfg.reasoning_parser is not None and request.tools and not engine_tool_calls:
-        final_content = _clean_final_content_tool_envelope(
-            final_content,
-            request,
-            reasoning_source=output.raw_text or output.text,
-            finish_reason=output.finish_reason,
-        )
+        if selected_result is None:
+            final_content = _clean_final_content_tool_envelope(
+                final_content,
+                request,
+                reasoning_source=output.raw_text or output.text,
+                finish_reason=output.finish_reason,
+            )
 
     # Build logprobs for response if requested.
     #
@@ -7281,6 +7323,11 @@ async def _create_chat_completion_impl(
         ),
         metrics=_build_response_metrics(output),
     )
+    if selected_result is not None:
+        # The shared owner already classified these bytes; serialization must
+        # not reinterpret literal examples or private channel text.
+        chat_response.choices[0].message.content = final_content
+        chat_response.choices[0].message.reasoning_content = reasoning_text
     # ── Response cache — STORE ───────────────────────────────────────
     #
     # Store the assembled response under the key computed at the lookup
@@ -7580,7 +7627,9 @@ async def stream_chat_completion(
                 if field == "reasoning_content"
                 else sanitize_content_for_stream
             )
-            escaped = json.dumps(_sanitize(text))
+            escaped = json.dumps(
+                text if processor.uses_output_demux else _sanitize(text)
+            )
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # Wire truth for content already delivered before the terminal chunk:
@@ -7596,7 +7645,11 @@ async def stream_chat_completion(
             text: str, chunk_logprobs: ChoiceLogProbs | None = None
         ) -> str:
             """Serialize one content delta, preserving requested logprobs."""
-            wire_text = sanitize_content_for_stream(text)
+            wire_text = (
+                text
+                if processor.uses_output_demux
+                else sanitize_content_for_stream(text)
+            )
             _streamed_content_parts.append(wire_text)
             if not want_logprobs:
                 return _fast_sse_chunk(wire_text, "content")
@@ -7611,6 +7664,8 @@ async def stream_chat_completion(
                     )
                 ],
             )
+            if processor.uses_output_demux:
+                chunk.choices[0].delta.content = wire_text
             return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
         # Start the engine and wait only for scheduler admission before
@@ -7734,7 +7789,8 @@ async def stream_chat_completion(
         # calls retain normal streaming latency.
         _stream_tool_choice = _normalize_tool_choice_for_grammar(request.tool_choice)
         _buffer_forced_content = bool(
-            request.tools
+            not processor.uses_output_demux
+            and request.tools
             and _stream_tool_choice
             and _stream_tool_choice.get("mode") in ("required", "named")
         )
@@ -8504,7 +8560,7 @@ async def stream_chat_completion(
                 request.response_format
             )
             rejected_only_tool_call = processor.undeclared_tool_dropped
-            if (
+            if not processor.uses_output_demux and (
                 not already_streamed_content
                 and not has_any_tool_calls
                 and not structured_output_requested
@@ -8707,7 +8763,11 @@ async def stream_chat_completion(
             # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. Gating
             # logic matches the non-streaming call site — the helper
             # owns it.
-            if not has_any_tool_calls and not structured_output_requested:
+            if (
+                not processor.uses_output_demux
+                and not has_any_tool_calls
+                and not structured_output_requested
+            ):
                 cutoff_content = _apply_reasoning_cutoff_notice(
                     terminal_content or None,
                     processor.accumulated_reasoning,
@@ -8767,6 +8827,9 @@ async def stream_chat_completion(
                 usage=None,
                 metrics=_build_response_metrics(finish_output),
             )
+            if processor.uses_output_demux:
+                final_chunk.choices[0].delta.content = terminal_content or None
+                final_chunk.choices[0].delta.reasoning_content = finish_event.reasoning
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
         elif fallback_tool_calls or finalize_content:
             # Defensive: stream ended without a "finish" event but
@@ -8804,6 +8867,12 @@ async def stream_chat_completion(
                     )
                 ],
             )
+            if processor.uses_output_demux:
+                tool_chunk.choices[0].delta.content = (
+                    None
+                    if _forced_terminal_content_consumed
+                    else finalize_content or None
+                )
             _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
             logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
             yield _fb_sse

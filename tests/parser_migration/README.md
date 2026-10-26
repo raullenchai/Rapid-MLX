@@ -36,8 +36,8 @@ and API consolidation remain separate work.
 | Orphan native args | #5274 | Native argument syntax is not published as reasoning |
 | Generated fenced echo | #5268 | Pending explicit literal/model-echo policy |
 
-These contracts are `xfail(strict=True)`: an unexpected pass requires a deliberate
-ledger change. R5 may remain deferred when migration does not reach its grammar.
+Remaining expected failures use `xfail(strict=True)`: an unexpected pass requires
+a deliberate ledger change. R5 may remain deferred when migration does not reach its grammar.
 The fenced-echo expectation is provisional; arbitrary code examples must remain
 literal. The prompt fixture file records current-turn initial-channel contracts,
 including historical markers, exact empty prefill and assistant continuation.
@@ -66,3 +66,34 @@ The normalizer retains duplicate names/arguments and uses actual Responses
 argument deltas. Separate clean controls compare streamed accumulation with both
 Responses completed items and the terminal response. Full cross-family terminal
 parity remains an API-consolidation gate, not a claim of this evidence PR.
+
+## Selected grammar migration
+
+Phase four retains the frozen baseline and reviewed-main observations unchanged.
+`differential_migration.json` and `advertised_migration.json` record exact
+before/after values and scenario-specific reasons for intended changes. Tests
+apply those explicit overrides and reject unrecorded differences. The full
+4,608-case replay changes only the selected Qwen/Hermes and Qwen/GLM pairings;
+other native families, including the distinct `qwen3_coder_xml` class, remain on
+the legacy path. The `qwen`, `qwen3`, and `qwen3_xml` aliases use the migrated
+JSON-wrapper/bracket-call grammar.
+
+R1, R2, R2b, R3, R4, R6, and the #5272–#5274 selected-family contracts now pass.
+Three strict expected failures remain: R5's two foreign-envelope route cases
+and #5268's generated fenced-echo policy. Literal fenced examples are retained;
+no generated-echo suppression heuristic is introduced. Preceding prose keeps
+ambiguous/incomplete tool headers literal (R6). Unknown foreign controls remain
+literal in the current channel; migration of their native grammars is deferred.
+
+`test_selected_routes.py` adds delayed-engine tests on all three real routes,
+both prompt modes and Qwen/Flint prompt fixtures, including first-visible input
+index, multiple deltas, literal serialization, terminal lifecycle, and tool
+partition parity. Indexed incomplete/invalid calls fail explicitly and cannot
+become executable calls through an EOF fallback.
+
+The CPU fixture now explicitly sets intermediate `GenerationOutput.finished`
+to false. Earlier evidence inherited its terminal default and must not be used
+as the comparison for this corrected full-stream benchmark. The corrected
+v0.16.9 baseline loses its 64K call; record that invalid result rather than
+counting it as a valid throughput sample. The current gate verifies valid calls
+at every size and requires no greater than 2x per-chunk growth.

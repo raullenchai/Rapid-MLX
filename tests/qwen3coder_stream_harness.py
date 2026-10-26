@@ -44,6 +44,7 @@ def non_stream(text: str, request: dict | None) -> tuple[list[tuple[str, str]], 
 def _output(text: str, finished: bool) -> MagicMock:
     out = MagicMock()
     out.new_text = text
+    out.prompt_parse_context = None
     out.finished = finished
     out.channel = None
     out.finish_reason = "stop" if finished else None

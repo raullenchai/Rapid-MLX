@@ -1,8 +1,8 @@
 # Output parser migration core
 
-`OutputDemultiplexer` is a request-local lexer, grammar and commit cursor. Phase
-three introduces it in shadow mode; production parsing remains unchanged until
-the selected format adapters move onto this contract.
+`OutputDemultiplexer` is a request-local lexer, grammar and commit cursor. The selected
+format adapters use this contract in production; other families retain their
+legacy implementations pending a separate migration.
 
 - `ParseContext` carries rendered current-turn evidence and an explicit grammar
   default for unknown prompts. Requested thinking mode alone is not evidence.
@@ -33,7 +33,7 @@ the selected format adapters move onto this contract.
   Indexed failures reserve that index even before a start event, so a failed
   candidate cannot later become an executable call under the same index.
   Name authorization and argument validation belong to the format adapter before
-  `ToolEnd`. This phase supplies the event contract, not new executable grammars.
+  `ToolEnd`. Selected format adapters implement this validation contract.
 
 Set the internal diagnostic environment switch `RAPID_MLX_PARSER_SHADOW=1` before
 creating a request to compare text-only Qwen-family postprocessor channels. The
@@ -47,4 +47,28 @@ Tests exercise split points, randomized partitions, token/text boundaries,
 source ownership, terminal lifecycles, native bypass, reducer failures, request
 reset, diagnostic failures, and real-route switch invariance. The 1K/4K/16K/64K
 work-counter test is deterministic; the existing full-postprocessor CPU contract
-remains a strict expected failure until the tool grammar migration.
+now passes with selected grammar ownership.
+
+## Activated selected grammars
+
+`ParsingSession` is the shared service bridge for selected Qwen-derived
+reasoning, Hermes, GLM and the specified Qwen-paired tool grammars. Streaming
+routes serialize its ordered events; buffered routes reduce the same events.
+These requests bypass legacy finalizers, wire filters, cutoff rescue and model
+field sanitizers. Legacy implementations remain reachable only for unmigrated
+families and authoritative engine-native streams. The shadow comparison does
+not run a second grammar owner after activation.
+
+`SelectedGrammar` owns JSON/XML/bracket tool candidates, bounded headers,
+authorized names, strict JSON completion and explicit literal/fence policies.
+A committed malformed or truncated call produces an indexed failure and never
+fabricated arguments. Uncommitted rejected candidates retain their source
+channel and literal ownership, including nested marker-shaped argument text.
+Reasoning budgets may suppress private text; they cannot promote it to content.
+
+`accept_metadata` is a separate ingress for completed engine calls that arrive
+after raw text. It drains pending source before assigning zero-width call events
+from the same index pool. Authoritative routed text gets new owned source spans
+without re-lexing; its prose context is retained. Engine-provided call IDs and
+argument strings survive serialization. This does not relax `accept_native`'s
+atomic source-coordinate and no-mixing contract.

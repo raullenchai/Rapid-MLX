@@ -145,10 +145,10 @@ async def test_reasoning_parser_stream_emits_text_chunks(patched_cfg):
     # actually instantiated it. If a future change makes the test fall
     # through to the no-parser path, this counter stays at 0 and the
     # assertion below fires — preventing silent test rot.
-    from rapid_mlx.reasoning import qwen3_parser as qwen3_module
+    from rapid_mlx.parsing.output_demux import OutputDemultiplexer
 
     call_count = {"streaming": 0}
-    real_streaming = qwen3_module.Qwen3ReasoningParser.extract_reasoning_streaming
+    real_streaming = OutputDemultiplexer.feed
 
     def _counted_streaming(self, *args, **kwargs):
         call_count["streaming"] += 1
@@ -179,8 +179,8 @@ async def test_reasoning_parser_stream_emits_text_chunks(patched_cfg):
     anthropic_request = SimpleNamespace(model="qwen3.5-test")
 
     with patch.object(
-        qwen3_module.Qwen3ReasoningParser,
-        "extract_reasoning_streaming",
+        OutputDemultiplexer,
+        "feed",
         _counted_streaming,
     ):
         stream = anthropic_route._stream_anthropic_messages(
@@ -192,7 +192,7 @@ async def test_reasoning_parser_stream_emits_text_chunks(patched_cfg):
     # this is 0, the test silently fell through to the no-parser branch
     # and the new fix path was never exercised.
     assert call_count["streaming"] > 0, (
-        "Qwen3ReasoningParser.extract_reasoning_streaming was not called — "
+        "OutputDemultiplexer.feed was not called — "
         "the test fell through to the no-parser branch and is not actually "
         "exercising the #185 fix. Check that cfg.reasoning_parser_name is "
         "still 'qwen3' and that get_parser() resolves it."

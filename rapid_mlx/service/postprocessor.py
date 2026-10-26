@@ -21,6 +21,7 @@ from unittest.mock import Mock
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
+from ..parsing.session import OutputParseError, make_session, protocol_calls
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
 from ..tool_call_authorization import call_name, declared_names, log_drop
@@ -223,7 +224,6 @@ class StreamingPostProcessor:
                     request_tools
                 )
         self.tools_requested = tools_requested
-        self._parser_shadow = make_shadow(cfg, tools_requested)
         self.json_mode = json_mode
         # LINE① (#558, codex r4 #4): when the reasoning-gated forced tool grammar is
         # engaged for THIS request, the real call is guaranteed to land AFTER
@@ -280,6 +280,12 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
+        self._selected_session = self._make_selected_session()
+        self._parser_shadow = (
+            None
+            if self._selected_session is not None
+            else make_shadow(self.cfg, self.tools_requested)
+        )
         # R8-M2 (2026-06-22): one-way latch tracking whether the model
         # has emitted an explicit ``<think>`` token despite
         # ``enable_thinking=False``. Set by
@@ -2477,6 +2483,31 @@ class StreamingPostProcessor:
             allowed.append(tc)
         return allowed
 
+    def _make_selected_session(self):
+        return make_session(
+            self.cfg,
+            self.request,
+            tools_requested=self.tools_requested,
+            thinking=self.enable_thinking,
+            authorization=self._tool_authorization_names,
+            promote_reasoning=not self._line1_gate_engaged,
+            reasoning_max_tokens=self._reasoning_max_tokens,
+        )
+
+    @property
+    def uses_output_demux(self):
+        return self._selected_session is not None and not self._selected_session.native
+
+    def _selected_events(self, events):
+        for event in events:
+            if event.type == "parse_failure":
+                raise OutputParseError()
+            for call in event.tool_calls or []:
+                if call.get("id"):
+                    self._tool_calls_emitted_to_wire += 1
+                    self.tool_calls_detected = True
+        return events
+
     def reset(self):
         """Reset all parser states for a new stream.
 
@@ -2485,7 +2516,12 @@ class StreamingPostProcessor:
         because that would clear another active stream's parser state.
         """
         self.prompt_parse_context = None
-        self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
+        self._selected_session = self._make_selected_session()
+        self._parser_shadow = (
+            None
+            if self._selected_session is not None
+            else make_shadow(self.cfg, self.tools_requested)
+        )
         self.accumulated_text = ""
         self._content_sanitizer = StreamingContentSanitizer()
         self._tool_marker_buffer = StreamingMarkerBuffer(
@@ -2619,6 +2655,13 @@ class StreamingPostProcessor:
         """
         if getattr(output, "prompt_parse_context", None) is not None:
             self.prompt_parse_context = output.prompt_parse_context
+        if self.uses_output_demux:
+            selected = self._selected_session.feed(output)
+            if selected is not None:
+                selected = self._selected_events(selected)
+                if output.finished:
+                    selected.append(self._make_finish_event(output))
+                return selected
         events = self._process_chunk_events(output)
         if any(event.type == "tool_call" for event in events):
             tail = ""
@@ -2652,11 +2695,17 @@ class StreamingPostProcessor:
     @property
     def content_held(self) -> bool:
         """Whether streamed content text is held back pending later deltas."""
+        if self.uses_output_demux:
+            parser = self._selected_session.parser
+            return bool(parser and parser.pending)
         return self._content_sanitizer.holding or bool(self._tool_marker_buffer.pending)
 
     @property
     def content_consumed(self) -> int:
         """Characters of content text that have entered the hold-back."""
+        if self.uses_output_demux:
+            parser = self._selected_session.parser
+            return parser.commit_cursor if parser else 0
         return self._content_sanitizer.consumed + len(self._tool_marker_buffer.pending)
 
     def _process_chunk_events(self, output: GenerationOutput) -> list[StreamEvent]:
@@ -3860,6 +3909,13 @@ class StreamingPostProcessor:
         return content
 
     def finalize(self) -> list[StreamEvent]:
+        if self.uses_output_demux:
+            events = self._selected_events(self._selected_session.finish())
+            result = self._selected_session.result
+            protocol_calls(result)
+            self.accumulated_text = result.content
+            self.accumulated_reasoning = result.reasoning
+            return events
         events = self._finalize_legacy()
         if self._parser_shadow is not None:
             self._parser_shadow.finish(events)

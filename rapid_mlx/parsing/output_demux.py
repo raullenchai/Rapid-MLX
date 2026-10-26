@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Incremental output owner, initially used only for shadow comparisons.
+"""Incremental request-local output owner.
 
 Offsets are half-open Unicode code-point offsets in the decoded generation, not
 prompt offsets or tokenizer indices. Every consumed source span has one owner,
@@ -47,6 +47,7 @@ class ToolStart:
     span: Span
     index: int
     name: str
+    call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +321,58 @@ class OutputDemultiplexer:
         if events:
             self._mode = "native"
         return result
+
+    def accept_metadata(
+        self, calls: list[dict], *, text: str = "", channel: Channel | None = None
+    ) -> list[Event]:
+        """Admit completed engine calls without inventing decoded source text.
+
+        This differs from native source ingress: metadata has zero-width
+        spans in the current text coordinate system. The grammar drains held
+        candidates before allocating indices from its one request-local pool.
+        """
+        if self._failed or self._finished or self._mode == "native":
+            raise ValueError("invalid structured metadata lifecycle")
+        adapter = getattr(self.grammar, "metadata", None)
+        boundary = getattr(self.grammar, "boundary", None)
+        if adapter is None or boundary is None or not isinstance(calls, list):
+            raise ValueError("grammar does not accept structured metadata")
+        if (text and channel is None) or channel not in {None, "content", "reasoning"}:
+            raise ValueError("invalid routed metadata channel")
+        try:
+            result = []
+            if self.pending:
+                result += self._consume(
+                    Lexeme(
+                        Span(self.offset - len(self.pending), self.offset),
+                        self.pending,
+                    )
+                )
+                self.pending = ""
+            result += self._commit(boundary(self.offset))
+            if self.commit_cursor != self.offset:
+                raise ValueError("grammar left source spans unowned at boundary")
+            if any(
+                isinstance(event, ParseFailure) and event.index is not None
+                for event in result
+            ):
+                self._failed = True
+                return result
+            if text:
+                start = self.offset
+                self.offset += len(text)
+                self.input_bytes += len(text.encode("utf-8"))
+                cls = ContentDelta if channel == "content" else ReasoningDelta
+                result += self._commit([cls(Span(start, self.offset), text)])
+            result += self._commit(
+                adapter(calls, self.offset, channel=channel, text=text)
+            )
+            if text or calls:
+                self._mode = "text"
+            return result
+        except Exception:
+            self._failed = True
+            raise
 
     def finish(self, reason: str = "stop") -> list[Event]:
         if self._failed:

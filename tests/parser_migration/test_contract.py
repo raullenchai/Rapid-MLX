@@ -21,9 +21,6 @@ PLAIN = "Hello world. This is a streamed answer."
 @pytest.mark.parametrize("surface", SURFACES)
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
 @pytest.mark.parametrize("tools_mode", ["enabled", "absent", "none"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R1 #5277: prompt-aware bounded holdback"
-)
 def test_first_visible_delta(surface, reasoning, tools_mode):
     result = route(
         reasoning,
@@ -42,18 +39,12 @@ def test_first_visible_delta(surface, reasoning, tools_mode):
 
 @pytest.mark.parametrize("tool", ["auto", "generic", "nemotron", "nemotron3", "muse"])
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R2 #5277: EOF content replay"
-)
 def test_one_content_owner(tool, reasoning):
     result = route(reasoning, tool, PLAIN, "chat", True, thinking=False)
     assert result["content"] == PLAIN
 
 
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R2b #5277: EOF tool replay"
-)
 def test_one_tool_owner(reasoning):
     raw = "<seed:tool_call><function=run_shell_command><parameter=command>pwd</parameter></function></seed:tool_call>"
     result = route(reasoning, "seed_oss", raw, "chat", True, thinking=False)
@@ -62,11 +53,6 @@ def test_one_tool_owner(reasoning):
 
 @pytest.mark.parametrize(
     "surface,stream", list(itertools.product(SURFACES, [False, True]))
-)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="R3 #5273: reasoning-to-tool ownership loses call or answer",
 )
 def test_promotion(surface, stream):
     result = route(
@@ -78,11 +64,6 @@ def test_promotion(surface, stream):
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#5272: tool wire duplicated into buffered reasoning",
-)
 def test_no_tool_wire_in_reasoning(surface):
     result = route("qwen3", "hermes", CALL, surface, False)
     assert result["calls"] == EXPECTED
@@ -91,9 +72,6 @@ def test_no_tool_wire_in_reasoning(surface):
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="#5274: orphan native argument markup"
-)
 def test_orphan_arguments(surface):
     raw = "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
     result = route("qwen3", "glm47", raw, surface, True)
@@ -116,11 +94,6 @@ def test_foreign_fallback(surface):
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="R6 #5274: preceding prose establishes literal context",
-)
 def test_literal_incomplete_header(surface):
     result = route(
         "qwen3", "glm47", "Example <tool_call>foo", surface, False, thinking=False

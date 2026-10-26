@@ -119,19 +119,20 @@ def process(monkeypatch, enabled):
     return processor, [asdict(event) for event in events]
 
 
-def test_processor_shadow_publishes_only_legacy_events_and_reset_is_request_local(
+def test_selected_processor_has_one_owner_and_reset_is_request_local(
     monkeypatch,
 ):
     off, old = process(monkeypatch, False)
     on, new = process(monkeypatch, True)
     assert old == new
     assert off._parser_shadow is None
-    prior = on._parser_shadow
-    assert prior.report is not None
+    assert on._parser_shadow is None
+    prior = on._selected_session
+    assert prior.result.content == "public"
     on.reset()
-    assert on._parser_shadow is not prior
-    assert on._parser_shadow.report is None
-    assert prior.report is not None
+    assert on._selected_session is not prior
+    assert on._selected_session.result.content == ""
+    assert prior.result.content == "public"
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])

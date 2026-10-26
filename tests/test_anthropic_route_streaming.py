@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.routes.anthropic import router
 
 
@@ -29,6 +30,17 @@ class _StreamingEngine:
         for i, text in enumerate(self._deltas, start=1):
             yield SimpleNamespace(
                 new_text=text,
+                prompt_parse_context=PromptParseContext(
+                    "<think>"
+                    if kwargs.get("enable_thinking") is not False
+                    else "<think></think>",
+                    (),
+                    "reasoning"
+                    if kwargs.get("enable_thinking") is not False
+                    else "content",
+                    kwargs.get("enable_thinking"),
+                    "chatml",
+                ),
                 prompt_tokens=5,
                 completion_tokens=i,
             )

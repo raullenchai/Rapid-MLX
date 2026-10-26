@@ -7,6 +7,13 @@ import pytest
 
 from .harness import route
 
+MIGRATION = {
+    tuple(row["key"]): row
+    for row in json.loads(
+        Path(__file__).with_name("differential_migration.json").read_text()
+    )
+}
+
 DATA = json.loads(Path(__file__).with_name("differential.json").read_text())
 CALL = (
     '<tool_call>{"name":"run_shell_command","arguments":{"command":"pwd"}}</tool_call>'
@@ -46,7 +53,11 @@ def test_review_head_observations(row):
     actual = route(
         reasoning, tool, raw, surface, stream, chunks, thinking, tools_mode=tools_mode
     )
-    assert actual == row["result"]
+    change = MIGRATION.get(tuple(row["key"]))
+    if change is not None:
+        assert change["before"] == row["result"]
+        assert change["reason"]
+    assert actual == (change["after"] if change else row["result"])
 
 
 def test_every_baseline_difference_has_a_ledger_entry():
@@ -68,3 +79,17 @@ def test_every_baseline_difference_has_a_ledger_entry():
         assert row["baseline"] == baseline[key]
         assert row["main"] == current[key]
         assert row["reasons"]
+
+
+def test_migration_ledger_has_no_stale_or_unselected_entries():
+    reviewed = {
+        tuple(row["key"]): row["result"]
+        for row in DATA["rows"]
+        if row["revision"] == "main"
+    }
+    assert MIGRATION.keys() <= reviewed.keys()
+    for key, row in MIGRATION.items():
+        assert key[:2] == ("qwen3", "hermes")
+        assert row["before"] == reviewed[key]
+        assert row["before"] != row["after"]
+        assert row["reason"]

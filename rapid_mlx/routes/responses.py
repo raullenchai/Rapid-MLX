@@ -84,6 +84,12 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..parsing.session import (
+    OutputParseError,
+    make_session,
+    parse_buffered,
+    protocol_calls,
+)
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
@@ -2290,14 +2296,27 @@ async def _non_stream(
                 },
             )
 
+    selected_result = parse_buffered(
+        cfg,
+        output,
+        openai_request,
+        reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+        promote_reasoning=True,
+    )
     engine_tool_calls = getattr(output, "tool_calls", None)
     tool_parse_request = _tool_parse_request(openai_request)
-    cleaned_text, tool_calls = _parse_tool_calls_with_parser(
-        output.text,
-        tool_parse_request,
-        structured_tool_calls=engine_tool_calls,
-        finish_reason=output.finish_reason,
-    )
+    if selected_result is not None:
+        cleaned_text, tool_calls = (
+            selected_result.content,
+            protocol_calls(selected_result),
+        )
+    else:
+        cleaned_text, tool_calls = _parse_tool_calls_with_parser(
+            output.text,
+            tool_parse_request,
+            structured_tool_calls=engine_tool_calls,
+            finish_reason=output.finish_reason,
+        )
 
     # Yuki F6 (0.8.5 dogfood): mirror the chat-route ``tool_choice``
     # coercion. The local engine has no decoder-level FSM constraint, so
@@ -2346,43 +2365,55 @@ async def _non_stream(
         payload["error"] = {"code": code, "message": message}
         return Response(content=json.dumps(payload), media_type="application/json")
 
-    cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        raw_text=output.raw_text or output.text,
-        cleaned_text=cleaned_text,
-        tool_calls=tool_calls,
-        reasoning_parser=cfg.reasoning_parser,
-        engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
-        enable_thinking=_effective_enable_thinking(
-            resolved_thinking, cfg.model_path or cfg.model_name
-        ),
-        prompt_thinking_active=_should_start_in_thinking(
-            getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
-            resolved_thinking,
-            unconditional=bool(
-                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
+    if selected_result is not None:
+        cleaned_text, reasoning_text = (
+            selected_result.content,
+            selected_result.reasoning,
+        )
+    else:
+        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+            raw_text=output.raw_text or output.text,
+            cleaned_text=cleaned_text,
+            tool_calls=tool_calls,
+            reasoning_parser=cfg.reasoning_parser,
+            engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
+            enable_thinking=_effective_enable_thinking(
+                resolved_thinking, cfg.model_path or cfg.model_name
             ),
-            tools_requested=bool(openai_request.tools),
-        ),
-        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
-        # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
-        # the Responses → OpenAI adapter. None → no cap (back-compat).
-        reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
-        # r5-D shared finalize-on-truncation plug — see chat.py for
-        # the rationale. Forwarded so the /v1/responses path picks up
-        # the same gemma4 / glm4 / minimax fixes.
-        finish_reason=getattr(output, "finish_reason", None),
-        json_mode=_is_structured_output_requested(
-            getattr(openai_request, "response_format", None)
-        ),
-    )
+            prompt_thinking_active=_should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+                unconditional=bool(
+                    getattr(
+                        cfg.reasoning_parser, "implicit_reasoning_until_close", False
+                    )
+                ),
+                tools_requested=bool(openai_request.tools),
+            ),
+            # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+            # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
+            # the Responses → OpenAI adapter. None → no cap (back-compat).
+            reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+            # r5-D shared finalize-on-truncation plug — see chat.py for
+            # the rationale. Forwarded so the /v1/responses path picks up
+            # the same gemma4 / glm4 / minimax fixes.
+            finish_reason=getattr(output, "finish_reason", None),
+            json_mode=_is_structured_output_requested(
+                getattr(openai_request, "response_format", None)
+            ),
+        )
 
     final_content = None
     if cleaned_text:
-        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        final_content = sanitize_output(
-            final_content,
-            strip_tool_markup=bool(tool_parse_request.tools),
-        )
+        if selected_result is not None:
+            final_content = cleaned_text
+        else:
+            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+        if selected_result is None:
+            final_content = sanitize_output(
+                final_content,
+                strip_tool_markup=bool(tool_parse_request.tools),
+            )
         # R7-M4 (Vlad r7 — 0.8.8 sweep): mirror the chat-route fence-strip
         # so a model that wraps a ``json_object`` / ``json_schema`` body
         # in a ```json ... ``` markdown fence has the fence peeled off
@@ -2421,13 +2452,14 @@ async def _non_stream(
     # carried the issue#569 silent-drop pre-history), so the helper sees
     # a broader predicate set here than on chat/anthropic — that scope
     # is fine because the helper itself owns all the gates.
-    final_content = _apply_reasoning_cutoff_notice(
-        final_content,
-        reasoning_text,
-        tool_calls,
-        finish_reason,
-        include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
-    )
+    if selected_result is None:
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
+            include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+        )
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
     if (
@@ -2435,12 +2467,13 @@ async def _non_stream(
         and openai_request.tools
         and not engine_tool_calls
     ):
-        final_content = _clean_final_content_tool_envelope(
-            final_content,
-            openai_request,
-            reasoning_source=output.raw_text or output.text,
-            finish_reason=output.finish_reason,
-        )
+        if selected_result is None:
+            final_content = _clean_final_content_tool_envelope(
+                final_content,
+                openai_request,
+                reasoning_source=output.raw_text or output.text,
+                finish_reason=output.finish_reason,
+            )
 
     if tool_calls and (
         openai_request.tool_choice == "required"
@@ -2451,12 +2484,14 @@ async def _non_stream(
     ):
         from .chat import _strip_truncated_forced_xml_call
 
-        final_content = _strip_truncated_forced_xml_call(
-            final_content, {call.function.name for call in tool_calls}
-        )
+        if selected_result is None:
+            final_content = _strip_truncated_forced_xml_call(
+                final_content, {call.function.name for call in tool_calls}
+            )
 
     if (
-        output.finish_reason not in ("length", "cancelled", "content_filter")
+        selected_result is None
+        and output.finish_reason not in ("length", "cancelled", "content_filter")
         and (responses_request.tools or reasoning_text)
         and not tool_calls
         and not (final_content or "").strip()
@@ -2490,6 +2525,9 @@ async def _non_stream(
         reasoning_content=reasoning_text,
         tool_calls=tool_calls,
     )
+    if selected_result is not None:
+        assistant_message.content = final_content
+        assistant_message.reasoning_content = reasoning_text
     if not tool_parse_request.tools:
         # The request-aware sanitizer already handled non-tool markup. Restore
         # tool-shaped text removed by AssistantMessage's context-free validator.
@@ -3836,6 +3874,12 @@ async def _stream_responses(
             caller_client=caller_client,
             failure_latch=telemetry_failure_emitted,
         )
+        selected_session = make_session(
+            cfg,
+            openai_request,
+            reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+        )
+        selected_active = False
         async for output in engine_stream:
             delta_text = output.new_text
             # Accumulate the RAW model output (pre-filter, pre-router) so the
@@ -3886,6 +3930,23 @@ async def _stream_responses(
             terminal_raw_text = getattr(output, "raw_text", "")
             if chunk_is_terminal and terminal_raw_text:
                 accumulated_raw_parts.append(terminal_raw_text)
+
+            if selected_session is not None and not selected_session.native:
+                selected_events = selected_session.feed(output)
+                if selected_events is not None:
+                    selected_active = selected_session.parser is not None
+                    if selected_active:
+                        _defer_public_text = False
+                    for event in selected_events:
+                        if event.type == "parse_failure":
+                            raise OutputParseError()
+                        if event.type == "reasoning":
+                            accumulated_reasoning_text += event.reasoning or ""
+                        elif event.type == "content":
+                            reasoning_block_closed = True
+                            async for ev in _emit_text_delta(event.content):
+                                yield ev
+                    continue
 
             engine_tool_calls = getattr(output, "tool_calls", None) or []
             if engine_tool_calls:
@@ -4185,15 +4246,41 @@ async def _stream_responses(
                     async for ev in _emit_reasoning_fragment(piece):
                         yield ev
 
-        # Flush filters
-        remaining = tool_filter.flush()
-        if remaining:
-            if reasoning_parser:
-                remaining = _transition_reasoning_to_content(remaining)
-                async for ev in _emit_text_delta(remaining):
-                    yield ev
-            else:
-                for block_type, piece in think_router.process(remaining):
+        if selected_active:
+            for event in selected_session.finish():
+                if event.type == "parse_failure":
+                    raise OutputParseError()
+                if event.type == "reasoning":
+                    accumulated_reasoning_text += event.reasoning or ""
+                elif event.type == "content":
+                    async for ev in _emit_text_delta(event.content):
+                        yield ev
+            accumulated_raw = ""
+        else:
+            # Flush filters
+            remaining = tool_filter.flush()
+            if remaining:
+                if reasoning_parser:
+                    remaining = _transition_reasoning_to_content(remaining)
+                    async for ev in _emit_text_delta(remaining):
+                        yield ev
+                else:
+                    for block_type, piece in think_router.process(remaining):
+                        if block_type == "text" and piece:
+                            # R11-B codex r7 BLOCKING: see in-loop branch.
+                            reasoning_block_closed = True
+                            piece = _transition_reasoning_to_content(piece)
+                            async for ev in _emit_text_delta(piece):
+                                yield ev
+                        elif block_type == "thinking" and piece:
+                            # R11-B: same rationale as the in-loop think_router
+                            # branch above — preserve mid-think bytes for the
+                            # terminal reasoning output item.
+                            async for ev in _emit_reasoning_fragment(piece):
+                                yield ev
+
+            if not reasoning_parser:
+                for block_type, piece in think_router.flush():
                     if block_type == "text" and piece:
                         # R11-B codex r7 BLOCKING: see in-loop branch.
                         reasoning_block_closed = True
@@ -4202,179 +4289,164 @@ async def _stream_responses(
                             yield ev
                     elif block_type == "thinking" and piece:
                         # R11-B: same rationale as the in-loop think_router
-                        # branch above — preserve mid-think bytes for the
-                        # terminal reasoning output item.
+                        # branch above.
                         async for ev in _emit_reasoning_fragment(piece):
                             yield ev
 
-        if not reasoning_parser:
-            for block_type, piece in think_router.flush():
-                if block_type == "text" and piece:
-                    # R11-B codex r7 BLOCKING: see in-loop branch.
-                    reasoning_block_closed = True
-                    piece = _transition_reasoning_to_content(piece)
-                    async for ev in _emit_text_delta(piece):
-                        yield ev
-                elif block_type == "thinking" and piece:
-                    # R11-B: same rationale as the in-loop think_router
-                    # branch above.
-                    async for ev in _emit_reasoning_fragment(piece):
-                        yield ev
+            # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
+            # last engine chunk of the stream (terminal exact-boundary case
+            # OR the model stopped immediately after overflow), the
+            # ``</think>`` close marker was never spliced into the parser —
+            # so any held content past the cap stays buffered and the
+            # client sees a silent reasoning-only response with no
+            # ``output_text.delta`` ever emitted. Force the injection here
+            # so a terminal cap-hit flips the parser to content and any
+            # trailing bytes are promoted to ``response.output_text.delta``.
+            # Idempotent via ``_reasoning_close_injected``.
+            terminal_injection_attempted = False
+            if accumulated_raw_parts and not accumulated_raw:
+                accumulated_raw = "".join(accumulated_raw_parts)
 
-        # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
-        # last engine chunk of the stream (terminal exact-boundary case
-        # OR the model stopped immediately after overflow), the
-        # ``</think>`` close marker was never spliced into the parser —
-        # so any held content past the cap stays buffered and the
-        # client sees a silent reasoning-only response with no
-        # ``output_text.delta`` ever emitted. Force the injection here
-        # so a terminal cap-hit flips the parser to content and any
-        # trailing bytes are promoted to ``response.output_text.delta``.
-        # Idempotent via ``_reasoning_close_injected``.
-        terminal_injection_attempted = False
-        if accumulated_raw_parts and not accumulated_raw:
-            accumulated_raw = "".join(accumulated_raw_parts)
-
-        if (
-            reasoning_parser is not None
-            and _reasoning_cap_hit
-            and not _reasoning_close_injected
-        ):
-            _reasoning_close_injected = True
-            terminal_injection_attempted = True
-            # Codex round-6 BLOCKING #2: build the parser's
-            # ``current`` argument LOCALLY rather than mutating the
-            # shared ``accumulated_raw``. If the injection produces no
-            # content (no held bytes / parser early-returns), the
-            # subsequent ``finalize_streaming(accumulated_raw)`` would
-            # otherwise re-parse a buffer that ends with the synthetic
-            # ``</think>`` marker and could mis-classify the forged
-            # bytes as model output. Symmetric with the postprocessor
-            # fix in service/postprocessor.py.
-            previous_raw = accumulated_raw
-            injected_delta = reasoning_close_marker
-            local_current = previous_raw + injected_delta
-            try:
-                _prepare_forced_reasoning_end()
-                final_inject = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, local_current, injected_delta
-                )
-            except Exception as e:
-                # Codex round-5 BLOCKING #3: an earlier draft emitted a
-                # diagnostic string ``"[reasoning cap hit — parser
-                # flush failed]"`` as ``response.output_text.delta``,
-                # which fabricates assistant content from an INTERNAL
-                # server failure — clients see an "answer" that the
-                # model never produced. Log the parser failure and
-                # leave the assistant content empty. The route's
-                # existing 5xx / disconnect-guard semantics handle
-                # truly catastrophic failures upstream; a single
-                # reasoning-cap parser bug must not invent text.
-                logger.warning(
-                    "responses terminal close-marker injection raised on %r: %s — "
-                    "trailing reasoning content (if any) will not be "
-                    "promoted to output_text.delta for this request",
-                    type(reasoning_parser).__name__,
-                    e,
-                )
-                final_inject = None
-            if final_inject is not None and getattr(final_inject, "content", None):
-                content = _transition_reasoning_to_content(final_inject.content)
-                if content:
-                    filtered = tool_filter.process(content)
-                    if filtered:
-                        async for ev in _emit_text_delta(filtered):
-                            yield ev
-
-        # Codex round-4 BLOCKING #1 + round-6 BLOCKING #2: when the
-        # terminal injection above ran at all (whether or not it
-        # produced content), skip the parser's non-stream finalize
-        # pass. Two distinct hazards:
-        #
-        #   1. Injection emitted content — running ``finalize_streaming``
-        #      next would re-emit the SAME bytes the streaming
-        #      extraction just released (qwen3 / deepseek parsers'
-        #      ``finalize_streaming`` re-parses the whole accumulated
-        #      buffer and can't distinguish already-streamed from
-        #      still-held content).
-        #   2. Injection produced no content — the parser already had
-        #      its chance to flush via the forced ``</think>``. Running
-        #      the non-stream finalize on the original
-        #      ``accumulated_raw`` (which excludes ``</think>`` per
-        #      the round-5/6 local-buffer fix) might still re-classify
-        #      the cap-truncated reasoning as content via the
-        #      non-stream parser's broader heuristics, double-emitting
-        #      bytes already routed past the cap.
-        #
-        # When NO terminal injection was attempted (cap never fired,
-        # or it fired and was already injected mid-stream), the
-        # finalize pass still runs as the safety net for normal
-        # parser-held content.
-        if (
-            reasoning_parser
-            and accumulated_raw
-            and not terminal_injection_attempted
-            and not engine_channel_routed
-        ):
-            # D-STOP-THINK (PR #799): pass matched_stop AND the
-            # ``_starts_thinking`` boolean (chat template injected
-            # ``<think>`` AND ``enable_thinking`` is non-False) so
-            # parsers can distinguish a prompt-injected mid-think
-            # truncation from a casual stop-terminated answer. Both
-            # signals together are required (codex round-4
-            # BLOCKING). Mirrors routes/anthropic.py.
-            final_msg = (
-                finalize_streaming_compat(
-                    reasoning_parser,
-                    accumulated_raw,
-                    matched_stop=stream_matched_stop,
-                    prompt_thinking_active=_starts_thinking,
-                    finish_reason=stream_finish_reason,
-                )
-                if hasattr(reasoning_parser, "finalize_streaming")
-                else None
-            )
-            if final_msg and final_msg.content:
-                content = _transition_reasoning_to_content(final_msg.content)
-                if content:
-                    # Flush below, after the sanitizer's final tail has also
-                    # passed through this same filter, preserving split markers.
-                    filtered = tool_filter.process(content)
-                    if filtered:
-                        async for ev in _emit_text_delta(filtered):
-                            yield ev
-            # R11-B (R11-M-F1): tap any reasoning bytes the finalize pass
-            # surfaces, but ONLY if the in-loop ``extract_reasoning_streaming``
-            # accumulator didn't already capture them. Qwen3 / deepseek /
-            # glm4 release reasoning incrementally on each delta AND
-            # re-emit the full chain on ``finalize_streaming`` (it
-            # re-parses ``accumulated_raw``), so naively appending would
-            # double the text. Parsers that only release on finalize
-            # (none in-tree today, but the contract allows it) still
-            # contribute correctly. The streaming surface's accumulator
-            # is the canonical source when both are populated.
             if (
-                final_msg
-                and getattr(final_msg, "reasoning", None)
-                and not accumulated_reasoning_text
+                reasoning_parser is not None
+                and _reasoning_cap_hit
+                and not _reasoning_close_injected
             ):
-                if reasoning_stream_seen:
-                    reasoning_sanitizer = StreamingReasoningSanitizer()
-                async for ev in _emit_reasoning_fragment(final_msg.reasoning):
-                    yield ev
+                _reasoning_close_injected = True
+                terminal_injection_attempted = True
+                # Codex round-6 BLOCKING #2: build the parser's
+                # ``current`` argument LOCALLY rather than mutating the
+                # shared ``accumulated_raw``. If the injection produces no
+                # content (no held bytes / parser early-returns), the
+                # subsequent ``finalize_streaming(accumulated_raw)`` would
+                # otherwise re-parse a buffer that ends with the synthetic
+                # ``</think>`` marker and could mis-classify the forged
+                # bytes as model output. Symmetric with the postprocessor
+                # fix in service/postprocessor.py.
+                previous_raw = accumulated_raw
+                injected_delta = reasoning_close_marker
+                local_current = previous_raw + injected_delta
+                try:
+                    _prepare_forced_reasoning_end()
+                    final_inject = reasoning_parser.extract_reasoning_streaming(
+                        previous_raw, local_current, injected_delta
+                    )
+                except Exception as e:
+                    # Codex round-5 BLOCKING #3: an earlier draft emitted a
+                    # diagnostic string ``"[reasoning cap hit — parser
+                    # flush failed]"`` as ``response.output_text.delta``,
+                    # which fabricates assistant content from an INTERNAL
+                    # server failure — clients see an "answer" that the
+                    # model never produced. Log the parser failure and
+                    # leave the assistant content empty. The route's
+                    # existing 5xx / disconnect-guard semantics handle
+                    # truly catastrophic failures upstream; a single
+                    # reasoning-cap parser bug must not invent text.
+                    logger.warning(
+                        "responses terminal close-marker injection raised on %r: %s — "
+                        "trailing reasoning content (if any) will not be "
+                        "promoted to output_text.delta for this request",
+                        type(reasoning_parser).__name__,
+                        e,
+                    )
+                    final_inject = None
+                if final_inject is not None and getattr(final_inject, "content", None):
+                    content = _transition_reasoning_to_content(final_inject.content)
+                    if content:
+                        filtered = tool_filter.process(content)
+                        if filtered:
+                            async for ev in _emit_text_delta(filtered):
+                                yield ev
 
-        sanitized_overflow_tail = _flush_reasoning_sanitizer()
-        if sanitized_overflow_tail:
-            content = sanitized_overflow_tail
-            if content:
-                filtered = tool_filter.process(content)
-                if filtered:
-                    async for ev in _emit_text_delta(filtered):
+            # Codex round-4 BLOCKING #1 + round-6 BLOCKING #2: when the
+            # terminal injection above ran at all (whether or not it
+            # produced content), skip the parser's non-stream finalize
+            # pass. Two distinct hazards:
+            #
+            #   1. Injection emitted content — running ``finalize_streaming``
+            #      next would re-emit the SAME bytes the streaming
+            #      extraction just released (qwen3 / deepseek parsers'
+            #      ``finalize_streaming`` re-parses the whole accumulated
+            #      buffer and can't distinguish already-streamed from
+            #      still-held content).
+            #   2. Injection produced no content — the parser already had
+            #      its chance to flush via the forced ``</think>``. Running
+            #      the non-stream finalize on the original
+            #      ``accumulated_raw`` (which excludes ``</think>`` per
+            #      the round-5/6 local-buffer fix) might still re-classify
+            #      the cap-truncated reasoning as content via the
+            #      non-stream parser's broader heuristics, double-emitting
+            #      bytes already routed past the cap.
+            #
+            # When NO terminal injection was attempted (cap never fired,
+            # or it fired and was already injected mid-stream), the
+            # finalize pass still runs as the safety net for normal
+            # parser-held content.
+            if (
+                reasoning_parser
+                and accumulated_raw
+                and not terminal_injection_attempted
+                and not engine_channel_routed
+            ):
+                # D-STOP-THINK (PR #799): pass matched_stop AND the
+                # ``_starts_thinking`` boolean (chat template injected
+                # ``<think>`` AND ``enable_thinking`` is non-False) so
+                # parsers can distinguish a prompt-injected mid-think
+                # truncation from a casual stop-terminated answer. Both
+                # signals together are required (codex round-4
+                # BLOCKING). Mirrors routes/anthropic.py.
+                final_msg = (
+                    finalize_streaming_compat(
+                        reasoning_parser,
+                        accumulated_raw,
+                        matched_stop=stream_matched_stop,
+                        prompt_thinking_active=_starts_thinking,
+                        finish_reason=stream_finish_reason,
+                    )
+                    if hasattr(reasoning_parser, "finalize_streaming")
+                    else None
+                )
+                if final_msg and final_msg.content:
+                    content = _transition_reasoning_to_content(final_msg.content)
+                    if content:
+                        # Flush below, after the sanitizer's final tail has also
+                        # passed through this same filter, preserving split markers.
+                        filtered = tool_filter.process(content)
+                        if filtered:
+                            async for ev in _emit_text_delta(filtered):
+                                yield ev
+                # R11-B (R11-M-F1): tap any reasoning bytes the finalize pass
+                # surfaces, but ONLY if the in-loop ``extract_reasoning_streaming``
+                # accumulator didn't already capture them. Qwen3 / deepseek /
+                # glm4 release reasoning incrementally on each delta AND
+                # re-emit the full chain on ``finalize_streaming`` (it
+                # re-parses ``accumulated_raw``), so naively appending would
+                # double the text. Parsers that only release on finalize
+                # (none in-tree today, but the contract allows it) still
+                # contribute correctly. The streaming surface's accumulator
+                # is the canonical source when both are populated.
+                if (
+                    final_msg
+                    and getattr(final_msg, "reasoning", None)
+                    and not accumulated_reasoning_text
+                ):
+                    if reasoning_stream_seen:
+                        reasoning_sanitizer = StreamingReasoningSanitizer()
+                    async for ev in _emit_reasoning_fragment(final_msg.reasoning):
                         yield ev
-        remaining = tool_filter.flush()
-        if remaining:
-            async for ev in _emit_text_delta(remaining):
-                yield ev
+
+            sanitized_overflow_tail = _flush_reasoning_sanitizer()
+            if sanitized_overflow_tail:
+                content = sanitized_overflow_tail
+                if content:
+                    filtered = tool_filter.process(content)
+                    if filtered:
+                        async for ev in _emit_text_delta(filtered):
+                            yield ev
+            remaining = tool_filter.flush()
+            if remaining:
+                async for ev in _emit_text_delta(remaining):
+                    yield ev
 
         # Check the terminal engine state before forced tool-choice synthesis:
         # a context-window stop cannot fulfill a tool contract.
@@ -4425,11 +4497,14 @@ async def _stream_responses(
         # to extract structured tool_calls. Without this swap, the
         # text-parser path returned zero tool_calls and Codex's agent
         # loop silently terminated with no items emitted.
-        _, parsed_tool_calls = _parse_tool_calls_with_parser(
-            accumulated_raw,
-            _tool_parse_request(openai_request),
-            structured_tool_calls=accumulated_structured_tool_calls or None,
-        )
+        if selected_active:
+            parsed_tool_calls = protocol_calls(selected_session.result)
+        else:
+            _, parsed_tool_calls = _parse_tool_calls_with_parser(
+                accumulated_raw,
+                _tool_parse_request(openai_request),
+                structured_tool_calls=accumulated_structured_tool_calls or None,
+            )
 
         # Yuki F6 (0.8.5 dogfood): mirror the non-stream synthesis so
         # ``tool_choice="required"`` / named-function always produce a
@@ -5000,7 +5075,12 @@ async def _stream_responses(
         # rescue on a different cap signal) routes through the same
         # invariant rather than getting silently skipped because the
         # outer text gate was forgotten.
-        if mid_think_cutoff and not message_open and not tool_calls:
+        if (
+            not selected_active
+            and mid_think_cutoff
+            and not message_open
+            and not tool_calls
+        ):
             rescue_text = _apply_reasoning_cutoff_notice(
                 final_content=None,
                 reasoning_text=accumulated_reasoning_text,

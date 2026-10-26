@@ -10,6 +10,11 @@ from fastapi.testclient import TestClient
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.reasoning import get_parser
+
+try:
+    from rapid_mlx.prompt_parse_context import PromptParseContext
+except ModuleNotFoundError:  # replaying the immutable pre-context release
+    PromptParseContext = None
 from rapid_mlx.routes import anthropic, chat, responses
 
 TOOLS = [
@@ -18,6 +23,12 @@ TOOLS = [
         "function": {"name": "run_shell_command", "parameters": {"type": "object"}},
     }
 ]
+
+
+def generation_output(**kwargs):
+    if "prompt_parse_context" not in GenerationOutput.__dataclass_fields__:
+        kwargs.pop("prompt_parse_context", None)
+    return GenerationOutput(**kwargs)
 
 
 class Engine:
@@ -34,8 +45,9 @@ class Engine:
         return self.prompt
 
     async def chat(self, **kw):
-        return GenerationOutput(
+        return generation_output(
             text=self.raw,
+            prompt_parse_context=self.parse_context,
             raw_text=self.raw,
             prompt_tokens=4,
             completion_tokens=len(self.raw),
@@ -50,15 +62,16 @@ class Engine:
             await asyncio.sleep(0)
             Engine.index = idx
             s += c
-            yield GenerationOutput(
+            yield generation_output(
                 text=s,
+                prompt_parse_context=self.parse_context,
                 new_text=c,
                 prompt_tokens=4,
                 completion_tokens=idx,
                 finished=False,
             )
         Engine.index = len(self.chunks) + 1
-        yield GenerationOutput(
+        yield generation_output(
             text=s,
             new_text="",
             prompt_tokens=4,
@@ -210,6 +223,7 @@ def route(
     prompt="prompt",
     tools=None,
     tool_choice=None,
+    parse_context="fixture",
 ):
     cfg = reset_config()
     cfg.model_name = model
@@ -220,6 +234,21 @@ def route(
     cfg.enable_auto_tool_choice = True
     cfg.engine = Engine(raw)
     cfg.engine.prompt = prompt
+    if parse_context == "fixture":
+        # The fake renderer owns the current assistant suffix. Historical
+        # messages and generated text cannot determine this state.
+        parse_context = (
+            PromptParseContext(
+                "<think>" if thinking else "<think></think>",
+                (),
+                "reasoning" if thinking else "content",
+                thinking,
+                "fixture",
+            )
+            if PromptParseContext is not None and r in {"qwen3", "hy_v3", "hy3"}
+            else None
+        )
+    cfg.engine.parse_context = parse_context
     declared_tools = TOOLS if tools is None else tools
     cfg.engine.chunks = chunks or list(raw)
     cfg.engine.finish = finish

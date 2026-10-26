@@ -1,7 +1,5 @@
 """Measure the complete parser path, including finalization."""
 
-import pytest
-
 from .benchmark import measure
 
 
@@ -9,11 +7,6 @@ class ScalingRegressionError(Exception):
     pass
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ScalingRegressionError,
-    reason="R4 #5273: growing Hermes prefix rescans",
-)
 def test_full_path_cpu_scaling():
     # Stop at the first violation to keep the known quadratic implementation
     # affordable in CI; a passing implementation must reach the 64K case.

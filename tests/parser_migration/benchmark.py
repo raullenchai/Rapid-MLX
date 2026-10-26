@@ -9,7 +9,7 @@ from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
-def measure(size, repetitions=3):
+def measure(size, repetitions=3, *, verify=True):
     raw = (
         '<tool_call>{"name":"run_shell_command","arguments":{"command":"'
         + "x" * size
@@ -21,7 +21,9 @@ def measure(size, repetitions=3):
     for i, chunk in enumerate(chunks):
         text += chunk
         outputs.append(
-            GenerationOutput(text=text, new_text=chunk, completion_tokens=i + 1)
+            GenerationOutput(
+                text=text, new_text=chunk, completion_tokens=i + 1, finished=False
+            )
         )
     outputs.append(
         GenerationOutput(text=text, new_text="", finished=True, finish_reason="stop")
@@ -59,12 +61,21 @@ def measure(size, repetitions=3):
                 target = calls.setdefault(call["index"], {"name": "", "arguments": ""})
                 for field in target:
                     target[field] += call.get("function", {}).get(field, "")
-        assert len(calls) == 1
-        call = calls[0]
-        assert call["name"] == "run_shell_command"
-        assert json.loads(call["arguments"]) == {"command": "x" * size}
+        valid_call = False
+        if len(calls) == 1:
+            call = calls[0]
+            try:
+                valid_call = call["name"] == "run_shell_command" and json.loads(
+                    call["arguments"]
+                ) == {"command": "x" * size}
+            except ValueError:
+                pass
+        if verify:
+            assert valid_call, "benchmark must retain one complete call"
+
     reset_config()
     return {
+        "call_valid": valid_call,
         "bytes": size,
         "chunks": len(chunks),
         "ns_per_chunk": statistics.median(samples),

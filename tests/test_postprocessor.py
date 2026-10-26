@@ -37,6 +37,7 @@ def _make_output(
     """
     out = MagicMock()
     out.new_text = text
+    out.prompt_parse_context = None
     out.finished = finished
     out.channel = channel
     out.finish_reason = finish_reason or ("stop" if finished else None)
@@ -2411,15 +2412,15 @@ class TestPerRequestParserIsolation:
         # Simulate pp1 accumulating state
         pp1.reset()
         pp1.process_chunk(_make_output("Hello"))
-        assert pp1.accumulated_text == "Hello"
+        assert pp1._selected_session.result.reasoning == "Hello"
 
         # pp2 resets independently
         pp2.reset()
         pp2.process_chunk(_make_output("World"))
 
         # pp1's state should be untouched
-        assert pp1.accumulated_text == "Hello"
-        assert pp2.accumulated_text == "World"
+        assert pp1._selected_session.result.reasoning == "Hello"
+        assert pp2._selected_session.result.reasoning == "World"
 
     def test_reasoning_parser_state_isolated(self):
         """Reasoning parser internal state is isolated between instances."""

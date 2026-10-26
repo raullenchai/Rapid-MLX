@@ -7,6 +7,13 @@ import pytest
 
 from .harness import route
 
+MIGRATION = {
+    tuple(row["key"]): row
+    for row in json.loads(
+        Path(__file__).with_name("advertised_migration.json").read_text()
+    )
+}
+
 ROWS = json.loads(Path(__file__).with_name("advertised.json").read_text())
 
 
@@ -42,4 +49,8 @@ def test_advertised_pair_observations(row):
         tools_mode=mode,
         tools=tools,
     )
-    assert actual == row["result"]
+    change = MIGRATION.get(tuple(row["key"]))
+    if change is not None:
+        assert change["before"] == row["result"]
+        assert change["reason"]
+    assert actual == (change["after"] if change else row["result"])
