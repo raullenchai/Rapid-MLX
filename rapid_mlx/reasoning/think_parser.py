@@ -844,6 +844,13 @@ class BaseThinkingReasoningParser(ReasoningParser):
         Duplicate openers are idempotent: the first closer returns to content.
         This also withholds partial closers in the chunk containing the opener.
         """
+        if not start_in_prev and current_text.index(self.start_token) >= len(
+            previous_text
+        ):
+            # Preserve the established explicit-opener boundary: a preamble in
+            # this chunk is outside the reasoning block, as in buffered parsing.
+            delta_text = delta_text[delta_text.index(self.start_token) :]
+            self._held_tag_suffix_len = 0
         if self._streaming_phase is None:
             self._streaming_phase = "content" if end_in_prev else "reasoning"
         return self._handle_multi_block_after_close(

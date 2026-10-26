@@ -261,3 +261,23 @@ def test_nested_block_preserves_later_reasoning_and_answer():
     assert parser.extract_reasoning(
         "<think>S<think>N</think>A</think>T<think>R</think>Z"
     ) == ("SNR", "ATZ")
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        ["prefix<think>Secret</think>Answer"],
+        ["prefix<think>Secret</th", "ink>Answer"],
+    ],
+)
+def test_explicit_opener_preamble_matches_buffered(chunks):
+    parser = get_parser("qwen3")()
+    previous = ""
+    reasoning = content = ""
+    for chunk in chunks:
+        delta = parser.extract_reasoning_streaming(previous, previous + chunk, chunk)
+        previous += chunk
+        if delta:
+            reasoning += delta.reasoning or ""
+            content += delta.content or ""
+    assert (reasoning, content) == parser.extract_reasoning(previous)
