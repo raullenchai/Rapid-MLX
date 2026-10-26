@@ -227,9 +227,13 @@ class Glm47ToolParser(ToolParser):
         # When tool calls are found, don't return reasoning text as content
         # GLM often outputs thinking/reasoning before tool calls without <think> tags
         if tool_calls:
-            content = cleaned_text[last_call_end:]
+            residual = cleaned_text[last_call_end:]
             if request and request.get("_reasoning_content_extracted"):
-                content = self.FUNC_DETAIL_PATTERN.sub("", cleaned_text).strip()
+                residual = cleaned_text
+            content_filter = Glm47ContentFilter()
+            content = content_filter.process(residual) + content_filter.flush()
+            if request and request.get("_reasoning_content_extracted"):
+                content = content.strip()
             return ExtractedToolCallInformation(
                 tools_called=True,
                 tool_calls=tool_calls,
@@ -287,8 +291,13 @@ class Glm47ToolParser(ToolParser):
                 if result.tools_called:
                     previous = self.extract_tool_calls(previous_text, request)
                     already = len(previous.tool_calls) if previous.tools_called else 0
+                    content = result.content or ""
+                    if previous.tools_called and content.startswith(
+                        previous.content or ""
+                    ):
+                        content = content[len(previous.content or "") :]
                     return {
-                        "content": result.content,
+                        "content": content,
                         "preserve_post_tool_content": True,
                         "tool_calls": [
                             {

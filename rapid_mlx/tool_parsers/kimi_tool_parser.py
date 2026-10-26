@@ -78,18 +78,10 @@ class KimiToolParser(ToolParser):
 
         tool_calls = []
 
-        # Extract content before tool calls
-        content = None
-        for marker in [self.TOOL_CALLS_START, self.TOOL_CALLS_START_ALT]:
-            if marker in model_output:
-                idx = model_output.find(marker)
-                content = model_output[:idx].strip() if idx > 0 else None
-                break
-
         # Find all tool calls
-        matches = self.TOOL_CALL_PATTERN.findall(model_output)
+        matches = list(self.TOOL_CALL_PATTERN.finditer(model_output))
         for match in matches:
-            func_id, func_args = match
+            func_id, func_args = match.groups()
             # func_id format: functions.get_weather:0 or get_weather:0
             func_name = func_id.split(":")[-2] if ":" in func_id else func_id
             func_name = func_name.split(".")[-1]  # Remove 'functions.' prefix
@@ -114,14 +106,28 @@ class KimiToolParser(ToolParser):
                 )
 
         if tool_calls:
-            content = self.TOOL_CALL_PATTERN.sub("", model_output)
-            for marker in (
-                self.TOOL_CALLS_START,
-                self.TOOL_CALLS_START_ALT,
-                self.TOOL_CALLS_END,
-                self.TOOL_CALLS_END_ALT,
-            ):
-                content = content.replace(marker, "")
+            pieces = []
+            cursor = 0
+            for match in matches:
+                start, end = match.span()
+                prefix = model_output[cursor:start].rstrip()
+                for marker in (self.TOOL_CALLS_START, self.TOOL_CALLS_START_ALT):
+                    if prefix.endswith(marker):
+                        start = cursor + len(prefix) - len(marker)
+                        break
+                suffix = model_output[end:]
+                stripped = suffix.lstrip()
+                for marker in (self.TOOL_CALLS_END, self.TOOL_CALLS_END_ALT):
+                    if stripped.startswith(marker):
+                        end += len(suffix) - len(stripped) + len(marker)
+                        break
+                    if stripped and marker.startswith(stripped):
+                        end = len(model_output)
+                        break
+                pieces.append(model_output[cursor:start])
+                cursor = end
+            pieces.append(model_output[cursor:])
+            content = self._without_pending_call("".join(pieces))
             return ExtractedToolCallInformation(
                 tools_called=True,
                 tool_calls=tool_calls,
@@ -131,6 +137,29 @@ class KimiToolParser(ToolParser):
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )
+
+    def _without_pending_call(self, content: str) -> str:
+        start = content.find(self.TOOL_CALL_START)
+        if start >= 0:
+            body = content[start + len(self.TOOL_CALL_START) :]
+            name = re.match(r"[\w.:-]*", body)
+            assert name is not None
+            tail = body[name.end() :]
+            if (
+                not tail
+                or self.TOOL_ARG_START.startswith(tail)
+                or tail.startswith(self.TOOL_ARG_START)
+            ):
+                prefix = content[:start].rstrip()
+                for marker in (self.TOOL_CALLS_START, self.TOOL_CALLS_START_ALT):
+                    if prefix.endswith(marker):
+                        start = len(prefix) - len(marker)
+                        break
+                content = content[:start]
+        for marker in (self.TOOL_CALLS_START, self.TOOL_CALLS_START_ALT):
+            if content.endswith(marker):
+                content = content[: -len(marker)]
+        return content
 
     def extract_tool_calls_streaming(
         self,
@@ -148,23 +177,22 @@ class KimiToolParser(ToolParser):
         if not self._has_tool_section(current_text):
             return {"content": delta_text}
 
-        tail = ""
-        last_call_end = max(
-            (m.end() for m in self.TOOL_CALL_PATTERN.finditer(current_text)), default=0
+        result = self.extract_tool_calls(current_text)
+        if not result.tools_called:
+            return None
+        content = result.content or ""
+        previous = self.extract_tool_calls(previous_text)
+        already_content = previous.content or "" if previous.tools_called else ""
+        tail = (
+            content[len(already_content) :]
+            if content.startswith(already_content)
+            else content
         )
-        if last_call_end:
-            for marker in (self.TOOL_CALLS_END, self.TOOL_CALLS_END_ALT):
-                end = current_text.find(marker, last_call_end)
-                if end >= 0:
-                    tail = current_text[max(len(previous_text), end + len(marker)) :]
-                    break
 
         if current_text.count(self.TOOL_CALL_END) > previous_text.count(
             self.TOOL_CALL_END
         ):
-            result = self.extract_tool_calls(current_text)
             if result.tools_called:
-                previous = self.extract_tool_calls(previous_text)
                 already = len(previous.tool_calls) if previous.tools_called else 0
                 return {
                     "content": tail,

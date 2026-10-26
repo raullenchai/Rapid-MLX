@@ -310,3 +310,59 @@ def test_literal_partial_tool_name_stays_in_reasoning():
             content += result.content or ""
     assert reasoning == "Discuss <tool_cal"
     assert content == "Answer"
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "<tool_call>undeclared<arg_key>x</arg_key><arg_value>y</arg_value></tool_call>",
+        "<tool_call>undeclared<arg_key>x</arg_key><arg_value>y",
+        "<tool_call>undeclared",
+    ],
+)
+def test_glm_answer_excludes_later_rejected_or_incomplete_wire(surface, suffix):
+    raw = (
+        "<tool_call>run_shell_command<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
+        + suffix
+    )
+    expected = {
+        "content": "Answer",
+        "reasoning": "",
+        "calls": [["run_shell_command", {"command": "pwd"}]],
+    }
+    assert route("qwen3", "glm47", raw, surface, False) == expected
+    for chunks in [[raw], list(raw)]:
+        assert route("qwen3", "glm47", raw, surface, True, chunks) == expected
+
+
+def test_native_parser_preserves_literal_marker_in_answer_prose():
+    from rapid_mlx.tool_parsers.kimi_tool_parser import KimiToolParser
+    from rapid_mlx.tool_parsers.streaming import StreamingToolContentFilter
+
+    wire = '<|tool_calls_section_begin|><|tool_call_begin|>run_shell_command:0<|tool_call_argument_begin|>{"command":"pwd"}<|tool_call_end|><|tool_calls_section_end|>'
+    answer = "The literal marker is <|tool_calls_section_end|>."
+    raw = wire + answer
+    assert KimiToolParser().extract_tool_calls(raw).content == answer
+    for chunks in [[raw], list(raw)]:
+        content_filter = StreamingToolContentFilter(KimiToolParser(), {})
+        content = "".join(content_filter.process(chunk) for chunk in chunks)
+        content += content_filter.flush()
+        assert content == answer
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_native_answer_excludes_following_incomplete_call(surface):
+    wire = '<|tool_calls_section_begin|><|tool_call_begin|>run_shell_command:0<|tool_call_argument_begin|>{"command":"pwd"}<|tool_call_end|><|tool_calls_section_end|>'
+    raw = (
+        wire
+        + 'Answer<|tool_calls_section_begin|><|tool_call_begin|>run_shell_command:1<|tool_call_argument_begin|>{"command":"'
+    )
+    expected = {
+        "content": "Answer",
+        "reasoning": "",
+        "calls": [["run_shell_command", {"command": "pwd"}]],
+    }
+    assert route("deepseek_r1", "kimi", raw, surface, False) == expected
+    for chunks in [[raw], list(raw)]:
+        assert route("deepseek_r1", "kimi", raw, surface, True, chunks) == expected

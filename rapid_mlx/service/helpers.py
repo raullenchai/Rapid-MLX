@@ -499,7 +499,19 @@ def _finalize_content_and_reasoning(
                     for call in tool_calls
                 ]
             }
-            if set(tool_parser.EXPECTED_WIRE_FORMATS) & {"kimi_native", "hy3_native"}:
+            if "glm_named_tool_call" in tool_parser.EXPECTED_WIRE_FORMATS:
+                from ..tool_parsers.glm47_tool_parser import Glm47ContentFilter
+
+                content_filter = Glm47ContentFilter()
+                residual = content_filter.process(raw_text) + content_filter.flush()
+                if raw_text.lstrip().startswith("<tool_call>") and not (
+                    reasoning_parser.start_token in residual
+                    or reasoning_parser.end_token in residual
+                ):
+                    reasoning_text = None
+                else:
+                    reasoning_text, _ = extract(residual)
+            elif set(tool_parser.EXPECTED_WIRE_FORMATS) & {"kimi_native", "hy3_native"}:
                 # These native parsers retain reasoning delimiters in residual
                 # prose. Remove their calls before interpreting any delimiter
                 # literals that may be part of JSON argument strings.
