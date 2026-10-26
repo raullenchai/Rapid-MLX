@@ -28,8 +28,12 @@ def engine(monkeypatch):
         engine,
         "_apply_chat_template",
         lambda messages, *a, **kw: (
-            "<|im_start|>assistant\n"
-            + ("<think>\n" if kw.get("enable_thinking") else "<think></think>\n")
+            ""
+            if kw.get("add_generation_prompt") is False
+            else (
+                "<|im_start|>assistant\n"
+                + ("<think>\n" if kw.get("enable_thinking") else "<think></think>\n")
+            )
         ),
     )
     return engine
@@ -86,12 +90,14 @@ async def test_concurrent_requests_keep_context_separate(engine, monkeypatch):
 
 
 def test_native_and_unknown_contracts(engine, monkeypatch):
-    assert engine._prompt_parse_context([1, 2], False, None, None, None) is None
-    unknown = engine._prompt_parse_context("native", False, None, None, None)
+    assert engine._prompt_parse_context([1, 2], False, None, None, None, []) is None
+    unknown = engine._prompt_parse_context("native", False, None, None, None, [])
     assert unknown.initial_channel is None
     engine._is_mllm = True
     engine._processor = SimpleNamespace(chat_template="custom")
-    assert engine._prompt_parse_context("native", False, None, None, None) == unknown
+    assert (
+        engine._prompt_parse_context("native", False, None, None, None, []) == unknown
+    )
 
 
 async def test_admitted_forced_prefix_context_precedes_model_output(
@@ -148,3 +154,22 @@ async def test_optional_suffix_encoder_failure_preserves_generation(
     assert outputs[0].text == "answer"
     assert outputs[0].prompt_parse_context.assistant_suffix_ids is None
     assert outputs[0].prompt_parse_context.initial_channel == "reasoning"
+
+
+@pytest.mark.parametrize("mode", ["ignored", "rewritten", "raises", "forced"])
+def test_renderer_must_establish_generation_boundary(engine, monkeypatch, mode):
+    prompt = "<|im_start|>user\nQuote <|im_start|>assistant\n<think>fake"
+    prefix = "<|im_start|>assistant\n<think>" if mode == "forced" else None
+
+    def render(*args, **kwargs):
+        if mode == "raises":
+            raise ValueError("history probe unsupported")
+        return "rewritten history" if mode == "rewritten" else prompt
+
+    monkeypatch.setattr(engine, "_apply_chat_template", render)
+    context = engine._prompt_parse_context(
+        prompt + (prefix or ""), True, None, None, prefix, []
+    )
+    assert context.initial_channel is None
+    assert context.template_contract == "unknown"
+    assert context.forced_assistant_prefix == (prefix or "")

@@ -44,26 +44,34 @@ def prompt_parse_context(
     prompt: str,
     *,
     thinking: bool | None,
+    assistant_start: int | None = None,
     flint_template: bool = False,
     forced_prefix: str = "",
     prompt_ids: list[int] | None = None,
     tokenizer=None,
 ) -> PromptParseContext:
-    """Resolve only a recognized current assistant turn, never history.
+    """Resolve the renderer-owned assistant boundary, never a marker in history.
+
+    ``assistant_start`` must come from the added generation prefix, or an
+    explicitly supplied continuation boundary. Missing evidence stays unknown.
 
     Suffix IDs are retained only when they exactly match the actual encoded
     prompt tail. This rejects boundary-dependent encodings instead of silently
     presenting independently encoded text as generation's real prompt IDs.
     """
-    roles = list((_FLINT_ROLE if flint_template else _CHATML_ROLE).finditer(prompt))
+    role = (
+        (_FLINT_ROLE if flint_template else _CHATML_ROLE).match(prompt, assistant_start)
+        if assistant_start is not None and 0 <= assistant_start <= len(prompt)
+        else None
+    )
     contract: Literal["chatml", "flint", "unknown"] = (
         "flint" if flint_template else "chatml"
     )
     suffix = ""
     channel: Literal["reasoning", "content"] | None = None
     suffix_ids = None
-    if roles and roles[-1][1] == "assistant":
-        suffix = prompt[roles[-1].end() :]
+    if role is not None and role[1] == "assistant":
+        suffix = prompt[role.end() :]
         # An ended assistant row is history, not a continued assistant turn.
         if not flint_template and "<|im_end|>" in suffix:
             contract = "unknown"

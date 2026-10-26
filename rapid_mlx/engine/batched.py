@@ -2830,7 +2830,9 @@ class BatchedEngine(BaseEngine):
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
 
-    def _prompt_parse_context(self, prompt, thinking, tools, template_kwargs, prefix):
+    def _prompt_parse_context(
+        self, prompt, thinking, tools, template_kwargs, prefix, messages, num_images=0
+    ):
         from ..prompt_parse_context import prompt_parse_context
         from ..utils.chat_template import is_flint_chat_template
 
@@ -2847,8 +2849,33 @@ class BatchedEngine(BaseEngine):
         flint = is_flint_chat_template(
             applicator, tools=tools, chat_template_kwargs=template_kwargs
         )
+        assistant_start = None
+        try:
+            history = self._apply_chat_template(
+                messages,
+                tools,
+                num_images=num_images,
+                enable_thinking=thinking,
+                add_generation_prompt=False,
+                chat_template_kwargs=template_kwargs,
+            )
+            rendered = prompt[: -len(prefix)] if prefix else prompt
+            if (
+                isinstance(history, str)
+                and rendered.startswith(history)
+                and len(rendered) > len(history)
+            ):
+                assistant_start = len(history)
+        except Exception:
+            # A template may not support history-only rendering. Metadata stays
+            # unknown rather than guessing a role boundary from user text.
+            logger.debug("Prompt boundary unavailable", exc_info=True)
         context = prompt_parse_context(
-            prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix or ""
+            prompt,
+            thinking=thinking,
+            assistant_start=assistant_start,
+            flint_template=flint,
+            forced_prefix=prefix or "",
         )
         return context
 
@@ -3845,6 +3872,8 @@ class BatchedEngine(BaseEngine):
             template_tools,
             chat_template_kwargs,
             forced_assistant_prefix,
+            messages,
+            num_images=len(all_images),
         )
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
@@ -4772,6 +4801,8 @@ class BatchedEngine(BaseEngine):
             template_tools,
             chat_template_kwargs,
             forced_assistant_prefix,
+            messages,
+            num_images=len(all_images),
         )
         capture = PromptContextCapture(
             context, getattr(self.tokenizer, "tokenizer", self.tokenizer)

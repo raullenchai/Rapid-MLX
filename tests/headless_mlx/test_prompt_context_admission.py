@@ -73,7 +73,15 @@ async def test_batched_transport_encodes_full_prompt_only_in_scheduler(
     engine._engine.engine.scheduler.config.max_concurrent_requests = 1
     monkeypatch.setattr(engine, "_create_output_router", lambda: None)
     monkeypatch.setattr(engine, "_needs_prefix_boundary_snapshot", lambda: False)
-    monkeypatch.setattr(engine, "_apply_chat_template", lambda *a, **kw: prompt)
+    monkeypatch.setattr(
+        engine,
+        "_apply_chat_template",
+        lambda *a, **kw: (
+            prompt[: prompt.rfind("<|im_start|>assistant\n")]
+            if kw.get("add_generation_prompt") is False
+            else prompt
+        ),
+    )
     monkeypatch.setattr(
         engine, "encode_prompt_text", lambda *_: pytest.fail("duplicate encode")
     )
