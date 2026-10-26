@@ -35,32 +35,52 @@ variant/context. Decode rate is
 `POST /v1/completions`; TTFT includes tokenization, prefill and serving overhead.
 This measurement assumes incremental text chunks as emitted by this workload.
 
-## Prior M5 evidence
+## Three-generation results
 
-On `studio-max` (M5 Max, 36 GB), the original implementation measured
-174.17 → 199.41 tok/s (+14.49%) at 256 context and
-166.64 → 189.92 tok/s (+13.97%) at 4096 context, against main
-`e56b3e4a68d991d7213e566d4a441a6bd939dbd6`. Metal peak memory was
-13.99 / 13.99 GB and 14.74 / 14.74 GB respectively. Single-request 128-token
-greedy outputs matched exactly at both contexts.
+Final LFM-only implementation, rerun on all three generations; M5 numbers
+were rerun after removing unused kernel specializations. Baseline:
+`0165b054ab0267ce3b6a1ad7d2552ba8243f9d1e` (origin/main when runs began).
+The subsequent rebase onto `7dfe272bd13a8adde8c5944ea6d8a7f130b7f564`
+changes chat/tool postprocessing; the measured engine, model utilities and
+`/v1/completions` route are unchanged. That route streams directly from the
+engine without the changed chat postprocessor.
 
-Concurrent runs used the same ABAB method at 256 context with 128-token
-responses. Aggregate throughput includes prefill and request completion.
+| Machine | Context | Main → fused decode tok/s | Change | Main → fused TTFT ms | Main → fused peak GB |
+|---|---:|---:|---:|---:|---:|
+| M5 Max, studio-max, 36 GB | 256 | 174.21 → 199.73 | +14.65% | 85.00 → 84.81 | 13.99 → 13.99 |
+| M5 Max, studio-max, 36 GB | 4096 | 166.91 → 190.36 | +14.05% | 566.86 → 566.00 | 14.74 → 14.74 |
+| M4 Pro, mzr-2, 48 GB | 256 | 116.47 → 129.82 | +11.46% | 306.11 → 305.40 | 14.00 → 14.00 |
+| M4 Pro, mzr-2, 48 GB | 4096 | 110.77 → 122.36 | +10.46% | 3779.99 → 3778.66 | 14.75 → 14.75 |
+| M3 Ultra, studio-ultra, 512 GB | 256 | 160.74 → 188.62 | +17.34% | 128.81 → 127.71 | 14.00 → 14.00 |
+| M3 Ultra, studio-ultra, 512 GB | 4096 | 155.86 → 181.71 | +16.59% | 1217.84 → 1213.94 | 14.75 → 14.75 |
 
-| Requests | Main aggregate tok/s | Fused aggregate tok/s | Change | Main/fused peak GB |
-|---|---:|---:|---:|---:|
-| 2 | 204.90 | 205.83 | +0.45% | 14.01 / 14.01 |
-| 4 | 277.13 | 276.65 | -0.17% | 14.04 / 14.04 |
+All single-request 128-token greedy outputs matched exactly at both contexts
+on all three machines. Peak Metal memory was unchanged at 0.01 GB resolution.
+M4 and M3 gains exceed the requested 8% at both contexts.
 
-Every response completed with 128 tokens; each variant produced the same set
-of output texts, including scheduling-dependent variants at concurrency four.
+Final M5 concurrency measurements use ABAB at 256 context; aggregate throughput
+includes prefill and completion. Every response completed with 128 tokens and
+output sets matched, including two scheduling-dependent variants at concurrency
+four.
 
-Teacher forcing used the repository README at the main revision above: 256
-prefill tokens followed by 1,024 forced tokens. Three independent caches share
-one set of weights. Main and fused prefill in chunks of 128; the main noise
-control uses chunks of 64. Fused vs main produced 1,024/1,024 matching top-1
-predictions, zero mean KL and byte-identical logits. Main's chunking control
-produced mean KL 0.0633344. No near-tie exception was needed in the greedy runs.
+| Concurrent requests | Main → fused aggregate tok/s | Change | Main → fused peak GB |
+|---|---:|---:|---:|
+| 2 | 205.38 → 205.70 | +0.16% | 14.01 → 14.01 |
+| 4 | 276.07 → 277.49 | +0.52% | 14.04 → 14.04 |
+
+Teacher forcing on M3 and M5 uses 256 prefill tokens from the baseline README
+followed by 1,024 forced tokens. Three caches share one set of weights;
+main and fused prefill in chunks of 128, the main noise control in chunks of
+64. M3 and M5 each enrolled 38 blocks and produced 1,024/1,024 top-1 matches, zero mean KL
+and byte-identical logits. Changed-chunking control KL was 0.0654713 on M3 and 0.0633344 on M5.
+
+M4 preflight showed about 76 GiB free and no heavy inference process; after
+weights and environment setup 61 GiB remained. The user authorized a task-only
+50 GB reserve exception. M5 had about 294 GiB free and no heavy inference
+process. M3 had 219 GiB free; existing idle Desktop/operator/other-agent servers
+remained untouched. M3 ran under its own FIFO lease plus
+`lockf -k /var/tmp/rapid-mlx-large-model.lock`. Remote checkpoint copies and
+scratch were removed before returning the corresponding leases.
 
 ## Reproduction
 
