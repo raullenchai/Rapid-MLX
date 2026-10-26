@@ -31,7 +31,6 @@ Set RAPID_MLX_MOE_DECODE_FUSION=0 to disable installation and execution.
 
 from __future__ import annotations
 
-import sys
 from functools import cache, lru_cache
 
 from .._env import env_falsey
@@ -98,7 +97,7 @@ _ROUTE = r"""
     for (uint j = 0; j < 4; ++j) {
         uint index = tid * 4 + j;
         if (index < E) {
-            float probability = float(S(values[j] * reciprocal));
+            float probability = float(values[j] * reciprocal);
             if (BIAS) probability += float(bias[index]);
             probs[index] = probability;
         }
@@ -121,13 +120,13 @@ _ROUTE = r"""
         picked[K - 1 - k] = winner;
         indices[K - 1 - k] = wi;
     }
-    S denom = S(0);
-    for (uint j = 0; j < K; ++j) denom += S(picked[j]);
-    float divisor = float(denom) + (PRECISE ? 0.0f : 1e-20f);
+    float denom = 0.0f;
+    for (uint j = 0; j < K; ++j) denom += picked[j];
+    float divisor = denom + 1e-20f;
     if (lane == 0) {
         for (uint j = 0; j < K; ++j) {
             inds[j] = indices[j];
-            scores[j] = NORMALIZE ? S(picked[j] / divisor) : S(picked[j]);
+            scores[j] = NORMALIZE ? picked[j] / divisor : picked[j];
         }
     }
 """
@@ -143,19 +142,7 @@ _COMBINE = r"""
 """
 
 
-_SHARED_COMBINE = _COMBINE.replace(
-    "out[i] = T(acc);",
-    """
-    V z = gate[0];
-    auto v = 1 / (1 + metal::precise::exp(metal::abs(z)));
-    V sigmoid = (z < 0) ? v : 1 - v;
-    U shared_product = U(float(sigmoid) * float(shared[i]));
-    out[i] = O(float(T(acc)) + float(shared_product));
-    """,
-)
-
-
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=3)
 def _kernel(kind: str):
     import mlx.core as mx
 
@@ -163,7 +150,6 @@ def _kernel(kind: str):
         "logits": (_LOGITS, ["x", "w"], ["logits"]),
         "route": (_ROUTE, ["logits", "bias"], ["inds", "scores"]),
         "combine": (_COMBINE, ["y", "scores"], ["out"]),
-        "shared_combine": (_SHARED_COMBINE, ["y", "scores", "shared", "gate"], ["out"]),
     }[kind]
     return mx.fast.metal_kernel(
         name=f"rapid_moe_decode_{kind}",
@@ -174,32 +160,24 @@ def _kernel(kind: str):
     )
 
 
-def route(block, x, *, qwen: bool):
+def route(block, x):
     """Parallel gate GEMV, followed by fused softmax/selection/normalization."""
     import mlx.core as mx
 
     e, h = block.num_experts, x.shape[-1]
     k = block.top_k
-    import mlx.nn as nn
-
-    if type(block.gate) is nn.QuantizedLinear:
-        # Keep checkpoint quantization in the established projection kernel.
-        logits = block.gate(x)
-        gate_dtype = logits.dtype
-    else:
-        gate_dtype = mx.result_type(x, block.gate.weight)
-        # Match the dependency's GEMV lane split and accumulation order.
-        bn = 8 if h >= 16 * e else 1
-        (logits,) = _kernel("logits")(
-            inputs=[x, block.gate.weight],
-            template=[("H", h), ("G", gate_dtype), ("BN", bn)],
-            grid=(e // 4 * bn * 32, 1, 1),
-            threadgroup=(bn * 32, 1, 1),
-            output_shapes=[(e,)],
-            output_dtypes=[mx.float32],
-        )
-    score_dtype = gate_dtype if qwen else mx.float32
-    biased = not qwen and block.use_expert_bias
+    gate_dtype = mx.result_type(x, block.gate.weight)
+    # Match the dependency's GEMV lane split and accumulation order.
+    bn = 8 if h >= 16 * e else 1
+    (logits,) = _kernel("logits")(
+        inputs=[x, block.gate.weight],
+        template=[("H", h), ("G", gate_dtype), ("BN", bn)],
+        grid=(e // 4 * bn * 32, 1, 1),
+        threadgroup=(bn * 32, 1, 1),
+        output_shapes=[(e,)],
+        output_dtypes=[mx.float32],
+    )
+    biased = block.use_expert_bias
     # Unused by the no-bias specialization; reuse an existing buffer.
     bias = block.expert_bias if biased else logits
     indices, scores = _kernel("route")(
@@ -207,20 +185,18 @@ def route(block, x, *, qwen: bool):
         template=[
             ("E", e),
             ("K", k),
-            ("S", score_dtype),
-            ("PRECISE", qwen),
             ("BIAS", biased),
             ("NORMALIZE", getattr(block, "norm_topk_prob", True)),
         ],
         grid=(((e + 127) // 128) * 32, 1, 1),
         threadgroup=(((e + 127) // 128) * 32, 1, 1),
         output_shapes=[(*x.shape[:-1], k)] * 2,
-        output_dtypes=[mx.uint32, score_dtype],
+        output_dtypes=[mx.uint32, mx.float32],
     )
-    return indices, scores if qwen else scores.astype(x.dtype)
+    return indices, scores.astype(x.dtype)
 
 
-def combine(y, scores, shared=None, gate=None):
+def combine(y, scores):
     """Round products and each addition in the promoted dtype, as upstream."""
     import mlx.core as mx
 
@@ -228,14 +204,7 @@ def combine(y, scores, shared=None, gate=None):
     dtype = mx.result_type(y, scores)
     template = [("H", h), ("K", k), ("T", dtype)]
     inputs = [y, scores]
-    kind = "combine"
-    if shared is not None:
-        shared_dtype = mx.result_type(shared, gate)
-        dtype = mx.result_type(dtype, shared_dtype)
-        template += [("U", shared_dtype), ("V", gate.dtype), ("O", dtype)]
-        inputs += [shared, gate]
-        kind = "shared_combine"
-    (output,) = _kernel(kind)(
+    (output,) = _kernel("combine")(
         inputs=inputs,
         template=template,
         grid=(((h + 255) // 256) * 256, 1, 1),
@@ -257,7 +226,7 @@ def eligible(block, x) -> bool:
         return False
 
     gate = getattr(block, "gate", None)
-    if gate is None or type(gate) not in (nn.Linear, nn.QuantizedLinear):
+    if gate is None or type(gate) is not nn.Linear:
         return False
     w = gate.weight
     return (
@@ -268,18 +237,8 @@ def eligible(block, x) -> bool:
         and "bias" not in block.gate
         and w.ndim == 2
         and x.dtype in (mx.float32, mx.float16, mx.bfloat16)
-        and (
-            (
-                type(block.gate) is nn.Linear
-                and w.dtype in (mx.float32, mx.bfloat16)
-                and w.shape == (block.num_experts, x.shape[-1])
-            )
-            or (
-                type(block.gate) is nn.QuantizedLinear
-                and w.shape[0] == block.num_experts
-                and w.shape[1] * 32 == x.shape[-1] * block.gate.bits
-            )
-        )
+        and w.dtype in (mx.float32, mx.bfloat16)
+        and w.shape == (block.num_experts, x.shape[-1])
         and x.shape[-1] % 128 == 0
         and 32 <= block.num_experts <= 256
         and block.num_experts % 32 == 0
@@ -296,15 +255,13 @@ def eligible(block, x) -> bool:
 
 
 @cache
-def _decode_type(base, original, qwen: bool):
+def _decode_type(base, original):
 
     def call(self, x):
         if not eligible(self, x):
             return original(self, x)
-        indices, scores = route(self, x, qwen=qwen)
+        indices, scores = route(self, x)
         y = self.switch_mlp(x, indices)
-        if qwen:
-            return combine(y, scores, self.shared_expert(x), self.shared_expert_gate(x))
         return combine(y, scores)
 
     return type(f"RapidDecode{base.__name__}", (base,), {"__call__": call})
@@ -312,23 +269,12 @@ def _decode_type(base, original, qwen: bool):
 
 def _block_types():
     from mlx_lm.models.lfm2_moe import Lfm2MoeSparseMoeBlock
-    from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
 
-    types = {
+    return {
         Lfm2MoeSparseMoeBlock: _decode_type(
-            Lfm2MoeSparseMoeBlock, Lfm2MoeSparseMoeBlock.__call__, False
-        ),
-        Qwen3NextSparseMoeBlock: _decode_type(
-            Qwen3NextSparseMoeBlock, Qwen3NextSparseMoeBlock.__call__, True
+            Lfm2MoeSparseMoeBlock, Lfm2MoeSparseMoeBlock.__call__
         ),
     }
-    # The actual Qwen3.5 serving lane shares the multimodal language weights.
-    # Discover its class only after that optional package has been loaded.
-    vlm = sys.modules.get("mlx_vlm.models.qwen3_5_moe.language")
-    base = getattr(vlm, "Qwen3_5MoeSparseMoeBlock", None)
-    if base is not None:
-        types[base] = _decode_type(base, base.__call__, True)
-    return types
 
 
 def install_moe_decode_fusion(model) -> int:

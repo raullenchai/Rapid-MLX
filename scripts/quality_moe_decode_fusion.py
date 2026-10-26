@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 
 def main() -> None:
@@ -21,7 +21,6 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--text", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--loader", choices=("text", "multimodal"), default="text")
     parser.add_argument("--tokens", type=int, default=1024)
     args = parser.parse_args()
     if not Path(args.model).is_dir():
@@ -35,21 +34,11 @@ def main() -> None:
     from rapid_mlx.patches.moe_decode_fusion import install_moe_decode_fusion
 
     os.environ["RAPID_MLX_MOE_DECODE_FUSION"] = "0"
-    if args.loader == "multimodal":
-        from rapid_mlx.models.mllm import MLXMultimodalLM
+    from rapid_mlx.moe_fusion import fuse_gate_up
+    from rapid_mlx.utils.tokenizer import load_model_with_fallback
 
-        wrapper = MLXMultimodalLM(args.model, enable_cache=False)
-        wrapper.load()
-        model = cast(Any, wrapper.model).language_model
-        tokenizer = cast(Any, wrapper.processor).tokenizer
-    else:
-        from rapid_mlx.moe_fusion import fuse_gate_up
-        from rapid_mlx.qwen35_moe_router import install_qwen35_moe_router
-        from rapid_mlx.utils.tokenizer import load_model_with_fallback
-
-        model, tokenizer = load_model_with_fallback(args.model)
-        fuse_gate_up(model)
-        install_qwen35_moe_router(model)
+    model, tokenizer = load_model_with_fallback(args.model)
+    fuse_gate_up(model)
     os.environ["RAPID_MLX_MOE_DECODE_FUSION"] = "1"
     enrolled = install_moe_decode_fusion(model)
     if not enrolled:

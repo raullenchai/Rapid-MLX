@@ -1854,9 +1854,6 @@ class MLXMultimodalLM:
                 from ..qwen35_moe_router import install_qwen35_moe_router
 
                 install_qwen35_moe_router(self.model)
-                from ..patches.moe_decode_fusion import install_moe_decode_fusion
-
-                install_moe_decode_fusion(self.model)
                 if self.spec_decode == "none":
                     from ..gdn_in_proj_fusion import fuse_gdn_in_proj
 
