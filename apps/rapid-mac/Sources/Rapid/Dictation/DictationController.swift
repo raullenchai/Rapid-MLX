@@ -213,7 +213,7 @@ final class DictationController {
     private struct CatalogFacts {
         let repo: String?
         let cached: Bool
-        let snapshots: [URL]
+        let snapshots: [DictationSnapshot.Snapshot]
     }
     private let modelCacheRoot: URL?
     private var catalogByAlias: [String: CatalogFacts] = [:]
@@ -1024,7 +1024,7 @@ final class DictationController {
     /// paths when the pane opens, selection changes, or a download finishes.
     func modelIsOnDisk(_ alias: String) -> Bool {
         guard let facts = catalogByAlias[alias], facts.cached else { return false }
-        let present = facts.snapshots.contains { DictationSnapshot.isDirectory($0) }
+        let present = facts.snapshots.contains { $0.isOnDisk }
         if !present {
             catalogByAlias[alias] = CatalogFacts(repo: facts.repo, cached: false, snapshots: [])
             refreshReadiness()

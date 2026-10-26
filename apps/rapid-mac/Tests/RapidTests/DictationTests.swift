@@ -316,7 +316,10 @@ struct DictationTests {
 
     @MainActor
     @Test("a second hotkey tap cancels a queued disk check without a catalog load")
-    func secondTapCancelsPendingRecordingRequest() async {
+    func secondTapCancelsPendingRecordingRequest() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var catalogLoads = 0
         let controller = DictationController(
             server: ServerManager(
                 testingState: .ready(alias: "whisper-small"),
@@ -324,15 +327,21 @@ struct DictationTests {
             ),
             testingEnabled: true, testingModelAlias: "whisper-small", testingPhase: .idle,
             testingRecorderStart: { Issue.record("Cancelled start must not capture") },
+            modelCacheRoot: root,
             audioCatalogLoader: { _ in
-                Issue.record("Hotkey must not load catalog")
-                return []
+                catalogLoads += 1
+                return [cachedAudioEntry(alias: "whisper-small")]
             }
         )
+        await controller.refreshModelCacheState()
+        #expect(controller.modelIsOnDisk("whisper-small"))
+        // Both taps run in this MainActor turn: the queued recording task
+        // cannot execute until we yield, so cancellation owns this boundary.
         controller.toggleFromUI()
         controller.toggleFromUI()
         await Task.yield()
         #expect(controller.phase == .idle)
+        #expect(catalogLoads == 1)
         controller.disable()
     }
 
@@ -1338,6 +1347,8 @@ struct DictationTests {
         try FileManager.default.createDirectory(at: repo.appendingPathComponent("snapshots/revision"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
         try Data("revision".utf8).write(to: repo.appendingPathComponent("refs/main"))
+        try Data("{}".utf8).write(to: repo.appendingPathComponent("snapshots/revision/config.json"))
+        try Data([1, 2, 3]).write(to: repo.appendingPathComponent("snapshots/revision/model.safetensors"))
         return root
     }
 

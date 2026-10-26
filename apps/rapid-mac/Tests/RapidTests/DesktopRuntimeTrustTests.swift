@@ -47,6 +47,8 @@ struct DesktopRuntimeTrustTests {
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
         try Data("revision".utf8).write(to: repo.appendingPathComponent("refs/main"))
+        try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+        try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent("model.safetensors"))
         var captureTime: ContinuousClock.Instant?
         let controller = DictationController(
             server: ServerManager(testingState: .ready(alias: entry.alias), binaryPath: fixture.binary),

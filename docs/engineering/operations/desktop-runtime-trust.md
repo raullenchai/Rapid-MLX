@@ -11,8 +11,8 @@ callers share that check; failures are never cached. The launch
 path remains inside the app even when the launcher is an internal symlink.
 Missing, changed, unsigned or differently signed bundles are refused.
 Verification reads the bundled payload once per session and binary path.
-Dictation capture only stats cached snapshot paths resolved by an earlier
-catalog refresh; it neither starts the CLI nor authenticates the bundle.
+Dictation capture only stats cached snapshot paths and artifact sizes inventoried
+by an earlier catalog refresh; it neither starts the CLI nor authenticates the bundle.
 
 ## Upgrading a slim installation
 
@@ -83,6 +83,7 @@ capture within 300 ms with zero catalog loads, bundled launches, or full
 bundle checks after warm-up. The designated test signature replaces only the
 release identity, not Security.framework validation or its flags. Repeated
 real launches assert that successful validation is reused; deletion of the
-selected cache snapshot must refuse capture without invoking the catalog.
+selected cache snapshot, a weight/config file, or a symlinked blob must refuse
+capture without invoking the catalog. Empty snapshots are not accepted.
 The budget allows CI scheduling noise; counters catch regressions even on
 hardware that verifies faster than the budget. No GPU or microphone is used.
