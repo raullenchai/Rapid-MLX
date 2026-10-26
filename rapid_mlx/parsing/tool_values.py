@@ -40,6 +40,7 @@ def _parameters(payload, opener, props):
     """Segment once at sibling boundaries; retain literal inner closers."""
     pattern = re.compile(f"(?:{opener})|(?P<close></parameter>)")
     pairs = []
+    seen = set()
     name = None
     start = 0
     last_close = None
@@ -59,6 +60,9 @@ def _parameters(payload, opener, props):
             if props and key not in props:
                 raise ValueError("undeclared parameter sibling")
             pairs.append((name, payload[start:last_close]))
+        if key in seen:
+            raise ValueError("duplicate XML parameter")
+        seen.add(key)
         name, start, last_close = key, marker.end(), None
     if name is not None:
         if last_close is None or payload[last_close + len("</parameter>") :].strip():
@@ -86,8 +90,12 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
         name, params, _ = walked
         props = schemas.get(name, {}).get("properties", {})
         arguments = {}
+        seen = set()
         for key, value in params:
-            if key not in arguments and (not props or key in props):
+            if key in seen:
+                raise ValueError("duplicate invoke parameter")
+            seen.add(key)
+            if not props or key in props:
                 arguments[key] = _convert_param_value(value, key, props)
         return name, arguments
     if stripped.startswith("{"):
@@ -173,6 +181,8 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
                 if cursor == len(payload) or payload.startswith("<arg_key>", cursor):
                     break
                 search = after
+            if key in arguments:
+                raise ValueError("duplicate GLM argument")
             arguments[key] = _value(
                 payload[value_start:value_end].strip(),
                 schemas.get(name, {}).get("properties", {}).get(key, {}),

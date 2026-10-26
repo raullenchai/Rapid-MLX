@@ -691,3 +691,27 @@ def test_terminal_engine_chunk_drains_before_finish_event():
     assert events[-1].type == "finish"
     assert "".join(e.content or "" for e in events[:-1]) == "literal <"
     assert processor.finalize() == []
+
+
+@pytest.mark.parametrize(
+    "fmt,raw",
+    [
+        (
+            "hermes",
+            "<tool_call><function=f><parameter=x>first</parameter><parameter=x>second</parameter></function></tool_call>",
+        ),
+        (
+            "glm47",
+            "<tool_call>f<arg_key>x</arg_key><arg_value>first</arg_value><arg_key>x</arg_key><arg_value>second</arg_value></tool_call>",
+        ),
+        (
+            "muse",
+            '<atem:invoke name="f"><atem:parameter name="x">first</atem:parameter><atem:parameter name="x">second</atem:parameter></atem:invoke>',
+        ),
+    ],
+)
+def test_duplicate_native_argument_names_fail_instead_of_overwriting(fmt, raw):
+    for parts in ([raw], list(raw)):
+        _, _, calls, failures = run(raw, parts, format_name=fmt)
+        assert calls == []
+        assert any(f.index is not None and f.code == "invalid_tool" for f in failures)

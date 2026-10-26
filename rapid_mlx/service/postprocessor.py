@@ -2498,7 +2498,7 @@ class StreamingPostProcessor:
     def uses_output_demux(self):
         return self._selected_session is not None and not self._selected_session.native
 
-    def _selected_events(self, events):
+    def _selected_events(self, events: list[StreamEvent]) -> list[StreamEvent]:
         for event in events:
             if event.type == "parse_failure":
                 raise OutputParseError()
