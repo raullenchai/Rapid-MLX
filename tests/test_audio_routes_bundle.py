@@ -1325,3 +1325,11 @@ class TestAudioBodyLimitCoversTranslations:
             "must include /v1/audio/translations in _GUARDED_PATHS so the "
             "25 MB upload cap covers both transcription endpoints."
         )
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

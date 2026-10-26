@@ -659,6 +659,7 @@ class STTEngine:
 
             from ..model_aliases import resolve_revision
             from ..model_metadata import resolve_pinned_cached_snapshot
+            from ..utils.model_file_guard import checked_stt_loader
 
             model_path = self.model_name
             load_options = {}
@@ -675,7 +676,7 @@ class STTEngine:
                         model_path, allow_patterns=list(DEFAULT_ALLOW_PATTERNS)
                     )
                 )
-            self.model = load_model(model_path, **load_options)
+            self.model = checked_stt_loader(load_model)(model_path, **load_options)
             # Prefer the backend metadata after loading so renamed/private
             # SenseVoice repos still receive the native generate() contract.
             # The constructor's name check remains a useful pre-load fallback.

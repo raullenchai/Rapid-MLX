@@ -337,3 +337,11 @@ def test_kokoro_generate_results_scopes_backend_pipeline(monkeypatch):
     assert list(engine._generate_results({})) == ["chunk"]
     assert seen == [model_downloads.snapshot_download]
     assert pipeline.snapshot_download is original
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

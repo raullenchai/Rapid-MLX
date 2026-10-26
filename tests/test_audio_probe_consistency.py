@@ -440,3 +440,11 @@ class TestProbeCaching:
         v2 = probe.mlx_audio_available()
         assert v2.ok is True
         assert v1 is not v2
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )
