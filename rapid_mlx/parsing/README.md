@@ -21,7 +21,9 @@ the selected format adapters move onto this contract.
   literal in their current channel, including on truncation/cancellation. No
   completed output is replayed. Input after terminal state is rejected.
 - `accept_native` bypasses text grammar. A stream cannot mix already routed events
-  with raw-text reclassification. Native adapters must supply source offsets.
+  with raw-text reclassification. Native adapters must supply source offsets
+  and cover their complete batch extent; incomplete batches are rejected before
+  any cursor or mode changes.
 - `EventReducer` accumulates the same events for buffered consumers. Only ended,
   nonfailed calls are eligible; no incomplete call receives fabricated arguments.
   Name authorization and argument validation belong to the format adapter before

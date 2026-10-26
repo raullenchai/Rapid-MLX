@@ -294,3 +294,14 @@ def test_grammar_cannot_publish_an_independent_finish():
     parser = OutputDemultiplexer(context(), PrematureGrammar())
     with pytest.raises(ValueError, match="owned by finish"):
         parser.feed("x")
+
+
+@pytest.mark.parametrize("events", [[], [ContentDelta(Span(0, 1), "a")]])
+def test_native_batch_rejects_unowned_tail_before_finalization(events):
+    parser = OutputDemultiplexer(context())
+    with pytest.raises(ValueError, match="complete source span"):
+        parser.accept_native(events, end_offset=2)
+    assert parser.offset == parser.commit_cursor == 0
+    # Rejection did not select native mode or strand finalization.
+    assert parser.feed("okay") == [ContentDelta(Span(0, 4), "okay")]
+    assert parser.finish() == [Finish(Span(4, 4), "stop")]

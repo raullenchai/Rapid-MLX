@@ -191,7 +191,9 @@ class OutputDemultiplexer:
         self._finished = False
         self._mode: str | None = None
 
-    def _commit(self, events: list[Event], *, terminal: bool = False) -> list[Event]:
+    def _commit(
+        self, events: list[Event], *, terminal: bool = False, complete: bool = False
+    ) -> list[Event]:
         cursor = self.commit_cursor
         for event in events:
             if isinstance(event, Finish) and not terminal:
@@ -204,6 +206,8 @@ class OutputDemultiplexer:
                     "events must own consecutive, nonoverlapping source spans"
                 )
             cursor = event.span.end
+        if complete and cursor != self.offset:
+            raise ValueError("native batch must cover its complete source span")
         self.commit_cursor = cursor
         return events
 
@@ -285,7 +289,7 @@ class OutputDemultiplexer:
         old_offset = self.offset
         self.offset = end_offset
         try:
-            result = self._commit(events)
+            result = self._commit(events, complete=True)
         except ValueError:
             self.offset = old_offset
             raise
