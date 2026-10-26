@@ -5,7 +5,7 @@ import Foundation
 /// during a keypress. Capture the files behind HF symlinks too: deleting a
 /// blob can leave its snapshot directory and symlink names intact.
 enum DictationSnapshot {
-    struct ReferenceIdentity: Equatable {
+    struct FileIdentity: Equatable, Sendable {
         let device: Int32
         let inode: UInt64
         let size: Int64
@@ -15,16 +15,16 @@ enum DictationSnapshot {
         let changedNanoseconds: Int
     }
 
-    struct Snapshot {
+    struct Snapshot: Sendable {
         let directory: URL
-        let artifacts: [(path: String, size: Int64)]
+        let artifacts: [(path: String, identity: FileIdentity)]
         let referencePath: String
-        let referenceIdentity: ReferenceIdentity?
+        let referenceIdentity: FileIdentity?
 
         var isOnDisk: Bool {
-            DictationSnapshot.referenceIdentity(referencePath) == referenceIdentity
+            DictationSnapshot.fileIdentity(referencePath) == referenceIdentity
                 && DictationSnapshot.isDirectory(directory) && artifacts.allSatisfy {
-                DictationSnapshot.fileSize($0.path) == $0.size
+                DictationSnapshot.fileIdentity($0.path) == $0.identity
             }
         }
     }
@@ -35,7 +35,7 @@ enum DictationSnapshot {
         else { return [] }
         let snapshots = directory.appendingPathComponent("snapshots", isDirectory: true)
         let reference = directory.appendingPathComponent("refs/main")
-        let identity = referenceIdentity(reference.path)
+        let identity = fileIdentity(reference.path)
         if FileManager.default.fileExists(atPath: reference.path) {
             guard identity != nil,
                   let revision = try? String(contentsOf: reference, encoding: .utf8)
@@ -58,7 +58,7 @@ enum DictationSnapshot {
     }
 
     private static func inventory(
-        _ directory: URL, referencePath: String, referenceIdentity: ReferenceIdentity?
+        _ directory: URL, referencePath: String, referenceIdentity: FileIdentity?
     ) -> Snapshot? {
         guard isDirectory(directory) else { return nil }
         var failed = false
@@ -66,13 +66,14 @@ enum DictationSnapshot {
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
             errorHandler: { _, _ in failed = true; return false }
         ) else { return nil }
-        var artifacts: [(path: String, size: Int64)] = []
+        var artifacts: [(path: String, identity: FileIdentity)] = []
         var hasConfig = false
         var hasWeights = false
         for case let file as URL in entries {
             if isDirectory(file) { continue }
-            guard let size = fileSize(file.path) else { return nil }
-            artifacts.append((file.path, size))
+            guard let identity = fileIdentity(file.path) else { return nil }
+            artifacts.append((file.path, identity))
+            let size = identity.size
             hasConfig = hasConfig || (file.lastPathComponent == "config.json" && size > 0)
             hasWeights = hasWeights || (["safetensors", "npz", "bin", "pt"].contains(file.pathExtension) && size > 0)
         }
@@ -81,25 +82,17 @@ enum DictationSnapshot {
                         referencePath: referencePath, referenceIdentity: referenceIdentity)
     }
 
-    private static func referenceIdentity(_ path: String) -> ReferenceIdentity? {
-        // Detect atomic ref replacement and in-place rewrites without reading
-        // refs/main on the hot path. Also reject a newly created ref when the
-        // inventory originally used an offline snapshot with no main ref.
+    private static func fileIdentity(_ path: String) -> FileIdentity? {
+        // stat follows HF blob symlinks without cached NSURL resource values.
+        // Detect replacement, truncation and same-size rewrites without file
+        // reads or hashing on the hot path. Apply this to refs and artifacts.
         var info = stat()
-        guard stat(path, &info) == 0 else { return nil }
-        return ReferenceIdentity(device: info.st_dev, inode: info.st_ino, size: info.st_size,
+        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        return FileIdentity(device: info.st_dev, inode: info.st_ino, size: info.st_size,
                                  modifiedSeconds: info.st_mtimespec.tv_sec,
                                  modifiedNanoseconds: info.st_mtimespec.tv_nsec,
                                  changedSeconds: info.st_ctimespec.tv_sec,
                                  changedNanoseconds: info.st_ctimespec.tv_nsec)
-    }
-
-    private static func fileSize(_ path: String) -> Int64? {
-        // stat follows HF blob symlinks and bypasses NSURL resource-value
-        // caching. No enumeration, file reads, hashing or processes here.
-        var info = stat()
-        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
-        return info.st_size
     }
 
     static func isDirectory(_ url: URL) -> Bool {

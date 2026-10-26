@@ -47,7 +47,13 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 # --- Launch `swift test` in the background, remember its PID ---------------
-swift test --no-parallel &
+# CI may run an expensive flow in its own visible step. Local/full runs
+# without this explicit filter continue to include every test.
+SWIFT_TEST_ARGS=(--no-parallel)
+if [[ -n "${RAPID_DESKTOP_TEST_SKIP:-}" ]]; then
+    SWIFT_TEST_ARGS+=(--skip "$RAPID_DESKTOP_TEST_SKIP")
+fi
+swift test "${SWIFT_TEST_ARGS[@]}" &
 TEST_PID=$!
 
 # --- Watchdog: fail fast if the run outlives the deadline while still alive --

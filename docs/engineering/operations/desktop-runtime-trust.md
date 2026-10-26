@@ -11,7 +11,7 @@ callers share that check; failures are never cached. The launch
 path remains inside the app even when the launcher is an internal symlink.
 Missing, changed, unsigned or differently signed bundles are refused.
 Verification reads the bundled payload once per session and binary path.
-Dictation capture only stats cached snapshot paths and artifact sizes inventoried
+Dictation capture only stats cached snapshot paths and artifact identities inventoried
 by an earlier catalog refresh; it neither starts the CLI nor authenticates the bundle.
 Reference-file identity and timestamps must also match, so repointing `refs/main`
 cannot authorize a stale snapshot.
@@ -78,7 +78,8 @@ flags are unchanged. The explicit developer override remains separate.
 ## Dictation latency regression guard
 
 The required Desktop build runs `DesktopRuntimeTrustTests/dictationCaptureLatency`
-as a named CI step as well as in the Swift suite. It drives the real
+as a named CI step, excluding it from the following full-suite invocation to
+avoid creating the large fixture twice. Standalone full Swift runs include it. It drives the real
 `toggleFromUI` controller through recorder start using fake capture, warms a
 real ad-hoc signed app with 24,000 runtime resource files (375 MiB), and asserts
 capture within 300 ms with zero catalog loads, bundled launches, or full

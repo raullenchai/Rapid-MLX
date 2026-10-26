@@ -307,6 +307,8 @@ jobs:
 
       - name: swift test
         env:
+          # Already required by the dedicated signed-runtime flow above.
+          RAPID_DESKTOP_TEST_SKIP: DesktopRuntimeTrustTests/dictationCaptureLatency
           # The GitHub ARM64 image is slower between the two suites that
           # explicitly checkpoint the in-process watchdog. Keep the provider's
           # existing 90-second bound; only the allowlisted incident fallback

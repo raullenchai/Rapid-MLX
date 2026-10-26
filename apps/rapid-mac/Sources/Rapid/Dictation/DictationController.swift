@@ -210,7 +210,7 @@ final class DictationController {
     /// nil limits `ensureServing` to cached models, which is exactly the
     /// contract here: downloading is the Download button's job, with
     /// progress the user can see.
-    private struct CatalogFacts {
+    private struct CatalogFacts: Sendable {
         let repo: String?
         let cached: Bool
         let snapshots: [DictationSnapshot.Snapshot]
@@ -708,18 +708,22 @@ final class DictationController {
     func refreshModelCacheState() async {
         guard let binary = server.binaryPath else { return }
         guard let entries = await audioCatalogLoader(binary) else { return }
-        var next: [String: CatalogFacts] = [:]
-        for entry in entries {
-            next[entry.alias] = CatalogFacts(
-                repo: entry.hfRepo, cached: entry.cached,
-                snapshots: DictationSnapshot.cachedSnapshots(
-                    for: entry, cacheRoot: modelCacheRoot ?? BundledModel.userHFCacheURL(
-                        environment: ProcessInfo.processInfo.environment,
-                        preferredOverride: ModelsFolderPreference.validatedOverrideURL()
-                    )
+        let cacheRoot = modelCacheRoot ?? BundledModel.userHFCacheURL(
+            environment: ProcessInfo.processInfo.environment,
+            preferredOverride: ModelsFolderPreference.validatedOverrideURL()
+        )
+        // Snapshot enumeration belongs to refresh, off the UI actor. Capture
+        // only performs the bounded stat checks over these immutable facts.
+        let next = await Task.detached(priority: .utility) {
+            var next: [String: CatalogFacts] = [:]
+            for entry in entries {
+                next[entry.alias] = CatalogFacts(
+                    repo: entry.hfRepo, cached: entry.cached,
+                    snapshots: DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: cacheRoot)
                 )
-            )
-        }
+            }
+            return next
+        }.value
         catalogByAlias = next
         refreshReadiness()
     }

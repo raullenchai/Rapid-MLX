@@ -46,7 +46,7 @@ struct DictationSnapshotTests {
         let missing = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: false)
         #expect(DictationSnapshot.cachedSnapshots(for: missing, cacheRoot: root).isEmpty)
     }
-    @Test("Missing or truncated artifacts and deleted blob targets refuse capture", arguments: ["weight", "config", "blob", "truncate"])
+    @Test("Missing or truncated artifacts and deleted blob targets refuse capture", arguments: ["weight", "config", "blob", "truncate", "replace", "rewrite"])
     func partialDeletion(kind: String) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-artifacts-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -68,11 +68,15 @@ struct DictationSnapshotTests {
         case "config": try FileManager.default.removeItem(at: snapshot.appendingPathComponent("config.json"))
         case "blob": try FileManager.default.removeItem(at: blob)
         case "truncate": try Data().write(to: weight)
+        case "replace": try Data([4, 5, 6]).write(to: weight, options: .atomic)
+        case "rewrite": try Data([4, 5, 6]).write(to: weight)
         default: try FileManager.default.removeItem(at: weight)
         }
         #expect(DictationSnapshot.isDirectory(snapshot))
         #expect(!paths.contains { $0.isOnDisk })
-        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        if kind != "replace" && kind != "rewrite" {
+            #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        }
     }
 
     @Test("Repointing main cannot authorize the old snapshot", arguments: [false, true])
