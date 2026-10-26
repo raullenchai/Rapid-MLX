@@ -101,3 +101,64 @@ def test_whisper_pinned_resolver_rejects_unsafe_or_other_snapshot(
     else:
         snapshot.rename(root / "snapshots" / ("a" * 40))
     assert resolve_pinned_cached_snapshot(REPO) is None
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_whisper_processor_local_first(monkeypatch, cached):
+    import sys
+
+    processor = object()
+    hub = Mock(return_value=processor)
+    calls = []
+
+    def from_pretrained(name, **kwargs):
+        calls.append((name, kwargs))
+        if kwargs.get("local_files_only"):
+            if cached:
+                return processor
+            raise OSError("Processor assets not found locally")
+        return hub(name, **kwargs)
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            WhisperProcessor=SimpleNamespace(from_pretrained=from_pretrained)
+        ),
+    )
+    engine = STTEngine(REPO)
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+    assert engine.model._processor is processor
+    expected = [("openai/whisper-tiny", {"local_files_only": True})]
+    if cached:
+        hub.assert_not_called()
+    else:
+        expected.append(("openai/whisper-tiny", {}))
+        hub.assert_called_once_with("openai/whisper-tiny")
+    assert calls == expected
+    engine._ensure_whisper_processor()
+    assert calls == expected
+
+
+@pytest.mark.parametrize("error", [OSError("missing"), ValueError("invalid assets")])
+@pytest.mark.parametrize("disabled", [True, False])
+def test_whisper_processor_failure_preserves_policy(monkeypatch, error, disabled):
+    import sys
+
+    loader = Mock(side_effect=error)
+    monkeypatch.setattr(model_downloads, "disabled", lambda: disabled)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(WhisperProcessor=SimpleNamespace(from_pretrained=loader)),
+    )
+    engine = STTEngine(REPO)
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+    assert engine.model._processor is None
+    assert loader.call_args_list[0].kwargs == {"local_files_only": True}
+    assert loader.call_count == (
+        2 if isinstance(error, OSError) and not disabled else 1
+    )

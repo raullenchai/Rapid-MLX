@@ -762,10 +762,16 @@ class STTEngine:
         try:
             from .. import model_downloads
 
-            local_only = (
-                {"local_files_only": True} if model_downloads.disabled() else {}
-            )
-            processor = WhisperProcessor.from_pretrained(processor_source, **local_only)
+            try:
+                processor = WhisperProcessor.from_pretrained(
+                    processor_source, local_files_only=True
+                )
+            except OSError:
+                # Transformers reports missing local processor assets as OSError.
+                # Keep the existing online lookup only for a cache miss.
+                if model_downloads.disabled():
+                    raise
+                processor = WhisperProcessor.from_pretrained(processor_source)
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first

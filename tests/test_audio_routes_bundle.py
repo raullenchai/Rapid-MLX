@@ -248,7 +248,7 @@ class TestWhisperProcessorPatch:
         # sentinel as opaque — only the *attachment* is under test.
         class _FakeProcessor:
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 # Verify the integration layer requested the OpenAI repo,
                 # not the broken mlx-community one. This is the
                 # behavioral pin.
@@ -299,7 +299,7 @@ class TestWhisperProcessorPatch:
             calls = 0
 
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 _FakeProcessor.calls += 1
                 return object()
 
@@ -336,7 +336,7 @@ class TestWhisperProcessorPatch:
             calls = 0
 
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 _FakeProcessor.calls += 1
                 return object()
 
@@ -391,7 +391,7 @@ class TestTranscriptionsCleanEnvelopeOnProcessorFailure:
         # Make the WhisperProcessor fetch fail so _processor stays None.
         class _BrokenProcessor:
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 raise OSError("simulated network failure to openai/whisper-large-v3")
 
         fake_transformers = types.SimpleNamespace(WhisperProcessor=_BrokenProcessor)
@@ -447,7 +447,7 @@ class TestTranscriptionsRouteEndToEnd:
 
         class _FakeProcessor:
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 return sentinel
 
         fake_mlx_audio_stt_utils = types.SimpleNamespace(load_model=_fake_load_model)
@@ -511,7 +511,7 @@ class TestTranslationsRoute:
 
         class _FakeProcessor:
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 return object()
 
         # Capture the ``task`` kwarg the engine receives so we can pin
@@ -716,7 +716,7 @@ class TestWhisperProcessorPatchIsWhisperOnly:
             calls = 0
 
             @staticmethod
-            def from_pretrained(name):
+            def from_pretrained(name, **kwargs):
                 _FakeProcessor.calls += 1
                 return object()
 
