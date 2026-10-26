@@ -128,7 +128,7 @@ batch removal/tool termination, not merely a fast HTTP acknowledgement. All
 
 Release gates on the documented Studio/model/task matrix:
 
-- Latency measured on the 12-task set ×3 (≥ 38 warm turns per model, same-revision baseline in the same session). Warm TTFVT p50 ≤ **0.30/0.40/0.73 s**; cold ≤ **0.70/0.66/2.45 s**,
+- Latency measured on the 12-task set ×3: 39 turns per model because the follow-up task has two turns, of which the first greeting is cold and 38 are warm; same-revision baseline in the same session. Warm TTFVT p50 ≤ **0.30/0.40/0.73 s**; cold ≤ **0.70/0.66/2.45 s**,
   with same-revision controlled baselines and no privacy bypass; greeting prompt
   ≤ **650 tokens** and warm pre-model orchestration p50 ≤ **20 ms**.
 - **100%** completed turns have nonempty visible final answers; **0** reasoning/
@@ -148,7 +148,8 @@ Release gates on the documented Studio/model/task matrix:
 
 ## Evidence
 
-Raw data, scripts and reports are archived on the Studio at
+The key numbers are summarized inline above. Raw data, scripts and full reports
+are in the internal engineering archive on the Studio at
 `/Volumes/RTL-2T/scratch-archive/rapid-mlx-chat-harness-2026-10-25/`:
 
 - `bakeoff/report.md`: 468-turn harness bake-off (tasks, proxy logs, summary CSV).
