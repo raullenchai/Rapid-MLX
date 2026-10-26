@@ -1,0 +1,44 @@
+[
+  {
+    "name": "qwen_on",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>\n",
+    "channel": "reasoning"
+  },
+  {
+    "name": "qwen_off",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "channel": "content"
+  },
+  {
+    "name": "flint_implicit",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>\n",
+    "channel": "reasoning"
+  },
+  {
+    "name": "flint_exact_empty_prefill",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "channel": "content"
+  },
+  {
+    "name": "history_does_not_close_current_turn",
+    "history": "<think>Old</think>Old answer",
+    "assistant_suffix": "<|im_start|>assistant\n<think>\n",
+    "channel": "reasoning"
+  },
+  {
+    "name": "forced_prefix",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>Secret.",
+    "channel": "reasoning"
+  },
+  {
+    "name": "continued_answer",
+    "history": "",
+    "assistant_suffix": "<|im_start|>assistant\n<think>Done</think>Answer",
+    "channel": "content"
+  }
+]
