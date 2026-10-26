@@ -189,6 +189,7 @@ class OutputDemultiplexer:
         self.examined_chars = 0
         self.input_bytes = 0
         self._finished = False
+        self._failed = False
         self._mode: str | None = None
 
     def _commit(
@@ -205,6 +206,11 @@ class OutputDemultiplexer:
                 raise ValueError(
                     "events must own consecutive, nonoverlapping source spans"
                 )
+            if (
+                isinstance(event, (ContentDelta, ReasoningDelta))
+                and len(event.text) != event.span.end - event.span.start
+            ):
+                raise ValueError("text delta length must match its source span")
             cursor = event.span.end
         if complete and cursor != self.offset:
             raise ValueError("native batch must cover its complete source span")
@@ -215,10 +221,23 @@ class OutputDemultiplexer:
         return self._commit(self.grammar.consume(lexeme))
 
     def feed(self, text: str, *, token_id: int | None = None) -> list[Event]:
+        if self._failed:
+            raise ValueError("parser failed; create a new request-local instance")
         if self._finished:
             raise ValueError("cannot feed a terminal parser")
+        if not text and token_id not in self._tokens:
+            return []
         if self._mode == "native":
             raise ValueError("native events cannot be reclassified as text")
+        try:
+            return self._feed(text, token_id=token_id)
+        except Exception:
+            # Adapter state may already have advanced. Never retry or replay
+            # after a failed feed; fail this request-local parser permanently.
+            self._failed = True
+            raise
+
+    def _feed(self, text: str, *, token_id: int | None) -> list[Event]:
         self._mode = "text"
         self.input_bytes += len(text.encode("utf-8"))
         result: list[Event] = []
@@ -282,7 +301,12 @@ class OutputDemultiplexer:
         Native adapters supply offsets in their decoded generation coordinate
         space, including control spans. Text/native modes cannot be mixed.
         """
-        if self._finished or self._mode == "text" or end_offset < self.offset:
+        if (
+            self._failed
+            or self._finished
+            or self._mode == "text"
+            or end_offset < self.offset
+        ):
             raise ValueError("invalid native event lifecycle")
         if any(isinstance(event, Finish) for event in events):
             raise ValueError("terminal events are owned by finish")
@@ -290,15 +314,25 @@ class OutputDemultiplexer:
         self.offset = end_offset
         try:
             result = self._commit(events, complete=True)
-        except ValueError:
+        except Exception:
             self.offset = old_offset
             raise
-        self._mode = "native"
+        if events:
+            self._mode = "native"
         return result
 
     def finish(self, reason: str = "stop") -> list[Event]:
+        if self._failed:
+            raise ValueError("parser failed; create a new request-local instance")
         if self._finished:
             return []
+        try:
+            return self._finish(reason)
+        except Exception:
+            self._failed = True
+            raise
+
+    def _finish(self, reason: str) -> list[Event]:
         result: list[Event] = []
         if self.pending:
             result += self._consume(

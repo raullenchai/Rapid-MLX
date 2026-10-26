@@ -305,3 +305,56 @@ def test_native_batch_rejects_unowned_tail_before_finalization(events):
     # Rejection did not select native mode or strand finalization.
     assert parser.feed("okay") == [ContentDelta(Span(0, 4), "okay")]
     assert parser.finish() == [Finish(Span(4, 4), "stop")]
+
+
+@pytest.mark.parametrize("failure", ["consume", "finish"])
+def test_adapter_exception_is_terminal_and_cannot_replay(failure):
+    class FailingGrammar(ChannelGrammar):
+        def consume(self, lexeme):
+            if failure == "consume" and lexeme.terminal:
+                raise RuntimeError("adapter failed after earlier text")
+            return super().consume(lexeme)
+
+        def finish(self, offset, reason):
+            if failure == "finish":
+                raise RuntimeError("adapter terminal failure")
+            return []
+
+    parser = OutputDemultiplexer(context(), FailingGrammar(context()))
+    with pytest.raises(RuntimeError):
+        parser.feed("already owned<think>")
+        parser.finish()
+    for operation in (lambda: parser.feed("again"), parser.finish, parser.cancel):
+        with pytest.raises(ValueError, match="parser failed"):
+            operation()
+    with pytest.raises(ValueError, match="lifecycle"):
+        parser.accept_native([], end_offset=parser.offset)
+
+
+def test_empty_feed_does_not_select_a_routing_mode():
+    parser = OutputDemultiplexer(context())
+    assert parser.feed("") == []
+    assert parser.accept_native([ContentDelta(Span(0, 1), "a")], end_offset=1)
+    assert parser.feed("") == []
+    parser.finish()
+    other = OutputDemultiplexer(context())
+    assert other.accept_native([], end_offset=0) == []
+    assert other.feed("a") == [ContentDelta(Span(0, 1), "a")]
+
+
+@pytest.mark.parametrize("cls", [ContentDelta, ReasoningDelta])
+def test_native_text_length_must_match_claimed_span(cls):
+    parser = OutputDemultiplexer(context())
+    with pytest.raises(ValueError, match="length must match"):
+        parser.accept_native([cls(Span(0, 1), "long")], end_offset=1)
+    assert parser.offset == parser.commit_cursor == 0
+    assert parser.feed("a") == [ContentDelta(Span(0, 1), "a")]
+
+
+def test_native_rejection_is_atomic_for_non_value_validation_errors():
+    parser = OutputDemultiplexer(context())
+    with pytest.raises(TypeError):
+        parser.accept_native([ContentDelta(Span(0, 1), None)], end_offset=1)
+    assert parser.offset == parser.commit_cursor == 0
+    assert parser.feed("a") == [ContentDelta(Span(0, 1), "a")]
+    assert parser.finish() == [Finish(Span(1, 1), "stop")]

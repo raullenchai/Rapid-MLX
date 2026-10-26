@@ -15,11 +15,15 @@ the selected format adapters move onto this contract.
   input size; `examined_chars` counts characters in tested bounded prefixes.
 - A grammar consumes each lexeme once. Events own consecutive source spans;
   controls own their wire markers and zero-width lifecycle events own no text.
+  Content/reasoning delta lengths must match their spans; converted tool
+  arguments may differ from their source spelling.
   Candidate adapters may defer publication, but must account for every span by
   finish. Header limits and argument storage are separate from marker lookahead.
 - `finish(reason)` and `cancel()` drain once. Unresolved text marker prefixes stay
   literal in their current channel, including on truncation/cancellation. No
-  completed output is replayed. Input after terminal state is rejected.
+  completed output is replayed. Input after terminal state is rejected. An
+  adapter exception during feed or finish permanently fails that parser; retry
+  requires a new instance rather than reusing partially advanced grammar state.
 - `accept_native` bypasses text grammar. A stream cannot mix already routed events
   with raw-text reclassification. Native adapters must supply source offsets
   and cover their complete batch extent; incomplete batches are rejected before
