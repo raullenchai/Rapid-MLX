@@ -15,15 +15,21 @@ enum DictationSnapshot {
         let changedNanoseconds: Int
     }
 
+    enum ReferenceIdentity: Equatable, Sendable {
+        case missing
+        case present(FileIdentity)
+        case invalid
+    }
+
     struct Snapshot: Sendable {
         let directory: URL
         let artifacts: [(path: String, identity: FileIdentity)]
         let directories: [(path: String, identity: FileIdentity)]
         let referencePath: String
-        let referenceIdentity: FileIdentity?
+        let referenceIdentity: ReferenceIdentity
 
         var isOnDisk: Bool {
-            DictationSnapshot.fileIdentity(referencePath) == referenceIdentity
+            DictationSnapshot.referenceIdentity(at: referencePath) == referenceIdentity
                 && directories.allSatisfy {
                     DictationSnapshot.fileIdentity($0.path, kind: S_IFDIR) == $0.identity
                 } && artifacts.allSatisfy {
@@ -38,10 +44,10 @@ enum DictationSnapshot {
         else { return [] }
         let snapshots = directory.appendingPathComponent("snapshots", isDirectory: true)
         let reference = directory.appendingPathComponent("refs/main")
-        let identity = fileIdentity(reference.path)
-        if FileManager.default.fileExists(atPath: reference.path) {
-            guard identity != nil,
-                  let revision = try? String(contentsOf: reference, encoding: .utf8)
+        let identity = referenceIdentity(at: reference.path)
+        guard identity != .invalid else { return [] }
+        if case .present = identity {
+            guard let revision = try? String(contentsOf: reference, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   !revision.isEmpty, revision != ".", revision != "..", !revision.contains("/")
             else { return [] }
@@ -61,7 +67,7 @@ enum DictationSnapshot {
     }
 
     private static func inventory(
-        _ directory: URL, referencePath: String, referenceIdentity: FileIdentity?, family: String?
+        _ directory: URL, referencePath: String, referenceIdentity: ReferenceIdentity, family: String?
     ) -> Snapshot? {
         guard let rootIdentity = fileIdentity(directory.path, kind: S_IFDIR) else { return nil }
         var failed = false
@@ -127,6 +133,15 @@ enum DictationSnapshot {
                   let file = fileIdentity(directory.appendingPathComponent(name).path) else { return false }
             return file.size > 0
         }
+    }
+
+    private static func referenceIdentity(at path: String) -> ReferenceIdentity {
+        // A dangling link is a broken selected reference, not an offline
+        // cache with no main reference. Other stat errors also fail closed.
+        var entry = stat()
+        guard lstat(path, &entry) == 0 else { return errno == ENOENT ? .missing : .invalid }
+        guard let identity = fileIdentity(path) else { return .invalid }
+        return .present(identity)
     }
 
     private static func fileIdentity(_ path: String, kind: mode_t = S_IFREG) -> FileIdentity? {

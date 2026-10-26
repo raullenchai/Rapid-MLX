@@ -170,6 +170,34 @@ struct DictationSnapshotTests {
         #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).count == 1)
     }
 
+    @Test("A dangling main reference never authorizes offline fallback")
+    func danglingReference() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-dangling-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("models--test--audio")
+        let snapshot = repo.appendingPathComponent("snapshots/pinned")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
+        try populate(snapshot)
+        let reference = repo.appendingPathComponent("refs/main")
+        let target = repo.appendingPathComponent("refs/target")
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true)
+        try FileManager.default.createSymbolicLink(at: reference, withDestinationURL: target)
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        try FileManager.default.removeItem(at: reference)
+        let offline = DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root)
+        #expect(offline.count == 1)
+        #expect(offline.allSatisfy { $0.isOnDisk })
+        try FileManager.default.createSymbolicLink(at: reference, withDestinationURL: target)
+        #expect(!offline.contains { $0.isOnDisk })
+        try Data("pinned".utf8).write(to: target)
+        let repaired = DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root)
+        #expect(repaired.count == 1)
+        #expect(repaired.allSatisfy { $0.isOnDisk })
+        try FileManager.default.removeItem(at: target)
+        #expect(!repaired.contains { $0.isOnDisk })
+    }
+
     private func populate(_ snapshot: URL) throws {
         try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent("model.safetensors"))
