@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import socket
@@ -91,7 +92,7 @@ class AcceptingConnectionsServer(uvicorn.Server):
 
     async def startup(self, sockets: list[Any] | None = None) -> None:
         try:
-            await super().startup(sockets=sockets)
+            await self._startup_with_progress(sockets)
         except SystemExit as exc:
             if (
                 getattr(self, "lifespan", None) is not None
@@ -153,6 +154,74 @@ class AcceptingConnectionsServer(uvicorn.Server):
                         logger.exception("Post-bind server callback failed")
                     except Exception:
                         pass
+
+    async def _startup_with_progress(self, sockets: list[Any] | None) -> None:
+        """Keep readiness observable during blocking lifespan model loads.
+
+        The temporary responder shares the eventual listener, so there is no
+        unbound-port race at handoff. Specialized transports retain Uvicorn's
+        existing startup behavior, including its TLS and inherited-FD handling.
+        """
+        config = self.config
+        lifespan = getattr(self, "lifespan", None)
+        if (
+            lifespan is None
+            or sockets is not None
+            or config.fd is not None
+            or config.uds
+            or config.is_ssl
+            or config.workers > 1
+            or config.should_reload
+        ):
+            await super().startup(sockets=sockets)
+            return
+
+        # A hostname can resolve to several IPv4/IPv6 listeners. Leave that
+        # resolution to Uvicorn rather than silently narrowing its bind scope.
+        try:
+            ipaddress.ip_address(config.host or "0.0.0.0")
+        except ValueError:
+            await super().startup(sockets=sockets)
+            return
+
+        from ._startup_probe import StartupProbe
+
+        family = socket.AF_INET6 if ":" in (config.host or "") else socket.AF_INET
+        listener = socket.socket(family, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if family == socket.AF_INET6:
+            # Match asyncio.create_server: an explicit IPv6 listener must not
+            # silently accept IPv4 connections or reserve the IPv4 port too.
+            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        probe = None
+        original_startup = lifespan.startup
+        try:
+            try:
+                listener.bind((config.host or "0.0.0.0", config.port))
+                listener.listen(config.backlog)
+            except OSError as exc:
+                logger.error(exc)
+                raise SystemExit(STARTUP_FAILURE) from exc
+            probe = StartupProbe(listener)
+
+            async def startup_then_handoff() -> None:
+                try:
+                    await original_startup()
+                finally:
+                    probe.close()
+
+            lifespan.startup = startup_then_handoff
+            await super().startup(sockets=[listener])
+            if self.started:
+                self._log_started_message([listener])
+        finally:
+            lifespan.startup = original_startup
+            if probe is not None:
+                probe.close()
+            # On success the asyncio server owns the listener. On failure no
+            # event-loop transport exists to release this reserved descriptor.
+            if not self.started:
+                listener.close()
 
 
 def _run_server(

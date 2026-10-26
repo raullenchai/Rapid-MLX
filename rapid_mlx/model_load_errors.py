@@ -254,7 +254,9 @@ def load_model_checked(
     if effective_config.get("model_file"):
         validate_local_model_file(model_path, model_config=effective_config)
     with typed_mlx_load_boundaries():
-        return loader(model_path, **kwargs)
+        from .startup_progress import load_with_progress
+
+        return load_with_progress(loader, model_path, **kwargs)
 
 
 def load_mlx_lm_checked(

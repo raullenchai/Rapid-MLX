@@ -845,9 +845,11 @@ def _flush_v2_telemetry() -> None:
 
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
+
     global _engine, _mcp_manager, _primary_model_lifecycle
 
     from .routes.agents import start_agent_service_lifecycle
+    from .startup_progress import startup_progress
 
     start_agent_service_lifecycle()
 
@@ -913,6 +915,8 @@ async def lifespan(app: FastAPI):
         _primary_model_lifecycle = _build_primary_model_lifecycle(_engine)
         get_config().primary_model_lifecycle = _primary_model_lifecycle
 
+    startup_progress.begin(_model_name or "")
+
     # Normal mode keeps the established eager-load contract.  An idle-unload
     # deployment also loads eagerly unless --lazy-load was requested, but does
     # so through the same coordinator later requests use to wake from standby.
@@ -922,6 +926,7 @@ async def lifespan(app: FastAPI):
         and not _engine._loaded
         and not _primary_lazy_load
     ):
+        startup_progress.phase("loading_weights")
         try:
             if _primary_model_lifecycle is not None:
                 await _primary_model_lifecycle.ensure_loaded()
@@ -967,6 +972,7 @@ async def lifespan(app: FastAPI):
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
+    startup_progress.phase("warming_up")
     if _engine is not None and not _primary_lazy_load and not _primary_post_load_done:
         await _warmup_primary_engine(_engine)
 
@@ -1099,6 +1105,7 @@ async def lifespan(app: FastAPI):
 
     start_video_jobs()
     _cfg.ready = True
+    startup_progress.phase("ready")
 
     # Now that readiness is flipped, warm the prefix cache from disk in the
     # background (#1350). The memory-aware cache installs each imported entry

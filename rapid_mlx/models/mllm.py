@@ -1826,6 +1826,14 @@ class MLXMultimodalLM:
 
                 self.model, self.processor = load_kimi_vlm(model_path)
             else:
+                from functools import partial
+
+                from ..startup_progress import load_with_progress
+
+                # Specialized shardwise loaders retain their own evaluation
+                # policy; only the standard loader has this lazy contract.
+                if getattr(load, "__module__", None) == "mlx_vlm.utils":
+                    load = partial(load_with_progress, load)
                 self.model, self.processor = load(
                     model_path,
                     trust_remote_code=trust_remote_code,

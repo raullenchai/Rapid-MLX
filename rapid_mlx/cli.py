@@ -12294,42 +12294,93 @@ def _spawn_chat_server(
     return proc, base_url
 
 
-def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
-    """Block until /health/ready returns 200, the proc exits, or timeout.
+def _chat_startup_frame(status: dict, *, elapsed: int, tick: int, width: int) -> str:
+    """Format one startup frame, keeping it inside the terminal's last column."""
+    from rich.cells import cell_len, set_cell_size
 
-    On a TTY, draws a spinner + elapsed-seconds counter to stderr so the
-    user can see the chat REPL is alive while the spawned server loads
-    weights (typically 20-90 s for 4-30 B models on Apple Silicon). The
-    line is erased before this function returns so the caller's next
-    print lands on a clean line.
+    width = max(0, width - 1)
+    progress = status.get("progress")
+    if isinstance(progress, dict):
+        done, total = progress.get("done"), progress.get("total")
+        if (
+            type(done) is not int
+            or type(total) is not int
+            or not 0 < total <= 2**63 - 1
+            or not 0 <= done <= total
+        ):
+            progress = None
+    else:
+        progress = None
+    if progress is not None:
+        percent = done * 100 // total
+        if width < 59:
+            return f"{percent}%"[:width]
+        model = status.get("model", "model")
+        # Readiness may come from an older or remote server. Never allow its
+        # model name to inject terminal controls, newlines, or bidi overrides.
+        import unicodedata
+
+        model = (
+            "".join(ch for ch in model if not unicodedata.category(ch).startswith("C"))
+            if isinstance(model, str)
+            else "model"
+        )
+        suffix = f" {percent:3d}%"
+        if progress.get("unit") == "bytes":
+            suffix += f" {done / 1e9:.1f}/{total / 1e9:.1f} GB"
+        suffix += f" {elapsed}s"
+        label = f"Loading {model}"
+        label_width = max(0, width - cell_len(suffix) - 11)
+        if cell_len(label) > label_width:
+            label = set_cell_size(label, max(0, label_width - 1)) + "…"
+        bar_width = min(24, max(1, width - cell_len(label) - cell_len(suffix) - 2))
+        filled, remainder = divmod(done * bar_width, total)
+        bar = "━" * filled
+        if remainder:
+            bar += "╸"
+        bar += "─" * (bar_width - len(bar))
+        return f"{label}  {bar}{suffix}"
+
+    phase = status.get("phase")
+    label = {
+        "starting": "Starting…",
+        "resolving": "Resolving model…",
+        "loading_weights": "Loading model…",
+        "warming_up": "Warming up…",
+        "initializing": "Initializing…",
+    }.get(phase if isinstance(phase, str) else None, "Loading model…")
+    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    frame = f"{spinner[tick % len(spinner)]} {label} {elapsed}s"
+    return set_cell_size(frame, min(width, cell_len(frame)))
+
+
+def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
+    """Wait for readiness, displaying measured load progress only on a TTY.
+
+    Startup phases without a measured total use a spinner. The line is erased
+    on success and every failure path before the caller prints its next line.
     """
+    import shutil
     import time
 
     import requests
 
     is_tty = sys.stderr.isatty()
-    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    cyan = "\x1b[36m" if is_tty else ""
-    dim = "\x1b[2m" if is_tty else ""
-    reset = "\x1b[0m" if is_tty else ""
     start = time.monotonic()
     deadline = start + timeout_s
     tick = 0
+    status = {"phase": "starting"}
 
     def _draw():
         if not is_tty:
             return
-        elapsed = int(time.monotonic() - start)
-        ch = spinner[tick % len(spinner)]
-        sys.stderr.write(
-            f"\r  {cyan}{ch}{reset} loading model ... {dim}{elapsed}s{reset}"
+        frame = _chat_startup_frame(
+            status,
+            elapsed=int(time.monotonic() - start),
+            tick=tick,
+            width=shutil.get_terminal_size((80, 24)).columns,
         )
-        sys.stderr.flush()
-
-    def _clear():
-        if not is_tty:
-            return
-        sys.stderr.write("\r" + " " * 40 + "\r")
+        sys.stderr.write("\r\x1b[2K" + frame)
         sys.stderr.flush()
 
     try:
@@ -12339,8 +12390,7 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
                     f"server exited early (code {proc.returncode}); "
                     "see chat-server.log for details"
                 )
-            # Animate the spinner at 10 fps; only poll /health once a
-            # second to keep the spinner smooth and the network polite.
+            # Animate at 10 fps; poll readiness only once per ten frames.
             if tick % 10 == 0:
                 try:
                     r = requests.get(
@@ -12350,13 +12400,21 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
                     )
                     if r.status_code == 200:
                         return
+                    if r.status_code == 503:
+                        try:
+                            payload = r.json()
+                        except ValueError:
+                            payload = {}
+                        status = payload if isinstance(payload, dict) else {}
                 except requests.RequestException:
                     pass
             _draw()
             time.sleep(0.1)
             tick += 1
     finally:
-        _clear()
+        if is_tty:
+            sys.stderr.write("\r\x1b[2K")
+            sys.stderr.flush()
     raise TimeoutError(
         f"server did not become ready within {timeout_s}s "
         "(large models can take longer — pass --ready-timeout)"

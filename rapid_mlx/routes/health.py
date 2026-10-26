@@ -162,7 +162,16 @@ async def health_ready():
     if primary_switching():
         raise ModelSwitchingError()
     if not cfg.ready:
-        raise HTTPException(status_code=503, detail="model loading")
+        from ..startup_progress import startup_progress
+
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "model loading",
+                "ready": False,
+                **startup_progress.snapshot(),
+            },
+        )
     lifecycle = cfg.primary_model_lifecycle
     status = lifecycle.snapshot() if lifecycle is not None else None
     if status is not None and status["state"] == "error":
