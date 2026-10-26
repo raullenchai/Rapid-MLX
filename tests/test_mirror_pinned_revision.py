@@ -859,7 +859,9 @@ def _manifest():
     }
 
 
-def _missing_pin_run(tmp_path, monkeypatch, manifest, files=None, **kwargs):
+def _missing_pin_run(
+    tmp_path, monkeypatch, manifest, files=None, *, model_error=None, **kwargs
+):
     from huggingface_hub.errors import RevisionNotFoundError
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
@@ -874,7 +876,8 @@ def _missing_pin_run(tmp_path, monkeypatch, manifest, files=None, **kwargs):
         patch("urllib.request.urlopen", side_effect=router),
         patch(
             "huggingface_hub.model_info",
-            side_effect=RevisionNotFoundError(
+            side_effect=model_error
+            or RevisionNotFoundError(
                 "gone",
                 response=httpx.Response(
                     404, request=httpx.Request("GET", "https://example.test")
@@ -896,6 +899,36 @@ def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch)
     assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
     assert (_snap(tmp_path) / "config.json").read_bytes() == CONFIG
     assert not (_snap(tmp_path).parents[1] / "refs" / "main").exists()
+
+
+def test_blocked_hub_uses_verified_pinned_manifest(tmp_path, monkeypatch):
+    assert _missing_pin_run(
+        tmp_path,
+        monkeypatch,
+        _manifest(),
+        model_error=httpx.ProxyError("403 Forbidden"),
+    )
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
+
+
+def test_blocked_hub_without_manifest_falls_back_safely(tmp_path, monkeypatch):
+    assert not _missing_pin_run(
+        tmp_path,
+        monkeypatch,
+        None,
+        model_error=httpx.ProxyError("403 Forbidden"),
+    )
+    assert not _snap(tmp_path).exists()
+
+
+def test_blocked_hub_without_pin_skips_manifest(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
+    with (
+        patch("huggingface_hub.model_info", side_effect=httpx.ProxyError("403")),
+        patch.object(_mirror, "_revision_manifest_info") as manifest,
+    ):
+        assert not _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path)
+        manifest.assert_not_called()
 
 
 @pytest.mark.parametrize(

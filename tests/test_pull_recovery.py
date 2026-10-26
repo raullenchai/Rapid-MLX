@@ -8,7 +8,10 @@ import httpx
 import pytest
 
 from rapid_mlx import cli
-from tests.pull_integrity_helpers import hub_integrity_metadata, snapshot_tree  # noqa: F401
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 
 def test_pull_disk_full_has_retry_command(monkeypatch, tmp_path, capsys):
@@ -86,6 +89,7 @@ def test_retry_is_bounded_for_network_and_server_errors(monkeypatch):
         _hub_error(HfHubHTTPError, 503),
         wrapped,
         httpx.RemoteProtocolError("peer closed with secret URL"),
+        httpx.ProxyError("proxy rejected secret URL"),
     ):
         calls = []
 
@@ -181,6 +185,12 @@ def test_gated_and_misspelled_repo_guidance(monkeypatch):
     assert "could not reach Hugging Face" in protocol
     assert "secret URL" not in protocol
 
+    proxy = cli.render_hub_error(
+        httpx.ProxyError("403 secret proxy URL"), "owner/model"
+    )
+    assert "could not reach Hugging Face" in proxy
+    assert "secret proxy URL" not in proxy
+
     server_error = cli.render_hub_error(
         _hub_error(HfHubHTTPError, 503),
         "owner/model",
@@ -190,6 +200,12 @@ def test_gated_and_misspelled_repo_guidance(monkeypatch):
     monkeypatch.setattr("rapid_mlx.model_aliases.suggest_similar", lambda _name: [])
     monkeypatch.setattr("rapid_mlx.model_aliases.list_builtin_aliases", lambda: {})
     assert "rapid-mlx models" in cli._hub_not_found_hint("owner/unknown")
+
+
+def test_proxy_rejection_is_a_network_failure():
+    from rapid_mlx.telemetry.model_events import pull_error_class
+
+    assert pull_error_class(httpx.ProxyError("403 Forbidden")) == "network"
 
 
 @pytest.mark.parametrize(

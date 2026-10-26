@@ -2608,7 +2608,7 @@ def _is_transient_hub_error(exc: BaseException) -> bool:
             current.response, "status_code", None
         ) in (401, 403, 404):
             return False
-        if isinstance(current, (httpx.RemoteProtocolError, ChunkedEncodingError)):
+        if isinstance(current, (httpx.TransportError, ChunkedEncodingError)):
             transient = True
         if isinstance(current, HfHubHTTPError) and getattr(
             current.response, "status_code", None
@@ -2760,9 +2760,7 @@ def render_hub_error(exc: BaseException, model_id: str) -> str | None:
                 requests_exceptions.ConnectionError,
                 requests_exceptions.Timeout,
                 requests_exceptions.ChunkedEncodingError,
-                httpx.NetworkError,
-                httpx.TimeoutException,
-                httpx.RemoteProtocolError,
+                httpx.TransportError,
                 socket.gaierror,
                 TimeoutError,
                 urllib.error.URLError,

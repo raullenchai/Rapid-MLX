@@ -1867,6 +1867,7 @@ def download_with_mirror_fallback(
     # expected network / HF API errors; programmer errors (TypeError,
     # AttributeError) and validation errors propagate so misuse
     # surfaces a real stack trace.
+    import httpx
     from huggingface_hub import model_info
     from huggingface_hub.errors import (
         EntryNotFoundError,
@@ -1899,6 +1900,17 @@ def download_with_mirror_fallback(
         if not pinned or revision is None:
             return False
         info = _revision_manifest_info(base, repo_id, revision)
+        mirror_only = True
+    except httpx.TransportError:
+        # A blocked Hub/proxy still permits a pinned pull when the mirror
+        # publishes an exact-revision inventory with hashes for every file.
+        # Without that proof, let the caller report its normal Hub error.
+        if not pinned or revision is None:
+            return False
+        try:
+            info = _revision_manifest_info(base, repo_id, revision)
+        except RuntimeError:
+            return False
         mirror_only = True
     except (
         EntryNotFoundError,
