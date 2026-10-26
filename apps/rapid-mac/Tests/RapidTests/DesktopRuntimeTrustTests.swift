@@ -83,7 +83,8 @@ struct DesktopRuntimeTrustTests {
         #expect(activity.checks == warmActivity.checks)
         #expect(activity.launches == warmActivity.launches)
 
-        controller.toggleFromUI() // Fake input has no recorded WAV; returns idle.
+        controller.toggleFromUI() // Fake input has no recorded WAV; returns idle synchronously.
+        try #require(controller.phase == .idle)
         captureTime = nil
         try FileManager.default.removeItem(at: snapshot)
         controller.toggleFromUI()

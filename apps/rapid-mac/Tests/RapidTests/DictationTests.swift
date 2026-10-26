@@ -315,6 +315,53 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("Another offline revision cannot hide deletion of a selected checkpoint")
+    func offlineRevisionDeletion() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("models--mlx-community--whisper-small")
+        try FileManager.default.removeItem(at: repo.appendingPathComponent("refs/main"))
+        let selected = repo.appendingPathComponent("snapshots/revision")
+        let other = repo.appendingPathComponent("snapshots/other")
+        try FileManager.default.copyItem(at: selected, to: other)
+        let controller = DictationController(
+            server: ServerManager(testingState: .idle, binaryPath: root.appendingPathComponent("rapid-mlx")),
+            modelCacheRoot: root,
+            audioCatalogLoader: { _ in [cachedAudioEntry(alias: "whisper-small")] }
+        )
+        await controller.refreshModelCacheState()
+        #expect(controller.modelIsOnDisk("whisper-small"))
+        try FileManager.default.removeItem(at: selected)
+        #expect(DictationSnapshot.isDirectory(other))
+        #expect(!controller.modelIsOnDisk("whisper-small"))
+    }
+
+    @MainActor
+    @Test("An older catalog refresh cannot overwrite a newer snapshot")
+    func overlappingCatalogRefreshes() async throws {
+        let root = try Self.snapshotCache()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var first: CheckedContinuation<[ModelEntry]?, Never>?
+        var loads = 0
+        let controller = DictationController(
+            server: ServerManager(testingState: .idle, binaryPath: root.appendingPathComponent("rapid-mlx")),
+            modelCacheRoot: root,
+            audioCatalogLoader: { _ in
+                loads += 1
+                if loads == 1 { return await withCheckedContinuation { first = $0 } }
+                return [cachedAudioEntry(alias: "new-selection")]
+            }
+        )
+        let older = Task { await controller.refreshModelCacheState() }
+        while first == nil { await Task.yield() }
+        await controller.refreshModelCacheState()
+        #expect(controller.knownAudioAliases == ["new-selection"])
+        first?.resume(returning: [cachedAudioEntry(alias: "old-selection")])
+        await older.value
+        #expect(controller.knownAudioAliases == ["new-selection"])
+    }
+
+    @MainActor
     @Test("a second hotkey tap cancels a queued disk check without a catalog load")
     func secondTapCancelsPendingRecordingRequest() async throws {
         let root = try Self.snapshotCache()

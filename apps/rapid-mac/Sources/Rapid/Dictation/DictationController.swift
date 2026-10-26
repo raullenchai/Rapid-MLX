@@ -216,6 +216,7 @@ final class DictationController {
         let snapshots: [DictationSnapshot.Snapshot]
     }
     private let modelCacheRoot: URL?
+    private var catalogRefreshRequestID: UUID?
     private var catalogByAlias: [String: CatalogFacts] = [:]
     /// Audio identities proven by Dictation's own catalog load. ContentView
     /// needs this before AudioView mounts so a voice-lane ready transition
@@ -706,6 +707,8 @@ final class DictationController {
     /// is actually in the cache. Called when the pane opens, when the alias
     /// changes, and when a download finishes.
     func refreshModelCacheState() async {
+        let requestID = UUID()
+        catalogRefreshRequestID = requestID
         guard let binary = server.binaryPath else { return }
         guard let entries = await audioCatalogLoader(binary) else { return }
         let cacheRoot = modelCacheRoot ?? BundledModel.userHFCacheURL(
@@ -724,6 +727,7 @@ final class DictationController {
             }
             return next
         }.value
+        guard catalogRefreshRequestID == requestID, !Task.isCancelled else { return }
         catalogByAlias = next
         refreshReadiness()
     }
@@ -1028,7 +1032,11 @@ final class DictationController {
     /// paths when the pane opens, selection changes, or a download finishes.
     func modelIsOnDisk(_ alias: String) -> Bool {
         guard let facts = catalogByAlias[alias], facts.cached else { return false }
-        let present = facts.snapshots.contains { $0.isOnDisk }
+        // The legacy audio catalog identifies repositories, not immutable
+        // pins. Without refs/main, conservatively require every inventoried
+        // revision to remain intact; another revision must not hide deletion
+        // of the selected checkpoint. A full refresh can resolve new facts.
+        let present = !facts.snapshots.isEmpty && facts.snapshots.allSatisfy { $0.isOnDisk }
         if !present {
             catalogByAlias[alias] = CatalogFacts(repo: facts.repo, cached: false, snapshots: [])
             refreshReadiness()

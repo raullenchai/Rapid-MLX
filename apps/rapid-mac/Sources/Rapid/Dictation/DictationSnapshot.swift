@@ -18,14 +18,17 @@ enum DictationSnapshot {
     struct Snapshot: Sendable {
         let directory: URL
         let artifacts: [(path: String, identity: FileIdentity)]
+        let directories: [(path: String, identity: FileIdentity)]
         let referencePath: String
         let referenceIdentity: FileIdentity?
 
         var isOnDisk: Bool {
             DictationSnapshot.fileIdentity(referencePath) == referenceIdentity
-                && DictationSnapshot.isDirectory(directory) && artifacts.allSatisfy {
-                DictationSnapshot.fileIdentity($0.path) == $0.identity
-            }
+                && directories.allSatisfy {
+                    DictationSnapshot.fileIdentity($0.path, kind: S_IFDIR) == $0.identity
+                } && artifacts.allSatisfy {
+                    DictationSnapshot.fileIdentity($0.path) == $0.identity
+                }
         }
     }
 
@@ -60,17 +63,22 @@ enum DictationSnapshot {
     private static func inventory(
         _ directory: URL, referencePath: String, referenceIdentity: FileIdentity?
     ) -> Snapshot? {
-        guard isDirectory(directory) else { return nil }
+        guard let rootIdentity = fileIdentity(directory.path, kind: S_IFDIR) else { return nil }
         var failed = false
         guard let entries = FileManager.default.enumerator(
-            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
+            at: directory, includingPropertiesForKeys: nil, options: [],
             errorHandler: { _, _ in failed = true; return false }
         ) else { return nil }
         var artifacts: [(path: String, identity: FileIdentity)] = []
+        var directories = [(path: directory.path, identity: rootIdentity)]
         var hasConfig = false
         var hasWeights = false
         for case let file as URL in entries {
-            if isDirectory(file) { continue }
+            if isDirectory(file) {
+                guard let identity = fileIdentity(file.path, kind: S_IFDIR) else { return nil }
+                directories.append((file.path, identity))
+                continue
+            }
             guard let identity = fileIdentity(file.path) else { return nil }
             artifacts.append((file.path, identity))
             let size = identity.size
@@ -78,16 +86,16 @@ enum DictationSnapshot {
             hasWeights = hasWeights || (["safetensors", "npz", "bin", "pt"].contains(file.pathExtension) && size > 0)
         }
         guard !failed, hasConfig, hasWeights else { return nil }
-        return Snapshot(directory: directory, artifacts: artifacts,
+        return Snapshot(directory: directory, artifacts: artifacts, directories: directories,
                         referencePath: referencePath, referenceIdentity: referenceIdentity)
     }
 
-    private static func fileIdentity(_ path: String) -> FileIdentity? {
+    private static func fileIdentity(_ path: String, kind: mode_t = S_IFREG) -> FileIdentity? {
         // stat follows HF blob symlinks without cached NSURL resource values.
         // Detect replacement, truncation and same-size rewrites without file
         // reads or hashing on the hot path. Apply this to refs and artifacts.
         var info = stat()
-        guard stat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        guard stat(path, &info) == 0, info.st_mode & S_IFMT == kind else { return nil }
         return FileIdentity(device: info.st_dev, inode: info.st_ino, size: info.st_size,
                                  modifiedSeconds: info.st_mtimespec.tv_sec,
                                  modifiedNanoseconds: info.st_mtimespec.tv_nsec,

@@ -107,6 +107,22 @@ struct DictationSnapshotTests {
         #expect(!offline.contains { $0.isOnDisk })
     }
 
+    @Test("Files added to the snapshot or nested directories invalidate its inventory", arguments: ["", "tokenizer", ".metadata"])
+    func addedArtifacts(subdirectory: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-additions-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appendingPathComponent("models--test--audio/snapshots/pinned")
+        let destination = snapshot.appendingPathComponent(subdirectory)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try populate(snapshot)
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true)
+        let paths = DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root)
+        #expect(paths.count == 1)
+        #expect(paths.allSatisfy { $0.isOnDisk })
+        try Data("new metadata".utf8).write(to: destination.appendingPathComponent("added.json"))
+        #expect(!paths.contains { $0.isOnDisk })
+    }
+
     private func populate(_ snapshot: URL) throws {
         try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent("model.safetensors"))
