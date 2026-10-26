@@ -338,6 +338,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Telemetry debug log toggle (stderr trace of v2 internals). Pure
         # observability, not engine routing.
         "RAPID_MLX_TELEMETRY_DEBUG",
+        # Nonpublishing parser diagnostics: compares channel/order hashes only.
+        # It never selects the parser that serves a request or changes output.
+        "RAPID_MLX_PARSER_SHADOW",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
         # Skip the [Y/n] confirmation prompt before large model downloads
