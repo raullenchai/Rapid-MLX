@@ -2368,6 +2368,12 @@ class BatchedEngine(BaseEngine):
                 install_qwen35_moe_router, self._model
             ).result()
 
+            from ..patches.moe_decode_fusion import install_moe_decode_fusion
+
+            self._model_load_executor.submit(  # type: ignore[attr-defined]
+                install_moe_decode_fusion, self._model
+            ).result()
+
             # Fuse the four GatedDeltaNet input projections into one
             # quantized matmul at decode widths, byte-exact (see
             # rapid_mlx/gdn_in_proj_fusion.py; measured +2.0%/+0.9% decode
