@@ -51,8 +51,8 @@ engine without the changed chat postprocessor.
 | M5 Max, studio-max, 36 GB | 4096 | 166.91 → 190.36 | +14.05% | 566.86 → 566.00 | 14.74 → 14.74 |
 | M4 Pro, mzr-2, 48 GB | 256 | 116.47 → 129.82 | +11.46% | 306.11 → 305.40 | 14.00 → 14.00 |
 | M4 Pro, mzr-2, 48 GB | 4096 | 110.77 → 122.36 | +10.46% | 3779.99 → 3778.66 | 14.75 → 14.75 |
-| M3 Ultra, studio-ultra, 512 GB | 256 | 160.74 → 188.62 | +17.34% | 128.81 → 127.71 | 14.00 → 14.00 |
-| M3 Ultra, studio-ultra, 512 GB | 4096 | 155.86 → 181.71 | +16.59% | 1217.84 → 1213.94 | 14.75 → 14.75 |
+| M3 Ultra, studio-ultra, 256 GB | 256 | 160.74 → 188.62 | +17.34% | 128.81 → 127.71 | 14.00 → 14.00 |
+| M3 Ultra, studio-ultra, 256 GB | 4096 | 155.86 → 181.71 | +16.59% | 1217.84 → 1213.94 | 14.75 → 14.75 |
 
 All single-request 128-token greedy outputs matched exactly at both contexts
 on all three machines. Peak Metal memory was unchanged at 0.01 GB resolution.
