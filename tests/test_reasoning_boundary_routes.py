@@ -263,7 +263,9 @@ def test_reasoning_delimiters_every_split(surface, thinking, raw, reason, answer
             }
         elif raw == "<think>Secret.</think></think>Answer":
             streaming_expected = {
-                "content": "</think>Answer", "reasoning": "Secret.", "calls": []
+                "content": "</think>Answer",
+                "reasoning": "Secret.",
+                "calls": [],
             }
     chunks = [[raw], list(raw)] + [[raw[:i], raw[i:]] for i in range(1, len(raw))]
     for parts in chunks:
