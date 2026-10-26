@@ -167,31 +167,10 @@ def cfg_without_reasoning_parser():
 class TestAnthropicStreamingWithReasoningParser:
     """Issue #185: _stream_anthropic_messages with reasoning_parser active."""
 
-    def test_no_think_tags_yields_thinking_delta_then_text_correction(
+    def test_private_only_stop_fails_without_text_promotion(
         self, cfg_with_reasoning_parser
     ):
-        """No-tag output under the Qwen3 parser: streaming routes to
-        thinking deltas, finalize flips to text block (casual-answer
-        contract).
-
-        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
-        the no-evidence no-tag path is the casual-answer flip
-        (#570/#572) — the streaming loop ships bytes as
-        ``thinking_delta`` (base class Case-3 "no tags yet →
-        reasoning"), and ``finalize_streaming`` then emits the
-        buffered text via ``content`` so the Anthropic route surfaces
-        it as a ``text_block`` block. The route consumer's content
-        gate fires on the finalize correction.
-
-        The Anthropic-stream apparent duplication (thinking_delta +
-        text_delta carrying same bytes) is the documented trade-off
-        for the no-evidence path; without the content flip, casual
-        answers would silently appear as empty on the OpenAI envelope
-        (the #569 regression). The D-STOP-THINK leak surface targeted
-        by this fix is the EXPLICIT-OPENER path — the base class
-        default finalize returns None there, breaking the duplication
-        chain.
-        """
+        """Unknown prompt state uses the private default, never EOF promotion."""
         from rapid_mlx.routes.anthropic import (
             AnthropicRequest,
             ChatCompletionRequest,
@@ -212,7 +191,17 @@ class TestAnthropicStreamingWithReasoningParser:
         )
 
         gen = _stream_anthropic_messages(engine, openai_req, anthropic_req)
-        events = _collect_sse_events(gen)
+        from rapid_mlx.service.helpers import _NoFinalAnswerError
+
+        async def collect_failed():
+            events = []
+            with pytest.raises(_NoFinalAnswerError) as exc:
+                async for event in gen:
+                    events.append(event)
+            assert exc.value.status_code == 422
+            return events
+
+        events = asyncio.run(collect_failed())
 
         delta_types = _extract_delta_types(events)
 

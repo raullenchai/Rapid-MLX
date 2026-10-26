@@ -24,9 +24,16 @@ class IncrementalDecoder:
                 send_to_client(delta)
     """
 
-    __slots__ = ("_tokenizer", "_skip_special_tokens", "_token_ids", "_prev_text")
+    __slots__ = (
+        "_tokenizer",
+        "_skip_special_tokens",
+        "_token_ids",
+        "_prev_text",
+        "_control_ids",
+    )
 
-    def __init__(self, tokenizer, skip_special_tokens: bool = False):
+    def __init__(self, tokenizer, skip_special_tokens: bool = False, *, control_ids=()):
+        self._control_ids = frozenset(control_ids)
         self._tokenizer = tokenizer
         self._skip_special_tokens = skip_special_tokens
         self._token_ids: list[int] = []
@@ -39,6 +46,8 @@ class IncrementalDecoder:
         multi-byte character (U+FFFD), deferring output until the
         character is complete.
         """
+        if token_id in self._control_ids:
+            return ""
         self._token_ids.append(token_id)
         full_text = self._tokenizer.decode(
             self._token_ids, skip_special_tokens=self._skip_special_tokens
@@ -81,3 +90,12 @@ class IncrementalDecoder:
         """Reset state for a new sequence."""
         self._token_ids.clear()
         self._prev_text = ""
+
+
+def visible_token_ids(token_ids, sampling_params):
+    """Linear fallback for terminal decoding without an incremental decoder."""
+    omitted = getattr(sampling_params, "output_control_token_ids", ())
+    if not omitted:
+        return token_ids
+    omitted = frozenset(omitted)
+    return [token_id for token_id in token_ids if token_id not in omitted]

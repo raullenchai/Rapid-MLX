@@ -90,6 +90,7 @@ from ..parsing.session import (
     parse_buffered,
     protocol_calls,
 )
+from ..parsing.token_controls import control_token_kwargs
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
@@ -1657,6 +1658,7 @@ async def _non_stream(
         **_resolved_responses_sampling_kwargs(
             openai_request, responses_request, cfg.tool_call_parser
         ),
+        **control_token_kwargs(cfg, engine, openai_request),
     }
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
@@ -3188,6 +3190,7 @@ async def _stream_responses(
             **_resolved_responses_sampling_kwargs(
                 openai_request, responses_request, cfg.tool_call_parser
             ),
+            **control_token_kwargs(cfg, engine, openai_request),
         }
         forced_prefix = None
         if openai_request.tools:

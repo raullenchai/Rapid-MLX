@@ -70,6 +70,7 @@ from rapid_mlx.api.responses_models import ResponsesRequest
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.service.helpers import (
     _resolve_enable_thinking,
     maybe_auto_disable_thinking_for_casual_chat,
@@ -587,9 +588,18 @@ class _ChatEngine:
 
     async def chat(self, messages, **kwargs):
         self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        thinking = kwargs.get("enable_thinking", True) is not False
+        raw = "</think>" + self._text if thinking else self._text
         return GenerationOutput(
             text=self._text,
-            raw_text=self._text,
+            raw_text=raw,
+            prompt_parse_context=PromptParseContext(
+                "<think>" if thinking else "<think></think>",
+                (),
+                "reasoning" if thinking else "content",
+                thinking,
+                "chatml",
+            ),
             prompt_tokens=4,
             completion_tokens=2,
             finished=True,

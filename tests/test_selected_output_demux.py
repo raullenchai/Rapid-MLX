@@ -370,10 +370,6 @@ def test_unauthorized_outer_call_does_not_execute_nested_argument_markup():
         ("<function=f>junk<parameter=x>1</parameter></function>", "hermes"),
         ("<function=f><parameter=x>1</function>", "hermes"),
         ("<function=f>junk</function>", "hermes"),
-        (
-            "<function=f><parameter=x>1</parameter><parameter=z>2</parameter></function>",
-            "hermes",
-        ),
         ("<atem:invoke bad></atem:invoke>", "muse"),
         ('{"arguments":{}}', "hermes"),
         ("<arg_key>x</arg_key>", "glm47"),
@@ -909,3 +905,120 @@ def test_selected_session_records_rejection_once_without_executing_or_logging_ar
         assert "private-value" not in caplog.text
     finally:
         diagnostics._rejections.reset(token)
+
+
+@pytest.mark.parametrize("fmt", ["hermes", "muse"])
+@pytest.mark.parametrize("extra_position", ["only", "first", "last"])
+@pytest.mark.parametrize(
+    "schema,valid",
+    [
+        ({"properties": {"x": {"type": "string"}}}, True),
+        ({"properties": {"x": {}}, "additionalProperties": True}, True),
+        ({"properties": {"x": {}}, "additionalProperties": False}, False),
+        ({"properties": {"x": {}}, "additionalProperties": {"type": "string"}}, True),
+        ({"properties": {"x": {}}, "additionalProperties": {"type": "integer"}}, False),
+        (
+            {
+                "properties": {"x": {}},
+                "patternProperties": {"^extra$": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            True,
+        ),
+        (
+            {
+                "properties": {"x": {}, "extra": {}},
+                "patternProperties": {"^extra$": {"type": "integer"}},
+            },
+            False,
+        ),
+        ({"$defs": {"args": {"type": "object"}}, "$ref": "#/$defs/args"}, True),
+        ({"$ref": "https://example.invalid/not-retrieved"}, False),
+    ],
+)
+def test_completed_schema_validation_preserves_or_rejects_all_parameters(
+    fmt, extra_position, schema, valid
+):
+    pairs = [("extra", "value")]
+    if extra_position == "first":
+        pairs.append(("x", "known"))
+    elif extra_position == "last":
+        pairs.insert(0, ("x", "known"))
+    if fmt == "muse":
+        raw = (
+            '<atem:invoke name="f">'
+            + "".join(
+                f'<atem:parameter name="{k}">{v}</atem:parameter>' for k, v in pairs
+            )
+            + "</atem:invoke>"
+        )
+    else:
+        raw = (
+            "<tool_call><function=f>"
+            + "".join(f"<parameter={k}>{v}</parameter>" for k, v in pairs)
+            + "</function></tool_call>"
+        )
+    policy = ToolPolicy(fmt, {"f": schema}, True)
+    for chunks in ([raw], list(raw)):
+        context = ParseContext(
+            authorized_tools=frozenset({"f"}), terminals=terminals(policy)
+        )
+        parser = OutputDemultiplexer(context, SelectedGrammar(context, policy))
+        reducer = EventReducer()
+        for chunk in chunks:
+            reducer.feed(parser.feed(chunk))
+        reducer.feed(parser.finish())
+        assert bool(reducer.calls) is valid
+        if valid:
+            assert json.loads(reducer.calls[0]["arguments"]) == dict(pairs)
+        else:
+            assert any(failure.index is not None for failure in reducer.failures)
+
+
+def test_metadata_schema_failure_reserves_index_and_preserves_next_valid_call():
+    policy = ToolPolicy("hermes", {"f": {"additionalProperties": False}}, True)
+    context = ParseContext(
+        authorized_tools=frozenset({"f"}), terminals=terminals(policy)
+    )
+    parser = OutputDemultiplexer(context, SelectedGrammar(context, policy))
+    reducer = EventReducer()
+    reducer.feed(
+        parser.accept_metadata(
+            [
+                {"name": "f", "arguments": '{"extra":1}'},
+                {"name": "f", "arguments": "{}"},
+            ]
+        )
+    )
+    reducer.feed(parser.finish())
+    assert [(f.index, f.code) for f in reducer.failures] == [(0, "invalid_tool")]
+    assert reducer.calls == [{"name": "f", "arguments": "{}"}]
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"additionalProperties": {"type": "string"}},
+        {"patternProperties": {"^x$": {"type": "string"}}},
+        {"properties": {"x": {}}, "patternProperties": {"^x$": {"type": "string"}}},
+    ],
+)
+@pytest.mark.parametrize(
+    "body,fmt",
+    [
+        ("<function=f><parameter=x>123</parameter></function>", "hermes"),
+        (
+            '<atem:invoke name="f"><atem:parameter name="x">123</atem:parameter></atem:invoke>',
+            "muse",
+        ),
+        ("f<arg_key>x</arg_key><arg_value>123</arg_value>", "glm47"),
+    ],
+)
+def test_pattern_and_additional_schemas_preserve_declared_string_values(
+    schema, body, fmt
+):
+    from rapid_mlx.parsing.tool_values import decode_body, validate_arguments
+
+    name, args = decode_body(body, fmt, {"f": schema})
+    assert name == "f" and args == {"x": "123"}
+    validate_arguments(args, schema)

@@ -78,6 +78,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..parsing.session import parse_buffered, protocol_calls
+from ..parsing.token_controls import control_token_kwargs
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -5197,6 +5198,7 @@ async def _create_chat_completion_impl(
     chat_kwargs.update(build_extended_sampling_kwargs(request))
     chat_kwargs.update(dry_sampling_kwargs(engine, request))
     chat_kwargs.update(reasoning_stop_scope_kwargs(engine, request))
+    chat_kwargs.update(control_token_kwargs(cfg, engine, request))
 
     # Add multimodal content
     if has_media:

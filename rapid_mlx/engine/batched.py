@@ -169,6 +169,7 @@ _LANE_PARITY_SAMPLING_KEYS = (
     "presence_penalty",
     "frequency_penalty",
     "reasoning_stop_scope",
+    "output_control_token_ids",
     # Fixed-length benchmarks also use the shared-weight native text lane.
     "ignore_eos",
 )

@@ -122,6 +122,8 @@ class SamplingParams:
     # a stop the model writes while reasoning does not end the request;
     # only the answer after the reasoning close is searched.
     reasoning_stop_scope: Any | None = None
+    # Request-local structural controls omitted before visible detokenization.
+    output_control_token_ids: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.stop is None:

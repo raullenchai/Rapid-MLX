@@ -111,3 +111,16 @@ retain request-local rejection diagnostics and remain non-executable. The
 production parser uses the engine's admitted generation budget; it adds no
 arbitrary payload-length cutoff. Markdown fences and inline-code runs are
 tracked incrementally, including escaped-backtick parity.
+
+Completed selected calls retain every converted parameter and validate against
+the complete declared object schema once before successful completion. Pattern
+and additional-property schemas contribute conversion type hints. Remote schema
+retrieval is disabled; local references remain supported. Invalid metadata calls
+reserve failed indices and cannot become successful calls later.
+
+Selected requests pass a tokenizer-derived control-ID policy into both scheduler
+lanes. Non-grammar structural IDs are omitted before request-local decoding;
+reasoning/tool grammar IDs and ordinary tokens spelling identical controls are
+preserved. Terminal fallback decoding uses the same policy. Original generation
+IDs, usage and cache accounting remain unchanged. This does not enable another
+family's channel router or restore global string sanitization.

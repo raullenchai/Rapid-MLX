@@ -222,7 +222,7 @@ from .repetition_guard import (
 )
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .runtime.model_performance import get_model_performance_ledger
-from .utils.decode import IncrementalDecoder
+from .utils.decode import IncrementalDecoder, visible_token_ids
 from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
@@ -10679,7 +10679,10 @@ class Scheduler:
                 # so the realign tests exercise the SAME registration (codex NIT).
                 self._register_uid_processors(uid, request, request_processors, _glp)
                 # Attach incremental decoder for multi-byte safe streaming
-                request._decoder = IncrementalDecoder(self._actual_tokenizer)
+                request._decoder = IncrementalDecoder(
+                    self._actual_tokenizer,
+                    control_ids=request.sampling_params.output_control_token_ids,
+                )
                 # Release the prompt cache reference now that BatchGenerator
                 # has its own copy.  Holding this reference prevents MLX from
                 # freeing the Metal buffers until the request object is GC'd,
@@ -10816,7 +10819,9 @@ class Scheduler:
                 if decoder is not None:
                     new_text = decoder.add_token(response.token)
                 else:
-                    new_text = self._decode_tokens([response.token])
+                    new_text = self._decode_tokens(
+                        visible_token_ids([response.token], request.sampling_params)
+                    )
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
@@ -10921,7 +10926,11 @@ class Scheduler:
                 if decoder is not None:
                     decoded_so_far = decoder.get_full_text()
                 else:
-                    decoded_so_far = self._decode_tokens(request.output_token_ids)
+                    decoded_so_far = self._decode_tokens(
+                        visible_token_ids(
+                            request.output_token_ids, request.sampling_params
+                        )
+                    )
                 # #1049 — for harmony-format models the stop-string
                 # search must be scoped to the ``final`` channel body:
                 # analysis-channel CoT routinely mentions user-supplied
@@ -11064,7 +11073,9 @@ class Scheduler:
                         output.output_text = decoder.get_full_text()
                     else:
                         output.output_text = self._decode_tokens(
-                            request.output_token_ids
+                            visible_token_ids(
+                                request.output_token_ids, request.sampling_params
+                            )
                         )
                     request.output_text = output.output_text
                     self._cleanup_detokenizer(request_id)

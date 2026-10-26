@@ -59,6 +59,7 @@ from .request import (  # noqa: E402
     classify_engine_abort,
 )
 from .runtime.model_performance import get_model_performance_ledger  # noqa: E402
+from .utils.decode import visible_token_ids
 
 logger = logging.getLogger(__name__)
 
@@ -724,6 +725,7 @@ class MLLMScheduler:
             ignore_eos=bool(kwargs.pop("ignore_eos", False)),
             seed=kwargs.pop("seed", None),
             reasoning_stop_scope=kwargs.pop("reasoning_stop_scope", None),
+            output_control_token_ids=tuple(kwargs.pop("output_control_token_ids", ())),
         )
 
         request = MLLMRequest(
@@ -1191,14 +1193,17 @@ class MLLMScheduler:
                 self._detokenizer_pool[request_id] = detok
             detok = self._detokenizer_pool[request_id]
             stop_params = [s for s in request.stop if s] if request.stop else []
-            if token_is_control_stop_token:
+            token_is_output_control = (
+                response.token in request.sampling_params.output_control_token_ids
+            )
+            if token_is_control_stop_token or token_is_output_control:
                 new_text = ""
             else:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
             detok_finalized = False
             if finish_reason is not None and (
-                stop_params or token_is_control_stop_token
+                stop_params or token_is_control_stop_token or token_is_output_control
             ):
                 baseline_prefix = (
                     request.stop_text if request.stop_text else request.output_text
@@ -1222,7 +1227,7 @@ class MLLMScheduler:
                 # defensive adapters on the same stop path.
                 new_text = (
                     ""
-                    if token_is_control_stop_token
+                    if token_is_control_stop_token or token_is_output_control
                     else tokenizer.decode([response.token])
                 )
 
@@ -1247,7 +1252,11 @@ class MLLMScheduler:
                     # If a detokenizer already exists, empty new_text means
                     # it is buffering partial bytes; offsets must wait for
                     # the detokenizer to emit text.
-                    request.stop_text = tokenizer.decode(request.output_tokens[:-1])
+                    request.stop_text = tokenizer.decode(
+                        visible_token_ids(
+                            request.output_tokens[:-1], request.sampling_params
+                        )
+                    )
                     request.stop_text_len = len(request.stop_text)
                     max_stop_len = max(len(s) for s in stop_params)
                     keep = max(0, max_stop_len - 1)
@@ -1387,7 +1396,11 @@ class MLLMScheduler:
                             detok.finalize()
                         output_output_text = detok.text
                     else:
-                        output_output_text = tokenizer.decode(request.output_tokens)
+                        output_output_text = tokenizer.decode(
+                            visible_token_ids(
+                                request.output_tokens, request.sampling_params
+                            )
+                        )
                     request.output_text = output_output_text
                 request.finish_reason = finish_reason
                 self._detokenizer_pool.pop(request_id, None)
@@ -1418,7 +1431,7 @@ class MLLMScheduler:
                 RequestOutput(
                     request_id=request_id,
                     new_token_ids=[]
-                    if token_is_control_stop_token
+                    if token_is_control_stop_token or token_is_output_control
                     else [response.token],
                     new_text=output_new_text,
                     output_token_ids=request.output_tokens,

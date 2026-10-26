@@ -53,6 +53,7 @@ from ..parsing.session import (
     parse_buffered,
     protocol_calls,
 )
+from ..parsing.token_controls import control_token_kwargs
 from ..reasoning import finalize_streaming_compat
 from ..request import (
     is_batch_cap_error,
@@ -989,6 +990,7 @@ async def create_anthropic_message(
             ),
             **_resolved_sampling_kwargs(openai_request),
             **reasoning_stop_scope_kwargs(engine, openai_request),
+            **control_token_kwargs(get_config(), engine, openai_request),
         }
 
         if openai_request.tools:
@@ -1971,6 +1973,7 @@ async def _stream_anthropic_messages_impl(
         ),
         **_resolved_sampling_kwargs(openai_request),
         **reasoning_stop_scope_kwargs(engine, openai_request),
+        **control_token_kwargs(get_config(), engine, openai_request),
     }
     # C-01: thread the request_id holder to the engine so disconnect
     # detection can force-call scheduler.abort_request.

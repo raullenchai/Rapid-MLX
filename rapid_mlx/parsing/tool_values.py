@@ -36,7 +36,29 @@ def _value(text, schema):
         return text
 
 
-def _parameters(payload, opener, props):
+def _parameter_schema(schema, key):
+    """Resolve conversion hints; full-object validation retains all constraints."""
+    props = schema.get("properties", {})
+    matched = [props[key]] if key in props else []
+    matched += [
+        value
+        for pattern, value in schema.get("patternProperties", {}).items()
+        if re.search(pattern, key)
+    ]
+    if not matched:
+        matched = [schema.get("additionalProperties", {})]
+    constraints = [value for value in matched if isinstance(value, dict)]
+    from ..tool_parsers.muse_tool_parser import _declared_type
+
+    # A direct type constraint controls representation, including when the
+    # property's own schema is unconstrained and a matching pattern adds it.
+    for value in constraints:
+        if _declared_type(value) is not None:
+            return value
+    return constraints[0] if constraints else {}
+
+
+def _parameters(payload, opener):
     """Segment once at sibling boundaries; retain literal inner closers."""
     pattern = re.compile(f"(?:{opener})|(?P<close></parameter>)")
     pairs = []
@@ -57,8 +79,6 @@ def _parameters(payload, opener, props):
         elif last_close is None:
             continue  # opener-shaped text inside the current value
         else:
-            if props and key not in props:
-                raise ValueError("undeclared parameter sibling")
             pairs.append((name, payload[start:last_close]))
         if key in seen:
             raise ValueError("duplicate XML parameter")
@@ -88,15 +108,16 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
         if not isinstance(walked, tuple) or walked[2] != len(stripped):
             raise ValueError("invalid invoke")
         name, params, _ = walked
-        props = schemas.get(name, {}).get("properties", {})
+        schema = schemas.get(name, {})
         arguments = {}
         seen = set()
         for key, value in params:
             if key in seen:
                 raise ValueError("duplicate invoke parameter")
             seen.add(key)
-            if not props or key in props:
-                arguments[key] = _convert_param_value(value, key, props)
+            arguments[key] = _convert_param_value(
+                value, key, {key: _parameter_schema(schema, key)}
+            )
         return name, arguments
     if stripped.startswith("{"):
         value = _json(stripped)
@@ -128,15 +149,17 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
         name = name.strip()
         if payload.lstrip().startswith("{"):
             return name, _json(payload)
-        props = schemas.get(name, {}).get("properties", {})
+        schema = schemas.get(name, {})
         named = '<parameter name="' in payload
         pattern = (
             r'<parameter name="([^"]{1,1024})">'
             if named
             else r"<parameter=([^>]{1,1024})>"
         )
-        pairs = _parameters(payload, pattern, props)
-        return name, {key: _value(value, props.get(key, {})) for key, value in pairs}
+        pairs = _parameters(payload, pattern)
+        return name, {
+            key: _value(value, _parameter_schema(schema, key)) for key, value in pairs
+        }
     function = re.fullmatch(
         r"<function>\s*<name>(.*?)</name>\s*<arguments>(.*?)</arguments>\s*</function>",
         stripped,
@@ -185,7 +208,20 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
                 raise ValueError("duplicate GLM argument")
             arguments[key] = _value(
                 payload[value_start:value_end].strip(),
-                schemas.get(name, {}).get("properties", {}).get(key, {}),
+                _parameter_schema(schemas.get(name, {}), key),
             )
         return name, arguments
     raise ValueError("unsupported tool body")
+
+
+def validate_arguments(arguments, schema):
+    """Validate a completed object without rewriting it or retrieving schemas."""
+    from jsonschema.exceptions import ValidationError
+    from jsonschema.validators import validator_for
+    from referencing import Registry
+    from referencing.exceptions import Unresolvable
+
+    try:
+        validator_for(schema)(schema, registry=Registry()).validate(arguments)
+    except (ValidationError, Unresolvable) as exc:
+        raise ValueError("tool arguments violate declared schema") from exc
