@@ -1712,11 +1712,24 @@ def _load_benchmark_baseline(
 def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str:
     """Return the revision resolved by Hugging Face for the loaded model."""
 
+    from rapid_mlx.model_aliases import resolve_revision
+
     if cache_dir is None:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache_dir = Path(HF_HUB_CACHE)
-    ref = cache_dir / f"models--{_safe_name(model_id)}" / "refs" / "main"
+    repo_cache = cache_dir / f"models--{_safe_name(model_id)}"
+    pinned_revision = resolve_revision(model_id)
+    if pinned_revision is not None:
+        # Commit-pinned downloads select this directory without updating refs/main.
+        snapshot = repo_cache / "snapshots" / pinned_revision
+        if not snapshot.is_dir() or snapshot.is_symlink():
+            raise ValueError(
+                f"cannot verify loaded revision for {model_id}: {snapshot} is unavailable"
+            )
+        return pinned_revision
+
+    ref = repo_cache / "refs" / "main"
     try:
         revision = ref.read_text().strip()
     except OSError as exc:

@@ -372,6 +372,42 @@ def test_stress_consumer_reads_loaded_huggingface_revision(tmp_path):
     )
 
 
+def test_stress_consumer_reads_pinned_snapshot_without_main_ref(tmp_path, monkeypatch):
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "mlx-community/Qwen3.5-35B-A3B-8bit"
+    revision = resolve_revision(model_id)
+    assert revision is not None
+    snapshot = (
+        tmp_path / f"models--{model_id.replace('/', '--')}" / "snapshots" / revision
+    )
+    snapshot.mkdir(parents=True)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert stress_e2e_bench._cached_model_revision(model_id) == revision
+
+
+def test_stress_consumer_rejects_wrong_pinned_snapshot(tmp_path):
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "mlx-community/Qwen3.5-35B-A3B-8bit"
+    revision = resolve_revision(model_id)
+    assert revision is not None
+    wrong_revision = "a" * 40 if revision != "a" * 40 else "b" * 40
+    snapshot = (
+        tmp_path
+        / f"models--{model_id.replace('/', '--')}"
+        / "snapshots"
+        / wrong_revision
+    )
+    snapshot.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="cannot verify loaded revision"):
+        stress_e2e_bench._cached_model_revision(model_id, cache_dir=tmp_path)
+
+
 @pytest.mark.parametrize("contents", [None, "main", "a" * 39])
 def test_stress_consumer_rejects_unverifiable_revision(tmp_path, contents):
     from scripts.pr_validate.steps import stress_e2e_bench
