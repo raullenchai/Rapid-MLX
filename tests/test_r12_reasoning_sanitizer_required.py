@@ -588,6 +588,7 @@ def _make_qwen3_required_client() -> tuple[TestClient, _ReasoningLeakEngine]:
     cfg.reasoning_parser = Qwen3ReasoningParser(tokenizer=None)
     cfg.reasoning_parser_name = "qwen3"
     cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
     app = FastAPI()
     app.include_router(chat_router)
     return TestClient(app), engine
@@ -604,18 +605,7 @@ def _make_qwen3_required_client() -> tuple[TestClient, _ReasoningLeakEngine]:
     ids=["required", "auto", "none", "named-function"],
 )
 def test_chat_route_reasoning_content_sanitized_across_tool_choice(tool_choice):
-    """The systematic invariant: ``reasoning_content`` MUST be
-    leak-free regardless of ``tool_choice`` value. Pre-fix the
-    sanitizer only fired on the explicit ``content`` channel — the
-    ``required`` branch (and any other path that constructs an
-    ``AssistantMessage``) leaked.
-
-    Run the same leaky-raw fixture through every ``tool_choice`` value
-    the OpenAI spec accepts; every code path must produce a clean
-    ``reasoning_content``. ``"none"`` is included because it routes
-    through a different post-parse branch (no tool-call extraction)
-    so the sanitization gate has to fire there too.
-    """
+    """Owned reasoning/tool controls are consumed; foreign text remains in its original lane."""
     client, _ = _make_qwen3_required_client()
     body: dict[str, Any] = {
         "model": "qwen3-0.6b-4bit",
@@ -635,7 +625,12 @@ def test_chat_route_reasoning_content_sanitized_across_tool_choice(tool_choice):
     msg = resp.json()["choices"][0]["message"]
 
     reasoning = msg.get("reasoning_content") or ""
+    assert (
+        "<|im_start|>" in reasoning
+    )  # Foreign control text stays in its owned private lane.
     for leak in _LEAK_MARKERS:
+        if leak == "<|im_start|>":
+            continue
         assert leak not in reasoning, (
             f"R12-MED-2 leak: {leak!r} survived in reasoning_content "
             f"on tool_choice={tool_choice!r}: reasoning={reasoning!r}"
@@ -657,11 +652,7 @@ def test_chat_route_reasoning_content_sanitized_across_tool_choice(tool_choice):
 
 
 def test_chat_route_required_repro_exact_vlad_shape():
-    """The exact shape from Vlad's r12 dogfood report:
-    ``tool_choice="required"``, single ``get_weather`` tool, qwen3
-    chat model. Asserts the bug-repro literal ``<|im_start|>`` is
-    NOT in ``message.reasoning_content``.
-    """
+    """Unknown role-marker spelling is literal private text, without duplicate tool wire."""
     client, _ = _make_qwen3_required_client()
     resp = client.post(
         "/v1/chat/completions",
@@ -687,7 +678,7 @@ def test_chat_route_required_repro_exact_vlad_shape():
     # The bug Vlad caught: reasoning_content == "<|im_start|>".
     # Pre-fix this assertion would fail.
     reasoning = msg.get("reasoning_content") or ""
-    assert "<|im_start|>" not in reasoning, (
+    assert "<|im_start|>" in reasoning, (
         f"Vlad r12 MED-2 repro: <|im_start|> still leaks into "
         f"reasoning_content under tool_choice=required: {reasoning!r}"
     )
@@ -828,7 +819,10 @@ def test_chat_route_streaming_required_reasoning_is_sanitized(tool_choice):
             if isinstance(c, str):
                 aggregated_content += c
 
+    assert "<|im_start|>" in aggregated_reasoning
     for leak in _LEAK_MARKERS:
+        if leak == "<|im_start|>":
+            continue
         assert leak not in aggregated_reasoning, (
             f"R12-MED-2 streaming leak: {leak!r} survived in "
             f"aggregated reasoning_content: {aggregated_reasoning!r}"
@@ -884,7 +878,18 @@ def test_forced_stream_preserves_non_structural_tool_marker_prose():
         for choice in chunk.get("choices", [])
         if isinstance((delta := choice.get("delta") or {}).get("content"), str)
     )
-    assert content == "Use <tool_call> literally in docs."
+    # Required choice cannot turn explanatory prose into an invented call.
+    chunks = _parse_sse_stream(resp.content)
+    assert any(
+        chunk.get("error", {}).get("code") == "tool_choice_violation"
+        for chunk in chunks
+    )
+    assert not any(
+        choice.get("delta", {}).get("tool_calls")
+        for chunk in chunks
+        for choice in chunk.get("choices", [])
+    )
+    assert not content or "Use <tool_call> literally in docs.".startswith(content)
 
 
 def test_forced_stream_replays_content_before_later_tool_call():

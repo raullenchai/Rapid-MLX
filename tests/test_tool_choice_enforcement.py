@@ -583,14 +583,7 @@ def test_t3_synthesize_falls_back_to_empty_when_unrecoverable():
 
 
 def test_t3_chat_route_strips_wire_leak_from_content_and_reasoning():
-    """End-to-end through the FULL chat route: when the model emits
-    the qwen3 malformed wire AND the request is ``tool_choice=required``,
-    the response MUST have:
-
-      - ``tool_calls`` populated with the forced name
-      - ``content`` clean of ``<tool_call>`` and ``</function>`` leaks
-      - ``reasoning_content`` (if any) also clean of those leaks
-    """
+    """Malformed generated wire fails the required-choice contract without fabricated calls."""
 
     class _QwenMalformedEngine(_RecordingEngine):
         def __init__(self):
@@ -608,27 +601,9 @@ def test_t3_chat_route_strips_wire_leak_from_content_and_reasoning():
             "max_tokens": 64,
         },
     )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    msg = body["choices"][0]["message"]
-    # Tool call is present (forced synth)
-    assert msg.get("tool_calls"), (
-        f"tool_choice=required must produce tool_calls; got msg={msg!r}"
-    )
-    assert msg["tool_calls"][0]["function"]["name"] == "add_numbers"
-    # Content is leak-free — the original ``<tool_call>...`` text
-    # must NOT survive into the user-visible content channel.
-    content = msg.get("content") or ""
-    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
-        assert leak not in content, (
-            f"T3 leak: {leak!r} survived in content: {content!r}"
-        )
-    # And the reasoning content (if any) is also leak-free.
-    reasoning = msg.get("reasoning_content") or ""
-    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
-        assert leak not in reasoning, (
-            f"T3 leak: {leak!r} survived in reasoning_content: {reasoning!r}"
-        )
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
+    assert "choices" not in resp.json()
 
 
 def test_t3_chat_route_scrubs_wire_leak_from_reasoning_content():
@@ -684,9 +659,7 @@ def test_t3_chat_route_scrubs_wire_leak_from_reasoning_content():
 
 
 def test_t3_chat_route_recovers_args_when_possible():
-    """When the model emits a recoverable arguments object inside an
-    unclosed envelope, the synth call's arguments must reflect the
-    recovered values, not ``"{}"``."""
+    """A complete argument object followed by a foreign closer fails explicitly."""
 
     class _QwenRecoverableEngine(_RecordingEngine):
         def __init__(self):
@@ -707,40 +680,9 @@ def test_t3_chat_route_recovers_args_when_possible():
             "max_tokens": 64,
         },
     )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    msg = body["choices"][0]["message"]
-    assert msg.get("tool_calls")
-    import json as _json
-
-    args = _json.loads(msg["tool_calls"][0]["function"]["arguments"])
-    # The model's intended args ARE recoverable from the body — verify
-    # the synth used them instead of defaulting to {}.
-    assert args == {"a": 4128, "b": 7591}, (
-        f"recoverable args were not used: got {args!r}"
-    )
-    # codex r3 BLOCKING #2: even on the recoverable shape, the
-    # parser-wire markers in the raw body MUST NOT leak into the
-    # user-visible fields. The recovered-args shape uses a
-    # ``<tool_call>`` opener + ``</function>`` cross-family closer,
-    # which exercises the phase-1.5 cross-family scrub specifically
-    # (the phase-1 strict same-family pair would not match).
-    content = msg.get("content") or ""
-    reasoning = msg.get("reasoning_content") or ""
-    for leak in (
-        "<tool_call>",
-        "</tool_call>",
-        "</function>",
-        "</parameter>",
-        '"name":',
-        '"arguments":',
-    ):
-        assert leak not in content, (
-            f"recoverable-args path leaked {leak!r} into content: {content!r}"
-        )
-        assert leak not in reasoning, (
-            f"recoverable-args path leaked {leak!r} into reasoning: {reasoning!r}"
-        )
+    # A foreign closer after an otherwise complete body is not an interrupted outer envelope.
+    assert resp.status_code == 502, resp.text
+    assert "incomplete or invalid" in resp.text
 
 
 _REQUIRED_ADD_TOOL = [
@@ -1263,7 +1205,7 @@ def test_codex_r4_blocking_2_scrub_does_not_fire_for_tool_choice_auto():
     content = msg.get("content") or ""
     # The phrase "<tool_call>" in the trailing prose was legitimate
     # — the scrub must NOT have removed it under tool_choice=auto.
-    assert content == "Note: tool calls use the <tool_call> envelope syntax."
+    assert content == "\nNote: tool calls use the <tool_call> envelope syntax."
     assert "<tool_call>" in content, (
         f"auto-mode legitimate prose mentioning <tool_call> was stripped; "
         f"content={content!r}"
@@ -1414,7 +1356,7 @@ def test_codex_r6_blocking_1_forced_choice_with_clean_text_does_not_scrub():
     msg = resp.json()["choices"][0]["message"]
     assert msg.get("tool_calls"), msg
     assert msg["tool_calls"][0]["function"]["name"] == "add_numbers"
-    assert msg.get("content") == "Tool called successfully."
+    assert msg.get("content") == "\nTool called successfully."
 
 
 def test_codex_r6_blocking_1_forced_choice_with_wire_leak_still_scrubs():
@@ -1559,15 +1501,8 @@ def test_4663_forced_truncated_payload_does_not_leak_to_content(choice, narratio
             "max_tokens": 128,
         },
     )
-    assert response.status_code == 200, response.text
-    message = response.json()["choices"][0]["message"]
-    assert (message.get("content") or "").strip() == narration.strip(), message
-    assert not message.get("reasoning_content"), message
-    assert len(message["tool_calls"]) == 1
-    assert message["tool_calls"][0]["function"] == {
-        "name": "add_numbers",
-        "arguments": "{}",
-    }
+    assert response.status_code == 422, response.text
+    assert "required declared tool call" in response.text
 
 
 @pytest.mark.parametrize("chunk_size", [1, 7, 200])
@@ -1631,8 +1566,12 @@ def test_4663_stream_terminal_does_not_replay_truncated_wire(chunk_size, narrati
                 )
                 for key in function:
                     function[key] += call.get("function", {}).get(key) or ""
-    assert visible.strip() == narration.strip(), visible
-    assert streamed_calls == {0: {"name": "add_numbers", "arguments": "{}"}}
+    assert "add_numbers" not in visible and "arguments" not in visible
+    assert not streamed_calls
+    assert any(
+        json.loads(line).get("error", {}).get("code") == "tool_choice_violation"
+        for line in data[:-1]
+    )
 
 
 def test_4663_forced_truncated_wire_in_reasoning_preserves_narration():
@@ -1675,9 +1614,7 @@ def test_codex_r11_broad_scrub_does_not_cross_family_strip_marker_prose():
 
 
 def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
-    """When forced synthesis happens because the parser found no call,
-    clean prose that merely mentions ``<tool_call>`` must survive.
-    """
+    """Literal marker prose cannot satisfy a required tool choice."""
 
     raw = "I cannot call tools here, but the literal token is <tool_call>."
 
@@ -1697,14 +1634,13 @@ def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
             "max_tokens": 64,
         },
     )
-    assert resp.status_code == 200, resp.text
-    msg = resp.json()["choices"][0]["message"]
-    assert msg.get("tool_calls"), msg
-    assert msg.get("content") == raw
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
+    assert "choices" not in resp.json()
 
 
 def test_codex_r7_synth_forced_clean_closer_prose_not_scrubbed():
-    """A lone closer token in ordinary prose is also not enough to scrub."""
+    """A literal closer cannot satisfy a required tool choice."""
 
     raw = "Use </function> to close XML in this example."
 
@@ -1724,14 +1660,13 @@ def test_codex_r7_synth_forced_clean_closer_prose_not_scrubbed():
             "max_tokens": 64,
         },
     )
-    assert resp.status_code == 200, resp.text
-    msg = resp.json()["choices"][0]["message"]
-    assert msg.get("tool_calls"), msg
-    assert msg.get("content") == raw
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
+    assert "choices" not in resp.json()
 
 
 def test_codex_r8_synth_forced_clean_balanced_marker_prose_not_scrubbed():
-    """Balanced marker examples without payload hints are explanatory prose."""
+    """A balanced documentation example cannot satisfy a required tool choice."""
 
     raw = "Show the literal form <tool_call>...</tool_call>."
 
@@ -1751,13 +1686,9 @@ def test_codex_r8_synth_forced_clean_balanced_marker_prose_not_scrubbed():
             "max_tokens": 64,
         },
     )
-    assert resp.status_code == 200, resp.text
-    msg = resp.json()["choices"][0]["message"]
-    assert msg.get("tool_calls"), msg
-    content = msg.get("content") or ""
-    assert "Show the literal form" in content
-    assert "<tool_call>" in content
-    assert "..." in content
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
+    assert "choices" not in resp.json()
 
 
 # -----------------------------------------------------------------------
@@ -2249,7 +2180,9 @@ def test_rc_xml_forced_header_at_tiny_budget(monkeypatch, budget, tail, stream):
 
     class Engine(_RecordingEngine):
         async def stream_chat(self, messages, **kwargs):
-            yield GenerationOutput(text=prefix, new_text=prefix, completion_tokens=0)
+            yield GenerationOutput(
+                text=prefix, new_text=prefix, completion_tokens=0, finished=False
+            )
             yield GenerationOutput(
                 text=prefix + tail,
                 raw_text=prefix + tail,
@@ -2284,24 +2217,22 @@ def test_rc_xml_forced_header_at_tiny_budget(monkeypatch, budget, tail, stream):
             "enable_thinking": False,
         },
     )
-    assert response.status_code == 200, response.text
     if stream:
-        choices = [
-            c
+        assert response.status_code == 200
+        packets = [
+            json.loads(line[6:])
             for line in response.text.splitlines()
             if line.startswith("data: {")
-            for c in json.loads(line[6:])["choices"]
         ]
-        assert "".join(c["delta"].get("content") or "" for c in choices) == ""
-        calls = [call for c in choices for call in c["delta"].get("tool_calls", [])]
-        assert calls[-1]["function"] == {"name": "write_file", "arguments": "{}"}
+        assert [p["error"]["code"] for p in packets if "error" in p] == [
+            "invalid_tool_arguments"
+        ]
+        assert not any(
+            c.get("finish_reason") for p in packets for c in p.get("choices", [])
+        )
     else:
-        message = response.json()["choices"][0]["message"]
-        assert not message.get("content"), message
-        assert message["tool_calls"][0]["function"] == {
-            "name": "write_file",
-            "arguments": "{}",
-        }
+        assert response.status_code == 502, response.text
+        assert "incomplete or invalid" in response.text
 
 
 def test_rc_xml_header_scrub_preserves_inline_documentation_and_narration():
@@ -2370,15 +2301,8 @@ def test_unclosed_xml_header_hidden_by_buffered_route(forced):
             "enable_thinking": False,
         },
     )
-    assert response.status_code == 200, response.text
-    message = response.json()["choices"][0]["message"]
-    # An unclosed header outside Markdown remains a truncated call even
-    # after narration. Keep the narration and the forced-call contract.
-    assert message["content"] == "Example:"
-    if forced:
-        assert message["tool_calls"][0]["function"]["name"] == "write_file"
-    else:
-        assert not message.get("tool_calls")
+    assert response.status_code == (422 if forced else 502), response.text
+    assert "choices" not in response.json()
 
 
 @pytest.mark.parametrize("narration", ["", "Calling now.\n"])
@@ -2421,17 +2345,17 @@ def test_stream_truncated_xml_tail_requires_produced_name(monkeypatch, narration
         },
     )
     assert response.status_code == 200, response.text
-    choices = [
-        c
+    packets = [
+        json.loads(line[6:])
         for line in response.text.splitlines()
         if line.startswith("data: {")
-        for c in json.loads(line[6:])["choices"]
     ]
-    assert (
-        "".join(c["delta"].get("content") or "" for c in choices) == narration.rstrip()
+    assert [p["error"]["code"] for p in packets if "error" in p] == [
+        "invalid_tool_arguments"
+    ]
+    assert not any(
+        c.get("finish_reason") for p in packets for c in p.get("choices", [])
     )
-    calls = [call for c in choices for call in c["delta"].get("tool_calls", [])]
-    assert calls[-1]["function"]["name"] == "write_file"
 
 
 def test_stream_parsed_call_name_evidence(monkeypatch):
@@ -2511,12 +2435,7 @@ def test_stream_parsed_call_name_evidence(monkeypatch):
 def test_dogfood_forced_stream_truncation_parity(
     monkeypatch, family, budget, tail, mode, required_city
 ):
-    """Replay the dogfood zero-call boundary with representative XML tails.
-
-    Qwen budget 1 releases '<' after the synthetic prefix is swallowed;
-    the other tails exercise empty terminal recovery. Bonsai's budget-16
-    already-emitted incomplete JSON call is a separate validation concern.
-    """
+    """Interrupted arguments fail on both surfaces regardless of schema optionality."""
     prefix = "<tool_call>\n<function=get_weather>\n"
     raw = prefix + tail
 
@@ -2533,7 +2452,9 @@ def test_dogfood_forced_stream_truncation_parity(
 
         async def stream_chat(self, messages, **kwargs):
             assert kwargs["forced_assistant_prefix"] == prefix
-            yield GenerationOutput(text=prefix, new_text=prefix, completion_tokens=0)
+            yield GenerationOutput(
+                text=prefix, new_text=prefix, completion_tokens=0, finished=False
+            )
             yield GenerationOutput(
                 text=raw,
                 raw_text=raw,
@@ -2583,26 +2504,10 @@ def test_dogfood_forced_stream_truncation_parity(
     choices = [c for chunk in chunks for c in chunk.get("choices", [])]
     assert "".join(c["delta"].get("content") or "" for c in choices) == ""
     assert not any(c["delta"].get("reasoning_content") for c in choices)
-    calls = [tc for c in choices for tc in c["delta"].get("tool_calls", [])]
     errors = [chunk["error"] for chunk in chunks if "error" in chunk]
     finishes = [c["finish_reason"] for c in choices if c.get("finish_reason")]
     assert streamed.text.count("data: [DONE]") == 1
-    if required_city:
-        assert buffered.status_code == 422, buffered.text
-        assert "city" in buffered.json()["detail"]
-        assert [error["code"] for error in errors] == ["tool_choice_violation"]
-        assert not calls
-        assert not finishes
-        assert "error" in chunks[-1]
-    else:
-        assert buffered.status_code == 200, buffered.text
-        choice = buffered.json()["choices"][0]
-        assert not choice["message"].get("content")
-        # max_tokens ended generation, so the synthesized call keeps the
-        # truthful "length" finish rather than claiming a completed call.
-        assert choice["finish_reason"] == "length"
-        expected = choice["message"]["tool_calls"][0]["function"]
-        assert expected == {"name": "get_weather", "arguments": "{}"}
-        assert [call["function"] for call in calls] == [expected]
-        assert finishes == ["length"]
-        assert not errors
+    # Neither schema optionality nor an injected function name supplies arguments.
+    assert buffered.status_code == 502, buffered.text
+    assert [error["code"] for error in errors] == ["invalid_tool_arguments"]
+    assert not finishes

@@ -857,9 +857,9 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
     def test_streaming_responses_keeps_cutoff_reasoning_private(
         self, responses_client, monkeypatch
     ):
-        """Selected grammars finish the private lane without synthetic content."""
+        """Disabling the static cutoff notice leaves only the private lane."""
         monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
-        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "0")
         with responses_client.client.stream(
             "POST",
             "/v1/responses",

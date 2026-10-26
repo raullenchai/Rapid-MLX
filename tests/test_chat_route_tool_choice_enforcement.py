@@ -995,13 +995,8 @@ def test_tool_call_name_returns_none_when_no_name_anywhere():
 # ======================================================================
 
 
-def test_required_with_single_tool_synthesizes_when_parser_empty():
-    """#571: ``tool_choice="required"`` with EXACTLY ONE tool and a
-    parser that returned no tool_calls must synthesise a call to that
-    sole tool. Without this, hermes-class engines 422 on the same
-    request that harmony returns 200 for, breaking OpenAI's
-    parser-agnostic ``tool_choice`` contract.
-    """
+def test_required_with_single_tool_rejects_missing_generated_call():
+    """A required request needs a generated invocation, even with one tool."""
     engine = _RecordingEngine()  # parser path returns empty
     client = _make_client(engine)
     single_tool = [_TOOLS_FIXTURE[0]]  # just get_weather
@@ -1015,14 +1010,8 @@ def test_required_with_single_tool_synthesizes_when_parser_empty():
             "max_tokens": 32,
         },
     )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    tcs = body["choices"][0]["message"].get("tool_calls") or []
-    assert len(tcs) == 1, f"expected 1 synthesized tool_call, got {len(tcs)}"
-    assert tcs[0]["function"]["name"] == "get_weather"
-    # Arguments default to ``"{}"`` — the contract guarantee is "a
-    # tool_call is present", not "the arguments are correct".
-    assert tcs[0]["function"]["arguments"] == "{}"
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
 
 
 def test_required_with_multiple_tools_still_422_when_parser_empty():
@@ -1047,14 +1036,8 @@ def test_required_with_multiple_tools_still_422_when_parser_empty():
     assert "required" in resp.text.lower()
 
 
-def test_named_function_synthesizes_when_parser_empty():
-    """#571: ``tool_choice={"type":"function","function":{"name":X}}``
-    with an empty parser output must synthesise a call to X. The
-    target tool is named in the request — there's no ambiguity. This
-    is the precise case from issue #571's repro
-    (``tool_choice={type:function,function:{name:web_search}}`` →
-    422 on hermes, 200 on harmony).
-    """
+def test_named_function_rejects_missing_generated_call():
+    """Pinning a name does not invent an invocation or its arguments."""
     engine = _RecordingEngine()
     client = _make_client(engine)
     resp = client.post(
@@ -1067,12 +1050,8 @@ def test_named_function_synthesizes_when_parser_empty():
             "max_tokens": 32,
         },
     )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    tcs = body["choices"][0]["message"].get("tool_calls") or []
-    assert len(tcs) == 1
-    assert tcs[0]["function"]["name"] == "get_time"
-    assert tcs[0]["function"]["arguments"] == "{}"
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
 
 
 def test_named_function_wrong_call_still_422_after_571():
@@ -1249,7 +1228,7 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
     # Defense-in-depth must produce 422 — NEVER 200 with a fabricated
     # call to ``ghost_function``.
     assert resp.status_code == 422, resp.text
-    assert "ghost_function" in resp.text
+    assert "required declared tool call" in resp.text
     # The critical assertion: the synthesis helper must NEVER be
     # invoked with the ghost name. Without the BLOCKING fix, this
     # would record ``["ghost_function"]`` and the response would be a

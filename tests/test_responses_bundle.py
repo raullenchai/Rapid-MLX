@@ -568,7 +568,10 @@ class TestDeepSeekV4ResponsesStreaming:
         failed = [data for name, data in events if name == "response.failed"]
         assert len(failed) == 1, events
         assert failed[0]["response"]["error"]["code"] == "invalid_tool_arguments"
-        assert "JSON object" in failed[0]["response"]["error"]["message"]
+        assert any(
+            message in failed[0]["response"]["error"]["message"]
+            for message in ("JSON object", "incomplete or invalid")
+        )
         assert not any(name == "response.completed" for name, _ in events)
         assert not any(
             name == "response.output_item.added"

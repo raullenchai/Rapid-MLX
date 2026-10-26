@@ -302,7 +302,14 @@ def test_native_tools(surface, parser, label, raw, expected):
             reasoning="harmony" if parser == "harmony" else None,
             names=[name for name, _ in expected],
         )
-        assert result == ("Checking. " if parser == "lfm" else "", "", expected), (
+        literal = (
+            "Checking. "
+            if parser == "lfm"
+            else "\n"
+            if parser == "qwen3_xml" and surface != "messages"
+            else ""
+        )
+        assert result == (literal, "", expected), (
             chunks,
             result,
         )
@@ -495,8 +502,15 @@ def test_post_call_marker_suffix_uses_parser_eof_content_policy():
         events.extend(processor.finalize())
         assert "".join(event.content or "" for event in events) == literal
         calls = [call for event in events for call in event.tool_calls or []]
-        assert len(calls) == 1
-        assert calls[0]["function"]["arguments"] == "{}"
+        assert {call["index"] for call in calls} == {0}
+        assert (
+            "".join(call.get("function", {}).get("name", "") for call in calls)
+            == "get_weather"
+        )
+        assert (
+            "".join(call.get("function", {}).get("arguments", "") for call in calls)
+            == "{}"
+        )
 
 
 @pytest.mark.parametrize("surface", ["responses", "messages"])

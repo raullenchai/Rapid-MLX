@@ -547,8 +547,8 @@ def test_inferred_parser_reports_drops(monkeypatch, called):
 
 
 @pytest.mark.parametrize("channel", [None, "content"])
-def test_dropped_stream_keeps_prose_and_honest_finish(channel):
-    pp = processor()
+def test_legacy_parser_dropped_stream_keeps_prose_and_honest_finish(channel):
+    pp = processor("qwen3_coder_xml")
     pp.tool_parser = Mock()
     pp.tool_parser.EXPECTED_WIRE_FORMATS = ("tool_call_json",)
     pp.tool_parser._undeclared_dropped = 0
@@ -714,7 +714,7 @@ def test_forced_choice_uses_original_authorization(stream, caplog):
         text,
         stream=stream,
         expected_status=200 if stream else 422,
-        expected_sse_error="invalid_tool_arguments" if stream else None,
+        expected_sse_error="tool_choice_violation" if stream else None,
         tools=[*TOOLS, {"type": "function", "function": {"name": "send_email"}}],
         tool_choice={"type": "function", "function": {"name": "write_file"}},
     )
@@ -722,9 +722,9 @@ def test_forced_choice_uses_original_authorization(stream, caplog):
     # Buffered rejects a wrong choice; streaming rejects the malformed
     # forced-prefix envelope rather than inventing a replacement call.
     if stream:
-        assert result["code"] == "invalid_tool_arguments"
+        assert result["code"] == "tool_choice_violation"
     else:
-        assert "emitted calls to ['send_email']" in result["detail"]
+        assert "required declared tool call" in result["detail"]
     assert not any("undeclared" in record.message for record in caplog.records)
 
 

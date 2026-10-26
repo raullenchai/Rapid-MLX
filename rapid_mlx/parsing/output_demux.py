@@ -68,6 +68,8 @@ class ParseFailure:
     span: Span
     code: str
     index: int | None = None
+    tool_name: str | None = None
+    raw_arguments: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +108,7 @@ class ParseContext:
     )
     authorized_tools: frozenset[str] = frozenset()
     max_header_chars: int = 1024
-    max_argument_chars: int = 1048576
+    max_argument_chars: int | None = 1048576
 
     @property
     def initial_channel(self) -> Channel:
@@ -120,6 +122,7 @@ class Lexeme:
     span: Span
     text: str
     terminal: str | None = None
+    pending_terminal: bool = False
 
 
 class Grammar(Protocol):
@@ -346,6 +349,7 @@ class OutputDemultiplexer:
                     Lexeme(
                         Span(self.offset - len(self.pending), self.offset),
                         self.pending,
+                        pending_terminal=True,
                     )
                 )
                 self.pending = ""
@@ -389,7 +393,11 @@ class OutputDemultiplexer:
         result: list[Event] = []
         if self.pending:
             result += self._consume(
-                Lexeme(Span(self.offset - len(self.pending), self.offset), self.pending)
+                Lexeme(
+                    Span(self.offset - len(self.pending), self.offset),
+                    self.pending,
+                    pending_terminal=True,
+                )
             )
             self.pending = ""
         if self._mode != "native":

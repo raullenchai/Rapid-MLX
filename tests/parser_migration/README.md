@@ -97,3 +97,17 @@ as the comparison for this corrected full-stream benchmark. The corrected
 v0.16.9 baseline loses its 64K call; record that invalid result rather than
 counting it as a valid throughput sample. The current gate verifies valid calls
 at every size and requires no greater than 2x per-chunk growth.
+
+Selected-family compatibility retains validated interrupted calls when only the
+outer envelope is missing, including a proven partial outer closer. Incomplete
+argument bodies fail explicitly. Required/named requests never invent a call,
+even when the schema has no required fields. Streaming comparisons assemble
+argument deltas by call index.
+
+A reasoning-only successful stop remains a `model_no_final_answer` protocol
+error. Length exhaustion may emit the existing static cutoff notice, but never
+promotes private reasoning into public text. Completed unauthorized GLM calls
+retain request-local rejection diagnostics and remain non-executable. The
+production parser uses the engine's admitted generation budget; it adds no
+arbitrary payload-length cutoff. Markdown fences and inline-code runs are
+tracked incrementally, including escaped-backtick parity.

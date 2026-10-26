@@ -715,3 +715,140 @@ def test_duplicate_native_argument_names_fail_instead_of_overwriting(fmt, raw):
         _, _, calls, failures = run(raw, parts, format_name=fmt)
         assert calls == []
         assert any(f.index is not None and f.code == "invalid_tool" for f in failures)
+
+
+def test_selected_content_holdback_properties_track_only_pending_marker():
+    from rapid_mlx.config.server_config import ServerConfig
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    p = StreamingPostProcessor(ServerConfig(reasoning_parser_name="qwen3"))
+    assert not p.content_held
+    assert p.content_consumed == 0
+    p.process_chunk(GenerationOutput(text="<thi", new_text="<thi", finished=False))
+    assert p.content_held
+    p.process_chunk(GenerationOutput(text="<thix", new_text="x", finished=False))
+    assert not p.content_held
+    assert p.content_consumed == 5
+
+
+@pytest.mark.parametrize(
+    "fmt,raw",
+    [
+        ("glm47", "<tool_call>f<arg_key>x</arg_key><arg_value>value</arg_value>"),
+        ("hermes", '<tool_call>{"name":"f","arguments":{"x":"value"}}'),
+        ("hermes", "<tool_call><function=f><parameter=x>value</parameter></function>"),
+    ],
+)
+@pytest.mark.parametrize("partial", ["", "<", "</tool_", "</tool_call"])
+def test_interrupted_outer_envelope_can_finish_only_validated_complete_arguments(
+    fmt, raw, partial
+):
+    raw += partial
+    for parts in ([raw], list(raw)):
+        content, _, calls, failures = run(raw, parts, format_name=fmt)
+        assert not content and not failures
+        assert json.loads(calls[0]["arguments"]) == {"x": "value"}
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~", "````", "~~~~"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_fenced_calls_are_literal_and_next_outside_call_is_owned(fence, newline):
+    call = '<tool_call>{"name":"f","arguments":{"x":"value"}}</tool_call>'
+    example = fence + "json" + newline + call + newline + fence + newline
+    raw = example + call
+    for parts in ([raw], list(raw)):
+        content, _, calls, failures = run(raw, parts)
+        assert content == example
+        assert len(calls) == 1 and not failures
+
+
+@pytest.mark.parametrize("ticks", ["`", "``"])
+def test_inline_code_call_is_literal(ticks):
+    call = '<tool_call>{"name":"f","arguments":{}}</tool_call>'
+    raw = ticks + call + ticks + " text"
+    for parts in ([raw], list(raw)):
+        content, _, calls, failures = run(raw, parts)
+        assert content == raw
+        assert not calls and not failures
+
+
+@pytest.mark.parametrize("slashes", [1, 3])
+def test_escaped_backtick_does_not_open_inline_code(slashes):
+    raw = "\\" * slashes + '` then `<tool_call>{"name":"f","arguments":{}}</tool_call>`'
+    for split in range(len(raw) + 1):
+        content, reasoning, calls, _ = run(raw, [raw[:split], raw[split:]])
+        assert content == raw
+        assert not reasoning and not calls
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "I should use <tool_call><function=f> to look this up.",
+        "A literal <tool_call>" + " " * 1100,
+    ],
+)
+def test_uncommitted_reasoning_example_releases_at_channel_boundary(body):
+    raw = "<think>" + body + "</think>Answer"
+    for parts in ([raw], list(raw)):
+        content, reasoning, calls, _ = run(raw, parts)
+        assert content == "Answer" and reasoning == body and not calls
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<function=f></function>",
+        "<function=f><parameter=x>value</parameter></function>",
+    ],
+)
+def test_private_xml_requires_parameter_grammar_or_complete_empty_call(body):
+    raw = "<think><tool_call>" + body + "</tool_call></think>Answer"
+    for parts in ([raw], list(raw)):
+        content, reasoning, calls, failures = run(raw, parts)
+        assert content == "Answer" and not reasoning and not failures
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize("marker", ["<think>"])
+def test_unquoted_reasoning_marker_retains_private_ownership_after_prose(marker):
+    raw = "Use the " + marker + " tag in the example."
+    for split in range(len(raw) + 1):
+        content, reasoning, calls, failures = run(raw, [raw[:split], raw[split:]])
+        assert content == "Use the " and reasoning == " tag in the example."
+        assert not calls and not failures
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (
+            "other<arg_key>x</arg_key><arg_value>private</arg_value>",
+            "<arg_key>x</arg_key><arg_value>private</arg_value>",
+        ),
+        ("other", ""),
+        ("other prose", None),
+        ("<function=other></function>", None),
+    ],
+)
+def test_completed_glm_rejection_diagnostic_is_non_executable(body, expected):
+    raw = "<tool_call>" + body + "</tool_call>"
+    for parts in ([raw], list(raw)):
+        content, reasoning, calls, failures = run(raw, parts, format_name="glm47")
+        assert content == raw and not reasoning and not calls
+        diagnostics = [failure for failure in failures if failure.tool_name is not None]
+        assert [(event.tool_name, event.raw_arguments) for event in diagnostics] == (
+            [] if expected is None else [("other", expected)]
+        )
+
+
+@pytest.mark.parametrize("outer", [False, True])
+@pytest.mark.parametrize("value", ["</think>secret", "x" * 2000])
+def test_private_xml_object_arguments_own_marker_strings_and_large_values(outer, value):
+    body = "<function=f>" + json.dumps({"x": value}) + "</function>"
+    raw = "<tool_call>" + body + "</tool_call>" if outer else body
+    for parts in ([raw], list(raw)):
+        content, reasoning, calls, failures = run(raw, parts, channel="reasoning")
+        assert not content and not reasoning and not failures
+        assert len(calls) == 1 and json.loads(calls[0]["arguments"]) == {"x": value}

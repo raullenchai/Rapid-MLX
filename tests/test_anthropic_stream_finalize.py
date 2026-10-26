@@ -368,7 +368,17 @@ def test_c08_nonpriming_short_answer_survives_length_with_preamble_parser():
 
 def test_c08_nonpriming_short_answer_survives_length_with_qwen():
     """Preserve genuine short answers under a non-priming template."""
-    engine = _NoTagsLengthTruncatedEngine()
+    from rapid_mlx.prompt_parse_context import PromptParseContext
+
+    class RenderedContentEngine(_NoTagsLengthTruncatedEngine):
+        async def stream_chat(self, **kwargs):
+            async for output in super().stream_chat(**kwargs):
+                output.prompt_parse_context = PromptParseContext(
+                    "assistant:", None, "content", True, "unknown"
+                )
+                yield output
+
+    engine = RenderedContentEngine()
     client = _make_client(engine, reasoning_parser_name="qwen3")
     r = client.post(
         "/v1/messages",
@@ -396,18 +406,8 @@ def test_c08_nonpriming_short_answer_survives_length_with_qwen():
     ]
     thinking_joined = "".join(thinking_chunks)
     text_joined = "".join(text_chunks)
-    # The wire MUST carry these bytes exactly once. The chunk loop
-    # already shipped them as thinking_delta — emitting an
-    # additional text block with the same bytes is the data-
-    # duplication regression. If a future refactor wants to
-    # re-classify those bytes, the right place is at the streaming
-    # surface (suppress the thinking_delta in the first place), NOT
-    # to emit a corrective text delta on top of the thinking ones.
-    if thinking_joined:
-        assert text_joined == thinking_joined == "1, 2", (
-            "byte-faithful duplicate detected: finalize correction re-encoded "
-            "already-streamed thinking as text"
-        )
+    assert not thinking_joined
+    assert text_joined == "1, 2"
     # And on the truncated path the message_delta carries the
     # correct stop_reason so the client knows what happened.
     message_delta = next(d for _, d in events if d.get("type") == "message_delta")

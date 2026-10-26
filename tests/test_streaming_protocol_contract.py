@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
 SURFACES = ("chat", "responses", "anthropic")
@@ -46,6 +47,7 @@ class _Scenario:
     reasoning: str
     calls: tuple[tuple[str, dict[str, Any]], ...] = ()
     tools: bool = False
+    initial_channel: str = "reasoning"
 
 
 def _call(city: str) -> str:
@@ -67,6 +69,7 @@ SCENARIOS = {
         engine_finish="stop",
         content="Just an answer.",
         reasoning="",
+        initial_channel="content",
     ),
     # Tags split across chunk boundaries must not leak partial markup.
     "split_tags": _Scenario(
@@ -157,6 +160,15 @@ class _ScriptedEngine:
             last = i == len(deltas) - 1
             yield GenerationOutput(
                 text=text,
+                prompt_parse_context=PromptParseContext(
+                    "<think>"
+                    if self.scenario.initial_channel == "reasoning"
+                    else "<think></think>",
+                    None,
+                    self.scenario.initial_channel,
+                    True,
+                    "chatml",
+                ),
                 new_text=delta,
                 tokens=[i],
                 prompt_tokens=3,

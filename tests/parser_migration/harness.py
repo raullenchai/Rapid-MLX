@@ -224,6 +224,7 @@ def route(
     tools=None,
     tool_choice=None,
     parse_context="fixture",
+    request_fields=None,
 ):
     cfg = reset_config()
     cfg.model_name = model
@@ -304,6 +305,7 @@ def route(
         b["tool_choice"] = tool_choice
     if matched:
         b["stop"] = [matched]
+    b.update(request_fields or {})
     try:
         resp = CLIENTS[surface].post(url, json=b)
         if resp.status_code != 200:

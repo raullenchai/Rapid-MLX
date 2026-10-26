@@ -7258,14 +7258,14 @@ async def _create_chat_completion_impl(
         # owns ALL the predicates (env gate, finish_reason, content
         # emptiness, tool-call gate, reasoning presence) so this call
         # site stays trivial.
-        if selected_result is None:
-            final_content = _apply_reasoning_cutoff_notice(
-                final_content,
-                reasoning_text,
-                tool_calls,
-                finish_reason,
-                include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
-            )
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
+            include_reasoning_tail=selected_result is None
+            and not _uses_deepseek_v4_reasoning(cfg),
+        )
 
     if (
         undeclared_tool_dropped
@@ -8457,7 +8457,11 @@ async def stream_chat_completion(
             # finish_event.content path is normally None for non-tool
             # plain-text streams (deltas already drained content during
             # the loop), so this typically just adds the held suffix.
-            finish_content = finish_event.content or ""
+            # The demultiplexer drains every owned text event before finish.
+            # Its terminal event is metadata, never another content source.
+            finish_content = (
+                "" if processor.uses_output_demux else finish_event.content or ""
+            )
             streamed_content = "".join(_streamed_content_parts)
             # Issue #1709: the terminal chunk can replay the WHOLE answer that
             # was already emitted as content deltas during the loop. Two
@@ -8764,16 +8768,17 @@ async def stream_chat_completion(
             # logic matches the non-streaming call site — the helper
             # owns it.
             if (
-                not processor.uses_output_demux
-                and not has_any_tool_calls
+                not has_any_tool_calls
                 and not structured_output_requested
+                and not (processor.uses_output_demux and streamed_content.strip())
             ):
                 cutoff_content = _apply_reasoning_cutoff_notice(
                     terminal_content or None,
                     processor.accumulated_reasoning,
                     None,
                     finish_event.finish_reason,
-                    include_reasoning_tail=not _uses_deepseek_v4_reasoning(
+                    include_reasoning_tail=not processor.uses_output_demux
+                    and not _uses_deepseek_v4_reasoning(
                         cfg, processor.reasoning_parser
                     ),
                 )

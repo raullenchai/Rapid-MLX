@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.routes.anthropic import router as anthropic_router
 from rapid_mlx.routes.chat import router as chat_router
 
@@ -47,6 +48,7 @@ class _StreamingEngine:
 
     def __init__(self, deltas: list[str]):
         self._deltas = deltas
+        self.context = None
         self.calls: list[dict] = []
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
@@ -65,6 +67,7 @@ class _StreamingEngine:
                 finished=last,
                 finish_reason="stop" if last else None,
                 channel=None,
+                prompt_parse_context=self.context,
             )
 
     async def chat(self, messages, **kwargs):
@@ -79,6 +82,7 @@ class _StreamingEngine:
             finished=True,
             finish_reason="stop",
             channel=None,
+            prompt_parse_context=self.context,
         )
 
 
@@ -98,6 +102,13 @@ def _make_paired_client(
     becomes vacuous.
     """
     engine = _StreamingEngine(deltas)
+    engine.context = PromptParseContext(
+        "<think></think>" if no_thinking else "<think>",
+        None,
+        "content" if no_thinking else "reasoning",
+        not no_thinking,
+        "chatml",
+    )
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"

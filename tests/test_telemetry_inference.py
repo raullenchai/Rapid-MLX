@@ -3262,7 +3262,7 @@ def test_additional_endpoint_has_completed_request_emit(relative_path, endpoint)
     [
         ("rapid_mlx/routes/chat.py", 7),
         ("rapid_mlx/routes/completions.py", 1),
-        ("rapid_mlx/routes/anthropic.py", 1),
+        ("rapid_mlx/routes/anthropic.py", 2),
         ("rapid_mlx/routes/responses.py", 3),
     ],
 )

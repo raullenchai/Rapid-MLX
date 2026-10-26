@@ -1316,14 +1316,14 @@ async def create_anthropic_message(
         # benefit from the literal cue surfacing in ``content`` too.
         # Opt out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
         # See helper docstring for the full predicate set.
-        if selected_result is None:
-            final_content = _apply_reasoning_cutoff_notice(
-                final_content,
-                reasoning_text,
-                tool_calls,
-                finish_reason,
-                include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
-            )
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
+            include_reasoning_tail=selected_result is None
+            and not _uses_deepseek_v4_reasoning(cfg),
+        )
 
         # Clean only the finalized visible lane; keep raw reasoning boundaries.
         if (
@@ -1880,7 +1880,7 @@ async def _stream_anthropic_messages(
                     "type": "error",
                     "error": {
                         "type": "api_error",
-                        "code": "invalid_generated_tool_call",
+                        "code": exc.rapid_mlx_error_code,
                         "message": str(exc.detail),
                     },
                 }
@@ -3497,27 +3497,29 @@ async def _stream_anthropic_messages_impl(
 
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
 
-    # Apply the same final-answer contract as the buffered surfaces.
-    if not selected_active and not (tool_choice_error or tool_validation_error):
-        try:
-            _rescue_silent_drop_from_reasoning(
-                streamed_visible_text,
-                streamed_thinking_text,
-                tool_calls,
-                finish_reason=stream_finish_reason,
-            )
-        except HTTPException as exc:
-            no_answer_error = {
-                "type": "error",
-                "error": cast(dict, exc.detail)["error"],
-            }
-            yield f"event: error\ndata: {json.dumps(no_answer_error)}\n\n"
-            return
+    # Validate legacy results without reclassifying selected grammar output.
+    if not (tool_choice_error or tool_validation_error):
+        if not selected_active:
+            try:
+                _rescue_silent_drop_from_reasoning(
+                    streamed_visible_text,
+                    streamed_thinking_text,
+                    tool_calls,
+                    finish_reason=stream_finish_reason,
+                )
+            except HTTPException as exc:
+                no_answer_error = {
+                    "type": "error",
+                    "error": cast(dict, exc.detail)["error"],
+                }
+                yield f"event: error\ndata: {json.dumps(no_answer_error)}\n\n"
+                return
         notice = _apply_reasoning_cutoff_notice(
             streamed_visible_text,
             streamed_thinking_text,
             tool_calls,
             stream_finish_reason,
+            include_reasoning_tail=not selected_active,
         )
         if notice and not streamed_visible_text.strip():
             events, current_block_type, block_index = _emit_and_track(

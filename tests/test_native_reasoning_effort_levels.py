@@ -52,6 +52,7 @@ from rapid_mlx.api.responses_models import ResponsesRequest
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.service.helpers import (
     maybe_apply_default_reasoning_effort,
     maybe_apply_reasoning_effort,
@@ -1299,12 +1300,15 @@ class _RouteEngine:
         self.stream_calls: list[dict] = []
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
-        return "PROMPT"
+        return "<|im_start|>assistant\n<think></think>"
 
     async def chat(self, messages=None, **kwargs):
         self.chat_calls.append({"messages": messages, "kwargs": kwargs})
         return GenerationOutput(
             text="ok",
+            prompt_parse_context=PromptParseContext(
+                "<think></think>", None, "content", False, "chatml"
+            ),
             new_text="ok",
             prompt_tokens=4,
             completion_tokens=2,
@@ -1317,6 +1321,9 @@ class _RouteEngine:
         for i, piece in enumerate(("o", "k")):
             yield GenerationOutput(
                 text="ok"[: i + 1],
+                prompt_parse_context=PromptParseContext(
+                    "<think></think>", None, "content", False, "chatml"
+                ),
                 new_text=piece,
                 prompt_tokens=4 if i == 0 else 0,
                 completion_tokens=i + 1,
@@ -1377,14 +1384,14 @@ def _responses_cap_probe():
     import rapid_mlx.routes.responses as responses_mod
 
     seen: list = []
-    original = responses_mod._finalize_content_and_reasoning
+    original = responses_mod.parse_buffered
 
     def _probe(*args, **kwargs):
         seen.append(kwargs.get("reasoning_max_tokens"))
         return original(*args, **kwargs)
 
     with patch(
-        "rapid_mlx.routes.responses._finalize_content_and_reasoning",
+        "rapid_mlx.routes.responses.parse_buffered",
         side_effect=_probe,
     ):
         yield seen

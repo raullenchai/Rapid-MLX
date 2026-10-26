@@ -38,7 +38,8 @@ def terminals(policy: ToolPolicy) -> tuple[Terminal, ...]:
     result = [
         Terminal("reasoning_start", "<think>"),
         Terminal("reasoning_end", "</think>"),
-        Terminal("fence", "```"),
+        Terminal("backtick", "`"),
+        Terminal("tilde", "~"),
     ]
     if policy.enabled:
         result += [
@@ -80,6 +81,36 @@ def terminals(policy: ToolPolicy) -> tuple[Terminal, ...]:
                 Terminal("arg_value_end", "</arg_value>"),
             ]
     return tuple(result)
+
+
+def _coalesce_args(events: list[Event]) -> list[Event]:
+    """One argument delta per contiguous source run in this input chunk."""
+    result: list[Event] = []
+    pending: list[str] = []
+    first: ToolArgs | None = None
+    end = 0
+    for event in events:
+        if first is not None and not (
+            isinstance(event, ToolArgs)
+            and event.index == first.index
+            and event.span.start == end
+        ):
+            result.append(
+                ToolArgs(Span(first.span.start, end), first.index, "".join(pending))
+            )
+            first, pending = None, []
+        if isinstance(event, ToolArgs):
+            if first is None:
+                first = event
+            pending.append(event.text)
+            end = event.span.end
+        else:
+            result.append(event)
+    if first is not None:
+        result.append(
+            ToolArgs(Span(first.span.start, end), first.index, "".join(pending))
+        )
+    return result
 
 
 class JsonEnvelope:
@@ -187,14 +218,40 @@ class SelectedGrammar(ChannelGrammar):
         super().__init__(context)
         self.context = context
         self.policy = policy
-        self.fenced = False
+        from ..tool_parsers.qwen3coder_tool_parser import _MarkdownCodeTracker
+
+        # Reuse only its incremental fence-state scanner, never its prefix
+        # queries or tool parsing. This request's grammar remains the owner.
+        self.code = _MarkdownCodeTracker()
+        self.inline_ticks = None
+        self.tick_run = 0
+        self.backslashes = 0
         self.has_prose = False
         self.orphan = False
         self.next_index = 0
         self.candidate: dict[str, Any] | None = None
         self.optional_outer_close = False
 
+    def _finish_tick_run(self):
+        if self.tick_run:
+            if self.inline_ticks is None:
+                self.inline_ticks = self.tick_run
+            elif self.inline_ticks == self.tick_run:
+                self.inline_ticks = None
+            self.tick_run = 0
+
     def _literal(self, lexeme) -> list[Event]:
+        self.code._feed_fence(lexeme.text)
+        for char in lexeme.text:
+            if char == "`":
+                if self.inline_ticks is not None or self.backslashes % 2 == 0:
+                    self.tick_run += 1
+                self.backslashes = 0
+            else:
+                self._finish_tick_run()
+                self.backslashes = self.backslashes + 1 if char == "\\" else 0
+                if char in "\r\n":
+                    self.inline_ticks = None
         cls = ReasoningDelta if self.channel == "reasoning" else ContentDelta
         if lexeme.text.strip():
             self.has_prose = True
@@ -214,10 +271,13 @@ class SelectedGrammar(ChannelGrammar):
                 # Do not hold an unbounded whitespace run awaiting a closer.
                 return self._literal(lexeme)
             self.optional_outer_close = False
-        if kind == "fence":
-            self.fenced = not self.fenced
-            return self._literal(lexeme)
-        if self.fenced:
+        if kind != "backtick":
+            self._finish_tick_run()
+        if (
+            kind in {"backtick", "tilde"}
+            or self.code._fence_result()
+            or self.inline_ticks is not None
+        ):
             return self._literal(lexeme)
         if self.orphan:
             if kind == "tool_end":
@@ -227,7 +287,10 @@ class SelectedGrammar(ChannelGrammar):
         if kind in {"reasoning_start", "reasoning_end"}:
             self.has_prose = False
             return super().consume(lexeme)
-        if kind in {"orphan_start", "arg_value_start"} and not self.has_prose:
+        if (
+            kind in {"orphan_start", "arg_value_start", "arg_value_end", "arg_key_end"}
+            and not self.has_prose
+        ):
             self.orphan = True
             return [Control(lexeme.span, "orphan_tool_wire")]
         allowed = self.channel != "reasoning" or self.policy.promote_reasoning
@@ -287,7 +350,41 @@ class SelectedGrammar(ChannelGrammar):
 
     def _candidate(self, lexeme):
         c = self.candidate
+        closer = {
+            "tool_start": "</tool_call>",
+            "seed_start": "</seed:tool_call>",
+            "function_start": "</function>",
+            "named_function_start": "</function>",
+            "muse_invoke": "</atem:invoke>",
+            "bracket_start": ")]",
+        }.get(c["kind"])
+        if (
+            lexeme.pending_terminal
+            and c["committed"]
+            and closer
+            and closer.startswith(lexeme.text)
+        ):
+            c["partial_closer"] = lexeme.span
+            return []
         scanner = c["json"] or c["value_json"]
+        if (
+            lexeme.terminal == "reasoning_end"
+            and c["origin"] == "reasoning"
+            and not (
+                self.policy.format_name in {"glm47", "glm4"}
+                and c["prefix"].strip() in self.context.authorized_tools
+            )
+            and not c["committed"]
+            and not c["in_value"]
+            and not (scanner is not None and scanner.in_string)
+        ):
+            events = (
+                []
+                if c["literal"]
+                else self._reject(lexeme.span.start, "literal_reasoning_example")
+            )
+            self.candidate = None
+            return events + self.consume(lexeme)
         xml_optional = (
             self.policy.format_name
             in {"qwen3_xml", "qwen", "qwen3", "nemotron", "nemotron3"}
@@ -341,7 +438,9 @@ class SelectedGrammar(ChannelGrammar):
             if c["literal"]:
                 self.candidate = None
                 cls = ReasoningDelta if c["origin"] == "reasoning" else ContentDelta
-                return [cls(lexeme.span, lexeme.text)]
+                return [cls(lexeme.span, lexeme.text)] + self._rejection_diagnostic(
+                    c, lexeme.span.end
+                )
             if xml_optional or c["kind"] in {
                 "function_start",
                 "named_function_start",
@@ -375,11 +474,13 @@ class SelectedGrammar(ChannelGrammar):
                 events.extend(self.consume(piece))
             else:
                 events.extend(self._body_piece(piece))
-        return events
+        return _coalesce_args(events)
 
     def _body_piece(self, lexeme):
         c = self.candidate
         if c["literal"]:
+            if "rejected_parts" in c:
+                c["rejected_parts"].append(lexeme.text)
             scanner = c["json"] or c["value_json"]
             if scanner is None and not c["xml_body_started"] and lexeme.text.strip():
                 c["xml_body_started"] = True
@@ -451,7 +552,18 @@ class SelectedGrammar(ChannelGrammar):
                     return self._reject(
                         lexeme.span.end, "unauthorized_tool", keep_open=True
                     )
-                result.append(self._start(name, c["body_start"] + match.end()))
+                tail = prefix[match.end() :].lstrip()
+                # In a private lane, a function-name example alone is not a
+                # tool commitment. Require its parameter grammar or validate
+                # the complete empty function at the enclosing close.
+                if c["origin"] != "reasoning" or tail.startswith(
+                    ("<parameter", "<atem:parameter", "{")
+                ):
+                    result.append(self._start(name, c["body_start"] + match.end()))
+                    if tail == "{":
+                        c["xml_body_started"] = True
+                        c["value_json"] = JsonEnvelope()
+                        c["value_json"].feed("{", lexeme.span.end - 1)
             elif c["kind"] == "bracket_start":
                 match = re.fullmatch(r"\s*([^()\s]+)\(", prefix)
                 if match:
@@ -476,7 +588,10 @@ class SelectedGrammar(ChannelGrammar):
             and c["size"] > self.context.max_header_chars
         ):
             return self._reject(lexeme.span.end, "header_limit", keep_open=True)
-        if c["size"] > self.context.max_argument_chars:
+        if (
+            self.context.max_argument_chars is not None
+            and c["size"] > self.context.max_argument_chars
+        ):
             if c["committed"]:
                 result.append(
                     ParseFailure(
@@ -500,6 +615,11 @@ class SelectedGrammar(ChannelGrammar):
         cls = ReasoningDelta if c["origin"] == "reasoning" else ContentDelta
         self.candidate = c if keep_open else None
         if keep_open:
+            if code == "unauthorized_tool" and self.policy.format_name in {
+                "glm47",
+                "glm4",
+            }:
+                c["rejected_parts"] = list(c["parts"])
             c["literal"] = True
             c["parts"] = []
             c["prefix"] = ""
@@ -510,6 +630,28 @@ class SelectedGrammar(ChannelGrammar):
                 c["json"].role = None
         self.has_prose = bool(text.strip())
         return [cls(Span(c["start"], end), text), ParseFailure(Span(end, end), code)]
+
+    def _rejection_diagnostic(self, candidate, offset):
+        if self.policy.format_name not in {"glm47", "glm4"}:
+            return []
+        body = "".join(candidate.get("rejected_parts", candidate["parts"]))
+        try:
+            name, _ = decode_body(body, self.policy.format_name, self.policy.schemas)
+        except (ValueError, TypeError, AttributeError, RecursionError):
+            return []
+        if name in self.context.authorized_tools:
+            return []
+        match = re.match(r"\s*[^<\s]+\s*(.*)", body, re.S)
+        if match is None:
+            return []
+        return [
+            ParseFailure(
+                Span(offset, offset),
+                "unauthorized_tool",
+                tool_name=name,
+                raw_arguments=match[1],
+            )
+        ]
 
     def _close(self, closer):
         c = self.candidate
@@ -558,7 +700,8 @@ class SelectedGrammar(ChannelGrammar):
                 if c["kind"] == "seed_start"
                 else ""
             )
-            return self._reject(closer.end, "invalid_tool")
+            diagnostic = self._rejection_diagnostic({**c, "parts": [body]}, closer.end)
+            return self._reject(closer.end, "invalid_tool") + diagnostic
         if not c["committed"]:
             result.append(self._start(name, c["body_start"]))
         if c["json"] is None or c["json"].argument_start is None:
@@ -611,6 +754,26 @@ class SelectedGrammar(ChannelGrammar):
             self.candidate = None
             return []
         if c["committed"]:
+            body = "".join(c["parts"]).rstrip()
+            complete_body = (
+                (
+                    c["json"] is not None
+                    and c["json"].depth == 0
+                    and not c["json"].in_string
+                )
+                or body.endswith("</function>")
+                or (
+                    self.policy.format_name in {"glm47", "glm4"}
+                    and body.endswith("</arg_value>")
+                )
+            )
+            if complete_body:
+                # The argument body is complete; only its outer envelope was
+                # interrupted. Conversion validates it without inventing bytes.
+                return cast(
+                    list[Event],
+                    self._close(c.get("partial_closer", Span(offset, offset))),
+                )
             self.candidate = None
             return [
                 ParseFailure(Span(c["cursor"], offset), "incomplete_tool", c["index"])

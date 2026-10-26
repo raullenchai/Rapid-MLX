@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.prompt_parse_context import prompt_parse_context
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.routes import anthropic, chat, responses
 from rapid_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
@@ -23,6 +24,12 @@ CALL = "<tool_call>run_shell_command<arg_key>command</arg_key><arg_value>pwd</ar
 
 class Engine(BaseEngine):
     step = 1
+    context = None
+
+    async def chat(self, **kwargs):
+        output = await super().chat(**kwargs)
+        output.prompt_parse_context = self.context
+        return output
 
     async def stream_chat(self, **kwargs):
         for i in range(0, len(self.raw), self.step):
@@ -32,10 +39,12 @@ class Engine(BaseEngine):
                 prompt_tokens=4,
                 completion_tokens=i + 1,
                 finished=False,
+                prompt_parse_context=self.context,
             )
         yield GenerationOutput(
             text=self.raw,
             new_text="",
+            prompt_parse_context=self.context,
             finished=True,
             finish_reason="stop",
             prompt_tokens=4,
@@ -74,6 +83,14 @@ def test_flint_routes(
     cfg.engine = Engine(raw)
     cfg.engine.step = step
     cfg.engine.tokenizer = SimpleNamespace(chat_template=TEMPLATE)
+    # The pinned template's generation suffix and exact-template off prefill
+    # are supplied by this fake renderer, not inferred from generated text.
+    suffix = "<|assistant|>" + (
+        "<think>\n\n</think>\n\n" if not enable_thinking else ""
+    )
+    cfg.engine.context = prompt_parse_context(
+        suffix, thinking=enable_thinking, assistant_start=0, flint_template=True
+    )
     app = FastAPI()
     app.include_router(anthropic.router)
     app.include_router(chat.router)
@@ -153,7 +170,12 @@ def test_flint_routes(
     try:
         response = TestClient(app).post(url, json=body)
         if (
-            raw == "Private thought.</think>"
+            raw
+            in {
+                "Private thought.</think>",
+                "Private thought.</think></arg_value><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
+            }
+            and enable_thinking
             and surface in ("chat", "messages")
             and not stream
         ):
@@ -245,7 +267,16 @@ def test_flint_routes(
             assert visible == expected_literal
             assert not calls
             return
-        assert "Private thought" not in visible
+        public_prefix = (
+            "Private thought."
+            if not enable_thinking and raw.startswith("Private thought.")
+            else ""
+        )
+        if raw.endswith("<tool_call>run_shell_command"):
+            assert visible == public_prefix + "<tool_call>run_shell_command"
+            assert not calls
+            return
+        assert "Private thought" not in visible.removeprefix(public_prefix)
         assert not any(
             tag in visible
             for tag in [
@@ -270,9 +301,9 @@ def test_flint_routes(
                 "command": "pwd"
             }
         elif raw.endswith("Done."):
-            assert visible == "Done."
+            assert visible == public_prefix + "Done."
         elif raw.endswith("Literal <arg_"):
-            assert visible == "Literal <arg_"
+            assert visible == public_prefix + "Literal <arg_"
     finally:
         reset_config()
 

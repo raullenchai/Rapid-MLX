@@ -125,8 +125,33 @@ def _extract_stream(parser_name: str, text: str) -> list:
     cfg = _make_cfg_for_parser(parser_name)
     # This helper intentionally exercises a configured parser without a full
     # request object, so declare the capability explicitly.
-    pp = StreamingPostProcessor(cfg, tools_requested=True)
+    pp = StreamingPostProcessor(
+        cfg,
+        tools_requested=True,
+        request={
+            "tools": [
+                {"type": "function", "function": {"name": name}}
+                for name in ("read_file", "computer", "get_current_weather")
+            ]
+        },
+    )
     pp.reset()
+    if pp.uses_output_demux:
+        from rapid_mlx.engine.base import GenerationOutput
+
+        events = pp.process_chunk(
+            GenerationOutput(text=text, new_text=text, finished=False)
+        )
+        events += pp.finalize()
+        joined = {}
+        for event in events:
+            for call in event.tool_calls or []:
+                old = joined.setdefault(
+                    call["index"], {"function": {"name": "", "arguments": ""}}
+                )
+                for key in ("name", "arguments"):
+                    old["function"][key] += call.get("function", {}).get(key, "")
+        return list(joined.values())
     pp.tool_accumulated_text = text
     events = pp.finalize()
     for ev in events:

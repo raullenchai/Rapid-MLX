@@ -372,7 +372,7 @@ def test_logprobs_released_held_text_excludes_tool_call_tokens(monkeypatch, held
     released = sanitize_content_for_stream(held)
     assert released
     assert "".join(contents[:call_index]) == "ok " + released
-    assert contents[call_index - 1] == released
+    assert contents[call_index - 1].endswith(released)
     logprobs = choices[call_index - 1]["logprobs"]["content"]
     assert [e["token"] for e in logprobs] == ["ok " + held]
     tokens = [

@@ -282,19 +282,14 @@ def test_nonstream_named_pin_missing_args_is_422():
     assert resp.status_code == 422, resp.text
 
 
-def test_nonstream_no_required_still_synthesizes_empty_call():
-    """Control: a tool with NO required fields still synthesises a ``{}`` call
-    (the #571/#447 forced-choice guarantee is preserved for that case)."""
+def test_nonstream_optional_schema_still_requires_generated_call():
+    """An optional schema is not permission to invent a tool invocation."""
     client = _make_client(_PlainTextEngine())
     resp = client.post(
         "/v1/chat/completions", json=_body("required", _PING_TOOL_NO_REQUIRED)
     )
-    assert resp.status_code == 200, resp.text
-    msg = resp.json()["choices"][0]["message"]
-    tcs = msg.get("tool_calls") or []
-    assert len(tcs) == 1
-    assert tcs[0]["function"]["name"] == "ping"
-    assert tcs[0]["function"]["arguments"] in ("{}", "")
+    assert resp.status_code == 422, resp.text
+    assert "required declared tool call" in resp.text
 
 
 # =====================================================================
@@ -344,7 +339,15 @@ def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
         gen = stream_chat_completion(
             engine, [{"role": "user", "content": "hi"}], request
         )
-        async for sse in gen:
+        from unittest.mock import AsyncMock
+
+        from rapid_mlx.service.helpers import _disconnect_guard
+
+        async for sse in _disconnect_guard(
+            gen,
+            AsyncMock(is_disconnected=AsyncMock(return_value=False)),
+            keepalive_seconds=0,
+        ):
             line = sse.strip()
             if not line.startswith("data: "):
                 continue
@@ -418,17 +421,15 @@ def test_stream_required_missing_args_does_not_fabricate_call(_qwen_hermes_cfg):
     )
 
 
-def test_stream_no_required_still_synthesizes(_qwen_hermes_cfg):
-    """Control: streaming ``required`` on a NO-required tool still synthesises
-    the guaranteed call (preserves #447)."""
-    deltas = ["The ", "answer", "."]
+def test_stream_optional_schema_still_requires_generated_call(_qwen_hermes_cfg):
     chunks, finish = _drive_stream(
-        _FakeStreamEngine(deltas), _stream_request("required", _PING_TOOL_NO_REQUIRED)
+        _FakeStreamEngine(["The ", "answer", "."]),
+        _stream_request("required", _PING_TOOL_NO_REQUIRED),
     )
-    emitted = _emitted_tool_calls(chunks)
-    assert emitted, "no-required forced synth must still fire"
-    assert emitted[0]["function"]["name"] == "ping"
-    assert finish == "tool_calls"
+    assert not _emitted_tool_calls(chunks) and finish is None
+    assert any(
+        c.get("error", {}).get("code") == "tool_choice_violation" for c in chunks
+    )
 
 
 # =====================================================================

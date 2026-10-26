@@ -64,9 +64,13 @@ def test_surrounding_whitespace_parity(route, mode, text):
     expected = "" if route == "messages" and not text.strip() else text
     for deltas in _chunkings(text):
         buffered, streamed, _, _ = _run(ReplayEngine(deltas, "stop"), route, mode)
-        assert buffered == text.strip()
+        assert buffered == (
+            text
+            if mode == "auto" and (text.strip() or route == "messages")
+            else text.strip()
+        )
         assert streamed == expected, deltas
-        assert streamed.strip() == buffered
+        assert streamed.strip() == buffered.strip()
 
 
 class ToolChunkEngine(ReplayEngine):

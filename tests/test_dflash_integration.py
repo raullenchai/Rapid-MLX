@@ -1858,7 +1858,13 @@ def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
         if choice.get("delta", {}).get("tool_calls")
     ]
     assert tool_deltas[0][0]["function"]["name"] == "get_weather"
-    assert '"city": "Paris"' in tool_deltas[0][0]["function"]["arguments"]
+    assert json.loads(
+        "".join(
+            call.get("function", {}).get("arguments", "")
+            for delta in tool_deltas
+            for call in delta
+        )
+    ) == {"city": "Paris"}
     assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
     assert "<tool_call>" not in body
 

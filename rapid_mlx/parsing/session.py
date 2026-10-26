@@ -61,8 +61,17 @@ def _request_dict(request):
 
 
 class OutputParseError(HTTPException):
-    def __init__(self, message="Generated tool call was incomplete or invalid"):
-        super().__init__(502, message)
+    rapid_mlx_error_code = "invalid_tool_arguments"
+
+    def __init__(
+        self,
+        message="Generated tool call was incomplete or invalid",
+        *,
+        status_code=502,
+    ):
+        super().__init__(status_code, message)
+        if status_code == 422:
+            self.rapid_mlx_error_code = "tool_choice_violation"
 
 
 @dataclass
@@ -73,6 +82,7 @@ class ParsedResult:
     failures: list[ParseFailure]
     required: bool = False
     required_name: str | None = None
+    finish_reason: str = "stop"
 
 
 class ParsingSession:
@@ -98,7 +108,7 @@ class ParsingSession:
             self.authorization = frozenset()
         self.schemas = {
             tool["function"]["name"]: tool["function"].get("parameters", {})
-            for tool in self.request.get("tools", [])
+            for tool in self.request.get("tools") or []
             if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
         }
         self.promote_reasoning = promote_reasoning
@@ -139,7 +149,12 @@ class ParsingSession:
             self.schemas,
             bool(
                 self.tools_requested
-                and self.cfg.enable_auto_tool_choice
+                and not self.drop_calls
+                and (
+                    self.cfg.enable_auto_tool_choice
+                    or self.required_name is not None
+                    or self.request.get("tool_choice") == "required"
+                )
                 and self.cfg.tool_call_parser
             ),
             self.promote_reasoning,
@@ -149,6 +164,9 @@ class ParsingSession:
             default_channel=default,
             terminals=terminals(policy),
             authorized_tools=self.authorization,
+            # Generation is already bounded by the admitted request budget.
+            # Do not impose a second arbitrary payload cutoff on viable calls.
+            max_argument_chars=None,
         )
         self.parser = OutputDemultiplexer(context, SelectedGrammar(context, policy))
 
@@ -257,6 +275,10 @@ class ParsingSession:
                 )
             elif isinstance(event, ToolEnd):
                 self.completed.append(event.index)
+            elif isinstance(event, ParseFailure) and event.tool_name is not None:
+                from ..tool_call_diagnostics import record_rejected_tool_call
+
+                record_rejected_tool_call(event.tool_name, event.raw_arguments or "")
             elif isinstance(event, ParseFailure) and event.index is not None:
                 result.append(
                     StreamEvent(
@@ -303,6 +325,7 @@ class ParsingSession:
             self.reducer.failures,
             choice == "required" or required_name is not None,
             required_name,
+            self.reducer.finish_reason or "stop",
         )
 
 
@@ -368,7 +391,7 @@ def parse_buffered(
     return session.result
 
 
-def protocol_calls(parsed):
+def protocol_calls(parsed, *, validate_outcome=True):
     if any(failure.index is not None for failure in parsed.failures):
         raise OutputParseError()
     if parsed.required and (
@@ -378,7 +401,29 @@ def protocol_calls(parsed):
             and any(call["name"] != parsed.required_name for call in parsed.calls)
         )
     ):
-        raise OutputParseError("Generation did not fulfill the requested tool choice")
+        raise OutputParseError(
+            "The response did not contain the required declared tool call.",
+            status_code=422,
+        )
+    if (
+        validate_outcome
+        and parsed.finish_reason not in {"length", "cancelled", "content_filter"}
+        and not parsed.content.strip()
+        and parsed.reasoning.strip()
+        and not parsed.calls
+    ):
+        from ..service.helpers import _NoFinalAnswerError
+
+        raise _NoFinalAnswerError(
+            status_code=422,
+            detail={
+                "error": {
+                    "code": "model_no_final_answer",
+                    "message": "The model stopped without a final answer or tool call. Retry the request.",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
     from ..api.models import FunctionCall, ToolCall
 
     return [

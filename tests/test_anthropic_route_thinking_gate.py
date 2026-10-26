@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.routes.anthropic import router as anthropic_router
 from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 from rapid_mlx.service.helpers import _resolve_reasoning_enabled
@@ -340,6 +341,9 @@ class _StreamingEngineNoChannelTags:
         # Plain text answer, no channel tag, no <think> markers — a
         # non-thinking alias's normal output.
         yield GenerationOutput(
+            prompt_parse_context=PromptParseContext(
+                "<think></think>", None, "content", False, "chatml"
+            ),
             text="hello ",
             new_text="hello ",
             tokens=[1],
@@ -350,6 +354,9 @@ class _StreamingEngineNoChannelTags:
             channel=None,
         )
         yield GenerationOutput(
+            prompt_parse_context=PromptParseContext(
+                "<think></think>", None, "content", False, "chatml"
+            ),
             text="hello world",
             new_text="world",
             tokens=[1, 2],

@@ -10,7 +10,10 @@ from tests.test_tool_call_finish_reason import ReplayEngine, client_for, sse
 GEMMA_CALL = '<|tool_call>call:get_weather{"city":"Paris"}<tool_call|>'
 TEXT_CALL = '[Calling tool: get_weather({"city":"Paris"})]'
 GEMMA_PROSE = "Use <|tool_call>call:x{}<tool_call|> to call."
-TEXT_CASES = [GEMMA_CALL, TEXT_CALL, GEMMA_PROSE]
+HERMES_CALL = (
+    '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+)
+TEXT_CASES = [GEMMA_CALL, TEXT_CALL, GEMMA_PROSE, HERMES_CALL]
 
 RESPONSES_TOOL = {
     "type": "function",
@@ -149,17 +152,16 @@ def test_buffered_and_streaming_tool_markup_parity(route, mode, text, chunking):
             assert stop == "end_turn"
         return
 
-    assert "<|tool_call>" not in buffered
-    assert "<tool_call|>" not in buffered
-    assert "[Calling tool" not in buffered
-    expect_call = text == TEXT_CALL
+    # Foreign-family marker strings remain literal in the selected grammar.
+    assert buffered == ("" if text == HERMES_CALL else text)
+    expect_call = text == HERMES_CALL
     assert bool(buffered_calls) is expect_call
     assert bool(streamed_calls) is expect_call
     if expect_call:
         assert buffered_calls[0]["name"] == "get_weather"
         assert streamed_calls[0]["name"] == "get_weather"
     if route == "responses":
-        expected_status = "failed" if text == GEMMA_CALL else "completed"
+        expected_status = "completed"
         assert body["status"] == expected_status
         assert events[-1]["type"] == f"response.{expected_status}"
     else:

@@ -68,6 +68,11 @@ def _make_cfg(**overrides):
 
 def _make_output(text: str = "", finished: bool = False):
     out = MagicMock()
+    from rapid_mlx.prompt_parse_context import PromptParseContext
+
+    out.prompt_parse_context = PromptParseContext(
+        "<think></think>", None, "content", False, "chatml"
+    )
     out.new_text = text
     out.finished = finished
     out.channel = None
@@ -105,6 +110,14 @@ def _drive(pp: StreamingPostProcessor, deltas: list[str]) -> dict:
     for e in all_events:
         if e.type == "tool_call" and e.tool_calls:
             tool_calls.extend(e.tool_calls)
+    joined = {}
+    for call in tool_calls:
+        old = joined.setdefault(
+            call["index"], {"function": {"name": "", "arguments": ""}}
+        )
+        for key in ("name", "arguments"):
+            old["function"][key] += call.get("function", {}).get(key, "")
+    tool_calls = list(joined.values())
     return {
         "reasoning": reasoning,
         "content": content,
@@ -120,7 +133,18 @@ def _pp(enable_thinking=False):
         tool_call_parser="hermes",
     )
     pp = StreamingPostProcessor(
-        cfg, tools_requested=True, enable_thinking=enable_thinking
+        cfg,
+        tools_requested=True,
+        enable_thinking=enable_thinking,
+        request={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": name, "parameters": {"type": "object"}},
+                }
+                for name in ("get_weather", "foo")
+            ]
+        },
     )
     pp.reset()
     return pp
@@ -473,7 +497,15 @@ def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
         gen = stream_chat_completion(
             engine, [{"role": "user", "content": "hi"}], request
         )
-        async for sse in gen:
+        from unittest.mock import AsyncMock
+
+        from rapid_mlx.service.helpers import _disconnect_guard
+
+        async for sse in _disconnect_guard(
+            gen,
+            AsyncMock(is_disconnected=AsyncMock(return_value=False)),
+            keepalive_seconds=0,
+        ):
             line = sse.strip()
             if not line.startswith("data: "):
                 continue
@@ -545,10 +577,8 @@ class TestStreamSynthForcedToolChoice:
         monkeypatch.setattr(cfg, "gc_control", False, raising=False)
         yield
 
-    def test_synth_fires_when_parser_saw_nothing(self):
-        """``required`` + 1 tool + zero parser-detected call shapes →
-        terminal chunk carries a synthesised ``delta.tool_calls`` with
-        ``finish_reason="tool_calls"``."""
+    def test_invalid_generated_shape_does_not_synthesize_call(self):
+        """A malformed hybrid envelope never becomes a fabricated required call."""
         # The model emits a hybrid wire shape (Nemotron closers after a
         # JSON prefix injection) that neither shape regex matches; the
         # parser never sets ``tool_calls_detected``.
@@ -570,9 +600,10 @@ class TestStreamSynthForcedToolChoice:
                 tcs = (ch.get("delta") or {}).get("tool_calls")
                 if tcs:
                     emitted_tcs.extend(tcs)
-        assert emitted_tcs, "synth must emit a delta.tool_calls"
-        assert emitted_tcs[0]["function"]["name"] == "get_weather"
-        assert finish == "tool_calls"
+        assert not emitted_tcs and finish is None
+        assert any(
+            c.get("error", {}).get("code") == "tool_choice_violation" for c in chunks
+        )
 
     def test_synth_does_not_fire_when_parser_saw_a_call(self):
         """Codex r1 MAJOR #1: a parser that detected a tool call

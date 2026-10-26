@@ -3615,7 +3615,7 @@ def test_line1_route_threads_predicate_into_offload_build():
         "route must reasoning-first split before tool-parse for line① (codex r4 #4)"
     )
     gate_guard_pos = src.find("if _line1_gate_engaged and engine_tool_calls is None:")
-    split_pos = src.find("_line1_split_reasoning_for_tool_parse(cfg.reasoning_parser")
+    split_pos = src.find("_line1_split_reasoning_for_tool_parse(", gate_guard_pos)
     assert gate_guard_pos != -1 and split_pos != -1 and gate_guard_pos < split_pos, (
         "reorder must be gated on line①-engaged AND no engine structured calls "
         "(preserve the harmony/gemma4 structured-tool bypass)"

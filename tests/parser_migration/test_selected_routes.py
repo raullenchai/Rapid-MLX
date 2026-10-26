@@ -129,7 +129,7 @@ def test_empty_admission_does_not_steal_native_calls(monkeypatch, surface):
 
 @pytest.mark.parametrize("surface", SURFACES)
 def test_committed_truncation_is_failure_never_success(surface):
-    raw = CALL.removesuffix("</tool_call>")
+    raw = '<tool_call>{"name":"run_shell_command","arguments":{"command":"unfinished'
     buffered = route("qwen3", "hermes", raw, surface, False)
     assert buffered["error"] == 502
     result = route("qwen3", "hermes", raw, surface, True, capture=True)
@@ -173,3 +173,59 @@ def test_literal_and_private_spans_survive_serialization(surface, thinking, tool
         assert result["content"] == literal
         assert result["reasoning"] == ("Private." if thinking else "")
         assert result["calls"] == []
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_complete_but_invalid_committed_call_fails_during_feed(surface):
+    raw = '<tool_call>{"name":"run_shell_command","arguments":{"command":"pwd"},"name":"other"}</tool_call>'
+    result = route("qwen3", "hermes", raw, surface, True, capture=True)
+    assert result.get("error") or any(
+        packet.get("type") in {"error", "response.failed"} or packet.get("error")
+        for packet in result.get("packets", [])
+    )
+
+
+def test_chat_logprobs_serializer_preserves_owned_literal_text():
+    raw = "Literal <|im_end|> marker."
+    result = route(
+        "qwen3",
+        "hermes",
+        raw,
+        "chat",
+        True,
+        thinking=False,
+        request_fields={"logprobs": True},
+    )
+    assert result["content"] == raw
+
+
+def test_chat_exhausted_engine_drains_literal_tail_without_finish_chunk(monkeypatch):
+    original = Engine.stream_chat
+
+    async def unfinished(self, **kwargs):
+        async for item in original(self, **kwargs):
+            item.finished = False
+            yield item
+
+    monkeypatch.setattr(Engine, "stream_chat", unfinished)
+    result = route("qwen3", "hermes", "Literal <", "chat", True, thinking=False)
+    assert result["content"] == "Literal <"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("stream", [False, True])
+def test_escaped_backtick_then_code_example_never_executes(surface, stream):
+    raw = "\\` then `" + CALL + "`"
+    result = route(
+        "qwen3", "hermes", raw, surface, stream, chunks=list(raw), thinking=False
+    )
+    assert result["content"] == raw and not result["calls"] and not result["reasoning"]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("stream", [False, True])
+def test_xml_object_marker_is_an_argument_not_a_reasoning_boundary(surface, stream):
+    raw = '<function=run_shell_command>{"command":"</think>secret"}</function>'
+    result = route("qwen3", "hermes", raw, surface, stream, chunks=list(raw))
+    assert not result["content"] and not result["reasoning"]
+    assert result["calls"] == [["run_shell_command", {"command": "</think>secret"}]]

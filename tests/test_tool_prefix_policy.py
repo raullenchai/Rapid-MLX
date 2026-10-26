@@ -26,7 +26,14 @@ LITERALS = [
 @pytest.mark.parametrize("stream", [False, True])
 def test_literal_or_unfinished_envelope(surface, stream, raw):
     visible, calls, errors, response = invoke(surface, stream, raw, parser=None)
-    assert visible == raw and not calls and not errors, response.text
+    if raw in (LITERALS[5], LITERALS[6]):
+        # A declared name plus object argument opener commits the tool lane.
+        # Failure cannot replay already-published argument bytes as text.
+        assert not visible and errors, response.text
+        if not stream:
+            assert not calls
+    else:
+        assert visible == raw and not calls and not errors, response.text
 
 
 @pytest.mark.parametrize("raw", LITERALS)
@@ -177,11 +184,13 @@ def test_unclosed_candidate_after_completed_call(surface, stream, complete):
     visible, calls, errors, response = invoke(
         surface, stream, first + tail, parser=None, step=len(first)
     )
-    assert not errors, response.text
-    assert visible == ("" if complete else tail), response.text
-    if surface == "messages" and stream:
-        calls = [c for c in calls if c.get("type") == "tool_use"]
-    assert len(calls) == (2 if complete else 1), response.text
+    assert not visible, response.text
+    if complete:
+        assert not errors and len(calls) == 2, response.text
+    else:
+        assert errors, response.text
+        if not stream:
+            assert not calls
 
 
 @pytest.mark.parametrize(
@@ -285,7 +294,7 @@ def test_forced_choice_never_synthesizes_rejected_shape(surface, stream, argumen
         surface, stream, raw, parser=None, choice="required"
     )
     assert not calls and errors, response.text
-    assert "valid JSON" in json.dumps(errors), response.text
+    assert "required declared tool call" in json.dumps(errors), response.text
 
 
 @pytest.mark.parametrize(
@@ -464,7 +473,7 @@ def test_complete_json_with_visible_suffix_is_released_at_every_split():
 )
 def test_typed_request_eof_choice_guard(choice):
     from rapid_mlx.api.models import ChatCompletionRequest
-    from rapid_mlx.service.helpers import _InvalidToolArgumentsError
+    from rapid_mlx.parsing.session import OutputParseError
     from tests.test_postprocessor import StreamingPostProcessor, _make_cfg, _make_output
 
     request = ChatCompletionRequest(
@@ -482,7 +491,7 @@ def test_typed_request_eof_choice_guard(choice):
     if choice == "auto":
         assert "".join(e.content or "" for e in pp.finalize()) == raw
     else:
-        with pytest.raises(_InvalidToolArgumentsError):
+        with pytest.raises(OutputParseError):
             pp.finalize()
 
 
@@ -507,8 +516,15 @@ def test_large_call_after_prose_at_each_opener_split():
         assert not pp._tool_suppression_released
         assert "x" * 100 not in "".join(e.content or "" for e in events)
         calls = [call for event in events for call in event.tool_calls or []]
-        assert len(calls) == 1
-        assert json.loads(calls[0]["function"]["arguments"])["content"] == "x" * 140000
+        assert {call["index"] for call in calls} == {0}
+        assert (
+            "".join(call.get("function", {}).get("name", "") for call in calls)
+            == "write_file"
+        )
+        arguments = "".join(
+            call.get("function", {}).get("arguments", "") for call in calls
+        )
+        assert json.loads(arguments)["content"] == "x" * 140000
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
@@ -516,5 +532,7 @@ def test_large_call_after_prose_at_each_opener_split():
 def test_malformed_native_call_never_becomes_executable(surface, stream):
     raw = "<tool_call><function=write_file>oops</tool_call>"
     _, calls, errors, response = invoke(surface, stream, raw, parser=None, step=1)
-    assert errors and not calls, response.text
-    assert "valid JSON" in json.dumps(errors), response.text
+    assert errors, response.text
+    if not stream:
+        assert not calls
+    assert "incomplete or invalid" in json.dumps(errors), response.text

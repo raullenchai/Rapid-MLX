@@ -53,6 +53,7 @@ def _make_output(text="", finished=False, finish_reason=None):
     """Build a mock GenerationOutput for the text-parser path."""
     out = MagicMock()
     out.new_text = text
+    out.prompt_parse_context = None
     out.finished = finished
     out.channel = None
     out.finish_reason = finish_reason or ("stop" if finished else None)
@@ -568,548 +569,105 @@ class TestRequiredModeFilter:
         assert len(out2) == 1
 
 
-# ── Four-quadrant behaviour pin (reasoning ✕ stream/non-stream ✕ forced/auto) ──
+def _joined_calls(events):
+    """Join protocol deltas by index, without treating fragments as calls."""
+    calls = {}
+    for event in events:
+        for delta in event.tool_calls or []:
+            call = calls.setdefault(delta["index"], {"name": "", "arguments": ""})
+            function = delta.get("function", {})
+            call["name"] += function.get("name", "")
+            call["arguments"] += function.get("arguments", "")
+    return list(calls.values())
 
 
-class TestStreamForcedReasoningEndToEnd:
-    """End-to-end through ``process_chunk``: feed bytes from the F-200
-    repro (scratch ``<tool_call>`` body inside the implicit ``<think>``
-    block followed by the real call after ``</think>``) and assert
-    only one structured tool_call event surfaces."""
-
-    def _drain_stream(self, chunks, processor):
-        """Replay a list of ``(text, finished)`` chunks through the
-        processor and return the assembled event list."""
-        out = []
-        for _i, (text, finished) in enumerate(chunks):
-            evs = processor.process_chunk(
-                _make_output(
-                    text=text,
-                    finished=finished,
-                    finish_reason=("stop" if finished else None),
-                )
-            )
-            out.extend(evs)
-        out.extend(processor.finalize())
-        return out
-
-    def test_qwen3_thinking_stream_forced_drops_scratch_call(self):
-        """qwen3-thinking + hermes + forced ``tool_choice``: scratch
-        in-think ``<tool_call>...1234567890...</tool_call>`` followed
-        by real ``<tool_call>...city:Paris...</tool_call>`` must emit
-        EXACTLY ONE tool_call to ``get_weather`` with ``{"city":"Paris"}``."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name="qwen3")
-        pp = StreamingPostProcessor(cfg, request=_forced_request("get_weather"))
-        pp.reset()
-
-        # Replay the recorded model output from the live repro. Chat
-        # template pre-injected ``<think>``; model emits scratch call,
-        # ``</think>``, real call.
-        full = (
-            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
-            "</think>\n"
-            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
-        )
-        events = pp.process_chunk(_make_output(text=full, finished=True))
-        events.extend(pp.finalize())
-
-        tool_events = [e for e in events if e.type == "tool_call"]
-        # Flatten all emitted tool_calls (parser may split into
-        # multiple events). Every surviving entry MUST have valid-
-        # object arguments matching the forced name.
-        all_calls: list[dict] = []
-        for ev in tool_events:
-            for tc in ev.tool_calls or []:
-                all_calls.append(tc)
-
-        # F-200 contract: EXACTLY ONE surviving call AND that call
-        # matches the forced name AND its ``arguments`` parse as a
-        # JSON object. Codex r1 BLOCKING — the earlier draft asserted
-        # only "every emitted call is valid" which would accept
-        # duplicate valid calls; the spec requires a single tool_call
-        # per forced ``tool_choice``.
-        assert len(all_calls) == 1, (
-            f"expected exactly 1 surviving tool_call, got {len(all_calls)}: {all_calls!r}"
-        )
-        tc = all_calls[0]
-        fn = tc.get("function") or {}
-        assert fn.get("name") == "get_weather"
-        parsed = json.loads(fn["arguments"])
-        assert isinstance(parsed, dict)
-        assert parsed.get("city", "").lower() == "paris"
-
-    def test_qwen3_thinking_stream_auto_keeps_call(self):
-        """Same model, no forced ``tool_choice`` (``auto``): the filter
-        is a no-op so the real call still surfaces."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name="qwen3")
-        pp = StreamingPostProcessor(cfg, request=_auto_request("get_weather"))
-        pp.reset()
-
-        full = (
-            "</think>\n"
-            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
-        )
-        events = pp.process_chunk(_make_output(text=full, finished=True))
-        events.extend(pp.finalize())
-
-        tool_events = [e for e in events if e.type == "tool_call"]
-        all_calls = [tc for ev in tool_events for tc in (ev.tool_calls or [])]
-        assert all_calls, "auto mode lost the call"
-        for tc in all_calls:
-            fn = tc.get("function") or {}
-            assert fn.get("name") == "get_weather"
-
-    def test_finalize_extract_drops_same_name_primitive_args(self):
-        """Codex r1 BLOCKING #1 — when the streaming parser missed
-        the call and ``finalize()`` runs ``extract_tool_calls`` over
-        the accumulated buffer, the parser may return both a scratch
-        call (same forced name, primitive ``arguments``) AND the real
-        call. Filtering by name alone leaks the scratch; the finalize
-        path must apply the same arguments-root-object validation."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_forced_request("get_weather"))
-        pp.reset()
-        # Seed the tool buffer so finalize's extract_tool_calls runs
-        # the hermes parser over a buffer containing both shapes —
-        # bypasses the streaming detection entirely (mimics the path
-        # where the per-chunk parser holds bytes and only the buffer
-        # carries them).
-        pp.tool_accumulated_text = (
-            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
-            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
-        )
-        events = pp.finalize()
-        all_calls = [
-            tc
-            for ev in events
-            if ev.type == "tool_call"
-            for tc in (ev.tool_calls or [])
-        ]
-        assert len(all_calls) == 1, f"finalize leaked a scratch call: {all_calls!r}"
-        fn = all_calls[0].get("function") or {}
-        parsed = json.loads(fn["arguments"])
-        assert isinstance(parsed, dict)
-        assert parsed.get("city") == "Paris"
-
-    def test_finalize_extract_drops_primitive_args_under_required_mode(self):
-        """r10-J round-4 finalize-path coverage (codex r6 LOW #6).
-
-        Required-mode twin of
-        ``test_finalize_extract_drops_same_name_primitive_args`` above.
-        Pre-round-4 the finalize ``extract_tool_calls`` branch only
-        applied the object-root gate when ``_forced_tool_choice_name``
-        was set. For ``tool_choice="required"`` the forced name is
-        None and the gate was disabled, so fallback-recovered calls
-        with primitive args reached the client.
-
-        Pin that after round-4 the required-mode arm of the
-        finalize ``extract_tool_calls`` branch drops the scratch
-        call and keeps only the real one.
-        """
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        required_request = {
-            "tool_choice": "required",
-            "tools": [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_weather",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"city": {"type": "string"}},
-                            "required": ["city"],
-                        },
-                    },
-                }
-            ],
+@pytest.mark.parametrize("reasoning", [None, "qwen3"])
+@pytest.mark.parametrize("choice", ["auto", "required", "named"])
+@pytest.mark.parametrize("size", [1, 10000])
+def test_selected_forced_and_auto_calls_preserve_wire_truth(reasoning, choice, size):
+    request = _auto_request()
+    if choice == "required":
+        request["tool_choice"] = "required"
+    elif choice == "named":
+        request["tool_choice"] = {
+            "type": "function",
+            "function": {"name": "get_weather"},
         }
-        pp = StreamingPostProcessor(cfg, request=required_request)
-        pp.reset()
-        # Buffer carries BOTH the scratch primitive-args call AND the
-        # real object-args call — mirrors the forced-name case.
-        pp.tool_accumulated_text = (
-            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
-            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+    pp = StreamingPostProcessor(
+        _make_cfg(reasoning_parser_name=reasoning), request=request
+    )
+    raw = (
+        "private</think>" if reasoning else ""
+    ) + '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+    events = []
+    chunks = [raw[i : i + size] for i in range(0, len(raw), size)]
+    for i, chunk in enumerate(chunks):
+        events.extend(
+            pp.process_chunk(_make_output(chunk, finished=i == len(chunks) - 1))
         )
-        events = pp.finalize()
-        all_calls = [
-            tc
-            for ev in events
-            if ev.type == "tool_call"
-            for tc in (ev.tool_calls or [])
-        ]
-        assert len(all_calls) == 1, (
-            f"required-mode finalize leaked a scratch call: {all_calls!r}"
-        )
-        fn = all_calls[0].get("function") or {}
-        parsed = json.loads(fn["arguments"])
-        assert isinstance(parsed, dict)
-        assert parsed.get("city") == "Paris"
-
-    def test_non_reasoning_stream_forced_keeps_call(self):
-        """Hermes parser without a reasoning parser (e.g. qwen3-instruct):
-        forced ``tool_choice`` + stream still surfaces the call with
-        valid args. The filter is engaged but has nothing to drop."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_forced_request("get_weather"))
-        pp.reset()
-
-        full = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
-        events = pp.process_chunk(_make_output(text=full, finished=True))
-        events.extend(pp.finalize())
-
-        all_calls = [
-            tc for e in events if e.type == "tool_call" for tc in (e.tool_calls or [])
-        ]
-        assert all_calls, "non-reasoning forced call was dropped"
-        for tc in all_calls:
-            fn = tc.get("function") or {}
-            assert fn.get("name") == "get_weather"
-            parsed = json.loads(fn["arguments"])
-            assert isinstance(parsed, dict)
+    events.extend(pp.finalize())
+    calls = _joined_calls(events)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_weather"
+    assert json.loads(calls[0]["arguments"]) == {"city": "Paris"}
+    assert [e.finish_reason for e in events if e.type == "finish"] == ["tool_calls"]
+    assert pp._tool_calls_emitted_to_wire == 1
+    assert pp.finalize() == []
+    pp.reset()
+    assert pp._tool_calls_emitted_to_wire == 0
 
 
-# ── R11-A invariant: finish_reason="tool_calls" ⇒ ≥1 tool_call delta ─
+def test_selected_scratch_non_object_does_not_replace_valid_forced_call():
+    pp = StreamingPostProcessor(
+        _make_cfg(reasoning_parser_name="qwen3"), request=_forced_request()
+    )
+    raw = '<tool_call>{"name":"get_weather","arguments":123}</tool_call></think><tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+    events = pp.process_chunk(_make_output(raw, finished=True))
+    calls = _joined_calls(events)
+    assert len(calls) == 1
+    assert json.loads(calls[0]["arguments"]) == {"city": "Paris"}
+    assert pp._tool_calls_emitted_to_wire == 1
 
 
-def _required_request(name="format_date"):
-    """Build a request dict carrying ``tool_choice="required"``."""
-    return {
-        "tool_choice": "required",
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"raw": {"type": "integer"}},
-                        "required": ["raw"],
-                    },
-                },
-            }
-        ],
-    }
+@pytest.mark.parametrize(
+    "arguments", ["20230805", '"20230805"', "Paris output", "[1,2,3]"]
+)
+@pytest.mark.parametrize("size", [1, 10000])
+def test_unfulfilled_required_choice_fails_without_success_terminal(arguments, size):
+    from rapid_mlx.parsing.session import OutputParseError
 
-
-def _collect_terminal_state(events):
-    """Aggregate stream events into the invariant-relevant state.
-
-    Returns a dict with:
-      - ``tool_call_delta_count``: count of ``tool_calls`` array entries
-        across every ``tool_call`` StreamEvent (the wire-equivalent of
-        ``delta.tool_calls`` chunks).
-      - ``finish_reasons``: list of every non-None ``finish_reason`` on
-        any event in order (R11-V2 invariant: exactly one non-None
-        finish_reason should appear before stream close).
-    """
-    tool_call_delta_count = 0
-    finish_reasons: list = []
-    for ev in events:
-        if ev.type == "tool_call" and ev.tool_calls:
-            tool_call_delta_count += len(ev.tool_calls)
-        if getattr(ev, "finish_reason", None):
-            finish_reasons.append(ev.finish_reason)
-    return {
-        "tool_call_delta_count": tool_call_delta_count,
-        "finish_reasons": finish_reasons,
-    }
-
-
-class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
-    """R11-V1: when ``_apply_forced_tool_choice_filter`` drops every
-    anchor (scratch with primitive-args root), the terminal event MUST
-    NOT carry ``finish_reason="tool_calls"``. The pre-fix path lied to
-    the client: it stamped ``tool_calls_detected=True`` AND emitted
-    ``finish_reason="tool_calls"`` even though zero ``delta.tool_calls``
-    chunks reached the wire. Clients depending on the promised tool
-    call hung their agent loop.
-
-    Repro shape mirrors the live Qwen3-0.6B + tool_choice=required
-    failure: model emits a SINGLE complete ``<tool_call>`` with
-    ``arguments=<bare-int>``.
-    """
-
-    def test_required_mode_bare_int_args_in_one_chunk_keeps_stop(self):
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-
-        # Single-chunk emission of a complete scratch tool_call —
-        # arguments parse to bare int 20230805 (non-object), filter
-        # drops it. ``output.finished=True`` on the same chunk so the
-        # terminal finish event fires here.
-        scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
-        )
-        events = pp.process_chunk(
-            _make_output(text=scratch, finished=True, finish_reason="stop")
-        )
-        events.extend(pp.finalize())
-
-        state = _collect_terminal_state(events)
-        # Invariant: zero tool_call deltas reached the wire AND no
-        # finish_reason==tool_calls was promised.
-        assert state["tool_call_delta_count"] == 0, (
-            f"filter should have dropped the scratch call but tool_call deltas leaked: {state!r}"
-        )
-        assert "tool_calls" not in state["finish_reasons"], (
-            f"R11-V1 regression: finish_reason=tool_calls emitted with zero deltas: {state!r}"
-        )
-        # Downgrade target: engine's natural finish_reason ("stop").
-        assert "stop" in state["finish_reasons"], (
-            f"terminal finish_reason missing or wrong: {state!r}"
-        )
-        # Wire-truth counter MUST be zero.
-        assert pp._tool_calls_emitted_to_wire == 0
-
-    def test_required_mode_filter_drop_then_followup_chunk_stays_stop(self):
-        """Mid-stream filter drop then a later finished chunk still
-        downgrades the finish to ``stop``.
-
-        Pre-fix the early-exit branch ``if self.tool_calls_detected:``
-        on the next chunk stamped ``finish_reason="tool_calls"``
-        unconditionally — even though the prior chunk's tool_calls had
-        been filter-dropped. This pins that path through
-        ``_compute_finish_reason``.
-        """
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-
-        scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
-        )
-        # Chunk 1: parser surfaces the call → filter drops → no event
-        events_a = pp.process_chunk(_make_output(text=scratch, finished=False))
-        # Chunk 2 (zero-text finished chunk): hits the
-        # ``if self.tool_calls_detected: ... finished:`` branch.
-        events_b = pp.process_chunk(
-            _make_output(text="", finished=True, finish_reason="stop")
-        )
-        events = list(events_a) + list(events_b) + list(pp.finalize())
-
-        state = _collect_terminal_state(events)
-        assert state["tool_call_delta_count"] == 0
-        assert "tool_calls" not in state["finish_reasons"], (
-            f"R11-V1 regression on next-chunk early-exit: {state!r}"
-        )
-        assert "stop" in state["finish_reasons"]
-
-    def test_required_mode_real_call_keeps_tool_calls(self):
-        """Symmetric pin: when the parser emits a VALID call (args is
-        a JSON object), the filter passes it through, the wire emits a
-        tool_call delta, AND ``finish_reason="tool_calls"`` is honored.
-        Ensures the fix doesn't over-rotate and downgrade legitimate
-        calls.
-        """
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-
-        full = (
-            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
-            "</tool_call>"
-        )
-        events = pp.process_chunk(
-            _make_output(text=full, finished=True, finish_reason="stop")
-        )
-        events.extend(pp.finalize())
-
-        state = _collect_terminal_state(events)
-        assert state["tool_call_delta_count"] >= 1, (
-            f"valid required-mode call must surface a tool_call delta: {state!r}"
-        )
-        assert "tool_calls" in state["finish_reasons"], (
-            f"valid required-mode call must keep finish=tool_calls: {state!r}"
-        )
-        assert pp._tool_calls_emitted_to_wire >= 1
-
-    def test_finalize_recovery_increments_wire_counter(self):
-        """Cross-format fallback in finalize() also satisfies the
-        invariant: when streaming missed the call and ``finalize()``
-        recovered it via ``extract_tool_calls`` / the cross-format
-        scan, ``_tool_calls_emitted_to_wire`` MUST be incremented so
-        downstream consumers see the consistent state.
-        """
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-        # Seed the buffer so finalize() runs the fallback parser.
-        pp.tool_accumulated_text = (
-            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
-            "</tool_call>"
-        )
-        events = pp.finalize()
-        emitted_calls = [
-            tc
-            for ev in events
-            if ev.type == "tool_call"
-            for tc in (ev.tool_calls or [])
-        ]
-        assert emitted_calls, "finalize recovery did not surface the call"
-        assert pp._tool_calls_emitted_to_wire == len(emitted_calls)
-
-    def test_reset_clears_wire_counter(self):
-        """``reset()`` MUST zero ``_tool_calls_emitted_to_wire`` so a
-        re-used processor doesn't carry the prior turn's emitted count
-        forward and lie to ``_compute_finish_reason`` on the next
-        request (BatchedEngine singleton-parser path)."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp._tool_calls_emitted_to_wire = 7
-        pp.reset()
-        assert pp._tool_calls_emitted_to_wire == 0
-
-
-class TestR11AInvariantHoldsAcrossSuite:
-    """Cross-suite invariant: ``finish_reason=="tool_calls" ⇒
-    tool_call_delta_count >= 1`` MUST hold across every postprocessor-
-    only stream test in this module. The check is structural — it
-    drives the postprocessor with the matrix of repro shapes seen
-    in dogfood-0812 (R11-V1 evidence) and confirms the invariant.
-    """
-
-    SCRATCH_CASES = [
-        # (label, arguments_value_in_scratch_block)
-        ("bare_int", "20230805"),
-        ("bare_quoted_string", '"20230805"'),
-        ("bare_unquoted_prose", "Paris output"),
-        ("bare_array_root", "[1,2,3]"),
-    ]
-
-    def test_invariant_holds_for_every_scratch_shape(self):
-        for label, args in self.SCRATCH_CASES:
-            cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-            pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-            pp.reset()
-            scratch = (
-                '<tool_call>\n{"name": "format_date", "arguments": ' + args + "}\n"
-                "</tool_call>"
-            )
-            if label == "bare_unquoted_prose":
-                from rapid_mlx.service.helpers import _InvalidToolArgumentsError
-
-                with pytest.raises(_InvalidToolArgumentsError, match="valid JSON"):
-                    pp.process_chunk(
-                        _make_output(text=scratch, finished=True, finish_reason="stop")
-                    )
-                    pp.finalize()
-                assert pp._tool_calls_emitted_to_wire == 0
-                continue
-            events = pp.process_chunk(
-                _make_output(text=scratch, finished=True, finish_reason="stop")
-            )
-            events.extend(pp.finalize())
-            state = _collect_terminal_state(events)
-            # Core invariant — same assertion the route-level prompt
-            # spells out: ``finish_reason=="tool_calls" ⇒ tool_call_delta_count >= 1``.
-            if "tool_calls" in state["finish_reasons"]:
-                assert state["tool_call_delta_count"] >= 1, (
-                    f"R11-A invariant violated on {label!r}: {state!r}"
-                )
-            # And the wire-truth counter must always match the emitted
-            # count (no orphan increments / decrements).
-            assert pp._tool_calls_emitted_to_wire == state["tool_call_delta_count"], (
-                f"wire-counter drift on {label!r}: counter="
-                f"{pp._tool_calls_emitted_to_wire} emitted={state['tool_call_delta_count']}"
-            )
-
-
-class TestR11V2ExactlyOneFinishReason:
-    """R11-V2 invariant: every closed stream MUST emit exactly one
-    ``finish_reason`` chunk before ``[DONE]``. Pre-fix some Qwen3 +
-    tool_choice=required streams in dogfood-0812 emitted zero
-    finish_reason chunks — clients hung waiting for the spec-mandated
-    terminal marker. Pinned by exercising the postprocessor-only
-    invariant: any path that ends a stream (process_chunk on the
-    finished chunk + finalize()) MUST surface at least one
-    finish_reason somewhere in the combined event list.
-    """
-
-    def test_filter_drop_finished_chunk_still_emits_finish(self):
-        """Filter drops the only scratch call AND the chunk is
-        ``finished=True`` — the early branch must emit a ``finish``
-        event (with downgraded reason). Pre-fix this path always
-        emitted a finish event so this just confirms we didn't break
-        it; the regression risk lives in the assertion that NO chunk
-        is silently lost."""
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-        scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
-        )
-        events = pp.process_chunk(
-            _make_output(text=scratch, finished=True, finish_reason="stop")
-        )
-        finish_events = [e for e in events if e.type == "finish"]
-        assert finish_events, (
-            "filter-drop on finished chunk must still emit a finish event"
-        )
-        # And the lone finish carries a non-None reason.
-        assert all(e.finish_reason for e in finish_events)
-
-    def test_real_call_finished_chunk_emits_exactly_one_finish_reason(self):
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-        full = (
-            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
-            "</tool_call>"
-        )
-        events = pp.process_chunk(
-            _make_output(text=full, finished=True, finish_reason="stop")
-        )
-        events.extend(pp.finalize())
-        state = _collect_terminal_state(events)
-        # Exactly one finish_reason across the stream (R11-V2 spec).
-        assert len(state["finish_reasons"]) == 1, (
-            f"expected exactly one finish_reason but got {state['finish_reasons']!r}"
-        )
-        assert state["finish_reasons"][0] == "tool_calls"
-
-
-class TestR11ARegressionFromDogfoodSSE:
-    """Direct regression scrape: drive the postprocessor with the
-    scratch-buffer state observed in ``/tmp/dogfood-0812/sse-required-*.txt``
-    (the live Qwen3 + tool_choice=required repro). The hermes parser
-    surfaces ``arguments`` as a bare-int string; the postprocessor
-    must drop the call AND downgrade the terminal to ``stop``.
-    """
-
-    def test_dogfood_qwen3_required_scratch_buffer(self):
-        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
-        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
-        pp.reset()
-        # The bytes observed in the live SSE captures (canonical
-        # hermes wire shape that the parser drives through the
-        # streaming path).
-        wire_text = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
-        )
-        # Stream it byte-by-byte to exercise the cumulative
-        # streaming-parser path AND its interaction with the filter
-        # on the final ``</tool_call>`` closing delta.
-        events = []
-        for i, ch in enumerate(wire_text):
-            is_last = i == len(wire_text) - 1
+    request = _forced_request()
+    request["tool_choice"] = "required"
+    pp = StreamingPostProcessor(_make_cfg(), request=request)
+    raw = '<tool_call>{"name":"get_weather","arguments":' + arguments + "}</tool_call>"
+    events = []
+    with pytest.raises(OutputParseError):
+        for i in range(0, len(raw), size):
             events.extend(
                 pp.process_chunk(
-                    _make_output(
-                        text=ch,
-                        finished=is_last,
-                        finish_reason="stop" if is_last else None,
-                    )
+                    _make_output(raw[i : i + size], finished=i + size >= len(raw))
                 )
             )
-        events.extend(pp.finalize())
+        pp.finalize()
+    assert not _joined_calls(events)
+    assert not any(e.type == "finish" for e in events)
+    assert pp._tool_calls_emitted_to_wire == 0
 
-        state = _collect_terminal_state(events)
-        assert state["tool_call_delta_count"] == 0, (
-            f"byte-streamed repro leaked a tool_call delta: {state!r}"
-        )
-        assert "tool_calls" not in state["finish_reasons"], (
-            f"R11-V1 byte-stream regression: {state!r}"
-        )
-        assert "stop" in state["finish_reasons"]
+
+@pytest.mark.parametrize("required", [False, True])
+def test_selected_finalization_never_rescans_legacy_buffer(required):
+    from rapid_mlx.parsing.session import OutputParseError
+
+    request = _auto_request()
+    if required:
+        request["tool_choice"] = "required"
+    pp = StreamingPostProcessor(_make_cfg(), request=request)
+    pp.tool_accumulated_text = (
+        '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>'
+    )
+    if required:
+        with pytest.raises(OutputParseError):
+            pp.finalize()
+    else:
+        assert pp.finalize() == []
+    assert pp._tool_calls_emitted_to_wire == 0

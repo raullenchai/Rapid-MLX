@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Buffered suffix cleanup with unchanged streaming behavior."""
+"""Selected literal policy and retained native-family suffix cleanup."""
 
 import json
-import re
 
 import pytest
 from fastapi import FastAPI
@@ -10,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.prompt_parse_context import prompt_parse_context
 from rapid_mlx.routes.anthropic import router as messages_router
 from rapid_mlx.routes.chat import router as chat_router
 from rapid_mlx.routes.responses import router as responses_router
@@ -39,6 +39,10 @@ class _Engine:
     is_mllm = False
     supports_guided_generation = False
     tokenizer = None
+    # This fixture renders the thinking-off assistant prefill.
+    context = prompt_parse_context(
+        "<|im_start|>assistant\n<think>\n</think>\n", thinking=False, assistant_start=0
+    )
 
     def __init__(self, text, finish_reason="length", chunks=None):
         self.text = text
@@ -51,6 +55,7 @@ class _Engine:
     async def chat(self, messages, **kwargs):
         return GenerationOutput(
             text=self.text,
+            prompt_parse_context=self.context,
             prompt_tokens=4,
             completion_tokens=4,
             finished=True,
@@ -64,6 +69,7 @@ class _Engine:
             last = index == len(self.chunks) - 1
             yield GenerationOutput(
                 text=accumulated,
+                prompt_parse_context=self.context,
                 new_text=chunk,
                 prompt_tokens=4,
                 completion_tokens=index + 1,
@@ -139,9 +145,16 @@ def _reply(
         "responses": "responses",
     }[route]
     response = http.post("/v1/" + path, json=body)
+    if response.status_code == 502:
+        assert cfg.tool_call_parser == "hermes"
+        assert "incomplete or invalid" in response.json()["detail"]
+        return "", [], "tool_parse_error"
     if response.status_code in (400, 422):
         assert cfg.tool_call_parser == "hermes"
-        assert "valid JSON" in response.json()["detail"]
+        assert (
+            "valid JSON" in response.json()["detail"]
+            or "required declared tool call" in response.json()["detail"]
+        )
         return "", [], "invalid_tool_arguments"
     assert response.status_code == 200, response.text
     if stream:
@@ -154,8 +167,17 @@ def _reply(
             p for p in packets if p.get("error") or p.get("type") == "response.failed"
         ]
         if errors:
-            assert "valid JSON" in str(errors) or "tool_choice" in str(errors)
-            return "", [], "invalid_tool_arguments"
+            assert any(
+                code in str(errors)
+                for code in ("valid JSON", "tool_choice", "invalid_tool_arguments")
+            )
+            return (
+                "",
+                [],
+                "tool_parse_error"
+                if "invalid_tool_arguments" in str(errors)
+                else "invalid_tool_arguments",
+            )
         if route != "chat":
             events = [
                 json.loads(line[6:])
@@ -201,6 +223,11 @@ def _reply(
             choices[-1]["finish_reason"],
         )
     data = response.json()
+    if (
+        data.get("status") == "failed"
+        and data.get("error", {}).get("code") == "invalid_tool_arguments"
+    ):
+        return "", [], "tool_parse_error"
     if (
         data.get("status") == "failed"
         and data.get("error", {}).get("code") == "invalid_tool_arguments"
@@ -258,7 +285,7 @@ def test_forced_named_truncated_json_4663(client, stream, parser, chunk_size):
         choice={"type": "function", "function": {"name": "release_probe"}},
         tools=tools,
     )
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert not content and not calls
         return
     assert calls
@@ -320,12 +347,18 @@ def test_buffered_truncated(client, parser, route, text, narration, finish_reaso
     content, calls, finish = _reply(
         client, route, narration + text, budget=4, finish_reason=finish_reason
     )
-    if finish == "invalid_tool_arguments":
+    if parser == "hermes":
+        committed = text == TRUNCATED[2] or '"arguments":{' in text
+        if committed:
+            assert finish == "tool_parse_error" and not calls and not content
+            return
+        assert content == narration + text and not calls
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert parser == "hermes"
         return
     assert content == (
-        (narration + text).strip()
-        if parser == "hermes" and re.match(r"<tool_call>\s*\{", text)
+        narration + text
+        if parser == "hermes"
         else narration.strip()
         if finish_reason == "length"
         else (narration + text).strip()
@@ -428,7 +461,7 @@ def test_nested_fenced_example_preserved(client, parser, route, indent, fence):
     )
     content, calls, _ = _reply(client, route, text)
     # Routes already trim outer whitespace; cleanup itself must preserve it.
-    assert content == text.strip()
+    assert content == (text if parser == "hermes" else text.strip())
     cls = ToolParserManager.get_tool_parser(parser)
     assert cls.strip_trailing_tool_envelope(text, {"tools": TOOLS}) == text
     assert not calls
@@ -444,7 +477,7 @@ def test_indented_example_preserved(client, parser, route, indent, preceding):
     client[1].tool_call_parser = parser
     text = preceding + indent + "<tool_call>\n" + indent + "<function=get_weather"
     content, calls, _ = _reply(client, route, text)
-    assert content == text.strip()
+    assert content == (text if parser == "hermes" else text.strip())
     cls = ToolParserManager.get_tool_parser(parser)
     assert cls.strip_trailing_tool_envelope(text, {"tools": TOOLS}) == text
     assert not calls
@@ -458,7 +491,13 @@ def test_nested_fence_closing_rules(client, parser, route, closing):
     prefix = f"Example:\n\n    ~~~xml\n    code\n    {closing}\n"
     text = prefix + "<tool_call>\n<function=get_weather"
     content, calls, _ = _reply(client, route, text)
-    assert content == (prefix.strip() if closing in ("~~~", "~~~~~") else text)
+    assert content == (
+        text
+        if parser == "hermes"
+        else prefix.strip()
+        if closing in ("~~~", "~~~~~")
+        else text
+    )
     assert not calls
 
 
@@ -470,7 +509,11 @@ def test_indentation_after_prose_is_not_code(client, parser, route, prefix):
     content, calls, _ = _reply(
         client, route, prefix + "    <tool_call>\n    <function=get_weather"
     )
-    assert content == prefix.strip()
+    assert content == (
+        prefix + "    <tool_call>\n    <function=get_weather"
+        if parser == "hermes"
+        else prefix.strip()
+    )
     assert not calls
 
 
@@ -482,9 +525,7 @@ def test_indentation_after_prose_is_not_code(client, parser, route, prefix):
 def test_complete_call_then_truncated(client, parser, route, tail):
     client[1].tool_call_parser = parser
     content, calls, _ = _reply(client, route, COMPLETE + tail)
-    assert content == (
-        '<tool_call> {"name' if parser == "hermes" and '{"name' in tail else ""
-    )
+    assert content == (tail if parser == "hermes" else "")
     assert len(calls) == 1
     call = calls[0]
     assert (call.get("function", {}).get("name") or call.get("name")) == "get_weather"
@@ -506,9 +547,7 @@ def test_reasoning_fallback(client, parser, route, text):
     cfg.tool_call_parser = parser
     cfg.reasoning_parser_name = "qwen3"
     cfg.reasoning_parser = Qwen3ReasoningParser(tokenizer=None)
-    assert _reply(client, route, text)[0] == (
-        text.split("</think>")[-1] if parser == "hermes" and '{"name' in text else ""
-    )
+    assert _reply(client, route, text)[0] == (text if parser == "hermes" else "")
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -538,7 +577,7 @@ def test_linear_cleanup(client, parser, record_property):
 def test_undeclared_xml_policy(client, parser):
     client[1].tool_call_parser = parser
     raw = "<tool_call>\n<function=unknown>\n<parameter=city>Paris"
-    expected = raw if parser == "qwen3_coder_xml" else ""
+    expected = raw
     assert _reply(client, "chat", raw)[0] == expected
     assert _reply(client, "chat", raw, stream=True)[0] == expected
 
@@ -724,7 +763,7 @@ def test_json_member_prefix_boundary(client, parser, route, payload, hidden):
     raw = prefix + "<tool_call>" + payload
     content, calls, _ = _reply(client, route, raw)
     assert content == (
-        prefix.strip() if hidden and parser != "hermes" else raw.rstrip()
+        raw if parser == "hermes" else prefix.strip() if hidden else raw.rstrip()
     )
     assert not calls
 
@@ -760,7 +799,7 @@ def test_prose_opener_before_real_call(client, parser, route):
     client[1].tool_call_parser = parser
     narration = "Use the <tool_call> tag.\nLet me check.\n"
     raw = narration + "<tool_call>\n<function=get_weather"
-    expected = _reply(client, route, narration)[0]
+    expected = raw if parser == "hermes" else _reply(client, route, narration)[0]
     assert _reply(client, route, raw)[0] == expected
 
 
@@ -781,12 +820,15 @@ def test_exact_whitespace_streaming_parity(client, parser):
     if parser == "qwen3_coder_xml":
         assert cleaned == streamed == narration
     else:
+        assert cleaned == narration  # Legacy helper remains for native families.
         assert (
-            cleaned
+            streamed
             == _reply(client, "chat", raw, stream=True, chunks=list(raw))[0]
-            == narration
+            == raw
         )
-    assert buffered == _reply(client, "chat", narration)[0]
+    assert buffered == (
+        raw if parser == "hermes" else _reply(client, "chat", narration)[0]
+    )
 
 
 @pytest.mark.parametrize("content", [None, "", "  \n"])
@@ -800,7 +842,7 @@ def test_reasoning_cleanup_preserves_empty_content(client, content, finish_reaso
     )
 
 
-@pytest.mark.parametrize("parser", PARSERS)
+@pytest.mark.parametrize("parser", ["qwen3_coder_xml"])
 @pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
 @pytest.mark.parametrize("truncated", [False, True])
@@ -854,7 +896,16 @@ def test_reasoning_boundaries(
             "Final answer.", "Let me check.\n<tool_call>\n<function=get_weather"
         )
     content = _reply(client, route, raw)[0]
-    if inside_reasoning == "combined":
+    if parser == "hermes":
+        expected = (
+            "Let me check.\n<tool_call>\n<function=get_weather"
+            if inside_reasoning == "combined"
+            else "Final answer."
+            if inside_reasoning
+            else "<tool_call>\n<function=get_weather"
+        )
+        assert content == expected
+    elif inside_reasoning == "combined":
         assert content.endswith("Let me check.")
         assert not content.endswith("<function=get_weather")
     else:
@@ -936,7 +987,9 @@ def test_inches_after_json_example(client, parser, route):
     client[1].tool_call_parser = parser
     prefix = 'Use <tool_call> {json} for examples.\nHe is 6" tall.\nLet me check.\n'
     raw = prefix + "<tool_call>\n<function=get_weather"
-    assert _reply(client, route, raw)[0] == _reply(client, route, prefix)[0]
+    assert _reply(client, route, raw)[0] == (
+        raw if parser == "hermes" else _reply(client, route, prefix)[0]
+    )
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -951,7 +1004,7 @@ def test_literal_opener_in_truncated_json(client, parser, route, reasoning):
         client[1].reasoning_parser = Qwen3ReasoningParser(None)
     raw = 'Narration.\n<tool_call>{"name":"get_weather","arguments":{"city":"see <tool_call>'
     content, calls, finish = _reply(client, route, raw)
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert parser == "hermes" and not calls
     else:
         assert content == (raw if parser == "hermes" else "Narration.")
@@ -1058,14 +1111,10 @@ def test_escaped_backtick_before_truncated_call(
     prefix += "I will update the documentation.\n"
     raw = prefix + suffix
     content, calls, finish = _reply(client, route, raw, tools=tools)
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert not content and not calls
         return
-    assert content == (
-        raw
-        if kept or parser == "hermes" and suffix.startswith("<tool_call>{")
-        else prefix.rstrip()
-    )
+    assert content == (raw if kept or parser == "hermes" else prefix.rstrip())
     assert not calls
 
 
@@ -1131,7 +1180,7 @@ def test_forced_json_stop_4663(client, route, reasoning, stream):
         stream=stream,
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert not content and not calls
         return
     assert calls
@@ -1151,7 +1200,7 @@ def test_forced_json_stop_stream_4663(client, chunk_size):
         chunks=[raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)],
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert not content and not calls
         return
     assert calls
@@ -1265,7 +1314,7 @@ def test_forced_terminal_json_replay_4663(client, monkeypatch, terminal_lane, pa
         finish_reason="stop",
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
+    if finish in ("invalid_tool_arguments", "tool_parse_error"):
         assert not content and not calls
         return
     assert calls

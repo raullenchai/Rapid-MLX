@@ -4605,6 +4605,8 @@ async def _disconnect_guard(
                         yield "data: [DONE]\n\n"
                     break
 
+                from ..parsing.session import OutputParseError
+
                 if (
                     isinstance(exc, InferenceAbortedError)
                     and exc.error_kind == "lifecycle"
@@ -4632,6 +4634,10 @@ async def _disconnect_guard(
                     _sse_type = _payload["type"]
                     _sse_message = _payload["message"]
                     _sse_code = _payload["code"]
+                elif isinstance(exc, OutputParseError):
+                    _sse_type = "server_error"
+                    _sse_code = exc.rapid_mlx_error_code
+                    _sse_message = str(exc.detail)
                 elif isinstance(exc, ToolProbeStorageError):
                     _sse_type = "internal_error"
                     _sse_code = exc.rapid_mlx_error_code

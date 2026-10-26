@@ -2308,7 +2308,7 @@ async def _non_stream(
     if selected_result is not None:
         cleaned_text, tool_calls = (
             selected_result.content,
-            protocol_calls(selected_result),
+            protocol_calls(selected_result, validate_outcome=False),
         )
     else:
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
@@ -2452,14 +2452,14 @@ async def _non_stream(
     # carried the issue#569 silent-drop pre-history), so the helper sees
     # a broader predicate set here than on chat/anthropic — that scope
     # is fine because the helper itself owns all the gates.
-    if selected_result is None:
-        final_content = _apply_reasoning_cutoff_notice(
-            final_content,
-            reasoning_text,
-            tool_calls,
-            finish_reason,
-            include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
-        )
+    final_content = _apply_reasoning_cutoff_notice(
+        final_content,
+        reasoning_text,
+        tool_calls,
+        finish_reason,
+        include_reasoning_tail=selected_result is None
+        and not _uses_deepseek_v4_reasoning(cfg),
+    )
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
     if (
@@ -2490,8 +2490,7 @@ async def _non_stream(
             )
 
     if (
-        selected_result is None
-        and output.finish_reason not in ("length", "cancelled", "content_filter")
+        output.finish_reason not in ("length", "cancelled", "content_filter")
         and (responses_request.tools or reasoning_text)
         and not tool_calls
         and not (final_content or "").strip()
@@ -4498,7 +4497,9 @@ async def _stream_responses(
         # text-parser path returned zero tool_calls and Codex's agent
         # loop silently terminated with no items emitted.
         if selected_active:
-            parsed_tool_calls = protocol_calls(selected_session.result)
+            parsed_tool_calls = protocol_calls(
+                selected_session.result, validate_outcome=False
+            )
         else:
             _, parsed_tool_calls = _parse_tool_calls_with_parser(
                 accumulated_raw,
@@ -5075,18 +5076,14 @@ async def _stream_responses(
         # rescue on a different cap signal) routes through the same
         # invariant rather than getting silently skipped because the
         # outer text gate was forgotten.
-        if (
-            not selected_active
-            and mid_think_cutoff
-            and not message_open
-            and not tool_calls
-        ):
+        if mid_think_cutoff and not message_open and not tool_calls:
             rescue_text = _apply_reasoning_cutoff_notice(
                 final_content=None,
                 reasoning_text=accumulated_reasoning_text,
                 tool_calls=None,
                 finish_reason=last_finish_reason,
-                include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+                include_reasoning_tail=not selected_active
+                and not _uses_deepseek_v4_reasoning(cfg),
             )
             if rescue_text:
                 rescue_output_index = len(completed_output)

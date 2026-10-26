@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.prompt_parse_context import PromptParseContext
 from rapid_mlx.reasoning import get_parser, list_parsers
 from rapid_mlx.routes import anthropic, chat, responses
 from tests.test_rejected_tool_diagnostics import Engine as BaseEngine
@@ -25,6 +26,7 @@ class Engine(BaseEngine):
     def __init__(self, raw, step, finish, matched_stop):
         super().__init__(raw)
         self.step, self.finish, self.matched_stop = step, finish, matched_stop
+        self.context = None
         self.tokenizer = SimpleNamespace(
             chat_template="{% if add_generation_prompt %}<think>{% endif %}",
             get_vocab=lambda: {},
@@ -40,6 +42,7 @@ class Engine(BaseEngine):
             finished=True,
             finish_reason=self.finish,
             matched_stop=self.matched_stop,
+            prompt_parse_context=self.context,
         )
 
     async def stream_chat(self, **kwargs):
@@ -51,6 +54,7 @@ class Engine(BaseEngine):
                 prompt_tokens=4,
                 completion_tokens=i + 1,
                 finished=False,
+                prompt_parse_context=self.context,
             )
         yield GenerationOutput(
             text=self.raw,
@@ -60,6 +64,7 @@ class Engine(BaseEngine):
             finished=True,
             finish_reason=self.finish,
             matched_stop=self.matched_stop,
+            prompt_parse_context=self.context,
         )
 
 
@@ -91,6 +96,12 @@ def invoke(
     cfg.engine.engine_routed = engine_routed
     if template is not None:
         cfg.engine.tokenizer.chat_template = template
+        # This fake renderer owns the current assistant prefix and its channel.
+        # A template source string alone is not generation metadata.
+        if template == "{% if add_generation_prompt %}assistant:{% endif %}":
+            cfg.engine.context = PromptParseContext(
+                "assistant:", None, "content", thinking, "unknown"
+            )
     app = FastAPI()
     for router in (chat.router, responses.router, anthropic.router):
         app.include_router(router)
@@ -184,6 +195,21 @@ def invoke(
                         visible.append(block["text"])
                     if block["type"] == "tool_use":
                         calls.append(block)
+        # Tool argument deltas are fragments of one indexed call, not calls.
+        from tests.parser_migration.harness import norm
+
+        normalized = norm(packets, surface, stream) if packets else {"calls": []}
+        calls = []
+        for name, arguments in normalized["calls"]:
+            encoded = (
+                json.dumps(arguments) if not isinstance(arguments, str) else arguments
+            )
+            if surface == "chat":
+                calls.append({"function": {"name": name, "arguments": encoded}})
+            elif surface == "responses":
+                calls.append({"name": name, "arguments": encoded})
+            else:
+                calls.append({"name": name, "input": arguments})
         return "".join(visible), calls, errors, response
     finally:
         reset_config()
@@ -244,7 +270,12 @@ def test_final_answer_preserved(surface, stream, raw):
 def test_invalid_arguments(surface, stream, body):
     raw = "<tool_call>" + body + "</tool_call>"
     visible, calls, errors, response = invoke(surface, stream, raw, parser=None)
-    assert visible == raw and not calls and not errors, response.text
+    if '"arguments":{' in body:
+        assert errors and not visible, response.text
+        if not stream:
+            assert not calls
+    else:
+        assert visible == raw and not calls and not errors, response.text
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
@@ -261,7 +292,13 @@ def test_large_valid_call(surface, stream, size):
     )
     assert not visible, visible[:100]
     assert calls and not errors, response.text[:1000]
-    assert "x" * size in response.text
+    assert len(calls) == 1
+    arguments = (
+        calls[0].get("function", calls[0]).get("arguments", calls[0].get("input"))
+    )
+    if isinstance(arguments, str):
+        arguments = json.loads(arguments)
+    assert arguments == {"content": "x" * size}
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
@@ -367,8 +404,6 @@ def test_large_native_arguments_exact(surface, stream, tool, size):
         )
     elif surface == "responses":
         arguments = json.loads(calls[0]["arguments"])
-    elif stream:
-        arguments = json.loads("".join(call.get("partial_json", "") for call in calls))
     else:
         arguments = calls[0]["input"]
     assert arguments == {"content": content}
@@ -464,12 +499,14 @@ def test_nonpriming_template_preserves_genuine_answer(
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_large_unfinished_call_is_content_at_eof(surface, stream):
+def test_large_committed_unfinished_call_fails_at_eof(surface, stream):
     raw = '<tool_call>{"name":"write_file","arguments":{"content":"' + "x" * 1048577
     visible, calls, errors, response = invoke(
         surface, stream, raw, parser=None, step=65536, finish="length"
     )
-    assert visible == raw and not calls and not errors, response.text[:1000]
+    assert not visible and errors, response.text[:1000]
+    if not stream:
+        assert not calls
 
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
@@ -595,15 +632,19 @@ def test_filter_spills_undecided_whitespace_and_closes_temporary_file():
 @pytest.mark.parametrize("stream", [False, True])
 def test_explicit_parser_rejection_is_not_repaired(surface, stream, monkeypatch):
     from rapid_mlx.service.helpers import _InvalidToolArgumentsError
-    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
     def reject(*args, **kwargs):
         raise _InvalidToolArgumentsError(status_code=400, detail="Arguments rejected")
 
-    monkeypatch.setattr(HermesToolParser, "extract_tool_calls", reject)
-    raw = '<tool_call>{"name":"write_file","arguments":{"content":"hello"}}</tool_call>'
-    visible, calls, errors, response = invoke(surface, stream, raw, parser=None)
-    assert not visible and not calls and errors, response.text
+    monkeypatch.setattr(Qwen3CoderToolParser, "extract_tool_calls", reject)
+    raw = "<tool_call><function=write_file><parameter=content>hello</parameter></function></tool_call>"
+    visible, calls, errors, response = invoke(
+        surface, stream, raw, parser=None, tool="qwen3_coder_xml"
+    )
+    assert not visible and errors, response.text
+    if not stream:
+        assert not calls
     if stream:
         assert "invalid_tool_arguments" in json.dumps(errors), response.text
     else:
@@ -615,7 +656,7 @@ def test_explicit_parser_rejection_is_not_repaired(surface, stream, monkeypatch)
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_nonpriming_template_does_not_rescue_scratchpad_labels(surface, stream):
+def test_nonpriming_content_context_preserves_scratchpad_words(surface, stream):
     visible, calls, errors, response = invoke(
         surface,
         stream,
@@ -623,8 +664,8 @@ def test_nonpriming_template_does_not_rescue_scratchpad_labels(surface, stream):
         template="{% if add_generation_prompt %}assistant:{% endif %}",
         thinking=True,
     )
-    assert not visible and not calls and errors, response.text
-    assert "model_no_final_answer" in json.dumps(errors), response.text
+    assert visible == "Here's a thinking process: Private secret.", response.text
+    assert not calls and not errors
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -712,7 +753,7 @@ async def test_probe_storage_closes_on_stream_failures(surface, failure, monkeyp
     cfg.model_name = "contract-test"
     cfg.no_thinking = True
     cfg.reasoning_parser = None
-    cfg.tool_call_parser = "hermes"
+    cfg.tool_call_parser = "qwen3_coder_xml"
     cfg.enable_auto_tool_choice = True
     engine = cfg.engine = InterruptedEngine(raw, 9000, "stop", None)
     request = ChatCompletionRequest(
@@ -811,7 +852,7 @@ def test_probe_storage_failure_has_safe_protocol_error(surface, failure, monkeyp
     monkeypatch.setattr(utils.tempfile, "TemporaryFile", open_probe)
     raw = "<tool_call>" + " " * 9000 + "literal example"
     visible, calls, errors, response = invoke(
-        surface, True, raw, parser=None, step=9000
+        surface, True, raw, parser=None, tool="qwen3_coder_xml", step=9000
     )
     assert response.status_code == 200
     assert not visible and not calls and errors, response.text
