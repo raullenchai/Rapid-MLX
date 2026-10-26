@@ -123,6 +123,53 @@ struct DictationSnapshotTests {
         #expect(!paths.contains { $0.isOnDisk })
     }
 
+    @Test("Nested configs and auxiliary binaries cannot stand in for root STT artifacts", arguments: ["config", "weights"])
+    func unrelatedArtifacts(missing: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-layout-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appendingPathComponent("models--test--audio/snapshots/pinned")
+        let nested = snapshot.appendingPathComponent("auxiliary")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try populate(snapshot)
+        try populate(nested)
+        try Data([1]).write(to: snapshot.appendingPathComponent("tokenizer.bin"))
+        try FileManager.default.removeItem(at: snapshot.appendingPathComponent(missing == "config" ? "config.json" : "model.safetensors"))
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true)
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+    }
+
+    @Test("Whisper accepts only its named root weights", arguments: ["weights.npz", "weights.safetensors"])
+    func whisperLayout(weight: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-whisper-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appendingPathComponent("models--test--audio/snapshots/pinned")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try populate(snapshot)
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true, audioFamily: "whisper")
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent(weight))
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).count == 1)
+    }
+
+    @Test("A shard or index cannot declare missing model weights complete")
+    func incompleteShards() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-shards-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = root.appendingPathComponent("models--test--audio/snapshots/pinned")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try populate(snapshot)
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true)
+        try Data([1]).write(to: snapshot.appendingPathComponent("model-00001-of-00002.safetensors"))
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        try Data([2]).write(to: snapshot.appendingPathComponent("model-00002-of-00002.safetensors"))
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).count == 1)
+        let index = snapshot.appendingPathComponent("model.safetensors.index.json")
+        try Data(#"{"weight_map":{"weight":"absent.safetensors"}}"#.utf8).write(to: index)
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        try Data(#"{"weight_map":{"weight":"model-00001-of-00002.safetensors"}}"#.utf8).write(to: index)
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).count == 1)
+    }
+
     private func populate(_ snapshot: URL) throws {
         try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent("model.safetensors"))

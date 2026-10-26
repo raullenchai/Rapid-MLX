@@ -1395,7 +1395,7 @@ struct DictationTests {
         try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
         try Data("revision".utf8).write(to: repo.appendingPathComponent("refs/main"))
         try Data("{}".utf8).write(to: repo.appendingPathComponent("snapshots/revision/config.json"))
-        try Data([1, 2, 3]).write(to: repo.appendingPathComponent("snapshots/revision/model.safetensors"))
+        try Data([1, 2, 3]).write(to: repo.appendingPathComponent("snapshots/revision/weights.npz"))
         return root
     }
 
