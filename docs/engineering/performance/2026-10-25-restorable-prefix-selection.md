@@ -43,6 +43,9 @@ Small differences in controls are not treated as improvements.
 | M5 Max | plain-8k | 3 | 2.585 → 2.583 | 0.1% | 6,144 → 6,144 |
 | M5 Max | middle-edit-8k | 2 | 7.908 → 5.445 | 31.1% | 1,792 → 3,840 |
 | M5 Max | plain-32k | 2 | 42.324 → 12.436 | 70.6% | 1,792 → 24,576 |
+| M4 Pro | plain-8k | 3 | 61.129 → 1.458 | 97.6% | 1,792 → 7,936 |
+| M4 Pro | middle-edit-8k | 2 | 61.131 → 41.569 | 32.0% | 1,792 → 3,840 |
+| M4 Pro | plain-32k | 2 | 331.536 → 94.271 | 71.6% | 1,792 → 24,576 |
 
 The M5 8K tail-change control retains only the long cache after prefill-memory
 reclamation, so both arms already resume at 6144; there is no material gain.
@@ -53,6 +56,30 @@ emit plain JSON. All measured answers have the expected key/value semantics.
 This does not establish broad quality equivalence.
 
 The final 8-file regression suite passes 244 tests.
+
+### M4 Pro follow-up
+
+The same implementation at `230fa59023c7a0fb7b2c577ed4fd9c204f7fe042`
+was measured on an M4 Pro (12 CPU / 16 GPU cores, 48 GiB, macOS 26.5.1).
+Python 3.12.13, MLX 0.32.3, MLX-LM 0.31.3 and MLX-VLM 0.7.2 match
+both earlier hosts. All 17 model files were verified against the same snapshot.
+The 8K campaign uses the original two-seed cases; the separate 32K campaign
+uses the same short-long-short seed order as M5. Each A/B trial restores an
+identical per-case inventory. Both campaigns completed under the cooperative
+GPU lock with a 27 GiB working-set estimate and the default 4 GiB reserve.
+
+All 14 measured A/B responses and both 32K long-only controls have the expected
+strict JSON values. Within each scenario every output hash is identical,
+including the 32K controls. The long-only control median is 94.126 seconds,
+resuming at the same 24,576 tokens as the candidate. Seed requests, model loading
+and file transfer are excluded from these medians. System swap was already
+354.62 MiB before the campaign, observed at 466.25 MiB during 32K, and 458.25 MiB
+afterward; this is not a swap-free or exclusive CPU/power measurement.
+
+This extends the hardware evidence to M4 Pro; it does not qualify other models,
+MTP-disabled operation, or other inference backends. The optimization selects an existing
+cache restoration path rather than changing the MTP algorithm. Its gains remain
+conditional on a longer restorable entry competing with a shorter strict prefix.
 
 ## Output and compatibility limits
 

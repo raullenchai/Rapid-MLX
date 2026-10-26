@@ -535,6 +535,358 @@
           "reduction_pct": 70.61704717422528
         }
       ]
+    },
+    {
+      "hardware": "M4 Pro",
+      "environment": {
+        "cpu": "Apple M4 Pro",
+        "ram_gib": 48.0,
+        "os": "26.5.1",
+        "python": "3.12.13",
+        "packages": {
+          "mlx": "0.32.3",
+          "mlx-lm": "0.31.3",
+          "mlx-vlm": "0.7.2",
+          "httpx": "0.28.1",
+          "transformers": "5.15.1"
+        },
+        "swap_before": "vm.swapusage: total = 2048.00M  used = 354.62M  free = 1693.38M  (encrypted)",
+        "recorded_utc": "2026-10-26T02:11:43Z",
+        "source_commit": "230fa59023c7a0fb7b2c577ed4fd9c204f7fe042",
+        "gpu_cores": 16,
+        "cpu_cores": 12,
+        "swap_after": "vm.swapusage: total = 2048.00M  used = 458.25M  free = 1589.75M (encrypted)",
+        "swap_observed_during_32k_mib": 466.25
+      },
+      "baseline_source_sha256": "3a97381ac34108259205f8c3b78a71ce337a529a345e48ace2d278c0e3747ccb",
+      "candidate_source_sha256": "52cd6159385c85703828ff2af15237db1283ecb8987ad6f20741d5355c8f5011",
+      "rows": [
+        {
+          "case": "plain-8k",
+          "mode": "baseline",
+          "ttft_s": 61.129722042009234,
+          "elapsed_s": 62.00393300037831,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-8k",
+          "mode": "candidate",
+          "ttft_s": 1.4618833754211664,
+          "elapsed_s": 2.339853875339031,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 7936,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-8k",
+          "mode": "candidate",
+          "ttft_s": 1.4564980417490005,
+          "elapsed_s": 2.329251582734287,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 7936,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-8k",
+          "mode": "baseline",
+          "ttft_s": 61.12263804022223,
+          "elapsed_s": 61.99567737430334,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-8k",
+          "mode": "baseline",
+          "ttft_s": 61.12877491675317,
+          "elapsed_s": 62.003858665935695,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-8k",
+          "mode": "candidate",
+          "ttft_s": 1.457579999230802,
+          "elapsed_s": 2.333069416694343,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 8057,
+          "completion_tokens": 18,
+          "cached_tokens": 7936,
+          "semantic_ok": true
+        },
+        {
+          "case": "middle-edit-8k",
+          "mode": "baseline",
+          "ttft_s": 61.13612337503582,
+          "elapsed_s": 62.00987754110247,
+          "sha256": "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3",
+          "strict_json_ok": true,
+          "prompt_tokens": 8046,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        },
+        {
+          "case": "middle-edit-8k",
+          "mode": "candidate",
+          "ttft_s": 41.58229341637343,
+          "elapsed_s": 42.45813654176891,
+          "sha256": "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3",
+          "strict_json_ok": true,
+          "prompt_tokens": 8046,
+          "completion_tokens": 18,
+          "cached_tokens": 3840,
+          "semantic_ok": true
+        },
+        {
+          "case": "middle-edit-8k",
+          "mode": "candidate",
+          "ttft_s": 41.55510308407247,
+          "elapsed_s": 42.4345184173435,
+          "sha256": "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3",
+          "strict_json_ok": true,
+          "prompt_tokens": 8046,
+          "completion_tokens": 18,
+          "cached_tokens": 3840,
+          "semantic_ok": true
+        },
+        {
+          "case": "middle-edit-8k",
+          "mode": "baseline",
+          "ttft_s": 61.12687341775745,
+          "elapsed_s": 62.00007937569171,
+          "sha256": "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3",
+          "strict_json_ok": true,
+          "prompt_tokens": 8046,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        }
+      ],
+      "summary": [
+        {
+          "case": "plain-8k",
+          "arms": {
+            "baseline": {
+              "n": 3,
+              "ttft_median_s": 61.12877491675317,
+              "cached_tokens": [
+                1792
+              ],
+              "strict_json_pass": 3,
+              "semantic_pass": 3,
+              "output_hashes": [
+                "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f"
+              ]
+            },
+            "candidate": {
+              "n": 3,
+              "ttft_median_s": 1.457579999230802,
+              "cached_tokens": [
+                7936
+              ],
+              "strict_json_pass": 3,
+              "semantic_pass": 3,
+              "output_hashes": [
+                "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f"
+              ]
+            }
+          },
+          "reduction_pct": 97.61555830095438
+        },
+        {
+          "case": "middle-edit-8k",
+          "arms": {
+            "baseline": {
+              "n": 2,
+              "ttft_median_s": 61.13149839639664,
+              "cached_tokens": [
+                1792
+              ],
+              "strict_json_pass": 2,
+              "semantic_pass": 2,
+              "output_hashes": [
+                "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3"
+              ]
+            },
+            "candidate": {
+              "n": 2,
+              "ttft_median_s": 41.56869825022295,
+              "cached_tokens": [
+                3840
+              ],
+              "strict_json_pass": 2,
+              "semantic_pass": 2,
+              "output_hashes": [
+                "dbfb807326403232c647f1f5a86b4b7eaec77253e62a31f8584d9739a4052cf3"
+              ]
+            }
+          },
+          "reduction_pct": 32.00117886743441
+        }
+      ]
+    },
+    {
+      "hardware": "M4 Pro",
+      "environment": {
+        "cpu": "Apple M4 Pro",
+        "ram_gib": 48.0,
+        "os": "26.5.1",
+        "python": "3.12.13",
+        "packages": {
+          "mlx": "0.32.3",
+          "mlx-lm": "0.31.3",
+          "mlx-vlm": "0.7.2",
+          "httpx": "0.28.1",
+          "transformers": "5.15.1"
+        },
+        "swap_before": "vm.swapusage: total = 2048.00M  used = 354.62M  free = 1693.38M  (encrypted)",
+        "recorded_utc": "2026-10-26T02:11:43Z",
+        "source_commit": "230fa59023c7a0fb7b2c577ed4fd9c204f7fe042",
+        "gpu_cores": 16,
+        "cpu_cores": 12,
+        "swap_after": "vm.swapusage: total = 2048.00M  used = 458.25M  free = 1589.75M (encrypted)",
+        "swap_observed_during_32k_mib": 466.25
+      },
+      "baseline_source_sha256": "3a97381ac34108259205f8c3b78a71ce337a529a345e48ace2d278c0e3747ccb",
+      "candidate_source_sha256": "52cd6159385c85703828ff2af15237db1283ecb8987ad6f20741d5355c8f5011",
+      "rows": [
+        {
+          "case": "plain-32k",
+          "mode": "baseline",
+          "ttft_s": 332.21159250009805,
+          "elapsed_s": 333.450794625096,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-32k",
+          "mode": "candidate",
+          "ttft_s": 93.68342383392155,
+          "elapsed_s": 94.94641766697168,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 24576,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-32k",
+          "mode": "long-only",
+          "ttft_s": 94.70215666666627,
+          "elapsed_s": 95.9915343336761,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 24576,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-32k",
+          "mode": "long-only",
+          "ttft_s": 93.54935529269278,
+          "elapsed_s": 94.82183516770601,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 24576,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-32k",
+          "mode": "candidate",
+          "ttft_s": 94.85951154213399,
+          "elapsed_s": 96.110411667265,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 24576,
+          "semantic_ok": true
+        },
+        {
+          "case": "plain-32k",
+          "mode": "baseline",
+          "ttft_s": 330.8595842504874,
+          "elapsed_s": 332.00735520850867,
+          "sha256": "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f",
+          "strict_json_ok": true,
+          "prompt_tokens": 32632,
+          "completion_tokens": 18,
+          "cached_tokens": 1792,
+          "semantic_ok": true
+        }
+      ],
+      "summary": [
+        {
+          "case": "plain-32k",
+          "arms": {
+            "baseline": {
+              "n": 2,
+              "ttft_median_s": 331.5355883752927,
+              "cached_tokens": [
+                1792
+              ],
+              "strict_json_pass": 2,
+              "semantic_pass": 2,
+              "output_hashes": [
+                "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f"
+              ]
+            },
+            "candidate": {
+              "n": 2,
+              "ttft_median_s": 94.27146768802777,
+              "cached_tokens": [
+                24576
+              ],
+              "strict_json_pass": 2,
+              "semantic_pass": 2,
+              "output_hashes": [
+                "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f"
+              ]
+            },
+            "long-only": {
+              "n": 2,
+              "ttft_median_s": 94.12575597967952,
+              "cached_tokens": [
+                24576
+              ],
+              "strict_json_pass": 2,
+              "semantic_pass": 2,
+              "output_hashes": [
+                "8b58ed08c8b118bfbb0372c2e5a20d8275d529764abda6b5cee7f7771420bb3f"
+              ]
+            }
+          },
+          "reduction_pct": 71.56520416103443
+        }
+      ]
     }
   ],
   "schema_control": {
