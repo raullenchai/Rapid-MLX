@@ -6,7 +6,7 @@ unknown; a request's thinking flag is not proof of its rendered initial state.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 
@@ -71,17 +71,36 @@ def prompt_parse_context(
         else:
             channel = _initial_channel(suffix, flint=flint_template)
             if prompt_ids is not None and tokenizer is not None:
-                try:
-                    encoded = tuple(tokenizer.encode(suffix, add_special_tokens=False))
-                except (AttributeError, TypeError, ValueError, RuntimeError):
-                    # Metadata must not make a previously valid prompt fail.
-                    encoded = None
-                if encoded is not None and (
-                    not encoded or tuple(prompt_ids[-len(encoded) :]) == encoded
-                ):
-                    suffix_ids = encoded
+                suffix_ids = _verified_suffix_ids(suffix, prompt_ids, tokenizer)
     else:
         contract = "unknown"
     return PromptParseContext(
         suffix, suffix_ids, channel, thinking, contract, forced_prefix
     )
+
+
+def _verified_suffix_ids(suffix, prompt_ids, tokenizer):
+    try:
+        encoded = tuple(tokenizer.encode(suffix, add_special_tokens=False))
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return None
+    if not encoded or tuple(prompt_ids[-len(encoded) :]) == encoded:
+        return encoded
+    return None
+
+
+class PromptContextCapture:
+    """One-shot refinement from scheduler admission; never encodes history."""
+
+    def __init__(self, context: PromptParseContext | None, tokenizer):
+        self.context = context
+        self.tokenizer = tokenizer
+
+    def __call__(self, prompt_ids):
+        if self.context is not None and prompt_ids is not None:
+            self.context = replace(
+                self.context,
+                assistant_suffix_ids=_verified_suffix_ids(
+                    self.context.assistant_suffix, prompt_ids, self.tokenizer
+                ),
+            )

@@ -28,6 +28,7 @@ from ..tool_parsers.streaming import tool_openers
 if TYPE_CHECKING:
     from ..config.server_config import ServerConfig
     from ..engine.base import GenerationOutput
+    from ..prompt_parse_context import PromptParseContext
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +209,7 @@ class StreamingPostProcessor:
         tool_authorization_names: set[str] | None = None,
     ):
         self.cfg = cfg
-        self.prompt_parse_context = None
+        self.prompt_parse_context: PromptParseContext | None = None
         if tools_requested is None:
             # Backward-compatible inference for direct/internal callers that
             # already pass the request payload but predate this constructor

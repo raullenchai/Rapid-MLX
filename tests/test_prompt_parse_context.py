@@ -169,3 +169,23 @@ def test_suffix_encoding_failure_is_optional():
     )
     assert context.initial_channel == "reasoning"
     assert context.assistant_suffix_ids is None
+
+
+@pytest.mark.parametrize(
+    "context_none,ids", [(True, [1]), (False, None), (False, [999])]
+)
+def test_capture_preserves_optional_or_mismatched_ids(context_none, ids):
+    from rapid_mlx.prompt_parse_context import PromptContextCapture
+
+    context = (
+        None
+        if context_none
+        else prompt_parse_context("<|im_start|>assistant\n<think>", thinking=True)
+    )
+    capture = PromptContextCapture(context, Tokenizer())
+    capture(ids)
+    if context_none:
+        assert capture.context is None
+    else:
+        assert capture.context.initial_channel == "reasoning"
+        assert capture.context.assistant_suffix_ids is None

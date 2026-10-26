@@ -2850,16 +2850,7 @@ class BatchedEngine(BaseEngine):
         context = prompt_parse_context(
             prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix or ""
         )
-        if context.template_contract == "unknown":
-            return context
-        return prompt_parse_context(
-            prompt,
-            thinking=thinking,
-            flint_template=flint,
-            forced_prefix=prefix or "",
-            prompt_ids=self.encode_prompt_text(prompt),
-            tokenizer=getattr(self.tokenizer, "tokenizer", self.tokenizer),
-        )
+        return context
 
     def encode_prompt_text(self, prompt: str) -> list[int] | None:
         """Tokenize a rendered prompt exactly as the text scheduler will.
@@ -3306,6 +3297,11 @@ class BatchedEngine(BaseEngine):
                 dry_logits_processor=dry_logits_processor,
                 lifecycle_admission_token=admission_token,
                 on_request_committed=request_committed,
+                **(
+                    {"on_prompt_prepared": kwargs["_on_prompt_prepared"]}
+                    if "_on_prompt_prepared" in kwargs
+                    else {}
+                ),
             )
         except BaseException:
             if owns_admission:
@@ -3560,6 +3556,11 @@ class BatchedEngine(BaseEngine):
                 dry_logits_processor=dry_logits_processor,
                 lifecycle_admission_token=admission_token,
                 on_request_committed=commit_admission,
+                **(
+                    {"on_prompt_prepared": kwargs["_on_prompt_prepared"]}
+                    if "_on_prompt_prepared" in kwargs
+                    else {}
+                ),
             )
         except BaseException:
             release_uncommitted_admission()
@@ -3836,6 +3837,8 @@ class BatchedEngine(BaseEngine):
         if requires_prompt_integrity:
             kwargs["requires_prompt_integrity"] = True
 
+        from ..prompt_parse_context import PromptContextCapture
+
         context = self._prompt_parse_context(
             prompt,
             enable_thinking,
@@ -3843,6 +3846,12 @@ class BatchedEngine(BaseEngine):
             chat_template_kwargs,
             forced_assistant_prefix,
         )
+        capture = PromptContextCapture(
+            context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
+        )
+        if context is not None and context.template_contract != "unknown":
+            kwargs["_on_prompt_prepared"] = capture
+
         output = await self.generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -3852,7 +3861,7 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
-        output.prompt_parse_context = context
+        output.prompt_parse_context = capture.context
         return output
 
     def _is_hybrid_model(self) -> bool:
@@ -4755,6 +4764,8 @@ class BatchedEngine(BaseEngine):
                     e,
                 )
                 router = None
+        from ..prompt_parse_context import PromptContextCapture
+
         context = self._prompt_parse_context(
             prompt,
             enable_thinking,
@@ -4762,6 +4773,14 @@ class BatchedEngine(BaseEngine):
             chat_template_kwargs,
             forced_assistant_prefix,
         )
+        capture = PromptContextCapture(
+            context, getattr(self.tokenizer, "tokenizer", self.tokenizer)
+        )
+        if context is not None and context.template_contract != "unknown":
+            kwargs["_on_prompt_prepared"] = capture
+
+        if forced_assistant_prefix and kwargs.get("request_admitted_event") is None:
+            kwargs["request_admitted_event"] = asyncio.Event()
         stream = self.stream_generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -4826,19 +4845,19 @@ class BatchedEngine(BaseEngine):
                     completion_tokens=0,
                     finished=False,
                     finish_reason=None,
-                    prompt_parse_context=context,
+                    prompt_parse_context=capture.context,
                 )
                 if first_output is None and engine_output_task is not None:
                     first_output = await engine_output_task
                 if first_output is not None:
-                    first_output.prompt_parse_context = context
+                    first_output.prompt_parse_context = capture.context
                     yield first_output
             elif first_output is not None:
-                first_output.prompt_parse_context = context
+                first_output.prompt_parse_context = capture.context
                 yield first_output
 
             async for output in routed_stream:
-                output.prompt_parse_context = context
+                output.prompt_parse_context = capture.context
                 yield output
         finally:
             # A failed, empty, or cancelled stream must not leave priming

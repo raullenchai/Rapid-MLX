@@ -1157,6 +1157,7 @@ class EngineCore:
         lifecycle_admission_token: str | None = None,
         on_request_committed: Callable[[], None] | None = None,
         dry_logits_processor: Any | None = None,
+        on_prompt_prepared: Callable[[list[int] | None], None] | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -1365,6 +1366,13 @@ class EngineCore:
         else:
             self.scheduler.add_request(request)
 
+        if on_prompt_prepared is not None:
+            try:
+                on_prompt_prepared(request.prompt_token_ids)
+            except Exception:
+                # Admission already succeeded. Optional metadata cannot strand
+                # the request or change generation's success/failure contract.
+                logger.debug("Prompt metadata capture failed", exc_info=True)
         if on_request_committed is not None:
             on_request_committed()
 

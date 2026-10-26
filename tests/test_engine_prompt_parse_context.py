@@ -19,7 +19,11 @@ def engine(monkeypatch):
     engine._tokenizer = Tokenizer()
     monkeypatch.setattr(engine, "_create_output_router", lambda: None)
     monkeypatch.setattr(engine, "_needs_prefix_boundary_snapshot", lambda: False)
-    monkeypatch.setattr(engine, "encode_prompt_text", Tokenizer.encode)
+    monkeypatch.setattr(
+        engine,
+        "encode_prompt_text",
+        lambda *_: pytest.fail("metadata must not re-encode the whole prompt"),
+    )
     monkeypatch.setattr(
         engine,
         "_apply_chat_template",
@@ -35,9 +39,11 @@ def engine(monkeypatch):
 @pytest.mark.parametrize("thinking", [False, True])
 async def test_stream_and_buffered_transport(engine, monkeypatch, prefix, thinking):
     async def generate(**kwargs):
+        kwargs["_on_prompt_prepared"](Tokenizer.encode(kwargs["prompt"]))
         return GenerationOutput(text="answer")
 
     async def stream_generate(**kwargs):
+        kwargs["_on_prompt_prepared"](Tokenizer.encode(kwargs["prompt"]))
         for text in ["first", "second"]:
             yield GenerationOutput(text=text, new_text=text, finished=False)
         yield GenerationOutput(text="firstsecond", finished=True)
@@ -123,9 +129,11 @@ async def test_optional_suffix_encoder_failure_preserves_generation(
     engine._tokenizer = BrokenTokenizer()
 
     async def generate(**kwargs):
+        kwargs["_on_prompt_prepared"](Tokenizer.encode(kwargs["prompt"]))
         return GenerationOutput(text="answer")
 
     async def stream_generate(**kwargs):
+        kwargs["_on_prompt_prepared"](Tokenizer.encode(kwargs["prompt"]))
         yield GenerationOutput(text="answer", new_text="answer")
 
     monkeypatch.setattr(engine, "generate", generate)
