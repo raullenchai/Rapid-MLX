@@ -21,6 +21,7 @@ from unittest.mock import Mock
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
+from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
 from ..tool_call_authorization import call_name, declared_names, log_drop
 from ..tool_parsers.streaming import tool_openers
@@ -222,6 +223,7 @@ class StreamingPostProcessor:
                     request_tools
                 )
         self.tools_requested = tools_requested
+        self._parser_shadow = make_shadow(cfg, tools_requested)
         self.json_mode = json_mode
         # LINE① (#558, codex r4 #4): when the reasoning-gated forced tool grammar is
         # engaged for THIS request, the real call is guaranteed to land AFTER
@@ -2483,6 +2485,7 @@ class StreamingPostProcessor:
         because that would clear another active stream's parser state.
         """
         self.prompt_parse_context = None
+        self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
         self.accumulated_text = ""
         self._content_sanitizer = StreamingContentSanitizer()
         self._tool_marker_buffer = StreamingMarkerBuffer(
@@ -2625,6 +2628,8 @@ class StreamingPostProcessor:
             if self._content_sanitizer_accumulates:
                 self.accumulated_text += tail
             self._insert_content_before_tool_call(events, tail, released_held=True)
+        if self._parser_shadow is not None:
+            self._parser_shadow.observe(output, events)
         return events
 
     @staticmethod
@@ -3855,6 +3860,12 @@ class StreamingPostProcessor:
         return content
 
     def finalize(self) -> list[StreamEvent]:
+        events = self._finalize_legacy()
+        if self._parser_shadow is not None:
+            self._parser_shadow.finish(events)
+        return events
+
+    def _finalize_legacy(self) -> list[StreamEvent]:
         """Finalize stream — flush remaining tool calls, emit corrections.
 
         Call after the engine stream ends.
