@@ -158,6 +158,7 @@ def test_complete_snapshot_requires_every_reviewed_data_file(
     assert _download_gate.mflux_missing_weights(REPO) == [missing_file]
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

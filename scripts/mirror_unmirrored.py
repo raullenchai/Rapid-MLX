@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -32,6 +33,23 @@ def _catalog_hf_paths(main_aliases_path: Path, audio_aliases_path: Path) -> set[
             hf_path = profile.get(key)
             if isinstance(hf_path, str):
                 paths.add(hf_path)
+    audio = json.loads(audio_aliases_path.read_text())
+    for assets in audio.get("_runtime_assets", {}).values():
+        for asset in assets:
+            repo = asset.get("repo_id")
+            if isinstance(repo, str):
+                paths.add(repo)
+    from rapid_mlx._download_gate import IMAGE_MODEL_RUNTIME_ASSETS
+
+    for assets in IMAGE_MODEL_RUNTIME_ASSETS.values():
+        paths.update(repo for repo, _revision, _patterns in assets)
+    artifacts = runpy.run_path(
+        str(
+            Path(__file__).resolve().parents[1]
+            / "rapid_mlx/models/deepseek_v41_native/artifacts.py"
+        )
+    )
+    paths.add(artifacts["MTP_REPO"])
     return paths
 
 

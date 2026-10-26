@@ -239,6 +239,7 @@ def test_pull_fetches_all_three_exact_allowlisted_snapshots(
     ]
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_engine_ensures_only_missing_pinned_runtime_assets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -268,6 +269,7 @@ def test_engine_ensures_only_missing_pinned_runtime_assets(
     ]
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_engine_runtime_asset_download_is_local_noop_and_fail_closed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -34,6 +34,14 @@ WEIGHTS = b"W" * 64
 CONFIG = b'{"a": 1}\n'
 
 
+def test_packaged_manifest_with_no_requested_files_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *_: _info([]))
+    with pytest.raises(_mirror.MirrorOnlyPullError, match="no requested files"):
+        _mirror.download_with_mirror_fallback(
+            REPO, cache_dir=tmp_path, revision=PIN, allow_patterns=["missing/*"]
+        )
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -129,6 +137,25 @@ def _run(tmp_path, monkeypatch, siblings, mirror_files, *, info=None, **kwargs):
 
 def _snap(tmp_path: Path) -> Path:
     return tmp_path / "models--org--pinned-image" / "snapshots" / PIN
+
+
+def test_unpinned_pull_uses_hub_metadata_without_packaged_digests(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        _mirror,
+        "_packaged_digest_info",
+        lambda *_args: pytest.fail("unpinned pull consulted packaged digests"),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.call_with_deadline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("Hub unavailable")
+        ),
+    )
+    assert not _mirror.download_with_mirror_fallback(
+        REPO, cache_dir=tmp_path, revision=None
+    )
 
 
 def test_matching_mirror_bytes_serve_the_pinned_commit(tmp_path, monkeypatch):

@@ -746,6 +746,15 @@ def hub_online_env(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
 
 
+@pytest.fixture
+def hub_pinned_snapshot_stub(monkeypatch):
+    """Keep a mocked Hub snapshot test on its Hub path, without R2 traffic."""
+    monkeypatch.setattr(
+        "rapid_mlx._mirror.download_with_mirror_fallback",
+        lambda *_args, **_kwargs: False,
+    )
+
+
 _SCRIPT_ONLY_MODULES = {"regression_suite.py"}
 """Files inside ``tests/`` that define ``test_*`` symbols but are
 actually standalone scripts invoked by the doctor harness via

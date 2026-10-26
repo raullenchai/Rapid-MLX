@@ -260,6 +260,56 @@
       "hf_path": "mlx-community/gemma-4-26B-A4B-it-8bit",
       "reason": "owner-approved cold mirror pruning; Hugging Face fallback",
       "since": "2026-10-24"
+    },
+    {
+      "hf_path": "pratikgx/Nanbeige4.3-33B-MLX-4bit",
+      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "mlx-community/Sage-A1.5-OptiQ-4bit",
+      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "abenzerps/Spark-X2.6-4B-MLX-4bit",
+      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+      "reason": "R2 catalog reports not_mirrored; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "Anes1032/Wan2.2-I2V-A14B-mlx-q8",
+      "reason": "R2 catalog reports not_mirrored; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
+      "reason": "R2 catalog reports not_mirrored; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",
+      "reason": "R2 catalog reports not_mirrored; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "prince-canuma/Kokoro-82M",
+      "reason": "R2 catalog entry absent for runtime voices; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "google/t5-v1_1-xxl",
+      "reason": "R2 catalog reports partial for image runtime asset; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
+    },
+    {
+      "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX",
+      "reason": "R2 catalog entry absent for MTP runtime asset; Hugging Face fallback until mirrored",
+      "since": "2026-10-26"
     }
   ]
 }

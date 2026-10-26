@@ -107,6 +107,7 @@ def test_qwen_runtime_provenance_read_failures_are_closed(monkeypatch) -> None:
         assert adapter._runtime_direct_url() == {}
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_download_pair_uses_pinned_revisions(monkeypatch, tmp_path) -> None:
     from rapid_mlx.speculative import tensorfold_qwen27 as adapter
 

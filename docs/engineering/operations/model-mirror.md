@@ -26,7 +26,8 @@ one-off restoration must explicitly pass `--force-unmirrored`.
 To add an entry, add exactly `hf_path`, `reason`, and an ISO `since` date to the
 JSON file. The loader rejects duplicates, unknown keys, invalid dates, and any
 stale `hf_path` that is not defined by `rapid_mlx/aliases.json` or
-`rapid_mlx/audio/aliases.json`. To remove an entry, first restore and verify the
+`rapid_mlx/audio/aliases.json` or the declared runtime assets. To remove an
+entry, first restore and verify the
 repository while the protection is still present:
 
 ```bash
@@ -56,8 +57,9 @@ alias and selected runtime asset, it records the exact commit, selected file
 paths, sizes, and LFS SHA-256 or Git blob IDs. The downloader reads this file
 before any Hub metadata request and verifies every R2 byte against it. The
 mirror catalog still determines the download URL, but neither the catalog nor
-bucket objects may supply expected hashes. `.gitattributes` is omitted because
-it is not runtime data and is absent from some mirror repositories.
+bucket objects may supply expected hashes. `.gitattributes` and root
+`README.md` model cards are omitted because they are not runtime data. Existing
+Hub caches may retain them without invalidating a verified snapshot.
 The puller's disk and interactive size checks use the same package inventory
 for pinned aliases, so those preflights do not need a Hub request either.
 
@@ -67,13 +69,17 @@ while the Hub is reachable:
 ```bash
 python scripts/build_model_digests.py
 python scripts/build_model_digests.py --check
+python scripts/build_model_digests.py --check-r2
 ```
 
 CI runs `--check` offline and compares selected file paths with
 `scripts/model_digest_inventory.json`; it fails on missing files, missing
 entries, mismatched revisions/selections, or invalid digests. Regeneration
-updates both files from the same Hub snapshot. An
-unlisted or unpinned repository keeps the normal Hub metadata path. A packaged
+updates both files from the same Hub snapshot. Run `--check-r2` outside CI
+before release: it sends paced HEAD requests for every unique selected mirror
+object and fails if any object is absent or unreachable. Run it after uploading
+missing files and before building a release. An unlisted or unpinned repository
+keeps the normal Hub metadata path. A packaged
 pinned pull with a missing, corrupt, or incomplete mirror file fails closed
 when the Hub is unavailable.
 

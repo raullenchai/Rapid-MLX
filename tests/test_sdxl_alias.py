@@ -250,6 +250,7 @@ def test_sdxl_snapshot_is_pinned_and_requires_every_runtime_file(
     assert _download_gate.mflux_local_snapshot(REPO) is None
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_cold_engine_download_uses_exact_revision_and_data_only_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

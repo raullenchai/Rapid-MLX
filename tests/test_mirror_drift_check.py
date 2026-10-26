@@ -154,6 +154,18 @@ def test_unmirrored_loader_accepts_valid_file(tmp_path):
     assert entries["audio/speech"].since == "2026-09-23"
 
 
+def test_unmirrored_loader_accepts_audio_runtime_asset(tmp_path):
+    main, audio = _write_aliases(tmp_path)
+    payload = json.loads(audio.read_text())
+    payload["_runtime_assets"] = {"speech": [{"repo_id": "audio/voices"}]}
+    audio.write_text(json.dumps(payload))
+    path = _write_unmirrored(
+        tmp_path,
+        [{"hf_path": "audio/voices", "reason": "not mirrored", "since": "2026-10-26"}],
+    )
+    assert "audio/voices" in drift.load_unmirrored(path, main, audio)
+
+
 def test_unmirrored_loader_rejects_stale_hf_path(tmp_path):
     main, audio = _write_aliases(tmp_path)
     path = _write_unmirrored(

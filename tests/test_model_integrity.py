@@ -567,11 +567,12 @@ def test_explicit_pin_without_packaged_digests_reports_hub_outage(
         verify_snapshot("test/integrity", path, revision=path.name)
 
 
-def test_packaged_digests_accept_hub_cache_gitattributes(snapshot, monkeypatch):
+def test_packaged_digests_accept_hub_cache_docs(snapshot, monkeypatch):
     from rapid_mlx import _mirror
 
     path, info, _ = snapshot
     (path / ".gitattributes").write_text("*.safetensors filter=lfs\n")
+    (path / "README.md").write_text("Cached model card\n")
     payload = {
         "aliases": {
             "test": {

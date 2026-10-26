@@ -173,6 +173,7 @@ class TestDiskSpaceCheck:
 
         statvfs = MagicMock()
         with (
+            patch("rapid_mlx._mirror._packaged_digest_info", return_value=None),
             patch("huggingface_hub.model_info", return_value=info),
             patch(
                 "huggingface_hub.try_to_load_from_cache",
@@ -232,6 +233,7 @@ class TestDiskSpaceCheck:
             return None
 
         with (
+            patch("rapid_mlx._mirror._packaged_digest_info", return_value=None),
             patch("huggingface_hub.model_info", return_value=info),
             patch(
                 "huggingface_hub.try_to_load_from_cache",

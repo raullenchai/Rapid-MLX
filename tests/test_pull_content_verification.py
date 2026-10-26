@@ -97,7 +97,7 @@ def test_pull_completion_requires_verified_content(
 
 
 @pytest.mark.parametrize("missing_revision", [False, True])
-def test_unpinned_mirror_pull_recovers_metadata_and_reuses_receipt_offline(
+def test_unpinned_mirror_pull_requires_trusted_hub_metadata(
     tmp_path, monkeypatch, missing_revision
 ):
     import httpx
@@ -154,19 +154,6 @@ def test_unpinned_mirror_pull_recovers_metadata_and_reuses_receipt_offline(
         cli, "_print_pull_summary", lambda *args, **kwargs: completed.append(True)
     )
     args = SimpleNamespace(model="test/integrity", bits=None, format=None)
-    cli._pull_repository(args, emit_lifecycle_event=False)
-    assert completed == [True]
-
-    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *args, **kwargs: False)
-    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download", lambda *args, **kwargs: str(snapshot)
-    )
-    monkeypatch.setattr(
-        "huggingface_hub.HfApi.model_info",
-        lambda *args, **kwargs: pytest.fail(
-            "offline verified snapshot queried metadata"
-        ),
-    )
-    cli._pull_repository(args, emit_lifecycle_event=False)
-    assert completed == [True, True]
+    with pytest.raises(ModelIntegrityError, match="Hub integrity metadata unavailable"):
+        cli._pull_repository(args, emit_lifecycle_event=False)
+    assert completed == []

@@ -11,6 +11,11 @@ import hashlib
 import json
 import runpy
 import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -158,9 +163,9 @@ def fetch(repo: str, revision: str) -> list[dict]:
         raise ValueError(f"revision mismatch: {repo}")
     files = []
     for sibling in info.siblings:
-        # Git LFS tracking rules are not runtime model data and are often
-        # omitted by the mirror. The package-owned pull skips this file too.
-        if sibling.rfilename == ".gitattributes":
+        # Tracking rules and model cards are not runtime data. Model cards can
+        # also remain behind a cached 404 after their R2 object is repaired.
+        if sibling.rfilename in {".gitattributes", "README.md"}:
             continue
         size = sibling.size
         sha = getattr(sibling.lfs, "sha256", None) if sibling.lfs else None
@@ -177,15 +182,79 @@ def fetch(repo: str, revision: str) -> list[dict]:
     return sorted(files, key=lambda value: value["path"])
 
 
+def check_r2_coverage(payload: dict) -> list[tuple[str, str, int]]:
+    """Check every selected object against the public mirror at a safe pace."""
+    objects = {
+        (entry["repo"], file["path"])
+        for entry in payload["aliases"].values()
+        for file in entry["files"]
+    }
+    lock = threading.Lock()
+    next_request = 0.0
+    backoff_until = 0.0
+
+    def probe(item: tuple[str, str]) -> tuple[str, str, int]:
+        nonlocal next_request, backoff_until
+        repo, path = item
+        key = urllib.parse.quote(f"{repo}/{path}", safe="/")
+        request = urllib.request.Request(
+            f"https://models.rapidmlx.com/{key}",
+            method="HEAD",
+            headers={"User-Agent": "rapid-mlx-r2-coverage/1.0"},
+        )
+        attempt = 0
+        while True:
+            with lock:
+                now = time.monotonic()
+                delay = max(0.0, next_request - now, backoff_until - now)
+                if delay:
+                    time.sleep(delay)
+                next_request = time.monotonic() + 0.35
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    status = response.status
+            except urllib.error.HTTPError as error:
+                status = error.code
+            except urllib.error.URLError:
+                status = 0
+            if status == 429 and attempt < 2:
+                attempt += 1
+                with lock:
+                    backoff_until = max(backoff_until, time.monotonic() + 30)
+                continue
+            return repo, path, status
+
+    missing = []
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for index, result in enumerate(pool.map(probe, sorted(objects)), 1):
+            if result[2] != 200:
+                missing.append(result)
+                print(f"MISS {result[2]} {result[0]}/{result[1]}", flush=True)
+            if index % 100 == 0:
+                print(f"checked {index}/{len(objects)}", flush=True)
+    return missing
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check", action="store_true", help="offline catalog coverage check"
     )
+    parser.add_argument(
+        "--check-r2",
+        action="store_true",
+        help="network check of every selected R2 object",
+    )
     args = parser.parse_args()
     expected = selections()
-    if args.check:
-        check(json.loads(OUTPUT.read_text()), expected)
+    if args.check or args.check_r2:
+        payload = json.loads(OUTPUT.read_text())
+        check(payload, expected)
+        if args.check_r2:
+            missing = check_r2_coverage(payload)
+            print(f"R2 coverage: {len(missing)} missing or failed of selected objects")
+            if missing:
+                raise SystemExit(1)
     else:
         keys = {(value["repo"], value["revision"]) for value in expected.values()}
         inventories = {}

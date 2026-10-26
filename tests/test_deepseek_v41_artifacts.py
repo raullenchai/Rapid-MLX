@@ -193,6 +193,7 @@ def test_programmatic_server_memory_gate_returns_detected_capacity(monkeypatch):
     assert artifacts.require_product_memory() == 256.0
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_artifact_download_helpers_pin_revisions_and_subset(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(

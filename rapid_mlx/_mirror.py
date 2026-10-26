@@ -1881,7 +1881,7 @@ def download_with_mirror_fallback(
     mirror_only = False
     info = (
         _packaged_digest_info(repo_id, revision, allow_patterns)
-        if pinned and not hf_only
+        if pinned and revision is not None and not hf_only
         else None
     )
     if info is not None:

@@ -82,7 +82,8 @@ def verify_snapshot(
     if packaged is not None:
         # Hub-created snapshots may contain LFS tracking rules even though the
         # mirror's package-owned runtime inventory intentionally omits them.
-        ignored.append(".gitattributes")
+        # A warm Hub cache may likewise retain the model card.
+        ignored.extend((".gitattributes", "README.md"))
     from huggingface_hub.utils import filter_repo_objects
 
     def inventory():

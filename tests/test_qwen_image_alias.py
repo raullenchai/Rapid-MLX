@@ -186,6 +186,7 @@ def _seed_pinned_download(cache_root, repo_id: str, sha: str, *, omit_shard=Fals
     return str(snap)
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_model_path_for_mflux_verifies_a_freshly_pinned_download(
     tmp_path, monkeypatch
 ) -> None:
@@ -216,6 +217,7 @@ def test_model_path_for_mflux_verifies_a_freshly_pinned_download(
     assert path.endswith(pinned_sha)
 
 
+@pytest.mark.usefixtures("hub_pinned_snapshot_stub")
 def test_model_path_for_mflux_rejects_a_freshly_pinned_incomplete_download(
     tmp_path, monkeypatch
 ) -> None:

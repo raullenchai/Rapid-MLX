@@ -17,6 +17,11 @@ def snapshot_tree(root, revision="a" * 40, filename="model.safetensors"):
 
 @pytest.fixture(autouse=True)
 def hub_integrity_metadata(tmp_path, monkeypatch):
+    # These orchestration tests build tiny synthetic snapshots. Their mocked
+    # Hub metadata, rather than the release's full packaged inventory, is the
+    # integrity contract for those fixtures.
+    monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *_args: None)
+
     def metadata(_self, _repo, *, revision, files_metadata, token=None):
         assert files_metadata is True
         snapshots = [path for path in tmp_path.rglob(revision) if path.is_dir()]
