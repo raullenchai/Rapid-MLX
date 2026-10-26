@@ -1712,7 +1712,7 @@ def _load_benchmark_baseline(
 def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str:
     """Return the revision resolved by Hugging Face for the loaded model."""
 
-    from rapid_mlx.model_aliases import resolve_revision
+    from rapid_mlx.model_aliases import resolve_model, resolve_revision
 
     if cache_dir is None:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -1721,11 +1721,19 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
     repo_cache = cache_dir / f"models--{_safe_name(model_id)}"
     pinned_revision = resolve_revision(model_id)
     if pinned_revision is not None:
-        # Commit-pinned downloads select this directory without updating refs/main.
+        from rapid_mlx.model_metadata import resolve_pinned_cached_snapshot
+
+        # The server resolves external roots before selecting a Hub checkpoint.
+        # A cache directory cannot prove the revision of a different local load.
         snapshot = repo_cache / "snapshots" / pinned_revision
-        if not snapshot.is_dir() or snapshot.is_symlink():
+        resolved = resolve_model(model_id)
+        cached = resolve_pinned_cached_snapshot(model_id)
+        if (
+            Path(resolved).exists() and Path(resolved).resolve() != snapshot.resolve()
+        ) or cached != snapshot:
             raise ValueError(
-                f"cannot verify loaded revision for {model_id}: {snapshot} is unavailable"
+                f"cannot verify loaded revision for {model_id}: "
+                f"resolved {resolved}, pinned snapshot {snapshot} is unavailable or incomplete"
             )
         return pinned_revision
 

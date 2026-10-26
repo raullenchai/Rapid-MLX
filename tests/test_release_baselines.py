@@ -383,12 +383,63 @@ def test_stress_consumer_reads_pinned_snapshot_without_main_ref(tmp_path, monkey
         tmp_path / f"models--{model_id.replace('/', '--')}" / "snapshots" / revision
     )
     snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (snapshot / "model.safetensors").write_bytes(b"weights")
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
 
     assert stress_e2e_bench._cached_model_revision(model_id) == revision
 
 
-def test_stress_consumer_rejects_wrong_pinned_snapshot(tmp_path):
+def test_stress_consumer_rejects_external_root_despite_empty_pinned_snapshot(
+    tmp_path, monkeypatch
+):
+    from rapid_mlx.model_aliases import resolve_model, resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "mlx-community/Qwen3.5-35B-A3B-8bit"
+    revision = resolve_revision(model_id)
+    assert revision is not None
+    cache = tmp_path / "cache"
+    (cache / f"models--{model_id.replace('/', '--')}" / "snapshots" / revision).mkdir(
+        parents=True
+    )
+    external = tmp_path / "external"
+    checkpoint = external / model_id
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (checkpoint / "model.safetensors").write_bytes(b"other weights")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache))
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(external))
+
+    assert resolve_model(model_id) == str(checkpoint)
+    with pytest.raises(ValueError, match="cannot verify loaded revision"):
+        stress_e2e_bench._cached_model_revision(model_id)
+
+
+def test_stress_consumer_rejects_cross_repo_leaf_symlinks(tmp_path, monkeypatch):
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "mlx-community/Qwen3.5-35B-A3B-8bit"
+    revision = resolve_revision(model_id)
+    assert revision is not None
+    snapshot = (
+        tmp_path / f"models--{model_id.replace('/', '--')}" / "snapshots" / revision
+    )
+    snapshot.mkdir(parents=True)
+    other = tmp_path / "models--other--repo" / "blobs"
+    other.mkdir(parents=True)
+    (other / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (other / "model.safetensors").write_bytes(b"other weights")
+    (snapshot / "config.json").symlink_to(other / "config.json")
+    (snapshot / "model.safetensors").symlink_to(other / "model.safetensors")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    with pytest.raises(ValueError, match="cannot verify loaded revision"):
+        stress_e2e_bench._cached_model_revision(model_id)
+
+
+def test_stress_consumer_rejects_wrong_pinned_snapshot(tmp_path, monkeypatch):
     from rapid_mlx.model_aliases import resolve_revision
     from scripts.pr_validate.steps import stress_e2e_bench
 
@@ -403,6 +454,7 @@ def test_stress_consumer_rejects_wrong_pinned_snapshot(tmp_path):
         / wrong_revision
     )
     snapshot.mkdir(parents=True)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
 
     with pytest.raises(ValueError, match="cannot verify loaded revision"):
         stress_e2e_bench._cached_model_revision(model_id, cache_dir=tmp_path)
