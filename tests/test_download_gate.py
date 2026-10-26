@@ -3900,6 +3900,27 @@ def test_snapshot_complete_accepts_single_file_beside_stale_index(tmp_path):
     assert gate._snapshot_is_complete(str(snap)) is False
 
 
+def test_snapshot_complete_accepts_replacement_text_weights_with_stale_optiq_index(
+    tmp_path,
+):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "model.safetensors").write_bytes(b"language")
+    (snap / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.embed_tokens.weight": "model-00001-of-00001.safetensors",
+                    "vision_tower.patch_embed.weight": "optiq_vision.safetensors",
+                }
+            }
+        )
+    )
+
+    assert gate._snapshot_is_complete(str(snap)) is True
+
+
 def test_snapshot_complete_judges_resharded_weights_beside_stale_index(tmp_path):
     snap = _stale_index_snapshot(tmp_path)
     (snap / "model-00001-of-00002.safetensors").write_bytes(b"x" * 4096)
@@ -3932,3 +3953,101 @@ def test_index_with_nested_entry_is_not_treated_as_stale(tmp_path):
         gate._index_names_no_present_shard(str(snap), {"vision/model.safetensors"})
         is False
     )
+
+
+def test_snapshot_complete_accepts_indexed_optiq_vision_sidecar(tmp_path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "config.json").write_text(json.dumps({"vision_config": {}}))
+    model_shards = [f"model-{i:05d}-of-00005.safetensors" for i in range(1, 6)]
+    for shard in model_shards:
+        (snap / shard).write_bytes(b"weights")
+    (snap / "optiq_vision.safetensors").write_bytes(b"vision")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    **{
+                        f"model.layers.{i}.weight": shard
+                        for i, shard in enumerate(model_shards)
+                    },
+                    "vision_tower.blocks.0.attn.qkv.weight": "optiq_vision.safetensors",
+                    "vision_tower.patch_embed.proj.weight": "optiq_vision.safetensors",
+                }
+            }
+        )
+    )
+
+    assert gate._snapshot_is_complete(str(snap)) is True
+    (snap / "optiq_vision.safetensors").unlink()
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+
+def test_snapshot_complete_rejects_unrecognized_sidecar_in_active_index(tmp_path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "model.safetensors").write_bytes(b"language")
+    (snap / "other_vision.safetensors").write_bytes(b"vision")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "vision_tower.patch_embed.weight": "other_vision.safetensors",
+                }
+            }
+        )
+    )
+
+    assert gate._snapshot_is_complete(str(snap)) is False
+
+
+@pytest.mark.parametrize(
+    "vision_keys,config,expected",
+    [
+        (["model.layers.0.self_attn.q_proj.weight"], {}, False),
+        (["vision_tower.blocks.0.attn.qkv.weight"], {"vision_config": {}}, True),
+        (
+            ["vision_tower.blocks.0.attn.qkv.weight", "model.layers.0.weight"],
+            {"vision_config": {}},
+            False,
+        ),
+        (["visual.patch_embed.weight"], {"vision_config": {}}, True),
+        (["model.vision_tower.blocks.0.weight"], {"vision_config": {}}, True),
+        (["vision_tower.blocks.0.weight"], {}, False),
+    ],
+)
+def test_snapshot_complete_validates_optiq_sidecar_tensors(
+    tmp_path, vision_keys, config, expected
+):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "config.json").write_text(json.dumps(config))
+    (snap / "model.safetensors").write_bytes(b"language")
+    (snap / "optiq_vision.safetensors").write_bytes(b"vision")
+    weight_map = {"model.embed_tokens.weight": "model.safetensors"}
+    weight_map.update(dict.fromkeys(vision_keys, "optiq_vision.safetensors"))
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": weight_map})
+    )
+
+    assert gate._snapshot_is_complete(str(snap)) is expected
+
+
+def test_snapshot_complete_requires_readable_vlm_config_for_optiq_sidecar(tmp_path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "model.safetensors").write_bytes(b"language")
+    (snap / "optiq_vision.safetensors").write_bytes(b"vision")
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "vision_tower.blocks.0.weight": "optiq_vision.safetensors",
+                }
+            }
+        )
+    )
+
+    assert gate._snapshot_is_complete(str(snap)) is False

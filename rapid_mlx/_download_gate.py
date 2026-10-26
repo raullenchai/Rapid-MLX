@@ -724,8 +724,8 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
       1. ``model.safetensors.index.json`` present → parse ``weight_map``
          and require every referenced shard to exist with non-zero
          size. Primary ``model*.safetensors`` shards must stay at the root
-         consumed by mlx-lm; safe nested paths are accepted for declared
-         auxiliary weights.
+         consumed by mlx-lm; safe nested paths and the indexed OptiQ vision
+         sidecar are accepted for declared auxiliary weights.
       2. Without an index, numbered ``model-N-of-M`` files must form the
          complete 1...M set. This covers an interrupted pull where one shard
          lands before the index file.
@@ -761,12 +761,32 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             return False
         shard_names = set(shard_values)
         if _index_names_no_present_shard(snap_dir, shard_names):
-            # Some published repos keep an index from an earlier upload whose
-            # shard names no longer exist (for example a single
-            # ``model.safetensors`` or a different shard count). mlx-lm
-            # ignores the index and globs the root weights, so judge the
-            # snapshot by those weights instead.
+            # An index left by an earlier upload does not govern replacement
+            # root weights when none of its declared shards remain.
             return _root_weights_are_complete(snap_dir)
+        if "optiq_vision.safetensors" in shard_names:
+            # Only a VLM's vision tower may live outside mlx-lm's model* glob.
+            # A language tensor assigned to this sidecar would never be loaded.
+            vision_keys = (
+                key
+                for key, shard in weight_map.items()
+                if shard == "optiq_vision.safetensors"
+            )
+            if not all(
+                isinstance(key, str)
+                and key.startswith(("vision_tower.", "visual.", "model.vision_tower."))
+                for key in vision_keys
+            ):
+                return False
+            try:
+                with open(os.path.join(snap_dir, "config.json")) as fh:
+                    config = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                return False
+            if not isinstance(config, dict) or not isinstance(
+                config.get("vision_config"), dict
+            ):
+                return False
         has_root_model_shard = False
         for shard in shard_names:
             parts = _safe_safetensors_manifest_parts(shard)
@@ -780,9 +800,13 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             # example a quantizer-owned vision sidecar), but a nested
             # ``model*.safetensors`` must not make an unloaded primary shard
             # look usable.
-            if is_root_entry != is_model_shard:
+            # OptiQ vision checkpoints index their separately quantized vision
+            # tower beside the root model shards. It is required for a complete
+            # snapshot, but mlx-lm does not include it in its model* glob.
+            is_optiq_vision = is_root_entry and parts[-1] == "optiq_vision.safetensors"
+            if is_root_entry != is_model_shard and not is_optiq_vision:
                 return False
-            has_root_model_shard = has_root_model_shard or is_root_entry
+            has_root_model_shard = has_root_model_shard or is_model_shard
 
             target = os.path.join(snap_dir, *parts)
             if not _is_nonempty_snapshot_manifest_file(target, snap_dir):

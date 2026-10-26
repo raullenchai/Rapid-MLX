@@ -11,6 +11,14 @@ rapid-mlx models
 
 Use `rapid-mlx info <alias>` for one model's memory needs, capabilities, and runtime profile. The [model catalog](https://rapidmlx.com/docs/aliases.html) is the current long-form list. An alias in the installed v0.16.6 registry is the source for a runnable model name.
 
+The pinned October 2026 additions are `nanbeige4.3-33b-4bit` (32 GB minimum),
+`spark-x2.6-4b-4bit` (16 GB, text input through the `[vision]` runtime),
+and `sage-a1.5-4bit` (48 GB, including image input). Each supports chat and
+tool calls. The [qualification record](../engineering/performance/2026-10-25-trending-models.md)
+lists the immutable revisions, measured memory, and serving checks. MiniMax
+M3.1 Flash's available MLX conversions require at least 320 GB by weight
+footprint and are not in this catalog.
+
 ## Text and vision
 
 Run `rapid-mlx models` to browse current text and vision aliases. Start a recommended text model with `rapid-mlx chat` or `rapid-mlx serve <alias>`. For images in a request, follow the [multimodal guide](../guides/multimodal.md).

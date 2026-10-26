@@ -3085,5 +3085,41 @@
     "supports_spec_decode": false,
     "mtp_default_enabled": false,
     "experimental": true
+  },
+  "nanbeige4.3-33b-4bit": {
+    "hf_path": "pratikgx/Nanbeige4.3-33B-MLX-4bit",
+    "revision": "883c8bda53b2062ff7e37f178ccf503c79674797",
+    "min_memory_gb": 32,
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "deepseek_r1",
+    "is_text_only": true,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "spark-x2.6-4b-4bit": {
+    "hf_path": "abenzerps/Spark-X2.6-4B-MLX-4bit",
+    "revision": "253181296bd0c643880b0f64daa0049a42148d4a",
+    "min_memory_gb": 16,
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "qwen3",
+    "is_text_only": false,
+    "supports_image_input": false,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
+  "sage-a1.5-4bit": {
+    "hf_path": "mlx-community/Sage-A1.5-OptiQ-4bit",
+    "revision": "efad5741d354e38b3429433c5144331f8fb86cce",
+    "min_memory_gb": 48,
+    "vision_min_memory_gb": 48,
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "supports_image_input": true,
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false
   }
 }

@@ -1541,6 +1541,11 @@ def is_mllm_model(model_name: str) -> bool:
     metadata = read_model_metadata(model_name)
     config = metadata.config if metadata is not None else None
     if config is not None:
+        # Spark 2.5 is a causal text checkpoint whose MLX implementation
+        # currently lives only in mlx-vlm. Route it through that loader even
+        # though its config has no vision tower or multimodal architecture.
+        if config.get("model_type") == "spark2_5":
+            return True
         if not _config_indicates_vlm(config):
             return False
         verdict = checkpoint_has_multimodal_weights(metadata.snapshot_dir, config)
