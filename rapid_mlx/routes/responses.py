@@ -3462,6 +3462,12 @@ async def _stream_responses(
             else:
                 reasoning_parser.reset_state()
 
+            from ..service.helpers import configure_reasoning_from_prompt
+
+            configure_reasoning_from_prompt(
+                reasoning_parser, engine, messages, chat_kwargs
+            )
+
         tool_filter = streaming_output_filter(
             cfg,
             openai_request.model_dump(),

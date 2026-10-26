@@ -5819,3 +5819,39 @@ def enforce_context_length_for_prompt(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
+
+
+def configure_reasoning_from_prompt(parser, engine, messages, chat_kwargs) -> None:
+    """Resolve request-local streaming state from the actual generation suffix."""
+    configure = getattr(parser, "configure_prompt", None)
+    if not callable(configure):
+        return
+    kwargs = {
+        "tools": chat_kwargs.get("tools"),
+        "enable_thinking": chat_kwargs.get("enable_thinking"),
+        "chat_template_kwargs": chat_kwargs.get("chat_template_kwargs"),
+    }
+    try:
+        render = engine.build_prompt
+        base = render(messages, add_generation_prompt=False, **kwargs)
+        prompt = render(messages, add_generation_prompt=True, **kwargs)
+    except (AttributeError, TypeError, RuntimeError, ValueError):
+        # Multimodal engines do not expose build_prompt. Their tokenizer uses
+        # the same template and request switches for the assistant suffix.
+        tokenizer = getattr(engine, "tokenizer", None)
+        render = getattr(tokenizer, "apply_chat_template", None)
+        if not callable(render):
+            return
+        template_kwargs = dict(kwargs.pop("chat_template_kwargs") or {})
+        template_kwargs.update(kwargs)
+        try:
+            base = render(
+                messages, tokenize=False, add_generation_prompt=False, **template_kwargs
+            )
+            prompt = render(
+                messages, tokenize=False, add_generation_prompt=True, **template_kwargs
+            )
+        except (TypeError, RuntimeError, ValueError):
+            return
+    if isinstance(base, str) and isinstance(prompt, str) and prompt.startswith(base):
+        configure(prompt[len(base) :], enable_thinking=kwargs["enable_thinking"])

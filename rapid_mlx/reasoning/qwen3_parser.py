@@ -154,15 +154,42 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         self.reset_state()
         self._thinking_disabled = enable_thinking is False
 
+    def configure_prompt(self, prefix: str, *, enable_thinking: bool | None) -> None:
+        """Seed the streaming lane from the rendered assistant generation prefix.
+
+        A closed block wins over the request flag. A bare assistant prefix
+        uses the request's implicit-thinking mode (including Flint templates).
+        Callers without a rendered prefix retain conservative legacy routing.
+        """
+        if not prefix:
+            return
+        self._prompt_lane_known = True
+        opener, closer = prefix.rfind(self.start_token), prefix.rfind(self.end_token)
+        active = (
+            opener > closer
+            if max(opener, closer) >= 0
+            else enable_thinking is not False
+        )
+        self._streaming_phase = "reasoning" if active else "content"
+
     def reset_state(self) -> None:
         super().reset_state()
         self._thinking_disabled = False
+        self._prompt_lane_known = False
+        self._prompt_tail = ""
         self._undecided_text = ""
         self._boundary_seen = False
 
     def extract_reasoning_streaming(
         self, previous_text: str, current_text: str, delta_text: str
     ) -> DeltaMessage | None:
+        if getattr(self, "_prompt_lane_known", False):
+            message = self._handle_multi_block_after_close(
+                previous_text, current_text, delta_text
+            )
+            held = self._held_tag_suffix_len
+            self._prompt_tail = current_text[-held:] if held else ""
+            return self._apply_tool_call_promotion(message)
         # Without a prompt opener, a bare prefix might be an answer or private
         # reasoning ending in a later closer. Do not publish it in either lane
         # until a boundary resolves that ambiguity (or EOF confirms plain text).
@@ -181,6 +208,14 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         )
 
     def finish_stream(self) -> DeltaMessage | None:
+        if getattr(self, "_prompt_lane_known", False):
+            tail, self._prompt_tail = self._prompt_tail, ""
+            self._held_tag_suffix_len = 0
+            return (
+                DeltaMessage(content=tail)
+                if tail and self._streaming_phase == "content"
+                else None
+            )
         text = getattr(self, "_undecided_text", "")
         self._undecided_text = ""
         return DeltaMessage(content=text) if text else None
@@ -331,6 +366,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         finish_reason: str | None = None,
     ) -> DeltaMessage | None:
         """Flush genuine answer text without promoting an unfinished thought."""
+        if getattr(self, "_prompt_lane_known", False):
+            # Only an unfinished literal suffix remains; never replay the
+            # entire answer or promote unfinished reasoning at EOF.
+            return self.finish_stream()
         if not accumulated_text:
             return None
         if self.end_token in accumulated_text:

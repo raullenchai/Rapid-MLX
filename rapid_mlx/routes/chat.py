@@ -7708,6 +7708,11 @@ async def stream_chat_completion(
         )
         processor.set_thinking_model(request.model)
         processor.reset()
+        from ..service.helpers import configure_reasoning_from_prompt
+
+        configure_reasoning_from_prompt(
+            processor.reasoning_parser, engine, messages, kwargs
+        )
 
         # Forced ``tool_choice`` synthetic-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the upstream chat_kwargs builder
