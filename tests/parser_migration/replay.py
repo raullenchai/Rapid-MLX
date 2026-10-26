@@ -8,13 +8,13 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
-from harness import route  # noqa: E402
-
 
 def main():
     if len(sys.argv) != 3 or sys.argv[2] not in {"baseline", "main"}:
         raise ValueError("expected CHECKOUT baseline|main")
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
+    from harness import route
+
     data = json.loads(Path(__file__).with_name("differential.json").read_text())
     failures = []
     count = 0

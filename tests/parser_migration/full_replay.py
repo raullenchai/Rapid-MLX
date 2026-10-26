@@ -6,12 +6,14 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
-from harness import route  # noqa: E402
-from rapid_mlx.reasoning import list_parsers  # noqa: E402
-from rapid_mlx.tool_parsers import ToolParserManager  # noqa: E402
-
 if __name__ == "__main__":
+    if len(sys.argv) != 4 or sys.argv[2] not in {"focused", "matrix"}:
+        raise ValueError("expected TREE focused|matrix OUTPUT")
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve()))
+    from harness import route
+    from rapid_mlx.reasoning import list_parsers
+    from rapid_mlx.tool_parsers import ToolParserManager
+
     mode = sys.argv[2]
     out = Path(sys.argv[3])
     rawcall = '<tool_call>{"name":"run_shell_command","arguments":{"command":"pwd"}}</tool_call>'

@@ -60,7 +60,9 @@ def test_one_tool_owner(reasoning):
     assert result["calls"] == EXPECTED
 
 
-@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
+@pytest.mark.parametrize(
+    "surface,stream", list(itertools.product(SURFACES, [False, True]))
+)
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
@@ -174,7 +176,9 @@ def native_cases():
 
 
 @pytest.mark.parametrize("tool,raw,expected", native_cases())
-@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
+@pytest.mark.parametrize(
+    "surface,stream", list(itertools.product(SURFACES, [False, True]))
+)
 def test_all_native_aliases(tool, raw, expected, surface, stream):
     tools = [
         {
@@ -215,7 +219,9 @@ def test_prompt_state_evidence(prompt_state, surface):
         assert result["content_deltas"] > 1
 
 
-@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
+@pytest.mark.parametrize(
+    "surface,stream", list(itertools.product(SURFACES, [False, True]))
+)
 @pytest.mark.parametrize("choice", ["auto", "none", "required", "named"])
 def test_tool_choice_contract(surface, stream, choice):
     if surface == "messages":
@@ -244,7 +250,9 @@ def test_tool_choice_contract(surface, stream, choice):
     assert result["calls"] == ([] if choice == "none" else EXPECTED)
 
 
-@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
+@pytest.mark.parametrize(
+    "surface,stream", list(itertools.product(SURFACES, [False, True]))
+)
 def test_undeclared_tool_is_not_executable(surface, stream):
     raw = CALL.replace("run_shell_command", "unauthorized")
     result = route(None, "hermes", raw, surface, stream)
