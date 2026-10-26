@@ -17,6 +17,16 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.16.10] — 2026-10-26
+
+Dictation starts capturing immediately, model downloads work better on restricted networks, and three new models are available.
+
+### Desktop
+
+- **Immediate dictation capture**: starting dictation no longer delays audio capture and loses the beginning of a sentence. ([#5275](https://github.com/raullenchai/Rapid-MLX/pull/5275))
+- **Reliable downloads and cached audio**: covered models can download through the mirror without contacting Hugging Face first, and complete cached transcription models and processor assets work when that network is unavailable. ([#5293](https://github.com/raullenchai/Rapid-MLX/pull/5293), [#5301](https://github.com/raullenchai/Rapid-MLX/pull/5301))
+- **More model choices**: adds Nanbeige4.3-33B, Spark-X2.6-4B, and Sage-A1.5. LFM2 MoE generation is faster on the tested Apple Silicon systems. ([#5279](https://github.com/raullenchai/Rapid-MLX/pull/5279), [#5298](https://github.com/raullenchai/Rapid-MLX/pull/5298))
+
 ## [0.16.9] — 2026-10-25
 
 Desktop stays responsive while you browse models during a reply, verifies its bundled engine before launch, and offers to connect your coding tools after your first successful chat.
@@ -4515,7 +4525,7 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.9...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...HEAD
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
 [0.16.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.6...rapid-mac-v0.16.7
@@ -4551,3 +4561,5 @@ for auto-generated notes against earlier tags.
 [0.5.10]: https://github.com/machinefi/rapid-desktop/compare/v0.5.9...v0.5.10
 
 [0.16.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.15.7...rapid-mac-v0.16.0
+
+[0.16.10]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.9...rapid-mac-v0.16.10
