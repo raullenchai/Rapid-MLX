@@ -1,6 +1,6 @@
 # Built-in chat harness: persistent PydanticAI with Rapid-owned state
 
-- **Status:** Accepted architecture; Phase 1 implementation gated by qualification
+- **Status:** Accepted architecture; client rollout and heuristic-path retirement gated by the qualification below
 - **Owner:** Human owner (decision); Vector (engine/runtime implementation), Pixel (Desktop integration), Harbor (packaging)
 - **Date:** 2026-10-25
 
@@ -128,7 +128,7 @@ batch removal/tool termination, not merely a fast HTTP acknowledgement. All
 
 Release gates on the documented Studio/model/task matrix:
 
-- Warm TTFVT p50 ≤ **0.30/0.40/0.73 s**; cold ≤ **0.70/0.66/2.45 s**,
+- Latency measured on the 12-task set ×3 (≥ 38 warm turns per model, same-revision baseline in the same session). Warm TTFVT p50 ≤ **0.30/0.40/0.73 s**; cold ≤ **0.70/0.66/2.45 s**,
   with same-revision controlled baselines and no privacy bypass; greeting prompt
   ≤ **650 tokens** and warm pre-model orchestration p50 ≤ **20 ms**.
 - **100%** completed turns have nonempty visible final answers; **0** reasoning/
