@@ -1,4 +1,5 @@
 from functools import partial
+import os
 from typing import Any, List, Optional
 
 import mlx.core as mx
@@ -624,6 +625,7 @@ class Gemma4TextModel(nn.Module):
         capture_layer_ids: Optional[List[int]] = None,
         hidden_sink: Optional[list] = None,
         shared_kv_sink: Optional[dict] = None,
+        logits_to_keep: Optional[int] = None,
         **kwargs,
     ):
         if inputs_embeds is None:
@@ -675,6 +677,22 @@ class Gemma4TextModel(nn.Module):
             per_layer_inputs = [None] * len(self.layers)
 
         capture_set = set(capture_layer_ids) if capture_layer_ids else set()
+        # Only an explicit last-logit consumer may discard query positions.
+        # Producers still process every token and fill the complete KV cache.
+        # Batch/padding and hidden-state consumers conservatively keep the
+        # historical full forward, including speculative assistant capture.
+        length = h.shape[1]
+        fast_prefill = (
+            logits_to_keep == 1
+            and os.environ.get("RAPID_MLX_GEMMA4_FAST_PREFILL", "1") != "0"
+            and h.shape[0] == 1
+            and length > 1
+            and 0 < self.first_kv_shared_layer_idx < len(self.layers)
+            and capture_layer_ids is None
+            and hidden_sink is None
+            and shared_kv_sink is None
+            and not kwargs.get("skip_final_norm", False)
+        )
         intermediates = [(None, None, None)] * len(self.layers)
         for idx, (layer, c, m, prev_idx, pli) in enumerate(
             zip(
@@ -687,6 +705,15 @@ class Gemma4TextModel(nn.Module):
         ):
             kvs, offset, shared_cache = intermediates[prev_idx]
             borrows_kv = kvs is not None
+            producer_offset = offset
+            query_offset = offset
+            if fast_prefill and idx >= self.first_kv_shared_layer_idx:
+                if idx == self.first_kv_shared_layer_idx:
+                    h = h[:, -1:, :]
+                if pli is not None:
+                    pli = pli[:, -1:, :]
+                m = m[..., -1:, :] if isinstance(m, mx.array) else None
+                query_offset = offset + length - 1
             h, kvs, offset = layer(
                 h,
                 m,
@@ -694,11 +721,14 @@ class Gemma4TextModel(nn.Module):
                 per_layer_input=pli,
                 shared_kv=kvs,
                 shared_cache=shared_cache,
-                offset=offset,
+                offset=query_offset,
             )
             intermediates[idx] = (
                 kvs,
-                offset,
+                # Preserve the producer's original start for borrower chains.
+                producer_offset
+                if fast_prefill and idx >= self.first_kv_shared_layer_idx
+                else offset,
                 shared_cache if borrows_kv else c,
             )
             if hidden_sink is not None and idx in capture_set:

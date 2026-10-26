@@ -341,7 +341,15 @@ class Gemma4TextWrapper(nn.Module):
             inner if inner and inner != "gemma4_text" else routed_model_type
         )
 
-    def __call__(self, input_ids, cache=None, **kwargs):
+    def __call__(self, input_ids, cache=None, *, logits_to_keep=None, **kwargs):
+        # The default remains a full-position forward. Only the owned
+        # KV-sharing implementation accepts the serving prefill contract;
+        # leave non-sharing models and upstream wrappers byte-identical.
+        if logits_to_keep is not None:
+            from .gemma4_vendored.language import LanguageModel
+
+            if isinstance(self.language_model, LanguageModel):
+                kwargs["logits_to_keep"] = logits_to_keep
         out = self.language_model(input_ids, cache=cache, **kwargs)
         # LanguageModelOutput -> raw logits tensor
         return out.logits if hasattr(out, "logits") else out

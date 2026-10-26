@@ -5613,6 +5613,16 @@ class Scheduler:
                 or getattr(self.config, "model_name", None),
             )
 
+        from .gemma4_prefill import install_gemma4_prefill
+
+        install_gemma4_prefill(
+            bg,
+            self.model,
+            speculative=(
+                getattr(self.config, "spec_decode", "none") != "none"
+                or self.config.enable_suffix_decoding
+            ),
+        )
         return bg
 
     def _make_prompt_cache_save_callback(self):

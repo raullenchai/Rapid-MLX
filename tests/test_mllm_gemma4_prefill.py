@@ -374,3 +374,14 @@ def test_real_language_model_retains_cache_and_next_decode(
     full_next = lm(token, cache=full_cache).logits
     kept_next = lm(token, cache=kept_cache).logits
     assert bool(mx.allclose(full_next, kept_next, atol=1e-5))
+
+
+def test_fast_prefill_kill_switch_keeps_full_forward(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_GEMMA4_FAST_PREFILL", "0")
+    model = _model()
+    assert _generator(model)._run_vision_encoding(_request(), [_Cache()]).shape == (
+        1,
+        5,
+        2,
+    )
+    assert model.calls == [(5, {})]

@@ -4219,6 +4219,7 @@ class MLLMBatchGenerator:
             if (
                 cache is not None
                 and getattr(self, "_gemma4_last_position_prefill", False)
+                and os.environ.get("RAPID_MLX_GEMMA4_FAST_PREFILL", "1") != "0"
                 and not request.videos
                 and request.extra_kwargs.keys() <= _GEMMA4_LAST_POSITION_METADATA
             ):
