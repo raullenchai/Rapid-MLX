@@ -15931,7 +15931,12 @@ def main():
             print("Run `rapid-mlx help` for the list of subcommands.")
             sys.exit(1)
     elif args.command == "pull":
-        pull_command(args)
+        try:
+            pull_command(args)
+        except KeyboardInterrupt:
+            print("\n  Download cancelled. Completed files stay cached.", file=sys.stderr)
+            print(f"  Retry: {_pull_retry_command(args)}", file=sys.stderr)
+            raise SystemExit(130) from None
     elif args.command == "rm":
         rm_command(args)
     elif args.command == "import":
