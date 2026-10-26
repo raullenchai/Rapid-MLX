@@ -639,7 +639,7 @@
     "tests/test_release_manifest.py": 145,
     "tests/test_release_prepare.py": 534,
     "tests/test_release_smoke.py": 116,
-    "tests/test_release_stamp_scripts.py": 16060,
+    "tests/test_release_stamp_scripts.py": 2990,
     "tests/test_release_version.py": 193,
     "tests/test_remaining_serve_diagnostics.py": 618,
     "tests/test_remote_audio_security.py": 1122,
