@@ -3,7 +3,7 @@ import Testing
 @testable import Rapid
 
 /// Parser cases for ``DownloadProgress``. Migrated from
-/// ``TestDriver.runDownloadProgress`` — same input strings, same
+/// the original download-progress smoke — same input strings, same
 /// expectations, now expressed as Swift Testing ``@Test`` cases.
 /// The strings are pasted directly from real ``rapid-mlx serve``
 /// stderr (cold-start of a ~30 GB Qwen 3.6 35B-A3B fetch) and exist

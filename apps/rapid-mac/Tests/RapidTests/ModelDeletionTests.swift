@@ -11,7 +11,7 @@ import Testing
 /// We do NOT exercise the subprocess path — that requires a real
 /// ``rapid-mlx`` binary, the right HF cache layout, and a model the
 /// test is allowed to delete. The smoke for that lives in the
-/// ``TestDriver`` (out-of-band; cost real disk).
+/// manual real-disk dogfood (out-of-band).
 @Suite("ModelDeletion — bytes-freed parser")
 struct ModelDeletionParseTests {
     @Test("Gigabyte suffix — the common case")

@@ -63,10 +63,10 @@ enum ServerLocator {
         applicationSupportURL: URL?,
         authenticateBundle: (URL) -> Bool = DesktopRuntimeTrust.authenticate
     ) -> Resolution? {
-        // 1. ``RAPID_BIN`` — test/dev override. TestDriver chat smoke
-        // uses this to swap in ``scripts/fake-rapid-mlx.sh`` so the
-        // lifecycle test runs in <2 s. Power users running their own
-        // dev checkout of rapid-mlx point this at it.
+        // 1. ``RAPID_BIN`` — test/dev override. GUI golden flows
+        // use this to swap in ``scripts/fake-rapid-mlx.sh`` so the
+        // lifecycle tests run without model inference. Power users can
+        // point this at their own dev checkout of rapid-mlx.
         if let override = environment["RAPID_BIN"],
            !override.isEmpty,
            let resolved = executableURL(path: override, allowRelative: true) {

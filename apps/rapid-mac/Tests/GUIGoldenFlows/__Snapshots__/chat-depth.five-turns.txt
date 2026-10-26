@@ -21,6 +21,41 @@ AXApplication title="Rapid-MLX"
           AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
+          AXHeading desc="Use this model in your tools" enabled=true
+          AXButton id="Chat.AgentTip.DismissButton" desc="Dismiss tool connection suggestion" enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="Chat.AgentTip.CopyDetailsButton" desc="Copy API base URL" enabled=true
+          AXButton id="Chat.AgentTip.SetupButton" desc="All tools" enabled=true
+          AXScrollArea
+            AXHeading desc="Coding agents" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.claude-code" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.codex" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.pi" desc="Copy Pi Coding Agent launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.pi" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.opencode" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.hermes" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.goose" desc="Copy Goose launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.goose" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.qwen-code" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.crush" desc="Copy Crush launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.crush" desc="Launch" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider launch command" help="Copy this agent's one-session launch command" enabled=true
+            AXButton id="Launch.Integration.Run.aider" desc="Launch" enabled=true
+          AXButton id="Transcript.JumpToBottom" desc="Jump to latest" enabled=true
           AXScrollArea
             AXStaticText value=text enabled=true
             AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true

@@ -346,7 +346,7 @@ struct ChatStreamClient {
     /// re-targets this onto `ServerManager.activePort` BEFORE the
     /// first request, so this default is only the bootstrapping
     /// guess for callers that construct the client without a live
-    /// `ServerManager` (e.g. TestDriver). Audit P1.
+    /// `ServerManager` (e.g. unit tests). Audit P1.
     static let defaultBaseURL: URL = loopbackURL(port: PortSweep.defaultPort)
 
     /// URLError codes that are safe to replay BEFORE any token
@@ -366,7 +366,7 @@ struct ChatStreamClient {
     ///   common on WiFi.
     /// * `.dnsLookupFailed` — DNS hiccup. Doesn't apply to
     ///   `127.0.0.1` but harmless to include for non-default
-    ///   `baseURL` callers (TestDriver, future remote-tunnel).
+    ///   `baseURL` callers (tests, future remote-tunnel).
     /// Explicitly NOT retried:
     /// * `.timedOut` — the request already got its full inactivity
     ///   budget (``requestTimeout``); a timeout means the server is

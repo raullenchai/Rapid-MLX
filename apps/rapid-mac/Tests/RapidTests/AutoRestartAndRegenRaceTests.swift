@@ -15,8 +15,8 @@ import Testing
 ///
 /// We do NOT exercise the full ``start(alias:)`` path here — that
 /// requires a real ``rapid-mlx`` binary, an HF cache, and ~30 s of
-/// model load. The headless ``TestDriver`` chat smoke covers the
-/// happy-path lifecycle; these tests pin the bookkeeping around it.
+/// model load. The GUI golden chat flows cover the
+/// fixture-backed lifecycle; these tests pin the bookkeeping around it.
 @MainActor
 @Suite("v0.5.3 — auto-restart + ensureServing contracts")
 final class AutoRestartAndRegenRaceTests {

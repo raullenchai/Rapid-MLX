@@ -467,7 +467,8 @@ struct RapidApp: App {
                     // RAPID_DEV_SNAPSHOT_DIR is set, then quit. Inert
                     // (returns immediately) in normal use.
                     await DevSnapshot.runIfRequested(
-                        server: server, downloads: downloads, chat: chatViewModel,
+                        server: server, cuaServer: cuaServer, telemetryLifecycle: telemetryLifecycle,
+                        downloads: downloads, chat: chatViewModel,
                         updater: updater, sampling: sampling, appearance: appearance,
                         settingsRouter: settingsRouter, installTracker: installTracker,
                         quickstart: quickstart, dockPromptStore: dockPromptStore)

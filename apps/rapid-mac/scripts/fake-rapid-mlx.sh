@@ -4,7 +4,7 @@
 # real model's ~60 s cold start.
 #
 # Used by:
-#   - TestDriver chat smoke (RAPID_BIN=/path/to/fake-rapid-mlx.sh)
+#   - GUI golden chat flows (RAPID_BIN=/path/to/fake-rapid-mlx.sh)
 #   - Local UI iteration when the actual rapid-mlx isn't installed
 #     or the user wants stable canned output to eyeball layout
 #     against

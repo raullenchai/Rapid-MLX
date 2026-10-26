@@ -148,14 +148,14 @@ final class UpdateChecker {
             case modelAlias = "model_alias"
         }
 
-        /// Explicit initializer so existing call sites (TestDriver,
-        /// fixtures, Settings panel snapshot helpers) that pass the
+        /// Explicit initializer so existing call sites (test fixtures,
+        /// Settings panel snapshot helpers) that pass the
         /// pre-slice-δ field set continue to compile without having
         /// to spell out the eight new optional fields. Memberwise
         /// inits don't grant defaults to ``let`` fields, so without
         /// this we'd break every caller in the codebase the moment
         /// the type gains a property. The bootstrapper / quickstart
-        /// fields default to nil so a TestDriver fixture that doesn't
+        /// fields default to nil so a test fixture that doesn't
         /// care about them reads the same way it always did.
         init(
             schemaVersion: Int,
@@ -211,7 +211,7 @@ final class UpdateChecker {
     /// as ``String`` because the comparison helper handles parsing.
     let currentVersion: String
 
-    /// Override hook for tests / TestDriver: lets the harness inject
+    /// Override hook for tests: lets the harness inject
     /// a closure that returns a canned ``Release`` payload (or throws)
     /// without standing up a real HTTPS server. The production path
     /// uses ``defaultFetch`` which GETs the R2 manifest.

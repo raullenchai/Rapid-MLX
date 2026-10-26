@@ -109,6 +109,8 @@ enum DevSnapshot {
     @MainActor
     static func runIfRequested(
         server: ServerManager,
+        cuaServer: CUAServerManager,
+        telemetryLifecycle: TelemetryLifecycleCoordinator,
         downloads: DownloadManager,
         chat: ChatViewModel,
         updater: UpdateChecker,
@@ -451,6 +453,15 @@ enum DevSnapshot {
         func contentView(width: CGFloat, height: CGFloat) -> AnyView {
             AnyView(
                 ContentView()
+                    // Match the app scene, including dependencies read by child views.
+                    .environment(cuaServer)
+                    .environment(telemetryLifecycle)
+                    .environment(chat.customInstructions)
+                    .environment(snapshotMemory)
+                    .environment(snapshotWebSearch)
+                    .environment(snapshotMCPConfig)
+                    .environment(snapshotMCPTools)
+                    .environment(snapshotPerfConfig)
                     .tint(RapidTheme.brandAmber)
                     .environment(server)
                     .environment(downloads)
@@ -1919,5 +1930,7 @@ private struct ConnectToolsCardHost: View {
             onClose: {},
             readiness: readiness
         ).cardContent
+            // ReadinessBanner reads the same server from the app environment.
+            .environment(server)
     }
 }

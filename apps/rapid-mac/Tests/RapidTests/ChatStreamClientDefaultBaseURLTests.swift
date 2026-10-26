@@ -59,7 +59,6 @@ struct ChatStreamClientDefaultBaseURLTests {
     ///   * `docs/userflows.md` — (already clean of a literal port)
     ///   * `docs/plans/v1-prod-readiness-gaps.md` — (already clean)
     ///   * `scripts/fake-rapid-mlx.sh` — (already clean)
-    ///   * `Sources/Rapid/TestDriver.swift` — (already clean)
     ///   * `Sources/Rapid/Server/ServerManager.swift` — doc comments
     @Test("Default port is the documented 7659 — bump fails loudly if PortSweep.defaultPort moves")
     func default_port_is_pinned_7659() {

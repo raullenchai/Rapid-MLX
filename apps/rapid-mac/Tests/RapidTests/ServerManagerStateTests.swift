@@ -5,8 +5,8 @@ import Testing
 
 /// State-transition contract for ``ServerManager``. We only test the
 /// transitions that are pure (no subprocess, no I/O) — anything that
-/// would spawn a real ``rapid-mlx`` belongs in the TestDriver chat
-/// smoke against the fake.
+/// would spawn a real ``rapid-mlx`` belongs in the real-engine chat
+/// dogfood against the fake.
 @MainActor
 @Suite("ServerManager state transitions")
 struct ServerManagerStateTests {

@@ -2,8 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-/// Contract cases for ``UpdateChecker``. Migrated from
-/// ``TestDriver.runUpdateCheck`` — we inject a stub fetcher so the
+/// Contract cases for ``UpdateChecker``. We inject a stub fetcher so the
 /// test runs offline and doesn't depend on whatever version the
 /// real worker is reporting at test time.
 @MainActor
