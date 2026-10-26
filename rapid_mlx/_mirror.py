@@ -1906,7 +1906,7 @@ def download_with_mirror_fallback(
             return False
         info = _revision_manifest_info(base, repo_id, revision)
         mirror_only = True
-    except httpx.TransportError:
+    except (httpx.TransportError, OSError, TimeoutError):
         # A blocked Hub/proxy still permits a pinned pull when the mirror
         # publishes an exact-revision inventory with hashes for every file.
         # Without that proof, let the caller report its normal Hub error.
@@ -1921,8 +1921,6 @@ def download_with_mirror_fallback(
         EntryNotFoundError,
         RepositoryNotFoundError,
         HfHubHTTPError,
-        OSError,
-        TimeoutError,
     ):
         return False
 

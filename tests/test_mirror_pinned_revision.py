@@ -228,7 +228,9 @@ def test_file_without_a_size_never_touches_the_mirror(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("error", [OSError("offline"), TimeoutError("slow")])
-def test_hf_metadata_unavailable_fails_safe_to_hf(tmp_path, monkeypatch, error):
+def test_hf_metadata_unavailable_probes_manifest_then_falls_back(
+    tmp_path, monkeypatch, error
+):
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", BASE)
     router = _Router({})
     with (
@@ -240,7 +242,7 @@ def test_hf_metadata_unavailable_fails_safe_to_hf(tmp_path, monkeypatch, error):
             REPO, cache_dir=tmp_path, revision=PIN
         )
     assert ok is False  # caller runs snapshot_download(revision=PIN)
-    assert router.urls == []
+    assert router.urls == [f"{BASE}/{REPO}/.rapid-mlx/revisions/{PIN}.json"]
     assert hf.call_count == 0
 
 
@@ -901,22 +903,32 @@ def test_missing_revision_recovers_verified_cold_snapshot(tmp_path, monkeypatch)
     assert not (_snap(tmp_path).parents[1] / "refs" / "main").exists()
 
 
-def test_blocked_hub_uses_verified_pinned_manifest(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "model_error",
+    [httpx.ProxyError("403 Forbidden"), TimeoutError("deadline"), OSError("reset")],
+)
+def test_blocked_hub_uses_verified_pinned_manifest(tmp_path, monkeypatch, model_error):
     assert _missing_pin_run(
         tmp_path,
         monkeypatch,
         _manifest(),
-        model_error=httpx.ProxyError("403 Forbidden"),
+        model_error=model_error,
     )
     assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
 
 
-def test_blocked_hub_without_manifest_falls_back_safely(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "model_error",
+    [httpx.ProxyError("403 Forbidden"), TimeoutError("deadline"), OSError("reset")],
+)
+def test_blocked_hub_without_manifest_falls_back_safely(
+    tmp_path, monkeypatch, model_error
+):
     assert not _missing_pin_run(
         tmp_path,
         monkeypatch,
         None,
-        model_error=httpx.ProxyError("403 Forbidden"),
+        model_error=model_error,
     )
     assert not _snap(tmp_path).exists()
 
