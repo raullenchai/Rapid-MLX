@@ -733,6 +733,7 @@ jobs:
             tests/test_qwen4_exp_vendored.py \
             tests/test_qwen4_fused_gdn_decode.py \
             tests/test_qwen35_moe_router.py \
+            tests/test_moe_decode_fusion.py \
             tests/test_qwen35_fused_gdn_decode.py \
             tests/test_qwen3_5_eager_dispatch.py \
             tests/test_nemotron_h_ssm.py \
