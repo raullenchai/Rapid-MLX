@@ -23,7 +23,7 @@ from .output_demux import (
     ToolEnd,
     ToolStart,
 )
-from .tool_values import _json, decode_body, validate_arguments
+from .tool_values import _json, decode_body
 
 
 @dataclass(frozen=True)
@@ -679,7 +679,6 @@ class SelectedGrammar(ChannelGrammar):
                 raise ValueError("unauthorized tool")
             if not isinstance(arguments, dict):
                 raise ValueError("tool arguments must be an object")
-            validate_arguments(arguments, self.policy.schemas.get(name, {}))
             arguments_text = json.dumps(arguments, ensure_ascii=False, allow_nan=False)
             if c["committed"] and name != c["name"]:
                 raise ValueError("tool name changed after commitment")
@@ -735,11 +734,6 @@ class SelectedGrammar(ChannelGrammar):
                 raise ValueError("invalid structured tool arguments")
             index = self.next_index
             self.next_index += 1
-            try:
-                validate_arguments(_json(arguments), self.policy.schemas.get(name, {}))
-            except ValueError:
-                events.append(ParseFailure(span, "invalid_tool", index))
-                continue
             events += [
                 ToolStart(span, index, name, call.get("id")),
                 ToolArgs(span, index, arguments),

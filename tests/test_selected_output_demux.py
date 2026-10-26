@@ -936,7 +936,7 @@ def test_selected_session_records_rejection_once_without_executing_or_logging_ar
         ({"$ref": "https://example.invalid/not-retrieved"}, False),
     ],
 )
-def test_completed_schema_validation_preserves_or_rejects_all_parameters(
+def test_schema_constraints_do_not_reject_xml_parameters(
     fmt, extra_position, schema, valid
 ):
     pairs = [("extra", "value")]
@@ -968,14 +968,12 @@ def test_completed_schema_validation_preserves_or_rejects_all_parameters(
         for chunk in chunks:
             reducer.feed(parser.feed(chunk))
         reducer.feed(parser.finish())
-        assert bool(reducer.calls) is valid
-        if valid:
-            assert json.loads(reducer.calls[0]["arguments"]) == dict(pairs)
-        else:
-            assert any(failure.index is not None for failure in reducer.failures)
+        assert len(reducer.calls) == 1
+        assert json.loads(reducer.calls[0]["arguments"]) == dict(pairs)
+        assert not reducer.failures
 
 
-def test_metadata_schema_failure_reserves_index_and_preserves_next_valid_call():
+def test_metadata_schema_constraints_preserve_calls():
     policy = ToolPolicy("hermes", {"f": {"additionalProperties": False}}, True)
     context = ParseContext(
         authorized_tools=frozenset({"f"}), terminals=terminals(policy)
@@ -991,16 +989,18 @@ def test_metadata_schema_failure_reserves_index_and_preserves_next_valid_call():
         )
     )
     reducer.feed(parser.finish())
-    assert [(f.index, f.code) for f in reducer.failures] == [(0, "invalid_tool")]
-    assert reducer.calls == [{"name": "f", "arguments": "{}"}]
+    assert not reducer.failures
+    assert reducer.calls == [
+        {"name": "f", "arguments": '{"extra":1}'},
+        {"name": "f", "arguments": "{}"},
+    ]
 
 
 @pytest.mark.parametrize(
     "schema",
     [
-        {"additionalProperties": {"type": "string"}},
-        {"patternProperties": {"^x$": {"type": "string"}}},
-        {"properties": {"x": {}}, "patternProperties": {"^x$": {"type": "string"}}},
+        {"properties": {"x": {"type": "string"}}},
+        {"properties": {"x": {"type": "string", "pattern": "(a+)+$"}}},
     ],
 )
 @pytest.mark.parametrize(
@@ -1014,11 +1014,29 @@ def test_metadata_schema_failure_reserves_index_and_preserves_next_valid_call():
         ("f<arg_key>x</arg_key><arg_value>123</arg_value>", "glm47"),
     ],
 )
-def test_pattern_and_additional_schemas_preserve_declared_string_values(
-    schema, body, fmt
-):
-    from rapid_mlx.parsing.tool_values import decode_body, validate_arguments
+def test_named_property_hints_preserve_declared_string_values(schema, body, fmt):
+    from rapid_mlx.parsing.tool_values import decode_body
 
     name, args = decode_body(body, fmt, {"f": schema})
     assert name == "f" and args == {"x": "123"}
-    validate_arguments(args, schema)
+
+
+def test_schema_patterns_are_never_evaluated_for_xml_conversion():
+    from rapid_mlx.parsing.tool_values import decode_body
+
+    key = "a" * 100 + "!"
+    schema = {
+        "properties": {"x": True},
+        "patternProperties": {"(a+)+$": {"type": "string"}, "[": {}},
+        "$ref": "https://example.invalid/not-retrieved",
+    }
+    body = f"<function=f><parameter={key}>123</parameter><parameter=x>4</parameter></function>"
+    assert decode_body(body, "hermes", {"f": schema}) == ("f", {key: 123, "x": 4})
+
+
+def test_missing_prompt_evidence_does_not_promote_private_text():
+    session = make_session(config(), {}, thinking=False)
+    session.feed(output("private reasoning"))
+    session.finish()
+    assert session.result.content == ""
+    assert session.result.reasoning == "private reasoning"

@@ -37,25 +37,9 @@ def _value(text, schema):
 
 
 def _parameter_schema(schema, key):
-    """Resolve conversion hints; full-object validation retains all constraints."""
-    props = schema.get("properties", {})
-    matched = [props[key]] if key in props else []
-    matched += [
-        value
-        for pattern, value in schema.get("patternProperties", {}).items()
-        if re.search(pattern, key)
-    ]
-    if not matched:
-        matched = [schema.get("additionalProperties", {})]
-    constraints = [value for value in matched if isinstance(value, dict)]
-    from ..tool_parsers.muse_tool_parser import _declared_type
-
-    # A direct type constraint controls representation, including when the
-    # property's own schema is unconstrained and a matching pattern adds it.
-    for value in constraints:
-        if _declared_type(value) is not None:
-            return value
-    return constraints[0] if constraints else {}
+    """Use named-property type hints without evaluating schema constraints."""
+    value = schema.get("properties", {}).get(key, {})
+    return value if isinstance(value, dict) else {}
 
 
 def _parameters(payload, opener):
@@ -212,16 +196,3 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
             )
         return name, arguments
     raise ValueError("unsupported tool body")
-
-
-def validate_arguments(arguments, schema):
-    """Validate a completed object without rewriting it or retrieving schemas."""
-    from jsonschema.exceptions import ValidationError
-    from jsonschema.validators import validator_for
-    from referencing import Registry
-    from referencing.exceptions import Unresolvable
-
-    try:
-        validator_for(schema)(schema, registry=Registry()).validate(arguments)
-    except (ValidationError, Unresolvable) as exc:
-        raise ValueError("tool arguments violate declared schema") from exc

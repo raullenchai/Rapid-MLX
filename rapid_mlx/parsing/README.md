@@ -32,8 +32,10 @@ legacy implementations pending a separate migration.
   nonfailed calls are eligible; no incomplete call receives fabricated arguments.
   Indexed failures reserve that index even before a start event, so a failed
   candidate cannot later become an executable call under the same index.
-  Name authorization and argument validation belong to the format adapter before
-  `ToolEnd`. Selected format adapters implement this validation contract.
+  Name authorization and well-formed JSON-object checks belong to the format
+  adapter before `ToolEnd`. Schema constraints do not gate call commitment;
+  guided generation or the client owns enforcement. XML parameter conversion
+  uses named-property type hints without evaluating schema patterns or references.
 
 Set the internal diagnostic environment switch `RAPID_MLX_PARSER_SHADOW=1` before
 creating a request to compare text-only Qwen-family postprocessor channels. The
