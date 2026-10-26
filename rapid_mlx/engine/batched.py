@@ -2849,6 +2849,10 @@ class BatchedEngine(BaseEngine):
         flint = is_flint_chat_template(
             applicator, tools=tools, chat_template_kwargs=template_kwargs
         )
+        if prefix and not prompt.endswith(prefix):
+            return prompt_parse_context(
+                prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix
+            )
         assistant_start = None
         try:
             history = self._apply_chat_template(

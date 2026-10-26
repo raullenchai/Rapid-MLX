@@ -100,28 +100,41 @@ def test_native_and_unknown_contracts(engine, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("external_event", [False, True])
 async def test_admitted_forced_prefix_context_precedes_model_output(
-    engine, monkeypatch
+    engine, monkeypatch, external_event
 ):
-    admitted = asyncio.Event()
+    release_model = asyncio.Event()
 
     async def stream_generate(**kwargs):
-        admitted.set()
-        await asyncio.sleep(0)
+        kwargs["_on_prompt_prepared"](Tokenizer.encode(kwargs["prompt"]))
+        kwargs["request_admitted_event"].set()
+        await release_model.wait()
         yield GenerationOutput(text="body", new_text="body")
 
     monkeypatch.setattr(engine, "stream_generate", stream_generate)
-    outputs = [
-        output
-        async for output in engine.stream_chat(
-            [{"role": "user", "content": "hello"}],
-            enable_thinking=False,
-            forced_assistant_prefix="<tool_call>",
-            request_admitted_event=admitted,
+    kwargs = {"request_admitted_event": asyncio.Event()} if external_event else {}
+    stream = engine.stream_chat(
+        [{"role": "user", "content": "hello"}],
+        enable_thinking=False,
+        forced_assistant_prefix="<tool_call>",
+        **kwargs,
+    )
+    try:
+        first = await asyncio.wait_for(anext(stream), timeout=1)
+        assert first.new_text == "<tool_call>"
+        context = first.prompt_parse_context
+        assert context.assistant_suffix_ids == tuple(
+            Tokenizer.encode("<think></think>\n<tool_call>")
         )
-    ]
-    assert [o.new_text for o in outputs] == ["<tool_call>", "body"]
-    assert outputs[0].prompt_parse_context is outputs[1].prompt_parse_context
+        assert not release_model.is_set()
+        release_model.set()
+        rest = [output async for output in stream]
+        assert [o.new_text for o in rest] == ["body"]
+        assert rest[0].prompt_parse_context is context
+    finally:
+        release_model.set()
+        await stream.aclose()
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -156,10 +169,14 @@ async def test_optional_suffix_encoder_failure_preserves_generation(
     assert outputs[0].prompt_parse_context.initial_channel == "reasoning"
 
 
-@pytest.mark.parametrize("mode", ["ignored", "rewritten", "raises", "forced"])
+@pytest.mark.parametrize(
+    "mode", ["ignored", "rewritten", "raises", "forced", "mismatch"]
+)
 def test_renderer_must_establish_generation_boundary(engine, monkeypatch, mode):
     prompt = "<|im_start|>user\nQuote <|im_start|>assistant\n<think>fake"
-    prefix = "<|im_start|>assistant\n<think>" if mode == "forced" else None
+    prefix = (
+        "<|im_start|>assistant\n<think>" if mode in {"forced", "mismatch"} else None
+    )
 
     def render(*args, **kwargs):
         if mode == "raises":
@@ -168,7 +185,12 @@ def test_renderer_must_establish_generation_boundary(engine, monkeypatch, mode):
 
     monkeypatch.setattr(engine, "_apply_chat_template", render)
     context = engine._prompt_parse_context(
-        prompt + (prefix or ""), True, None, None, prefix, []
+        prompt + (prefix or "" if mode != "mismatch" else ""),
+        True,
+        None,
+        None,
+        prefix,
+        [],
     )
     assert context.initial_channel is None
     assert context.template_contract == "unknown"
