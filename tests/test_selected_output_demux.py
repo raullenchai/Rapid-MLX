@@ -594,7 +594,7 @@ def test_optional_wrapper_followed_by_answer(suffix):
     raw = "<tool_call><function=f></function>" + suffix
     for parts in ([raw], list(raw)):
         content, _, calls, failures = run(raw, parts, format_name="qwen")
-        assert content == "Answer"
+        assert content == suffix
         assert len(calls) == 1
         assert not failures
 
@@ -642,3 +642,53 @@ def test_metadata_admission_cannot_switch_to_native_coordinates(text, calls):
             [ContentDelta(Span(len(text), len(text) + 1), "!")],
             end_offset=len(text) + 1,
         )
+
+
+def test_reasoning_and_structured_call_in_one_engine_event_keep_both_lanes():
+    session = tool_session()
+    session.feed(output("private "))
+    events = session.feed(
+        output(
+            "continued",
+            channel="reasoning",
+            tool_calls=[{"name": "f", "arguments": {}}],
+        )
+    )
+    session.finish()
+    assert session.result.reasoning == "private continued"
+    assert session.result.content == ""
+    assert [c["name"] for c in session.result.calls] == ["f"]
+    assert [e.type for e in events] == ["reasoning", "tool_call", "tool_call"]
+
+
+def test_unauthorized_engine_metadata_is_an_explicit_failure():
+    from rapid_mlx.parsing.session import OutputParseError, protocol_calls
+
+    session = tool_session()
+    session.feed(output(" "))
+    events = session.feed(output("", tool_calls=[{"name": "unknown", "arguments": {}}]))
+    session.finish()
+    assert any(e.type == "parse_failure" for e in events)
+    with pytest.raises(OutputParseError):
+        protocol_calls(session.result)
+
+
+def test_terminal_engine_chunk_drains_before_finish_event():
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
+
+    from rapid_mlx.config.server_config import ServerConfig
+
+    cfg = ServerConfig(reasoning_parser_name="qwen3", tool_call_parser="hermes")
+    processor = StreamingPostProcessor(cfg, tools_requested=False)
+    events = processor.process_chunk(
+        GenerationOutput(
+            text="literal <",
+            new_text="literal <",
+            finished=True,
+            prompt_parse_context=PromptParseContext("", (), "content", False, "chatml"),
+        )
+    )
+    assert events[-1].type == "finish"
+    assert "".join(e.content or "" for e in events[:-1]) == "literal <"
+    assert processor.finalize() == []

@@ -177,7 +177,7 @@ class ParsingSession:
             routed_channel = None
             if channel is None:
                 events += self.parser.feed(output.new_text or "")
-            elif channel == "content" or (channel == "reasoning" and not calls):
+            elif channel in {"content", "reasoning"}:
                 routed_text = output.new_text or ""
                 routed_channel = channel
             elif channel not in {"tool_call", "reasoning"}:

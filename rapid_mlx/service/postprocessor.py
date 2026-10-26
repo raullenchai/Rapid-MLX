@@ -2660,6 +2660,7 @@ class StreamingPostProcessor:
             if selected is not None:
                 selected = self._selected_events(selected)
                 if output.finished:
+                    selected.extend(self.finalize())
                     selected.append(self._make_finish_event(output))
                 return selected
         events = self._process_chunk_events(output)

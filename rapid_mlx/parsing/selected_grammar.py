@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from .output_demux import (
     ChannelGrammar,
@@ -190,10 +191,10 @@ class SelectedGrammar(ChannelGrammar):
         self.has_prose = False
         self.orphan = False
         self.next_index = 0
-        self.candidate = None
+        self.candidate: dict[str, Any] | None = None
         self.optional_outer_close = False
 
-    def _literal(self, lexeme):
+    def _literal(self, lexeme) -> list[Event]:
         cls = ReasoningDelta if self.channel == "reasoning" else ContentDelta
         if lexeme.text.strip():
             self.has_prose = True
@@ -201,21 +202,17 @@ class SelectedGrammar(ChannelGrammar):
 
     def consume(self, lexeme: Lexeme) -> list[Event]:
         if self.candidate is not None:
-            return self._candidate(lexeme)
+            return cast(list[Event], self._candidate(lexeme))
         kind = lexeme.terminal
         if self.optional_outer_close:
             if kind == "tool_end":
                 self.optional_outer_close = False
                 return [Control(lexeme.span, "tool_wrapper")]
-            whitespace = len(lexeme.text) - len(lexeme.text.lstrip())
-            if whitespace:
-                end = lexeme.span.start + whitespace
-                result = [Control(Span(lexeme.span.start, end), "tool_wrapper")]
-                if whitespace < len(lexeme.text):
-                    result += self.consume(
-                        Lexeme(Span(end, lexeme.span.end), lexeme.text[whitespace:])
-                    )
-                return result
+            if lexeme.text.isspace():
+                # The inner function close completes the call. Following
+                # whitespace is literal output, even before an optional wrapper.
+                # Do not hold an unbounded whitespace run awaiting a closer.
+                return self._literal(lexeme)
             self.optional_outer_close = False
         if kind == "fence":
             self.fenced = not self.fenced
@@ -367,7 +364,7 @@ class SelectedGrammar(ChannelGrammar):
             events += self._close(Span(lexeme.span.end, lexeme.span.end))
         return events
 
-    def _body(self, lexeme):
+    def _body(self, lexeme) -> list[Event]:
         # Resource boundaries are source positions, never input-chunk edges.
         # Processing the owned body once also bounds header lookahead before
         # a large single chunk can commit a header rejected by token streaming.
@@ -584,7 +581,9 @@ class SelectedGrammar(ChannelGrammar):
             name = function.get("name")
             arguments = function.get("arguments")
             if name not in self.context.authorized_tools:
-                events.append(ParseFailure(span, "unauthorized_tool"))
+                index = self.next_index
+                self.next_index += 1
+                events.append(ParseFailure(span, "unauthorized_tool", index))
                 continue
             if isinstance(arguments, dict):
                 arguments = json.dumps(arguments, ensure_ascii=False, allow_nan=False)
@@ -616,4 +615,4 @@ class SelectedGrammar(ChannelGrammar):
             return [
                 ParseFailure(Span(c["cursor"], offset), "incomplete_tool", c["index"])
             ]
-        return self._reject(offset, "incomplete_candidate")
+        return cast(list[Event], self._reject(offset, "incomplete_candidate"))

@@ -103,13 +103,13 @@ def decode_body(body: str, format_name: str, schemas: dict) -> tuple[str, object
             raise ValueError("missing tool arguments")
         if "arguments" in function and "parameters" in function:
             raise ValueError("ambiguous tool arguments")
-        name = function.get("name")
-        arguments = function.get("arguments", function.get("parameters", {}))
-        if isinstance(arguments, str):
-            arguments = _json(arguments)
-        if not isinstance(name, str) or not name:
+        json_name = function.get("name")
+        json_arguments = function.get("arguments", function.get("parameters", {}))
+        if isinstance(json_arguments, str):
+            json_arguments = _json(json_arguments)
+        if not isinstance(json_name, str) or not json_name:
             raise ValueError("missing tool name")
-        return name, arguments
+        return json_name, json_arguments
     function = re.fullmatch(r"<function=([^>]+)>(.*)</function>\s*", stripped, re.S)
     if function is None:
         function = re.fullmatch(
