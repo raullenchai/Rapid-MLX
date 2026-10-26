@@ -2830,6 +2830,37 @@ class BatchedEngine(BaseEngine):
             return [*prompt_ids, *suffix_ids], suffix_ids
         return prompt + "".join(_HARMONY_NO_THINKING_SUFFIX_TOKENS), suffix_ids
 
+    def _prompt_parse_context(self, prompt, thinking, tools, template_kwargs, prefix):
+        from ..prompt_parse_context import prompt_parse_context
+        from ..utils.chat_template import is_flint_chat_template
+
+        # Native token-routed families keep their existing ownership contract.
+        if not isinstance(prompt, str):
+            return None
+        applicator = self.tokenizer
+        if (
+            self._is_mllm
+            and self._processor
+            and getattr(self._processor, "chat_template", None)
+        ):
+            applicator = self._processor
+        flint = is_flint_chat_template(
+            applicator, tools=tools, chat_template_kwargs=template_kwargs
+        )
+        context = prompt_parse_context(
+            prompt, thinking=thinking, flint_template=flint, forced_prefix=prefix or ""
+        )
+        if context.template_contract == "unknown":
+            return context
+        return prompt_parse_context(
+            prompt,
+            thinking=thinking,
+            flint_template=flint,
+            forced_prefix=prefix or "",
+            prompt_ids=self.encode_prompt_text(prompt),
+            tokenizer=getattr(self.tokenizer, "tokenizer", self.tokenizer),
+        )
+
     def encode_prompt_text(self, prompt: str) -> list[int] | None:
         """Tokenize a rendered prompt exactly as the text scheduler will.
 
@@ -3805,7 +3836,14 @@ class BatchedEngine(BaseEngine):
         if requires_prompt_integrity:
             kwargs["requires_prompt_integrity"] = True
 
-        return await self.generate(
+        context = self._prompt_parse_context(
+            prompt,
+            enable_thinking,
+            template_tools,
+            chat_template_kwargs,
+            forced_assistant_prefix,
+        )
+        output = await self.generate(
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -3814,6 +3852,8 @@ class BatchedEngine(BaseEngine):
             videos=all_videos if all_videos else None,
             **kwargs,
         )
+        output.prompt_parse_context = context
+        return output
 
     def _is_hybrid_model(self) -> bool:
         """Is the loaded model a hybrid Mamba/DeltaNet + Transformer?
@@ -4715,6 +4755,13 @@ class BatchedEngine(BaseEngine):
                     e,
                 )
                 router = None
+        context = self._prompt_parse_context(
+            prompt,
+            enable_thinking,
+            template_tools,
+            chat_template_kwargs,
+            forced_assistant_prefix,
+        )
         stream = self.stream_generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -4779,15 +4826,19 @@ class BatchedEngine(BaseEngine):
                     completion_tokens=0,
                     finished=False,
                     finish_reason=None,
+                    prompt_parse_context=context,
                 )
                 if first_output is None and engine_output_task is not None:
                     first_output = await engine_output_task
                 if first_output is not None:
+                    first_output.prompt_parse_context = context
                     yield first_output
             elif first_output is not None:
+                first_output.prompt_parse_context = context
                 yield first_output
 
             async for output in routed_stream:
+                output.prompt_parse_context = context
                 yield output
         finally:
             # A failed, empty, or cancelled stream must not leave priming

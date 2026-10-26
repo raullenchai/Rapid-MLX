@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..prompt_parse_context import PromptParseContext
+
 
 @dataclass
 class GenerationOutput:
@@ -108,6 +110,8 @@ class GenerationOutput:
     # Frozen scheduler timings for a successful terminal text generation.
     # Appended after prompt_compression to preserve its positional index.
     timing_metrics: dict[str, float] | None = None
+    # Internal request-local metadata, never serialized as model output.
+    prompt_parse_context: PromptParseContext | None = None
 
 
 def _callable_accepts_kwarg(func: Any, name: str, inspect_mod: Any) -> bool:
