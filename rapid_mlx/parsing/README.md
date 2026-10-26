@@ -30,6 +30,8 @@ the selected format adapters move onto this contract.
   any cursor or mode changes.
 - `EventReducer` accumulates the same events for buffered consumers. Only ended,
   nonfailed calls are eligible; no incomplete call receives fabricated arguments.
+  Indexed failures reserve that index even before a start event, so a failed
+  candidate cannot later become an executable call under the same index.
   Name authorization and argument validation belong to the format adapter before
   `ToolEnd`. This phase supplies the event contract, not new executable grammars.
 

@@ -358,3 +358,24 @@ def test_native_rejection_is_atomic_for_non_value_validation_errors():
     assert parser.offset == parser.commit_cursor == 0
     assert parser.feed("a") == [ContentDelta(Span(0, 1), "a")]
     assert parser.finish() == [Finish(Span(1, 1), "stop")]
+
+
+def test_indexed_failure_before_start_cannot_become_an_executable_call():
+    reducer = EventReducer()
+    span = Span(0, 0)
+    reducer.feed([ParseFailure(span, "invalid_header", 0)])
+    with pytest.raises(ValueError, match="failed tool index"):
+        reducer.feed([ToolStart(span, 0, "failed")])
+    with pytest.raises(ValueError, match="terminal call"):
+        reducer.feed([ParseFailure(span, "another_failure", 0)])
+    assert reducer.calls == []
+    reducer.feed(
+        [
+            ToolStart(span, 1, "valid"),
+            ToolArgs(span, 1, "{}"),
+            ToolEnd(span, 1),
+            Finish(span, "stop"),
+        ]
+    )
+    assert reducer.calls == [{"name": "valid", "arguments": "{}"}]
+    assert len(reducer.failures) == 1

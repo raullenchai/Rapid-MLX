@@ -374,6 +374,7 @@ class EventReducer:
         self.content: list[str] = []
         self.reasoning: list[str] = []
         self._calls: dict[int, ReducedCall] = {}
+        self._failed_indices: set[int] = set()
         self.failures: list[ParseFailure] = []
         self.finish_reason: str | None = None
 
@@ -386,8 +387,8 @@ class EventReducer:
             elif isinstance(event, ReasoningDelta):
                 self.reasoning.append(event.text)
             elif isinstance(event, ToolStart):
-                if event.index in self._calls:
-                    raise ValueError("duplicate tool index")
+                if event.index in self._calls or event.index in self._failed_indices:
+                    raise ValueError("duplicate or failed tool index")
                 self._calls[event.index] = ReducedCall(event.index, event.name)
             elif isinstance(event, (ToolArgs, ToolEnd)):
                 call = self._calls[event.index]
@@ -398,11 +399,15 @@ class EventReducer:
                 else:
                     call.complete = True
             elif isinstance(event, ParseFailure):
+                if event.index in self._failed_indices:
+                    raise ValueError("failure after terminal call")
                 if event.index is not None and event.index in self._calls:
                     call = self._calls[event.index]
                     if call.complete or call.failed:
                         raise ValueError("failure after terminal call")
                     call.failed = True
+                if event.index is not None:
+                    self._failed_indices.add(event.index)
                 self.failures.append(event)
             elif isinstance(event, Finish):
                 self.finish_reason = event.reason
