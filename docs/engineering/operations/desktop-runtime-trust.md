@@ -13,6 +13,8 @@ Missing, changed, unsigned or differently signed bundles are refused.
 Verification reads the bundled payload once per session and binary path.
 Dictation capture only stats cached snapshot paths and artifact sizes inventoried
 by an earlier catalog refresh; it neither starts the CLI nor authenticates the bundle.
+Reference-file identity and timestamps must also match, so repointing `refs/main`
+cannot authorize a stale snapshot.
 
 ## Upgrading a slim installation
 

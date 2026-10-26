@@ -75,6 +75,34 @@ struct DictationSnapshotTests {
         #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
     }
 
+    @Test("Repointing main cannot authorize the old snapshot", arguments: [false, true])
+    func changedReference(atomic: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dictation-reference-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = root.appendingPathComponent("models--test--audio")
+        let snapshot = repo.appendingPathComponent("snapshots/current")
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("refs"), withIntermediateDirectories: true)
+        try populate(snapshot)
+        let ref = repo.appendingPathComponent("refs/main")
+        try Data("current".utf8).write(to: ref)
+        let entry = ModelEntry(alias: "audio", hfRepo: "test/audio", sizeOnDisk: nil, cached: true)
+        let paths = DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root)
+        #expect(paths.count == 1)
+        #expect(paths.allSatisfy { $0.isOnDisk })
+        // Same byte count: size alone must not authorize a different revision.
+        try Data("missing".utf8).write(to: ref, options: atomic ? .atomic : [])
+        #expect(!paths.contains { $0.isOnDisk })
+        #expect(DictationSnapshot.isDirectory(snapshot))
+        #expect(DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root).isEmpty)
+        try FileManager.default.removeItem(at: ref)
+        let offline = DictationSnapshot.cachedSnapshots(for: entry, cacheRoot: root)
+        #expect(offline.count == 1)
+        #expect(offline.allSatisfy { $0.isOnDisk })
+        try Data("missing".utf8).write(to: ref)
+        #expect(!offline.contains { $0.isOnDisk })
+    }
+
     private func populate(_ snapshot: URL) throws {
         try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
         try Data([1, 2, 3]).write(to: snapshot.appendingPathComponent("model.safetensors"))

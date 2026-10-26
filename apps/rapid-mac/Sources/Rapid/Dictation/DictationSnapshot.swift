@@ -5,12 +5,25 @@ import Foundation
 /// during a keypress. Capture the files behind HF symlinks too: deleting a
 /// blob can leave its snapshot directory and symlink names intact.
 enum DictationSnapshot {
+    struct ReferenceIdentity: Equatable {
+        let device: Int32
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+    }
+
     struct Snapshot {
         let directory: URL
         let artifacts: [(path: String, size: Int64)]
+        let referencePath: String
+        let referenceIdentity: ReferenceIdentity?
 
         var isOnDisk: Bool {
-            DictationSnapshot.isDirectory(directory) && artifacts.allSatisfy {
+            DictationSnapshot.referenceIdentity(referencePath) == referenceIdentity
+                && DictationSnapshot.isDirectory(directory) && artifacts.allSatisfy {
                 DictationSnapshot.fileSize($0.path) == $0.size
             }
         }
@@ -21,22 +34,32 @@ enum DictationSnapshot {
               let directory = HFCacheByteMonitor.cacheDirectoryURL(hubCacheRoot: cacheRoot, hfPath: repo)
         else { return [] }
         let snapshots = directory.appendingPathComponent("snapshots", isDirectory: true)
-        if let revision = try? String(contentsOf: directory.appendingPathComponent("refs/main"), encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !revision.isEmpty, revision != ".", revision != "..", !revision.contains("/") {
+        let reference = directory.appendingPathComponent("refs/main")
+        let identity = referenceIdentity(reference.path)
+        if FileManager.default.fileExists(atPath: reference.path) {
+            guard identity != nil,
+                  let revision = try? String(contentsOf: reference, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !revision.isEmpty, revision != ".", revision != "..", !revision.contains("/")
+            else { return [] }
             // Another revision must not hide deletion of the selected main
             // snapshot, or of any artifacts inside it.
-            return inventory(snapshots.appendingPathComponent(revision, isDirectory: true)).map { [$0] } ?? []
+            return inventory(snapshots.appendingPathComponent(revision, isDirectory: true),
+                             referencePath: reference.path, referenceIdentity: identity).map { [$0] } ?? []
         }
         // Pinned/offline caches may have snapshots without a main ref. Only
         // remember revisions present at catalog refresh, never discover new
         // ones (or trigger downloads) at record time.
         return ((try? FileManager.default.contentsOfDirectory(
             at: snapshots, includingPropertiesForKeys: nil
-        )) ?? []).compactMap(inventory)
+        )) ?? []).compactMap {
+            inventory($0, referencePath: reference.path, referenceIdentity: identity)
+        }
     }
 
-    private static func inventory(_ directory: URL) -> Snapshot? {
+    private static func inventory(
+        _ directory: URL, referencePath: String, referenceIdentity: ReferenceIdentity?
+    ) -> Snapshot? {
         guard isDirectory(directory) else { return nil }
         var failed = false
         guard let entries = FileManager.default.enumerator(
@@ -54,7 +77,21 @@ enum DictationSnapshot {
             hasWeights = hasWeights || (["safetensors", "npz", "bin", "pt"].contains(file.pathExtension) && size > 0)
         }
         guard !failed, hasConfig, hasWeights else { return nil }
-        return Snapshot(directory: directory, artifacts: artifacts)
+        return Snapshot(directory: directory, artifacts: artifacts,
+                        referencePath: referencePath, referenceIdentity: referenceIdentity)
+    }
+
+    private static func referenceIdentity(_ path: String) -> ReferenceIdentity? {
+        // Detect atomic ref replacement and in-place rewrites without reading
+        // refs/main on the hot path. Also reject a newly created ref when the
+        // inventory originally used an offline snapshot with no main ref.
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return ReferenceIdentity(device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                                 modifiedSeconds: info.st_mtimespec.tv_sec,
+                                 modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                                 changedSeconds: info.st_ctimespec.tv_sec,
+                                 changedNanoseconds: info.st_ctimespec.tv_nsec)
     }
 
     private static func fileSize(_ path: String) -> Int64? {
