@@ -293,9 +293,22 @@ def resolve_pinned_cached_snapshot(
         return None
     repo_id = resolve_hub_model(model_name)
     repo_root = Path(HF_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
+    from ._download_gate import _snapshot_is_complete_audio_model
+    from .audio.registry import resolve_audio_alias
+
+    # Whisper uses weights.npz/weights.safetensors, not the text weight glob.
+    # Reuse the same family-specific completeness check as the serve gate.
+    snapshot = repo_root / "snapshots" / revision
+    audio = resolve_audio_alias(repo_id)
+    if audio is not None and audio.family == "whisper" and not checkpoint_subfolder:
+        if not snapshot.is_symlink() and _snapshot_is_complete_audio_model(
+            repo_id, audio.family
+        ):
+            return snapshot
+        return None
     return _complete_cached_checkpoint(
         repo_root,
-        repo_root / "snapshots" / revision,
+        snapshot,
         model_name,
         checkpoint_subfolder=checkpoint_subfolder,
     )
