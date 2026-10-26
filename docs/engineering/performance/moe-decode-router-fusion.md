@@ -20,6 +20,11 @@ reciprocal multiplication, post-softmax bias and epsilon, and dtype-rounded
 products and accumulation. Keeping only f32 accumulation until the final bf16
 cast was insufficient for model-level agreement.
 
+Deterministic ties preserve the runtime's stable ascending sort order: the
+largest tied indices occupy the top-k tail. Regression coverage compares exact
+indices, scores and full bf16 block outputs for 32–256 experts, top-k 1–8,
+uniform gates and biased boundary ties (128 cases).
+
 ## Measurement method
 
 Checkpoint: `LiquidAI/LFM2.5-24B-A2B-MLX-4bit`, revision

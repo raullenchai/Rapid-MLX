@@ -158,13 +158,35 @@ def test_non_module_container(metal):
     assert fusion.install_moe_decode_fusion(object()) == 0
 
 
-def test_routing_ties(metal):
+@pytest.mark.parametrize("e", range(32, 257, 32))
+@pytest.mark.parametrize("k", range(1, 9))
+@pytest.mark.parametrize("biased", [False, True])
+def test_routing_ties(metal, e, k, biased):
+    """Match the runtime's stable ascending sort, including boundary ties."""
     mx = metal
-    b = make_block()
-    x = mx.zeros((1, 1, 128))
+    import mlx.nn as nn
+
+    b = make_block(e, k)
+    b.set_dtype(mx.bfloat16)
+    b.gate.weight = mx.zeros((e, 128), dtype=mx.float32)
+    b.expert_bias = (
+        (mx.arange(e) % 3 == 0).astype(mx.float32) * 0.001
+        if biased
+        else mx.zeros((e,), dtype=mx.float32)
+    )
+    x = mx.ones((1, 1, 128), dtype=mx.bfloat16)
+    gates = mx.softmax(b.gate(x).astype(mx.float32)) + b.expert_bias
+    expected_indices = mx.argpartition(gates, kth=-k, axis=-1)[..., -k:]
+    expected_scores = mx.take_along_axis(gates, expected_indices, -1)
+    expected_scores = (
+        expected_scores / (expected_scores.sum(-1, keepdims=True) + 1e-20)
+    ).astype(x.dtype)
     indices, scores = fusion.route(b, x)
-    assert len(set(indices.reshape(-1).tolist())) == b.top_k
-    assert mx.allclose(scores, mx.full(scores.shape, 1 / b.top_k)).item()
+    assert mx.array_equal(indices, expected_indices).item()
+    assert mx.array_equal(scores, expected_scores).item()
+    expected_output = b(x)
+    assert fusion.install_moe_decode_fusion(nn.Sequential(b)) == 1
+    assert mx.array_equal(b(x), expected_output).item()
 
 
 def test_missing_mlx(monkeypatch):
