@@ -15934,7 +15934,9 @@ def main():
         try:
             pull_command(args)
         except KeyboardInterrupt:
-            print("\n  Download cancelled. Completed files stay cached.", file=sys.stderr)
+            print(
+                "\n  Download cancelled. Completed files stay cached.", file=sys.stderr
+            )
             print(f"  Retry: {_pull_retry_command(args)}", file=sys.stderr)
             raise SystemExit(130) from None
     elif args.command == "rm":
