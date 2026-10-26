@@ -16,10 +16,10 @@ import subprocess
 import time
 import urllib.request
 
-from mlx_lm.utils import load_tokenizer
-
 
 def main() -> None:
+    from mlx_lm.utils import load_tokenizer
+
     p = argparse.ArgumentParser()
     p.add_argument("model")
     p.add_argument(
@@ -88,11 +88,15 @@ def main() -> None:
                         output += c["text"]
         end = time.perf_counter()
         nt = usage.get("completion_tokens", len(tok.encode(output)))
+        # SSE text events need not correspond one-to-one with generated tokens.
+        # Decode timing is unavailable when events coalesce tokens or text is empty.
+        interval = stamps[-1] - stamps[0] if len(stamps) > 1 else 0
+        tps = (nt - 1) / interval if len(stamps) == nt and interval > 0 else None
         return dict(
             ctx=ctx,
             tokens=nt,
-            tps=(nt - 1) / (stamps[-1] - stamps[0]),
-            ttft=stamps[0] - start,
+            tps=tps,
+            ttft=stamps[0] - start if stamps else None,
             elapsed=end - start,
             output=output,
             usage=usage,
@@ -105,7 +109,6 @@ def main() -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(root / ("main" if v == "A" else "wt"))
         env["RAPID_MLX_MOE_DECODE_FUSION"] = "0" if v == "A" else "1"
-        log = open(root / f"server-{run}-{v}.log", "w")
         cmd = [
             str(root / "venv/bin/rapid-mlx"),
             "serve",
@@ -120,63 +123,64 @@ def main() -> None:
             "--max-tokens",
             "128",
         ]
-        proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
-        try:
-            for _ in range(240):
-                if proc.poll() is not None:
-                    raise RuntimeError(f"server exit {proc.returncode}")
-                try:
-                    with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/health", timeout=2
-                    ):
-                        pass
-                    break
-                except Exception:
-                    time.sleep(1)
-            else:
-                raise TimeoutError("server did not become ready")
-            req(256, 16)
-            for ctx in map(int, a.contexts.split(",")):
-                for rep in range(3):
-                    t0 = time.perf_counter()
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=a.concurrency
-                    ) as pool:
-                        rows = list(pool.map(req, [ctx] * a.concurrency))
-                    duration = time.perf_counter() - t0
-                    r = rows[0]
-                    r["requests"] = rows[1:]
-                    r["concurrency"] = a.concurrency
-                    r["aggregate_tps"] = sum(z["tokens"] for z in rows) / duration
-                    try:
-                        r["status"] = json.load(
-                            urllib.request.urlopen(
-                                f"http://127.0.0.1:{port}/v1/status", timeout=5
-                            )
-                        )
-                    except Exception as exc:
-                        r["status_error"] = str(exc)
-                    r.update(variant=v, run=run, rep=rep, model=a.model)
-                    with (root / a.out).open("a") as result_file:
-                        result_file.write(json.dumps(r) + "\n")
-                    print(
-                        json.dumps(
-                            {
-                                k: x
-                                for k, x in r.items()
-                                if k not in ("output", "usage", "requests", "status")
-                            }
-                        ),
-                        flush=True,
-                    )
-        finally:
-            proc.terminate()
+        with (root / f"server-{run}-{v}.log").open("w") as log:
+            proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
             try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            log.close()
+                for _ in range(240):
+                    if proc.poll() is not None:
+                        raise RuntimeError(f"server exit {proc.returncode}")
+                    try:
+                        with urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/health", timeout=2
+                        ):
+                            pass
+                        break
+                    except Exception:
+                        time.sleep(1)
+                else:
+                    raise TimeoutError("server did not become ready")
+                req(256, 16)
+                for ctx in map(int, a.contexts.split(",")):
+                    for rep in range(3):
+                        t0 = time.perf_counter()
+                        with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=a.concurrency
+                        ) as pool:
+                            rows = list(pool.map(req, [ctx] * a.concurrency))
+                        duration = time.perf_counter() - t0
+                        r = rows[0]
+                        r["requests"] = rows[1:]
+                        r["concurrency"] = a.concurrency
+                        r["aggregate_tps"] = sum(z["tokens"] for z in rows) / duration
+                        try:
+                            r["status"] = json.load(
+                                urllib.request.urlopen(
+                                    f"http://127.0.0.1:{port}/v1/status", timeout=5
+                                )
+                            )
+                        except Exception as exc:
+                            r["status_error"] = str(exc)
+                        r.update(variant=v, run=run, rep=rep, model=a.model)
+                        with (root / a.out).open("a") as result_file:
+                            result_file.write(json.dumps(r) + "\n")
+                        print(
+                            json.dumps(
+                                {
+                                    k: x
+                                    for k, x in r.items()
+                                    if k
+                                    not in ("output", "usage", "requests", "status")
+                                }
+                            ),
+                            flush=True,
+                        )
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
 
 
 if __name__ == "__main__":
