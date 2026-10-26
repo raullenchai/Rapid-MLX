@@ -7,11 +7,12 @@ alternatives considered, consequences, owner, and date.
 
 | Date | Decision | Status |
 | --- | --- | --- |
+| 2026-10-25 | [Built-in chat harness: persistent PydanticAI with Rapid-owned state](2026-10-25-built-in-chat-harness-pydanticai.md) | Accepted; Phase 1 gated by qualification |
 | 2026-10-05 | [CUA approvals belong to the brain, not the hands](2026-10-05-cua-approvals-belong-to-the-brain.md) | Accepted |
 | 2026-09-27 | [Agent-session prefix reuse on 16-32 GB Macs](2026-09-27-agent-session-prefix-cache.md) | Accepted |
 | 2026-09-24 | [Native System One server boundary](2026-09-24-system-one-server.md) | Accepted for implementation |
 | 2026-09-15 | [Community Benchmark read-API seam](2026-09-15-community-benchmark-read-api-seam.md) | Implemented; aggregate gaps documented |
-| 2026-09-13 | [Rapid agent runtime](2026-09-13-rapid-agent-runtime.md) | Accepted for P0 implementation |
+| 2026-09-13 | [Rapid agent runtime](2026-09-13-rapid-agent-runtime.md) | Superseded for built-in chat (2026-10-25) |
 | 2026-09-08 | [Share Compute Desktop boundary](2026-09-08-share-compute-desktop-boundary.md) | Implemented behind the experimental gate |
 | 2026-09-05 | [Always-on service configuration and transactional apply](2026-09-05-always-on-service-configuration.md) | Accepted for implementation |
 | 2026-08-31 | [Community benchmark wire contract v1](2026-08-31-community-benchmark-wire-contract.md) | Accepted contract; producer and ingestion migration deferred |

@@ -1,6 +1,6 @@
 # Rapid Agent Runtime: one bounded harness for Server and Desktop
 
-- **Status:** Accepted for P0 implementation
+- **Status:** Accepted for P0 implementation; superseded for the built-in chat harness by [2026-10-25 built-in chat harness](2026-10-25-built-in-chat-harness-pydanticai.md)
 - **Owner:** Atlas
 - **Date:** 2026-09-13
 
