@@ -1712,13 +1712,20 @@ def _load_benchmark_baseline(
 def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str:
     """Return the revision resolved by Hugging Face for the loaded model."""
 
-    from rapid_mlx.model_aliases import resolve_model, resolve_revision
+    from rapid_mlx.model_aliases import (
+        resolve_hub_model,
+        resolve_model,
+        resolve_revision,
+        resolve_subfolder,
+        subfolder_allow_patterns,
+    )
 
     if cache_dir is None:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         cache_dir = Path(HF_HUB_CACHE)
-    repo_cache = cache_dir / f"models--{_safe_name(model_id)}"
+    repo_id = resolve_hub_model(model_id)
+    repo_cache = cache_dir / f"models--{_safe_name(repo_id)}"
     pinned_revision = resolve_revision(model_id)
     if pinned_revision is not None:
         from rapid_mlx.model_metadata import resolve_pinned_cached_snapshot
@@ -1726,15 +1733,52 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
         # The server resolves external roots before selecting a Hub checkpoint.
         # A cache directory cannot prove the revision of a different local load.
         snapshot = repo_cache / "snapshots" / pinned_revision
+        subfolder = resolve_subfolder(model_id)
+        checkpoint = snapshot / subfolder if subfolder else snapshot
         resolved = resolve_model(model_id)
-        cached = resolve_pinned_cached_snapshot(model_id)
+        cached = resolve_pinned_cached_snapshot(
+            model_id, checkpoint_subfolder=subfolder
+        )
         if (
-            Path(resolved).exists() and Path(resolved).resolve() != snapshot.resolve()
-        ) or cached != snapshot:
+            Path(resolved).exists()
+            and Path(resolved).resolve()
+            not in (snapshot.resolve(), checkpoint.resolve())
+        ) or cached != checkpoint:
             raise ValueError(
                 f"cannot verify loaded revision for {model_id}: "
-                f"resolved {resolved}, pinned snapshot {snapshot} is unavailable or incomplete"
+                f"resolved {resolved}, pinned snapshot {checkpoint} is unavailable or incomplete"
             )
+        # The snapshot directory name alone does not identify its leaves: an old
+        # blob can be linked into a new snapshot. Covered mirrored aliases have
+        # packaged digests; validate the selected leaves by HF blob name and size
+        # without reading multi-GB weights. Uncovered models retain the existing
+        # containment/completeness check, which cannot prove blob identity.
+        from rapid_mlx._mirror import _packaged_digest_info
+
+        info = _packaged_digest_info(
+            repo_id, pinned_revision, subfolder_allow_patterns(model_id)
+        )
+        if info is not None:
+            for file in info.siblings:
+                digest = file.lfs.sha256 if file.lfs is not None else file.blob_id
+                leaf = snapshot / file.rfilename
+                blob = repo_cache / "blobs" / digest
+                try:
+                    # The snapshot link must name the canonical HF blob. The
+                    # blob itself may link onward into the shared Hub store.
+                    linked_blob = Path(os.path.abspath(leaf.parent / leaf.readlink()))
+                    valid = (
+                        linked_blob == blob
+                        and leaf.resolve(strict=True) == blob.resolve(strict=True)
+                        and leaf.stat().st_size == file.size
+                    )
+                except (OSError, ValueError):
+                    valid = False
+                if not valid:
+                    raise ValueError(
+                        f"cannot verify loaded revision for {model_id}: "
+                        f"{leaf} does not match packaged blob {digest}"
+                    )
         return pinned_revision
 
     ref = repo_cache / "refs" / "main"

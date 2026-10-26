@@ -386,8 +386,121 @@ def test_stress_consumer_reads_pinned_snapshot_without_main_ref(tmp_path, monkey
     (snapshot / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (snapshot / "model.safetensors").write_bytes(b"weights")
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    # Exercise the documented fallback for a pinned model without an inventory.
+    monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
 
     assert stress_e2e_bench._cached_model_revision(model_id) == revision
+
+
+def test_stress_consumer_resolves_catalog_alias(tmp_path, monkeypatch):
+    from rapid_mlx.model_aliases import resolve_model, resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    alias = "qwen3.5-35b-8bit"
+    revision = resolve_revision(alias)
+    snapshot = (
+        tmp_path
+        / "models--mlx-community--Qwen3.5-35B-A3B-8bit"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
+
+    assert resolve_model(alias) == "mlx-community/Qwen3.5-35B-A3B-8bit"
+    assert stress_e2e_bench._cached_model_revision(alias) == revision
+
+
+@pytest.mark.parametrize("loaded_at_root", [False, True])
+def test_stress_consumer_accepts_pinned_subfolder(
+    tmp_path, monkeypatch, loaded_at_root
+):
+    from rapid_mlx import model_aliases
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "LiquidAI/LFM2.5-2.6B-MLX"
+    revision = resolve_revision(model_id)
+    checkpoint = (
+        tmp_path / "models--LiquidAI--LFM2.5-2.6B-MLX" / "snapshots" / revision / "4bit"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"model_type":"lfm2"}')
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
+    original_resolve = model_aliases.resolve_model
+    loaded_path = checkpoint.parent if loaded_at_root else checkpoint
+
+    def loaded_model(name, *, include_external_roots=True):
+        if include_external_roots and name == model_id:
+            return str(loaded_path)
+        return original_resolve(name, include_external_roots=include_external_roots)
+
+    monkeypatch.setattr(model_aliases, "resolve_model", loaded_model)
+
+    assert model_aliases.resolve_model(model_id) == str(loaded_path)
+    assert stress_e2e_bench._cached_model_revision(model_id) == revision
+
+
+@pytest.mark.parametrize("case", ["valid", "stale", "missing"])
+def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case):
+    from types import SimpleNamespace
+
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    alias = "qwen3.5-35b-8bit"
+    revision = resolve_revision(alias)
+    repo = tmp_path / "models--mlx-community--Qwen3.5-35B-A3B-8bit"
+    snapshot = repo / "snapshots" / revision
+    blobs = repo / "blobs"
+    snapshot.mkdir(parents=True)
+    blobs.mkdir()
+    config_digest = "a" * 40
+    weight_digest = "b" * 64
+    (blobs / config_digest).write_text('{"model_type":"qwen3"}')
+    (blobs / weight_digest).write_bytes(b"weights")
+    stale_blob = blobs / ("c" * 64)
+    stale_blob.write_bytes(b"weights")
+    (snapshot / "config.json").symlink_to(blobs / config_digest)
+    (snapshot / "model.safetensors").symlink_to(
+        stale_blob if case == "stale" else blobs / weight_digest
+    )
+    files = [
+        SimpleNamespace(
+            rfilename="config.json",
+            size=(blobs / config_digest).stat().st_size,
+            lfs=None,
+            blob_id=config_digest,
+        ),
+        SimpleNamespace(
+            rfilename="model.safetensors",
+            size=7,
+            lfs=SimpleNamespace(sha256=weight_digest),
+            blob_id=None,
+        ),
+    ]
+    if case == "missing":
+        files.append(
+            SimpleNamespace(
+                rfilename="tokenizer.json", size=1, lfs=None, blob_id="d" * 40
+            )
+        )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._packaged_digest_info",
+        lambda *a: SimpleNamespace(siblings=files),
+    )
+
+    if case != "valid":
+        with pytest.raises(ValueError, match="does not match packaged blob"):
+            stress_e2e_bench._cached_model_revision(alias)
+    else:
+        assert stress_e2e_bench._cached_model_revision(alias) == revision
 
 
 def test_stress_consumer_rejects_external_root_despite_empty_pinned_snapshot(
