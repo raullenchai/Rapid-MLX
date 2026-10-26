@@ -6,10 +6,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import ExitStack, aclosing
+from collections.abc import AsyncIterator
 from functools import wraps
-from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -1797,43 +1795,6 @@ async def _stream_anthropic_messages(
     caller_client: str | None = None,
     served_telemetry_id: str | None = None,
 ) -> AsyncIterator[str]:
-    """Close stream-owned probe storage on completion, errors, and cancellation."""
-    with ExitStack() as cleanup:
-        async with aclosing(
-            _stream_anthropic_messages_impl(
-                engine,
-                openai_request,
-                anthropic_request,
-                request_id_holder=request_id_holder,
-                prompt_tokens_estimate=prompt_tokens_estimate,
-                prepared_messages=prepared_messages,
-                prepared_images=prepared_images,
-                prepared_videos=prepared_videos,
-                caller_agent=caller_agent,
-                caller_client=caller_client,
-                served_telemetry_id=served_telemetry_id,
-                cleanup=cleanup,
-            )
-        ) as events:
-            async for event in events:
-                yield event
-
-
-async def _stream_anthropic_messages_impl(
-    engine: BaseEngine,
-    openai_request: ChatCompletionRequest,
-    anthropic_request: AnthropicRequest,
-    *,
-    cleanup: ExitStack,
-    request_id_holder: list | None = None,
-    prompt_tokens_estimate: int | None = None,
-    prepared_messages: list | None = None,
-    prepared_images: list | None = None,
-    prepared_videos: list | None = None,
-    caller_agent: str | None = None,
-    caller_client: str | None = None,
-    served_telemetry_id: str | None = None,
-) -> AsyncGenerator[str, None]:
     """Stream Anthropic Messages API SSE events.
 
     Args:
@@ -2210,7 +2171,6 @@ async def _stream_anthropic_messages_impl(
 
     accumulated_text = ""
     accumulated_raw = ""
-    engine_channel_routed = False
     accumulated_raw_parts: list[str] = []
     # Structured tool calls surfaced by the engine's OutputRouter
     # (currently HarmonyStreamingRouter via openai-harmony's
@@ -2228,11 +2188,7 @@ async def _stream_anthropic_messages_impl(
     tool_filter = (
         Glm47ContentFilter()
         if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
-        else StreamingToolCallFilter(
-            enabled=filter_tools,
-            parser_name=cfg.tool_call_parser,
-            request={"tools": chat_kwargs.get("tools", [])},
-        )
+        else StreamingToolCallFilter(enabled=filter_tools)
     )
     from ..tool_parsers.streaming import streaming_output_filter
 
@@ -2316,7 +2272,6 @@ async def _stream_anthropic_messages_impl(
     # finalize correction's content is bytes the wire has already
     # carried as thinking.
     streamed_thinking_text = ""
-    streamed_visible_text = ""
 
     def _emit_and_track(
         pieces: list[tuple[str, str]],
@@ -2335,15 +2290,13 @@ async def _stream_anthropic_messages_impl(
         and the ``nonlocal`` plumbing lives in exactly one place.
         """
         nonlocal streamed_any_thinking, streamed_any_content_block
-        nonlocal streamed_thinking_text, streamed_visible_text
+        nonlocal streamed_thinking_text
         if pieces:
             streamed_any_content_block = True
             for piece_type, piece_text in pieces:
                 if piece_type == "thinking":
                     streamed_any_thinking = True
                     streamed_thinking_text += piece_text
-                elif piece_type == "text":
-                    streamed_visible_text += piece_text
         return _emit_content_pieces(pieces, cur_block_type, blk_index)
 
     # Per-request reasoning parser instance (not the singleton from cfg).
@@ -2410,7 +2363,6 @@ async def _stream_anthropic_messages_impl(
         tool_filter,
         preserve_think_close=reasoning_parser is None,
     )
-    cleanup.callback(tool_filter.close_after_stream)
 
     # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
     # Same chars-÷4 heuristic the OpenAI route uses so the same effective
@@ -2533,8 +2485,6 @@ async def _stream_anthropic_messages_impl(
             # ``getattr`` keeps legacy mocks (without ``.channel``)
             # falling through to the text path below.
             output_channel = getattr(output, "channel", None)
-            if output_channel in ("content", "tool_call", "reasoning"):
-                engine_channel_routed = True
             if output_channel is not None:
                 if output_channel in ("reasoning", "content", "tool_call"):
                     accumulated_raw_parts.append(delta_text)
@@ -2949,12 +2899,7 @@ async def _stream_anthropic_messages_impl(
     # When NO terminal injection was attempted (cap never fired, or
     # was already injected mid-stream), the finalize pass still runs
     # as the safety net for normal parser-held content.
-    if (
-        reasoning_parser
-        and accumulated_raw
-        and not terminal_injection_attempted
-        and not engine_channel_routed
-    ):
+    if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
         # C-08 (r5-A bundle): the parser's ``finalize_streaming``
         # fallback (qwen3 / deepseek_r1 / thinking-family parsers)
         # reclassifies the whole buffer as ``content`` when the model
@@ -3054,7 +2999,6 @@ async def _stream_anthropic_messages_impl(
             final_msg is not None
             and streamed_any_thinking
             and stream_finish_reason == "length"
-            and _starts_thinking
             and "</think>" not in accumulated_raw
         ):
             probe_content = getattr(final_msg, "content", None)
@@ -3098,7 +3042,6 @@ async def _stream_anthropic_messages_impl(
                 accumulated_text = content
                 content = tool_filter.process(content) + tool_filter.flush()
             if content:
-                streamed_visible_text += content
                 for raw_event in (
                     f"event: content_block_start\ndata: "
                     f"{json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n",
@@ -3273,7 +3216,6 @@ async def _stream_anthropic_messages_impl(
             "error": {
                 "type": "invalid_request_error",
                 "message": tool_choice_error or tool_validation_error,
-                **({"code": "invalid_tool_arguments"} if tool_validation_error else {}),
             },
         }
         yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
@@ -3370,38 +3312,6 @@ async def _stream_anthropic_messages_impl(
                 )
 
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
-
-    # Apply the same final-answer contract as the buffered surfaces.
-    if not (tool_choice_error or tool_validation_error):
-        try:
-            _rescue_silent_drop_from_reasoning(
-                streamed_visible_text,
-                streamed_thinking_text,
-                tool_calls,
-                finish_reason=stream_finish_reason,
-            )
-        except HTTPException as exc:
-            no_answer_error = {
-                "type": "error",
-                "error": cast(dict, exc.detail)["error"],
-            }
-            yield f"event: error\ndata: {json.dumps(no_answer_error)}\n\n"
-            return
-        notice = _apply_reasoning_cutoff_notice(
-            streamed_visible_text,
-            streamed_thinking_text,
-            tool_calls,
-            stream_finish_reason,
-        )
-        if notice and not streamed_visible_text.strip():
-            events, current_block_type, block_index = _emit_and_track(
-                [("text", notice)],
-                None,
-                block_index,
-            )
-            for event in events:
-                yield event
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
 
     if is_cancellation_finish_reason(stream_finish_reason):
         cancellation_event = {

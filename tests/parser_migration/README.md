@@ -36,7 +36,13 @@ and API consolidation remain separate work.
 | Orphan native args | #5274 | Native argument syntax is not published as reasoning |
 | Generated fenced echo | #5268 | Pending explicit literal/model-echo policy |
 
-These contracts are `xfail(strict=True)`: an unexpected pass requires a deliberate
+R1, R2 and R2b pass after reverting #5258 and #5267. Other known defects
+remain tracked by their contracts. R3 streaming Chat and R4 retain strict
+expected failures for v0.16.9 baseline parity, authorized for 0.16.10; their
+upstream-aligned parser port is tracked for 0.17.0 in #5273. The unchanged R4
+probe on v0.16.9 measured 22.154/46.640/142.830 microseconds per chunk for
+1K/4K/16K bodies (2.105x and 3.062x growth; median of three CPU samples).
+No scaling threshold or call/argument assertion is relaxed. An unexpected pass requires a deliberate
 ledger change. R5 may remain deferred when migration does not reach its grammar.
 The fenced-echo expectation is provisional; arbitrary code examples must remain
 literal. The prompt fixture file records current-turn initial-channel contracts,
@@ -54,8 +60,14 @@ new pairs from silently escaping the gate. Required/named/none/auto choices and
 undeclared names are separate executable controls. The forced Chat fixture uses
 the actual synthetic assistant prefix, as the real engine does.
 
-`ledger.json` classifies all 324 changed Qwen/Hermes focused observations between
-the two fixed revisions. Its historical classifications include policy-sensitive
+`ledger.json` classifies the remaining 124 changed Qwen/Hermes focused observations
+between the two fixed revisions. The revert refreshes 274 reviewed-head rows: 206
+return exactly to the immutable v0.16.9 baseline. The other 68 changed rows
+remain different from baseline because the rollback preserves later merged
+changes; their exact observations and remaining differences stay in the ledger. Thinking-off implicit reasoning leakage and the
+earlier malformed-call policy return as the explicit rollback trade-off. Three
+advertised Qwen/LFM streaming rows retain their exact call and text payloads but
+now publish ten content deltas starting at chunk one, instead of one at EOF. Its historical classifications include policy-sensitive
 and foreign-format stress cases; an intended difference is not a correctness
 claim. The test checks that every differing row has matching before/after values
 and a rationale. The complete archived focused and Cartesian plain-answer runner

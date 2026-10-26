@@ -686,12 +686,9 @@ class TestOpenaiToAnthropic:
         resp = self._make_response(
             content=None, finish_reason="tool_calls", tool_calls=[tc]
         )
-        from rapid_mlx.service.helpers import _InvalidToolArgumentsError
-
-        with pytest.raises(_InvalidToolArgumentsError, match="valid JSON") as caught:
-            openai_to_anthropic(resp, "default")
-        assert caught.value.status_code == 400
-        assert caught.value.rapid_mlx_error_code == "invalid_tool_arguments"
+        result = openai_to_anthropic(resp, "default")
+        tool_block = [b for b in result.content if b.type == "tool_use"][0]
+        assert tool_block.input == {}
 
     def test_empty_choices(self):
         resp = ChatCompletionResponse(

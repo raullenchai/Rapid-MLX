@@ -2456,8 +2456,8 @@ async def _non_stream(
         )
 
     if (
-        output.finish_reason not in ("length", "cancelled", "content_filter")
-        and (responses_request.tools or reasoning_text)
+        output.finish_reason == "stop"
+        and responses_request.tools
         and not tool_calls
         and not (final_content or "").strip()
     ):
@@ -3104,7 +3104,6 @@ async def _stream_responses(
                 "response": _initial_response_payload,
             },
         )
-    tool_filter = None
     try:
         messages = _prepare_messages_for_engine(engine, openai_request)
         codex_surface = _is_deepseek_codex_surface(
@@ -3197,7 +3196,6 @@ async def _stream_responses(
 
         accumulated_text = ""
         accumulated_raw = ""
-        engine_channel_routed = False
         accumulated_raw_parts: list[str] = []
         # D-STOP-THINK (PR #799): track the most-recently-surfaced
         # ``matched_stop`` so the post-loop finalize_streaming call
@@ -3230,11 +3228,7 @@ async def _stream_responses(
         tool_filter = (
             Glm47ContentFilter()
             if filter_tools and cfg.tool_call_parser in ("glm47", "glm4")
-            else StreamingToolCallFilter(
-                enabled=filter_tools,
-                parser_name=cfg.tool_call_parser,
-                request={"tools": chat_kwargs.get("tools", [])},
-            )
+            else StreamingToolCallFilter(enabled=filter_tools)
         )
 
         from ..tool_parsers.streaming import streaming_output_filter
@@ -3904,8 +3898,6 @@ async def _stream_responses(
             # delta event Codex parses (Codex maps it from a separate
             # ``response.reasoning_text.delta`` we omit in v1).
             output_channel = getattr(output, "channel", None)
-            if output_channel in ("content", "tool_call", "reasoning"):
-                engine_channel_routed = True
             if output_channel is not None:
                 if output_channel in ("content", "tool_call", "reasoning"):
                     accumulated_raw_parts.append(delta_text)
@@ -4310,12 +4302,7 @@ async def _stream_responses(
         # or it fired and was already injected mid-stream), the
         # finalize pass still runs as the safety net for normal
         # parser-held content.
-        if (
-            reasoning_parser
-            and accumulated_raw
-            and not terminal_injection_attempted
-            and not engine_channel_routed
-        ):
+        if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
             # D-STOP-THINK (PR #799): pass matched_stop AND the
             # ``_starts_thinking`` boolean (chat template injected
             # ``<think>`` AND ``enable_thinking`` is non-False) so
@@ -4877,7 +4864,7 @@ async def _stream_responses(
             or accumulated_text
         )
         no_final_answer_stop = (
-            last_finish_reason not in ("length", "cancelled", "content_filter")
+            last_finish_reason == "stop"
             and not consumable_output_seen
             # Immediate EOS remains a valid empty response for ordinary prose
             # requests.  It is not valid for an agent turn that supplied tools:
@@ -5380,17 +5367,12 @@ async def _stream_responses(
                     "id": response_id,
                     "status": "failed",
                     "error": {
-                        "code": getattr(e, "rapid_mlx_error_code", "internal_error"),
+                        "code": "internal_error",
                         "message": str(e),
                     },
                 },
             },
         )
-
-    finally:
-        close_filter = getattr(tool_filter, "close_after_stream", None)
-        if callable(close_filter):
-            close_filter()
 
 
 # ---------------------------------------------------------------------------

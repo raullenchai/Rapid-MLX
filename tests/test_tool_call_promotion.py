@@ -422,27 +422,24 @@ class TestStreamingPromotion:
             "<function=b><parameter=y>2</parameter></function>\n"
         )
         accumulated = ""
-        streamed_content = ""
         for ch in [text]:
             previous = accumulated
             accumulated += ch
-            delta = p.extract_reasoning_streaming(previous, accumulated, ch)
-            streamed_content += (delta.content or "") if delta else ""
+            p.extract_reasoning_streaming(previous, accumulated, ch)
         final = finalize_streaming_compat(
             p, accumulated, finish_reason=None, matched_stop=None
         )
         assert final is not None
         assert final.content is not None
-        combined_content = streamed_content + final.content
-        # The completed call and held suffix must each appear exactly once.
+        # Both completed-and-in-progress calls must appear in content
         # — the first must NOT have been mistakenly stripped by the
         # dedup logic.
-        assert "<function=a>" in combined_content
-        assert "<function=b>" in combined_content
+        assert "<function=a>" in final.content
+        assert "<function=b>" in final.content
         # Each opener appears exactly twice (one per call), not three
         # times (would indicate duplication) or once (would indicate
         # the first was clobbered).
-        assert combined_content.count("<tool_call>") == 2
+        assert final.content.count("<tool_call>") == 2
 
     def test_deepseek_threshold_crossing_with_reasoning_carry(self):
         """Codex round-5 BLOCKING finding #1: when ``<tool_call>`` is

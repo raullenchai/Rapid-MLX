@@ -39,7 +39,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi import HTTPException
 
 from rapid_mlx.service.helpers import (
     REASONING_CUTOFF_SENTINEL,
@@ -52,8 +51,27 @@ from rapid_mlx.service.helpers import (
 def _assert_is_rescue(
     result: str | None, reasoning_text: str, *, msg: str = ""
 ) -> None:
-    """A cutoff notice contains no part of the reasoning trace."""
-    assert result == REASONING_CUTOFF_SENTINEL, msg
+    """R12-8: the rescue payload is ``sentinel + "\\n\\n" + tail``.
+
+    Centralised here so every assertion in this file pins the same
+    contract — the sentinel anchors the opening (pattern-matchable
+    by agentic auto-retry) and the trailing ``RESCUE_TAIL_LENGTH``
+    chars of ``reasoning_text`` give a human reader a glimpse of the
+    partial conclusion. This shape replaces the pre-R12-8 bare
+    sentinel return — see ``_build_reasoning_rescue_payload``.
+    """
+    assert result is not None, f"rescue must fire: {msg}"
+    assert result.startswith(REASONING_CUTOFF_SENTINEL), (
+        f"rescue must open with the literal sentinel; got {result!r}: {msg}"
+    )
+    expected_tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
+    assert result.endswith(expected_tail), (
+        f"rescue must end with last {RESCUE_TAIL_LENGTH} chars of "
+        f"reasoning; expected tail {expected_tail!r}, got {result!r}: {msg}"
+    )
+    assert "\n\n" in result, (
+        f"rescue must separate sentinel from tail with a blank line; got {result!r}: {msg}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -390,7 +408,16 @@ class TestR12_8RescuePayloadShape:
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        assert result is not None
+        expected_tail = reasoning[-RESCUE_TAIL_LENGTH:]
+        assert result.endswith(expected_tail), (
+            f"rescue must end with the LAST {RESCUE_TAIL_LENGTH} chars of "
+            f"reasoning; expected suffix {expected_tail!r}, got {result!r}"
+        )
+        assert prefix_marker not in result, (
+            f"rescue must NOT carry the unique early prefix marker — only "
+            f"the trailing window; got {result!r}"
+        )
 
     def test_rescue_separates_sentinel_from_tail_with_blank_line(self, monkeypatch):
         """``sentinel\\n\\ntail`` — a literal blank line separates the
@@ -405,7 +432,11 @@ class TestR12_8RescuePayloadShape:
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        assert result is not None
+        expected = f"{REASONING_CUTOFF_SENTINEL}\n\n{reasoning}"
+        assert result == expected, (
+            f"rescue payload must be exactly 'sentinel\\n\\ntail'; got {result!r}"
+        )
 
     def test_rescue_short_reasoning_appended_in_full(self, monkeypatch):
         """When ``reasoning_text`` is shorter than ``RESCUE_TAIL_LENGTH``,
@@ -420,7 +451,9 @@ class TestR12_8RescuePayloadShape:
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        assert result == f"{REASONING_CUTOFF_SENTINEL}\n\n{short}", (
+            f"short reasoning must be appended in full; got {result!r}"
+        )
 
     def test_rescue_strips_trailing_whitespace_before_slicing_tail(self, monkeypatch):
         """Trailing whitespace on the reasoning trace is stripped
@@ -434,7 +467,13 @@ class TestR12_8RescuePayloadShape:
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        assert result is not None
+        assert result.endswith("compute the result"), (
+            f"rescue tail must strip trailing whitespace; got {result!r}"
+        )
+        assert not result.endswith(" "), (
+            f"rescue must NOT end with whitespace; got {result!r}"
+        )
 
     def test_rescue_preserves_reasoning_content_unchanged(self, monkeypatch):
         """R12-8 contract: the rescue NEVER mutates ``reasoning_text`` —
@@ -983,13 +1022,16 @@ class TestParserWideLengthCutMidThinkOptOut:
         carries the sentinel. Under the opt-out branch this is also
         strict-null, but the sentinel-absence assertion is what
         D-STOP-THINK pins."""
-        with pytest.raises(HTTPException) as caught:
-            content, reasoning = _finalize_route_assembly(
-                raw_text=parser_case["raw_stop_mid"],
-                reasoning_parser=parser_case["parser"],
-                finish_reason="stop",
-            )
-        assert caught.value.detail["error"]["code"] == "model_no_final_answer"
+        content, reasoning = _finalize_route_assembly(
+            raw_text=parser_case["raw_stop_mid"],
+            reasoning_parser=parser_case["parser"],
+            finish_reason="stop",
+        )
+        assert content != REASONING_CUTOFF_SENTINEL, (
+            f"[{parser_case['name']}]: sentinel must not fire on "
+            f"finish_reason=stop; got content={content!r}"
+        )
+        assert reasoning is not None and reasoning.strip()
 
     def test_happy_path_full_generation_preserves_answer(self, parser_case):
         """Full closed reasoning + answer flow: content has the answer,
@@ -1037,7 +1079,10 @@ class TestParserWideLengthCutMidThinkEnabled:
         )
         assert reasoning is not None and "17" in reasoning
         # Tail must be the trailing window of the parser's reasoning text.
-        assert content == REASONING_CUTOFF_SENTINEL
+        assert content.endswith(reasoning.rstrip()[-RESCUE_TAIL_LENGTH:]), (
+            f"enabled [{parser_case['name']}]: rescue must end with the "
+            f"reasoning tail; got content={content!r}, reasoning={reasoning!r}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1090,36 +1135,32 @@ class TestGemma4HarmonyEngineRouted:
 class TestRescueSilentDropFromReasoning:
     def test_1570_natural_eos_from_prompt_primed_reasoning_stays_suppressed(self):
         """Natural EOS does not turn an unclosed implicit thought into content."""
-        with pytest.raises(HTTPException) as caught:
-            _rescue_silent_drop_from_reasoning(
-                final_content=None,
-                reasoning_text="Okay, so I need to figure out unified memory.",
-                tool_calls=None,
-                finish_reason="stop",
-                raw_text="Okay, so I need to figure out unified memory.",
-                reasoning_is_case4=True,
-                # The shared template probe recognizes that R1-Distill's shipped
-                # template ignores enable_thinking=False and still primes <think>.
-                prompt_thinking_active=True,
-                implicit_reasoning_until_close=True,
-            )
-        assert caught.value.detail["error"]["code"] == "model_no_final_answer"
+        content = _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="Okay, so I need to figure out unified memory.",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text="Okay, so I need to figure out unified memory.",
+            reasoning_is_case4=True,
+            # The shared template probe recognizes that R1-Distill's shipped
+            # template ignores enable_thinking=False and still primes <think>.
+            prompt_thinking_active=True,
+            implicit_reasoning_until_close=True,
+        )
+        assert content is None
 
     def test_1570_custom_non_priming_template_rescues_short_answer(self):
-        answer = "Unified memory is shared by the CPU and GPU."
-        assert (
-            _rescue_silent_drop_from_reasoning(
-                final_content=None,
-                reasoning_text=answer,
-                tool_calls=None,
-                finish_reason="stop",
-                raw_text=answer,
-                reasoning_is_case4=True,
-                prompt_thinking_active=False,
-                implicit_reasoning_until_close=True,
-            )
-            == answer
+        content = _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="Unified memory is shared by the CPU and GPU.",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text="Unified memory is shared by the CPU and GPU.",
+            reasoning_is_case4=True,
+            prompt_thinking_active=False,
+            implicit_reasoning_until_close=True,
         )
+        assert content == "Unified memory is shared by the CPU and GPU."
 
     def test_case4_length_without_prompt_thinking_rescues_content(self):
         """A non-thinking answer truncated by max_tokens must not be
@@ -1656,10 +1697,15 @@ def test_chat_route_enabled_surfaces_sentinel_on_length_cut(monkeypatch):
             "enabled (env=1): chat non-stream must surface rescue payload "
             f"opening with the sentinel; got content={content!r}"
         )
-        # The notice must not contain any of the model's private reasoning.
+        # R12-8: rescue payload also embeds the reasoning tail so users
+        # see what the model was working on. The mock engine produces a
+        # short ``<think>`` body — verify the last chars are appended.
         reasoning = msg.get("reasoning_content") or ""
         if reasoning:
-            assert content == REASONING_CUTOFF_SENTINEL
+            assert content.endswith(reasoning.rstrip()[-RESCUE_TAIL_LENGTH:]), (
+                f"R12-8: rescue must end with the reasoning tail; "
+                f"got content={content!r}, reasoning={reasoning!r}"
+            )
         assert payload["choices"][0]["finish_reason"] == "length"
     finally:
         reset_config()

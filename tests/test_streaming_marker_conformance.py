@@ -481,8 +481,7 @@ def test_eof_marker_tail_follows_older_sanitizer_tail(parser):
 def test_post_call_marker_suffix_uses_parser_eof_content_policy():
     from tests.test_postprocessor import StreamingPostProcessor, _make_cfg, _make_output
 
-    literal = '<tool_call>{"example":"literal"}</tool_call>Tail <'
-    wire = '<tool_call>{"name":"get_weather","arguments":{}}</tool_call>' + literal
+    wire = "<tool_call><function=get_weather>oops</tool_call>Tail <"
     request = {"tools": [{"type": "function", "function": {"name": "get_weather"}}]}
     for chunks in partitions(wire):
         processor = StreamingPostProcessor(
@@ -493,10 +492,10 @@ def test_post_call_marker_suffix_uses_parser_eof_content_policy():
         for chunk in chunks:
             events.extend(processor.process_chunk(_make_output(chunk)))
         events.extend(processor.finalize())
-        assert "".join(event.content or "" for event in events) == literal
+        assert "".join(event.content or "" for event in events) == "Tail <"
         calls = [call for event in events for call in event.tool_calls or []]
         assert len(calls) == 1
-        assert calls[0]["function"]["arguments"] == "{}"
+        assert calls[0]["function"]["arguments"] == "<malformed_function_body>oops"
 
 
 @pytest.mark.parametrize("surface", ["responses", "messages"])
@@ -517,13 +516,12 @@ def test_tool_content_filter_preserves_parser_owned_eof_suffix():
     from rapid_mlx.tool_parsers.streaming import StreamingToolContentFilter
 
     request = {"tools": [{"type": "function", "function": {"name": "get_weather"}}]}
-    literal = '<tool_call>{"example":"literal"}</tool_call>Tail <'
-    wire = '<tool_call>{"name":"get_weather","arguments":{}}</tool_call>' + literal
+    wire = "<tool_call><function=get_weather>oops</tool_call>Tail <"
     for chunks in partitions(wire):
         content_filter = StreamingToolContentFilter(HermesToolParser(), request)
         visible = "".join(content_filter.process(chunk) for chunk in chunks)
         visible += content_filter.flush()
-        assert visible == literal
+        assert visible == "Tail <"
         assert content_filter.flush() == ""
 
 

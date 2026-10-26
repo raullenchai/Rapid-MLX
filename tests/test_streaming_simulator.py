@@ -699,7 +699,7 @@ class TestScenario5_EdgeCases:
             f"prompt_thinking_active; got content={full_content!r}"
         )
 
-    def test_explicit_opener_natural_eos_keeps_reasoning_private(self):
+    def test_explicit_opener_natural_eos_rescues_content(self):
         """Explicit ``<think>`` natural EOS is not truncation. Finalize
         surfaces the orphaned thought as content so clients do not receive
         an empty assistant turn."""
@@ -713,8 +713,8 @@ class TestScenario5_EdgeCases:
         full_content = "".join(content)
         full_reasoning = "".join(reasoning)
         assert "just a thought" in full_reasoning
-        assert full_content == "", (
-            f"explicit-opener natural EOS must not copy reasoning into content; got "
+        assert full_content == "just a thought", (
+            f"explicit-opener natural EOS should rescue content; got "
             f"content={full_content!r}"
         )
 

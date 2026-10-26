@@ -1872,8 +1872,8 @@
           }
         ]
       ],
-      "first_content_index": 66,
-      "content_deltas": 1,
+      "first_content_index": 1,
+      "content_deltas": 10,
       "input_chunks": 65
     }
   },
@@ -1950,8 +1950,8 @@
           }
         ]
       ],
-      "first_content_index": 66,
-      "content_deltas": 1,
+      "first_content_index": 1,
+      "content_deltas": 10,
       "input_chunks": 65
     }
   },
@@ -2028,8 +2028,8 @@
           }
         ]
       ],
-      "first_content_index": 66,
-      "content_deltas": 1,
+      "first_content_index": 1,
+      "content_deltas": 10,
       "input_chunks": 65
     }
   },

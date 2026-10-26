@@ -12,7 +12,7 @@ class ScalingRegressionError(Exception):
 @pytest.mark.xfail(
     strict=True,
     raises=ScalingRegressionError,
-    reason="R4 #5273: growing Hermes prefix rescans",
+    reason="pre-existing in v0.16.9 (baseline parity); fix via upstream-aligned parser port in 0.17.0 — #5273 / R4",
 )
 def test_full_path_cpu_scaling():
     # Stop at the first violation to keep the known quadratic implementation

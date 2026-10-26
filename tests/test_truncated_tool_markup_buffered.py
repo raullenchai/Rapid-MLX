@@ -2,7 +2,6 @@
 """Buffered suffix cleanup with unchanged streaming behavior."""
 
 import json
-import re
 
 import pytest
 from fastapi import FastAPI
@@ -139,23 +138,8 @@ def _reply(
         "responses": "responses",
     }[route]
     response = http.post("/v1/" + path, json=body)
-    if response.status_code in (400, 422):
-        assert cfg.tool_call_parser == "hermes"
-        assert "valid JSON" in response.json()["detail"]
-        return "", [], "invalid_tool_arguments"
     assert response.status_code == 200, response.text
     if stream:
-        packets = [
-            json.loads(line[6:])
-            for line in response.text.splitlines()
-            if line.startswith("data: {")
-        ]
-        errors = [
-            p for p in packets if p.get("error") or p.get("type") == "response.failed"
-        ]
-        if errors:
-            assert "valid JSON" in str(errors) or "tool_choice" in str(errors)
-            return "", [], "invalid_tool_arguments"
         if route != "chat":
             events = [
                 json.loads(line[6:])
@@ -201,11 +185,6 @@ def _reply(
             choices[-1]["finish_reason"],
         )
     data = response.json()
-    if (
-        data.get("status") == "failed"
-        and data.get("error", {}).get("code") == "invalid_tool_arguments"
-    ):
-        return "", [], "invalid_tool_arguments"
     if with_reasoning:
         return data
     if route == "chat":
@@ -249,7 +228,7 @@ def test_forced_named_truncated_json_4663(client, stream, parser, chunk_size):
         }
     ]
     raw = '<tool_call> {"name": "release_probe", "'
-    content, calls, finish = _reply(
+    content, calls, _ = _reply(
         client,
         "chat",
         raw,
@@ -258,9 +237,6 @@ def test_forced_named_truncated_json_4663(client, stream, parser, chunk_size):
         choice={"type": "function", "function": {"name": "release_probe"}},
         tools=tools,
     )
-    if finish == "invalid_tool_arguments":
-        assert not content and not calls
-        return
     assert calls
     assert content == ""
     if stream:
@@ -320,15 +296,8 @@ def test_buffered_truncated(client, parser, route, text, narration, finish_reaso
     content, calls, finish = _reply(
         client, route, narration + text, budget=4, finish_reason=finish_reason
     )
-    if finish == "invalid_tool_arguments":
-        assert parser == "hermes"
-        return
     assert content == (
-        (narration + text).strip()
-        if parser == "hermes" and re.match(r"<tool_call>\s*\{", text)
-        else narration.strip()
-        if finish_reason == "length"
-        else (narration + text).strip()
+        narration.strip() if finish_reason == "length" else (narration + text).strip()
     )
     assert not calls
     assert (
@@ -359,9 +328,7 @@ def test_buffered_finish_reason_gate(client, parser, route, reasoning, finish_re
     narration = "Here is an unclosed example.\n"
     raw = narration + '<tool_call>\n{"name": "get_wea'
     content, calls, finish = _reply(client, route, raw, finish_reason=finish_reason)
-    assert content == (
-        narration.strip() if finish_reason == "length" and parser != "hermes" else raw
-    )
+    assert content == (narration.strip() if finish_reason == "length" else raw)
     assert not calls
     assert (
         finish
@@ -386,9 +353,7 @@ def test_helper_finish_reason_gate(client, parser):
     assert _strip_trailing_tool_envelope(raw) == raw
     assert _strip_trailing_tool_envelope(raw, finish_reason=None) == raw
     assert _strip_trailing_tool_envelope(raw, finish_reason="stop") == raw
-    assert _strip_trailing_tool_envelope(raw, finish_reason="length") == (
-        raw if parser == "hermes" else narration
-    )
+    assert _strip_trailing_tool_envelope(raw, finish_reason="length") == narration
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -482,9 +447,7 @@ def test_indentation_after_prose_is_not_code(client, parser, route, prefix):
 def test_complete_call_then_truncated(client, parser, route, tail):
     client[1].tool_call_parser = parser
     content, calls, _ = _reply(client, route, COMPLETE + tail)
-    assert content == (
-        '<tool_call> {"name' if parser == "hermes" and '{"name' in tail else ""
-    )
+    assert content == ""
     assert len(calls) == 1
     call = calls[0]
     assert (call.get("function", {}).get("name") or call.get("name")) == "get_weather"
@@ -506,9 +469,7 @@ def test_reasoning_fallback(client, parser, route, text):
     cfg.tool_call_parser = parser
     cfg.reasoning_parser_name = "qwen3"
     cfg.reasoning_parser = Qwen3ReasoningParser(tokenizer=None)
-    assert _reply(client, route, text)[0] == (
-        text.split("</think>")[-1] if parser == "hermes" and '{"name' in text else ""
-    )
+    assert _reply(client, route, text)[0] == ""
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -659,19 +620,124 @@ def _stream_snapshots():
     return rows
 
 
-def test_streaming_preserves_valid_literal_argument(client):
-    client[1].tool_call_parser = "hermes"
-    raw = '<tool_call>{"name":"get_weather","arguments":{"city":"literal <tool_call>"}}</tool_call>'
-    for size in (1, 7, len(raw)):
-        content, calls, finish = _reply(
-            client,
-            "chat",
-            raw,
-            stream=True,
-            finish_reason="stop",
-            chunks=[raw[i : i + size] for i in range(0, len(raw), size)],
-        )
-        assert not content and calls and finish == "tool_calls"
+def test_streaming_unchanged_against_base():
+    """Streaming definitions match the pre-#5267 rollback target."""
+    import ast
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import rapid_mlx
+
+    root = Path(rapid_mlx.__file__).resolve().parents[1]
+    # The release rollback intentionally changes streaming relative to main.
+    # Pin the exact pre-#5267 definitions instead of exempting changed methods.
+    base_ref = "a9593a7bb"
+    for name in ("hermes_tool_parser", "qwen3coder_tool_parser"):
+        relative = f"rapid_mlx/tool_parsers/{name}.py"
+        try:
+            base = subprocess.check_output(
+                ["git", "show", f"{base_ref}:{relative}"],
+                cwd=root,
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            pytest.skip(f"Git unavailable for streaming base comparison: {exc}")
+        except subprocess.CalledProcessError as exc:
+            pytest.skip(
+                f"Cannot resolve {base_ref}:{relative} for streaming base comparison "
+                f"(requires a Git checkout with the base ref/path): {exc.stderr.strip()}"
+            )
+
+        def existing_definitions(source):
+            tree = ast.parse(source)
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    node.body = [
+                        method
+                        for method in node.body
+                        if not (
+                            isinstance(method, ast.FunctionDef)
+                            and method.name
+                            in {
+                                "strip_trailing_tool_envelope",
+                                # #4714 intentionally changes these scans;
+                                # dedicated fence tests pin their output.
+                                "_first_opener_pos",
+                                "_new_opener_position",
+                                "_function_start_positions",
+                                "_content_without_admitted_calls",
+                                "__init__",
+                                "_reset_streaming_state",
+                                "inside_fence",
+                                "skip_fence_span",
+                                "_fence_state",
+                                "_restore_fence_state",
+                                "_feed_fence",
+                                "_feed_fence_plain",
+                                "_finish_fence_line",
+                                "_fence_result",
+                                "mask_markdown_fenced_regions",
+                                "flush_held_content",
+                                "_streaming_step_once",
+                                # #4788 treats CR and CRLF as line boundaries.
+                                "_feed",
+                                "inside",
+                            }
+                        )
+                    ]
+            # The opt-in buffered Markdown query leaves the original streaming
+            # methods unchanged. Normalize its new dispatch before comparison.
+            for node in tree.body:
+                if (
+                    isinstance(node, ast.ClassDef)
+                    and node.name == "_MarkdownCodeTracker"
+                ):
+                    node.body = [
+                        m
+                        for m in node.body
+                        if not (
+                            isinstance(m, ast.FunctionDef)
+                            and m.name == "_inside_buffered"
+                        )
+                    ]
+                    for method in node.body:
+                        if (
+                            isinstance(method, ast.FunctionDef)
+                            and method.name == "inside"
+                            and method.args.kwonlyargs
+                        ):
+                            method.args.kwonlyargs = []
+                            method.args.kw_defaults = []
+                            method.body = method.body[1:]
+            tree.body = [
+                node
+                for node in tree.body
+                if not (
+                    isinstance(node, ast.FunctionDef)
+                    and node.name == "_strip_trailing_tool_envelope"
+                )
+            ]
+            return ast.dump(tree, include_attributes=False)
+
+        assert existing_definitions(
+            (root / relative).read_text()
+        ) == existing_definitions(base)
+
+    # Load the same test helper with base production modules on PYTHONPATH.
+    base_root = os.environ.get("TRUNCATED_TOOL_BASE")
+    if base_root is None:
+        return  # Definitions prove parity in CI; opt in to cross-worktree events.
+    script = "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); print(json.dumps(m['_stream_snapshots']()))"
+    output = subprocess.check_output(
+        [sys.executable, "-c", script, str(Path(__file__).resolve())],
+        cwd=base_root,
+        env={**os.environ, "PYTHONPATH": base_root, "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True,
+    )
+    assert _stream_snapshots() == json.loads(output)
 
 
 def test_xml_without_declared_tools(client):
@@ -723,9 +789,7 @@ def test_json_member_prefix_boundary(client, parser, route, payload, hidden):
     prefix = "Let me check.\n"
     raw = prefix + "<tool_call>" + payload
     content, calls, _ = _reply(client, route, raw)
-    assert content == (
-        prefix.strip() if hidden and parser != "hermes" else raw.rstrip()
-    )
+    assert content == (prefix.strip() if hidden else raw)
     assert not calls
 
 
@@ -907,9 +971,7 @@ def test_linear_cleanup_large_json_string(client, parser):
         + "x" * 500000
     )
     start = perf_counter()
-    assert cls.strip_trailing_tool_envelope(raw) == (
-        raw if parser == "hermes" else narration
-    )
+    assert cls.strip_trailing_tool_envelope(raw) == narration
     assert perf_counter() - start < 0.2
 
 
@@ -950,11 +1012,7 @@ def test_literal_opener_in_truncated_json(client, parser, route, reasoning):
         client[1].reasoning_parser_name = "qwen3"
         client[1].reasoning_parser = Qwen3ReasoningParser(None)
     raw = 'Narration.\n<tool_call>{"name":"get_weather","arguments":{"city":"see <tool_call>'
-    content, calls, finish = _reply(client, route, raw)
-    if finish == "invalid_tool_arguments":
-        assert parser == "hermes" and not calls
-    else:
-        assert content == (raw if parser == "hermes" else "Narration.")
+    assert _reply(client, route, raw)[0] == "Narration."
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -973,10 +1031,7 @@ def test_last_payload_visibility(client, parser, raw, hidden):
     from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
 
     cls = ToolParserManager.get_tool_parser(parser)
-    preserve = parser == "hermes" and raw.startswith("<tool_call>{")
-    assert cls.strip_trailing_tool_envelope(raw) == (
-        "" if hidden and not preserve else raw
-    )
+    assert cls.strip_trailing_tool_envelope(raw) == ("" if hidden else raw)
 
 
 @pytest.mark.parametrize("parser", PARSERS)
@@ -1057,15 +1112,8 @@ def test_escaped_backtick_before_truncated_call(
     prefix = f"Escape a backtick as {example} in Markdown.\n"
     prefix += "I will update the documentation.\n"
     raw = prefix + suffix
-    content, calls, finish = _reply(client, route, raw, tools=tools)
-    if finish == "invalid_tool_arguments":
-        assert not content and not calls
-        return
-    assert content == (
-        raw
-        if kept or parser == "hermes" and suffix.startswith("<tool_call>{")
-        else prefix.rstrip()
-    )
+    content, calls, _ = _reply(client, route, raw, tools=tools)
+    assert content == (raw if kept else prefix.rstrip())
     assert not calls
 
 
@@ -1123,7 +1171,7 @@ def test_forced_json_stop_4663(client, route, reasoning, stream):
         client[1].reasoning_parser = Qwen3ReasoningParser(None)
     client[1].tool_call_parser = "hermes"
     raw = '<tool_call> {"name": "get_weather", "'
-    content, calls, finish = _reply(
+    content, calls, _ = _reply(
         client,
         route,
         raw,
@@ -1131,9 +1179,6 @@ def test_forced_json_stop_4663(client, route, reasoning, stream):
         stream=stream,
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
-        assert not content and not calls
-        return
     assert calls
     assert content == ""
 
@@ -1151,9 +1196,6 @@ def test_forced_json_stop_stream_4663(client, chunk_size):
         chunks=[raw[i : i + chunk_size] for i in range(0, len(raw), chunk_size)],
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
-        assert not content and not calls
-        return
     assert calls
     assert finish == "tool_calls"
     assert content == ""
@@ -1265,9 +1307,6 @@ def test_forced_terminal_json_replay_4663(client, monkeypatch, terminal_lane, pa
         finish_reason="stop",
         choice={"type": "function", "function": {"name": "get_weather"}},
     )
-    if finish == "invalid_tool_arguments":
-        assert not content and not calls
-        return
     assert calls
     assert finish == "tool_calls"
     assert content == ""

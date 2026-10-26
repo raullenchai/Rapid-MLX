@@ -21,9 +21,6 @@ PLAIN = "Hello world. This is a streamed answer."
 @pytest.mark.parametrize("surface", SURFACES)
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
 @pytest.mark.parametrize("tools_mode", ["enabled", "absent", "none"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R1 #5277: prompt-aware bounded holdback"
-)
 def test_first_visible_delta(surface, reasoning, tools_mode):
     result = route(
         reasoning,
@@ -42,18 +39,12 @@ def test_first_visible_delta(surface, reasoning, tools_mode):
 
 @pytest.mark.parametrize("tool", ["auto", "generic", "nemotron", "nemotron3", "muse"])
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R2 #5277: EOF content replay"
-)
 def test_one_content_owner(tool, reasoning):
     result = route(reasoning, tool, PLAIN, "chat", True, thinking=False)
     assert result["content"] == PLAIN
 
 
 @pytest.mark.parametrize("reasoning", ["qwen3", "hy_v3", "hy3"])
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R2b #5277: EOF tool replay"
-)
 def test_one_tool_owner(reasoning):
     raw = "<seed:tool_call><function=run_shell_command><parameter=command>pwd</parameter></function></seed:tool_call>"
     result = route(reasoning, "seed_oss", raw, "chat", True, thinking=False)
@@ -61,12 +52,21 @@ def test_one_tool_owner(reasoning):
 
 
 @pytest.mark.parametrize(
-    "surface,stream", list(itertools.product(SURFACES, [False, True]))
-)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="R3 #5273: reasoning-to-tool ownership loses call or answer",
+    "surface,stream",
+    [
+        pytest.param(
+            surface,
+            stream,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="pre-existing in v0.16.9 (baseline parity); fix via upstream-aligned parser port in 0.17.0 — #5273 / R4",
+            )
+            if surface == "chat" and stream
+            else (),
+        )
+        for surface, stream in itertools.product(SURFACES, [False, True])
+    ],
 )
 def test_promotion(surface, stream):
     result = route(

@@ -225,8 +225,30 @@ class TestAnthropicStreamingWithReasoningParser:
             "Expected base class Case-3 reasoning routing for the no-tag path."
         )
 
-        # Prompt-primed output remains reasoning at EOF, even at natural EOS.
-        assert not _extract_text_from_deltas(events)
+        # Must also have a text block from the finalize content
+        # correction — casual-answer contract (#570/#572). Without
+        # this flip, the casual answer would never reach
+        # ``message.content`` on the OpenAI envelope.
+        text_starts = [t for t in delta_types if t == ("content_block_start", "text")]
+        assert text_starts, (
+            f"Casual-answer regression: finalize content correction did "
+            f"not open a text block. Without this the no-tag casual "
+            f"answer would be silently empty on message.content. "
+            f"Events: {delta_types}"
+        )
+
+        # Codex round-14 NIT: assert the finalized text bytes actually
+        # appear in a text_delta payload, not just that a text block
+        # opened. Without this assertion a regression that emitted an
+        # empty text block (or wrong bytes) would still pass.
+        text_payload = _extract_text_from_deltas(events)
+        for expected_byte in ("1", "2", "3", "4", "5"):
+            assert expected_byte in text_payload, (
+                f"Casual-answer regression: expected byte "
+                f"{expected_byte!r} not in finalized text payload "
+                f"{text_payload!r}. The text block opened but its "
+                f"contents did not carry the model output."
+            )
 
     def test_both_think_tags_emits_thinking_and_text(self, cfg_with_reasoning_parser):
         """Model outputs <think>...</think> → separated thinking + text blocks."""

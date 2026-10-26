@@ -61,9 +61,7 @@ class Engine(BaseEngine):
         "Private thought.</think></arg_value><arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>",
     ],
 )
-def test_flint_routes(
-    surface, stream, later, raw, step, expected_literal=None, enable_thinking=True
-):
+def test_flint_routes(surface, stream, later, raw, step, expected_literal=None):
     cfg = reset_config()
     cfg.model_name = "flint-40b-a2.5b-4bit"
     cfg.no_thinking = False
@@ -98,7 +96,7 @@ def test_flint_routes(
         model=cfg.model_name,
         stream=stream,
         tools=TOOLS,
-        chat_template_kwargs={"enable_thinking": enable_thinking},
+        chat_template_kwargs={"enable_thinking": True},
     )
     if surface == "chat":
         body["messages"] = history
@@ -106,7 +104,7 @@ def test_flint_routes(
     elif surface == "messages":
         body.pop("chat_template_kwargs")
         body["max_tokens"] = 1024
-        body["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
+        body["thinking"] = {"type": "enabled"}
         body["messages"] = history[:1]
         body["tools"] = [
             {"name": "run_shell_command", "input_schema": {"type": "object"}}
@@ -152,14 +150,6 @@ def test_flint_routes(
         url = "/v1/responses"
     try:
         response = TestClient(app).post(url, json=body)
-        if (
-            raw == "Private thought.</think>"
-            and surface in ("chat", "messages")
-            and not stream
-        ):
-            assert response.status_code == 422
-            assert response.json()["detail"]["error"]["code"] == "model_no_final_answer"
-            return
         assert response.status_code == 200, response.text
         packets = (
             [
@@ -221,26 +211,6 @@ def test_flint_routes(
                 for c in i["content"]
             )
             calls = [i for i in packets[0]["output"] if i["type"] == "function_call"]
-        if surface == "responses" and stream:
-
-            def message_text(items):
-                return "".join(
-                    c["text"]
-                    for i in items
-                    if i["type"] == "message"
-                    for c in i["content"]
-                )
-
-            for packet in packets:
-                if packet.get("type") == "response.output_text.done":
-                    assert packet["text"] == visible
-                elif (
-                    packet.get("type") == "response.output_item.done"
-                    and packet["item"]["type"] == "message"
-                ):
-                    assert message_text([packet["item"]]) == visible
-                elif packet.get("type") == "response.completed":
-                    assert message_text(packet["response"]["output"]) == visible
         if expected_literal is not None:
             assert visible == expected_literal
             assert not calls
@@ -328,7 +298,7 @@ def test_glm_malformed_markup_is_not_content(raw):
 
 
 def test_responses_finalize_preserves_plain_text():
-    test_flint_routes("responses", True, False, "</think>Done.", 1)
+    test_flint_routes("responses", True, False, "Done.", 1)
 
 
 def test_glm_interrupted_name_requires_arguments():
@@ -364,9 +334,7 @@ def test_glm_stream_flush(raw, expected):
 
 @pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>"])
 def test_responses_finalize_flushes_literal_prefix(text):
-    test_flint_routes(
-        "responses", True, False, "</think>" + text, 1, expected_literal=text
-    )
+    test_flint_routes("responses", True, False, text, 1, expected_literal=text)
 
 
 @pytest.mark.parametrize("name", ["run_shell_command", "unknown"])
@@ -535,10 +503,8 @@ def test_glm_orphan_segments_preserve_following_answer(prefix):
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("text", ["Literal <arg_", "Use <tool_call>", "Plain <"])
 def test_messages_finalization_preserves_literal_prefix(stream, text):
-    test_flint_routes(
-        "messages", stream, False, "</think>" + text, 1, expected_literal=text
-    )
+    test_flint_routes("messages", stream, False, text, 1, expected_literal=text)
 
 
 def test_messages_bare_tool_envelope_preserves_surrounding_prose():
-    test_flint_routes("messages", True, True, "</think>Ready." + CALL + "Done.", 1)
+    test_flint_routes("messages", True, True, "Ready." + CALL + "Done.", 1)

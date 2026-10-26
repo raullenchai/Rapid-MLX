@@ -144,11 +144,8 @@ def test_buffered_parser_authorization(monkeypatch, parser, text):
     monkeypatch.setattr(cfg, "tool_call_parser", parser)
     content, calls = helpers._parse_tool_calls_with_parser(text, _Request())
     assert not calls
-    if parser == "hermes":
-        assert content == text
-    else:
-        assert helpers._was_undeclared_tool_dropped()
-        assert not content.strip()
+    assert helpers._was_undeclared_tool_dropped()
+    assert not content.strip()
 
 
 @pytest.mark.parametrize(
@@ -612,14 +609,7 @@ FENCED_EXAMPLE = "```xml\n<tool_call>example</tool_call>\n```"
 
 
 def _route_reply(
-    text,
-    *,
-    stream,
-    deltas=None,
-    tools=TOOLS,
-    tool_choice=None,
-    expected_status=200,
-    expected_sse_error=None,
+    text, *, stream, deltas=None, tools=TOOLS, tool_choice=None, expected_status=200
 ):
     cfg = reset_config()
     cfg.engine = _Engine(text, deltas=deltas)
@@ -644,20 +634,6 @@ def _route_reply(
         assert response.status_code == expected_status, response.text
         if expected_status != 200:
             return response.json()
-        if stream and expected_sse_error:
-            packets = [
-                json.loads(line[6:])
-                for line in response.text.splitlines()
-                if line.startswith("data: {")
-            ]
-            errors = [packet["error"] for packet in packets if "error" in packet]
-            assert len(errors) == 1 and errors[0]["code"] == expected_sse_error
-            assert not any(
-                choice.get("delta", {}).get("tool_calls")
-                for packet in packets
-                for choice in packet.get("choices", [])
-            )
-            return errors[0]
         if stream:
             choices = [
                 c
@@ -714,15 +690,16 @@ def test_forced_choice_uses_original_authorization(stream, caplog):
         text,
         stream=stream,
         expected_status=200 if stream else 422,
-        expected_sse_error="invalid_tool_arguments" if stream else None,
         tools=[*TOOLS, {"type": "function", "function": {"name": "send_email"}}],
         tool_choice={"type": "function", "function": {"name": "write_file"}},
     )
     # Authorization agrees; existing forced-choice enforcement still differs:
-    # Buffered rejects a wrong choice; streaming rejects the malformed
-    # forced-prefix envelope rather than inventing a replacement call.
+    # buffered rejects a wrong choice, streaming recovers the pinned function.
     if stream:
-        assert result["code"] == "invalid_tool_arguments"
+        content, names, finish = result
+        assert names == ["write_file"]
+        assert finish == "tool_calls"
+        assert NOTICE not in content
     else:
         assert "emitted calls to ['send_email']" in result["detail"]
     assert not any("undeclared" in record.message for record in caplog.records)

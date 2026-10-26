@@ -14,7 +14,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -58,7 +57,10 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
-from ..api.utils import ToolProbeStorageError
+from ..api.utils import (
+    sanitize_reasoning_content,
+    strip_reasoning_channel_markup,
+)
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..errors import BackpressureError, MetalMemoryBackpressureError
@@ -496,11 +498,6 @@ def _finalize_content_and_reasoning(
             and "<think>" not in text_to_parse
             and "</think>" not in text_to_parse
         )
-        tentative = _tentative_answer_text(
-            raw_text, new_reasoning, first_parse_was_case4, prompt_thinking_active
-        )
-        if tentative is not None:
-            return tentative, None
         # 2026-06-17 VibeThinker live test: Case-3 (truncated
         # ``<think>`` with no ``</think>``) leaks identically to Case-4
         # but the #575 plug above doesn't catch it because ``<think>``
@@ -1009,28 +1006,6 @@ def _should_start_in_thinking(
     )
 
 
-def _tentative_answer_text(
-    raw_text: str | None,
-    reasoning_text: str | None,
-    reasoning_is_case4: bool,
-    prompt_thinking_active: bool | None,
-) -> str | None:
-    """Recover unmarked text only when the parser used its tentative fallback."""
-    if (
-        not reasoning_is_case4
-        or prompt_thinking_active is not False
-        or not raw_text
-        or not reasoning_text
-        or raw_text.strip() != reasoning_text.strip()
-        or "<think>" in raw_text
-        or "</think>" in raw_text
-    ):
-        return None
-    from ..reasoning.qwen3_parser import _looks_like_bare_think_preamble
-
-    return None if _looks_like_bare_think_preamble(raw_text) else raw_text
-
-
 def _rescue_silent_drop_from_reasoning(
     final_content: str | None,
     reasoning_text: str | None,
@@ -1043,35 +1018,237 @@ def _rescue_silent_drop_from_reasoning(
     prompt_thinking_active: bool = False,
     implicit_reasoning_until_close: bool = False,
 ) -> str | None:
-    """Preserve the parsed content lane, including an absent final answer.
+    """Issue #569: never silently drop an assistant turn.
 
-    Reasoning is not a substitute for an answer, regardless of the finish
-    reason. Keep this compatibility entry point for finalization callers.
+    The route layer's normal ``content`` extraction can legitimately
+    produce an empty ``final_content`` when the model emits ONLY
+    reasoning tokens and never closes the reasoning channel into a
+    ``content``/``final`` channel or a tool call. The exact production
+    failure mode: ``gemma-4-26b-4bit`` multi-turn tool flows where the
+    model gets stuck inside ``<|channel>thought\\n...`` and runs out of
+    its token budget before emitting any ``<|tool_call>`` or
+    ``<|channel>content`` marker. The engine's token-level
+    ``OutputRouter`` correctly routes every token to ``reasoning`` —
+    but the route then emits an OpenAI-compat message with
+    ``content=null`` and ``tool_calls=null`` while
+    ``reasoning_content`` carries the entire stuck thought. Agentic
+    clients (Cline, Cursor, Codex CLI) read ``content`` and
+    ``tool_calls`` only, see an empty message, and either retry into
+    the same trap or stall.
+
+    Rescue rule: when ``final_content`` is empty/None AND no
+    ``tool_calls`` fired AND ``reasoning_text`` is non-empty, surface
+    ``reasoning_text`` as ``content``. ``reasoning_content`` stays
+    populated unchanged — duplication between the two fields is the
+    lesser evil vs. a silently empty response.
+
+    Cases that fall through unchanged:
+
+    * Happy path: ``final_content`` is non-empty AND has at least one
+      non-whitespace char → return as-is. Whitespace-only
+      ``final_content`` (``"   \n"``) is treated as semantically
+      absent for rescue purposes (codex round-3 NIT on #676): an
+      OpenAI-compat client still sees an empty assistant turn, so
+      the rescue must be allowed to fire when reasoning is present.
+      The strip is on the predicate only — the original
+      ``final_content`` propagates back on the happy path so callers
+      that DO want the whitespace preserved still see it as-is.
+    * Tool-call path: ``tool_calls`` non-empty → the spec already
+      requires ``content`` to be ``None`` (the tool call IS the
+      response); rescue does NOT fire.
+    * Truly empty: ``reasoning_text`` empty OR whitespace-only →
+      nothing semantically rescue-worthy; ``None`` propagates. The
+      whitespace-only check (codex round-1 NIT on #676) closes a
+      gap where ``"   \n"`` would surface as non-empty ``content``
+      while still being semantically empty to clients. The
+      ORIGINAL ``reasoning_text`` is returned untouched (no
+      ``.strip()`` on the assignment) so callers that DO want the
+      whitespace preserved still see it as-is — the strip is on
+      the predicate only.
+
+    The rescue lives at the route layer (not the engine) because the
+    engine's ``_route_tokens_for_channels`` has a tested contract
+    (issue #442's harmony fix pins ``content == ""`` when only the
+    analysis channel fires) — flipping that at the engine level
+    would re-leak analysis text into ``content`` for the original
+    #442 case. The rescue runs AFTER tool-call parsing and AFTER the
+    reasoning/content split, as a final route-level safety net so
+    silent drops never escape to clients regardless of which model
+    family produced them.
+
+    Codex round-3 BLOCKING on #676: this helper is now the SINGLE
+    predicate for both the non-streaming AND streaming rescue paths
+    (chat.py:~1285 and chat.py:~1605). The streaming path used to
+    promote ``processor.accumulated_reasoning`` directly into
+    ``delta.content`` without the whitespace guard, so a
+    reasoning-only stream of ``"   \n"`` would emit a semantically
+    empty ``delta.content`` while non-streaming correctly suppressed
+    it. Routing both call sites through this helper closes that
+    asymmetry — the predicate cannot drift between the two paths
+    because there's only one of it.
     """
-    if not (final_content or "").strip() and not tool_calls:
-        tentative = _tentative_answer_text(
-            raw_text, reasoning_text, reasoning_is_case4, prompt_thinking_active
+    if final_content and final_content.strip():
+        return final_content
+    if tool_calls:
+        return final_content
+    if not reasoning_text or not reasoning_text.strip():
+        return final_content
+    # An implicit close positively identifies the private reasoning prefix.
+    # An empty answer after it must not restore that prefix as visible text.
+    if raw_text and "</think>" in raw_text and "<think>" not in raw_text:
+        return final_content
+    # 2026-06-17 VibeThinker live test: when the model was truncated
+    # D-STOP-THINK rescue gate. The #569 rescue normally copies
+    # reasoning-only output into ``content`` so clients do not see an
+    # empty assistant turn. Do not run that rescue when the empty content
+    # is a known interrupted-thought shape; otherwise the same thought
+    # bytes appear in both ``content`` and ``reasoning_content``.
+    #
+    # Current suppression matrix:
+    #
+    # finish | raw starts unclosed <think> | case4 | matched_stop | prompt think | suppress
+    # length | yes                         | *     | *            | *            | yes
+    # length | no                          | yes   | *            | true         | yes
+    # length | no                          | yes   | *            | false        | no
+    # stop   | yes                         | *     | set          | *            | yes
+    # stop   | no                          | yes   | set          | true         | yes
+    # stop   | no                          | yes   | set/none     | false        | no
+    # stop   | no                          | no    | *            | *            | no
+    #
+    # ``case4`` means the parser routed a no-tag output wholly to
+    # reasoning. For case4 we require the route's
+    # ``prompt_thinking_active`` signal so a direct answer truncated by
+    # ``max_tokens`` or by a user stop string still rescues to content.
+    truncated_mid_think = (
+        # Explicit-opener under length OR stop: raw_text proves
+        # an in-progress ``<think>`` was truncated.
+        #
+        # Codex round-12 BLOCKING (PR #799): REVERTS round-11's
+        # unconditional ``stop`` arm. Round-11 widened the
+        # suppression on the ``stop`` arm to fire regardless of
+        # ``matched_stop`` because the streaming chat path can lose
+        # ``matched_stop`` between sampler and helper — but that
+        # widening dropped the #569 silent-drop rescue for a model
+        # that voluntarily ends after emitting ``<think>just a
+        # thought`` (no closing ``</think>``, no user stop fired).
+        # The helper's contract is "never silently drop an
+        # assistant turn"; a natural-EOS in-progress thought must
+        # still rescue. Fix: ``length`` stays unconditional (length
+        # is unambiguously truncation); ``stop`` requires
+        # ``matched_stop is not None`` so only engine-initiated
+        # trims suppress, natural EOS falls through to the rescue
+        # path. The matched_stop-propagation concern from r11 is
+        # addressed at the call sites (chat.py streaming now
+        # accumulates ``output.matched_stop`` per chunk, mirroring
+        # responses.py / anthropic.py).
+        (
+            finish_reason == "length"
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
         )
-        if tentative is not None:
-            return tentative
+        or (
+            finish_reason == "stop"
+            and matched_stop is not None
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        # Case-4 + length + prompt_thinking_active: parser routed the
+        # whole body to reasoning (helper-Case-4 signal) and the route
+        # says the chat template injected thinking, so ``length`` means
+        # max_tokens cut an implicit thought. Without the template signal
+        # this is just a non-thinking answer truncated mid-content, and
+        # the #569 rescue must surface it instead of silently dropping it.
+        or (finish_reason == "length" and reasoning_is_case4 and prompt_thinking_active)
+        # Case-4 + stop + matched_stop + prompt_thinking_active:
+        # codex round-5 BLOCKING — matched_stop alone with
+        # Case-4 under finish=stop is NOT enough to identify the
+        # D-STOP-THINK shape. A casual answer like ``"The answer
+        # is STOP"`` under ``stop=["STOP"]`` ALSO has matched_stop
+        # set but is NOT chain-of-thought. Require the route-
+        # supplied ``prompt_thinking_active`` boolean (chat
+        # template injected ``<think>`` AND ``enable_thinking`` is
+        # non-False) as the secondary discriminator. Symmetric
+        # with the parser-level ``finalize_streaming`` AND-of-
+        # signals contract.
+        or (
+            finish_reason == "stop"
+            and reasoning_is_case4
+            and matched_stop is not None
+            and prompt_thinking_active
+        )
+    )
+    if implicit_reasoning_until_close and reasoning_is_case4 and prompt_thinking_active:
+        return final_content
+    if truncated_mid_think:
+        return final_content
+    # r5-D (F-DGF-V080-B-7, 2026-06-21): gemma4 channel-token analog
+    # of the truncated-``<think>`` gate above. When generation is cut
+    # mid-thought-channel (``<|channel>thought\n…``-without-
+    # ``<channel|>``), the reasoning trace is NOT the final answer —
+    # surfacing it as ``content`` per the #569 rescue would feed the
+    # desktop client the SAME bytes as ``reasoning_content`` (the
+    # 132/128/512-char identical-dup repro that this PR closes).
+    # Skip the rescue and let the client see ``content=null`` so it
+    # can detect "model ran out of budget mid-thought" via
+    # ``finish_reason="length"`` — symmetric with the
+    # truncated-``<think>`` and D-HARMONY-LEAK gates.
     if (
-        finish_reason not in ("length", "cancelled", "content_filter")
-        and not (final_content or "").strip()
-        and reasoning_text
-        and reasoning_text.strip()
-        and not tool_calls
+        finish_reason == "length"
+        and raw_text
+        and "<|channel>thought" in raw_text
+        and "<channel|>" not in raw_text[raw_text.rfind("<|channel>thought") :]
     ):
-        raise _NoFinalAnswerError(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "model_no_final_answer",
-                    "message": "The model stopped without a final answer or tool call. Retry the request.",
-                    "type": "invalid_request_error",
-                }
-            },
-        )
-    return final_content
+        return final_content
+    # D-HARMONY-LEAK (2026-06-21): harmony-channel analog of the
+    # truncated-``<think>`` gate above. The gpt-oss family (and any
+    # Harmony-encoding tokenizer) emits ``<|channel|>analysis<|message|>
+    # …<|end|><|channel|>final<|message|>…<|return|>`` as the wire
+    # contract for a complete reasoning-then-answer turn — the
+    # ``<|channel|>analysis<|message|>`` opener is the analysis-channel
+    # start marker and ``<|channel|>final<|message|>`` is the
+    # final-channel start marker (the user-visible answer). When
+    # generation is cut short BEFORE the final-channel opener appears
+    # (max_tokens cut mid-analysis OR ``stop:["X"]`` matched a stop-
+    # string that happens to land in the analysis body), the engine
+    # has correctly routed the analysis bytes into ``reasoning_text``
+    # and left ``content`` empty — exactly the silent-drop shape this
+    # rescue was designed to fix. But the analysis body is NOT the
+    # model's final answer, so promoting it to ``content`` ships the
+    # SAME bytes in both fields (``content == reasoning_content``
+    # mojibake) — the bug filed as D-HARMONY-LEAK. Gate the rescue
+    # on the harmony state machine: when raw_text shows an analysis-
+    # channel opener but NO final-channel opener, we are structurally
+    # mid-state-machine and the rescue must NOT fire. The gate is
+    # finish_reason-AGNOSTIC because both repros (max_tokens=length
+    # AND stop-string match=stop) produce the same broken shape —
+    # letting the rescue fire on either would re-leak the analysis
+    # body into ``content``.
+    #
+    # Codex r1 BLOCKING #1: an earlier revision exempted any raw_text
+    # carrying ``<|call|>`` (commentary tool-call terminator) under
+    # the assumption the upstream ``tool_calls`` branch would catch
+    # it. That assumption is unsafe — if the tool-call parser failed
+    # to extract a structured call (malformed args, downstream filter
+    # dropping the entry, ``tool_calls`` not threaded into this
+    # helper at all by a third-party caller), the analysis body
+    # would still leak as user-visible content. Suppress the rescue
+    # for ANY harmony "analysis without final" state and rely on the
+    # earlier ``if tool_calls:`` branch to preserve parsed tool
+    # calls — that branch already returns the original
+    # ``final_content`` so a populated ``tool_calls`` list never
+    # reaches this point. When the model DID reach the final channel
+    # (final-marker present), control already returned through the
+    # happy-path early-exit above, so no override is needed for that
+    # case.
+    if (
+        raw_text
+        and "<|channel|>analysis<|message|>" in raw_text
+        and "<|channel|>final<|message|>" not in raw_text
+    ):
+        return final_content
+    return reasoning_text
 
 
 # ---------------------------------------------------------------------------
@@ -1175,15 +1352,100 @@ _RESCUE_ENV_LEGACY = "RAPID_MLX_REASONING_CUTOFF_NOTICE"
 
 
 def _cutoff_notice_enabled() -> bool:
-    """Whether the default-on cutoff notice is enabled by the environment."""
+    """Whether the cutoff rescue is enabled for this process.
+
+    R12-8 / issue #259 expands the rescue from a bare sentinel string
+    to ``sentinel + tail-of-reasoning`` (the 8-round carry kept getting
+    reopened because the bare sentinel still felt like "the model
+    didn't answer" to six independent reviewers). The default-on /
+    opt-out policy is unchanged from PR #860 — only the rescue payload
+    grew. Issue #858 revert (PR #860) settled the default-on question:
+    GUI clients that only render ``content`` showed empty bubbles
+    under R-01's default-off, and that ships as a user-visible bug.
+
+    Reads the env vars on each call so test harnesses can flip the
+    gate per-request via ``monkeypatch.setenv`` without restarting the
+    process. The cost is negligible (``os.environ.get`` is a dict
+    lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
+    is read in this module.
+
+    Two env vars are honoured (in this priority order):
+
+    * ``RAPID_MLX_REASONING_RESCUE`` — R12-8 primary name. Easier to
+      discover than the legacy alias (``RESCUE`` is what the operator
+      thinks of it as) and aligns with the task spec.
+    * ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` — legacy alias from PR
+      #802 / #860 (issue #858). Still honoured so existing
+      rapid-desktop deployments and operator runbooks that already
+      reference this name keep working without a rebuild.
+
+    The rescue is DISABLED when EITHER env var is set to a falsey
+    spelling (``rapid_mlx._env.FALSEY_VALUES``, case-insensitive,
+    whitespace-stripped). Operator
+    intent: "I do not want the rescue", regardless of which name was
+    used. Anything else — including unset, the empty string, a truthy
+    spelling, or any arbitrary unrecognised value — leaves the rescue
+    enabled.
+    """
     return not any(
         env_falsey(env_name) for env_name in (_RESCUE_ENV_PRIMARY, _RESCUE_ENV_LEGACY)
     )
 
 
 def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
-    """Report a cutoff without copying private reasoning into visible text."""
-    return REASONING_CUTOFF_SENTINEL
+    """Build the rescue ``content`` string for R12-8.
+
+    Layout: ``"<sentinel>\\n\\n<tail-of-reasoning>"``. The sentinel
+    anchors the opening (agentic auto-retry clients pattern-match the
+    prefix), then a blank line, then the LAST ``RESCUE_TAIL_LENGTH``
+    chars of the reasoning trace so a human sees the partial
+    conclusion. The tail is taken from the END of ``reasoning_text``
+    because that's where the partial answer lives in every reasoning
+    parser dialect we ship (qwen3, deepseek_r1, glm4, vibethinker,
+    harmony — all build the answer at the tail of the thought).
+
+    Trailing whitespace on the reasoning trace is stripped before the
+    slice so the rescue doesn't end on a partial newline. The caller
+    has already verified ``reasoning_text`` is non-empty + non-
+    whitespace (see ``_apply_reasoning_cutoff_notice``), so an empty
+    tail is impossible by construction.
+
+    The reasoning trace is stripped of channel markup BEFORE the
+    tail slice is chosen, then the slice runs through
+    :func:`sanitize_output` (general special-token catch-all:
+    ``<|...|>``, harmony channel markers, ``</tool_call>``, etc.).
+    The strip-before-slice order matters: a naive slice of the raw
+    reasoning bytes can bisect a structural ``<think>`` /
+    ``</think>`` tag (codex r3 P2: when reasoning is just slightly
+    longer than ``RESCUE_TAIL_LENGTH`` and starts with ``<think>``,
+    the raw slice begins ``hink>...`` and the regex stripper no
+    longer matches the orphaned fragment — so the literal ``ink>``
+    bytes leak into ``content``). Stripping channel markup first
+    means the slice operates on the clean, in-channel byte stream
+    and can never bisect a tag because there are no tags left to
+    bisect.
+    ``reasoning_content`` keeps the full original trace addressable
+    for clients that walk both fields. Codex r1 (R12-8): the rescue
+    path previously bypassed the sanitizer that ``content``
+    consumers rely on. R12-M1b (Mira r12 R-3 bonus regression):
+    also strip the ``<think>`` OPENER — at ``max_tokens=1`` the
+    reasoning trace IS the literal opener, and ``sanitize_output``
+    deliberately leaves the opener alone on the ``content`` channel
+    (where it can be legit Nemotron prefix injection or literal-tag
+    prose). The rescue tail is from the reasoning channel, so the
+    channel-aware strip applies.
+    """
+    # Strip BEFORE slicing — see docstring for the bisection
+    # regression this order closes.
+    stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
+    tail = stripped[-RESCUE_TAIL_LENGTH:]
+    # Reasoning-channel sanitizer, not the content one: this slice is a
+    # copy of the reasoning trace (see docstring above), so bare wire
+    # markers in it are parser artifacts rather than requested text.
+    sanitized = sanitize_reasoning_content(tail)
+    if not sanitized:
+        return REASONING_CUTOFF_SENTINEL
+    return f"{REASONING_CUTOFF_SENTINEL}\n\n{sanitized}"
 
 
 def _apply_reasoning_cutoff_notice(
@@ -1194,11 +1456,65 @@ def _apply_reasoning_cutoff_notice(
     *,
     include_reasoning_tail: bool = True,
 ) -> str | None:
-    """Return a static cutoff notice for a reasoning-only length termination.
+    """R12-8 / H-01: rescue ``content`` when generation was cut short
+    mid-think and the strict rescue path left it empty.
 
-    The legacy include_reasoning_tail keyword is accepted for compatibility,
-    but reasoning is never copied into visible text. Existing opt-out settings
-    continue to suppress the notice."""
+    Runs AFTER ``_rescue_silent_drop_from_reasoning`` — its job is the
+    UX rescue for the cases the silent-drop rescue deliberately
+    SUPPRESSED (truncated ``<think>``, harmony analysis-without-final,
+    Case-4 no-tag fallback). All those cases share the same observable
+    shape: ``finish_reason="length"`` + empty content + non-empty
+    reasoning + no tool calls.
+
+    R12-8 (issue #259, 8-round D-carry) extends PR #802 / #860: the
+    rescue is now ``sentinel + tail-of-reasoning`` rather than the bare
+    sentinel, because six independent reviewers kept reopening the H-01
+    carry — the bare sentinel still felt like "the model didn't
+    answer". The tail is the LAST ``RESCUE_TAIL_LENGTH`` chars of the
+    reasoning trace — that gives a human reader a glimpse of the
+    partial conclusion without dumping the whole trace into
+    ``content`` (which would re-introduce the D-STOP-THINK /
+    D-HARMONY-LEAK byte-identical leak shape the rescue is allowed to
+    exist alongside). ``reasoning_content`` is NEVER touched — the
+    full original trace stays addressable to clients that walk both
+    fields.
+
+    Returns ``final_content`` unchanged when:
+    * the env var disables the rescue (``RAPID_MLX_REASONING_RESCUE=off``
+      or the legacy ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``)
+    * ``finish_reason`` is anything other than ``"length"`` (stop-string
+      cut mid-think hits the D-STOP-THINK regression guard — strict
+      null wins; a clean ``"stop"`` finish on an empty answer is a
+      legitimate model decision and gets no "raise max_tokens" hint)
+    * ``final_content`` already carries a non-whitespace payload
+    * ``tool_calls`` were extracted (OpenAI-spec ``content=None`` path)
+    * ``reasoning_text`` is empty / whitespace (nothing to signal — the
+      model produced nothing semantically, which is a different bug
+      class and shouldn't get a "raise max_tokens" hint)
+
+    Otherwise returns the rescue payload produced by
+    :func:`_build_reasoning_rescue_payload` — the canonical shape is
+    ``sentinel + "\\n\\n" + sanitized_tail``. The builder applies
+    operations in this order (codex r3 P2 strip-before-slice):
+
+    1. :func:`strip_reasoning_channel_markup` on
+       ``reasoning_text.rstrip()`` — strips ``<think>`` / ``</think>``
+       on the FULL trace so the next slice operates on a clean,
+       in-channel byte stream. Doing it before the slice means a tag
+       straddling the ``L - RESCUE_TAIL_LENGTH`` boundary can never
+       leave an orphan ``<th`` / ``ink>`` fragment in the tail.
+    2. ``[-RESCUE_TAIL_LENGTH:]`` slice on the stripped trace.
+    3. :func:`sanitize_output` on the slice — general special-token
+       catch-all (``<|...|>``, harmony markers, ``</tool_call>``, …).
+
+    When sanitization collapses the tail to empty (e.g.
+    ``reasoning_text="<think>"`` at ``max_tokens=1``), the rescue
+    builder returns the bare sentinel — clients still see the
+    structural truncation signal without a stray markup byte in
+    ``content``. The caller writes the returned string into
+    ``message.content`` (non-stream) or the final SSE ``delta.content``
+    chunk (stream).
+    """
     if not _cutoff_notice_enabled():
         return final_content
     if finish_reason != "length":
@@ -3352,11 +3668,6 @@ def _run_tool_parser(
     """
     cfg = get_config()
     request_dict = request.model_dump() if hasattr(request, "model_dump") else request
-    if request_dict and cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder"):
-        request_dict = {
-            **request_dict,
-            "_tool_authorization_names": declared_names(request),
-        }
     # Match streaming: unknown/empty tools leave text untouched, including request=None.
     if not request_dict or not request_dict.get("tools"):
         return output_text or "", None
@@ -3442,25 +3753,6 @@ def _run_tool_parser(
         parser.reset()
         result = parser.extract_tool_calls(output_text, request_dict)
         _undeclared_tool_dropped_this_parse.set(bool(parser._undeclared_dropped))
-        if (
-            not result.tools_called
-            and request_dict.get("tool_choice") not in (None, "auto", "none")
-            and re.search(r"<tool_call>\s*\{", output_text)
-            and cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
-        ):
-            from ..tool_parsers.json_prefix import tool_json_prefix
-
-            body = output_text.split("<tool_call>", 1)[1].lstrip()
-            viable, end = tool_json_prefix(body)
-            if viable and end is not None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="The response did not contain the required declared tool call.",
-                )
-            raise _InvalidToolArgumentsError(
-                status_code=400,
-                detail="The requested tool call was not valid JSON.",
-            )
         if result.tools_called:
             tool_calls = [
                 ToolCall(
@@ -3475,36 +3767,17 @@ def _run_tool_parser(
             ]
             return result.content or "", tool_calls
         else:
-            if (
-                parser._undeclared_dropped
-                or cfg.tool_call_parser == "qwen3_coder_xml"
-                or cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
-                and "<tool_call>" in output_text
-            ):
-                if (
-                    cfg.tool_call_parser in ("hermes", "nous", "qwen3_coder")
-                    and not parser._undeclared_dropped
-                ):
-                    return output_text or "", None
+            if parser._undeclared_dropped or cfg.tool_call_parser == "qwen3_coder_xml":
                 # The configured parser made an authoritative declared-name decision.
                 # Falling through to the generic parser would re-promote the
                 # exact undeclared/tool_choice=none span it rejected.
                 return result.content or "", None
             return parse_tool_calls(output_text, request_dict)
-    except HTTPException:
-        # A parser's explicit rejection must not be bypassed by generic repair.
-        raise
     except Exception as e:
         logger.warning(f"Tool parser error: {e}")
         if cfg.tool_call_parser == "qwen3_coder_xml":
             return output_text or "", None
         return parse_tool_calls(output_text, request_dict)
-
-
-class _NoFinalAnswerError(HTTPException):
-    """A reasoning-only stop with no executable call or final answer."""
-
-    rapid_mlx_error_code = "model_no_final_answer"
 
 
 class _InvalidToolArgumentsError(HTTPException):
@@ -3604,11 +3877,19 @@ def _validate_tool_call_params(
 
         try:
             args = json.loads(args_str)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            raise _InvalidToolArgumentsError(
-                status_code=400,
-                detail=f"Tool call '{func_name}' arguments must be valid JSON; retry the request.",
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                f"Tool call '{func_name}': arguments is not valid JSON: {args_str!r}"
             )
+            if enforce_required:
+                raise _InvalidToolArgumentsError(
+                    status_code=400,
+                    detail=(
+                        f"Tool call '{func_name}' arguments must be a valid JSON "
+                        "object; retry the request."
+                    ),
+                )
+            continue
 
         if not isinstance(args, dict):
             if enforce_required:
@@ -4632,18 +4913,6 @@ async def _disconnect_guard(
                     _sse_type = _payload["type"]
                     _sse_message = _payload["message"]
                     _sse_code = _payload["code"]
-                elif isinstance(exc, ToolProbeStorageError):
-                    _sse_type = "internal_error"
-                    _sse_code = exc.rapid_mlx_error_code
-                    _sse_message = ToolProbeStorageError.public_message
-                elif isinstance(exc, (_NoFinalAnswerError, _InvalidToolArgumentsError)):
-                    _sse_type = "invalid_request_error"
-                    _sse_code = exc.rapid_mlx_error_code
-                    _sse_message = (
-                        "The model stopped without a final answer or tool call. Retry the request."
-                        if isinstance(exc, _NoFinalAnswerError)
-                        else "Tool call arguments must be valid JSON; retry the request."
-                    )
                 elif isinstance(exc, ClientRequestError):
                     _sse_type = "invalid_request_error"
                     _sse_message = str(exc)
