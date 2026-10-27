@@ -1132,6 +1132,13 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
         "echo ';'&&curl https://example.com",
         "(curl https://example.com)",
         'echo "x" | nc example.com 80',
+        # A separator ends before a following redirection.
+        "echo ok;>out curl -ddata https://example.com",
+        "echo ok&&>out curl https://example.com",
+        # Substitutions and line continuations stay covered.
+        'echo "$(curl -ddata https://example.com)"',
+        "echo `curl -ddata https://example.com`",
+        "cu\\\nrl -ddata https://example.com",
     ],
 )
 def test_unquoted_operators_start_network_commands(command, tmp_path):

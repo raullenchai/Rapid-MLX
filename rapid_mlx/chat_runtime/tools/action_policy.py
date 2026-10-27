@@ -139,13 +139,20 @@ NETWORK_CLIENTS = {
 
 
 SHELL_OPERATOR_CHARS = ";&|<>()\n"
+# Multi-character shell operators, longest first; anything else is one char.
+SHELL_OPERATORS = sorted(
+    ["&&", "||", ";;", "|&", ">>", "<<<", "<<", ">&", "<&", "&>>", "&>", ">|", "<>"],
+    key=len,
+    reverse=True,
+)
 
 
 def shell_words(text):
     """Split POSIX shell text into (word, is_operator) pairs.
 
     Unlike shlex, this keeps whether punctuation was unquoted, so a quoted or
-    escaped ``;`` is an argument rather than a command separator.
+    escaped ``;`` is an argument rather than a command separator. Command
+    substitution needs no handling here: the dynamic expansion rule prompts.
     """
 
     words = []
@@ -193,9 +200,9 @@ def shell_words(text):
             continue
         elif char in SHELL_OPERATOR_CHARS:
             flush()
-            end = index
-            while end < len(text) and text[end] in SHELL_OPERATOR_CHARS:
-                end += 1
+            end = index + next(
+                (len(op) for op in SHELL_OPERATORS if text.startswith(op, index)), 1
+            )
             words.append((text[index:end], True))
             index = end
             continue
