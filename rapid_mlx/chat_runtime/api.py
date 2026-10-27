@@ -25,35 +25,56 @@ from .store import Conflict, Store
 PREFIX = "/v1/rapid/chat"
 MAX_ATTACHMENT_BYTES = MAX_INPUT_BYTES
 MAX_REQUEST_BYTES = 2 * MAX_ATTACHMENT_BYTES
+BODY_READ_TIMEOUT = 30
+
+
+def _authorized(authorization: str, token: str) -> bool:
+    return secrets.compare_digest(authorization.encode(), f"Bearer {token}".encode())
 
 
 class ChatBodyLimitMiddleware:
     """Bound authenticated body bytes before JSON parsing, including chunked uploads."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, token: str) -> None:
         self.app = app
+        self.token = token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
+        authorization = Request(scope).headers.get("authorization", "")
+        if not _authorized(authorization, self.token):
+            return await JSONResponse(
+                {"detail": "Bearer authentication required"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )(scope, receive, send)
         body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return await self.app(
-                    scope, _replay_with_disconnect([bytes(body)]), send
-                )
-            chunk = message.get("body", b"")
-            if len(body) + len(chunk) > MAX_REQUEST_BYTES:
-                response = JSONResponse(
-                    {"detail": "Request too large"},
-                    status_code=413,
-                    headers={"Connection": "close"},
-                )
-                return await response(scope, receive, send)
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
+        try:
+            async with asyncio.timeout(BODY_READ_TIMEOUT):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return await self.app(
+                            scope, _replay_with_disconnect([bytes(body)]), send
+                        )
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > MAX_REQUEST_BYTES:
+                        response = JSONResponse(
+                            {"detail": "Request too large"},
+                            status_code=413,
+                            headers={"Connection": "close"},
+                        )
+                        return await response(scope, receive, send)
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            return await JSONResponse(
+                {"detail": "Request body timeout"},
+                status_code=408,
+                headers={"Connection": "close"},
+            )(scope, receive, send)
         # Share the server's replay helper so streaming response readers see real
         # disconnects after the buffered request, never a synthetic early EOF.
         return await self.app(scope, _replay_buffered(bytes(body), receive), send)
@@ -111,16 +132,14 @@ def create_app(
     if not token:
         raise ValueError("Chat API requires a bearer credential")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(ChatBodyLimitMiddleware)
+    app.add_middleware(ChatBodyLimitMiddleware, token=token)
     metadata = metadata or {}
     leases = leases or ClientLeases()
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
         authorization = request.headers.get("authorization", "")
-        if not secrets.compare_digest(
-            authorization.encode(), f"Bearer {token}".encode()
-        ):
+        if not _authorized(authorization, token):
             return JSONResponse(
                 {"detail": "Bearer authentication required"},
                 status_code=401,

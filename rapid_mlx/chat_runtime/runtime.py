@@ -25,7 +25,12 @@ from pydantic_ai.models import Model
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from .context import ContextManager, ContextSynthesisUnavailableError, context_event
+from .context import (
+    ContextManager,
+    ContextSynthesisUnavailableError,
+    RuntimeNoticePart,
+    context_event,
+)
 from .events import Envelope
 from .history import _project_messages
 from .model_client import ModelClients, inference_url
@@ -757,7 +762,7 @@ class Runtime:
                 history.append(
                     ModelRequest(
                         parts=[
-                            UserPromptPart(
+                            RuntimeNoticePart(
                                 _localized(
                                     human_text,
                                     "上次工具调用被截断，未执行。请重新发出完整且更短的调用；如有必要，将内容拆成较小的操作。此前已完成的操作无需重复。",

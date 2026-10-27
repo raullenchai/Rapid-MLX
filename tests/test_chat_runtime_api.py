@@ -263,7 +263,11 @@ async def test_body_cap_preserves_partial_upload_disconnect():
     async def send(message):
         pytest.fail("disconnected partial body cannot create a success response")
 
-    await ChatBodyLimitMiddleware(downstream)({"type": "http"}, receive, send)
+    await ChatBodyLimitMiddleware(downstream, "test-token")(
+        {"type": "http", "headers": [(b"authorization", b"Bearer test-token")]},
+        receive,
+        send,
+    )
     assert observed == [
         {"type": "http.request", "body": b'{"title":', "more_body": True},
         {"type": "http.disconnect"},
@@ -299,3 +303,38 @@ async def test_attachment_worker_error_status_and_safe_message(
         "code": code,
         "message": "Safe extraction message.",
     }
+
+
+async def test_body_buffer_authenticates_and_times_out(monkeypatch):
+    import asyncio
+
+    from rapid_mlx.chat_runtime.api import ChatBodyLimitMiddleware
+
+    monkeypatch.setattr("rapid_mlx.chat_runtime.api.BODY_READ_TIMEOUT", 0.01)
+    received = 0
+    sent = []
+
+    async def receive():
+        nonlocal received
+        received += 1
+        if received == 1:
+            return {"type": "http.request", "body": b"x", "more_body": True}
+        await asyncio.Event().wait()
+
+    async def send(message):
+        sent.append(message)
+
+    async def downstream(scope, receive, send):
+        pytest.fail("incomplete body must not reach downstream")
+
+    middleware = ChatBodyLimitMiddleware(downstream, "test-token")
+    scope = {"type": "http", "headers": []}
+    await middleware(scope, receive, send)
+    assert sent[0]["status"] == 401
+    assert received == 0
+    sent.clear()
+    scope["headers"] = [(b"authorization", b"Bearer test-token")]
+    await middleware(scope, receive, send)
+    assert sent[0]["status"] == 408
+    assert (b"connection", b"close") in sent[0]["headers"]
+    assert received == 2

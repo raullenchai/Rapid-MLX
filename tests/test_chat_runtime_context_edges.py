@@ -605,3 +605,37 @@ async def test_context_disabled_first_request_cannot_dispatch_unexpected_tools(
     finally:
         await runtime.close()
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_synthesis_preserves_human_request_and_final_retry_notice():
+    from pydantic_ai.models import ModelRequestParameters
+
+    from rapid_mlx.chat_runtime.context import RuntimeNoticePart, fit_synthesis
+
+    class Counter(TokenCounter):
+        async def measure(self, messages, parameters=None):
+            result = await super().measure(messages, parameters)
+            result["used_tokens"] += 60 * len(messages)
+            return result
+
+    question = "Human request: " + "important details " * 30
+    notice = "Retry the truncated tool call."
+    messages = [
+        ModelRequest(parts=[UserPromptPart("old evidence " * 300)]) for _ in range(30)
+    ]
+    messages.extend(
+        [
+            ModelRequest(parts=[UserPromptPart(question)]),
+            ModelRequest(parts=[RuntimeNoticePart(notice)]),
+        ]
+    )
+    projected, _, measured = await fit_synthesis(
+        messages, ModelRequestParameters(), Counter(), 400
+    )
+    assert measured["used_tokens"] <= 400
+    parts = [part for message in projected for part in message.parts]
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == question for part in parts
+    )
+    assert isinstance(parts[-1], RuntimeNoticePart) and parts[-1].content == notice

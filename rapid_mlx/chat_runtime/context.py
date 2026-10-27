@@ -18,6 +18,10 @@ from .history import _project_messages, active_messages, compact_tool_history
 from .token_budget import TokenCounter, context_tokens, estimate_text, text_value
 
 
+class RuntimeNoticePart(UserPromptPart):
+    """A prompt injected by the runtime rather than the human."""
+
+
 class ContextSynthesisUnavailableError(ValueError):
     """Even minimal tools-disabled context cannot be sent safely."""
 
@@ -74,7 +78,11 @@ def squeeze(messages, budget, latest=None):
                     part,
                     args={},
                 )
-            elif part is latest:
+            elif (
+                part is latest
+                or isinstance(part, RuntimeNoticePart)
+                and part is messages[-1].parts[-1]
+            ):
                 pass
             elif isinstance(
                 part, (UserPromptPart, SystemPromptPart, TextPart, ToolReturnPart)
@@ -144,9 +152,12 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
             for message in reversed(original)
             for part in reversed(message.parts)
             if isinstance(part, UserPromptPart)
+            and not isinstance(part, RuntimeNoticePart)
         ),
         None,
     )
+    final = original[-1].parts[-1] if original and original[-1].parts else None
+    notice = final if isinstance(final, RuntimeNoticePart) else None
     for retire in (False, True):
         if retire:
             messages = _retire_completed_pairs(messages)
@@ -171,7 +182,7 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
     reference = []
     for message in _retire_completed_pairs(original):
         for part in message.parts:
-            if part is latest:
+            if part is latest or part is notice:
                 continue
             if isinstance(part, (ToolCallPart, ToolReturnPart)):
                 # A pending pair must stay protocol-valid, rather than become a
@@ -202,7 +213,11 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
     )
     compact = identities + reference_text
     messages = [
-        ModelRequest(parts=[UserPromptPart(compact)] + ([latest] if latest else []))
+        ModelRequest(
+            parts=[UserPromptPart(compact)]
+            + ([latest] if latest else [])
+            + ([notice] if notice else [])
+        )
     ]
     for _ in range(8):
         measured = await counter.measure(messages, parameters)
@@ -220,7 +235,11 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
         )
         compact = identities + reference_text
         messages = [
-            ModelRequest(parts=[UserPromptPart(compact)] + ([latest] if latest else []))
+            ModelRequest(
+                parts=[UserPromptPart(compact)]
+                + ([latest] if latest else [])
+                + ([notice] if notice else [])
+            )
         ]
     # A model's template/instructions alone may exhaust an exceptionally small
     # configured window. Use a compact synthesis instruction, with no tool schema.
