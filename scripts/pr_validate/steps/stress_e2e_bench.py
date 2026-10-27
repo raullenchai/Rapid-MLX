@@ -1783,6 +1783,16 @@ def _cached_model_revision(
         )
         if info is None:
             return None
+        covered = {file.rfilename for file in info.siblings}
+        loaded = {
+            leaf.relative_to(snapshot).as_posix()
+            for leaf in checkpoint.rglob("*")
+            if leaf.is_file()
+        }
+        if not loaded or not loaded <= covered:
+            # Files without a packaged digest could differ from the pinned
+            # revision, so the loaded checkpoint cannot be identified.
+            return None
         for file in info.siblings:
             digest = file.lfs.sha256 if file.lfs is not None else file.blob_id
             leaf = snapshot / file.rfilename

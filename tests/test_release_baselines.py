@@ -481,13 +481,32 @@ def test_stress_consumer_verifies_only_the_loaded_subfolder(
         tmp_path / "models--LiquidAI--LFM2.5-2.6B-MLX" / "snapshots" / revision / "4bit"
     )
     checkpoint.mkdir(parents=True)
-    (checkpoint / "config.json").write_text('{"model_type":"lfm2"}')
+    import hashlib
+
+    config = b'{"model_type":"lfm2"}'
+    (checkpoint / "config.json").write_bytes(config)
     (checkpoint / "model.safetensors").write_bytes(b"weights")
+    files = [
+        SimpleNamespace(
+            rfilename="4bit/config.json",
+            size=len(config),
+            lfs=None,
+            blob_id=hashlib.sha1(
+                b"blob " + str(len(config)).encode() + b"\0" + config
+            ).hexdigest(),
+        ),
+        SimpleNamespace(
+            rfilename="4bit/model.safetensors",
+            size=7,
+            lfs=SimpleNamespace(sha256=hashlib.sha256(b"weights").hexdigest()),
+            blob_id=None,
+        ),
+    ]
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     # Digests cover only the subfolder, so a root load cannot be proven.
     monkeypatch.setattr(
         "rapid_mlx._mirror._packaged_digest_info",
-        lambda *a: SimpleNamespace(siblings=[]),
+        lambda *a: SimpleNamespace(siblings=files),
     )
     original_resolve = model_aliases.resolve_model
     loaded_path = checkpoint.parent if loaded_at_root else checkpoint
@@ -504,7 +523,17 @@ def test_stress_consumer_verifies_only_the_loaded_subfolder(
 
 
 @pytest.mark.parametrize(
-    "case", ["valid", "regular", "stale", "missing", "corrupt_git", "corrupt_lfs"]
+    "case",
+    [
+        "valid",
+        "regular",
+        "stale",
+        "missing",
+        "corrupt_git",
+        "corrupt_lfs",
+        "empty",
+        "uncovered",
+    ],
 )
 def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case):
     from types import SimpleNamespace
@@ -563,13 +592,20 @@ def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case
                 rfilename="tokenizer.json", size=1, lfs=None, blob_id="d" * 40
             )
         )
+    if case == "empty":
+        files = []
+    if case == "uncovered":
+        (snapshot / "extra.py").write_text("pass\n")
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(
         "rapid_mlx._mirror._packaged_digest_info",
         lambda *a: SimpleNamespace(siblings=files),
     )
 
-    if case not in ("valid", "regular"):
+    if case in ("empty", "uncovered"):
+        # Loaded files without a packaged digest cannot prove the revision.
+        assert stress_e2e_bench._cached_model_revision(alias) is None
+    elif case not in ("valid", "regular"):
         with pytest.raises(ValueError, match="does not match packaged blob"):
             stress_e2e_bench._cached_model_revision(alias)
     else:
