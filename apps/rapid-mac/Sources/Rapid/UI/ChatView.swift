@@ -675,7 +675,7 @@ struct ChatView: View {
                         // actually pressed gave no feedback whatsoever. It now
                         // dims and carries the Send tooltip's sentence, which
                         // is the pattern ``sendOrStopButton`` already uses.
-                        retryEnabled: readiness.sendAllowed,
+                        retryEnabled: readiness.sendAllowed && !viewModel.isOwnerBackedChat,
                         retryTooltip: readiness.sendTooltip,
                         // Switching branches replays no turn, so unlike Edit
                         // and Retry it deliberately does NOT go through

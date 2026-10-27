@@ -14,8 +14,12 @@ final class ChatBackendConfig {
     nonisolated static let storageKey = "Rapid.experimental.chatBackend"
     private let defaults: UserDefaults
 
+    var onDisabled: (() -> Void)?
     var chatBackend: ChatBackend {
-        didSet { defaults.set(chatBackend.rawValue, forKey: Self.storageKey) }
+        didSet {
+            defaults.set(chatBackend.rawValue, forKey: Self.storageKey)
+            if chatBackend == .legacy && oldValue == .ownerV1 { onDisabled?() }
+        }
     }
 
     var harnessEnabled: Bool {

@@ -159,6 +159,7 @@ final class ChatViewModel {
     private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
     private var ownerSessions: [UUID: OwnerChatSession] = [:]
+    private var ownerConnections: [UUID: ChatOwnerConnection] = [:]
     struct OwnerApproval {
         let opID: String
         let title: String
@@ -633,6 +634,15 @@ final class ChatViewModel {
     ///
     /// Folded into one helper so every navigation and replay path applies the
     /// same turn-scoped cancellation and rail cleanup.
+    private func discardOwnerSessions() {
+        let sessions = Array(ownerSessions.values)
+        ownerSessions.removeAll()
+        for session in sessions { Task { await session.close() } }
+        let connections = Array(ownerConnections.values)
+        ownerConnections.removeAll()
+        for connection in connections { Task { await connection.close() } }
+    }
+
     private func cancelInflightWork() {
         inflight?.cancel()
         inflight = nil
@@ -1085,6 +1095,7 @@ final class ChatViewModel {
     func selectConversation(_ id: UUID) {
         saveDrafts()
         guard id != activeConversationID else { return }
+        discardOwnerSessions()
         cancelInflightWork()
         finaliseInterruptedLiveTurn()
         persistActive(touching: false)
@@ -1106,6 +1117,7 @@ final class ChatViewModel {
 
     /// Deletes a conversation and all document extracts in its full branch tree.
     func deleteConversation(_ id: UUID) {
+        if id == activeConversationID { discardOwnerSessions() }
         cancelTitleTask(for: id)
         var attachmentIDs: Set<UUID> = []
         if id == activeConversationID {
@@ -1279,6 +1291,7 @@ final class ChatViewModel {
     /// Start a fresh conversation — drops the transcript and any stale
     /// error banner. The in-flight stream (if any) is cancelled first.
     func newConversation() {
+        discardOwnerSessions()
         saveDrafts()
         cancelInflightWork()
         finaliseInterruptedLiveTurn()
@@ -1526,6 +1539,15 @@ final class ChatViewModel {
     }
 
     private func sendViaOwner(text: String, alias: String, placeholderIndex: Int, epoch: Int) async {
+        chatBackendConfig.onDisabled = { [weak self] in
+            guard let self else { return }
+            self.cancelInflightWork()
+            self.finaliseInterruptedLiveTurn()
+            self.persistActive()
+            self.conversationEpoch &+= 1
+            self.isStreaming = false
+            self.discardOwnerSessions()
+        }
         let conversationID = activeConversationID
         let placeholder = messages[placeholderIndex]
         do {
@@ -1543,10 +1565,17 @@ final class ChatViewModel {
                 }
                 guard epoch == conversationEpoch else { await newConnection?.close(); return }
                 if Task.isCancelled { await newConnection?.close(); finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch); persistActive(); return }
+                if let newConnection { ownerConnections[conversationID] = newConnection }
                 ownerSessions[conversationID] = session
             }
             let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
-            try await session.submit(text: text, target: target)
+            try await session.submit(text: text, target: target) { [weak self] id in
+                await MainActor.run {
+                    guard let self, let index = self.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+                    self.conversations[index].ownerConversationID = id
+                    self.saveConversations()
+                }
+            }
             if Task.isCancelled { try? await session.stop() }
             let snapshots = await session.snapshots()
             if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
@@ -1582,6 +1611,8 @@ final class ChatViewModel {
             persistActive()
         }
     }
+
+    var _testingOwnerSessionCount: Int { ownerSessions.count }
 
     func _testingOwnerProjection() async -> ChatTurnProjection? {
         await ownerSessions[activeConversationID]?.snapshot().projection
@@ -1755,7 +1786,17 @@ final class ChatViewModel {
     /// has produced so far. The placeholder transitions to ``.complete``
     /// with whatever bytes already arrived.
     func stop() {
-        if let session = ownerSessions[activeConversationID] { Task { try? await session.stop() } }
+        if let session = ownerSessions[activeConversationID] {
+            let id = activeConversationID
+            Task {
+                do { try await session.stop() }
+                catch {
+                    guard id == activeConversationID else { return }
+                    lastError = "Couldn't confirm the stop — the harness may still be running this turn."
+                }
+            }
+            return
+        }
         cancelInflightWork()
     }
 
@@ -1770,6 +1811,7 @@ final class ChatViewModel {
     /// actor. The task's own cleanup remains harmless: it re-persists the same
     /// state if it ever gets to run.
     func stopAndPersist() {
+        discardOwnerSessions()
         saveDrafts()
         if let session = ownerSessions[activeConversationID] { Task { try? await session.stop() } }
         cancelInflightWork()
@@ -2374,6 +2416,7 @@ final class ChatViewModel {
         alias: String,
         supportsImageInput: Bool? = nil
     ) -> Bool {
+        guard !isOwnerBackedChat else { return false }
         guard !isStreaming else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
         let imageAttachments = messages[idx].imageAttachments
@@ -2406,7 +2449,7 @@ final class ChatViewModel {
         alias: String,
         supportsImageInput: Bool? = nil
     ) {
-        guard !isStreaming, messages.indices.contains(userIndex) else { return }
+        guard !isOwnerBackedChat, !isStreaming, messages.indices.contains(userIndex) else { return }
         let userMessage = messages[userIndex]
         guard !userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !userMessage.imageAttachments.isEmpty
@@ -2450,6 +2493,7 @@ final class ChatViewModel {
         alias: String,
         supportsImageInput: Bool? = nil
     ) -> Bool {
+        guard !isOwnerBackedChat else { return false }
         guard !isStreaming else { return false }
         guard let assistantIndex = messages.firstIndex(where: {
             $0.id == id && $0.role == .assistant
@@ -2524,6 +2568,7 @@ final class ChatViewModel {
     /// are — exactly what the `‹ 2/3 ›` control renders. ``nil`` when the
     /// turn has no alternatives.
     func branchPosition(of id: UUID) -> (index: Int, count: Int)? {
+        guard !isOwnerBackedChat else { return nil }
         let tree = treeSnapshot()
         guard let anchor = branchAnchor(for: id, in: tree) else { return nil }
         let group = tree.childGroup(of: anchor.parentID)
@@ -2541,6 +2586,7 @@ final class ChatViewModel {
     /// wrong branch. The UI disables the control for the same reason.
     @discardableResult
     func selectBranch(at offset: Int, forSiblingOf id: UUID) -> Bool {
+        guard !isOwnerBackedChat else { return false }
         guard !isStreaming else { return false }
         let snapshot = treeSnapshot()
         // Resolve to the fork this row belongs to before indexing, so a tool
@@ -2688,6 +2734,7 @@ final class ChatViewModel {
     /// model. Surfaces a friendly error and bails without dropping the
     /// transcript tail if the new model fails to load.
     func regenerateLast(usingAlias newAlias: String) async {
+        guard !isOwnerBackedChat else { return }
         guard !isStreaming else { return }
         let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

@@ -35,6 +35,7 @@ enum ChatTurnClientError: Error, Equatable {
     case invalidEndpoint
     case invalidCursor
     case disconnected(lastEventID: String)
+    case beforeHeaders
 }
 
 /// Endpoint and bearer are injected by the future owner bootstrap layer. This
@@ -88,12 +89,19 @@ actor URLSessionChatTurnClient: ChatTurnClient {
                 _ = try await turn(turnID: intent.turnID)
             } catch ChatTurnClientError.http(status: 404) {
                 // Admission may not have happened. Reuse this exact intent/ID.
-            }
+            } catch is CancellationError { throw CancellationError() }
+            catch let error as URLError where error.code == .cancelled { throw error }
+            catch { throw ChatTurnClientError.beforeHeaders }
             // The unversioned turn snapshot lacks the original request. Re-POST
             // also checks the server's intent hash instead of attaching to an
             // accidentally reused ID whose conflicting POST response was lost.
-            opened = try await session.bytes(for: request, delegate: redirectDelegate)
-        }
+            do { opened = try await session.bytes(for: request, delegate: redirectDelegate) }
+            catch is CancellationError { throw CancellationError() }
+            catch let error as URLError where error.code == .cancelled { throw error }
+            catch { throw ChatTurnClientError.beforeHeaders }
+        } catch is CancellationError { throw CancellationError() }
+        catch let error as URLError where error.code == .cancelled { throw error }
+        catch { throw ChatTurnClientError.beforeHeaders }
         try await consume(opened, turnID: intent.turnID, after: after, onEvent: onEvent)
     }
 

@@ -42,6 +42,12 @@ actor OwnerChatSession {
         self.workspace = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().standardizedFileURL
         self.clientProvider = clientProvider
     }
+    func close() {
+        task?.cancel()
+        task = nil
+        for observer in observers.values { observer.finish() }
+        observers.removeAll()
+    }
     func ownerConversationID() -> String? { conversationID }
     func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: unavailable) }
     func snapshots() -> AsyncStream<Snapshot> {
@@ -55,7 +61,7 @@ actor OwnerChatSession {
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     private func publish() { let value = snapshot(); for observer in observers.values { observer.yield(value) } }
 
-    func submit(text: String, target: Target) async throws {
+    func submit(text: String, target: Target, onConversation: @Sendable (String) async -> Void = { _ in }) async throws {
         guard task == nil, !preparing else { throw SessionError.busy }
         preparing = true
         defer { preparing = false }
@@ -64,8 +70,10 @@ actor OwnerChatSession {
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
         else { conversation = try await client.createConversation(workspace: workspace.path) }
-        guard case .object(let object) = conversation,
-              case .string(let id) = object["id"], case .string(let branch) = object["branch_id"],
+        guard case .object(let object) = conversation, case .string(let id) = object["id"] else { throw SessionError.invalidConversation }
+        conversationID = id
+        await onConversation(id)
+        guard case .string(let branch) = object["branch_id"],
               case .array(let branches) = object["branches"],
               let selected = branches.first(where: { if case .object(let b) = $0 { return b["id"] == .string(branch) }; return false }),
               case .object(let fields) = selected, case .integer(let revision) = fields["revision"] else { throw SessionError.invalidConversation }
@@ -90,10 +98,11 @@ actor OwnerChatSession {
             let cursor = reducer?.lastApplied ?? 0
             do {
                 let handler: ChatTurnEventHandler = { [weak self] event in try await self?.apply(event) }
-                if initial { initial = false; try await client.submit(request, after: 0, onEvent: handler) }
+                if initial { try await client.submit(request, after: 0, onEvent: handler); initial = false }
                 else { try await client.stream(turnID: request.turnID, after: cursor, onEvent: handler) }
             } catch is CancellationError { break }
             catch {
+                if case ChatTurnClientError.beforeHeaders = error {} else { initial = false }
                 if Self.isPermanent(error) {
                     state = .failed(error.localizedDescription); publish(); break
                 }
@@ -130,7 +139,7 @@ actor OwnerChatSession {
             switch error {
             case .http(let status): return (400..<500).contains(status) && status != 401
             case .invalidResponse, .invalidEndpoint, .invalidCursor: return true
-            case .disconnected: return false
+            case .disconnected, .beforeHeaders: return false
             }
         }
         if let wire = error as? ChatWireError { return wire != .unexpectedEOF }
@@ -138,7 +147,16 @@ actor OwnerChatSession {
     }
     func stop() async throws {
         guard let client, let turnID = reducer?.projection.turnID, reducer?.projection.terminal == nil else { return }
-        _ = try await client.cancel(turnID: turnID)
+        var current = client
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                if attempt > 0 { current = try await clientProvider(); self.client = current }
+                _ = try await current.cancel(turnID: turnID)
+                return
+            } catch { lastError = error }
+        }
+        throw lastError!
     }
     func resolve(opID: String, decision: ChatPermissionResponse.Decision) async throws {
         guard let client, let permission = reducer?.projection.pendingPermissions.first(where: { $0.opID == opID }), !unavailable.contains(opID), !resolving.contains(opID) else { throw SessionError.permissionUnavailable }

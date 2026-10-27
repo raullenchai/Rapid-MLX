@@ -47,6 +47,49 @@ struct ChatViewModelOwnerRoutingTests {
         #expect(model.conversations.first?.backend == nil)
         #expect(await client.calls.isEmpty)
     }
+    @Test func discardsSessionsOnSwitchAndToggle() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("one", alias: "model"); await model._testingWaitForCurrentTurn()
+        #expect(model._testingOwnerSessionCount == 1)
+        model.newConversation()
+        #expect(model._testingOwnerSessionCount == 0)
+        model.send("two", alias: "model"); await model._testingWaitForCurrentTurn()
+        #expect(model._testingOwnerSessionCount == 1)
+        config.harnessEnabled = false
+        #expect(model._testingOwnerSessionCount == 0)
+    }
+    @Test func failedStopRemainsAttached() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake(); await client.setFrames([]); await client.failCancel()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("hello", alias: "model")
+        for _ in 0..<100 {
+            if await client.calls.contains(where: { if case .submit = $0 { true } else { false } }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.stop()
+        for _ in 0..<100 {
+            if model.lastError != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.lastError == "Couldn't confirm the stop — the harness may still be running this turn.")
+        #expect(await client.calls.filter { if case .cancel = $0 { true } else { false } }.count == 3)
+        #expect(model.isStreaming)
+    }
+    @Test func ownerBranchNavigationDisabled() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("hello", alias: "model"); await model._testingWaitForCurrentTurn()
+        let user = try #require(model.messages.first)
+        let count = model.messages.count
+        #expect(!model.editUserMessage(id: user.id, newContent: "changed", alias: "model"))
+        #expect(!model.selectBranch(at: 0, forSiblingOf: user.id))
+        model.regenerateLast(alias: "model")
+        #expect(model.messages.count == count)
+    }
     @Test func stopSendsCancel() async throws {
         let config = config(); config.chatBackend = .ownerV1
         let client = try await fake(); await client.setFrames([])

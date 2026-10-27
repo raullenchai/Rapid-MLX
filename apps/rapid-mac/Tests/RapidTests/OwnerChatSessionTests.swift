@@ -23,6 +23,24 @@ struct OwnerChatSessionTests {
         for _ in 0..<100 { if predicate(await session.snapshot()) { return }; try await Task.sleep(for: .milliseconds(20)) }
         Issue.record("Timed out waiting for session")
     }
+    @Test func retriesUnadmittedPost() async throws {
+        let client = try await fake([frame(#"{"type":"turn.terminal","outcome":"completed"}"#, 1)])
+        await client.failSubmissions(1)
+        let session = try await start(client)
+        try await wait(session) { $0.state == .finished }
+        let calls = await client.calls
+        guard case .submit(let first, _) = calls[0], case .submit(let second, _) = calls[1] else { Issue.record("Expected two POSTs"); return }
+        #expect(first == second)
+    }
+    @Test func persistsIDBeforeBranchParsing() async throws {
+        let client = try await fake([]); await client.setMalformedConversation()
+        let session = OwnerChatSession(client: client)
+        actor Capture { var id: String?; func set(_ value: String) { id = value } }
+        let capture = Capture()
+        do { try await session.submit(text: "x", target: .init(url: URL(string: "http://localhost")!, bearer: nil, model: "m"), onConversation: { await capture.set($0) }); Issue.record("Expected invalid response") } catch {}
+        #expect(await capture.id == "c")
+        #expect(await session.ownerConversationID() == "c")
+    }
     @Test func textAndReplay() async throws {
         let frames = [frame(#"{"type":"text.delta","part_id":"p","text":"Hi"}"#, 1), frame(#"{"type":"tool.started","call_id":"x","name":"search","args":{"q":"hello"}}"#, 2), frame(#"{"type":"tool.result","call_id":"x","result":"found"}"#, 3), frame(#"{"type":"turn.terminal","outcome":"completed"}"#, 4)]
         let client = try await fake([frames[0], frames[1], frames[1], frames[2], frames[3]])
