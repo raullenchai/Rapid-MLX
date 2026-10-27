@@ -973,6 +973,7 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PWD", "/stale-owner-directory")
     monkeypatch.setenv("NOT_SELECTED", "unselected-value")
     monkeypatch.setenv("LC_TOKEN", "locale-secret")
     monkeypatch.setenv("RAPID_MLX_HARNESS_TERMINAL_ENV", ", ".join(values))
@@ -1000,6 +1001,14 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
         assert "SAFE_URL=https://example.test?email=user@example.test" in result
         assert "CUSTOM_SETTING=ordinary-setting" in result
         assert "CUSTOM_SETTING=ordinary-setting" in recorded
+        direct = await run_process(
+            [sys.executable, "-c", "import os; print(os.environ['PWD'])"],
+            str(workspace),
+            10,
+            ctx.deps.emit,
+            "c",
+        )
+        assert direct["output"].strip() == str(workspace)
         for command in ("python3 -c 'print(42)'", "git --version", "pwd"):
             receipt = await run_process(
                 ["/bin/sh", "-c", command], str(workspace), 10, ctx.deps.emit, "c"

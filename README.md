@@ -886,7 +886,8 @@ approvals expire after 120 seconds; noninteractive input denies them.
 in the workspace, with a 120-second default timeout (maximum 600) and 8 KiB of
 head/tail output. Python uses `python3` on PATH, falling back to the bundled
 interpreter. Terminal processes inherit only PATH, HOME, USER, LOGNAME, LANG,
-LC_*, TERM, SHELL, TMPDIR and PWD. To pass other non-secret variables, set
+LC_*, TERM, SHELL and TMPDIR; PWD is set to the workspace. To pass other
+non-secret variables, set
 `RAPID_MLX_HARNESS_TERMINAL_ENV` in the owner environment to a comma-separated
 list of exact names before starting the owner. Names containing KEY, SECRET,
 TOKEN, PASSWORD, PASSWD, CREDENTIAL or AUTH, AWS_* and DATABASE_URL are always

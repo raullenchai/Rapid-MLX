@@ -167,7 +167,7 @@ async def kill_group(process):
 
 # Only operational variables are inherited; additional names require owner opt-in.
 _TERMINAL_ENV = frozenset(
-    {"PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "SHELL", "TMPDIR", "PWD"}
+    {"PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "SHELL", "TMPDIR"}
 )
 _TERMINAL_ENV_EXTRA = "RAPID_MLX_HARNESS_TERMINAL_ENV"
 
@@ -219,6 +219,7 @@ async def run_process(argv, workspace, timeout, emit, call_id):
     started = time.monotonic()
     # No stdin, no interactive shell, and a session/process group owned by this call.
     env = terminal_environment()
+    env["PWD"] = str(workspace)
     spawning = asyncio.create_task(
         asyncio.create_subprocess_exec(
             *argv,
