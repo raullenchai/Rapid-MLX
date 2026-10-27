@@ -135,6 +135,7 @@ def test_dangerous_patterns(command, tmp_path):
         "git status --short",
         "python3 -c 'print(42)'",
         "echo hello",
+        "FOO='a>b' echo ok",
         '2 ""',
         "echo 'curl'",
         "env echo curl",
