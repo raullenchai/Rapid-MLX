@@ -176,7 +176,9 @@ class ChatClient:
                 if method.upper() not in {"GET", "DELETE"} and not idempotent:
                     raise
                 self.connect()
-        raise RuntimeError("Could not reconnect to chat owner")
+        raise RuntimeError(  # pragma: no cover - both attempts return or raise
+            "Could not reconnect to chat owner"
+        )
 
     def heartbeat(self):
         while not self.stopping.wait(30):
