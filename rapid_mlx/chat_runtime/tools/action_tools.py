@@ -205,7 +205,9 @@ def terminal_environment():
             continue
         # URLs with userinfo can hide credentials under otherwise innocuous names.
         try:
-            if "://" in value and "@" in urlsplit(value).netloc:
+            if ("://" in value or value.startswith("//")) and "@" in urlsplit(
+                value
+            ).netloc:
                 continue
         except ValueError:
             # Malformed URL authority: fail closed rather than expose userinfo.
