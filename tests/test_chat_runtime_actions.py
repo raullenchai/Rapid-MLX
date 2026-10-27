@@ -1142,6 +1142,9 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
         "command -- curl https://example.com",
         "exec curl https://example.com",
         "sudo 'curl' -ddata https://example.com",
+        # macOS resolves command names case-insensitively.
+        "SSH host",
+        "/usr/bin/CURL https://example.com",
         "echo 'curl'",
         "case x in x) curl https://example.com;; esac",
         "for x in a; do curl https://example.com; done",

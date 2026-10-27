@@ -269,7 +269,7 @@ def scan_code(text, workspace, *, python=False):
         previous = tokens[index - 1] if index else ""
         if (
             not operator
-            and Path(token).name in NETWORK_CLIENTS
+            and Path(token).name.lower() in NETWORK_CLIENTS
             and previous not in {"-v", "-V", "which", "type", "-u", "--unset"}
         ):
             return "Network client"
@@ -301,7 +301,7 @@ def scan_code(text, workspace, *, python=False):
             if wrapper == "command" and token in {"-v", "-V"}:
                 command_start = False
                 continue
-            name = Path(token).name
+            name = Path(token).name.lower()
             if name in NETWORK_CLIENTS:
                 return "Network client"
             if wrapper and token.startswith(("-S", "--split-string")):
