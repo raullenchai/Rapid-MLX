@@ -18,13 +18,22 @@ from rapid_mlx.chat_runtime.token_budget import (
 )
 
 
-async def test_image_turn_and_replay(tmp_path):
+async def test_image_turn_and_replay(tmp_path, monkeypatch):
     store = await Store.open(tmp_path)
     conversation = await store.create_conversation()
     image = b"private-image-bytes"
     attachment = await store.put_attachment(
         conversation["id"], "x.png", image, "image/png"
     )
+    document = await store.put_attachment(conversation["id"], "doc.txt", b"document")
+    reads = []
+    read_bytes = store.read_attachment_bytes
+
+    async def spy(conversation_id, attachment_id):
+        reads.append(attachment_id)
+        return await read_bytes(conversation_id, attachment_id)
+
+    monkeypatch.setattr(store, "read_attachment_bytes", spy)
     seen = []
 
     async def stream(messages, info):
@@ -47,7 +56,7 @@ async def test_image_turn_and_replay(tmp_path):
         branch_id=conversation["branch_id"],
         expected_revision=0,
         text="look",
-        attachment_ids=[attachment["id"]],
+        attachment_ids=[attachment["id"], document["id"]],
         inference_url="http://localhost:1234",
         model="local",
         context_tokens=8192,
@@ -83,9 +92,38 @@ async def test_image_turn_and_replay(tmp_path):
             if isinstance(p, UserPromptPart) and isinstance(p.content, str)
         )
         assert base64.b64encode(image).decode() not in json.dumps(rows) + str(events)
+        assert reads == [attachment["id"]]
+        assert await store.attachment_metadata(
+            conversation["id"], attachment["id"]
+        ) == ("image/png", "x.png")
+        other = await store.create_conversation()
+        with pytest.raises(KeyError):
+            await store.attachment_metadata(other["id"], attachment["id"])
         manager = await runtime._context_manager(request)
         assert attachment["id"] not in manager.deps.attachment_ids
         branch = await store.regenerate(conversation["branch_id"], "regen")
+        reads.clear()
+        snapshot = await store.get_conversation(
+            conversation["id"], conversation["branch_id"]
+        )
+        request2 = request.model_copy(
+            update={
+                "turn_id": "later",
+                "expected_revision": snapshot["branches"][0]["revision"],
+                "text": "again",
+                "attachment_ids": [],
+            }
+        )
+        seen.clear()
+        await runtime.submit(request2)
+        _ = [e async for e in runtime.events("later") if e]
+        assert reads == []
+        assert any(
+            "[Earlier image: x.png; not included]" in p.content
+            for m in seen
+            for p in m.parts
+            if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+        )
         request.turn_id, request.branch_id, request.expected_revision, request.mode = (
             "two",
             branch["id"],

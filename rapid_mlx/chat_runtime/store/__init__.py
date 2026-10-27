@@ -856,6 +856,19 @@ class Store(ActionLedger, Subruns):
             raise ValueError("attachment integrity check failed")
         return content
 
+    async def attachment_metadata(self, conversation_id, attachment_id):
+        def read(db):
+            self._live(db, conversation_id)
+            row = db.execute(
+                "SELECT mime, name FROM attachments WHERE id=? AND conversation_id=?",
+                (attachment_id, conversation_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("attachment not authorized")
+            return row["mime"], row["name"]
+
+        return await self.writer.call(read)
+
     async def read_attachment_bytes(self, conversation_id, attachment_id):
         def read(db):
             self._live(db, conversation_id)

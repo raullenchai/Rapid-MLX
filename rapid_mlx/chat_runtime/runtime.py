@@ -279,7 +279,7 @@ class Runtime:
                 )
             images = []
             for aid in ids:
-                mime, _ = await self.store.read_attachment_bytes(
+                mime, _ = await self.store.attachment_metadata(
                     request.conversation_id, aid
                 )
                 if mime.startswith("image/"):
@@ -444,13 +444,22 @@ class Runtime:
             request.conversation_id, request.branch_id
         )
         attachments = {}
+        current_id = next(
+            (row["id"] for row in reversed(rows) if row["role"] == "user"), None
+        )
         for row in rows:
             for part in row["parts"]:
                 if part["type"] == "attachment":
                     aid = part["attachment_id"]
-                    attachments[aid] = await self.store.read_attachment_bytes(
+                    mime, _ = await self.store.attachment_metadata(
                         request.conversation_id, aid
                     )
+                    if row["id"] == current_id and mime.startswith("image/"):
+                        attachments[aid] = await self.store.read_attachment_bytes(
+                            request.conversation_id, aid
+                        )
+                    elif aid not in attachments:
+                        attachments[aid] = (mime, None)
         deps = TurnDeps(
             self.store,
             request.conversation_id,
