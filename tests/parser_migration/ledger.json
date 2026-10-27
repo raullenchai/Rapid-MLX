@@ -1454,8 +1454,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "Tail",
@@ -1466,7 +1465,7 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": null,
@@ -1487,15 +1486,12 @@
       "chars"
     ],
     "changed_fields": [
-      "content",
-      "reasoning",
-      "content_deltas"
+      "reasoning"
     ],
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -1506,11 +1502,11 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": 36,
-      "content_deltas": 11,
+      "content_deltas": 10,
       "input_chunks": 53
     }
   },
@@ -1533,8 +1529,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "Tail",
@@ -1545,7 +1540,7 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": null,
@@ -1566,15 +1561,12 @@
       "chars"
     ],
     "changed_fields": [
-      "content",
-      "reasoning",
-      "content_deltas"
+      "reasoning"
     ],
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -1585,11 +1577,11 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": 36,
-      "content_deltas": 11,
+      "content_deltas": 10,
       "input_chunks": 53
     }
   },
@@ -1611,8 +1603,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "Tail",
@@ -1623,7 +1614,7 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": null,
@@ -1644,15 +1635,12 @@
       "chars"
     ],
     "changed_fields": [
-      "content",
-      "reasoning",
-      "content_deltas"
+      "reasoning"
     ],
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "idempotent reasoning delimiters (#5276)",
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "idempotent reasoning delimiters (#5276)"
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -1663,11 +1651,11 @@
       "input_chunks": 53
     },
     "main": {
-      "content": "Answer</think>Tail",
+      "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
       "first_content_index": 36,
-      "content_deltas": 11,
+      "content_deltas": 10,
       "input_chunks": 53
     }
   },
@@ -5340,7 +5328,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener, treat every closer as a reasoning control (#5271), and decode each tool envelope once for every surface; the answer after a nested block streams as separate deltas."
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -5351,50 +5339,12 @@
       "input_chunks": 1
     },
     "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 1,
-      "content_deltas": 3,
-      "input_chunks": 1
-    }
-  },
-  {
-    "suite": "focused",
-    "key": [
-      "qwen3",
-      "hermes",
-      "nested",
-      true,
-      "enabled",
-      "chat",
-      true,
-      "seven"
-    ],
-    "changed_fields": [
-      "content",
-      "content_deltas"
-    ],
-    "classification": "intended-fix",
-    "confidence": "policy-classified-not-correctness-proof",
-    "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
-    ],
-    "baseline": {
       "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
-      "first_content_index": 6,
+      "first_content_index": 1,
       "content_deltas": 2,
-      "input_chunks": 8
-    },
-    "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 6,
-      "content_deltas": 3,
-      "input_chunks": 8
+      "input_chunks": 1
     }
   },
   {
@@ -5416,7 +5366,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener, treat every closer as a reasoning control (#5271), and decode each tool envelope once for every surface; the answer after a nested block streams as separate deltas."
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -5427,50 +5377,12 @@
       "input_chunks": 1
     },
     "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 1,
-      "content_deltas": 3,
-      "input_chunks": 1
-    }
-  },
-  {
-    "suite": "focused",
-    "key": [
-      "qwen3",
-      "hermes",
-      "nested",
-      true,
-      "enabled",
-      "responses",
-      true,
-      "seven"
-    ],
-    "changed_fields": [
-      "content",
-      "content_deltas"
-    ],
-    "classification": "intended-fix",
-    "confidence": "policy-classified-not-correctness-proof",
-    "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
-    ],
-    "baseline": {
       "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
-      "first_content_index": 6,
+      "first_content_index": 1,
       "content_deltas": 2,
-      "input_chunks": 8
-    },
-    "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 6,
-      "content_deltas": 3,
-      "input_chunks": 8
+      "input_chunks": 1
     }
   },
   {
@@ -5492,7 +5404,7 @@
     "classification": "intended-fix",
     "confidence": "policy-classified-not-correctness-proof",
     "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
+      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener, treat every closer as a reasoning control (#5271), and decode each tool envelope once for every surface; the answer after a nested block streams as separate deltas."
     ],
     "baseline": {
       "content": "AnswerTail",
@@ -5503,50 +5415,12 @@
       "input_chunks": 1
     },
     "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 1,
-      "content_deltas": 3,
-      "input_chunks": 1
-    }
-  },
-  {
-    "suite": "focused",
-    "key": [
-      "qwen3",
-      "hermes",
-      "nested",
-      true,
-      "enabled",
-      "messages",
-      true,
-      "seven"
-    ],
-    "changed_fields": [
-      "content",
-      "content_deltas"
-    ],
-    "classification": "intended-fix",
-    "confidence": "policy-classified-not-correctness-proof",
-    "reasons": [
-      "Selected owner (#5272/#5273/#5274): thinking-on Qwen tool requests start in reasoning, honor one opener and one closer, and decode each tool envelope once for every surface; foreign markers stay literal in their channel."
-    ],
-    "baseline": {
       "content": "AnswerTail",
       "reasoning": "Secret.Nested",
       "calls": [],
-      "first_content_index": 6,
+      "first_content_index": 1,
       "content_deltas": 2,
-      "input_chunks": 8
-    },
-    "main": {
-      "content": "Answer</think>Tail",
-      "reasoning": "Secret.Nested",
-      "calls": [],
-      "first_content_index": 6,
-      "content_deltas": 3,
-      "input_chunks": 8
+      "input_chunks": 1
     }
   },
   {

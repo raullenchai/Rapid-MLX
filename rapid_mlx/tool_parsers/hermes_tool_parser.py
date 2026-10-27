@@ -493,8 +493,14 @@ class HermesToolParser(ToolParser):
         tool_calls: list[dict[str, Any]] = []
         cleaned_text = model_output
 
-        # Strip <think> tags first (fallback when no reasoning parser)
-        cleaned_text = self.strip_think_tags(cleaned_text)
+        # Strip <think> tags first (fallback when no reasoning parser). When
+        # request-local orchestration already separated reasoning, the input
+        # is tool-phase text and a marker in it is argument text.
+        cleaned_text = (
+            cleaned_text
+            if self.skip_reasoning_parsing
+            else self.strip_think_tags(cleaned_text)
+        )
 
         # Remove reasoning tags first (keep for content)
         reasoning_matches = self.REASONING_PATTERN.findall(cleaned_text)

@@ -77,7 +77,8 @@ automatic tool choice, asks for thinking and sets no reasoning budget. Disabled
 tools, thinking-off templates and reasoning budgets keep their existing paths.
 
 Reasoning is lexed first; the start marker is honored once and a closer ends
-only an open block. A thinking request whose rendered prompt state is unknown
+only an open block. Every closer outside an envelope is a reasoning control, as
+in the existing thinking parser, so a repeated closer is not answer text. A thinking request whose rendered prompt state is unknown
 starts in reasoning; there is no end-of-output rescue. A block the output
 opened resumes after an envelope; reasoning inherited from the prompt ends at
 the tool phase. A closer inside a JSON body's string is argument text. Each
@@ -100,8 +101,8 @@ does not install a grammar dependency or introduce new request errors. The
 prompt-owner differential ledger records every change from v0.16.10, including
 unchanged Qwen control cases. The source comments identify the reference rules.
 
-A closing thinking marker without an open reasoning block remains literal output,
-matching the reference detector. Live acceptance must reject such model output;
+For Flint and LFM2.5, a closing thinking marker without an open reasoning
+block remains literal output, matching the reference detector. Live acceptance must reject such model output;
 the adapter does not hide it with a sanitizer.
 
 Existing non-reasoning control cleanup remains in place. Foreign marker spellings

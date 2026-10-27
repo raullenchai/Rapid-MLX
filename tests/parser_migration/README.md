@@ -62,9 +62,9 @@ new pairs from silently escaping the gate. Required/named/none/auto choices and
 undeclared names are separate executable controls. The forced Chat fixture uses
 the actual synthetic assistant prefix, as the real engine does.
 
-`ledger.json` classifies the 183 changed Qwen/Hermes focused observations
-between the immutable baseline and the reviewed head. The selected owner added 59
-entries and refreshed 30; every thinking-on tools-enabled row it changed now
+`ledger.json` classifies the 180 changed Qwen/Hermes focused observations
+between the immutable baseline and the reviewed head. The selected owner added 56
+entries and refreshed 24; every thinking-on tools-enabled row it changed now
 agrees across the six API modes on content, reasoning and calls, apart from
 existing surface policy for malformed arguments. The revert refreshes 274 reviewed-head rows: 206
 return exactly to the immutable v0.16.9 baseline. The other 68 changed rows

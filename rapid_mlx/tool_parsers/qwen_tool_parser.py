@@ -131,8 +131,14 @@ class QwenToolParser(ToolParser):
         """
         tool_calls = []
 
-        # Strip <think> tags first (fallback when no reasoning parser)
-        cleaned_text = self.strip_think_tags(model_output)
+        # Strip <think> tags first (fallback when no reasoning parser). When
+        # request-local orchestration already separated reasoning, the input
+        # is tool-phase text and a marker in it is argument text.
+        cleaned_text = (
+            model_output
+            if self.skip_reasoning_parsing
+            else self.strip_think_tags(model_output)
+        )
 
         # Try bracket pattern first (Qwen3 style)
         bracket_matches = self.BRACKET_PATTERN.findall(cleaned_text)

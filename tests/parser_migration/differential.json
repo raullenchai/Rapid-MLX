@@ -17231,7 +17231,7 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17253,11 +17253,11 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 11,
+        "content_deltas": 10,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17275,11 +17275,11 @@
         "whole"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17297,11 +17297,11 @@
         "seven"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17319,7 +17319,7 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17341,11 +17341,11 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 11,
+        "content_deltas": 10,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17363,11 +17363,11 @@
         "whole"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17385,11 +17385,11 @@
         "seven"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17407,7 +17407,7 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17429,11 +17429,11 @@
         "chars"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 11,
+        "content_deltas": 10,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17451,11 +17451,11 @@
         "whole"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17473,11 +17473,11 @@
         "seven"
       ],
       "result": {
-        "content": "Answer</think>Tail",
+        "content": "AnswerTail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 3,
+        "content_deltas": 2,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"

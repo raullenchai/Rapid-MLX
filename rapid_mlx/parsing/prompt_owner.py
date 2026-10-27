@@ -9,6 +9,7 @@ with the configured parser's complete-output extractor, so buffered and
 streaming consumers receive the same typed calls.
 """
 
+import re
 from dataclasses import replace
 
 from ..engine.base import GenerationOutput
@@ -81,6 +82,18 @@ class ContentToolGrammar(ChannelGrammar):
         return super().consume(lexeme)
 
 
+# Markup argument values (GLM ``<arg_value>``, Qwen XML ``<parameter=...>``)
+# are opaque to the envelope grammar, like JSON strings: markers inside them
+# are argument text for the configured extractor.
+VALUE_MARKERS = {
+    "<arg_value>": True,
+    "</arg_value>": False,
+    "<parameter=": True,
+    "</parameter>": False,
+}
+VALUE_MARKER = re.compile("|".join(map(re.escape, VALUE_MARKERS)))
+VALUE_TAIL = max(map(len, VALUE_MARKERS)) - 1
+
 # Families whose Qwen-derived reasoning grammar pairs with a ``<tool_call>``
 # envelope. Each format keeps its existing complete-output extractor; the
 # owner only decides which source span is a tool envelope.
@@ -101,6 +114,9 @@ class EnvelopeTools:
             request.model_dump() if hasattr(request, "model_dump") else request
         )
         self.parser = ToolParserManager.get_tool_parser(parser_name)(tokenizer)
+        # The owner already separated reasoning: the decoder sees only the
+        # envelope, so reasoning markers inside it are argument text.
+        self.parser.skip_reasoning_parsing = True
         self.terminals = (
             Terminal("tool_start", "<tool_call>"),
             Terminal("tool_end", "</tool_call>"),
@@ -171,10 +187,11 @@ class EnvelopeToolGrammar(ChannelGrammar):
     Text outside envelopes is ordinary content or reasoning. An envelope is a
     tool phase nested in the channel it interrupts. A reasoning block the
     output opened resumes after it and ends only at its closer; reasoning
-    inherited from the prompt ends at the tool phase, and its later closer is
-    still consumed once. A closed envelope is
-    decoded once; a closer or opener inside a JSON body's string is argument
-    text. An envelope that yields no call, a partial envelope interrupted by a
+    inherited from the prompt ends at the tool phase. Every closer outside
+    an envelope is a control; only one that ends an open block changes the
+    channel. A closed envelope is
+    decoded once; a closer or opener inside a JSON string or markup argument
+    value is argument text. An envelope that yields no call, a partial envelope interrupted by a
     new opener or by its reasoning block's closer, and an envelope left open at finish stay verbatim in the
     channel they arrived in. A closed GLM argument list without its opener is
     an unpublished parse failure.
@@ -190,6 +207,8 @@ class EnvelopeToolGrammar(ChannelGrammar):
         self.envelope: list[Lexeme] | None = None
         self.json_body: bool | None = False
         self.json_string = self.json_escape = False
+        self.value_open = False
+        self.value_tail = ""
         self.origin = self.channel
         self.calls: dict[int, dict] = {}
 
@@ -202,8 +221,8 @@ class EnvelopeToolGrammar(ChannelGrammar):
     def consume(self, lexeme: Lexeme) -> list[Event]:
         terminal = lexeme.terminal
         if self.envelope is not None:
-            if terminal == "tool_start" and not self.json_string:
-                # A new opener outside a JSON string starts the next envelope;
+            if terminal == "tool_start" and not self._in_argument():
+                # A new opener outside an argument value starts the next envelope;
                 # the unfinished one before it is ordinary text.
                 flushed = self._flush()
                 self._open(lexeme)
@@ -212,7 +231,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
                 terminal == "reasoning_end"
                 and self.origin == "reasoning"
                 and self.reasoning_open
-                and not self.json_string
+                and not self._in_argument()
             ):
                 # The reasoning block the envelope interrupted ends first; the
                 # unfinished envelope stays verbatim in that reasoning.
@@ -229,16 +248,20 @@ class EnvelopeToolGrammar(ChannelGrammar):
             return []
         # python/sglang/srt/parser/reasoning_parser.py::
         # BaseReasoningFormatDetector@baa9bef: the opener is honored once and a
-        # closer ends only an open block; other markers are literal output.
+        # closer ends only an open block. A later opener in content is literal.
         if terminal == "reasoning_start":
             if self.reasoning_seen and self.channel == "content":
                 return [self._literal(lexeme)]
             self.reasoning_seen = self.reasoning_open = self.delimited = True
             self.channel = "reasoning"
             return [Control(lexeme.span, terminal)]
-        if terminal == "reasoning_end" and self.reasoning_open:
-            self.reasoning_open = self.delimited = False
-            self.channel = "content"
+        if terminal == "reasoning_end":
+            # Every closer is a reasoning control (the #5271 contract of the
+            # existing think parser); one without an open block changes no
+            # channel.
+            if self.reasoning_open:
+                self.reasoning_open = self.delimited = False
+                self.channel = "content"
             return [Control(lexeme.span, terminal)]
         return [self._literal(lexeme)]
 
@@ -247,6 +270,8 @@ class EnvelopeToolGrammar(ChannelGrammar):
         # Only a ``<tool_call>`` body may be JSON; GLM arguments are not.
         self.json_body = None if lexeme.terminal == "tool_start" else False
         self.json_string = self.json_escape = False
+        self.value_open = False
+        self.value_tail = ""
         self.origin = self.channel
 
     def _flush(self) -> list[Event]:
@@ -270,19 +295,24 @@ class EnvelopeToolGrammar(ChannelGrammar):
             ]
         return events
 
+    def _in_argument(self) -> bool:
+        return self.json_string or self.value_open
+
     def _scan(self, text: str) -> None:
-        """Track whether the envelope body is inside a JSON string.
+        """Track whether the envelope body is inside an argument value.
 
         The JSON extractors decode the body with a JSON decoder, so a closer
-        spelled inside an argument string belongs to the arguments. State is
+        spelled inside an argument string belongs to the arguments; markup
+        extractors read a value up to its own closing marker. State is
         incremental: each body character is read once.
         """
-        for char in text:
+        for position, char in enumerate(text):
             if self.json_body is None:
                 if char.isspace():
                     continue
                 self.json_body = char == "{"
             if not self.json_body:
+                self._scan_values(text[position:])
                 return
             if self.json_escape:
                 self.json_escape = False
@@ -290,6 +320,14 @@ class EnvelopeToolGrammar(ChannelGrammar):
                 self.json_escape = self.json_string
             elif char == '"':
                 self.json_string = not self.json_string
+
+    def _scan_values(self, text: str) -> None:
+        buffer = self.value_tail + text
+        end = 0
+        for match in VALUE_MARKER.finditer(buffer):
+            self.value_open = VALUE_MARKERS[match.group()]
+            end = match.end()
+        self.value_tail = buffer[max(end, len(buffer) - VALUE_TAIL) :]
 
     def _close(self, closed: bool = True) -> list[Event]:
         assert self.envelope is not None

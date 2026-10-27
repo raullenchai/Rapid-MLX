@@ -1,6 +1,7 @@
 """Selected Qwen-reasoning envelope owner: one result for every API mode."""
 
 import itertools
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -164,11 +165,11 @@ def run(owner, text, finished=True):
     return "".join(owner.reasoning), "".join(owner.content), events
 
 
-def test_markers_are_honored_once_and_stray_closers_stay_literal():
+def test_opener_is_honored_once_and_every_closer_is_a_control():
     reasoning, content, _ = run(
         owner(), "<think>a</think>b<think>c</think></tool_call>"
     )
-    assert (reasoning, content) == ("a", "b<think>c</think></tool_call>")
+    assert (reasoning, content) == ("a", "b<think>c</tool_call>")
 
 
 MARKER = "</think>Use <tool_call> as a marker</tool_call> in the example"
@@ -215,6 +216,29 @@ def test_reasoning_closer_ends_an_unfinished_envelope(split):
         "Answer",
         [],
     )
+
+
+VALUE = "echo </think> <tool_call> done"
+MARKUP_VALUES = {
+    "glm47": "<think>plan <tool_call>run_shell_command<arg_key>command</arg_key>"
+    f"<arg_value>{VALUE}</arg_value></tool_call></think>Answer",
+    "qwen3": '<think>plan <tool_call>{"name": "run_shell_command", "arguments": '
+    f'{{"command": "{VALUE}"}}}}</tool_call></think>Answer',
+    "qwen3_coder": "<think>plan <tool_call>\n<function=run_shell_command>\n"
+    f"<parameter=command>\n{VALUE}\n</parameter>\n</function>\n</tool_call>"
+    "</think>Answer",
+}
+
+
+@pytest.mark.parametrize("split", [1, 7, 1000])
+@pytest.mark.parametrize("tool", sorted(MARKUP_VALUES))
+def test_markers_inside_argument_values_are_argument_text(tool, split):
+    the_owner = owner(tool)
+    reasoning, content, _ = stream(the_owner, MARKUP_VALUES[tool], split)
+    assert (reasoning, content) == ("plan ", "Answer")
+    assert [
+        [call["name"], json.loads(call["arguments"])] for call in the_owner.calls
+    ] == [["run_shell_command", {"command": VALUE}]]
 
 
 @pytest.mark.parametrize("surface", SURFACES)
