@@ -19,7 +19,7 @@ from .events import Envelope, PermissionResponse, json_schema
 from .file_extraction import MAX_INPUT_BYTES
 from .file_worker import run_worker
 from .owner import CAPABILITIES, ClientLeases
-from .runtime import Runtime, TurnRequest
+from .runtime import ImageCapabilityError, Runtime, TurnRequest
 from .store import Conflict, Store
 
 PREFIX = "/v1/rapid/chat"
@@ -174,6 +174,12 @@ def create_app(
     @app.exception_handler(KeyError)
     async def missing(request, error):
         return JSONResponse({"detail": "Chat item not found"}, status_code=404)
+
+    @app.exception_handler(ImageCapabilityError)
+    async def image_capability_error(request, error):
+        return JSONResponse(
+            {"detail": {"code": error.code, "message": error.message}}, status_code=400
+        )
 
     @app.exception_handler(ValueError)
     async def invalid_value(request, error):

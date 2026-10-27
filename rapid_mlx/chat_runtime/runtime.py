@@ -43,6 +43,12 @@ logger = logging.getLogger(__name__)
 _TRUNCATED_CALL = object()
 
 
+class ImageCapabilityError(Exception):
+    def __init__(self, code, message):
+        self.code, self.message = code, message
+        super().__init__(message)
+
+
 class _SynthesisRequiredError(Exception):
     """Stop before inference when context preparation ends the tool phase."""
 
@@ -111,10 +117,12 @@ def _dated_history(messages):
     for message in messages:
         parts = list(message.parts)
         for index, part in enumerate(parts):
-            if isinstance(part, UserPromptPart) and isinstance(part.content, str):
-                parts[index] = replace(
-                    part, content=f"{turn_clock(part.timestamp)}\n{part.content}"
-                )
+            if isinstance(part, UserPromptPart):
+                if isinstance(part.content, str):
+                    content = f"{turn_clock(part.timestamp)}\n{part.content}"
+                else:
+                    content = [turn_clock(part.timestamp), *part.content]
+                parts[index] = replace(part, content=content)
                 break
         result.append(replace(message, parts=parts))
     return result
@@ -124,9 +132,11 @@ def latest_prompt(history):
     return next(
         (
             p.content
+            if isinstance(p.content, str)
+            else " ".join(item for item in p.content if isinstance(item, str))
             for m in reversed(history)
             for p in m.parts
-            if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+            if isinstance(p, UserPromptPart)
         ),
         "",
     )
@@ -248,6 +258,50 @@ class Runtime:
         async with self._submit_lock:
             if self._closed:
                 raise RuntimeError("runtime_closed")
+            try:
+                await self.store.get_turn(request.turn_id)
+            except KeyError:
+                pass
+            else:
+                existing, created = await self.store.begin_turn(request.model_dump())
+                return existing, created
+            ids = request.attachment_ids
+            if request.mode == "regenerate":
+                rows = await self.store.branch_messages(request.branch_id)
+                ids = (
+                    [
+                        p["attachment_id"]
+                        for p in rows[-1]["parts"]
+                        if p["type"] == "attachment"
+                    ]
+                    if rows and rows[-1]["role"] == "user"
+                    else []
+                )
+            images = []
+            for aid in ids:
+                mime, _ = await self.store.read_attachment_bytes(
+                    request.conversation_id, aid
+                )
+                if mime.startswith("image/"):
+                    images.append(aid)
+            if images:
+                capability = await self.clients.vision_capability(
+                    request.inference_url,
+                    request.model,
+                    request.inference_api_key.get_secret_value()
+                    if request.inference_api_key
+                    else None,
+                )
+                if capability is not True:
+                    if capability is False:
+                        raise ImageCapabilityError(
+                            "image_model_unsupported",
+                            "The selected model can't read images. Choose a vision model or remove the image.",
+                        )
+                    raise ImageCapabilityError(
+                        "image_capability_unknown",
+                        "Could not determine whether the selected model can read images. Please retry.",
+                    )
             turn, created = await self.store.begin_turn(request.model_dump())
             if created:
                 self._signals[request.turn_id] = asyncio.Event()
@@ -389,6 +443,14 @@ class Runtime:
         conversation = await self.store.get_conversation(
             request.conversation_id, request.branch_id
         )
+        attachments = {}
+        for row in rows:
+            for part in row["parts"]:
+                if part["type"] == "attachment":
+                    aid = part["attachment_id"]
+                    attachments[aid] = await self.store.read_attachment_bytes(
+                        request.conversation_id, aid
+                    )
         deps = TurnDeps(
             self.store,
             request.conversation_id,
@@ -397,6 +459,7 @@ class Runtime:
                 for row in rows
                 for p in row["parts"]
                 if p["type"] == "attachment"
+                and not attachments[p["attachment_id"]][0].startswith("image/")
             ),
             lambda event: self._emit(request.turn_id, event),
             workspace=conversation.get("workspace"),
@@ -419,7 +482,9 @@ class Runtime:
                 else None
             ),
         )
-        return ContextManager(self, request, deps, rows, model)
+        manager = ContextManager(self, request, deps, rows, model)
+        manager.attachments = attachments
+        return manager
 
     async def context_info(self, request):
         manager = await self._context_manager(request)
@@ -448,7 +513,7 @@ class Runtime:
                     )
                 ]
             )
-        ] + _project_messages(manager.rows)
+        ] + _project_messages(manager.rows, attachments=manager.attachments)
         measured = await manager.counter.measure(history, parameters)
         return context_event(measured, request.context_tokens)
 
@@ -490,7 +555,12 @@ class Runtime:
                 ),
                 request.text,
             )
-            history = _project_messages(rows)
+            current_id = next(
+                (row["id"] for row in reversed(rows) if row["role"] == "user"), None
+            )
+            history = _project_messages(
+                rows, current_id=current_id, attachments=manager.attachments
+            )
             deps.context_budget = max(
                 128,
                 request.context_tokens
@@ -504,15 +574,14 @@ class Runtime:
                     # answer date explicit when regenerating a dated question.
                     for message in reversed(history):
                         for index, part in enumerate(message.parts):
-                            if isinstance(part, UserPromptPart) and isinstance(
-                                part.content, str
-                            ):
-                                message.parts[index] = replace(
-                                    part,
-                                    content=part.content
-                                    + "\nAnswering now: "
-                                    + turn_clock(),
+                            if isinstance(part, UserPromptPart):
+                                notice = "\nAnswering now: " + turn_clock()
+                                content = (
+                                    part.content + notice
+                                    if isinstance(part.content, str)
+                                    else [*part.content, notice]
                                 )
+                                message.parts[index] = replace(part, content=content)
                                 break
                         else:
                             continue

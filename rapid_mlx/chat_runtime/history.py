@@ -23,9 +23,10 @@ def active_messages(messages):
     return result
 
 
-def _project_messages(messages):
+def _project_messages(messages, *, current_id=None, attachments=None):
     messages = active_messages(messages)
     from pydantic_ai.messages import (
+        BinaryContent,
         ModelRequest,
         ModelResponse,
         SystemPromptPart,
@@ -46,6 +47,14 @@ def _project_messages(messages):
             "metadata": {"message_id": message["id"]},
         }
         parts = []
+        multimodal = []
+        has_current_image = message["id"] == current_id and any(
+            p["type"] == "attachment"
+            and (attachments or {})
+            .get(p["attachment_id"], ("",))[0]
+            .startswith("image/")
+            for p in message["parts"]
+        )
         for part in message["parts"]:
             kind = part["type"]
             if kind == "text":
@@ -61,6 +70,9 @@ def _project_messages(messages):
                     # instruction/system message. Some templates reject two
                     # leading system roles before the latest user/tool round.
                     cls = UserPromptPart
+                if has_current_image and message["role"] == "user":
+                    multimodal.append(part["text"])
+                    continue
                 parts.append(
                     cls(
                         (
@@ -77,12 +89,25 @@ def _project_messages(messages):
             elif kind == "attachment":
                 if message["role"] != "user":
                     raise ValueError("attachments belong to user messages")
-                parts.append(
-                    UserPromptPart(
-                        f"Attached UTF-8 document: {part.get('name', 'document')}. Use read_attachment with attachment_id={part['attachment_id']} to read it.",
-                        timestamp=timestamp,
-                    )
-                )
+                attachment = (attachments or {}).get(part["attachment_id"])
+                if attachment and attachment[0].startswith("image/"):
+                    if message["id"] == current_id:
+                        multimodal.append(
+                            BinaryContent(attachment[1], media_type=attachment[0])
+                        )
+                    else:
+                        parts.append(
+                            UserPromptPart(
+                                f"[Earlier image: {part.get('name', 'image')}; not included]",
+                                timestamp=timestamp,
+                            )
+                        )
+                    continue
+                instruction = f"Attached UTF-8 document: {part.get('name', 'document')}. Use read_attachment with attachment_id={part['attachment_id']} to read it."
+                if has_current_image:
+                    multimodal.append(instruction)
+                else:
+                    parts.append(UserPromptPart(instruction, timestamp=timestamp))
             elif kind == "tool_call":
                 if message["role"] != "assistant" or part["call_id"] in pending:
                     raise ValueError("invalid or duplicate tool call")
@@ -106,6 +131,8 @@ def _project_messages(messages):
                 continue
             else:
                 raise ValueError("unsupported history part")
+        if multimodal:
+            parts.insert(0, UserPromptPart(multimodal, timestamp=timestamp))
         if not parts:
             continue
         if message["role"] == "assistant":

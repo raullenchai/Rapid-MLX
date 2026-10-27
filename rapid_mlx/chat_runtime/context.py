@@ -156,6 +156,22 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
         ),
         None,
     )
+    # The active image-bearing prompt must survive synthesis even after tool notices.
+    from pydantic_ai.messages import BinaryContent
+
+    image_prompt = next(
+        (
+            part
+            for message in original
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+            and isinstance(part.content, (list, tuple))
+            and any(isinstance(item, BinaryContent) for item in part.content)
+        ),
+        None,
+    )
+    if image_prompt is not None:
+        latest = image_prompt
     final = original[-1].parts[-1] if original and original[-1].parts else None
     notice = final if isinstance(final, RuntimeNoticePart) else None
     for retire in (False, True):
@@ -272,6 +288,7 @@ class ContextManager:
     def __init__(self, runtime, request, deps, rows, model):
         self.runtime, self.request, self.deps = runtime, request, deps
         self.rows, self.model = active_messages(rows), model
+        self.attachments = {}
         self.counter = TokenCounter(
             None if runtime.model_override else runtime.clients, request
         )
@@ -282,7 +299,7 @@ class ContextManager:
 
     async def summarize(self, rows, instructions=""):
         """Roll every source chunk into a checkpoint; never mark unseen text covered."""
-        messages = _project_messages(rows)
+        messages = _project_messages(rows, attachments=getattr(self, "attachments", {}))
         transcript = "\n".join(
             f"{message.kind}/{part.part_kind}"
             + (

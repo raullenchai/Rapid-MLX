@@ -9,6 +9,10 @@ from functools import lru_cache
 
 import httpx
 from pydantic_ai._instrumentation import get_instructions
+from pydantic_ai.messages import BinaryContent
+
+# Conservative fixed allowance per image; actual model costs vary.
+IMAGE_TOKEN_ESTIMATE = 1500
 
 
 @lru_cache(maxsize=4096)
@@ -24,6 +28,12 @@ def estimate_text(text: str) -> int:
 
 
 def text_value(value):
+    if isinstance(value, (list, tuple)):
+        return " ".join(
+            text_value(item) for item in value if not isinstance(item, BinaryContent)
+        )
+    if isinstance(value, BinaryContent):
+        return ""
     return (
         value
         if isinstance(value, str)
@@ -35,6 +45,11 @@ def part_tokens(part):
     cost = 8 + estimate_text(
         text_value(getattr(part, "content", getattr(part, "args", "")))
     )
+    content = getattr(part, "content", None)
+    if isinstance(content, (list, tuple)):
+        cost += IMAGE_TOKEN_ESTIMATE * sum(
+            isinstance(item, BinaryContent) for item in content
+        )
     if getattr(part, "part_kind", "") in {"tool-call", "tool-return"}:
         cost += 8 + estimate_text(part.tool_name) + estimate_text(part.tool_call_id)
     return cost
@@ -156,8 +171,21 @@ class TokenCounter:
                 self.cache[key] = exact
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 self.available = False
+        image_tokens = sum(
+            IMAGE_TOKEN_ESTIMATE
+            for message in messages
+            for part in message.parts
+            for item in (
+                part.content
+                if isinstance(getattr(part, "content", None), (list, tuple))
+                else []
+            )
+            if isinstance(item, BinaryContent)
+        )
         used = max(
-            0, (exact if exact is not None else estimated_total) + self.correction
+            0,
+            (exact + image_tokens if exact is not None else estimated_total)
+            + self.correction,
         )
         self.last_count = used
         # Full-prompt count is exact; category attribution is proportional because

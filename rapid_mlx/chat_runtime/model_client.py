@@ -63,6 +63,26 @@ class ModelClients:
             )
         return self._models[model_key]
 
+    async def vision_capability(self, endpoint, model, credential=None):
+        """Return True/False only for well-formed selected-model capabilities."""
+        try:
+            response = await self._http.get(
+                inference_url(endpoint) + "/models",
+                headers={"Authorization": "Bearer " + (credential or "rapid-local")},
+                timeout=5,
+            )
+            response.raise_for_status()
+            data = response.json()["data"]
+            entry = next(item for item in data if item["id"] == model)
+            capabilities = entry["capabilities"]
+            if not isinstance(capabilities, list) or not all(
+                isinstance(c, str) for c in capabilities
+            ):
+                return None
+            return "vision" in capabilities
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, StopIteration):
+            return None
+
     async def close(self):
         for client in self._clients.values():
             await client.close()
