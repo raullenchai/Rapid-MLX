@@ -885,7 +885,14 @@ approvals expire after 120 seconds; noninteractive input denies them.
 `terminal` and `execute_code(language="python", code=...)` run noninteractively
 in the workspace, with a 120-second default timeout (maximum 600) and 8 KiB of
 head/tail output. Python uses `python3` on PATH, falling back to the bundled
-interpreter. Pattern checks are heuristics, **not an OS sandbox**; scripts and
+interpreter. Terminal processes inherit only PATH, HOME, USER, LOGNAME, LANG,
+LC_*, TERM, SHELL, TMPDIR and PWD. To pass other non-secret variables, set
+`RAPID_MLX_HARNESS_TERMINAL_ENV` in the owner environment to a comma-separated
+list of exact names before starting the owner. Names containing KEY, SECRET,
+TOKEN, PASSWORD, PASSWD, CREDENTIAL or AUTH, AWS_* and DATABASE_URL are always
+excluded, as are values containing URL userinfo. This limits accidental
+inheritance; commands can still access files and resources available to the user.
+Pattern checks are heuristics, **not an OS sandbox**; scripts and
 programs run with your local account's access. Use
 `RAPID_MLX_CHAT_APPROVALS=always` or `--approvals always` to approve every action;
 `RAPID_MLX_CHAT_ACTION_TOOLS=0` or `--no-action-tools` disables all four tools.

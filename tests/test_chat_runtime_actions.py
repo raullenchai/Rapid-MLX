@@ -955,3 +955,62 @@ def test_model_facing_file_path_contract(name):
         assert "LINE_NUM|" in description
     if name == "patch":
         assert "never include that display prefix" in description
+
+
+@pytest.mark.asyncio
+async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
+    values = {
+        "DATABASE_URL": "postgres://host/db",
+        "SERVICE_TOKEN": "test-token-value",
+        "AWS_REGION": "test-region-value",
+        "DB_PASSWORD": "test-password-value",
+        "CUSTOM_URL": "https://user:pass@example.test/path",
+        "CUSTOM_SETTING": "ordinary-setting",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("NOT_SELECTED", "unselected-value")
+    monkeypatch.setenv("LC_TOKEN", "locale-secret")
+    monkeypatch.setenv("RAPID_MLX_HARNESS_TERMINAL_ENV", ", ".join(values))
+    store, runtime, req, workspace = await setup(tmp_path)
+    try:
+        ctx = await context(store, runtime, req, workspace)
+        result = await runtime.actions.call(
+            ctx, "terminal", {"command": "env", "timeout": 10}
+        )
+        operations = await store.list_operations(req.conversation_id)
+        recorded = json.dumps(operations)
+        for name in list(values)[:-1]:
+            assert name not in result and values[name] not in result
+            assert name not in recorded and values[name] not in recorded
+        assert "NOT_SELECTED" not in result and "LC_TOKEN" not in result
+        assert "CUSTOM_SETTING=ordinary-setting" in result
+        assert "CUSTOM_SETTING=ordinary-setting" in recorded
+        for command in ("python3 -c 'print(42)'", "git --version", "pwd"):
+            receipt = await run_process(
+                ["/bin/sh", "-c", command], str(workspace), 10, ctx.deps.emit, "c"
+            )
+            assert receipt["exit_code"] == 0
+    finally:
+        await runtime.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:secret@example.test/db")
+    store, runtime, req, workspace = await setup(
+        tmp_path, one_call_model("terminal", {"command": "env", "timeout": 10})
+    )
+    try:
+        await runtime.submit(req)
+        events = [event async for event in runtime.events(req.turn_id) if event]
+        operations = await store.list_operations(req.conversation_id)
+        assert operations[-1]["state"] == "succeeded"
+        assert "DATABASE_URL" not in json.dumps(events)
+        assert "postgres://user:secret" not in json.dumps(operations)
+        assert "PATH=" in operations[-1]["receipt"]["output"]
+        assert events[-1]["event"]["outcome"] == "completed"
+    finally:
+        await runtime.close()
+        await store.close()
