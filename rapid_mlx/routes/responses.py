@@ -44,6 +44,7 @@ from ..api.response_format_metrics import (
     incr_strict_violation,
 )
 from ..api.responses_adapter import (
+    _build_reasoning_output_item,
     normalize_responses_tool_types,
     openai_to_responses,
     request_uses_computer_use,
@@ -2480,7 +2481,11 @@ async def _non_stream(
             created_at=created_at,
             model=cfg.model_name or responses_request.model,
             status="failed",
-            output=[],
+            output=(
+                [_build_reasoning_output_item(reasoning_text)]
+                if channels_owned and reasoning_text
+                else []
+            ),
             usage=ResponsesUsage(
                 input_tokens=output.prompt_tokens or 0,
                 output_tokens=output.completion_tokens or 0,

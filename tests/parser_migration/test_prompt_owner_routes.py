@@ -375,3 +375,31 @@ def test_buffered_native_reasoning_sidecar(surface, model, monkeypatch):
     )
     assert result["content"] == "Answer.", result
     assert result["reasoning"] == "Private plan.", result
+
+
+@pytest.mark.parametrize("model", ["flint", "lfm2.5"])
+def test_buffered_failed_tool_turn_retains_reasoning(model):
+    context = PromptParseContext(
+        "<think>" if model == "lfm2.5" else "",
+        None,
+        "reasoning" if model == "lfm2.5" else "content",
+        False,
+        "chatml" if model == "lfm2.5" else "flint",
+    )
+    raw = ("<think>" if model == "flint" else "") + "Private unfinished plan."
+    result = route(
+        "qwen3",
+        "glm47" if model == "flint" else "lfm",
+        raw,
+        "responses",
+        False,
+        model=model,
+        prompt_context=context,
+        thinking=False,
+        capture=True,
+    )
+    assert result["content"] == "", result
+    assert result["reasoning"] == "Private unfinished plan.", result
+    assert result["calls"] == [], result
+    assert result["packets"][0]["status"] == "failed"
+    assert result["packets"][0]["error"]["code"] == "model_no_final_answer"
