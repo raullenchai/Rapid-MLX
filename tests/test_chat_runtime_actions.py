@@ -93,6 +93,7 @@ async def context(store, runtime, request, workspace):
         "coproc curl example.com",
         "function f { curl example.com; }; f",
         "echo `curl example.com`",
+        "cat <(curl example.com)",
         "busybox wget example.com",
         "toybox nc host 1234",
         "sudo -n curl example.com",
