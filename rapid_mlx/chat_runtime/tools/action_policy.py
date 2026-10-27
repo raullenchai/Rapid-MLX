@@ -85,14 +85,6 @@ RULES = (
         "Remote code execution",
     ),
     (
-        r"\b(?:curl|wget)\b[^\n]*(?:--data|--form|--upload|--post|--body|--json|\s-[a-zA-Z]*[dFT]\b)",
-        "Network upload",
-    ),
-    (
-        r"\b(?:scp|sftp|rsync|nc|ncat|netcat|socat|ssh)\b",
-        "Network transfer or remote execution",
-    ),
-    (
         r"\b(?:eval|exec|source)\b|\b(?:sh|bash|zsh|dash|perl|ruby|node)\s+.*",
         "Indirect code execution",
     ),
@@ -129,6 +121,22 @@ RULES = (
 COMPILED_RULES = [
     (re.compile(pattern, re.I | re.S), reason) for pattern, reason in RULES
 ]
+
+NETWORK_CLIENTS = {
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "ftp",
+    "http",
+    "https",
+}
 
 
 def scan_code(text, workspace, *, python=False):
@@ -171,11 +179,56 @@ def scan_code(text, workspace, *, python=False):
                         return "Code path could not be inspected"
         return None
     try:
-        lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|<>()")
+        lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|<>()\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
         return "Shell quoting could not be inspected"
+    command_start = True
+    wrapper = False
+    for token in tokens:
+        if token and all(char in ";&|()\n" for char in token):
+            command_start = True
+            wrapper = False
+        elif command_start:
+            if token and all(char in "<>" for char in token):
+                return "Shell redirection before command"
+            name = Path(token).name
+            if name in NETWORK_CLIENTS:
+                return "Network client"
+            if wrapper and (token == "-S" or token.startswith("--split-string")):
+                return "Indirect command execution"
+            if name in {
+                "env",
+                "sudo",
+                "doas",
+                "command",
+                "xargs",
+                "timeout",
+                "nice",
+                "nohup",
+                "stdbuf",
+                "time",
+            }:
+                wrapper = True
+            elif token in {
+                "if",
+                "then",
+                "else",
+                "elif",
+                "while",
+                "until",
+                "do",
+                "!",
+                "{",
+            }:
+                continue
+            elif not wrapper and not (
+                token.startswith("-")
+                or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token)
+            ):
+                command_start = False
     for token in tokens:
         if secret_path(token):
             return "Secrets-like path or credential access"
