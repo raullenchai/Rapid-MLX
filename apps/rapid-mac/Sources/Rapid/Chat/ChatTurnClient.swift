@@ -54,6 +54,7 @@ actor URLSessionChatTurnClient: ChatTurnClient {
             config.timeoutIntervalForRequest = 180
             config.timeoutIntervalForResource = 24 * 60 * 60
             config.urlCache = nil
+            config.connectionProxyDictionary = [:]
             self.session = URLSession(configuration: config)
         }
     }
