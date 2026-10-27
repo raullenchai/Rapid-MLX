@@ -31,6 +31,7 @@ struct SettingsView: View {
     @Environment(ServerManager.self) private var server
     @Environment(ShareComputeManager.self) private var shareCompute
     @Environment(MCPConfigStore.self) private var mcpConfig
+    @Environment(ChatBackendConfig.self) private var chatBackendConfig
     @Environment(MCPCatalog.self) private var mcpCatalog
     /// #191: Settings → App panel binds the desktop self-update
     /// poller. ``RapidApp`` injects it into the Settings scene's
@@ -519,6 +520,7 @@ struct SettingsView: View {
 
     private var experimentalFeaturesPanel: some View {
         @Bindable var mcpConfig = mcpConfig
+        @Bindable var chatBackendConfig = chatBackendConfig
         return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 String(localized: "Experimental"),
@@ -576,6 +578,15 @@ struct SettingsView: View {
                 } message: {
                     Text(String(localized: "The running model will restart. Other resident models will unload. Your conversations and files stay untouched."))
                 }
+                SettingsRowDivider()
+                Toggle(isOn: $chatBackendConfig.harnessEnabled) {
+                    SettingsRowLabel(
+                        title: String(localized: "Built-in Agent Harness (Experimental)"),
+                        description: String(localized: "New chats use the built-in agent harness with web, file and terminal tools. Existing chats keep their current engine.")
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.AgentHarnessToggle")
                 SettingsRowDivider()
                 Toggle(isOn: $computerUseEnabled) {
                     SettingsRowLabel(

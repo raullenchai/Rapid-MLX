@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-enum ChatBackend: String, CaseIterable, Sendable {
+enum ChatBackend: String, CaseIterable, Codable, Sendable {
     case legacy
     case ownerV1
 }
@@ -16,6 +16,11 @@ final class ChatBackendConfig {
 
     var chatBackend: ChatBackend {
         didSet { defaults.set(chatBackend.rawValue, forKey: Self.storageKey) }
+    }
+
+    var harnessEnabled: Bool {
+        get { chatBackend == .ownerV1 }
+        set { chatBackend = newValue ? .ownerV1 : .legacy }
     }
 
     init(defaults: UserDefaults = .standard) {

@@ -1091,6 +1091,7 @@ enum DevSnapshot {
                     .environment(dockPromptStore)
                     .environment(snapshotWebSearch)
                     .environment(browseApproval)
+                    .environment(ChatBackendConfig())
                     .environment(snapshotMCPConfig)
                     .environment(snapshotMCPCatalog)
                     .environment(snapshotMCPApproval)

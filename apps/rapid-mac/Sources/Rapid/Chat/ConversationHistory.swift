@@ -93,6 +93,9 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     /// ``SidebarView/folderSections(for:folders:)``.
     var folderID: UUID? = nil
 
+    var backend: ChatBackend? = nil
+    var ownerConversationID: String? = nil
+
     init(
         id: UUID,
         title: String,
@@ -107,7 +110,9 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         hasCustomTitle: Bool = false,
         hasGeneratedTitle: Bool = false,
         customInstructions: String? = nil,
-        folderID: UUID? = nil
+        folderID: UUID? = nil,
+        backend: ChatBackend? = nil,
+        ownerConversationID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -135,6 +140,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         self.hasGeneratedTitle = hasGeneratedTitle
         self.customInstructions = customInstructions
         self.folderID = folderID
+        self.backend = backend
+        self.ownerConversationID = ownerConversationID
     }
 
     /// Hand-written so a history file written before pin/archive shipped
@@ -148,7 +155,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         case id, title, messages, branches, activeLeafID, branchChoices
         case createdAt, updatedAt, isPinned, isArchived, hasCustomTitle
         case hasGeneratedTitle
-        case customInstructions, folderID
+        case customInstructions, folderID, backend, ownerConversationID
     }
 
     /// Hand-written to match ``init(from:)``'s string-keyed
@@ -193,6 +200,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         try c.encode(hasGeneratedTitle, forKey: .hasGeneratedTitle)
         try c.encodeIfPresent(customInstructions, forKey: .customInstructions)
         try c.encodeIfPresent(folderID, forKey: .folderID)
+        try c.encodeIfPresent(backend, forKey: .backend)
+        try c.encodeIfPresent(ownerConversationID, forKey: .ownerConversationID)
     }
 
     init(from decoder: Decoder) throws {
@@ -239,6 +248,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         hasGeneratedTitle = try c.decodeIfPresent(Bool.self, forKey: .hasGeneratedTitle) ?? false
         customInstructions = try c.decodeIfPresent(String.self, forKey: .customInstructions)
         folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
+        backend = try c.decodeIfPresent(ChatBackend.self, forKey: .backend)
+        ownerConversationID = try c.decodeIfPresent(String.self, forKey: .ownerConversationID)
     }
 }
 
