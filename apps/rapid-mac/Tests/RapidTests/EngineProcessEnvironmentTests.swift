@@ -96,6 +96,7 @@ struct EngineProcessEnvironmentTests {
         // DownloadManager test-only completion helper.
         let allowedNonEngineSites: [String: Int] = [
             "Server/PortSweep.swift": 2,
+            "Chat/ChatOwnerConnection.swift": 1,
             "Services/ReonboardingReset.swift": 1,
             "UI/PromptScheduler.swift": 1,
             "UI/ConnectToolsView.swift": 1,
@@ -115,6 +116,7 @@ struct EngineProcessEnvironmentTests {
 
         let allowlistAnchors: [String: String] = [
             "Server/PortSweep.swift": "/usr/sbin/netstat",
+            "Chat/ChatOwnerConnection.swift": "rapid_mlx.chat_runtime.owner",
             "Services/ReonboardingReset.swift": "/bin/sh",
             "UI/PromptScheduler.swift": "GitHubStarChild.spawn(",
             "UI/ConnectToolsView.swift": "/usr/bin/open",
