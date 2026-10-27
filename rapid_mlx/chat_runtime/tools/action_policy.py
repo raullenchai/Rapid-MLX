@@ -237,6 +237,7 @@ def scan_code(text, workspace, *, python=False):
                 "time",
                 "builtin",
                 "coproc",
+                "function",
             }:
                 return "Indirect command execution"
             if name in {"env", "command", "busybox", "toybox"}:
