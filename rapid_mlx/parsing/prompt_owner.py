@@ -32,6 +32,9 @@ class ContentToolGrammar(ChannelGrammar):
     def consume(self, lexeme: Lexeme) -> list[Event]:
         # vllm/parser/abstract_parser.py::DelegatingParser.parse_delta@5df63a7:
         # tool payload stays in the tool phase until its own closing control.
+        # The first closing control ends the envelope: neither format escapes
+        # it inside argument values (flint_sglang/tool_parser.py non-greedy
+        # func_detail_regex; LFM's end marker is a single special token).
         if self.tool_end is not None:
             if lexeme.terminal == self.tool_end:
                 self.tool_end = None

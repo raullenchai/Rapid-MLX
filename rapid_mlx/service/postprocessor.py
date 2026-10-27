@@ -457,6 +457,7 @@ class StreamingPostProcessor:
         # chunk so clients see ``completion_tokens_details.reasoning_tokens``
         # in parity with the non-streaming response shape. v0.6.63
         # onboarding sweep finding #5.
+        self._reasoning_parts: list[str] = []
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         # A malformed Hermes call is deliberately promoted into a rejected
@@ -2678,7 +2679,7 @@ class StreamingPostProcessor:
         events = []
         for event in owned:
             if isinstance(event, ReasoningDelta):
-                self.accumulated_reasoning += event.text
+                self._reasoning_parts.append(event.text)
                 events.append(StreamEvent(type="reasoning", reasoning=event.text))
             elif isinstance(event, ContentDelta):
                 chunk = copy.copy(output)
@@ -2687,6 +2688,20 @@ class StreamingPostProcessor:
                 chunk.finish_reason = None
                 events.extend(self._process_standard(event.text, chunk))
         return events
+
+    @property
+    def accumulated_reasoning(self) -> str:
+        # Owned deltas are collected as fragments and joined on read, so long
+        # streams do not regrow one immutable string per delta.
+        if self._reasoning_parts:
+            self._accumulated_reasoning += "".join(self._reasoning_parts)
+            self._reasoning_parts.clear()
+        return self._accumulated_reasoning
+
+    @accumulated_reasoning.setter
+    def accumulated_reasoning(self, value: str) -> None:
+        self._reasoning_parts.clear()
+        self._accumulated_reasoning = value
 
     @property
     def channels_owned(self) -> bool:
