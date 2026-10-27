@@ -290,6 +290,7 @@ def _finalize_content_and_reasoning(
     reasoning_max_tokens: int | None = None,
     finish_reason: str | None = None,
     json_mode: bool = False,
+    channels_owned: bool = False,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -323,6 +324,8 @@ def _finalize_content_and_reasoning(
     (anthropic_sdk / langchain / pydantic_ai non-streaming
     integrations, v0.6.64 pr_validate baseline).
     """
+    if channels_owned:
+        return cleaned_text, engine_reasoning_text or None
     reasoning_text = None
     # Engine-level token routing is authoritative when present. The
     # ``OutputRouter`` state machine tracks channel boundaries at the
@@ -3605,6 +3608,7 @@ def _parse_tool_calls_with_parser(
     request=None,
     *,
     structured_tool_calls: list[dict] | None = None,
+    channels_owned: bool = False,
     finish_reason: str | None = None,
 ) -> tuple[str, list | None]:
     """Parse tool calls, then honor ``tool_choice="none"`` by dropping them.
@@ -3621,7 +3625,10 @@ def _parse_tool_calls_with_parser(
     """
     _undeclared_tool_dropped_this_parse.set(False)
     content, tool_calls = _run_tool_parser(
-        output_text, request, structured_tool_calls=structured_tool_calls
+        output_text,
+        request,
+        structured_tool_calls=structured_tool_calls,
+        channels_owned=channels_owned,
     )
     if not structured_tool_calls and get_config().reasoning_parser is None:
         request_dict = request.model_dump() if request else None
@@ -3650,6 +3657,7 @@ def _run_tool_parser(
     request=None,
     *,
     structured_tool_calls: list[dict] | None = None,
+    channels_owned: bool = False,
 ) -> tuple[str, list | None]:
     """Parse tool calls from model output using the configured parser.
 
@@ -3743,6 +3751,7 @@ def _run_tool_parser(
     try:
         parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
         parser = parser_cls(tokenizer)
+        parser.skip_reasoning_parsing = channels_owned
     except Exception as e:
         logger.warning(f"Failed to create tool parser '{cfg.tool_call_parser}': {e}")
         if cfg.tool_call_parser == "qwen3_coder_xml":

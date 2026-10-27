@@ -105,9 +105,7 @@ def test_actual_flint_template_contract(thinking, custom):
         thinking=thinking,
         flint_template=is_flint_chat_template(tokenizer, chat_template_kwargs=kwargs),
     )
-    assert context.initial_channel == (
-        None if custom else "content" if thinking is False else "reasoning"
-    )
+    assert context.initial_channel == (None if custom else "content")
 
 
 def test_forced_prefix_metadata_and_service_reset():

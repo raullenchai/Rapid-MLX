@@ -26,6 +26,8 @@ class Engine:
     supports_guided_generation = False
     tokenizer = None
     index = 0
+    prompt_parse_context = None
+    terminal = True
 
     def __init__(self, raw):
         self.raw = raw
@@ -35,6 +37,7 @@ class Engine:
 
     async def chat(self, **kw):
         return GenerationOutput(
+            prompt_parse_context=self.prompt_parse_context,
             text=self.raw,
             raw_text=self.raw,
             prompt_tokens=4,
@@ -51,14 +54,18 @@ class Engine:
             Engine.index = idx
             s += c
             yield GenerationOutput(
+                prompt_parse_context=self.prompt_parse_context,
                 text=s,
                 new_text=c,
                 prompt_tokens=4,
                 completion_tokens=idx,
                 finished=False,
             )
+        if not self.terminal:
+            return
         Engine.index = len(self.chunks) + 1
         yield GenerationOutput(
+            prompt_parse_context=self.prompt_parse_context,
             text=s,
             new_text="",
             prompt_tokens=4,
@@ -210,6 +217,8 @@ def route(
     prompt="prompt",
     tools=None,
     tool_choice=None,
+    prompt_context=None,
+    terminal=True,
 ):
     cfg = reset_config()
     cfg.model_name = model
@@ -219,6 +228,8 @@ def route(
     cfg.tool_call_parser = t
     cfg.enable_auto_tool_choice = True
     cfg.engine = Engine(raw)
+    cfg.engine.prompt_parse_context = prompt_context
+    cfg.engine.terminal = terminal
     cfg.engine.prompt = prompt
     declared_tools = TOOLS if tools is None else tools
     cfg.engine.chunks = chunks or list(raw)

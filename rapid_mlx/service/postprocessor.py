@@ -21,6 +21,7 @@ from unittest.mock import Mock
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
+from ..parsing.prompt_owner import ContentDelta, PromptOutputOwner, ReasoningDelta
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
 from ..tool_call_authorization import call_name, declared_names, log_drop
@@ -222,6 +223,7 @@ class StreamingPostProcessor:
     ):
         self.cfg = cfg
         self.prompt_parse_context: PromptParseContext | None = None
+        self._prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
         if tools_requested is None:
             # Backward-compatible inference for direct/internal callers that
             # already pass the request payload but predate this constructor
@@ -1588,6 +1590,8 @@ class StreamingPostProcessor:
         the live delta handy; those sites use the strict
         accumulated-buffer signal (sufficient post-first-chunk).
         """
+        if self._prompt_owner.active:
+            return True
         if self.enable_thinking is not False:
             return True
         # DeepSeek V4's protocol permits a bare ``</think>`` while already
@@ -2491,6 +2495,9 @@ class StreamingPostProcessor:
         because that would clear another active stream's parser state.
         """
         self.prompt_parse_context = None
+        self._prompt_owner = PromptOutputOwner(
+            self.cfg.model_path or self.cfg.model_name
+        )
         self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
         self.accumulated_text = ""
         self._content_sanitizer = StreamingContentSanitizer()
@@ -2625,7 +2632,23 @@ class StreamingPostProcessor:
         """
         if getattr(output, "prompt_parse_context", None) is not None:
             self.prompt_parse_context = output.prompt_parse_context
-        events = self._process_chunk_events(output)
+        was_owned = self.channels_owned
+        owned = self._prompt_owner.observe(output)
+        if owned is not None:
+            if not was_owned:
+                # The engine replays its forced prefix as the first source span.
+                # The owner consumes it once; undo legacy speculative seeding.
+                self.tool_accumulated_text = ""
+                self._forced_prefix_pending = ""
+            self.reasoning_parser = None
+            if self.tool_parser is not None:
+                self.tool_parser.skip_reasoning_parsing = True
+            events = self._process_owned_events(owned, output)
+            if output.finished:
+                self.accumulated_text = "".join(self._prompt_owner.content)
+                events.append(self._make_finish_event(output))
+        else:
+            events = self._process_chunk_events(output)
         if any(event.type == "tool_call" for event in events):
             tail = ""
             if getattr(output, "tool_calls", None):
@@ -2637,6 +2660,24 @@ class StreamingPostProcessor:
         if self._parser_shadow is not None:
             self._parser_shadow.observe(output, events)
         return events
+
+    def _process_owned_events(self, owned, output):
+        events = []
+        for event in owned:
+            if isinstance(event, ReasoningDelta):
+                self.accumulated_reasoning += event.text
+                events.append(StreamEvent(type="reasoning", reasoning=event.text))
+            elif isinstance(event, ContentDelta):
+                chunk = copy.copy(output)
+                chunk.new_text = event.text
+                chunk.finished = False
+                chunk.finish_reason = None
+                events.extend(self._process_standard(event.text, chunk))
+        return events
+
+    @property
+    def channels_owned(self) -> bool:
+        return self._prompt_owner.active
 
     @staticmethod
     def _insert_content_before_tool_call(
@@ -3866,7 +3907,14 @@ class StreamingPostProcessor:
         return content
 
     def finalize(self) -> list[StreamEvent]:
-        events = self._finalize_legacy()
+        from ..engine.base import GenerationOutput
+
+        events = self._process_owned_events(
+            self._prompt_owner.finish(), GenerationOutput(text="", finished=False)
+        )
+        if self.channels_owned:
+            self.accumulated_text = "".join(self._prompt_owner.content)
+        events += self._finalize_legacy()
         if self._parser_shadow is not None:
             self._parser_shadow.finish(events)
         return events

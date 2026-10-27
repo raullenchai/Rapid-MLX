@@ -255,6 +255,9 @@ class ToolParser(ABC):
     # existing single-special-token-trigger family (hermes/qwen) is unaffected.
     TOOL_GRAMMAR_AUTO_SAFE: bool = True
 
+    # Request-local orchestration already separated reasoning from tool input.
+    skip_reasoning_parsing: bool = False
+
     @classmethod
     def supports_native_format(cls) -> bool:
         """

@@ -45,6 +45,12 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
+from ..parsing.prompt_owner import (
+    ContentDelta,
+    PromptOutputOwner,
+    ReasoningDelta,
+    split_buffered,
+)
 from ..reasoning import finalize_streaming_compat
 from ..request import (
     is_batch_cap_error,
@@ -1082,11 +1088,15 @@ async def create_anthropic_message(
         # for the rationale (PR #515 codex round-12 / round-14 BLOCKING
         # — wire-text round-trip lost calls whose JSON args contained
         # harmony sentinels).
+        output, channels_owned = split_buffered(
+            output, cfg.model_path or cfg.model_name
+        )
         engine_tool_calls = getattr(output, "tool_calls", None)
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             output.text,
             openai_request,
             structured_tool_calls=engine_tool_calls,
+            channels_owned=channels_owned,
             finish_reason=output.finish_reason,
         )
 
@@ -1163,6 +1173,7 @@ async def create_anthropic_message(
         # path while OpenAI preserved it as ``reasoning_content``.
         cleaned_text_before_helper = cleaned_text
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+            channels_owned=channels_owned,
             raw_text=output.raw_text or output.text,
             cleaned_text=cleaned_text,
             tool_calls=tool_calls,
@@ -1254,23 +1265,24 @@ async def create_anthropic_message(
             ),
             tools_requested=bool(openai_request.tools),
         )
-        final_content = _rescue_silent_drop_from_reasoning(
-            final_content,
-            reasoning_text,
-            tool_calls,
-            finish_reason=finish_reason,
-            raw_text=output.raw_text or output.text,
-            reasoning_is_case4=reasoning_is_case4,
-            matched_stop=getattr(output, "matched_stop", None),
-            prompt_thinking_active=prompt_thinking_active_ns,
-            implicit_reasoning_until_close=bool(
-                getattr(
-                    cfg.reasoning_parser,
-                    "implicit_reasoning_until_close",
-                    False,
-                )
-            ),
-        )
+        if not channels_owned:
+            final_content = _rescue_silent_drop_from_reasoning(
+                final_content,
+                reasoning_text,
+                tool_calls,
+                finish_reason=finish_reason,
+                raw_text=output.raw_text or output.text,
+                reasoning_is_case4=reasoning_is_case4,
+                matched_stop=getattr(output, "matched_stop", None),
+                prompt_thinking_active=prompt_thinking_active_ns,
+                implicit_reasoning_until_close=bool(
+                    getattr(
+                        cfg.reasoning_parser,
+                        "implicit_reasoning_until_close",
+                        False,
+                    )
+                ),
+            )
         # Issue #858: Anthropic-side mirror of the chat-route cutoff
         # sentinel. Default-on (PR #802 / H-01 semantics restored) — the
         # Anthropic envelope already carries ``stop_reason="max_tokens"``
@@ -1284,7 +1296,8 @@ async def create_anthropic_message(
             reasoning_text,
             tool_calls,
             finish_reason,
-            include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+            include_reasoning_tail=not channels_owned
+            and not _uses_deepseek_v4_reasoning(cfg),
         )
 
         # Clean only the finalized visible lane; keep raw reasoning boundaries.
@@ -1318,6 +1331,8 @@ async def create_anthropic_message(
             reasoning_content=reasoning_text,
             tool_calls=tool_calls,
         )
+        if channels_owned:
+            assistant_message.reasoning_content = reasoning_text
         if not chat_kwargs.get("tools"):
             # The request-aware sanitizer already handled non-tool markup.
             # Preserve tool-shaped text through the context-free validator.
@@ -1354,6 +1369,7 @@ async def create_anthropic_message(
         anthropic_response = openai_to_anthropic(
             openai_response,
             cfg.model_name or anthropic_request.model,
+            channels_owned=channels_owned,
             strip_tool_markup=bool(chat_kwargs.get("tools")),
             reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
             # H-03: forward the engine-surfaced matched stop string so
@@ -2418,6 +2434,26 @@ async def _stream_anthropic_messages(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
+    prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+
+    def emit_owned(events):
+        nonlocal current_block_type, block_index
+        pieces = []
+        for event in events:
+            if isinstance(event, ReasoningDelta):
+                pieces.append(("thinking", event.text))
+            elif isinstance(event, ContentDelta):
+                filtered = tool_filter.process(event.text)
+                if filtered:
+                    pieces.append(("text", filtered))
+        packets, current_block_type, block_index = _emit_and_track(
+            pieces, current_block_type, block_index
+        )
+        for packet in packets:
+            captured = _capture(packet)
+            if captured is not None:
+                yield captured
+
     async for output in _generation_stream:
         delta_text = output.new_text
 
@@ -2442,6 +2478,13 @@ async def _stream_anthropic_messages(
         _chunk_finish_reason = getattr(output, "finish_reason", None)
         if _chunk_finish_reason:
             stream_finish_reason = _chunk_finish_reason
+
+        owned = prompt_owner.observe(output)
+        if owned is not None:
+            reasoning_parser = None
+            for packet in emit_owned(owned):
+                yield packet
+            continue
 
         # Capture engine-surfaced structured tool calls (HarmonyStreamingRouter
         # via openai-harmony's StreamableParser). The delta_text on these
@@ -2756,13 +2799,18 @@ async def _stream_anthropic_messages(
                     if ev is not None:
                         yield ev
 
+    if prompt_owner.active:
+        for packet in emit_owned(prompt_owner.finish()):
+            yield packet
+        accumulated_text = "".join(prompt_owner.content)
+
     # Flush remaining from both filters
     remaining = tool_filter.flush()
     if remaining:
         # When reasoning_parser owns the split, route flushed tool-filter
         # content straight to text — `think_router` would mis-buffer it
         # for the same reason as above.
-        if reasoning_parser:
+        if reasoning_parser or prompt_owner.active:
             pieces_flush: list[tuple[str, str]] = [("text", remaining)]
         else:
             pieces_flush = think_router.process(remaining)
@@ -2776,7 +2824,7 @@ async def _stream_anthropic_messages(
             if ev is not None:
                 yield ev
 
-    if not reasoning_parser:
+    if not reasoning_parser and not prompt_owner.active:
         flush_pieces = think_router.flush()
         if flush_pieces:
             events, current_block_type, block_index = _emit_and_track(
@@ -3085,6 +3133,7 @@ async def _stream_anthropic_messages(
         accumulated_text,
         openai_request,
         structured_tool_calls=accumulated_structured_tool_calls or None,
+        channels_owned=prompt_owner.active,
     )
 
     # H-05: same un-pinned-tool drop as the non-streaming branch —

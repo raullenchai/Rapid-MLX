@@ -573,6 +573,7 @@ def openai_to_anthropic(
     *,
     strip_tool_markup: bool = True,
     reasoning_enabled: bool = True,
+    channels_owned: bool = False,
     matched_stop: str | None = None,
 ) -> AnthropicResponse:
     """
@@ -651,8 +652,12 @@ def openai_to_anthropic(
         # Returns ``None`` when sanitization + trimming leave nothing,
         # which signals "do not emit a thinking block" (same shape as
         # the previous whitespace-only guard).
-        thinking_body = _thinking_block_content(
-            reasoning_text, text, finish_reason=choice.finish_reason
+        thinking_body = (
+            reasoning_text
+            if channels_owned
+            else _thinking_block_content(
+                reasoning_text, text, finish_reason=choice.finish_reason
+            )
         )
         # Compare BOTH sides post-sanitize so visible-byte equality
         # decides the duplicate-block gate. Codex r1 P2 + r3 BLOCKING

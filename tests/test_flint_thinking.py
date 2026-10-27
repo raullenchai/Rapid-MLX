@@ -14,7 +14,6 @@ from rapid_mlx.service.helpers import _resolve_enable_thinking
 from rapid_mlx.utils.chat_template import apply_chat_template
 
 TEMPLATE = (Path(__file__).parent / "fixtures/flint_chat_template.jinja").read_text()
-EMPTY_THINK = "<think>\n</think>\n"
 MESSAGES = [{"role": "user", "content": "What is 2 + 2?"}]
 
 
@@ -42,9 +41,7 @@ def test_flint_thinking_prefix(tokenizer, thinking, generation, model):
         add_generation_prompt=generation,
         model_name=model,
     )
-    assert rendered == original + (
-        EMPTY_THINK if thinking is False and generation else ""
-    )
+    assert rendered == original
     assert tokenizer.chat_template == TEMPLATE
 
 
@@ -71,7 +68,7 @@ def test_request_and_server_switches_reach_flint(
         MESSAGES,
         enable_thinking=thinking,
         chat_template_kwargs=request.chat_template_kwargs,
-    ).endswith("<|assistant|>" + EMPTY_THINK)
+    ).endswith("<|assistant|>")
 
 
 def test_flint_tool_history_and_request_isolation(tokenizer):
@@ -106,7 +103,7 @@ def test_flint_tool_history_and_request_isolation(tokenizer):
         rendered = apply_chat_template(
             tokenizer, messages, tools=tools, enable_thinking=thinking
         )
-        assert rendered == baseline + (EMPTY_THINK if thinking is False else "")
+        assert rendered == baseline
         assert "<think>Check first.</think>" in rendered
         assert "<|observation|><tool_response>4</tool_response>" in rendered
     assert tokenizer.chat_template == TEMPLATE
@@ -156,7 +153,7 @@ def test_client_tokenize_override_cannot_bypass_thinking_off(tokenizer):
         chat_template_kwargs={"tokenize": True},
     )
     assert isinstance(rendered, str)
-    assert rendered.endswith("<|assistant|>" + EMPTY_THINK)
+    assert rendered.endswith("<|assistant|>")
 
 
 def test_null_template_override_uses_configured_flint_template(tokenizer):
@@ -166,4 +163,4 @@ def test_null_template_override_uses_configured_flint_template(tokenizer):
         enable_thinking=False,
         chat_template_kwargs={"chat_template": None},
     )
-    assert rendered.endswith("<|assistant|>" + EMPTY_THINK)
+    assert rendered.endswith("<|assistant|>")

@@ -84,6 +84,12 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..parsing.prompt_owner import (
+    ContentDelta,
+    PromptOutputOwner,
+    ReasoningDelta,
+    split_buffered,
+)
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
@@ -2290,12 +2296,14 @@ async def _non_stream(
                 },
             )
 
+    output, channels_owned = split_buffered(output, cfg.model_path or cfg.model_name)
     engine_tool_calls = getattr(output, "tool_calls", None)
     tool_parse_request = _tool_parse_request(openai_request)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
         output.text,
         tool_parse_request,
         structured_tool_calls=engine_tool_calls,
+        channels_owned=channels_owned,
         finish_reason=output.finish_reason,
     )
 
@@ -2347,6 +2355,7 @@ async def _non_stream(
         return Response(content=json.dumps(payload), media_type="application/json")
 
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+        channels_owned=channels_owned,
         raw_text=output.raw_text or output.text,
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
@@ -2426,7 +2435,8 @@ async def _non_stream(
         reasoning_text,
         tool_calls,
         finish_reason,
-        include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+        include_reasoning_tail=not channels_owned
+        and not _uses_deepseek_v4_reasoning(cfg),
     )
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
@@ -2490,6 +2500,8 @@ async def _non_stream(
         reasoning_content=reasoning_text,
         tool_calls=tool_calls,
     )
+    if channels_owned:
+        assistant_message.reasoning_content = reasoning_text
     if not tool_parse_request.tools:
         # The request-aware sanitizer already handled non-tool markup. Restore
         # tool-shaped text removed by AssistantMessage's context-free validator.
@@ -3830,6 +3842,23 @@ async def _stream_responses(
             caller_client=caller_client,
             failure_latch=telemetry_failure_emitted,
         )
+        prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+
+        def owned_content(events):
+            nonlocal \
+                reasoning_block_closed, \
+                accumulated_reasoning_text, \
+                reasoning_stream_seen
+            for event in events:
+                if isinstance(event, ReasoningDelta):
+                    reasoning_stream_seen = True
+                    accumulated_reasoning_text += event.text
+                elif isinstance(event, ContentDelta):
+                    reasoning_block_closed = True
+                    filtered = tool_filter.process(event.text)
+                    if filtered:
+                        yield filtered
+
         async for output in engine_stream:
             delta_text = output.new_text
             # Accumulate the RAW model output (pre-filter, pre-router) so the
@@ -3868,6 +3897,14 @@ async def _stream_responses(
                 last_response_metrics = _build_response_metrics(
                     output, include_timing=not nonprogress_retry
                 )
+
+            owned = prompt_owner.observe(output)
+            if owned is not None:
+                reasoning_parser = None
+                for content in owned_content(owned):
+                    async for packet in _emit_text_delta(content):
+                        yield packet
+                continue
 
             terminal_reasoning_text = getattr(output, "reasoning_text", "")
             if terminal_reasoning_text:
@@ -4177,10 +4214,15 @@ async def _stream_responses(
                     async for ev in _emit_reasoning_fragment(piece):
                         yield ev
 
-        # Flush filters
-        remaining = tool_filter.flush()
+        owned_tail = ""
+        if prompt_owner.active:
+            owned_tail = "".join(owned_content(prompt_owner.finish()))
+            accumulated_raw = "".join(prompt_owner.content)
+
+        # Flush the same content-only tool input, including a partial final marker.
+        remaining = owned_tail + tool_filter.flush()
         if remaining:
-            if reasoning_parser:
+            if reasoning_parser or prompt_owner.active:
                 remaining = _transition_reasoning_to_content(remaining)
                 async for ev in _emit_text_delta(remaining):
                     yield ev
@@ -4199,7 +4241,7 @@ async def _stream_responses(
                         async for ev in _emit_reasoning_fragment(piece):
                             yield ev
 
-        if not reasoning_parser:
+        if not reasoning_parser and not prompt_owner.active:
             for block_type, piece in think_router.flush():
                 if block_type == "text" and piece:
                     # R11-B codex r7 BLOCKING: see in-loop branch.
@@ -4416,6 +4458,7 @@ async def _stream_responses(
             accumulated_raw,
             _tool_parse_request(openai_request),
             structured_tool_calls=accumulated_structured_tool_calls or None,
+            channels_owned=prompt_owner.active,
         )
 
         # Yuki F6 (0.8.5 dogfood): mirror the non-stream synthesis so
@@ -4993,7 +5036,8 @@ async def _stream_responses(
                 reasoning_text=accumulated_reasoning_text,
                 tool_calls=None,
                 finish_reason=last_finish_reason,
-                include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+                include_reasoning_tail=not prompt_owner.active
+                and not _uses_deepseek_v4_reasoning(cfg),
             )
             if rescue_text:
                 rescue_output_index = len(completed_output)

@@ -48,3 +48,25 @@ source ownership, terminal lifecycles, native bypass, reducer failures, request
 reset, diagnostic failures, and real-route switch invariance. The 1K/4K/16K/64K
 work-counter test is deterministic; the existing full-postprocessor CPU contract
 remains a strict expected failure until the tool grammar migration.
+
+## Prompt-owned Flint and LFM2.5 output
+
+`PromptOutputOwner` activates from the rendered Flint template contract or the
+LFM2.5 model identity plus `PromptParseContext`. The last current-turn thinking
+opener/closer determines the initial channel; a request's thinking switch does
+not. A bare Flint assistant prefix starts in content. The template renderer no
+longer adds an empty thinking block.
+
+The existing `OutputDemultiplexer` owns split-marker holdback and finalization.
+Its selected grammar preserves tool-looking reasoning and shields content tool
+arguments from reasoning transitions. Chat, Responses and Messages pass only
+content to tool extraction, including buffered replies. Owned reasoning bypasses
+serializer stripping and EOF promotion. Native channel events and other model
+families retain their existing paths.
+
+Remaining migration work includes other families' reasoning parsers and think
+routers, content sanitizers, format-specific tool filters and fallback parsing,
+and API-specific tool serialization/validation. These remain active; this change
+does not install a grammar dependency or introduce new request errors. The
+prompt-owner differential ledger records every change from v0.16.10, including
+unchanged Qwen control cases. The source comments identify the reference rules.

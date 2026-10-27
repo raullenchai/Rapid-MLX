@@ -37,7 +37,7 @@ def _initial_channel(suffix: str, *, flint: bool):
         return "content" if close >= 0 else "reasoning"
     if body.startswith("</think>"):
         return "content"
-    return "reasoning" if flint and not body else None
+    return "content" if flint and not body else None
 
 
 def prompt_parse_context(

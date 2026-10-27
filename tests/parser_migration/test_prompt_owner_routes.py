@@ -1,0 +1,176 @@
+"""Actual FastAPI streaming surfaces share rendered prompt ownership."""
+
+import pytest
+
+from rapid_mlx.prompt_parse_context import PromptParseContext
+
+from .harness import route
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize(
+    "model,contract,initial",
+    [
+        ("flint-40b-a2.5b-4bit", "flint", "content"),
+        ("lfm2.5-24b-a2b-4bit", "chatml", "reasoning"),
+    ],
+)
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("split", [1, 7, 1000])
+@pytest.mark.parametrize("stream", [False, True])
+def test_prompt_channels(surface, model, contract, initial, thinking, split, stream):
+    raw = (
+        "<think>" if initial == "content" else ""
+    ) + "private plan</think>Answer one. Answer two."
+    context = PromptParseContext(
+        "<think>" if initial == "reasoning" else "", None, initial, thinking, contract
+    )
+    result = route(
+        "qwen3",
+        "glm47" if contract == "flint" else "lfm",
+        raw,
+        surface,
+        stream,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
+        thinking=thinking,
+        model=model,
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert result["content"] == "Answer one. Answer two.", result
+    assert result["reasoning"] == "private plan", result
+    if stream and split < 1000:
+        assert result["content_deltas"] > 1, result
+        assert result["first_content_index"] < result["input_chunks"], result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("split", [1, 1000])
+def test_tool_looking_reasoning_stays_private(surface, stream, split):
+    hidden = "<tool_call>run_shell_command<arg_key>command</arg_key><arg_value>secret</arg_value></tool_call>"
+    call = "<tool_call>run_shell_command<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>"
+    raw = "<think>" + hidden + "</think>" + call
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
+        thinking=False,
+        model="flint-40b-a2.5b-4bit",
+        prompt_context=context,
+    )
+    assert result["calls"] == [["run_shell_command", {"command": "pwd"}]], result
+    assert result["reasoning"] == hidden, result
+    assert "secret" not in result["content"], result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("finish", ["length", "stop"])
+def test_reasoning_only_never_rescued(surface, stream, finish):
+    raw = "<think>private unfinished plan"
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        thinking=False,
+        finish=finish,
+        model="flint-40b-a2.5b-4bit",
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert "private" not in result.get("content", ""), result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("split", [1, 1000])
+def test_plain_flint_streams_immediately(surface, split):
+    raw = "Hello world. A second sentence."
+    context = PromptParseContext("", None, "content", True, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        True,
+        thinking=True,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
+        model="flint-40b-a2.5b-4bit",
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert result["content"] == raw, result
+    assert result["reasoning"] == "", result
+    assert result["first_content_index"] == 1, result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_think_markers_in_arguments_are_tool_data(surface, stream):
+    raw = '<think>plan</think><tool_call>run_shell_command<arg_key>command</arg_key><arg_value>echo "<think>literal</think>"</arg_value></tool_call>'
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        thinking=False,
+        model="flint-40b-a2.5b-4bit",
+        prompt_context=context,
+    )
+    assert result["calls"] == [
+        ["run_shell_command", {"command": 'echo "<think>literal</think>"'}]
+    ], result
+    assert result["reasoning"] == "plan", result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("raw", ["Hello <thi", "Hello </thi", "<think>private<thi"])
+def test_partial_marker_drains_once(surface, terminal, raw):
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        True,
+        thinking=False,
+        model="flint-40b-a2.5b-4bit",
+        tools_mode="absent",
+        prompt_context=context,
+        terminal=terminal,
+    )
+    if raw.startswith("<think>"):
+        assert result["reasoning"] == raw[7:], result
+    else:
+        assert result["content"] == raw, result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_lfm_tools_only_from_content(surface, stream):
+    hidden = '[run_shell_command(command="secret")]'
+    raw = hidden + '</think>[run_shell_command(command="pwd")]'
+    context = PromptParseContext("<think>", None, "reasoning", False, "chatml")
+    result = route(
+        "qwen3",
+        "lfm",
+        raw,
+        surface,
+        stream,
+        thinking=False,
+        model="lfm2.5-24b-a2b-4bit",
+        prompt_context=context,
+    )
+    assert result["calls"] == [["run_shell_command", {"command": "pwd"}]], result
+    assert result["reasoning"] == hidden, result
+    assert "secret" not in result["content"], result

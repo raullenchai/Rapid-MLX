@@ -181,8 +181,11 @@ class Glm47ToolParser(ToolParser):
 
         # Strip think tags using the base class method (handles both
         # full <think>...</think> and implicit ...</think> patterns)
-        model_output = self._INTERRUPTED_NAME.sub(r"</think>\1", model_output)
-        cleaned_text = self.strip_think_tags(model_output)
+        if getattr(self, "skip_reasoning_parsing", False):
+            cleaned_text = model_output
+        else:
+            model_output = self._INTERRUPTED_NAME.sub(r"</think>\1", model_output)
+            cleaned_text = self.strip_think_tags(model_output)
 
         # Get valid tool names for validation
         valid_names = self._get_tool_names(request)
@@ -257,10 +260,18 @@ class Glm47ToolParser(ToolParser):
         """
         # Reasoning bytes must not change the content filter's leading-orphan
         # state. Reset at the first close, including a split closing marker.
-        if "<think>" in current_text and "</think>" not in current_text:
+        if (
+            not getattr(self, "skip_reasoning_parsing", False)
+            and "<think>" in current_text
+            and "</think>" not in current_text
+        ):
             return None
         filter_delta = delta_text
-        if "</think>" in current_text and "</think>" not in previous_text:
+        if (
+            not getattr(self, "skip_reasoning_parsing", False)
+            and "</think>" in current_text
+            and "</think>" not in previous_text
+        ):
             self._content_filter = Glm47ContentFilter()
             filter_delta = current_text.partition("</think>")[2]
         if not hasattr(self, "_content_filter"):

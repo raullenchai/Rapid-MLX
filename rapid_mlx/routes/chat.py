@@ -77,6 +77,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..parsing.prompt_owner import split_buffered
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -6668,6 +6669,7 @@ async def _create_chat_completion_impl(
     # whereas the regex round-trip lost calls whose JSON arguments
     # contained literal harmony sentinel substrings (PR #515 codex
     # round-12 / round-14 BLOCKING).
+    output, channels_owned = split_buffered(output, cfg.model_path or cfg.model_name)
     engine_tool_calls = getattr(output, "tool_calls", None)
     # LINE① (#558, codex r4 #4) — reasoning-first extraction. When the reasoning
     # gate is engaged (and the engine did NOT already produce structured calls via
@@ -6686,6 +6688,7 @@ async def _create_chat_completion_impl(
             _line1_split_reasoning_for_tool_parse(cfg.reasoning_parser, output.text),
             request,
             structured_tool_calls=engine_tool_calls,
+            channels_owned=channels_owned,
             finish_reason=output.finish_reason,
         )
         if not tool_calls:
@@ -6699,6 +6702,7 @@ async def _create_chat_completion_impl(
             output.text,
             request,
             structured_tool_calls=engine_tool_calls,
+            channels_owned=channels_owned,
             finish_reason=output.finish_reason,
         )
     undeclared_tool_dropped = _was_undeclared_tool_dropped()
@@ -7006,6 +7010,7 @@ async def _create_chat_completion_impl(
     # the same orchestration without re-implementing it.
     cleaned_text_before_helper = cleaned_text
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
+        channels_owned=channels_owned,
         # codex r6 BLOCKING #2: pass the ORIGINAL raw text so the
         # reasoning parser sees the bytes the engine actually emitted.
         # Any wire-literal scrub above only touched user-visible
@@ -7136,7 +7141,7 @@ async def _create_chat_completion_impl(
     # rescue path (chat.py:~1580) can call the SAME predicate. Round
     # 1 inlined the check here only; codex round 2 caught the
     # streaming path drifting because it had no gate at all.
-    if not _is_structured_output_requested(response_format):
+    if not channels_owned and not _is_structured_output_requested(response_format):
         # PR #715 bundle, fuzz finding C / live-test repro: when the
         # parser's Case-4 fallback blanked ``cleaned_text`` (no tags +
         # ``enable_thinking=True`` → route the whole output to
@@ -7185,7 +7190,11 @@ async def _create_chat_completion_impl(
             and reasoning_text
             and not final_content
         )
-        if not deepseek_v4_mid_think and not undeclared_tool_dropped:
+        if (
+            not channels_owned
+            and not deepseek_v4_mid_think
+            and not undeclared_tool_dropped
+        ):
             final_content = _rescue_silent_drop_from_reasoning(
                 final_content,
                 reasoning_text,
@@ -7217,7 +7226,8 @@ async def _create_chat_completion_impl(
             reasoning_text,
             tool_calls,
             finish_reason,
-            include_reasoning_tail=not _uses_deepseek_v4_reasoning(cfg),
+            include_reasoning_tail=not channels_owned
+            and not _uses_deepseek_v4_reasoning(cfg),
         )
 
     if (
@@ -7275,6 +7285,8 @@ async def _create_chat_completion_impl(
         ),
         metrics=_build_response_metrics(output),
     )
+    if channels_owned:
+        chat_response.choices[0].message.reasoning_content = reasoning_text
     # ── Response cache — STORE ───────────────────────────────────────
     #
     # Store the assembled response under the key computed at the lookup
@@ -7574,7 +7586,7 @@ async def stream_chat_completion(
                 if field == "reasoning_content"
                 else sanitize_content_for_stream
             )
-            escaped = json.dumps(_sanitize(text))
+            escaped = json.dumps(text if processor.channels_owned else _sanitize(text))
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # Wire truth for content already delivered before the terminal chunk:
@@ -8499,7 +8511,8 @@ async def stream_chat_completion(
             )
             rejected_only_tool_call = processor.undeclared_tool_dropped
             if (
-                not already_streamed_content
+                not processor.channels_owned
+                and not already_streamed_content
                 and not has_any_tool_calls
                 and not structured_output_requested
                 and not rejected_only_tool_call
@@ -8706,7 +8719,8 @@ async def stream_chat_completion(
                     processor.accumulated_reasoning,
                     None,
                     finish_event.finish_reason,
-                    include_reasoning_tail=not _uses_deepseek_v4_reasoning(
+                    include_reasoning_tail=not processor.channels_owned
+                    and not _uses_deepseek_v4_reasoning(
                         cfg, processor.reasoning_parser
                     ),
                 )

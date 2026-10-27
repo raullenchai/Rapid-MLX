@@ -2451,15 +2451,6 @@ def apply_chat_template(
         template_applicator, tools=tools
     ):
         prompt = _retain_tool_loop_think_blocks(prompt, messages)
-    # The validated Flint checkpoint has no thinking switch. Close its
-    # reasoning block in the generation prefix only when thinking is off.
-    # Match the exact upstream template, not the model/path name: local
-    # copies work and custom or future templates keep their own semantics.
-    if enable_thinking is False and add_generation_prompt and isinstance(prompt, str):
-        if is_flint_chat_template(
-            template_applicator, tools=tools, chat_template_kwargs=chat_template_kwargs
-        ) and prompt.endswith("<|assistant|>"):
-            prompt += "<think>\n</think>\n"
     return prompt
 
 
