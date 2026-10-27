@@ -224,3 +224,24 @@ def test_stubbed_mlx_loader_failure_advances_phase(progress, monkeypatch):
     with pytest.raises(ValueError, match="fixture failure"):
         load_with_progress(loader)
     assert progress.snapshot() == {"phase": "initializing", "model": "broken"}
+
+
+def test_loader_without_lazy_contract_keeps_original_call(progress):
+    progress.begin("fixture")
+    calls = []
+
+    def strict_loader(path):
+        calls.append(path)
+        return "model"
+
+    assert progress_module.load_with_progress(strict_loader, "p") == "model"
+    assert calls == ["p"]
+    assert progress.claim_weights()
+
+
+def test_uninspectable_loader_is_not_wrapped(monkeypatch):
+    def broken(_):
+        raise ValueError("no signature")
+
+    monkeypatch.setattr(progress_module.inspect, "signature", broken)
+    assert progress_module._accepts_lazy(lambda **kw: None) is False

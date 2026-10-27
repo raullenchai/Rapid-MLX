@@ -275,6 +275,21 @@ async def test_specialized_transports_keep_original_startup(monkeypatch, options
     assert calls == [None]
 
 
+def test_malformed_target_still_gets_loading_response(progress):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        probe = StartupProbe(listener)
+        try:
+            with socket.create_connection(listener.getsockname(), timeout=2) as client:
+                client.sendall(b"GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n")
+                reply = client.recv(4096)
+            assert reply.startswith(b"HTTP/1.0 503") or reply.startswith(b"HTTP/1.1 503")
+            assert b"model loading" in reply
+        finally:
+            probe.close()
+
+
 @pytest.mark.asyncio
 async def test_listener_option_failure_closes_reserved_socket(monkeypatch):
     created = []

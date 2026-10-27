@@ -8,6 +8,8 @@ retries and specialized loaders remain indeterminate rather than resetting it.
 
 from __future__ import annotations
 
+import inspect
+
 import threading
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
@@ -93,6 +95,18 @@ startup_progress = StartupProgress()
 _EVAL_BATCH_BYTES = 1024**3
 
 
+def _accepts_lazy(loader: Callable[..., Any]) -> bool:
+    # Only loaders with an explicit ``lazy`` keyword can defer evaluation.
+    try:
+        parameters = inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        return False
+    return "lazy" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 def load_with_progress(
     loader: Callable[..., _Result], *args: Any, **kwargs: Any
 ) -> _Result:
@@ -102,7 +116,11 @@ def load_with_progress(
     extra reads, or work on another Metal thread. Disk-stream/lazy callers and
     loads outside server startup keep their original call and behavior.
     """
-    if kwargs.get("lazy") or not startup_progress.claim_weights():
+    if (
+        kwargs.get("lazy")
+        or not _accepts_lazy(loader)
+        or not startup_progress.claim_weights()
+    ):
         return loader(*args, **kwargs)
 
     try:

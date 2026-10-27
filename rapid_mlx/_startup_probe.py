@@ -39,10 +39,11 @@ class _ProbeHandler(BaseHTTPRequestHandler):
 
     def _respond(self) -> None:
         body: dict[str, object] = {"detail": "model loading"}
-        if (
-            self.command in {"GET", "HEAD"}
-            and urlsplit(self.path).path == "/health/ready"
-        ):
+        try:
+            path = urlsplit(self.path).path
+        except ValueError:
+            path = ""  # A malformed target still gets the loading response.
+        if self.command in {"GET", "HEAD"} and path == "/health/ready":
             from .startup_progress import startup_progress
 
             body.update(ready=False, **startup_progress.snapshot())
