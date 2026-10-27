@@ -272,6 +272,8 @@ def create_app(
             status = {
                 "binary_unsupported": 415,
                 "image_unsupported": 415,
+                "image_invalid": 422,
+                "image_too_large": 413,
                 "document_unsupported": 415,
                 "file_too_large": 413,
                 "timeout": 504,
@@ -279,6 +281,10 @@ def create_app(
                 "document_invalid": 422,
             }.get(code, 422)
             raise HTTPException(status, error)
+        if result.get("kind") == "image":
+            return await store.put_attachment(
+                conversation_id, name, bytes(content), result["mime"]
+            )
         text = result["text"]
         return await store.put_attachment(conversation_id, name, text.encode("utf-8"))
 

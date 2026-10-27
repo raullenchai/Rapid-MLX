@@ -33,7 +33,7 @@ async def test_current_store_reopens_with_history_and_ledger(tmp_path):
         }
         assert await store.catalog_revision() == revision
         with sqlite3.connect(store.path) as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 5
             assert db.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         await store.close()

@@ -2,4 +2,4 @@
 """Opt-in chat owner. Importing this package does not initialize model clients."""
 
 # Shared by discovery and the store; incompatible owners must refuse the profile.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5

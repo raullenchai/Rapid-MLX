@@ -109,7 +109,7 @@ class Store(ActionLedger, Subruns):
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise ValueError("chat store requires a newer Rapid version")
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 4, SCHEMA_VERSION):
                 raise ValueError(
                     "unsupported experimental chat store; use a new profile"
                 )
@@ -123,6 +123,13 @@ class Store(ActionLedger, Subruns):
                 db.executescript("BEGIN IMMEDIATE;\n" + schema.read_text())
                 db.execute("INSERT INTO metadata VALUES('store_uuid',?)", (uid(),))
                 db.execute("INSERT INTO metadata VALUES('catalog_revision','0')")
+                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                db.execute("COMMIT")
+            if version == 4:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(
+                    "ALTER TABLE attachments ADD COLUMN mime TEXT NOT NULL DEFAULT 'text/plain'"
+                )
                 db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 db.execute("COMMIT")
             self.store_uuid = db.execute(
@@ -786,12 +793,18 @@ class Store(ActionLedger, Subruns):
 
         return await self.writer.call(fork)
 
-    async def put_attachment(self, conversation_id, name, content):
-        if len(content) > MAX_ATTACHMENT_BYTES:
-            raise ValueError("attachment exceeds 1 MiB")
-        content.decode("utf-8", errors="strict")
-        if b"\x00" in content:
-            raise ValueError("attachment must be UTF-8 text")
+    async def put_attachment(self, conversation_id, name, content, mime="text/plain"):
+        if mime == "text/plain":
+            if len(content) > MAX_ATTACHMENT_BYTES:
+                raise ValueError("attachment exceeds 1 MiB")
+            content.decode("utf-8", errors="strict")
+            if b"\x00" in content:
+                raise ValueError("attachment must be UTF-8 text")
+        elif (
+            mime not in {"image/png", "image/jpeg", "image/webp", "image/gif"}
+            or len(content) > 20 * 1024 * 1024
+        ):
+            raise ValueError("invalid image attachment")
         digest = hashlib.sha256(content).hexdigest()
         name = Path(name).name[:200] or "attachment.txt"
 
@@ -807,9 +820,10 @@ class Store(ActionLedger, Subruns):
                 "name": name,
                 "size": len(content),
                 "created_at": now(),
+                "mime": mime,
             }
             db.execute(
-                "INSERT INTO attachments VALUES(?,?,?,?,?,?)",
+                "INSERT INTO attachments VALUES(?,?,?,?,?,?,?)",
                 tuple(attachment.values()),
             )
             return attachment
@@ -830,9 +844,27 @@ class Store(ActionLedger, Subruns):
             ).fetchone()
             if row is None:
                 raise KeyError("attachment not authorized")
-            content = (self.blob_dir / row["digest"]).read_bytes()
-            if hashlib.sha256(content).hexdigest() != row["digest"]:
-                raise ValueError("attachment integrity check failed")
-            return content.decode("utf-8")[offset : offset + limit]
+            if row["mime"] != "text/plain":
+                raise ValueError("image attachment cannot be read as text")
+            return self._attachment_bytes(row).decode("utf-8")[offset : offset + limit]
+
+        return await self.writer.call(read)
+
+    def _attachment_bytes(self, row):
+        content = (self.blob_dir / row["digest"]).read_bytes()
+        if hashlib.sha256(content).hexdigest() != row["digest"]:
+            raise ValueError("attachment integrity check failed")
+        return content
+
+    async def read_attachment_bytes(self, conversation_id, attachment_id):
+        def read(db):
+            self._live(db, conversation_id)
+            row = db.execute(
+                "SELECT * FROM attachments WHERE id=? AND conversation_id=?",
+                (attachment_id, conversation_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("attachment not authorized")
+            return row["mime"], self._attachment_bytes(row)
 
         return await self.writer.call(read)

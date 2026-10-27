@@ -128,8 +128,8 @@ async def test_api_workspace_and_explicit_office_attachment(tmp_path):
                 params={"name": "picture.png"},
                 content=b"not-an-image",
             )
-            assert image.status_code == 415
-            assert image.json()["detail"]["code"] == "image_unsupported"
+            assert image.status_code == 422
+            assert image.json()["detail"]["code"] == "image_invalid"
     finally:
         await runtime.close()
         await store.close()

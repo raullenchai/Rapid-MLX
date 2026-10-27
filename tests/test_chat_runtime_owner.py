@@ -42,7 +42,7 @@ def test_two_clients_one_owner_stale_discovery_and_permissions(tmp_path, monkeyp
         from rapid_mlx.chat_runtime.store import Store
 
         assert len({owner["pid"] for owner in owners}) == 1
-        assert first["schema_version"] == Store.schema_version == 4
+        assert first["schema_version"] == Store.schema_version == 5
         run = profile_directory(profile) / "run"
         assert stat.S_IMODE(run.stat().st_mode) == 0o700
         assert stat.S_IMODE((run / "discovery.json").stat().st_mode) == 0o600

@@ -13,6 +13,8 @@ import re
 import zipfile
 from pathlib import Path
 
+from PIL import Image, UnidentifiedImageError
+
 from rapid_mlx.local_search import extraction
 
 MAX_INPUT_BYTES = extraction.MAX_BYTES
@@ -174,16 +176,54 @@ def extract_document(data: bytes, name: str) -> str:
         ) from None
 
 
+_IMAGE_FORMATS = {
+    ".png": ("PNG", "image/png"),
+    ".jpg": ("JPEG", "image/jpeg"),
+    ".jpeg": ("JPEG", "image/jpeg"),
+    ".webp": ("WEBP", "image/webp"),
+    ".gif": ("GIF", "image/gif"),
+}
+
+
+def extract_upload(data: bytes, name: str) -> dict:
+    """Validate image headers in the worker, or extract a text document."""
+    suffix = Path(name).suffix.lower()
+    if suffix not in _IMAGE_FORMATS:
+        return {"text": extract_document(data, name)}
+    if len(data) > MAX_INPUT_BYTES:
+        raise DocumentError("file_too_large", "Files are limited to 20 MiB.")
+    expected, mime = _IMAGE_FORMATS[suffix]
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != expected:
+                raise DocumentError(
+                    "image_invalid", "Image format does not match its name."
+                )
+            width, height = image.size
+            if width > 8192 or height > 8192:
+                raise DocumentError(
+                    "image_too_large", "Image dimensions are limited to 8192 pixels."
+                )
+            image.verify()
+    except DocumentError:
+        raise
+    except Image.DecompressionBombError:
+        raise DocumentError(
+            "image_too_large", "Image dimensions are limited to 8192 pixels."
+        ) from None
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise DocumentError(
+            "image_invalid", "The image could not be decoded."
+        ) from None
+    return {"kind": "image", "mime": mime, "width": width, "height": height}
+
+
 if __name__ == "__main__":
     import json
     import sys
 
     try:
-        result: dict[str, str | dict[str, str]] = {
-            "text": extract_document(
-                sys.stdin.buffer.read(MAX_INPUT_BYTES + 1), sys.argv[1]
-            )
-        }
+        result = extract_upload(sys.stdin.buffer.read(MAX_INPUT_BYTES + 1), sys.argv[1])
     except DocumentError as error:
         result = {"error": {"code": error.code, "message": error.message}}
     print(json.dumps(result, ensure_ascii=False))

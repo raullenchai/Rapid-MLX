@@ -14,7 +14,7 @@ CREATE TABLE turns(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, branch_id
 CREATE UNIQUE INDEX one_running_turn ON turns(branch_id) WHERE status='running';
 CREATE TABLE events(turn_id TEXT NOT NULL REFERENCES turns(id), seq INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(turn_id,seq));
 CREATE UNIQUE INDEX one_terminal ON events(turn_id) WHERE type='turn.terminal';
-CREATE TABLE attachments(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), digest TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE attachments(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), digest TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, created_at TEXT NOT NULL, mime TEXT NOT NULL DEFAULT 'text/plain');
 CREATE TABLE operations(id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, branch_id TEXT NOT NULL REFERENCES branches(id));
 CREATE TRIGGER immutable_message_delete BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'immutable message'); END;
 CREATE TRIGGER immutable_part_delete BEFORE DELETE ON parts BEGIN SELECT RAISE(ABORT,'immutable part'); END;
