@@ -2388,7 +2388,7 @@ async def _non_stream(
     final_content = None
     if cleaned_text:
         if channels_owned:
-            final_content = cleaned_text
+            final_content = strip_special_tokens(cleaned_text)
         else:
             final_content = strip_thinking_tags(clean_output_text(cleaned_text))
             final_content = sanitize_output(

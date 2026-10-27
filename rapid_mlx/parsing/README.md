@@ -78,3 +78,8 @@ unchanged Qwen control cases. The source comments identify the reference rules.
 A closing thinking marker without an open reasoning block remains literal output,
 matching the reference detector. Live acceptance must reject such model output;
 the adapter does not hide it with a sanitizer.
+
+Existing non-reasoning control cleanup remains in place. Foreign marker spellings
+are not automatically controls of the selected grammar: for example, LFM's native
+tool envelope is ordinary literal text for Flint. The differential ledger records
+this removal of broad cross-format sanitizer rewriting.

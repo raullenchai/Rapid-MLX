@@ -197,7 +197,7 @@ def test_stray_closer_is_not_sanitized(surface, stream, split, tools_mode):
         thinking=False,
         chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
         model="flint-40b-a2.5b-4bit",
-        tools_mode="absent",
+        tools_mode=tools_mode,
         prompt_context=context,
     )
     assert result["content"] == raw, result
@@ -218,5 +218,71 @@ def test_owned_content_survives_logprob_serializer():
         tools_mode="absent",
         prompt_context=context,
         logprobs=True,
+    )
+    assert result["content"] == raw, result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("split", [1, 1000])
+def test_lfm_native_tool_arguments_ignore_foreign_closer(surface, stream, split):
+    command = "echo </tool_call><think>literal</think>"
+    raw = (
+        'plan</think><|tool_call_start|>[run_shell_command(command="'
+        + command
+        + '")]<|tool_call_end|>'
+    )
+    result = route(
+        "qwen3",
+        "lfm",
+        raw,
+        surface,
+        stream,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
+        thinking=False,
+        model="lfm2.5",
+        prompt_context=PromptParseContext(
+            "<think>", None, "reasoning", False, "chatml"
+        ),
+    )
+    assert result["calls"] == [["run_shell_command", {"command": command}]], result
+    assert result["reasoning"] == "plan", result
+    assert result["content"] == "", result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_existing_control_cleanup_does_not_strip_owned_closer(surface, stream):
+    # Preserve the existing non-reasoning cleanup for complete control tokens.
+    raw = "Hello<|im_end|>world</think>literal"
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        chunks=[raw],
+        thinking=False,
+        model="flint",
+        tools_mode="absent",
+        prompt_context=PromptParseContext("", None, "content", False, "flint"),
+    )
+    assert result["content"] == "Helloworld</think>literal", result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_foreign_marker_spelling_is_literal_flint_content(surface, stream):
+    raw = "Literal <|tool_call_start|> and <|tool_call_end|> spellings."
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        thinking=False,
+        model="flint",
+        tools_mode="absent",
+        prompt_context=PromptParseContext("", None, "content", False, "flint"),
     )
     assert result["content"] == raw, result

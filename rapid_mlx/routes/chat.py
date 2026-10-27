@@ -71,6 +71,7 @@ from ..api.utils import (
     sanitize_content_for_stream,
     sanitize_output,
     sanitize_reasoning_for_stream,
+    strip_special_tokens,
     strip_thinking_tags,
     validate_content_blocks_for_capabilities,
 )
@@ -7113,7 +7114,7 @@ async def _create_chat_completion_impl(
     final_content = None
     if cleaned_text:
         if channels_owned:
-            final_content = cleaned_text
+            final_content = strip_special_tokens(cleaned_text)
         else:
             final_content = strip_thinking_tags(clean_output_text(cleaned_text))
             final_content = sanitize_output(final_content)

@@ -146,17 +146,17 @@ class StreamingOutputFilter:
     def process(self, delta: str) -> str:
         from ..api.utils import strip_special_tokens
 
-        if self.channels_owned:
-            return self.tool_filter.process(delta)
         text = self.special.process(self.tool_filter.process(delta))
+        if self.channels_owned:
+            return strip_special_tokens(text)
         return self.sanitizer.process(strip_special_tokens(text))
 
     def flush(self) -> str:
         from ..api.utils import strip_special_tokens
 
-        if self.channels_owned:
-            return self.tool_filter.flush()
         text = self.special.process(self.tool_filter.flush()) + self.special.flush()
+        if self.channels_owned:
+            return strip_special_tokens(text)
         return (
             self.sanitizer.process(strip_special_tokens(text)) + self.sanitizer.flush()
         )

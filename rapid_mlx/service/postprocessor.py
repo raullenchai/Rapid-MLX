@@ -3662,9 +3662,7 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle standard models (no reasoning parser, no channel router)."""
-        content = (
-            delta_text if self.channels_owned else strip_special_tokens(delta_text)
-        )
+        content = strip_special_tokens(delta_text)
 
         # JSON mode preamble stripping (#46): when response_format is set and
         # no reasoning parser is active, the model may emit a thinking preamble
@@ -3735,11 +3733,7 @@ class StreamingPostProcessor:
                 mixed_content = result.get("content")
                 events: list[StreamEvent] = []
                 if isinstance(mixed_content, str) and mixed_content:
-                    mixed_content = (
-                        mixed_content
-                        if self.channels_owned
-                        else strip_special_tokens(mixed_content)
-                    )
+                    mixed_content = strip_special_tokens(mixed_content)
                     if mixed_content:
                         mixed_content = self._sanitize_content(mixed_content)
                     if mixed_content:
@@ -3826,11 +3820,7 @@ class StreamingPostProcessor:
                     )
                 )
                 return events
-            content = (
-                result.get("content", "")
-                if self.channels_owned
-                else strip_special_tokens(result.get("content", ""))
-            )
+            content = strip_special_tokens(result.get("content", ""))
 
         if self.tool_calls_detected:
             if self._preserve_post_tool_content and content:

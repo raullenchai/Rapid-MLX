@@ -1216,7 +1216,7 @@ async def create_anthropic_message(
         final_content = None
         if cleaned_text:
             if channels_owned:
-                final_content = cleaned_text
+                final_content = strip_special_tokens(cleaned_text)
             else:
                 final_content = strip_thinking_tags(clean_output_text(cleaned_text))
                 # Final defense against special-token / markup leakage — mirrors

@@ -26,26 +26,30 @@ class ContentToolGrammar(ChannelGrammar):
 
     def __init__(self, context):
         super().__init__(context)
-        self.in_tool = False
+        self.tool_end: str | None = None
 
     def consume(self, lexeme: Lexeme) -> list[Event]:
+        # vllm/parser/abstract_parser.py::DelegatingParser.parse_delta@5df63a7:
+        # tool payload stays in the tool phase until its own closing control.
+        if self.tool_end is not None:
+            if lexeme.terminal == self.tool_end:
+                self.tool_end = None
+                if lexeme.terminal == "lfm_tool_end":
+                    return [Control(lexeme.span, lexeme.terminal)]
+            return [ContentDelta(lexeme.span, lexeme.text)]
         # mlx_lm/tool_parsers/pythonic.py::parse_tool_call@4cfc647:
         # native LFM envelope tokens delimit the pythonic payload. Consume
         # controls here; the existing tool parser receives only that payload.
         if lexeme.terminal in ("lfm_tool_start", "lfm_tool_end"):
             if self.channel == "reasoning":
                 return [ReasoningDelta(lexeme.span, lexeme.text)]
-            self.in_tool = lexeme.terminal == "lfm_tool_start"
+            self.tool_end = (
+                "lfm_tool_end" if lexeme.terminal == "lfm_tool_start" else None
+            )
             return [Control(lexeme.span, lexeme.terminal)]
-        # vllm/parser/abstract_parser.py::DelegatingParser.parse_delta@5df63a7:
-        # once a content tool starts, its bytes belong to the tool parser.
-        if self.in_tool:
-            if lexeme.terminal == "tool_end":
-                self.in_tool = False
-            return [ContentDelta(lexeme.span, lexeme.text)]
         if lexeme.terminal in ("tool_start", "tool_end"):
             if self.channel == "content":
-                self.in_tool = lexeme.terminal == "tool_start"
+                self.tool_end = "tool_end" if lexeme.terminal == "tool_start" else None
                 return [ContentDelta(lexeme.span, lexeme.text)]
             return [ReasoningDelta(lexeme.span, lexeme.text)]
         # python/sglang/srt/parser/reasoning_parser.py::
@@ -86,15 +90,16 @@ class PromptOutputOwner:
                     terminals=(
                         Terminal("reasoning_start", "<think>"),
                         Terminal("reasoning_end", "</think>"),
-                        Terminal("tool_start", "<tool_call>"),
-                        Terminal("tool_end", "</tool_call>"),
                         *(
                             (
                                 Terminal("lfm_tool_start", "<|tool_call_start|>"),
                                 Terminal("lfm_tool_end", "<|tool_call_end|>"),
                             )
                             if "lfm2.5" in self.model
-                            else ()
+                            else (
+                                Terminal("tool_start", "<tool_call>"),
+                                Terminal("tool_end", "</tool_call>"),
+                            )
                         ),
                     ),
                 )
