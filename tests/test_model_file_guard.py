@@ -469,3 +469,53 @@ def test_tokenizer_fallback_preserves_consent(monkeypatch):
         "local", {"trust_remote_code": False}
     ) == ("model", "tokenizer")
     assert calls == [{"enable_dspark": False, "trust_remote_code": False}]
+
+
+def test_vlm_standard_loader_uses_progress_without_mlx(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx import startup_progress as progress_module
+    from rapid_mlx.models import mllm
+    from rapid_mlx.utils import model_file_guard, tokenizer
+
+    state = progress_module.StartupProgress()
+    state.begin("fixture")
+    monkeypatch.setattr(progress_module, "startup_progress", state)
+    monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
+    monkeypatch.setattr(mllm, "_resolve_checkpoint", lambda name: name)
+    monkeypatch.setattr(
+        tokenizer, "apply_remote_code_policy", lambda config: ({}, False)
+    )
+    monkeypatch.setattr(model_file_guard, "validate_model_code", lambda *a, **k: None)
+    for module_name, function_name in (
+        ("glm5_next_forget_gate_quant", "install_glm5_next_forget_gate_quant_fix"),
+        ("glm5_next_processor", "install_glm5_next_processor_patch"),
+        ("glm5_next_runtime", "install_glm5_next_runtime_fix"),
+    ):
+        name = f"rapid_mlx.patches.{module_name}"
+        module = ModuleType(name)
+        setattr(module, function_name, lambda: None)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    vlm = ModuleType("mlx_vlm")
+    vlm.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda *a, **k: {"model_type": "fixture"}
+    calls = []
+
+    def load(path, **kwargs):
+        calls.append((path, kwargs))
+        raise RuntimeError("loader reached")
+
+    load.__module__ = "mlx_vlm.utils"
+    vlm.load = load
+    monkeypatch.setitem(sys.modules, "mlx_vlm", vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    for name in ("mlx", "mlx.core", "mlx.utils"):
+        monkeypatch.setitem(sys.modules, name, None)
+    model = mllm.MLXMultimodalLM("fixture", enable_cache=False)
+    with pytest.raises(RuntimeError, match="loader reached"):
+        model.load()
+    assert calls == [("fixture", {"trust_remote_code": False})]
+    assert state.snapshot() == {"phase": "initializing", "model": "fixture"}

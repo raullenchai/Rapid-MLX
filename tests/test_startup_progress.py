@@ -157,3 +157,70 @@ async def test_readiness_body_is_additive_and_ready_body_unchanged(
         "state": "ready",
         "model_loaded": True,
     }
+
+
+def test_stubbed_mlx_materializes_unique_arrays_in_batches(progress, monkeypatch):
+    import sys
+    from types import ModuleType
+
+    mlx = ModuleType("mlx")
+    mlx.__path__ = []
+    core = ModuleType("mlx.core")
+    utils = ModuleType("mlx.utils")
+    first = SimpleNamespace(nbytes=4)
+    second = SimpleNamespace(nbytes=3)
+    third = SimpleNamespace(nbytes=1)
+    utils.tree_flatten = lambda params: list(params.items())
+    batches = []
+    core.eval = lambda batch: batches.append((list(batch), progress.snapshot()))
+    for name, module in (("mlx", mlx), ("mlx.core", core), ("mlx.utils", utils)):
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(progress_module, "_EVAL_BATCH_BYTES", 5)
+    progress.begin("fixture")
+    model = SimpleNamespace(
+        parameters=lambda: {
+            "first": first,
+            "tied": first,
+            "second": second,
+            "third": third,
+        }
+    )
+    calls = []
+
+    def loader(path, **kwargs):
+        calls.append((path, kwargs))
+        return model, "processor"
+
+    assert load_with_progress(loader, "fixture", option=True) == (model, "processor")
+    assert calls == [("fixture", {"option": True, "lazy": True})]
+    assert [batch for batch, _ in batches] == [[first, second], [third]]
+    assert [state["progress"] for _, state in batches] == [
+        {"done": 0, "total": 8, "unit": "bytes"},
+        {"done": 7, "total": 8, "unit": "bytes"},
+    ]
+    assert progress.snapshot() == {"phase": "initializing", "model": "fixture"}
+
+
+def test_stubbed_mlx_loader_failure_advances_phase(progress, monkeypatch):
+    import sys
+    from types import ModuleType
+
+    mlx = ModuleType("mlx")
+    mlx.__path__ = []
+    utils = ModuleType("mlx.utils")
+    utils.tree_flatten = lambda params: []
+    for name, module in (
+        ("mlx", mlx),
+        ("mlx.core", ModuleType("mlx.core")),
+        ("mlx.utils", utils),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+    progress.begin("broken")
+
+    def loader(**kwargs):
+        assert kwargs == {"lazy": True}
+        raise ValueError("fixture failure")
+
+    with pytest.raises(ValueError, match="fixture failure"):
+        load_with_progress(loader)
+    assert progress.snapshot() == {"phase": "initializing", "model": "broken"}

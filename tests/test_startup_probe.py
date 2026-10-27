@@ -298,3 +298,42 @@ async def test_ipv6_listener_preserves_ipv6_only_binding():
     )
     await instance.serve()
     assert observed == [1]
+
+
+def test_shutdown_ignores_closed_connection(monkeypatch):
+    from rapid_mlx._startup_probe import _ProbeHandler, _ProbeServer
+
+    class ClosedConnection:
+        def shutdown(self, how):
+            assert how == socket.SHUT_RDWR
+            raise OSError("already closed")
+
+    handler = object.__new__(_ProbeHandler)
+    handler.connection = ClosedConnection()
+    handler._abort()
+    server = _ProbeServer(("127.0.0.1", 0), _ProbeHandler, bind_and_activate=False)
+    try:
+        server._connection = ClosedConnection()
+        server.stop_requests()
+        assert server._stopping
+    finally:
+        server.server_close()
+
+
+def test_accept_during_shutdown_closes_connection(monkeypatch):
+    from http.server import HTTPServer
+
+    from rapid_mlx._startup_probe import _ProbeHandler, _ProbeServer
+
+    connection = SimpleNamespace(close=lambda: closed.append(True))
+    closed = []
+    monkeypatch.setattr(HTTPServer, "get_request", lambda self: (connection, "address"))
+    server = _ProbeServer(("127.0.0.1", 0), _ProbeHandler, bind_and_activate=False)
+    try:
+        server.stop_requests()
+        with pytest.raises(OSError, match="startup responder stopped"):
+            server.get_request()
+        assert closed == [True]
+        assert server._connection is None
+    finally:
+        server.server_close()
