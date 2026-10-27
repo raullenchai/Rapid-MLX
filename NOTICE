@@ -227,3 +227,27 @@ Affine8 packed attention
 The Metal attention kernel adapts MIT-licensed code by David Dalcu and the
 Apache-2.0 Inco Splash tile structure. See rapid_mlx/kernels/NOTICE-AFFINE8,
 LICENSE-AFFINE8 and LICENSE-AFFINE8-APACHE for source attribution and terms.
+
+Chat prompt guidance
+====================
+
+The general assistant identity in `rapid_mlx/chat_runtime/prompts.py` is adapted
+from Hermes Agent v0.9.0, https://github.com/NousResearch/hermes-agent, revision
+722331a57de9e18f134c896d733870b4a493dc84. The final-summary guidance in
+`rapid_mlx/chat_runtime/runtime.py` retains adaptations from revision
+edfa1c2a135532a8b64f7825c0ac0af6cfe73d4d.
+Copyright (c) 2025 Nous Research, licensed under the MIT License.
+The complete license is in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.
+
+The task-scoped prompt guidance in `rapid_mlx/chat_runtime/prompts.py` is
+adapted from OpenCode, https://github.com/anomalyco/opencode, revision
+148842ef7cb1bc34192b3fff57d0f9721ab9c801 (session/prompt/default.txt,
+kimi.txt and codex.txt). Copyright (c) 2025 opencode, MIT License.
+The complete license is in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.
+
+The path descriptions in `rapid_mlx/chat_runtime/tools/files.py` and
+`tools/action_tools.py` follow Hermes Agent v0.9.0 tools/file_tools.py
+(revision 722331a57de9e18f134c896d733870b4a493dc84). Reader-prefix guidance
+is adapted from OpenCode tool/edit.txt at revision
+148842ef7cb1bc34192b3fff57d0f9721ab9c801. Both use the MIT License reproduced
+in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.

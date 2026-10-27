@@ -819,7 +819,7 @@ enables the experimental harness for subsequent chat commands.
 
 The harness reads the selected model's native context and effective serving
 limit from `/v1/models` before each turn. Its default context budget is the
-smaller of those limits and 32,768 tokens. Newly spawned chat servers use the
+smaller of those limits and 32,768 tokens. Newly spawned harness chat servers use the
 same default, bounded by locally cached model metadata. A server started with
 `--context-length` remains authoritative; set that flag on `serve` when
 attaching to an existing server. An explicit chat startup context can exceed
@@ -838,8 +838,8 @@ create branches, and `/branch` to switch between them. `/think on` turns thinkin
 on; `/think off` turns it off. The prompt is `› `, or `Thinking › ` while thinking
 is on (`> ` replaces `› ` on non-UTF-8 output). Thinking is collapsed by default
 and `/show-thinking` expands it for the current session; it is never saved.
-The folder where you launch chat becomes that conversation's workspace, including
-when you resume it. Ask Rapid to read files, search code with a regex, or list
+The folder where you start a new conversation becomes its workspace and stays
+fixed when you resume it. Ask Rapid to read files, search code with a regex, or list
 matching paths using its built-in `read_file`, `grep`, and `glob` tools. Reads
 support text/code, PDF text, DOCX, XLSX/CSV, PPTX, JSON/YAML, and HTML. Results
 include line numbers and paging hints; searches honor `.gitignore` and skip
