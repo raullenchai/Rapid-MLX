@@ -23,6 +23,23 @@ struct OwnerChatSessionTests {
         for _ in 0..<100 { if predicate(await session.snapshot()) { return }; try await Task.sleep(for: .milliseconds(20)) }
         Issue.record("Timed out waiting for session")
     }
+    @Test func stopDuringSessionPreparationDoesNotSubmit() async throws {
+        actor Gate {
+            var started = false
+            var continuation: CheckedContinuation<Void, Never>?
+            func wait() async { started = true; await withCheckedContinuation { continuation = $0 } }
+            func release() { continuation?.resume(); continuation = nil }
+        }
+        let gate = Gate()
+        let client = try await fake([])
+        let session = OwnerChatSession(clientProvider: { await gate.wait(); return client })
+        let submission = Task { try await session.submit(text: "x", target: .init(url: URL(string: "http://localhost")!, bearer: nil, model: "m")) }
+        for _ in 0..<100 { if await gate.started { break }; try await Task.sleep(for: .milliseconds(10)) }
+        try await session.stop()
+        await gate.release()
+        do { try await submission.value; Issue.record("Expected cancellation") } catch is CancellationError {}
+        #expect(!(await client.calls.contains { if case .submit = $0 { true } else { false } }))
+    }
     @Test func retriesUnadmittedPost() async throws {
         let client = try await fake([frame(#"{"type":"turn.terminal","outcome":"completed"}"#, 1)])
         await client.failSubmissions(1)

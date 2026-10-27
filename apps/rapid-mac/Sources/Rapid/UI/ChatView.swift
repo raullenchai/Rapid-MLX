@@ -2507,6 +2507,11 @@ private struct MessageRow: View {
 /// the user sees what is happening; auto-collapses on success so a long
 /// transcript stays skimmable. Clarifications also collapse; other failures
 /// stay expanded because the error detail is the useful part.
+private struct OwnerPreviewHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) { value.merge(nextValue(), uniquingKeysWith: { _, new in new }) }
+}
+
 private struct ToolCallChip: View {
     let call: ToolCall
     let result: ChatMessage?
@@ -2531,6 +2536,8 @@ private struct ToolCallChip: View {
     /// completed chip would be silently re-collapsed on the next body pass.
     @State private var userToggled: Bool = false
     @State private var manualExpanded: Bool = false
+    @State private var fullApprovalPreview = false
+    @State private var previewHeights: [String: CGFloat] = [:]
 
     private var expanded: Bool {
         if userToggled { return manualExpanded }
@@ -2667,12 +2674,30 @@ private struct ToolCallChip: View {
                         .font(.rapid(size: 11))
                         .accessibilityIdentifier("OwnerApproval.Summary.\(approval.opID)")
                     if !approval.preview.isEmpty {
-                        Text(ChatTextSanitizer.sanitizeForDisplay(approval.preview))
+                        let preview = ChatTextSanitizer.sanitizeForDisplay(approval.preview)
+                        Text(preview)
                             .font(.rapid(size: 11, design: .monospaced))
-                            .lineLimit(12)
+                            .lineLimit(fullApprovalPreview ? nil : 12)
                             .truncationMode(.tail)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .background {
+                                VStack(spacing: 0) {
+                                    Text(preview).lineLimit(12).fixedSize(horizontal: false, vertical: true)
+                                        .background(GeometryReader { Color.clear.preference(key: OwnerPreviewHeightKey.self, value: ["limited": $0.size.height]) })
+                                    Text(preview).fixedSize(horizontal: false, vertical: true)
+                                        .background(GeometryReader { Color.clear.preference(key: OwnerPreviewHeightKey.self, value: ["full": $0.size.height]) })
+                                }
+                                .font(.rapid(size: 11, design: .monospaced))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .hidden()
+                                .accessibilityHidden(true)
+                            }
+                            .onPreferenceChange(OwnerPreviewHeightKey.self) { previewHeights = $0 }
+                        if (previewHeights["full"] ?? 0) > (previewHeights["limited"] ?? 0) + 0.5 {
+                            Button(fullApprovalPreview ? "Show less" : "Show full preview") { fullApprovalPreview.toggle() }
+                                .accessibilityIdentifier("OwnerApproval.Expand.\(approval.opID)")
+                        }
                     }
                 }
                 .padding(.horizontal, 10)

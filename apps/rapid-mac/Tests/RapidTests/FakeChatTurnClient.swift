@@ -13,6 +13,7 @@ actor FakeChatTurnClient: ChatTurnClient {
 
     var deliveryError: ChatTurnClientError?
     var operationError: ChatTurnClientError?
+    var responseError: ChatTurnClientError?
     var cancelError: ChatTurnClientError?
     var submitFailures = 0
     var malformedConversation = false
@@ -20,6 +21,7 @@ actor FakeChatTurnClient: ChatTurnClient {
     func failCancel() { cancelError = .beforeHeaders }
     func setMalformedConversation() { malformedConversation = true }
     func setDeliveryError(_ error: ChatTurnClientError?) { deliveryError = error }
+    func setResponseError(_ error: ChatTurnClientError?) { responseError = error }
     func setOperationError(_ error: ChatTurnClientError?) { operationError = error }
     var substituteTurnID = false
     func enableTurnSubstitution() { substituteTurnID = true }
@@ -48,7 +50,7 @@ actor FakeChatTurnClient: ChatTurnClient {
     }
     func turn(turnID: String) async throws -> ChatWireJSON { calls.append(.turn(turnID)); return receipt }
     func cancel(turnID: String) async throws -> ChatWireJSON { calls.append(.cancel(turnID)); if let cancelError { throw cancelError }; return receipt }
-    func respond(_ response: ChatPermissionResponse) async throws -> ChatWireJSON { calls.append(.respond(response)); return receipt }
+    func respond(_ response: ChatPermissionResponse) async throws -> ChatWireJSON { calls.append(.respond(response)); if let responseError { throw responseError }; return receipt }
     func operation(opID: String) async throws -> ChatWireJSON { calls.append(.operation(opID)); if let operationError { throw operationError }; return receipt }
     func context(_ request: ChatTurnRequest) async throws -> ChatWireContextEvent {
         calls.append(.context(request)); return contextValue

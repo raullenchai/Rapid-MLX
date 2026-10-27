@@ -107,4 +107,67 @@ struct ChatViewModelOwnerRoutingTests {
         #expect(await client.calls.contains { if case .cancel = $0 { true } else { false } })
     }
 
+    @Test func terminationCancelsOwnerTurn() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake(); await client.setFrames([])
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("hello", alias: "model")
+        for _ in 0..<100 {
+            if await client.calls.contains(where: { if case .submit = $0 { true } else { false } }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.stopAndPersist()
+        for _ in 0..<100 {
+            if await client.calls.contains(where: { if case .cancel = $0 { true } else { false } }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await client.calls.contains { if case .cancel = $0 { true } else { false } })
+    }
+    @Test func stopDuringConnectionPreparationDoesNotSubmit() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let gate = OwnerPreparationGate()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { await gate.wait(); return client }, persistsConversations: false)
+        model.send("hello", alias: "model")
+        for _ in 0..<100 {
+            if await gate.started { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.stop()
+        await gate.release()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!(await client.calls.contains { if case .submit = $0 { true } else { false } }))
+    }
+    @Test func approvalErrorsRemainRetryable() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let frame = Data("id: turn-1:2\nevent: permission.request\ndata: {\"turn_id\":\"turn-1\",\"seq\":2,\"event\":{\"type\":\"permission.request\",\"op_id\":\"op\",\"revision\":1,\"tool\":\"write_file\",\"summary\":\"Edit\",\"preview\":\"x\",\"risk\":\"file\",\"reason\":\"Approval\",\"options\":[\"once\",\"deny\"],\"expires_at\":2000000000}}\n\n".utf8)
+        let tool = Data("id: turn-1:1\nevent: tool.started\ndata: {\"turn_id\":\"turn-1\",\"seq\":1,\"event\":{\"type\":\"tool.started\",\"call_id\":\"op\",\"name\":\"write_file\",\"args\":{\"op_id\":\"op\"}}}\n\n".utf8)
+        await client.setFrames([tool, frame])
+        await client.setReceipt(.object(["id": .string("op"), "state": .string("intent"), "revision": .integer(1), "expires_at": .integer(2000000000)]))
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("hello", alias: "model")
+        for _ in 0..<100 {
+            if model.ownerApprovals["op"] != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await client.setOperationError(.beforeHeaders)
+        model.resolveOwnerPermission(opID: "op", allow: true)
+        for _ in 0..<100 { if model.lastError != nil { break }; try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.lastError == "Couldn't send your approval — try again.")
+        #expect(model.ownerApprovals["op"]?.unavailable == false)
+        await client.setOperationError(nil); await client.setResponseError(.beforeHeaders)
+        model.resolveOwnerPermission(opID: "op", allow: false)
+        for _ in 0..<100 { if model.lastError != nil { break }; try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.lastError == "Couldn't send your approval — try again.")
+        #expect(model.ownerApprovals["op"]?.unavailable == false)
+    }
+
+}
+
+private actor OwnerPreparationGate {
+    var started = false
+    var continuation: CheckedContinuation<Void, Never>?
+    func wait() async { started = true; await withCheckedContinuation { continuation = $0 } }
+    func release() { continuation?.resume(); continuation = nil }
 }

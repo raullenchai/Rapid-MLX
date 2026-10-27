@@ -26,6 +26,7 @@ actor OwnerChatSession {
     private var branchID: String?
     private var task: Task<Void, Never>?
     private var preparing = false
+    private var stoppedWhilePreparing = false
     private var resolving: Set<String> = []
 
     init(connection: ChatOwnerConnection, conversationID: String? = nil, workspace: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -64,15 +65,20 @@ actor OwnerChatSession {
     func submit(text: String, target: Target, onConversation: @Sendable (String) async -> Void = { _ in }) async throws {
         guard task == nil, !preparing else { throw SessionError.busy }
         preparing = true
+        stoppedWhilePreparing = false
         defer { preparing = false }
+        try checkPreparation()
         let client = try await clientProvider()
+        try checkPreparation()
         self.client = client
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
         else { conversation = try await client.createConversation(workspace: workspace.path) }
+        try checkPreparation()
         guard case .object(let object) = conversation, case .string(let id) = object["id"] else { throw SessionError.invalidConversation }
         conversationID = id
         await onConversation(id)
+        try checkPreparation()
         guard case .string(let branch) = object["branch_id"],
               case .array(let branches) = object["branches"],
               let selected = branches.first(where: { if case .object(let b) = $0 { return b["id"] == .string(branch) }; return false }),
@@ -82,6 +88,10 @@ actor OwnerChatSession {
         let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, inferenceURL: target.url.absoluteString, model: target.model, approvals: .always, inferenceAPIKey: target.bearer)
         reducer = ChatTurnReducer(turnID: turnID); unavailable = []; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
+    }
+    private func checkPreparation() throws {
+        try Task.checkCancellation()
+        if stoppedWhilePreparing { throw CancellationError() }
     }
     private func apply(_ event: ChatWireEnvelope) throws {
         guard var current = reducer else { return }
@@ -146,6 +156,7 @@ actor OwnerChatSession {
         return error is DecodingError
     }
     func stop() async throws {
+        if preparing { stoppedWhilePreparing = true }
         guard let client, let turnID = reducer?.projection.turnID, reducer?.projection.terminal == nil else { return }
         var current = client
         var lastError: Error?

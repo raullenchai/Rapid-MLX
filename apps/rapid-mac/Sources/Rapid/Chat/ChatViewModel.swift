@@ -634,13 +634,16 @@ final class ChatViewModel {
     ///
     /// Folded into one helper so every navigation and replay path applies the
     /// same turn-scoped cancellation and rail cleanup.
-    private func discardOwnerSessions() {
+    private func discardOwnerSessions(stopping activeSession: OwnerChatSession? = nil) {
         let sessions = Array(ownerSessions.values)
         ownerSessions.removeAll()
-        for session in sessions { Task { await session.close() } }
         let connections = Array(ownerConnections.values)
         ownerConnections.removeAll()
-        for connection in connections { Task { await connection.close() } }
+        Task {
+            if let activeSession { try? await activeSession.stop() }
+            for session in sessions { await session.close() }
+            for connection in connections { await connection.close() }
+        }
     }
 
     private func cancelInflightWork() {
@@ -1604,6 +1607,11 @@ final class ChatViewModel {
             persistActive()
         } catch {
             guard epoch == conversationEpoch else { return }
+            if error is CancellationError {
+                finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch)
+                persistActive()
+                return
+            }
             if let index = messages.firstIndex(where: { $0.id == placeholder.id }) {
                 var row = messages[index]; row.status = .failed; row.errorMessage = error.localizedDescription; updateMessage(at: index, with: row)
             }
@@ -1620,7 +1628,17 @@ final class ChatViewModel {
 
     func resolveOwnerPermission(opID: String, allow: Bool) {
         guard let session = ownerSessions[activeConversationID] else { return }
-        Task { try? await session.resolve(opID: opID, decision: allow ? .allow : .deny) }
+        let id = activeConversationID
+        lastError = nil
+        Task {
+            do { try await session.resolve(opID: opID, decision: allow ? .allow : .deny) }
+            catch {
+                if case OwnerChatSession.SessionError.permissionUnavailable = error { return }
+                let snapshot = await session.snapshot()
+                guard id == activeConversationID, !snapshot.unavailablePermissions.contains(opID) else { return }
+                lastError = "Couldn't send your approval — try again."
+            }
+        }
     }
 
     /// Startup and tool rounds can change the live lane after attachment admission.
@@ -1811,9 +1829,9 @@ final class ChatViewModel {
     /// actor. The task's own cleanup remains harmless: it re-persists the same
     /// state if it ever gets to run.
     func stopAndPersist() {
-        discardOwnerSessions()
+        let session = ownerSessions[activeConversationID]
+        discardOwnerSessions(stopping: session)
         saveDrafts()
-        if let session = ownerSessions[activeConversationID] { Task { try? await session.stop() } }
         cancelInflightWork()
         guard isStreaming else { return }
         finaliseInterruptedLiveTurn()
