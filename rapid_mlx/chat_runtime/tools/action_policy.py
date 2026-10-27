@@ -267,7 +267,7 @@ def scan_code(text, workspace, *, python=False):
                 continue
             elif not (
                 token.startswith("-")
-                or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token)
+                or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*\+?=.*", token)
             ):
                 command_start = False
     for token in tokens:
