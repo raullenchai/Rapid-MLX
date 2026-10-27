@@ -533,6 +533,7 @@ def test_stress_consumer_verifies_only_the_loaded_subfolder(
         "corrupt_lfs",
         "empty",
         "uncovered",
+        "linked_dir",
     ],
 )
 def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case):
@@ -596,13 +597,18 @@ def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case
         files = []
     if case == "uncovered":
         (snapshot / "extra.py").write_text("pass\n")
+    if case == "linked_dir":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "extra.py").write_text("pass\n")
+        (snapshot / "extra").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(
         "rapid_mlx._mirror._packaged_digest_info",
         lambda *a: SimpleNamespace(siblings=files),
     )
 
-    if case in ("empty", "uncovered"):
+    if case in ("empty", "uncovered", "linked_dir"):
         # Loaded files without a packaged digest cannot prove the revision.
         assert stress_e2e_bench._cached_model_revision(alias) is None
     elif case not in ("valid", "regular"):

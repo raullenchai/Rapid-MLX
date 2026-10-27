@@ -1784,12 +1784,14 @@ def _cached_model_revision(
         if info is None:
             return None
         covered = {file.rfilename for file in info.siblings}
+        entries = list(checkpoint.rglob("*"))
         loaded = {
-            leaf.relative_to(snapshot).as_posix()
-            for leaf in checkpoint.rglob("*")
-            if leaf.is_file()
+            leaf.relative_to(snapshot).as_posix() for leaf in entries if leaf.is_file()
         }
-        if not loaded or not loaded <= covered:
+        # rglob does not descend into linked directories, whose files would
+        # then escape the coverage check; Hub snapshots never contain them.
+        linked_dir = any(leaf.is_symlink() and leaf.is_dir() for leaf in entries)
+        if linked_dir or not loaded or not loaded <= covered:
             # Files without a packaged digest could differ from the pinned
             # revision, so the loaded checkpoint cannot be identified.
             return None
