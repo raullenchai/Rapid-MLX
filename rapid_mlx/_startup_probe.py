@@ -13,13 +13,29 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlsplit
 
+_REQUEST_DEADLINE_S = 1.0
+
 
 class _ProbeHandler(BaseHTTPRequestHandler):
     def handle_one_request(self) -> None:
         # A client which sends only part of a request must not hold startup
         # shutdown indefinitely. The responder handles no request bodies.
         self.connection.settimeout(0.2)
-        super().handle_one_request()
+        # Per-read timeouts alone let a client trickle bytes forever and keep
+        # this single-threaded responder from serving other probes.
+        deadline = threading.Timer(_REQUEST_DEADLINE_S, self._abort)
+        deadline.daemon = True
+        deadline.start()
+        try:
+            super().handle_one_request()
+        finally:
+            deadline.cancel()
+
+    def _abort(self) -> None:
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def _respond(self) -> None:
         body: dict[str, object] = {"detail": "model loading"}

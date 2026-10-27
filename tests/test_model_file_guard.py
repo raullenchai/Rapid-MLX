@@ -236,12 +236,15 @@ def test_model_file_cannot_execute_without_consent(tmp_path, monkeypatch, lazy, 
 def test_checked_model_file_requires_consent_before_loader(tmp_path, monkeypatch):
     import sys
 
+    from rapid_mlx import startup_progress as progress_module
     from rapid_mlx.model_load_errors import load_model_checked
-    from rapid_mlx.startup_progress import startup_progress
 
     for module in ("mlx", "mlx.core", "mlx.utils", "mlx.nn"):
         monkeypatch.setitem(sys.modules, module, None)
-    startup_progress.begin("fixture")
+    # A test-local tracker keeps the shared singleton idle for later tests.
+    progress = progress_module.StartupProgress()
+    monkeypatch.setattr(progress_module, "startup_progress", progress)
+    progress.begin("fixture")
 
     root = _model_dir(tmp_path, "model.py")
     (root / "model.py").write_text("# reviewed custom code")

@@ -91,6 +91,38 @@ def test_incomplete_http_request_cannot_hold_handoff(progress):
             assert not probe._thread.is_alive()
 
 
+def test_trickling_client_cannot_monopolize_responder(progress):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        address = listener.getsockname()
+        probe = StartupProbe(listener)
+        stop = threading.Event()
+        try:
+            with socket.create_connection(address, timeout=1) as client:
+                client.sendall(b"GET /health/ready HTTP/1.1\r\nHost:")
+
+                def trickle():
+                    while not stop.wait(0.05):
+                        try:
+                            client.sendall(b"x")
+                        except OSError:
+                            return
+
+                sender = threading.Thread(target=trickle)
+                sender.start()
+                try:
+                    start = time.monotonic()
+                    status, _ = _get(address)
+                    assert status == 503
+                    assert time.monotonic() - start < 1.8
+                finally:
+                    stop.set()
+                    sender.join(timeout=1)
+        finally:
+            probe.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.requires_mlx
 async def test_blocking_loader_exposes_intermediate_progress_before_ready(
