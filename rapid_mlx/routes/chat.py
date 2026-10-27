@@ -78,7 +78,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
-from ..parsing.prompt_owner import split_buffered
+from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
@@ -6670,7 +6670,7 @@ async def _create_chat_completion_impl(
     # whereas the regex round-trip lost calls whose JSON arguments
     # contained literal harmony sentinel substrings (PR #515 codex
     # round-12 / round-14 BLOCKING).
-    output, channels_owned = split_buffered(output, cfg.model_path or cfg.model_name)
+    output, channels_owned = split_buffered(output, served_model_identity(cfg))
     engine_tool_calls = getattr(output, "tool_calls", None)
     # LINE① (#558, codex r4 #4) — reasoning-first extraction. When the reasoning
     # gate is engaged (and the engine did NOT already produce structured calls via

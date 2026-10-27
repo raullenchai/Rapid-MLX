@@ -45,10 +45,12 @@ class ReasoningStopScope:
     start_marker: str
     end_marker: str
     starts_in_reasoning: bool = False
+    # The engine refines the start from the rendered prompt suffix.
+    prompt_owned: bool = False
 
 
 def build_reasoning_stop_scope(
-    reasoning_parser: Any, *, starts_in_reasoning: bool
+    reasoning_parser: Any, *, starts_in_reasoning: bool, prompt_owned: bool = False
 ) -> ReasoningStopScope | None:
     """Return the stop scope for a configured reasoning parser, or ``None``.
 
@@ -71,6 +73,7 @@ def build_reasoning_stop_scope(
         start_marker=start,
         end_marker=end,
         starts_in_reasoning=bool(starts_in_reasoning),
+        prompt_owned=prompt_owned,
     )
 
 

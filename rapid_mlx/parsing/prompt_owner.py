@@ -65,6 +65,12 @@ class ContentToolGrammar(ChannelGrammar):
         return super().consume(lexeme)
 
 
+def served_model_identity(cfg) -> str:
+    """Both configured names: a local path may not carry the family name."""
+    names = (getattr(cfg, "model_path", ""), getattr(cfg, "model_name", ""))
+    return " ".join(name for name in names if isinstance(name, str) and name)
+
+
 def owns_prompt_state(model: str | None, *, flint: bool) -> bool:
     """Families whose output channel follows the rendered prompt state."""
     return flint or "lfm2.5" in (model or "").lower()

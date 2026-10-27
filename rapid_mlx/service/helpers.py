@@ -2801,7 +2801,7 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
     chat_template = served_chat_template(engine) or ""
     from types import SimpleNamespace
 
-    from ..parsing.prompt_owner import owns_prompt_state
+    from ..parsing.prompt_owner import owns_prompt_state, served_model_identity
     from ..utils.chat_template import is_flint_chat_template
 
     flint = is_flint_chat_template(
@@ -2809,10 +2809,8 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
         tools=getattr(request, "tools", None),
         chat_template_kwargs=getattr(request, "chat_template_kwargs", None),
     )
-    if owns_prompt_state(
-        getattr(cfg, "model_path", "") or getattr(cfg, "model_name", ""),
-        flint=flint,
-    ):
+    prompt_owned = owns_prompt_state(served_model_identity(cfg), flint=flint)
+    if prompt_owned:
         # Agree with PromptOutputOwner: the rendered generation prompt decides
         # (mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647), never the
         # thinking switch. Flint renders no think prefix (official conventions).
@@ -2829,7 +2827,9 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
             tools_requested=bool(getattr(request, "tools", None)),
         )
     scope = build_reasoning_stop_scope(
-        reasoning_parser, starts_in_reasoning=starts_in_reasoning
+        reasoning_parser,
+        starts_in_reasoning=starts_in_reasoning,
+        prompt_owned=prompt_owned,
     )
     if scope is None:
         return {}

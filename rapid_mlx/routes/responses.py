@@ -89,6 +89,7 @@ from ..parsing.prompt_owner import (
     ContentDelta,
     PromptOutputOwner,
     ReasoningDelta,
+    served_model_identity,
     split_buffered,
 )
 from ..reasoning import finalize_streaming_compat
@@ -2297,7 +2298,7 @@ async def _non_stream(
                 },
             )
 
-    output, channels_owned = split_buffered(output, cfg.model_path or cfg.model_name)
+    output, channels_owned = split_buffered(output, served_model_identity(cfg))
     engine_tool_calls = getattr(output, "tool_calls", None)
     tool_parse_request = _tool_parse_request(openai_request)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
@@ -3852,7 +3853,7 @@ async def _stream_responses(
             caller_client=caller_client,
             failure_latch=telemetry_failure_emitted,
         )
-        prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+        prompt_owner = PromptOutputOwner(served_model_identity(cfg))
         owned_reasoning_parts: list[str] = []
 
         def merge_owned_reasoning():

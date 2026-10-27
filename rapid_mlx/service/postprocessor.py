@@ -22,7 +22,12 @@ from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
 from ..parsing.output_demux import Event
-from ..parsing.prompt_owner import ContentDelta, PromptOutputOwner, ReasoningDelta
+from ..parsing.prompt_owner import (
+    ContentDelta,
+    PromptOutputOwner,
+    ReasoningDelta,
+    served_model_identity,
+)
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
 from ..tool_call_authorization import call_name, declared_names, log_drop
@@ -224,9 +229,7 @@ class StreamingPostProcessor:
     ):
         self.cfg = cfg
         self.prompt_parse_context: PromptParseContext | None = None
-        self._prompt_owner = PromptOutputOwner(
-            getattr(cfg, "model_path", "") or getattr(cfg, "model_name", "")
-        )
+        self._prompt_owner = PromptOutputOwner(served_model_identity(cfg))
         if tools_requested is None:
             # Backward-compatible inference for direct/internal callers that
             # already pass the request payload but predate this constructor
@@ -2503,9 +2506,7 @@ class StreamingPostProcessor:
         """
         self.prompt_parse_context = None
         self.reasoning_parser = self._legacy_reasoning_parser
-        self._prompt_owner = PromptOutputOwner(
-            getattr(self.cfg, "model_path", "") or getattr(self.cfg, "model_name", "")
-        )
+        self._prompt_owner = PromptOutputOwner(served_model_identity(self.cfg))
         self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
         self.accumulated_text = ""
         self._content_sanitizer = StreamingContentSanitizer()
@@ -2642,7 +2643,10 @@ class StreamingPostProcessor:
         if getattr(output, "prompt_parse_context", None) is not None:
             self.prompt_parse_context = output.prompt_parse_context
         was_owned = self.channels_owned
-        released = self._prompt_owner.release_held(output)
+        # Held marker text precedes the native chunk in parser order.
+        released = self._process_owned_events(
+            self._prompt_owner.release_held(output), output
+        )
         owned = self._prompt_owner.observe(output)
         if owned is not None:
             if not was_owned:
@@ -2659,8 +2663,7 @@ class StreamingPostProcessor:
                 events.append(self._make_finish_event(output))
         else:
             events = self._process_chunk_events(output)
-        if released:
-            events = self._process_owned_events(released, output) + events
+        events = released + events
         if any(event.type == "tool_call" for event in events):
             tail = ""
             if getattr(output, "tool_calls", None):

@@ -60,25 +60,40 @@ def test_flint_stop_waits_for_model_written_reasoning():
 
 
 @pytest.mark.parametrize(
-    "model,contract,suffix,expected",
+    "owned,contract,suffix,expected",
     [
-        ("flint-40b-a2.5b-4bit", "flint", "<think>", True),
-        ("flint-40b-a2.5b-4bit", "flint", "", False),
-        ("LiquidAI/LFM2.5-24B-A2B-MLX-4bit", "chatml", "<think>", True),
-        ("LiquidAI/LFM2.5-24B-A2B-MLX-4bit", "chatml", "<think>x</think>", False),
-        ("qwen3.5-4b-4bit", "chatml", "", True),
+        (True, "flint", "<think>", True),
+        (True, "flint", "", False),
+        (True, "chatml", "<think>", True),
+        (True, "chatml", "<think>x</think>", False),
+        (False, "chatml", "", True),
     ],
 )
-def test_engine_scopes_stop_by_rendered_suffix(model, contract, suffix, expected):
+def test_engine_scopes_stop_by_rendered_suffix(owned, contract, suffix, expected):
     from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.prompt_parse_context import PromptParseContext
     from rapid_mlx.reasoning.think_stop import ReasoningStopScope
 
     engine = object.__new__(BatchedEngine)
-    engine._model_name = model
     # Non-owned families keep the request-time scope unchanged.
-    kwargs = {"reasoning_stop_scope": ReasoningStopScope("<think>", "</think>", True)}
+    scope = ReasoningStopScope("<think>", "</think>", True, prompt_owned=owned)
+    kwargs = {"reasoning_stop_scope": scope}
     engine._align_owned_stop_scope(
         kwargs, PromptParseContext(suffix, None, None, False, contract)
     )
     assert kwargs["reasoning_stop_scope"].starts_in_reasoning is expected
+
+
+def test_local_path_keeps_lfm_ownership_from_served_name():
+    cfg = reset_config()
+    cfg.reasoning_parser = get_parser("qwen3")()
+    cfg.model_path = "/models/local-snapshot"
+    cfg.model_name = "lfm2.5-24b-a2b-4bit"
+    engine = SimpleNamespace(tokenizer=SimpleNamespace(chat_template=LFM_TEMPLATE))
+    request = SimpleNamespace(
+        stop=["Observation:"],
+        chat_template_kwargs={"enable_thinking": False},
+        tools=None,
+    )
+    scope = reasoning_stop_scope_kwargs(engine, request)["reasoning_stop_scope"]
+    assert scope.prompt_owned and scope.starts_in_reasoning

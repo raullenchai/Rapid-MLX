@@ -2839,19 +2839,15 @@ class BatchedEngine(BaseEngine):
     def _align_owned_stop_scope(self, kwargs, context) -> None:
         """Scope stop strings by the same rendered suffix the output owner uses."""
         scope = kwargs.get("reasoning_stop_scope")
-        if scope is None or context is None:
+        if context is None or not getattr(scope, "prompt_owned", False):
             return
         from dataclasses import replace
 
-        from ..parsing.prompt_owner import owned_initial_channel, owns_prompt_state
+        from ..parsing.prompt_owner import owned_initial_channel
 
-        if owns_prompt_state(
-            self._model_name, flint=context.template_contract == "flint"
-        ):
-            kwargs["reasoning_stop_scope"] = replace(
-                scope,
-                starts_in_reasoning=owned_initial_channel(context) == "reasoning",
-            )
+        kwargs["reasoning_stop_scope"] = replace(
+            scope, starts_in_reasoning=owned_initial_channel(context) == "reasoning"
+        )
 
     def _prompt_parse_context(
         self, prompt, thinking, tools, template_kwargs, prefix, messages, num_images=0

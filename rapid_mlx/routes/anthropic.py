@@ -49,6 +49,7 @@ from ..parsing.prompt_owner import (
     ContentDelta,
     PromptOutputOwner,
     ReasoningDelta,
+    served_model_identity,
     split_buffered,
 )
 from ..reasoning import finalize_streaming_compat
@@ -1088,9 +1089,7 @@ async def create_anthropic_message(
         # for the rationale (PR #515 codex round-12 / round-14 BLOCKING
         # — wire-text round-trip lost calls whose JSON args contained
         # harmony sentinels).
-        output, channels_owned = split_buffered(
-            output, cfg.model_path or cfg.model_name
-        )
+        output, channels_owned = split_buffered(output, served_model_identity(cfg))
         engine_tool_calls = getattr(output, "tool_calls", None)
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             output.text,
@@ -2441,7 +2440,7 @@ async def _stream_anthropic_messages(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+    prompt_owner = PromptOutputOwner(served_model_identity(cfg))
 
     def emit_owned(events):
         nonlocal current_block_type, block_index
