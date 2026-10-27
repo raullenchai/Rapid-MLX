@@ -685,6 +685,10 @@ def test_streaming_unchanged_against_base():
                                 # #4788 treats CR and CRLF as line boundaries.
                                 "_feed",
                                 "inside",
+                                # #5318: buffered extraction honors
+                                # skip_reasoning_parsing for the request-local
+                                # owner; test_selected_owner pins its output.
+                                "extract_tool_calls",
                             }
                         )
                     ]

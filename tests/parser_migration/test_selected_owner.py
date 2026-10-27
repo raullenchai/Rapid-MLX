@@ -2,6 +2,7 @@
 
 import itertools
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -111,6 +112,13 @@ def test_issue_contracts_agree_across_modes(case, surface, stream, split):
     )
 
 
+FLINT = SimpleNamespace(
+    chat_template=(
+        Path(__file__).parents[1] / "fixtures/flint_chat_template.jinja"
+    ).read_text()
+)
+
+
 def cfg(reasoning="qwen3", tool="hermes", auto=True):
     return SimpleNamespace(
         reasoning_parser_name=reasoning,
@@ -138,6 +146,13 @@ def test_selection_gates_keep_the_existing_parser():
         **REQUEST,
     )
     assert selected_envelope_tools(cfg(), budget) is None
+    # Prompt-state families keep their owner without a rendered context.
+    lfm = SimpleNamespace(**{**vars(cfg()), "model_name": "lfm2.5-test"})
+    assert selected_envelope_tools(lfm, REQUEST) is None
+    flint = SimpleNamespace(
+        **{**vars(cfg(tool="glm47")), "engine": SimpleNamespace(tokenizer=FLINT)}
+    )
+    assert selected_envelope_tools(flint, REQUEST) is None
     glm = selected_envelope_tools(cfg(tool="glm47"), REQUEST)
     assert [t.text for t in glm.terminals][-1] == "<arg_key>"
 

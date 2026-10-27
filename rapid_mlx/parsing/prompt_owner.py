@@ -163,7 +163,28 @@ def selected_envelope_tools(
     ):
         return None
     engine = getattr(cfg, "engine", None)
+    if prompt_state_family(cfg, request):
+        # Flint and LFM2.5 keep their prompt-state owner even when an output
+        # carries no rendered prompt context.
+        return None
     return EnvelopeTools(parser, request, getattr(engine, "_tokenizer", None))
+
+
+def prompt_state_family(cfg, request) -> bool:
+    """Whether the served template or model uses the prompt-state owner."""
+    from types import SimpleNamespace
+
+    from ..service.helpers import served_chat_template
+    from ..utils.chat_template import is_flint_chat_template
+
+    flint = is_flint_chat_template(
+        SimpleNamespace(
+            chat_template=served_chat_template(getattr(cfg, "engine", None)) or ""
+        ),
+        tools=_field(request, "tools"),
+        chat_template_kwargs=_field(request, "chat_template_kwargs"),
+    )
+    return owns_prompt_state(served_model_identity(cfg), flint=flint)
 
 
 def requested_thinking(cfg, request) -> bool:
