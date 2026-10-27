@@ -85,7 +85,7 @@ actor OwnerChatSession {
               case .object(let fields) = selected, case .integer(let revision) = fields["revision"] else { throw SessionError.invalidConversation }
         conversationID = id; branchID = branch
         let turnID = UUID().uuidString.lowercased()
-        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, inferenceURL: target.url.absoluteString, model: target.model, approvals: .always, inferenceAPIKey: target.bearer)
+        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, inferenceURL: target.url.absoluteString, model: target.model, approvals: .default, inferenceAPIKey: target.bearer)
         reducer = ChatTurnReducer(turnID: turnID); unavailable = []; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
