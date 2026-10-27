@@ -1,0 +1,6 @@
+{"wire_version": 1, "turn_id": "denied", "seq": 1, "event": {"type": "turn.started", "message_id": "user", "branch_id": "branch", "model": "local", "thinking": false}}
+{"wire_version": 1, "turn_id": "denied", "seq": 2, "event": {"type": "tool.started", "call_id": "call", "name": "terminal", "args": {"op_id": "op"}, "label": "Run", "target": "", "summary": "terminal…"}}
+{"wire_version": 1, "turn_id": "denied", "seq": 3, "event": {"type": "permission.request", "op_id": "op", "revision": 0, "tool": "terminal", "summary": "rm -rf build", "preview": "rm -rf build", "risk": "dangerous", "reason": "Directory deletion; approval is required every time.", "options": ["once", "deny"], "expires_at": 1800000000.0, "title": "Run this command?", "preview_language": "bash"}}
+{"wire_version": 1, "turn_id": "denied", "seq": 4, "event": {"type": "tool.result", "call_id": "call", "result": "Action denied or approval expired.", "outcome": "error", "label": "Run", "target": "", "summary": "Action denied or approval expired.", "details": [], "details_kind": "text", "omitted_lines": 0}}
+{"wire_version": 1, "turn_id": "denied", "seq": 5, "event": {"type": "text.delta", "part_id": "a", "text": "The action was denied."}}
+{"wire_version": 1, "turn_id": "denied", "seq": 6, "event": {"type": "turn.terminal", "outcome": "completed", "final_message_id": "answer"}}

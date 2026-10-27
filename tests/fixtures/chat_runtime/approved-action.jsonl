@@ -1,0 +1,7 @@
+{"wire_version": 1, "turn_id": "approved", "seq": 1, "event": {"type": "turn.started", "message_id": "user", "branch_id": "branch", "model": "local", "thinking": false}}
+{"wire_version": 1, "turn_id": "approved", "seq": 2, "event": {"type": "tool.started", "call_id": "call", "name": "terminal", "args": {"op_id": "op"}, "label": "Run", "target": "", "summary": "terminal…"}}
+{"wire_version": 1, "turn_id": "approved", "seq": 3, "event": {"type": "permission.request", "op_id": "op", "revision": 0, "tool": "terminal", "summary": "rm -rf build", "preview": "rm -rf build", "risk": "dangerous", "reason": "Directory deletion; approval is required every time.", "options": ["once", "deny"], "expires_at": 1800000000.0, "title": "Run this command?", "preview_language": "bash"}}
+{"wire_version": 1, "turn_id": "approved", "seq": 4, "event": {"type": "tool.output", "call_id": "call", "text": "Removed build\n"}}
+{"wire_version": 1, "turn_id": "approved", "seq": 5, "event": {"type": "tool.result", "call_id": "call", "result": "Ran `rm -rf build` (exit 0, 0.1s)", "outcome": "success", "label": "Run", "target": "", "summary": "(exit 0, 0.1s)", "details": [], "details_kind": "output", "omitted_lines": 0}}
+{"wire_version": 1, "turn_id": "approved", "seq": 6, "event": {"type": "text.delta", "part_id": "a", "text": "Removed the build directory."}}
+{"wire_version": 1, "turn_id": "approved", "seq": 7, "event": {"type": "turn.terminal", "outcome": "completed", "final_message_id": "answer"}}
