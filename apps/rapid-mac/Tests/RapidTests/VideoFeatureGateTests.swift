@@ -7,7 +7,7 @@ struct VideoFeatureGateTests {
     @Test("Video is opt-in when no preference exists")
     func defaultsOff() throws {
         let suite = "rapid.video-gate-tests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = FeatureGateTestDefaults(domain: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
 
         #expect(!VideoFeatureConfig.isEnabled(in: defaults))

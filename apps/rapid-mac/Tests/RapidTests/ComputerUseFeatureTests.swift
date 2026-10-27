@@ -8,7 +8,7 @@ struct ComputerUseFeatureTests {
     @Test("Computer Use is opt-in")
     func defaultsOff() throws {
         let suite = "rapid.computer-use-gate-tests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = FeatureGateTestDefaults(domain: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
 
         #expect(!ComputerUseFeatureConfig.isEnabled(in: defaults))
