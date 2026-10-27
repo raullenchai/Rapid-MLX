@@ -8,6 +8,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .loopback_transport import AsyncLoopbackTransport
+
 
 def inference_url(value: str) -> str:
     url = urlsplit(value)
@@ -22,8 +24,8 @@ def inference_url(value: str) -> str:
         or not url.port
     ):
         raise ValueError("inference_url must be a loopback HTTP server URL with a port")
-    # Avoid DNS and proxy configuration changing a loopback target.
-    host = "[::1]" if url.hostname == "::1" else "127.0.0.1"
+    # Preserve the hostname; the transport pins localhost to loopback addresses.
+    host = "[::1]" if url.hostname == "::1" else url.hostname
     return urlunsplit(("http", f"{host}:{url.port}", "/v1", "", ""))
 
 
@@ -32,6 +34,7 @@ class ModelClients:
         self._http = http_client or httpx.AsyncClient(
             timeout=httpx.Timeout(180, connect=5),
             trust_env=False,
+            transport=AsyncLoopbackTransport(trust_env=False),
             follow_redirects=False,
         )
         self._clients: dict[tuple[str, str], AsyncOpenAI] = {}

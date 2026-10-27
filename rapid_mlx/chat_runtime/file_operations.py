@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read-only workspace operations, run in a disposable bounded worker.
 
-No model-supplied shell commands are executed. Search backends receive only
-bytes already opened through the workspace policy and pinned file descriptors.
+No model-supplied shell commands are executed. Search reads only files opened
+through the workspace policy and pinned file descriptors.
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ import fnmatch
 import json
 import os
 import re
-import shutil
 import stat
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -242,7 +240,6 @@ def search(
     ):
         return {"matches": [], "truncated": False}
     deadline = time.monotonic() + SEARCH_SECONDS
-    rg = None if filenames else shutil.which("rg")
     expression = None
     if not filenames:
         try:
@@ -280,48 +277,11 @@ def search(
                 if not isinstance(error, UnicodeDecodeError):
                     skipped += 1
                 continue
-            if rg:
-                command = [
-                    rg,
-                    "--no-config",
-                    "--color",
-                    "never",
-                    "-n",
-                    "--max-count",
-                    str(max_results + 1),
-                ]
-                if not case:
-                    command.append("-i")
-                completed = subprocess.run(
-                    command + ["--", pattern],
-                    input=data,
-                    capture_output=True,
-                    timeout=max(0.01, deadline - time.monotonic()),
-                )
-                if completed.returncode == 2 and (
-                    b"regex parse error:" in completed.stderr
-                    or b"regex error:" in completed.stderr
-                ):
-                    rg = None
-                elif completed.returncode not in (0, 1):
-                    raise FileError(
-                        "invalid_pattern",
-                        "The search backend rejected this regular expression.",
-                    )
-            if rg:
-                hits = (
-                    (int(number), line)
-                    for number, line in (
-                        row.split(":", 1)
-                        for row in completed.stdout.decode("utf-8").splitlines()
-                    )
-                )
-            else:
-                hits = (
-                    (number, line)
-                    for number, line in enumerate(text.splitlines(), 1)
-                    if expression.search(line)
-                )
+            hits = (
+                (number, line)
+                for number, line in enumerate(text.splitlines(), 1)
+                if expression.search(line)
+            )
             for number, line in hits:
                 item = {"path": display, "line": number, "text": line[:1000]}
                 if len(line) > 1000:
@@ -334,8 +294,8 @@ def search(
                 size += item_size
             if truncated:
                 break
-    except (FileError, subprocess.TimeoutExpired) as error:
-        if isinstance(error, FileError) and error.code != "search_limit":
+    except FileError as error:
+        if error.code != "search_limit":
             raise
         truncated = True
     if filenames:
@@ -357,7 +317,7 @@ def search(
             if truncated or skipped
             else ""
         ),
-        "backend": "glob" if filenames else "ripgrep" if rg else "python",
+        "backend": "glob" if filenames else "python",
     }
 
 

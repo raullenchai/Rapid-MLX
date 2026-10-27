@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import shutil
 import sys
 from types import SimpleNamespace
 
@@ -135,14 +134,7 @@ def test_low_context_cap_must_make_progress_or_return_typed_error(tmp_path):
     )
 
 
-@pytest.mark.parametrize("backend", ["ripgrep", "python"])
-def test_search_ignore_binary_venv_and_backend(tmp_path, monkeypatch, backend):
-    executable = shutil.which("rg")
-    if backend == "ripgrep" and executable is None:
-        pytest.skip("ripgrep not installed")
-    monkeypatch.setattr(
-        files.shutil, "which", lambda name: executable if backend == "ripgrep" else None
-    )
+def test_search_ignore_binary_venv_and_backend(tmp_path):
     write(tmp_path, ".gitignore", "/root.txt\n*.log\n!keep.log\nignored/\n")
     write(tmp_path, "src/.gitignore", "/local.txt\n!rescue.log\n")
     for path in (
@@ -169,7 +161,7 @@ def test_search_ignore_binary_venv_and_backend(tmp_path, monkeypatch, backend):
     (tmp_path / "binary.txt").write_bytes(b"needle\0binary")
     (tmp_path / "invalid.txt").write_bytes(b"needle\xff")
     result = request(tmp_path, "grep", pattern="needle", case=False)
-    assert result["backend"] == backend
+    assert result["backend"] == "python"
     assert {item["path"] for item in result["matches"]} == {
         "keep.log",
         "src/root.txt",
@@ -199,8 +191,7 @@ def test_glob_order_recursive_pattern_and_results_cap(tmp_path):
     assert request(tmp_path, "glob", pattern="src/*.md")["matches"] == ["src/middle.md"]
 
 
-def test_grep_result_cap_and_long_lines(tmp_path, monkeypatch):
-    monkeypatch.setattr(files.shutil, "which", lambda _: None)
+def test_grep_result_cap_and_long_lines(tmp_path):
     write(tmp_path, "matches.txt", "\n".join(["needle" + "x" * 2000] * 10))
     result = request(tmp_path, "grep", pattern="needle", max_results=3)
     assert len(result["matches"]) == 3
@@ -208,35 +199,8 @@ def test_grep_result_cap_and_long_lines(tmp_path, monkeypatch):
     assert all("Line truncated" in item["text"] for item in result["matches"])
 
 
-@pytest.mark.parametrize("backend", ["python", "ripgrep", "stub", "stub_regex_error"])
-def test_grep_lookbehind_falls_back(tmp_path, monkeypatch, backend):
-    executable = shutil.which("rg")
-    if backend == "ripgrep" and executable is None:
-        pytest.skip("ripgrep not installed")
+def test_grep_python_regex_semantics(tmp_path):
     write(tmp_path, "matches.txt", "foobar\nbar\nfoobar again\n")
-    monkeypatch.setattr(
-        files.shutil,
-        "which",
-        lambda _: (
-            executable
-            if backend == "ripgrep"
-            else ("rg" if backend.startswith("stub") else None)
-        ),
-    )
-    if backend.startswith("stub"):
-        monkeypatch.setattr(
-            files.subprocess,
-            "run",
-            lambda *args, **kwargs: SimpleNamespace(
-                returncode=2,
-                stderr=(
-                    b"regex error: unsupported"
-                    if backend == "stub_regex_error"
-                    else b"regex parse error: unsupported"
-                ),
-                stdout=b"",
-            ),
-        )
     result = request(tmp_path, "grep", pattern=r"(?<=foo)bar")
     assert result["matches"] == [
         {"path": "matches.txt", "line": 1, "text": "foobar"},
@@ -244,26 +208,15 @@ def test_grep_lookbehind_falls_back(tmp_path, monkeypatch, backend):
     ]
     assert result["backend"] == "python"
     assert not result["truncated"]
+    assert request(tmp_path, "grep", pattern=r"\w+", case=True)["backend"] == "python"
+    write(tmp_path, "cr.txt", "needle\rrest\n")
+    assert (
+        request(tmp_path, "grep", pattern="rest", path="cr.txt")["matches"][0]["line"]
+        == 2
+    )
     lookahead = request(tmp_path, "grep", pattern=r"foo(?=bar)")
     assert lookahead["matches"] == result["matches"]
     assert lookahead["backend"] == "python"
-
-
-def test_grep_ripgrep_per_file_limit_reports_truncation(tmp_path, monkeypatch):
-    write(tmp_path, "matches.txt", "needle\n" * 4)
-    monkeypatch.setattr(files.shutil, "which", lambda _: "rg")
-
-    def run(command, **kwargs):
-        assert command[command.index("--max-count") + 1] == "4"
-        return SimpleNamespace(
-            returncode=0, stderr=b"", stdout=b"1:needle\n2:needle\n3:needle\n4:needle\n"
-        )
-
-    monkeypatch.setattr(files.subprocess, "run", run)
-    result = request(tmp_path, "grep", pattern="needle", max_results=3)
-    assert len(result["matches"]) == 3
-    assert result["truncated"]
-    assert result["backend"] == "ripgrep"
 
 
 @pytest.mark.parametrize("cancel", [False, True])
@@ -421,8 +374,7 @@ def test_output_cap_accounts_for_json_escaping(tmp_path):
     assert len(json.dumps(result, ensure_ascii=False).encode()) <= files.MAX_OUTPUT
 
 
-def test_search_cannot_enter_venv_via_explicit_descendant(tmp_path, monkeypatch):
-    monkeypatch.setattr(files.shutil, "which", lambda _: None)
+def test_search_cannot_enter_venv_via_explicit_descendant(tmp_path):
     write(tmp_path, "custom/pyvenv.cfg", "home = python")
     write(tmp_path, "custom/deep/module.py", "needle")
     for path in ("custom/deep", "custom/deep/module.py"):
@@ -443,12 +395,7 @@ def test_replaced_workspace_and_lexical_secret_alias(tmp_path):
     assert request(outside, path=".env.alias")["error"]["code"] == "sensitive_path"
 
 
-@pytest.mark.parametrize("backend", ["python", "ripgrep"])
-def test_ignore_contents_negation_and_large_skips(tmp_path, monkeypatch, backend):
-    if backend == "python":
-        monkeypatch.setattr(files.shutil, "which", lambda _: None)
-    elif not shutil.which("rg"):
-        pytest.skip("ripgrep is not installed")
+def test_ignore_contents_negation_and_large_skips(tmp_path):
     write(tmp_path, ".gitignore", "foo/**\n!foo/keep.txt\n")
     write(tmp_path, "foo/keep.txt")
     write(tmp_path, "foo/drop.txt")
@@ -517,3 +464,35 @@ async def test_parallel_reads_share_context_budget(tmp_path):
     assert 1 <= sum("error" not in json.loads(result) for result in results) < 3
     assert json.loads(results[-1])["error"]["code"] == "context_limit"
     assert sum(len(result.encode()) for result in results) <= 5000
+
+
+def test_grep_uses_python_even_when_rg_is_available(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    write(tmp_path, "cr.txt", "needle\rrest\n")
+    monkeypatch.setattr(shutil, "which", lambda _: "rg")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=b"1:needle\rrest\n", stderr=b""
+        ),
+    )
+    result = request(tmp_path, "grep", pattern="rest")
+    assert result["backend"] == "python"
+    assert result["matches"] == [{"path": "cr.txt", "line": 2, "text": "rest"}]
+
+
+@pytest.mark.parametrize("code", ["search_limit", "workspace_changed"])
+def test_search_preserves_scan_limit_and_other_errors(tmp_path, monkeypatch, code):
+    def interrupted(*args):
+        raise files.FileError(code, "scan stopped")
+        yield
+
+    monkeypatch.setattr(files, "walk_files", interrupted)
+    result = request(tmp_path, "grep", pattern="needle")
+    if code == "search_limit":
+        assert result["truncated"]
+    else:
+        assert result["error"]["code"] == code

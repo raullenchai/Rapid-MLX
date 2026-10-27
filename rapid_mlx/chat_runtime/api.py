@@ -244,7 +244,18 @@ def create_app(
             "rapid_mlx.chat_runtime.file_extraction", bytes(content), arguments=(name,)
         )
         if "error" in result:
-            raise HTTPException(415, result["error"])
+            error = result["error"]
+            code = error["code"]
+            status = {
+                "binary_unsupported": 415,
+                "image_unsupported": 415,
+                "document_unsupported": 415,
+                "file_too_large": 413,
+                "timeout": 504,
+                "worker_failed": 500,
+                "document_invalid": 422,
+            }.get(code, 422)
+            raise HTTPException(status, error)
         text = result["text"]
         return await store.put_attachment(conversation_id, name, text.encode("utf-8"))
 

@@ -153,7 +153,6 @@ class DelegationManager:
                 )
             raise Conflict("delegation already running")
         usage = RunUsage()
-        messages = []
         tool_count = 0
         evidence = []
         status = "error"
@@ -174,8 +173,6 @@ class DelegationManager:
             )
 
         async def snapshot(items, consumed):
-            nonlocal messages
-            messages = list(items)
             await self.store.update_subrun(
                 child_id,
                 messages=_snapshot_messages(items),
@@ -309,7 +306,6 @@ class DelegationManager:
             summary = _clip(summary, limits.summary_bytes)
             await self.store.update_subrun(
                 child_id,
-                messages=_snapshot_messages(messages),
                 usage=_usage(usage),
                 status=status,
                 summary=summary,

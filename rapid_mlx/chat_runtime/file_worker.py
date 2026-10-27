@@ -44,7 +44,7 @@ async def run_worker(module, payload, *, arguments=(), timeout=10):
             }
         }
     finally:
-        # Own the worker and any ripgrep child; Stop leaves no work running.
+        # Own the worker process group; Stop leaves no work running.
         if process.returncode is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)

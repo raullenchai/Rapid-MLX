@@ -57,7 +57,7 @@ def test_invalid_request_and_secret_excluded():
     )
     request = TurnRequest(**data)
     assert "SECRET" not in request.model_dump_json()
-    assert request.inference_url == "http://127.0.0.1:18800/v1"
+    assert request.inference_url == "http://localhost:18800/v1"
     with pytest.raises(ValidationError):
         TurnRequest(**{**data, "turn_id": "bad:id"})
 
@@ -66,7 +66,7 @@ def test_client_settings():
     async def scenario():
         clients = ModelClients()
         model = clients.model("http://localhost:18800", "local")
-        assert clients.model("http://127.0.0.1:18800/v1", "local") is model
+        assert clients.model("http://localhost:18800/v1", "local") is model
         assert model.client.max_retries == 0
         assert model.profile["openai_chat_send_back_thinking_parts"] == "field"
         assert model.profile["openai_chat_thinking_field"] == "reasoning_content"
@@ -677,3 +677,91 @@ def test_attachment_tools_and_instructions_follow_branch_on_persistent_agent(tmp
             await store.close()
 
     asyncio.run(scenario())
+
+
+def test_localhost_preserves_dual_stack_resolution():
+    assert inference_url("http://localhost:18800") == "http://localhost:18800/v1"
+    assert inference_url("http://[::1]:18800") == "http://[::1]:18800/v1"
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+@pytest.mark.parametrize("fail", [False, True])
+def test_loopback_transports_pin_and_fallback(monkeypatch, host, fail):
+    import httpx
+
+    from rapid_mlx.chat_runtime.loopback_transport import (
+        AsyncLoopbackTransport,
+        LoopbackTransport,
+    )
+
+    sync_seen = []
+    async_seen = []
+
+    def sync_send(self, request):
+        sync_seen.append(request.url.host)
+        if fail and request.url.host == "127.0.0.1":
+            raise httpx.ConnectError("unavailable")
+        return httpx.Response(200)
+
+    async def async_send(self, request):
+        async_seen.append(request.url.host)
+        if fail and request.url.host == "127.0.0.1":
+            raise httpx.ConnectError("unavailable")
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", sync_send)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_send)
+    request = httpx.Request("GET", f"http://{host}:1234")
+    expected = ["127.0.0.1", "::1"] if host == "localhost" and fail else ["127.0.0.1"]
+    transport = LoopbackTransport()
+    if host != "localhost" and fail:
+        with pytest.raises(httpx.ConnectError):
+            transport.handle_request(request)
+    else:
+        transport.handle_request(request)
+    assert sync_seen == expected and request.url.host == host
+
+    async def run():
+        async_transport = AsyncLoopbackTransport()
+        if host != "localhost" and fail:
+            with pytest.raises(httpx.ConnectError):
+                await async_transport.handle_async_request(request)
+        else:
+            await async_transport.handle_async_request(request)
+        await async_transport.aclose()
+
+    asyncio.run(run())
+    transport.close()
+    assert async_seen == expected and request.url.host == host
+
+
+def test_loopback_transports_restore_url_when_both_connections_fail(monkeypatch):
+    import httpx
+
+    from rapid_mlx.chat_runtime.loopback_transport import (
+        AsyncLoopbackTransport,
+        LoopbackTransport,
+    )
+
+    def fail(*args):
+        raise httpx.ConnectError("unavailable")
+
+    async def async_fail(*args):
+        raise httpx.ConnectError("unavailable")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fail)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", async_fail)
+    request = httpx.Request("GET", "http://localhost:1234")
+    transport = LoopbackTransport()
+    with pytest.raises(httpx.ConnectError):
+        transport.handle_request(request)
+    transport.close()
+
+    async def run():
+        transport = AsyncLoopbackTransport()
+        with pytest.raises(httpx.ConnectError):
+            await transport.handle_async_request(request)
+        await transport.aclose()
+
+    asyncio.run(run())
+    assert request.url.host == "localhost"

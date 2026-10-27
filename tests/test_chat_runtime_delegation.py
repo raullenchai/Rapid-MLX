@@ -558,3 +558,31 @@ def test_summary_envelope_including_sources_is_bounded():
     assert len(result.encode()) <= 4000
     data = json.loads(result)
     assert data["summary"] and data["sources"] and data["source_note"]
+
+
+async def test_failed_child_preserves_latest_durable_snapshot(tmp_path, monkeypatch):
+    async def stream(messages, info):
+        if returns(messages):
+            yield "done"
+        else:
+            yield delegate_calls(["Read fact"], ["read_file"])
+
+    store, runtime, request, _ = await setup(tmp_path, stream)
+    original = runtime._attempt
+    saved = [{"role": "assistant", "parts": [{"type": "text", "text": "incremental"}]}]
+
+    async def attempt(agent, model, history, deps, settings, number):
+        if deps.subagent_id:
+            await store.update_subrun(deps.subagent_id, messages=saved)
+            raise RuntimeError("interrupted")
+        return await original(agent, model, history, deps, settings, number)
+
+    monkeypatch.setattr(runtime, "_attempt", attempt)
+    try:
+        await collect(runtime, request)
+        child = (await store.list_subruns(request.turn_id))[0]
+        assert child["status"] == "error"
+        assert (await store.get_subrun(child["id"]))["messages"] == saved
+    finally:
+        await runtime.close()
+        await store.close()

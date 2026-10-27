@@ -160,7 +160,7 @@ def test_context_budget_model_selection_and_auth(
     client.client.close()
 
     def serve(request):
-        assert str(request.url) == "http://127.0.0.1:18800/v1/models"
+        assert str(request.url) == "http://localhost:18800/v1/models"
         assert request.headers["Authorization"] == "Bearer local-test-key"
         return httpx.Response(200, json={"data": entries})
 
@@ -840,3 +840,83 @@ def test_harness_output_budget_default_and_override(
     monkeypatch.setattr(client, "branch", lambda: {"revision": 0})
     monkeypatch.setattr(client, "context_tokens", lambda: 32768)
     assert client.context_request()["max_tokens"] == expected
+
+
+@pytest.mark.parametrize("succeed", [True, False])
+def test_cancel_transport_failure_retries_or_reports(
+    client_factory, monkeypatch, capsys, succeed
+):
+    client = client_factory()
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    monkeypatch.setattr(
+        client.client,
+        "stream",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    reconnects = []
+    monkeypatch.setattr(client, "connect", lambda: reconnects.append(True))
+    calls = []
+
+    def cancel(*args, **kwargs):
+        calls.append(kwargs)
+        if not succeed or len(calls) < 3:
+            raise httpx.ConnectError("lost")
+        client.last_state.terminal = {"outcome": "cancelled"}
+
+    monkeypatch.setattr(client, "request", cancel)
+    client.turn("hello")
+    assert len(calls) == 3 and len(reconnects) == 2
+    assert all(call["idempotent"] for call in calls)
+    assert ("Couldn't confirm the stop" in capsys.readouterr().out) is not succeed
+
+
+def test_attachment_displays_safe_error(client_factory, monkeypatch, tmp_path):
+    client = client_factory()
+    path = tmp_path / "doc.txt"
+    path.write_text("hello")
+    response = httpx.Response(
+        504,
+        json={"detail": {"code": "timeout", "message": "File operation timed out."}},
+        request=httpx.Request("POST", "http://localhost"),
+    )
+    monkeypatch.setattr(client, "request", lambda *a, **k: response.raise_for_status())
+    with pytest.raises(ValueError, match="File operation timed out"):
+        client.command(f"/attach {path}")
+
+
+def test_cancel_reconnect_can_fail_without_exiting_client(
+    client_factory, monkeypatch, capsys
+):
+    client = client_factory()
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(
+        client.client,
+        "stream",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("lost")),
+    )
+    monkeypatch.setattr(
+        client, "connect", lambda: (_ for _ in ()).throw(httpx.ConnectError("lost"))
+    )
+    client.turn("hello")
+    assert "Couldn't confirm the stop" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("body", [b"invalid", b'{"detail": {}}'])
+def test_attachment_error_without_safe_message_preserves_http_error(
+    client_factory, monkeypatch, tmp_path, body
+):
+    client = client_factory()
+    path = tmp_path / "doc.txt"
+    path.write_text("hello")
+    response = httpx.Response(
+        500, content=body, request=httpx.Request("POST", "http://localhost")
+    )
+    monkeypatch.setattr(client, "request", lambda *a, **k: response.raise_for_status())
+    with pytest.raises(httpx.HTTPStatusError):
+        client.command(f"/attach {path}")

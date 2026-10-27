@@ -27,6 +27,7 @@ from rapid_mlx.chat_render import (
     supports_rich_output,
     terminal_safe_text,
 )
+from rapid_mlx.chat_runtime.loopback_transport import LoopbackTransport
 from rapid_mlx.chat_state import ReplayRequiredError, TurnState, sse_events
 
 PREFIX = "/v1/rapid/chat"
@@ -126,6 +127,7 @@ class ChatClient:
         self.client = httpx.Client(
             timeout=httpx.Timeout(getattr(args, "response_timeout", 600), connect=5),
             trust_env=False,
+            transport=LoopbackTransport(trust_env=False),
         )
         self.stopping = threading.Event()
         self.lease_thread: threading.Thread | None = None
@@ -481,12 +483,26 @@ class ChatClient:
                 except KeyboardInterrupt:
                     cancelled = True
                     print("\nStopping…", flush=True)
-                    self.request(
-                        "POST",
-                        f"/turns/{state.turn_id}/cancel",
-                        json={},
-                        idempotent=True,
-                    )
+                    for attempt in range(3):
+                        try:
+                            self.request(
+                                "POST",
+                                f"/turns/{state.turn_id}/cancel",
+                                json={},
+                                idempotent=True,
+                            )
+                            break
+                        except httpx.TransportError:
+                            if attempt < 2:
+                                try:
+                                    self.connect()
+                                except httpx.TransportError:
+                                    pass
+                    else:
+                        print(
+                            "Couldn't confirm the stop — the owner may still be running this turn."
+                        )
+                        return
                     # Cancellation acknowledgement follows cleanup. Replay its terminal.
                     failures = 0
                 except (httpx.TransportError, ReplayRequiredError):
@@ -612,12 +628,23 @@ class ChatClient:
                 content = file.read(MAX_ATTACHMENT_BYTES + 1)
             if len(content) > MAX_ATTACHMENT_BYTES:
                 raise ValueError("Attachment exceeds the 20 MiB limit")
-            result = self.request(
-                "POST",
-                f"/conversations/{self.conversation_id}/attachments",
-                params={"name": path.name},
-                content=content,
-            )
+            try:
+                result = self.request(
+                    "POST",
+                    f"/conversations/{self.conversation_id}/attachments",
+                    params={"name": path.name},
+                    content=content,
+                )
+            except httpx.HTTPStatusError as error:
+                try:
+                    message = error.response.json().get("detail")
+                except ValueError:
+                    message = None
+                if isinstance(message, dict):
+                    message = message.get("message")
+                if isinstance(message, str):
+                    raise ValueError(message) from None
+                raise
             self.attachments.append(result["id"])
             print(
                 f"Attached {terminal_safe_text(path.name)}. Ask a question to send it."

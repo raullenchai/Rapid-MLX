@@ -268,3 +268,34 @@ async def test_body_cap_preserves_partial_upload_disconnect():
         {"type": "http.request", "body": b'{"title":', "more_body": True},
         {"type": "http.disconnect"},
     ]
+
+
+@pytest.mark.parametrize(
+    "code,status",
+    [
+        ("binary_unsupported", 415),
+        ("file_too_large", 413),
+        ("timeout", 504),
+        ("worker_failed", 500),
+        ("document_invalid", 422),
+        ("other_worker_failure", 422),
+    ],
+)
+async def test_attachment_worker_error_status_and_safe_message(
+    api, monkeypatch, code, status
+):
+    client, _, _ = api
+    conversation = (await client.post(PREFIX + "/conversations", json={})).json()
+
+    async def worker(*args, **kwargs):
+        return {"error": {"code": code, "message": "Safe extraction message."}}
+
+    monkeypatch.setattr("rapid_mlx.chat_runtime.api.run_worker", worker)
+    response = await client.post(
+        PREFIX + f"/conversations/{conversation['id']}/attachments", content=b"x"
+    )
+    assert response.status_code == status
+    assert response.json()["detail"] == {
+        "code": code,
+        "message": "Safe extraction message.",
+    }
