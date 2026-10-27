@@ -246,6 +246,15 @@ def test_owner_main_error(monkeypatch, capsys):
     assert "ValueError" in capsys.readouterr().err
 
 
+def test_owner_main_ensure_starts_without_printing(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(owner, "discover_or_start", calls.append)
+    monkeypatch.setattr(sys, "argv", ["owner", "--profile", "p", "--ensure"])
+    owner.main()
+    assert calls == ["p"]
+    assert capsys.readouterr().out == ""
+
+
 async def test_synthesis_minimum_failure_and_short_instruction():
     from pydantic_ai.models import ModelRequestParameters
 
