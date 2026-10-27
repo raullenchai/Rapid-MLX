@@ -525,3 +525,24 @@ def test_native_event_releases_held_marker_prefix(surface, monkeypatch):
     # and the held prefix is emitted before the native narration.
     assert result["reasoning"] == "", result
     assert result["content"] == "Hi <thiNative. nk>secret", result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_think_start_is_honored_once(surface, stream):
+    # A later opener, here inside an unwrapped call's argument, stays literal.
+    context = PromptParseContext("<think>", None, None, False, "chatml")
+    raw = 'plan</think>[f(a="<think>x</think>")]'
+    result = route(
+        "qwen3",
+        "lfm",
+        raw,
+        surface,
+        stream,
+        thinking=True,
+        model="lfm2.5",
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert result["reasoning"] == "plan", result
+    assert result["content"] == '[f(a="<think>x</think>")]', result

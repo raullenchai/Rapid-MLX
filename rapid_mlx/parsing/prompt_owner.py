@@ -28,6 +28,7 @@ class ContentToolGrammar(ChannelGrammar):
     def __init__(self, context):
         super().__init__(context)
         self.tool_end: str | None = None
+        self.reasoning_seen = self.channel == "reasoning"
 
     def consume(self, lexeme: Lexeme) -> list[Event]:
         # vllm/parser/abstract_parser.py::DelegatingParser.parse_delta@5df63a7:
@@ -62,6 +63,12 @@ class ContentToolGrammar(ChannelGrammar):
         # is literal output; removing it would hide a model/grammar failure.
         if lexeme.terminal == "reasoning_end" and self.channel == "content":
             return [ContentDelta(lexeme.span, lexeme.text)]
+        # Same detector: the start marker is honored once (stripped_think_start).
+        # A later opener, e.g. inside an unwrapped call's argument, is literal.
+        if lexeme.terminal == "reasoning_start":
+            if self.reasoning_seen and self.channel == "content":
+                return [ContentDelta(lexeme.span, lexeme.text)]
+            self.reasoning_seen = True
         return super().consume(lexeme)
 
 

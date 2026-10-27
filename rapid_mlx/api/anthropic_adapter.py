@@ -685,7 +685,8 @@ def openai_to_anthropic(
             else text
         )
         emit_thinking = (
-            reasoning_enabled
+            # Owned channels keep reasoning as thinking, as the stream does.
+            (reasoning_enabled or channels_owned)
             and thinking_body is not None
             and thinking_body != sanitized_text
         )
