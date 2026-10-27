@@ -39,6 +39,8 @@ def test_unselected_and_native_requests_are_untouched():
     assert owner.finish() == []
     owner = PromptOutputOwner("flint")
     assert owner.observe(output("answer", channel="content")) is None
+    assert not owner.active
+    owner = PromptOutputOwner("flint")
     assert owner.observe(GenerationOutput(text="answer")) is None
     original = GenerationOutput(text="answer")
     assert split_buffered(original, "qwen3.5") == (original, False)
@@ -120,3 +122,21 @@ def test_structured_buffered_output_is_already_owned():
     owner = PromptOutputOwner("flint")
     assert owner.observe(original) is None
     assert not owner.active
+
+
+def test_initial_structured_event_retains_prompt_context():
+    owner = PromptOutputOwner("lfm2.5")
+    native = output("{}", "<think>", "chatml", channel="tool_call")
+    native.tool_calls = [{"name": "run_shell_command", "arguments": "{}"}]
+    assert owner.observe(native) is None
+    assert not owner.active
+    owner.observe(
+        GenerationOutput(
+            text="",
+            new_text="private</think>Answer.",
+            finished=True,
+            finish_reason="stop",
+        )
+    )
+    assert "".join(owner.reasoning) == "private"
+    assert "".join(owner.content) == "Answer."

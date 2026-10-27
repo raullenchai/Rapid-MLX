@@ -8,6 +8,7 @@ content events to their existing tool parser; reasoning never enters tool input.
 from dataclasses import replace
 
 from ..engine.base import GenerationOutput
+from ..prompt_parse_context import PromptParseContext
 from .output_demux import (
     ChannelGrammar,
     ContentDelta,
@@ -65,6 +66,7 @@ class PromptOutputOwner:
     def __init__(self, model: str | None = ""):
         self.model = (model or "").lower()
         self.parser: OutputDemultiplexer | None = None
+        self.prompt_context: PromptParseContext | None = None
         self.content: list[str] = []
         self.reasoning: list[str] = []
 
@@ -73,7 +75,8 @@ class PromptOutputOwner:
         return self.parser is not None
 
     def _initialize(self, output: GenerationOutput) -> None:
-        context = getattr(output, "prompt_parse_context", None)
+        context = getattr(output, "prompt_parse_context", None) or self.prompt_context
+        self.prompt_context = context
         if (
             self.parser is None
             and context is not None
@@ -111,15 +114,19 @@ class PromptOutputOwner:
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))
 
     def observe(self, output: GenerationOutput) -> list[Event] | None:
+        self._initialize(output)
         # Native metadata is authoritative on every event, including streams
         # whose first event used text parsing. Let the existing route handlers
         # consume structured calls without feeding their argument summaries back
         # into the text grammar. Retain native narration in the final projection.
         if output.channel is not None or output.tool_calls:
-            if self.active and output.channel in (None, "content"):
+            selected = self.prompt_context is not None and (
+                self.prompt_context.template_contract == "flint"
+                or "lfm2.5" in self.model
+            )
+            if selected and output.channel in (None, "content"):
                 self.content.append(output.new_text)
             return None
-        self._initialize(output)
         if self.parser is None:
             return None
         events = self.parser.feed(output.new_text)

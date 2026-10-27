@@ -403,3 +403,60 @@ def test_buffered_failed_tool_turn_retains_reasoning(model):
     assert result["calls"] == [], result
     assert result["packets"][0]["status"] == "failed"
     assert result["packets"][0]["error"]["code"] == "model_no_final_answer"
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("model", ["flint", "lfm2.5"])
+@pytest.mark.parametrize("narration", ["", "Native. "])
+def test_native_first_event_retains_prompt_context(
+    surface, model, narration, monkeypatch
+):
+    from rapid_mlx.engine.base import GenerationOutput
+
+    from .harness import Engine
+
+    context = PromptParseContext(
+        "<think>" if model == "lfm2.5" else "",
+        None,
+        "reasoning" if model == "lfm2.5" else "content",
+        False,
+        "chatml" if model == "lfm2.5" else "flint",
+    )
+
+    async def mixed_stream(self, **kwargs):
+        yield GenerationOutput(
+            text="",
+            new_text=narration,
+            finished=False,
+            channel="content",
+            prompt_parse_context=context,
+        )
+        yield GenerationOutput(
+            text="",
+            new_text=("<think>" if model == "flint" else "") + "private</think>Answer.",
+            finished=False,
+        )
+        yield GenerationOutput(text="", finished=True, finish_reason="stop")
+
+    monkeypatch.setattr(Engine, "stream_chat", mixed_stream)
+    result = route(
+        "qwen3",
+        "glm47" if model == "flint" else "lfm",
+        "",
+        surface,
+        True,
+        model=model,
+        prompt_context=context,
+        thinking=False,
+        tools_mode="absent",
+        capture=True,
+    )
+    assert result["content"] == narration + "Answer.", result
+    if surface == "responses" and narration:
+        # Existing Responses ordering rejects reasoning after a visible item.
+        # Native narration is still preserved and private bytes never leak.
+        failure = result["packets"][-1]
+        assert failure["type"] == "response.failed"
+        assert failure["response"]["error"]["code"] == "invalid_reasoning_event_order"
+    else:
+        assert result["reasoning"] == "private", result
