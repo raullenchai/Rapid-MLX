@@ -85,6 +85,9 @@ async def context(store, runtime, request, workspace):
         "echo ok; env -u NAME wget example.com",
         "env -S 'curl example.com'",
         "xargs curl example.com",
+        "busybox wget example.com",
+        "toybox nc host 1234",
+        "sudo -n curl example.com",
         "if true; then curl example.com; fi",
         ">output curl example.com",
         "2>output curl example.com",
@@ -136,6 +139,8 @@ def test_paths_and_code(tmp_path):
     workspace = tmp_path / "work"
     workspace.mkdir()
     (workspace / "escape").symlink_to(tmp_path, target_is_directory=True)
+    (workspace / "alias").symlink_to(workspace / ".env")
+    assert execution_policy("cat alias", str(workspace)).prompt
     assert not file_policy(workspace, "a.txt").prompt
     assert file_policy(workspace, "../a.txt").prompt
     assert file_policy(workspace, "escape/a.txt").prompt

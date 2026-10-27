@@ -211,26 +211,12 @@ def scan_code(text, workspace, *, python=False):
             if wrapper and (token == "-S" or token.startswith("--split-string")):
                 return "Indirect command execution"
             if wrapper and token.startswith("-"):
-                if token in {
-                    "-u",
-                    "--unset",
-                    "-C",
-                    "--chdir",
-                    "-n",
-                    "--adjustment",
-                    "-I",
-                    "-L",
-                    "-P",
-                    "-s",
-                    "-d",
-                    "-E",
-                    "-a",
-                }:
+                if wrapper == "env" and token in {"-u", "--unset", "-C", "--chdir"}:
                     skip_operand = True
                 continue
             if name in {"xargs", "timeout", "nice", "nohup", "stdbuf", "time"}:
                 return "Indirect command execution"
-            if name in {"env", "sudo", "doas", "command"}:
+            if name in {"env", "sudo", "doas", "command", "busybox", "toybox"}:
                 wrapper = name
             elif token in {
                 "if",
