@@ -1,0 +1,1036 @@
+{
+  "$defs": {
+    "ContextEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "context",
+          "default": "context",
+          "title": "Type",
+          "type": "string"
+        },
+        "used_tokens": {
+          "minimum": 0,
+          "title": "Used Tokens",
+          "type": "integer"
+        },
+        "limit_tokens": {
+          "minimum": 1,
+          "title": "Limit Tokens",
+          "type": "integer"
+        },
+        "system_tools_tokens": {
+          "minimum": 0,
+          "title": "System Tools Tokens",
+          "type": "integer"
+        },
+        "conversation_tokens": {
+          "minimum": 0,
+          "title": "Conversation Tokens",
+          "type": "integer"
+        },
+        "tool_output_tokens": {
+          "minimum": 0,
+          "title": "Tool Output Tokens",
+          "type": "integer"
+        },
+        "free_tokens": {
+          "minimum": 0,
+          "title": "Free Tokens",
+          "type": "integer"
+        },
+        "percent": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Percent",
+          "type": "integer"
+        },
+        "estimated": {
+          "default": false,
+          "title": "Estimated",
+          "type": "boolean"
+        },
+        "compacted": {
+          "default": false,
+          "title": "Compacted",
+          "type": "boolean"
+        },
+        "notice": {
+          "default": "",
+          "title": "Notice",
+          "type": "string"
+        }
+      },
+      "required": [
+        "used_tokens",
+        "limit_tokens",
+        "system_tools_tokens",
+        "conversation_tokens",
+        "tool_output_tokens",
+        "free_tokens",
+        "percent"
+      ],
+      "title": "ContextEvent",
+      "type": "object"
+    },
+    "PermissionRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "permission.request",
+          "default": "permission.request",
+          "title": "Type",
+          "type": "string"
+        },
+        "op_id": {
+          "title": "Op Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "title": {
+          "default": "Allow this action?",
+          "title": "Title",
+          "type": "string"
+        },
+        "preview_language": {
+          "default": "text",
+          "enum": [
+            "python",
+            "bash",
+            "diff",
+            "text"
+          ],
+          "title": "Preview Language",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "preview": {
+          "title": "Preview",
+          "type": "string"
+        },
+        "risk": {
+          "title": "Risk",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "enum": [
+              "once",
+              "conversation",
+              "deny"
+            ],
+            "type": "string"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "expires_at": {
+          "title": "Expires At",
+          "type": "number"
+        },
+        "subagent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subagent Id"
+        }
+      },
+      "required": [
+        "op_id",
+        "revision",
+        "tool",
+        "summary",
+        "preview",
+        "risk",
+        "reason",
+        "options",
+        "expires_at"
+      ],
+      "title": "PermissionRequest",
+      "type": "object"
+    },
+    "ReasoningDelta": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "reasoning.delta",
+          "default": "reasoning.delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "part_id": {
+          "title": "Part Id",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "omitted": {
+          "default": false,
+          "title": "Omitted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "part_id"
+      ],
+      "title": "ReasoningDelta",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "description": "Provenance from a read-only tool; URLs are references, never fetched.",
+      "properties": {
+        "type": {
+          "const": "source",
+          "default": "source",
+          "title": "Type",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "attachment_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attachment Id"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "source_id",
+        "call_id",
+        "title"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "SubagentFinished": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "budget_exhausted",
+            "timeout"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tool Count",
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "type": {
+          "const": "subagent.finished",
+          "default": "subagent.finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "call_id",
+        "title",
+        "status"
+      ],
+      "title": "SubagentFinished",
+      "type": "object"
+    },
+    "SubagentProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "budget_exhausted",
+            "timeout"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tool Count",
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "type": {
+          "const": "subagent.progress",
+          "default": "subagent.progress",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "call_id",
+        "title",
+        "status"
+      ],
+      "title": "SubagentProgress",
+      "type": "object"
+    },
+    "SubagentStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "budget_exhausted",
+            "timeout"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tool Count",
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "type": {
+          "const": "subagent.started",
+          "default": "subagent.started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "call_id",
+        "title",
+        "status"
+      ],
+      "title": "SubagentStarted",
+      "type": "object"
+    },
+    "TextDelta": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text.delta",
+          "default": "text.delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "part_id": {
+          "title": "Part Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "part_id",
+        "text"
+      ],
+      "title": "TextDelta",
+      "type": "object"
+    },
+    "ToolOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool.output",
+          "default": "tool.output",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "text"
+      ],
+      "title": "ToolOutput",
+      "type": "object"
+    },
+    "ToolResult": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool.result",
+          "default": "tool.result",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "result": {
+          "title": "Result",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "target": {
+          "default": "",
+          "title": "Target",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "details": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Details",
+          "type": "array"
+        },
+        "details_kind": {
+          "default": "text",
+          "enum": [
+            "diff",
+            "output",
+            "text"
+          ],
+          "title": "Details Kind",
+          "type": "string"
+        },
+        "omitted_lines": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Omitted Lines",
+          "type": "integer"
+        },
+        "outcome": {
+          "default": "success",
+          "enum": [
+            "success",
+            "error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "result"
+      ],
+      "title": "ToolResult",
+      "type": "object"
+    },
+    "ToolStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool.started",
+          "default": "tool.started",
+          "title": "Type",
+          "type": "string"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "target": {
+          "default": "",
+          "title": "Target",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        }
+      },
+      "required": [
+        "call_id",
+        "name"
+      ],
+      "title": "ToolStarted",
+      "type": "object"
+    },
+    "TurnStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "turn.started",
+          "default": "turn.started",
+          "title": "Type",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "parent_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Message Id"
+        },
+        "branch_id": {
+          "title": "Branch Id",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "thinking": {
+          "title": "Thinking",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "message_id",
+        "branch_id",
+        "model",
+        "thinking"
+      ],
+      "title": "TurnStarted",
+      "type": "object"
+    },
+    "TurnTerminal": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "turn.terminal",
+          "default": "turn.terminal",
+          "title": "Type",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "error"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "final_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Message Id"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "title": "TurnTerminal",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "requests": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Requests",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    },
+    "UsageEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "requests": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Requests",
+          "type": "integer"
+        },
+        "type": {
+          "const": "usage",
+          "default": "usage",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "UsageEvent",
+      "type": "object"
+    },
+    "PermissionResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "op_id": {
+          "title": "Op Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "scope": {
+          "default": "once",
+          "enum": [
+            "once",
+            "conversation"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op_id",
+        "revision",
+        "decision"
+      ],
+      "title": "PermissionResponse",
+      "type": "object"
+    },
+    "TurnRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 1,
+          "default": 1,
+          "title": "V",
+          "type": "integer"
+        },
+        "turn_id": {
+          "pattern": "^[A-Za-z0-9_-]{1,80}$",
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace"
+        },
+        "branch_id": {
+          "title": "Branch Id",
+          "type": "string"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "text": {
+          "default": "",
+          "maxLength": 262144,
+          "title": "Text",
+          "type": "string"
+        },
+        "attachment_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Attachment Ids",
+          "type": "array"
+        },
+        "inference_url": {
+          "title": "Inference Url",
+          "type": "string"
+        },
+        "model": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "surface": {
+          "default": "desktop",
+          "enum": [
+            "desktop",
+            "cli",
+            "plain"
+          ],
+          "title": "Surface",
+          "type": "string"
+        },
+        "thinking": {
+          "default": false,
+          "title": "Thinking",
+          "type": "boolean"
+        },
+        "action_tools": {
+          "default": true,
+          "title": "Action Tools",
+          "type": "boolean"
+        },
+        "approvals": {
+          "default": "default",
+          "enum": [
+            "default",
+            "always"
+          ],
+          "title": "Approvals",
+          "type": "string"
+        },
+        "temperature": {
+          "default": 0.7,
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_tokens": {
+          "default": 32768,
+          "maximum": 32768,
+          "minimum": 1,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "context_tokens": {
+          "default": 32768,
+          "maximum": 131072,
+          "minimum": 512,
+          "title": "Context Tokens",
+          "type": "integer"
+        },
+        "mode": {
+          "default": "append",
+          "enum": [
+            "append",
+            "regenerate"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "inference_api_key": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inference Api Key"
+        }
+      },
+      "required": [
+        "turn_id",
+        "conversation_id",
+        "branch_id",
+        "expected_revision",
+        "inference_url",
+        "model"
+      ],
+      "title": "TurnRequest",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "wire_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Wire Version",
+      "type": "integer"
+    },
+    "turn_id": {
+      "title": "Turn Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "event": {
+      "discriminator": {
+        "mapping": {
+          "context": "#/$defs/ContextEvent",
+          "permission.request": "#/$defs/PermissionRequest",
+          "reasoning.delta": "#/$defs/ReasoningDelta",
+          "source": "#/$defs/Source",
+          "subagent.finished": "#/$defs/SubagentFinished",
+          "subagent.progress": "#/$defs/SubagentProgress",
+          "subagent.started": "#/$defs/SubagentStarted",
+          "text.delta": "#/$defs/TextDelta",
+          "tool.output": "#/$defs/ToolOutput",
+          "tool.result": "#/$defs/ToolResult",
+          "tool.started": "#/$defs/ToolStarted",
+          "turn.started": "#/$defs/TurnStarted",
+          "turn.terminal": "#/$defs/TurnTerminal",
+          "usage": "#/$defs/UsageEvent"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TurnStarted"
+        },
+        {
+          "$ref": "#/$defs/TextDelta"
+        },
+        {
+          "$ref": "#/$defs/ReasoningDelta"
+        },
+        {
+          "$ref": "#/$defs/ToolStarted"
+        },
+        {
+          "$ref": "#/$defs/ToolResult"
+        },
+        {
+          "$ref": "#/$defs/ToolOutput"
+        },
+        {
+          "$ref": "#/$defs/PermissionRequest"
+        },
+        {
+          "$ref": "#/$defs/SubagentStarted"
+        },
+        {
+          "$ref": "#/$defs/SubagentProgress"
+        },
+        {
+          "$ref": "#/$defs/SubagentFinished"
+        },
+        {
+          "$ref": "#/$defs/Source"
+        },
+        {
+          "$ref": "#/$defs/UsageEvent"
+        },
+        {
+          "$ref": "#/$defs/ContextEvent"
+        },
+        {
+          "$ref": "#/$defs/TurnTerminal"
+        }
+      ],
+      "title": "Event"
+    }
+  },
+  "required": [
+    "turn_id",
+    "seq",
+    "event"
+  ],
+  "title": "Envelope",
+  "type": "object",
+  "x-turn-request": {
+    "$ref": "#/$defs/TurnRequest"
+  },
+  "x-permission-response": {
+    "$ref": "#/$defs/PermissionResponse"
+  }
+}

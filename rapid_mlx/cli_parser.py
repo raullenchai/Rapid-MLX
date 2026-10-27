@@ -2621,6 +2621,35 @@ def _add_chat_parser(
         "use. See `rapid_mlx.first_run.select_chat_default`.",
     ).completer = alias_completer
     chat_parser.add_argument(
+        "--harness",
+        action="store_true",
+        help="Use the experimental persistent built-in chat harness",
+    )
+    chat_parser.add_argument(
+        "--approvals",
+        choices=("default", "always"),
+        default=None,
+        help="Harness: require approval for every action with 'always'",
+    )
+    chat_parser.add_argument(
+        "--no-action-tools",
+        dest="action_tools",
+        action="store_false",
+        help="Harness: disable file writes, patch, terminal, and code execution",
+    )
+    chat_parser.add_argument(
+        "--profile",
+        default="default",
+        help="Harness conversation profile (default: default)",
+    )
+    chat_parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="last",
+        metavar="ID",
+        help="Resume a harness conversation (most recent when ID is omitted)",
+    )
+    chat_parser.add_argument(
         "--system",
         type=str,
         default=None,
@@ -2652,8 +2681,8 @@ def _add_chat_parser(
         "--max-tokens",
         type=int,
         default=None,
-        help="Max tokens per assistant response (default: 2048; raised to "
-        "4096 when --think is set so reasoning + answer fit the budget).",
+        help="Max tokens per model response (harness default: 32768, bounded by "
+        "remaining context; legacy chat: 2048, or 4096 with --think).",
     )
     chat_parser.add_argument(
         "--context-length",

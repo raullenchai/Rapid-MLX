@@ -12892,6 +12892,29 @@ def _chat_server_log_target(args) -> str | None:
     return target
 
 
+def _preflight_chat_harness() -> None:
+    """Fail before starting inference when the optional chat runtime is unavailable."""
+    if sys.version_info < (3, 11):
+        print(
+            "Error: --harness requires Python 3.11 or newer. Install with "
+            "python3.11 -m pip install 'rapid-mlx[chat]'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    import importlib
+
+    try:
+        for module in ("pydantic_ai", "prompt_toolkit", "httpx", "openai"):
+            importlib.import_module(module)
+    except ImportError:
+        print(
+            "Error: --harness requires the chat dependencies. Install with "
+            "python -m pip install 'rapid-mlx[chat]'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
+
+
 def chat_command(args):
     """Interactive REPL chat with a model.
 
@@ -12907,6 +12930,13 @@ def chat_command(args):
     from rapid_mlx import log_file
     from rapid_mlx._tempfile_safe import managed_tempfile_path
     from rapid_mlx.chat_render import supports_rich_output, terminal_safe_text
+
+    use_harness = (
+        getattr(args, "harness", False)
+        or os.environ.get("RAPID_MLX_CHAT_HARNESS") == "1"
+    )
+    if use_harness:
+        _preflight_chat_harness()
 
     base_url: str
     proc = None
@@ -13179,6 +13209,11 @@ def chat_command(args):
                 args, "_model_was_explicit", True
             )
             try:
+                context_length = getattr(args, "context_length", None)
+                if use_harness:
+                    from .chat_runtime.context_limits import startup_context_limit
+
+                    context_length = startup_context_limit(args.model, context_length)
                 proc, base_url = _spawn_chat_server(
                     args.model,
                     log_path,
@@ -13186,8 +13221,8 @@ def chat_command(args):
                     register_in=_active_procs,
                     log_handle=_log_handle,
                     **(
-                        {"context_length": args.context_length}
-                        if getattr(args, "context_length", None) is not None
+                        {"context_length": context_length}
+                        if context_length is not None
                         else {}
                     ),
                     **privacy_kwargs,
@@ -13241,6 +13276,16 @@ def chat_command(args):
     from rapid_mlx._version_check import print_staleness_warning_if_any
 
     print_staleness_warning_if_any()
+
+    if use_harness:
+        from rapid_mlx.chat_client import run_chat
+
+        try:
+            return run_chat(
+                args, base_url, getattr(args, "_original_alias", args.model)
+            )
+        finally:
+            _cleanup()
 
     # Resolve ``--max-tokens``. Default is None at the argparse layer so
     # we can distinguish "user did not pass it" from "user passed 2048

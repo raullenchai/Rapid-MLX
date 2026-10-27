@@ -3182,7 +3182,10 @@ def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
     assert captured["cmd"].count("--disable-prefix-cache") == 1
 
 
-def test_spawn_chat_server_forwards_context_length(monkeypatch, tmp_path):
+@pytest.mark.parametrize("requested,expected", [(65536, "65536"), (None, None)])
+def test_spawn_chat_server_forwards_context_length(
+    monkeypatch, tmp_path, requested, expected
+):
     captured: dict = {}
 
     class _FakePopen:
@@ -3210,13 +3213,17 @@ def test_spawn_chat_server_forwards_context_length(monkeypatch, tmp_path):
 
     monkeypatch.setattr("socket.socket", _FakeSocket)
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("rapid_mlx.model_metadata.read_model_metadata", lambda _: None)
     cli._spawn_chat_server(
         "ling-3.0-tiny-4bit",
         str(tmp_path / "fake.log"),
-        context_length=65_536,
+        context_length=requested,
     )
-    index = captured["cmd"].index("--context-length")
-    assert captured["cmd"][index + 1] == "65536"
+    if expected is None:
+        assert "--context-length" not in captured["cmd"]
+    else:
+        index = captured["cmd"].index("--context-length")
+        assert captured["cmd"][index + 1] == expected
 
 
 def test_chat_context_length_rejects_attaching_to_existing_server(capsys):
@@ -3773,3 +3780,117 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
     finally:
         # Restore the simulated parent state.
         real_pthread_sigmask(_signal.SIG_SETMASK, saved_mask)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="Harness requires Python 3.11")
+@pytest.mark.parametrize("requested,expected", [(None, 32768), (65536, 65536)])
+@pytest.mark.parametrize("env_enabled", [False, True])
+def test_harness_reuses_one_command_server_start_and_cleanup(
+    monkeypatch, requested, expected, env_enabled
+):
+    """The opt-in harness begins only after legacy inference setup is ready."""
+    from rapid_mlx import chat_client
+
+    calls = []
+
+    class Process:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("stop")
+
+        def wait(self, timeout=None):
+            return 0
+
+    process = Process()
+
+    def spawn(model, log_path, **kwargs):
+        calls.append("spawn")
+        kwargs["register_in"].append(process)
+        assert kwargs["context_length"] == expected
+        return process, "http://127.0.0.1:18800"
+
+    def run(args, endpoint, model):
+        calls.append("harness")
+        assert endpoint == "http://127.0.0.1:18800"
+        assert model == args.model
+
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda model: calls.append("model")
+    )
+    monkeypatch.setattr(cli, "_spawn_chat_server", spawn)
+    monkeypatch.setattr(
+        cli, "_wait_for_chat_server", lambda *args, **kwargs: calls.append("ready")
+    )
+    monkeypatch.setattr(chat_client, "run_chat", run)
+    monkeypatch.setattr("atexit.register", lambda callback: None)
+    args = _ns_for_chat(18800)
+    args.base_url = None
+    args.port = None
+    args.harness = not env_enabled
+    args.context_length = requested
+    monkeypatch.setenv("RAPID_MLX_CHAT_HARNESS", "1" if env_enabled else "0")
+    monkeypatch.setattr("rapid_mlx.model_metadata.read_model_metadata", lambda _: None)
+    cli.chat_command(args)
+    assert calls == ["model", "spawn", "ready", "harness", "stop"]
+
+
+@pytest.mark.parametrize("env_enabled", [False, True])
+@pytest.mark.parametrize("missing", ["python", "pydantic_ai", "prompt_toolkit"])
+def test_harness_preflight_fails_before_model_download_or_spawn(
+    monkeypatch, capsys, env_enabled, missing
+):
+    import importlib
+
+    monkeypatch.setenv("RAPID_MLX_CHAT_HARNESS", "1" if env_enabled else "0")
+    monkeypatch.setattr(
+        sys, "version_info", (3, 10) if missing == "python" else (3, 12)
+    )
+    original_import = importlib.import_module
+
+    def import_module(name, *args, **kwargs):
+        if name == missing:
+            raise ModuleNotFoundError(name)
+        if name in {"pydantic_ai", "prompt_toolkit", "httpx", "openai"}:
+            return object()
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda *_: pytest.fail("must not download")
+    )
+    monkeypatch.setattr(
+        cli, "_spawn_chat_server", lambda *_, **__: pytest.fail("must not spawn")
+    )
+    with pytest.raises(SystemExit) as error:
+        cli.chat_command(_ns_for_chat(0, base_url=None, harness=not env_enabled))
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "pip install 'rapid-mlx[chat]'" in message
+    assert (
+        "Python 3.11" in message
+        if missing == "python"
+        else "chat dependencies" in message
+    )
+
+
+def test_legacy_chat_does_not_load_optional_harness_dependencies(monkeypatch):
+    import builtins
+
+    monkeypatch.delenv("RAPID_MLX_CHAT_HARNESS", raising=False)
+    original_import = builtins.__import__
+
+    def import_module(name, *args, **kwargs):
+        assert not name.startswith(
+            ("pydantic_ai", "prompt_toolkit", "rapid_mlx.chat_runtime")
+        )
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_module)
+    monkeypatch.setattr("builtins.input", lambda _: "/exit")
+    with _fake_server([]) as (port, _):
+        cli.chat_command(_ns_for_chat(port))

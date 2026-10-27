@@ -1,0 +1,53 @@
+[
+  {
+    "request": {
+      "v": 1,
+      "turn_id": "t",
+      "conversation_id": "c",
+      "branch_id": "b",
+      "expected_revision": 0,
+      "inference_url": "http://127.0.0.1:8000",
+      "model": "qwen"
+    },
+    "surface": "desktop"
+  },
+  {
+    "request": {
+      "v": 1,
+      "turn_id": "t",
+      "conversation_id": "c",
+      "branch_id": "b",
+      "expected_revision": 0,
+      "inference_url": "http://127.0.0.1:8000",
+      "model": "qwen",
+      "surface": "cli"
+    },
+    "surface": "cli"
+  },
+  {
+    "request": {
+      "v": 1,
+      "turn_id": "t",
+      "conversation_id": "c",
+      "branch_id": "b",
+      "expected_revision": 0,
+      "inference_url": "http://127.0.0.1:8000",
+      "model": "qwen",
+      "surface": "desktop"
+    },
+    "surface": "desktop"
+  },
+  {
+    "request": {
+      "v": 1,
+      "turn_id": "t",
+      "conversation_id": "c",
+      "branch_id": "b",
+      "expected_revision": 0,
+      "inference_url": "http://127.0.0.1:8000",
+      "model": "qwen",
+      "surface": "plain"
+    },
+    "surface": "plain"
+  }
+]

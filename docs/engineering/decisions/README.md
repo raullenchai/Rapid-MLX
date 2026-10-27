@@ -7,6 +7,7 @@ alternatives considered, consequences, owner, and date.
 
 | Date | Decision | Status |
 | --- | --- | --- |
+| 2026-10-25 | [Chat owner: two processes and an opt-in CLI](2026-10-25-chat-owner-topology.md) | Accepted amendment; experimental CLI |
 | 2026-10-25 | [Built-in chat harness: persistent PydanticAI with Rapid-owned state](2026-10-25-built-in-chat-harness-pydanticai.md) | Accepted; client rollout and retirement gated by qualification |
 | 2026-10-05 | [CUA approvals belong to the brain, not the hands](2026-10-05-cua-approvals-belong-to-the-brain.md) | Accepted |
 | 2026-09-27 | [Agent-session prefix reuse on 16-32 GB Macs](2026-09-27-agent-session-prefix-cache.md) | Accepted |

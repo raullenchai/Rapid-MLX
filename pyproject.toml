@@ -273,8 +273,11 @@ clef = [
 mirror = [
     "boto3>=1.34.0",
 ]
-# Gradio chat UI
+# Chat interfaces: the terminal harness requires Python 3.11 or newer.
 chat = [
+    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
+    "httpx>=0.27,<0.29",
+    "prompt-toolkit>=3.0.52,<4",
     "gradio>=4.0.0",
     "pytz>=2024.1",
 ]
@@ -292,6 +295,9 @@ all = [
     "torchvision>=0.18.0,<0.30",
     "pillow>=10.0.0,<13",
     # chat
+    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
+    "httpx>=0.27,<0.29",
+    "prompt-toolkit>=3.0.52,<4",
     "gradio>=4.0.0",
     "pytz>=2024.1",
     # embeddings
@@ -333,6 +339,9 @@ all = [
 # as their own extras so pr_validate can re-install them from the
 # canonical source, instead of every script hand-maintaining a list.
 test = [
+    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
+    "httpx>=0.27,<0.29",
+    "prompt-toolkit>=3.0.52,<4",
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
     # Community protocol tests use jsonschema's external Registry API. Keep
@@ -344,6 +353,8 @@ test = [
     # test. Without the plugin, those tests fail at collection with
     # "async def functions are not natively supported".
     "pytest-asyncio>=0.21.0",
+    "pexpect>=4.9,<5; sys_platform != 'win32'",
+    "pyte>=0.8.2,<0.9",  # Exercise terminal screen and scrollback contracts.
     # Parse the /metrics output through the official Prometheus parser
     # to catch format regressions. NOT used at runtime — the route
     # hand-rolls the exposition format to avoid a runtime dep.
@@ -399,6 +410,11 @@ test = [
 # pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
 # then adds test-only packages required by automatically discovered modules.
 ci-linux = [
+    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
+    "httpx>=0.27,<0.29",
+    "prompt-toolkit>=3.0.52,<4",
+    "pexpect>=4.9,<5; sys_platform != 'win32'",
+    "pyte>=0.8.2,<0.9",
     "tiktoken>=0.5.0,<0.14",
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
@@ -417,7 +433,6 @@ ci-linux = [
     "fastapi>=0.100.0,<0.163",
     "jsonschema>=4.18.0,<5",
     "referencing>=0.28.4,<0.38",
-    "httpx",
     "psutil>=5.9.0,<8",
     "transformers>=5.0.0,!=5.13.0,<5.16",
     "tokenizers>=0.19.0,<0.23",
@@ -461,6 +476,11 @@ ci-apple = [
     "prometheus_client>=0.16.0",
 ]
 dev = [
+    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
+    "httpx>=0.27,<0.29",
+    "prompt-toolkit>=3.0.52,<4",
+    "pexpect>=4.9,<5; sys_platform != 'win32'",
+    "pyte>=0.8.2,<0.9",
     # Test runtime (must mirror the `test` extras above; a unit test in
     # tests/test_pr_validate_test_env.py asserts every `test` dep is
     # also in `dev` so a future drift can't silently break the
@@ -631,6 +651,7 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
 rapid_mlx = [
+    "chat_runtime/store/migrations/*.sql",
     "aliases.json",
     "model_digests.json",
     "model_catalog_lock.json",
@@ -668,6 +689,7 @@ rapid_mlx = [
     "templates/*.jinja",
     "agents/profiles/*.yaml",
     "kernels/*.metal",
+    "chat_runtime/LICENSE-PROMPTS",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
     "kernels/LICENSE-QSA-STAGE1",
     "kernels/LICENSE-AFFINE8*",

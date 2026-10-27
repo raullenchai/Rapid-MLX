@@ -1961,6 +1961,85 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "harness",
+       "help": "Use the experimental persistent built-in chat harness",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--harness"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "choices": [
+        "default",
+        "always"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "approvals",
+       "help": "Harness: require approval for every action with 'always'",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--approvals"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreFalseAction",
+       "completer": null,
+       "const": false,
+       "default": true,
+       "dest": "action_tools",
+       "help": "Harness: disable file writes, patch, terminal, and code execution",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--no-action-tools"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "default",
+       "dest": "profile",
+       "help": "Harness conversation profile (default: default)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--profile"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": "last",
+       "default": null,
+       "dest": "resume",
+       "help": "Resume a harness conversation (most recent when ID is omitted)",
+       "metavar": "ID",
+       "nargs": "?",
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -2012,7 +2091,7 @@
        "const": null,
        "default": null,
        "dest": "max_tokens",
-       "help": "Max tokens per assistant response (default: 2048; raised to 4096 when --think is set so reasoning + answer fit the budget).",
+       "help": "Max tokens per model response (harness default: 32768, bounded by remaining context; legacy chat: 2048, or 4096 with --think).",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -2220,6 +2299,11 @@
        "description": null,
        "dests": [
         "help",
+        "harness",
+        "approvals",
+        "action_tools",
+        "profile",
+        "resume",
         "system",
         "think",
         "think",
@@ -3838,6 +3922,85 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "harness",
+       "help": "Use the experimental persistent built-in chat harness",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--harness"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "choices": [
+        "default",
+        "always"
+       ],
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "approvals",
+       "help": "Harness: require approval for every action with 'always'",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--approvals"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreFalseAction",
+       "completer": null,
+       "const": false,
+       "default": true,
+       "dest": "action_tools",
+       "help": "Harness: disable file writes, patch, terminal, and code execution",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--no-action-tools"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": "default",
+       "dest": "profile",
+       "help": "Harness conversation profile (default: default)",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--profile"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": "last",
+       "default": null,
+       "dest": "resume",
+       "help": "Resume a harness conversation (most recent when ID is omitted)",
+       "metavar": "ID",
+       "nargs": "?",
+       "option_strings": [
+        "--resume"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -3889,7 +4052,7 @@
        "const": null,
        "default": null,
        "dest": "max_tokens",
-       "help": "Max tokens per assistant response (default: 2048; raised to 4096 when --think is set so reasoning + answer fit the budget).",
+       "help": "Max tokens per model response (harness default: 32768, bounded by remaining context; legacy chat: 2048, or 4096 with --think).",
        "metavar": null,
        "nargs": null,
        "option_strings": [
@@ -4097,6 +4260,11 @@
        "description": null,
        "dests": [
         "help",
+        "harness",
+        "approvals",
+        "action_tools",
+        "profile",
+        "resume",
         "system",
         "think",
         "think",

@@ -1,0 +1,4 @@
+{"wire_version":1,"turn_id":"turn-1","seq":1,"event":{"type":"turn.started","message_id":"user-1","parent_message_id":null,"branch_id":"branch-1","model":"local","thinking":true}}
+{"wire_version":1,"turn_id":"turn-1","seq":2,"event":{"type":"reasoning.delta","part_id":"0:0:0","text":"","omitted":true}}
+{"wire_version":1,"turn_id":"turn-1","seq":3,"event":{"type":"text.delta","part_id":"0:0:1","text":"391"}}
+{"wire_version":1,"turn_id":"turn-1","seq":4,"event":{"type":"turn.terminal","outcome":"completed","final_message_id":"assistant-1","usage":{"input_tokens":8,"output_tokens":2,"requests":1},"error_code":null}}

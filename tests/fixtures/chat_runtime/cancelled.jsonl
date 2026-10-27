@@ -1,0 +1,3 @@
+{"wire_version":1,"turn_id":"turn-1","seq":1,"event":{"type":"turn.started","message_id":"user-1","parent_message_id":null,"branch_id":"branch-1","model":"local","thinking":false}}
+{"wire_version":1,"turn_id":"turn-1","seq":2,"event":{"type":"text.delta","part_id":"0:0:0","text":"Partial"}}
+{"wire_version":1,"turn_id":"turn-1","seq":3,"event":{"type":"turn.terminal","outcome":"cancelled","final_message_id":null,"usage":{"input_tokens":0,"output_tokens":0,"requests":0},"error_code":null}}

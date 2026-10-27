@@ -799,3 +799,159 @@ Vendored third-party components and their licenses are listed in
 ## License
 
 Apache 2.0 — see [LICENSE](https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE) and [NOTICE](https://github.com/raullenchai/Rapid-MLX/blob/main/NOTICE).
+
+### Experimental persistent chat
+
+The harness requires Python 3.11 or newer and the optional `chat` dependencies.
+Install them, then try the harness with a local inference server:
+
+```bash
+python -m pip install 'rapid-mlx[chat]'
+rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
+# In another terminal:
+rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood
+rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood --resume last
+```
+
+The usual model selection and startup also work with `rapid-mlx chat --harness`.
+The existing chat experience remains the default; `RAPID_MLX_CHAT_HARNESS=1`
+enables the experimental harness for subsequent chat commands.
+
+The harness reads the selected model's native context and effective serving
+limit from `/v1/models` before each turn. Its default context budget is the
+smaller of those limits and 32,768 tokens. Newly spawned chat servers use the
+same default, bounded by locally cached model metadata. A server started with
+`--context-length` remains authoritative; set that flag on `serve` when
+attaching to an existing server. An explicit chat startup context can exceed
+the default budget, but cannot exceed the model or serving limit. The runtime
+counts tokens using the inference server when available and falls back to a
+conservative text estimate. It reserves room for the answer, compacts older
+tool outputs, and saves summary checkpoints to keep longer conversations usable.
+Use `/context` for the system/tools, conversation, tool-output, and free-token
+breakdown; `/compact [instructions]` saves a summary checkpoint manually. A dim
+context indicator appears at 50% usage, with a warning at 90%. Automatic
+compaction announces itself in the transcript.
+
+Responses stream as Markdown. Ctrl-C stops the current response. Use `/history`
+to list and resume conversations, `/new` to start fresh, `/edit` and `/regen` to
+create branches, and `/branch` to switch between them. `/think on` turns thinking
+on; `/think off` turns it off. The prompt is `› `, or `Thinking › ` while thinking
+is on (`> ` replaces `› ` on non-UTF-8 output). Thinking is collapsed by default
+and `/show-thinking` expands it for the current session; it is never saved.
+The folder where you launch chat becomes that conversation's workspace, including
+when you resume it. Ask Rapid to read files, search code with a regex, or list
+matching paths using its built-in `read_file`, `grep`, and `glob` tools. Reads
+support text/code, PDF text, DOCX, XLSX/CSV, PPTX, JSON/YAML, and HTML. Results
+include line numbers and paging hints; searches honor `.gitignore` and skip
+binaries and dependency folders. These three read tools need no approval.
+
+Paths outside the workspace and secrets-like paths are refused, including
+symlink escapes. Use `/attach PATH` to explicitly share a file from another
+folder (or a sensitive file you choose to share). Attachments accept the same
+formats up to 20 MiB and save an extracted text snapshot capped at 1 MiB.
+Spreadsheet extraction caps each sheet at 1,000 rows/10,000 cells and reads
+cached formula values; it does not calculate formulas. Images and scanned PDFs
+without text are currently unsupported. `/regen` reruns workspace reads, so it
+can see file changes; attached snapshots stay fixed.
+`/export [PATH]` exports the selected branch as Markdown; `/help` lists commands.
+New conversations show `New chat · Type / for commands`; resuming shows the
+conversation title. Type `/` to browse commands in the completion menu.
+
+History is stored under `~/Library/Application Support/Rapid/chat/<profile>/`
+(`RAPID_MLX_CHAT_HOME` overrides the root). A separate local owner starts
+automatically, survives client exits, and stops after five idle minutes.
+An owner restart preserves history and marks an in-flight answer interrupted;
+you can continue or regenerate. Only local HTTP inference targets are supported.
+New conversations use the CLI's launch directory (resolved to its real path) as
+an immutable workspace, including after resume. `write_file` and `patch` edit
+UTF-8 files up to 1 MiB with durable pre-images; `/undo` restores the last file
+edit, refusing to overwrite subsequent changes. Repeat `/undo` for earlier edits.
+It does not undo shell commands or Python effects. Older conversations without a
+workspace can bind one explicitly supplied client directory on their next turn;
+that directory then remains immutable. The owner never chooses its own cwd.
+
+Workspace edits and commands without dangerous patterns run immediately.
+Outside-workspace and secrets-like file reads/edits are refused, even with approval.
+Explicit attachments grant access only to their extracted snapshot. Destructive commands,
+privilege changes, remote execution/uploads, and side effects on regenerated or
+edited branches require approval once each. Approvals show a command or diff:
+`y` allows once, `a` allows the exact tool/arguments for this conversation when
+offered, and `n` denies (`N` adds an optional denial reason). Dangerous actions
+never offer `a`. Ctrl-C cancels a
+pending approval or kills the running command's process group. Unanswered
+approvals expire after 120 seconds; noninteractive input denies them.
+
+`terminal` and `execute_code(language="python", code=...)` run noninteractively
+in the workspace, with a 120-second default timeout (maximum 600) and 8 KiB of
+head/tail output. Python uses `python3` on PATH, falling back to the bundled
+interpreter. Pattern checks are heuristics, **not an OS sandbox**; scripts and
+programs run with your local account's access. Use
+`RAPID_MLX_CHAT_APPROVALS=always` or `--approvals always` to approve every action;
+`RAPID_MLX_CHAT_ACTION_TOOLS=0` or `--no-action-tools` disables all four tools.
+These client settings also apply when attaching to an existing owner; an owner's
+stricter environment policy cannot be relaxed by a client.
+
+The operation ledger commits authorization and dispatch before effects. Restart
+marks unfinished dispatches `outcome_unknown`, shows them when resuming history,
+and never automatically replays them. Regeneration shows matching prior receipts
+as “Previously executed … — run again?” and requires fresh approval. Inspect
+unknown effects before approving another attempt.
+
+Weather, web search and `web_fetch(url)` are available to tool-capable models by
+default. The CLI shows tool progress and numbered sources after the answer;
+`/export` retains those sources. Weather uses Open-Meteo without a key. Search
+uses Keenable's public tier without a key. Set `KEENABLE_API_KEY`,
+`RAPID_MLX_TAVILY_API_KEY` or `RAPID_MLX_BRAVE_API_KEY` in the owner's environment
+to use a keyed provider. `RAPID_MLX_WEB_SEARCH_PROVIDER=tavily|brave|keenable`
+selects explicitly; otherwise configured keyed providers precede public Keenable.
+Rate limits, server errors and timeouts fail over to the next available provider.
+Keys stay in memory and are never saved in chat history. Providers can throttle
+or return no useful results.
+Each turn carries local date, weekday, time, timezone and coarse locale beside
+its user message, preserving the stable system/tool prefix. Search results keep
+provider dates when available and label missing dates. Explicitly current queries
+are anchored to the full local date unless they already specify a date or a
+historical period. Explicit "today" searches omit known older results, retaining
+unknown dates for verification; provider publication dates are not event dates.
+For article summaries,
+the assistant is instructed to follow the story link and cite the evidence.
+Web calls are limited to four per run. All tools share a 16,000-byte model-return
+allowance per run, including file and terminal output; older tool
+results may be compacted for the model while original evidence remains in the
+local event journal. At the limit, the runtime makes one tools-disabled answer
+attempt. An empty recovery produces a visible failure message, without claiming
+a verified answer.
+
+The built-in `delegate_task(task, context?, tools?)` tool is available by default
+inside the harness. It gives a helper a fresh history containing only its task
+and supplied context. Helpers use the same local model, workspace, and approval
+policy. Optional tool names narrow the parent's available tools; helpers cannot
+delegate again. Up to three helpers run concurrently in the owner, using the
+inference server's batching. Each helper has a 120-second deadline, six model
+requests, eight tool calls, and a 12,000-token usage budget; its web/result limits
+are independent of the parent's. Exhausted or timed-out helpers return an explicit
+partial summary. The parent combines their summaries and sources.
+
+The CLI shows compact nested helper progress. Child actions use the normal
+approval prompt with helper attribution; Ctrl-C stops the parent and all its
+helpers. Child transcripts stay out of visible branch messages but are retained
+locally without reasoning and included as collapsed details in `/export`.
+Chat stores use schema 4. Earlier experimental schemas require a new profile;
+existing schema 4 profiles reopen unchanged, and incompatible stores are refused.
+
+For offline use, set `RAPID_MLX_CHAT_WEB_TOOLS=0` before starting a new profile
+owner, for example `RAPID_MLX_CHAT_WEB_TOOLS=0 rapid-mlx chat --harness --profile offline`.
+An already-running owner keeps its startup environment. Weather and search have
+a 10-second total timeout. Fetch has a 20-second total timeout, allowing up to
+10 seconds for Keenable before trying the direct fallback; Ctrl-C cancels an
+in-flight request. Editing or regenerating a turn runs read-only tools again
+for fresh information. Search returns snippets; `web_fetch` reads a page using Keenable, with a direct HTTP(S)
+fallback that rejects private network addresses, pins validated IPs and checks
+every redirect. Responses are size- and content-type-bounded; extracted page
+text is capped at 8,000 UTF-8 bytes and may be shortened further to fit the
+remaining tool-output allowance, with a truncation marker. Fetching needs no per-domain prompt.
+MCP, custom system prompts, and Desktop integration remain outside this
+experimental slice.
+
+See the [chat owner decision](docs/engineering/decisions/2026-10-25-chat-owner-topology.md)
+for lifecycle and durability details.
