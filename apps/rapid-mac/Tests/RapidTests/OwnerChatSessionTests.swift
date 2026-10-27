@@ -85,7 +85,8 @@ struct OwnerChatSessionTests {
         await rejected.setDeliveryError(.http(status: 409))
         let first = try await start(rejected)
         try await wait(first) { if case .failed = $0.state { true } else { false } }
-        #expect(await rejected.calls.count == 1)
+        #expect(await rejected.calls.count == 2)
+        #expect(await rejected.calls.contains { if case .cancel = $0 { true } else { false } })
         let disconnected = try await fake([])
         await disconnected.setDeliveryError(.disconnected(lastEventID: ""))
         let second = try await start(disconnected)

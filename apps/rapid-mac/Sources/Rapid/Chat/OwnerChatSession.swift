@@ -120,6 +120,8 @@ actor OwnerChatSession {
             catch {
                 if case ChatTurnClientError.beforeHeaders = error {} else { initial = false }
                 if Self.isPermanent(error) {
+                    // A turn the UI can no longer follow must not keep running tools.
+                    _ = try? await client.cancel(turnID: request.turnID)
                     state = .failed(error.localizedDescription); publish(); break
                 }
             }
@@ -138,7 +140,10 @@ actor OwnerChatSession {
                         break
                     } catch is CancellationError { break }
                     catch {
-                        if Self.isPermanent(error) { state = .failed(error.localizedDescription); publish(); break }
+                        if Self.isPermanent(error) {
+                            _ = try? await client.cancel(turnID: request.turnID)
+                            state = .failed(error.localizedDescription); publish(); break
+                        }
                         failures += 1
                         if failures >= 4 {
                             _ = try? await client.cancel(turnID: request.turnID)
