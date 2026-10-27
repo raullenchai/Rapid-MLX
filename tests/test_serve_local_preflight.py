@@ -847,3 +847,37 @@ def test_cli_chat_missing_local_model_keeps_nonserve_error(
     assert exited.value.code == 1
     rendered = capsys.readouterr().err
     assert "Error: " in rendered and str(missing) in rendered
+
+
+def test_stale_text_index_accepts_only_complete_resharded_weights(tmp_path):
+    root = tmp_path / "text"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "model-00001-of-00012.safetensors"}})
+    )
+    (root / "model-00001-of-00002.safetensors").write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing indexed model shard"):
+        validate_local_model_for_serve(str(root))
+    (root / "model-00002-of-00002.safetensors").write_bytes(b"data")
+    validate_local_model_for_serve(str(root))
+
+
+def test_partially_present_index_does_not_accept_other_complete_weights(tmp_path):
+    root = tmp_path / "text"
+    root.mkdir()
+    (root / "config.json").write_text('{"model_type":"qwen3"}')
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "a": "model-00001-of-00012.safetensors",
+                    "b": "model-00002-of-00012.safetensors",
+                }
+            }
+        )
+    )
+    (root / "model-00001-of-00012.safetensors").write_bytes(b"data")
+    (root / "model.safetensors").write_bytes(b"data")
+    with pytest.raises(FileNotFoundError, match="Missing indexed model shard"):
+        validate_local_model_for_serve(str(root))

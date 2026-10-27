@@ -400,18 +400,27 @@ def validate_local_model_for_serve(model_ref: object) -> None:
         model_type = None  # Leave malformed configs to the loader's typed error.
     if not isinstance(model_type, str):
         model_type = None
-    # The normal text path checks its primary index in tokenizer.py before
-    # loading. Native Gemma 4 reads root safetensors directly and ignores it.
+    from .model_metadata import config_indicates_multimodal
+
+    # Native Gemma 4 reads root safetensors directly and ignores the index.
     if model_type not in {"gemma4", "gemma4_assistant", "gemma4_unified"}:
         missing_shards = _missing_index_shards(root, recursive=False, primary_only=True)
+        if missing_shards:
+            from ._download_gate import _snapshot_is_complete
+
+            ordinary_text = model_type not in {
+                "embedding_gemma2",
+                "whisper",
+                "kokoro",
+            } and not config_indicates_multimodal(config_data)
+            if ordinary_text and _snapshot_is_complete(str(root)):
+                missing_shards = []
         if missing_shards:
             raise FileNotFoundError(
                 errno.ENOENT,
                 "Missing indexed model shard",
                 str(root / missing_shards[0]),
             )
-    from .model_metadata import config_indicates_multimodal
-
     native_any_safetensors = config_indicates_multimodal(config_data) or model_type in {
         "gemma4",
         "gemma4_assistant",
