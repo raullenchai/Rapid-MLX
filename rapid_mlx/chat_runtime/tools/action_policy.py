@@ -216,7 +216,7 @@ def scan_code(text, workspace, *, python=False):
                 continue
             if name in {"xargs", "timeout", "nice", "nohup", "stdbuf", "time"}:
                 return "Indirect command execution"
-            if name in {"env", "sudo", "doas", "command", "busybox", "toybox"}:
+            if name in {"env", "command", "busybox", "toybox"}:
                 wrapper = name
             elif token in {
                 "if",

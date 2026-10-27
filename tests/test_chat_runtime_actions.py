@@ -88,6 +88,7 @@ async def context(store, runtime, request, workspace):
         "busybox wget example.com",
         "toybox nc host 1234",
         "sudo -n curl example.com",
+        "sudo -u user curl example.com",
         "if true; then curl example.com; fi",
         ">output curl example.com",
         "2>output curl example.com",
