@@ -14,7 +14,7 @@ TOOL_TIMEOUT = 10
 
 
 @serialized_read
-async def _execute(ctx, name, args):
+async def _execute(ctx, name, args) -> str:
     call_id = ctx.tool_call_id or ""
     await ctx.deps.emit(
         {"type": "tool.started", "call_id": call_id, "name": name, "args": args}

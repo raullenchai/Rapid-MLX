@@ -11,7 +11,7 @@ import math
 import os
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html import unescape
@@ -74,7 +74,7 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
-async def response_body(response, *, page=False):
+async def response_body(response, *, page=False) -> bytes:
     """Apply the same compression and byte limits to provider and direct reads."""
     subject = "page" if page else "provider"
     size_subject = "page" if page else "provider response"
@@ -384,12 +384,15 @@ class WebTools:
         )
 
     async def _guard(
-        self, name: str, operation, timeout: float | None = None
+        self,
+        name: str,
+        operation: Callable[[httpx.AsyncClient], Awaitable[WebResult]],
+        timeout: float | None = None,
     ) -> WebResult:
         try:
             # Total wall-clock budget covers geocoding plus forecast, or all fallback hops.
             async with (
-                asyncio.timeout(TIMEOUT if timeout is None else timeout),
+                asyncio.timeout(TIMEOUT if timeout is None else timeout),  # type: ignore[attr-defined]  # Harness requires Python 3.11; base mypy target is 3.10.
                 self._client() as client,
             ):
                 return await operation(client)
@@ -459,7 +462,7 @@ class WebTools:
             try:
                 # Each attempt gets a share of the total deadline, leaving time
                 # for the remaining providers even when a connection stalls.
-                async with asyncio.timeout(TIMEOUT / len(candidates)):
+                async with asyncio.timeout(TIMEOUT / len(candidates)):  # type: ignore[attr-defined]  # Python 3.11-only harness.
                     results = await self._search_provider(client, provider, key, query)
                 break
             except ProviderError as exc:
@@ -472,7 +475,7 @@ class WebTools:
         content = f'Web search via {provider}: "{_clean(query)[:256]}"\n'
         if note:
             content += note.strip() + "\n"
-        sources = []
+        sources: list[SearchResult] = []
         seen = set()
         for row in results[:RESULT_CAP]:
             if row.url in seen:

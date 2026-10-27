@@ -87,7 +87,7 @@ def _segments_match(pattern: str, value: str) -> bool:
     """Slash-aware glob matching; ** spans zero or more path components."""
     pats, parts = pattern.split("/"), value.split("/")
 
-    def match(i, j):
+    def match(i: int, j: int) -> bool:
         if i == len(pats):
             return j == len(parts)
         if pats[i] == "**":

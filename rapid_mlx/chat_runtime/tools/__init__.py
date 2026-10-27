@@ -98,7 +98,7 @@ def bounded_result(function, *, debit_context=False):
     return bounded
 
 
-async def emit_result(deps, call_id, result, outcome="error"):
+async def emit_result(deps, call_id, result: str, outcome="error") -> str:
     await deps.emit(
         {
             "type": "tool.result",
@@ -114,7 +114,7 @@ def error_result(code, message):
     return json.dumps({"error": {"code": code, "message": message}})
 
 
-async def _web_call(ctx, name, args):
+async def _web_call(ctx, name, args) -> str:
     call_id = ctx.tool_call_id or ""
     pending_sources = []
     # Reserve before awaiting: parallel calls share the same per-turn limit.

@@ -177,7 +177,7 @@ if __name__ == "__main__":
     import sys
 
     try:
-        result = {
+        result: dict[str, str | dict[str, str]] = {
             "text": extract_document(
                 sys.stdin.buffer.read(MAX_INPUT_BYTES + 1), sys.argv[1]
             )

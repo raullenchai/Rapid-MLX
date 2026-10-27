@@ -182,7 +182,7 @@ class HarnessRenderer:
         self._finished = False
         self._committed_timeline = 0
         self._committed_reasoning = 0
-        self._committed_children = set()
+        self._committed_children: set[str] = set()
         self._last_started_id = None
         if supports_rich_output(self.stream):
             console = _console(self.stream)

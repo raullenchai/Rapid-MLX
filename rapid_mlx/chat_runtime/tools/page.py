@@ -77,7 +77,7 @@ def public_ip(value: str) -> bool:
 async def resolve_public(url: str) -> tuple[httpx.URL, str]:
     target = validate_url(url)
     try:
-        async with asyncio.timeout(min(TIMEOUT, 8.0)):
+        async with asyncio.timeout(min(TIMEOUT, 8.0)):  # type: ignore[attr-defined]  # Python 3.11-only harness.
             addresses = await asyncio.get_running_loop().getaddrinfo(
                 target.host,
                 target.port or (443 if target.scheme == "https" else 80),
@@ -87,7 +87,7 @@ async def resolve_public(url: str) -> tuple[httpx.URL, str]:
         raise ProviderError(
             "unresolvable", "The page hostname could not be resolved."
         ) from None
-    ips = list(dict.fromkeys(row[4][0] for row in addresses))
+    ips = list(dict.fromkeys(str(row[4][0]) for row in addresses))
     if not ips or any(not public_ip(ip) for ip in ips):
         raise ProviderError(
             "unsafe_url", "The page hostname must resolve only to public addresses."
@@ -323,7 +323,7 @@ def page_result(url: str, title: str, content: str) -> WebResult:
     # Some extractors nest video links inside story links. Remove generic
     # media markers before parsing the enclosing article destination.
     content = re.sub(r"\[(?:Video|Image) \d+\]\([^)]*\)", "", content)
-    links = []
+    links: list[str] = []
     seen = {url}
 
     def link_text(match):

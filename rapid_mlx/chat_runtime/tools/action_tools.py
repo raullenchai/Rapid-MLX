@@ -17,7 +17,7 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic_ai import ApprovalRequired, RunContext
 from pydantic_ai.tools import DeferredToolResults, ToolDenied
@@ -660,8 +660,11 @@ class ActionTools:
 # see /NOTICE and ../LICENSE-PROMPTS. File content itself is never rewritten.
 async def write_file(ctx: RunContext[TurnDeps], path: str, content: str) -> str:
     """Create or replace a UTF-8 file; records an undo checkpoint. Path may be absolute, relative to the workspace, or ~/path; it must resolve inside the workspace. Write actual file content without the LINE_NUM| display prefixes added by read_file."""
-    return await ctx.deps.actions.call(
-        ctx, "write_file", {"path": path, "content": content}
+    return cast(
+        str,
+        await ctx.deps.actions.call(
+            ctx, "write_file", {"path": path, "content": content}
+        ),
     )
 
 
@@ -669,8 +672,11 @@ async def patch(
     ctx: RunContext[TurnDeps], path: str, old_text: str, new_text: str
 ) -> str:
     """Replace one exact, unique old_text match in a UTF-8 file; records an undo checkpoint. Path may be absolute, relative to the workspace, or ~/path; it must resolve inside the workspace. Preserve indentation after read_file's LINE_NUM| prefix; never include that display prefix in old_text or new_text."""
-    return await ctx.deps.actions.call(
-        ctx, "patch", {"path": path, "old_text": old_text, "new_text": new_text}
+    return cast(
+        str,
+        await ctx.deps.actions.call(
+            ctx, "patch", {"path": path, "old_text": old_text, "new_text": new_text}
+        ),
     )
 
 
@@ -678,8 +684,11 @@ async def terminal(
     ctx: RunContext[TurnDeps], command: str, timeout: float = 120
 ) -> str:
     """Run a non-interactive shell command in the workspace. Timeout is at most 600 seconds."""
-    return await ctx.deps.actions.call(
-        ctx, "terminal", {"command": command, "timeout": timeout}
+    return cast(
+        str,
+        await ctx.deps.actions.call(
+            ctx, "terminal", {"command": command, "timeout": timeout}
+        ),
     )
 
 
@@ -690,6 +699,11 @@ async def execute_code(
     timeout: float = 120,
 ) -> str:
     """Run Python using python3 on PATH in the workspace; bounded output and timeout (max 600s)."""
-    return await ctx.deps.actions.call(
-        ctx, "execute_code", {"language": language, "code": code, "timeout": timeout}
+    return cast(
+        str,
+        await ctx.deps.actions.call(
+            ctx,
+            "execute_code",
+            {"language": language, "code": code, "timeout": timeout},
+        ),
     )

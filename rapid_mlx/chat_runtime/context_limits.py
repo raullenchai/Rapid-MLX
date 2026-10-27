@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 DEFAULT_CONTEXT_TOKENS = 32768
 MAX_CONTEXT_TOKENS = 131072
 
 
-def context_limit(requested=None, *, model=None, previous=None):
+def context_limit(
+    requested: int | None = None,
+    *,
+    model: dict[str, Any] | None = None,
+    previous: int | None = None,
+) -> int:
     """Respect an explicit request and every positive advertised server limit."""
     limits = [requested or DEFAULT_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS]
     advertised = [
@@ -27,8 +34,6 @@ def context_limit(requested=None, *, model=None, previous=None):
 
 def startup_context_limit(model: str, requested: int | None = None) -> int:
     """Choose the initial server ceiling from cached checkpoint metadata only."""
-    if requested is not None:
-        return requested
     from rapid_mlx.model_aliases import resolve_profile
     from rapid_mlx.model_metadata import read_model_metadata
 
@@ -53,4 +58,4 @@ def startup_context_limit(model: str, requested: int | None = None) -> int:
         ),
         None,
     )
-    return context_limit(model={"context_window": native})
+    return context_limit(requested, model={"context_window": native})

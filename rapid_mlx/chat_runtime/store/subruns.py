@@ -9,7 +9,7 @@ from . import Conflict, clean_parts, clean_usage, encode, now
 
 LIVE = {"queued", "running"}
 TERMINAL = {"completed", "error", "cancelled", "budget_exhausted", "timeout"}
-_event_adapter = TypeAdapter(Event)
+_event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
 
 
 def clean_messages(messages):

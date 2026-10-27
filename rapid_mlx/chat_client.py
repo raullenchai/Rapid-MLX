@@ -622,9 +622,9 @@ class ChatClient:
                 if not replacement:
                     raise ValueError("Edited message cannot be empty")
                 body.update(message_id=users[-1]["id"], text=replacement)
-            path = "edit" if command == "/edit" else "regenerate"
+            operation = "edit" if command == "/edit" else "regenerate"
             result = self.request(
-                "POST", f"/conversations/{self.conversation_id}/{path}", json=body
+                "POST", f"/conversations/{self.conversation_id}/{operation}", json=body
             )
             self.branch_id = result.get("branch_id") or result["id"]
             self.turn("", mode="regenerate")

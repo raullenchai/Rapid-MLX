@@ -174,7 +174,7 @@ def _tools(names, candidates):
     return ", ".join(f"`{name}`" for name in candidates if name in names)
 
 
-def build_instructions(deps, names, *, synthesis=False, child=False):
+def build_instructions(deps, names, *, synthesis=False, child=False) -> str:
     """General response policy first; only describe capabilities actually offered."""
     parts = [BASE_INSTRUCTIONS, ASSISTANT_POLICY, LANGUAGE_INSTRUCTIONS]
     if synthesis:

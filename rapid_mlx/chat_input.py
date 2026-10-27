@@ -9,6 +9,8 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
+
     from rapid_mlx.chat_client import ChatCommand
 
 
@@ -88,7 +90,7 @@ class ChatInput:
     """
 
     def __init__(self, commands: tuple[ChatCommand, ...] = ()):
-        self._session = None
+        self._session: PromptSession[str] | None = None
         self._commands = commands
         self._complete_commands = True
         self._approval_options = ()
@@ -339,9 +341,11 @@ class ChatInput:
                 )
             ]
 
-        return self._session.prompt(
+        assert self._session is not None
+        answer: str = self._session.prompt(
             formatted_prompt, pre_run=start_timeout, rprompt=context_prompt
         )
+        return answer
 
     def _print_approval_card(self):
         import shutil

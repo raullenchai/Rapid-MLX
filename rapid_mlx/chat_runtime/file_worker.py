@@ -6,7 +6,12 @@ import json
 import os
 import signal
 import sys
+from collections.abc import Awaitable, Callable
 from functools import wraps
+from typing import Any, Concatenate, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 async def run_worker(module, payload, *, arguments=(), timeout=10):
@@ -48,11 +53,13 @@ async def run_worker(module, payload, *, arguments=(), timeout=10):
             await process.wait()
 
 
-def serialized_read(function):
+def serialized_read(
+    function: Callable[Concatenate[Any, P], Awaitable[R]],
+) -> Callable[Concatenate[Any, P], Awaitable[R]]:
     """Share the turn's output budget without changing a tool's schema."""
 
     @wraps(function)
-    async def locked(ctx, *args, **kwargs):
+    async def locked(ctx: Any, *args: P.args, **kwargs: P.kwargs) -> R:
         async with ctx.deps.read_lock:
             return await function(ctx, *args, **kwargs)
 

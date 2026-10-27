@@ -11,6 +11,9 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from rapid_mlx.middleware.body_depth import _replay_buffered, _replay_with_disconnect
 
 from .events import Envelope, PermissionResponse, json_schema
 from .file_extraction import MAX_INPUT_BYTES
@@ -21,6 +24,39 @@ from .store import Conflict, Store
 
 PREFIX = "/v1/rapid/chat"
 MAX_ATTACHMENT_BYTES = MAX_INPUT_BYTES
+MAX_REQUEST_BYTES = 2 * MAX_ATTACHMENT_BYTES
+
+
+class ChatBodyLimitMiddleware:
+    """Bound authenticated body bytes before JSON parsing, including chunked uploads."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return await self.app(
+                    scope, _replay_with_disconnect([bytes(body)]), send
+                )
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > MAX_REQUEST_BYTES:
+                response = JSONResponse(
+                    {"detail": "Request too large"},
+                    status_code=413,
+                    headers={"Connection": "close"},
+                )
+                return await response(scope, receive, send)
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                break
+        # Share the server's replay helper so streaming response readers see real
+        # disconnects after the buffered request, never a synthetic early EOF.
+        return await self.app(scope, _replay_buffered(bytes(body), receive), send)
 
 
 class Input(BaseModel):
@@ -75,6 +111,7 @@ def create_app(
     if not token:
         raise ValueError("Chat API requires a bearer credential")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(ChatBodyLimitMiddleware)
     metadata = metadata or {}
     leases = leases or ClientLeases()
 
@@ -92,7 +129,7 @@ def create_app(
         # Never include the request body in validation/error responses: it can
         # contain an inference credential or private conversation material.
         length = request.headers.get("content-length")
-        if length and (not length.isdigit() or int(length) > 2 * MAX_ATTACHMENT_BYTES):
+        if length and (not length.isdigit() or int(length) > MAX_REQUEST_BYTES):
             return JSONResponse({"detail": "Request too large"}, status_code=413)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"

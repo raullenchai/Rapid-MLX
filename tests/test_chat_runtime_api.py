@@ -174,3 +174,97 @@ async def test_attachment_branches_delete_and_secret_errors(api):
     assert invalid.status_code == 422 and "DO-NOT-ECHO" not in invalid.text
     assert (await client.delete(PREFIX + f"/conversations/{cid}")).status_code == 204
     assert (await client.get(PREFIX + f"/conversations/{cid}")).status_code == 404
+
+
+@pytest.mark.parametrize("declared_length", [None, "1"])
+@pytest.mark.parametrize("path", ["/conversations", "/clients", "/turns"])
+async def test_streamed_body_cap_precedes_json_parsing(
+    api, monkeypatch, declared_length, path
+):
+    client, store, _ = api
+    monkeypatch.setattr("rapid_mlx.chat_runtime.api.MAX_REQUEST_BYTES", 64)
+    consumed = []
+
+    async def chunks():
+        for chunk in (b" " * 32, b" " * 32, b"x"):
+            consumed.append(len(chunk))
+            yield chunk
+        pytest.fail("oversized request must not consume more upload bytes")
+
+    headers = {"Content-Type": "application/json"}
+    if declared_length is not None:
+        headers["Content-Length"] = declared_length
+    response = await client.post(PREFIX + path, content=chunks(), headers=headers)
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request too large"}
+    assert response.headers["cache-control"] == "no-store"
+    assert consumed == [32, 32, 1]
+    assert await store.list_conversations() == []
+
+
+async def test_streamed_body_at_cap_reaches_handler(api, monkeypatch):
+    client, _, _ = api
+    monkeypatch.setattr("rapid_mlx.chat_runtime.api.MAX_REQUEST_BYTES", 64)
+    payload = b'{"title":"chunked"}'.ljust(64)
+
+    async def chunks():
+        yield payload[:32]
+        yield payload[32:]
+
+    response = await client.post(
+        PREFIX + "/conversations",
+        content=chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 201
+    assert response.json()["title"] == "chunked"
+
+
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_auth_and_declared_body_cap_reject_without_reading(
+    api, monkeypatch, authorized
+):
+    client, _, _ = api
+    monkeypatch.setattr("rapid_mlx.chat_runtime.api.MAX_REQUEST_BYTES", 64)
+
+    async def chunks():
+        pytest.fail("request must be rejected before reading its body")
+        yield b"unused"
+
+    response = await client.post(
+        PREFIX + "/conversations",
+        content=chunks(),
+        headers={
+            "Content-Length": "65",
+            "Authorization": "Bearer test-token" if authorized else "",
+        },
+    )
+    assert response.status_code == (413 if authorized else 401)
+
+
+async def test_body_cap_preserves_partial_upload_disconnect():
+    from rapid_mlx.chat_runtime.api import ChatBodyLimitMiddleware
+
+    incoming = iter(
+        [
+            {"type": "http.request", "body": b'{"title":', "more_body": True},
+            {"type": "http.disconnect"},
+        ]
+    )
+    observed = []
+
+    async def receive():
+        return next(incoming)
+
+    async def downstream(scope, receive, send):
+        observed.append(await receive())
+        observed.append(await receive())
+
+    async def send(message):
+        pytest.fail("disconnected partial body cannot create a success response")
+
+    await ChatBodyLimitMiddleware(downstream)({"type": "http"}, receive, send)
+    assert observed == [
+        {"type": "http.request", "body": b'{"title":', "more_body": True},
+        {"type": "http.disconnect"},
+    ]

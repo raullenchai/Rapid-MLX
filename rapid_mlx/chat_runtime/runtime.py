@@ -90,7 +90,7 @@ from .prompts import build_instructions
 def turn_clock(timestamp: datetime | None = None) -> str:
     """Local clock goes beside the user turn, after the stable system/tool prefix."""
     now = (timestamp or datetime.now().astimezone()).astimezone()
-    zone = os.environ.get("TZ", "")
+    zone: str | None = os.environ.get("TZ", "")
     if not zone:
         target = str(Path("/etc/localtime").resolve())
         zone = target.split("zoneinfo/")[-1] if "zoneinfo/" in target else now.tzname()
@@ -282,7 +282,7 @@ class Runtime:
         if op_id:
             operation = await self.store.get_operation(op_id)
         event = presenter.event(event, operation=operation)
-        envelope = await self.store.append_event(turn_id, event)
+        envelope: dict = await self.store.append_event(turn_id, event)
         # Validate before publication, including store-produced sequencing.
         Envelope.model_validate(envelope)
         if event["type"] == "reasoning.delta":

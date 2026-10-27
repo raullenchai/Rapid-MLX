@@ -27,7 +27,29 @@ def test_spawn_default_uses_offline_checkpoint_limit(monkeypatch, config, expect
         lambda _: SimpleNamespace(config=config),
     )
     assert startup_context_limit("fixture") == expected
-    assert startup_context_limit("fixture", 65536) == 65536
+
+
+@pytest.mark.parametrize(
+    "config,requested,expected",
+    [
+        ({"max_position_embeddings": 262144}, 65536, 65536),
+        ({"max_position_embeddings": 4096}, 65536, 4096),
+        ({"text_config": {"max_position_embeddings": 8192}}, 65536, 8192),
+        ({"max_position_embeddings": 262144}, 262144, 131072),
+        ({}, 262144, 131072),
+        ({}, 65536, 65536),
+        ({"max_position_embeddings": 4096}, 2048, 2048),
+    ],
+)
+def test_spawn_explicit_context_respects_native_and_runtime_limits(
+    monkeypatch, config, requested, expected
+):
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _: None)
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata",
+        lambda _: SimpleNamespace(config=config),
+    )
+    assert startup_context_limit("fixture", requested) == expected
 
 
 def test_context_default_and_explicit_server_cap():
