@@ -214,8 +214,19 @@ def scan_code(text, workspace, *, python=False):
             if wrapper and token.startswith(("-S", "--split-string")):
                 return "Indirect command execution"
             if wrapper and token.startswith("-"):
-                if wrapper == "env" and token in {"-u", "--unset", "-C", "--chdir"}:
-                    skip_operand = True
+                if wrapper == "env":
+                    if token in {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}:
+                        skip_operand = True
+                    elif token not in {
+                        "--",
+                        "-i",
+                        "--ignore-environment",
+                        "-0",
+                        "--null",
+                    } and not token.startswith(
+                        ("-u", "-C", "-a", "--unset=", "--chdir=", "--argv0=")
+                    ):
+                        return "Indirect command execution"
                 continue
             if name in {
                 "xargs",
