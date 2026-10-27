@@ -65,6 +65,23 @@ private final class OwnerStubProtocol: URLProtocol, @unchecked Sendable {
 
 @Suite("Owner turn URLSession contract", .serialized)
 struct ChatTurnClientTests {
+    @Test func attachmentUploadContract() async throws {
+        let client = try makeClient([OwnerStubReply(status: 201, data: Data(#"{"id":"file-1"}"#.utf8))])
+        #expect(try await client.uploadAttachment(conversationID: "c", name: "a & b.txt", data: Data("text".utf8)) == "file-1")
+        let request = try #require(OwnerStubProtocol.state.requests.first)
+        #expect(request.url?.path == "/v1/rapid/chat/conversations/c/attachments")
+        #expect(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "a & b.txt")
+        #expect(request.httpBody == Data("text".utf8))
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer owner-test-key")
+    }
+    @Test func attachmentUploadOwnerErrors() async throws {
+        for detail in [#"{"detail":{"code":"bad","message":"Rejected"}}"#, #"{"detail":"Rejected"}"#] {
+            let client = try makeClient([OwnerStubReply(status: 400, data: Data(detail.utf8))])
+            await #expect(throws: ChatAttachmentUploadError(message: "Rejected")) {
+                try await client.uploadAttachment(conversationID: "c", name: "x.txt", data: Data())
+            }
+        }
+    }
     private var intent: ChatTurnRequest {
         ChatTurnRequest(turnID: "turn-1", conversationID: "c", branchID: "b", expectedRevision: 7,
                         text: "hello", inferenceURL: "http://127.0.0.1:8000", model: "local",

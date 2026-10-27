@@ -1041,9 +1041,9 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(
-                viewModel.isStreaming || attachmentDraft.isImportingFiles || viewModel.isOwnerBackedChat
+                viewModel.isStreaming || attachmentDraft.isImportingFiles
             )
-            .help(viewModel.isOwnerBackedChat ? "Attachments aren't available in harness chats yet" : "Add photos or files")
+            .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
             .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
@@ -1367,8 +1367,8 @@ struct ChatView: View {
 
     private func send() {
         guard viewModel.startAndSendIntent.pending == nil else { return }
-        if viewModel.isOwnerBackedChat && attachmentDraft.hasAttachments {
-            attachmentDraft.notice = "Attachments aren't available in harness chats yet"
+        if viewModel.isOwnerBackedChat && !attachmentDraft.images.isEmpty {
+            viewModel.send(draft, alias: alias, imageAttachments: attachmentDraft.images)
             return
         }
         if let target = readiness.startAndSendAlias {
@@ -1534,10 +1534,6 @@ struct ChatView: View {
 
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
-        guard !viewModel.isOwnerBackedChat else {
-            attachmentDraft.notice = "Attachments aren't available in harness chats yet"
-            return false
-        }
         guard !attachmentDraft.isImportingFiles else { return false }
         photoCapabilityNotice.dismiss()
         // Filter before splitting, so images and documents get the same

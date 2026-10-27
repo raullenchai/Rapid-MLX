@@ -8,6 +8,7 @@ typealias ChatTurnEventHandler = @Sendable (ChatWireEnvelope) async throws -> Vo
 protocol ChatTurnClient: Sendable {
     func createConversation(workspace: String) async throws -> ChatWireJSON
     func conversation(id: String) async throws -> ChatWireJSON
+    func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String
     func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func turn(turnID: String) async throws -> ChatWireJSON
@@ -27,6 +28,11 @@ extension ChatTurnClient {
 struct ChatCompactResponse: Decodable, Equatable, Sendable {
     let context: ChatWireContextEvent
     let notice: String
+}
+
+struct ChatAttachmentUploadError: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 enum ChatTurnClientError: Error, Equatable {
@@ -73,6 +79,28 @@ actor URLSessionChatTurnClient: ChatTurnClient {
 
     func conversation(id: String) async throws -> ChatWireJSON {
         try await json(["conversations", id])
+    }
+
+    func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String {
+        var request = try makeRequest(["conversations", conversationID, "attachments"], method: "POST", body: data)
+        var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "name", value: name)]
+        guard let url = components.url else { throw ChatTurnClientError.invalidEndpoint }
+        request.url = url
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let (body, response) = try await session.data(for: request, delegate: redirectDelegate)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                let detail = json["detail"]
+                if let message = detail as? String ?? (detail as? [String: Any])?["message"] as? String {
+                    throw ChatAttachmentUploadError(message: message)
+                }
+            }
+            throw ChatTurnClientError.http(status: http.statusCode)
+        }
+        try validate(response, contentType: "application/json")
+        struct UploadResponse: Decodable { let id: String }
+        return try JSONDecoder().decode(UploadResponse.self, from: body).id
     }
 
     func submit(_ intent: ChatTurnRequest, after: Int = 0, onEvent: @escaping ChatTurnEventHandler) async throws {

@@ -15,6 +15,42 @@ struct ChatViewModelOwnerRoutingTests {
         await client.enableTurnSubstitution()
         return client
     }
+    @Test func fileAttachmentsUploadBeforeTurn() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        let files = [try ChatFileAttachment(filename: "a.csv", kind: .csv, extractedText: "a,b", sourceByteCount: 3),
+                     try ChatFileAttachment(filename: "b.pdf", kind: .pdf, extractedText: "extracted", sourceByteCount: 10)]
+        model.send("hello", alias: "model", fileAttachments: files)
+        await model._testingWaitForCurrentTurn()
+        let calls = await client.calls
+        #expect(calls.count >= 3)
+        #expect(calls[0] == .upload("c", "a.csv", Data("a,b".utf8)))
+        #expect(calls[1] == .upload("c", "b.pdf.txt", Data("extracted".utf8)))
+        if case .submit(let request, _) = calls[2] { #expect(request.attachmentIDs == ["attachment-id", "attachment-id"]) }
+        else { Issue.record("Expected turn submission after uploads") }
+    }
+    @Test func imagesAreRejectedVisibly() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        let image = try ChatImageAttachment(filename: "photo.png", mimeType: "image/png", data: Data("photo".utf8))
+        model.send("hello", alias: "model", imageAttachments: [image])
+        #expect(model.lastError == "Images aren't supported in harness chats yet — turn off the harness to send images.")
+        #expect(await client.calls.isEmpty)
+    }
+    @Test func uploadFailureFailsPlaceholder() async throws {
+        let config = config(); config.chatBackend = .ownerV1
+        let client = try await fake()
+        await client.setUploadError(ChatAttachmentUploadError(message: "File rejected"))
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        let file = try ChatFileAttachment(filename: "a.txt", kind: .txt, extractedText: "hello", sourceByteCount: 5)
+        model.send("", alias: "model", fileAttachments: [file])
+        await model._testingWaitForCurrentTurn()
+        #expect(model.messages.last?.status == .failed)
+        #expect(model.messages.last?.errorMessage == "File rejected")
+        #expect(!(await client.calls.contains { if case .submit = $0 { true } else { false } }))
+    }
     @Test func ownerNewConversation() async throws {
         let config = config(); config.chatBackend = .ownerV1
         let client = try await fake()

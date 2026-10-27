@@ -1400,7 +1400,10 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
-        guard !isOwnerBackedChat || (imageAttachments.isEmpty && fileAttachments.isEmpty) else { return }
+        if isOwnerBackedChat && !imageAttachments.isEmpty {
+            lastError = "Images aren't supported in harness chats yet — turn off the harness to send images."
+            return
+        }
 
         // The reader has taken the wheel. Anything we were asking the model
         // on our own account stops now — it would land on a transcript that
@@ -1575,7 +1578,10 @@ final class ChatViewModel {
                 ownerSessions[conversationID] = session
             }
             let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
-            try await session.submit(text: text, target: target) { [weak self] id in
+            let attachments = messages[placeholderIndex - 1].fileAttachments.map { file in
+                (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
+            }
+            try await session.submit(text: text, target: target, attachments: attachments) { [weak self] id in
                 await MainActor.run {
                     guard let self, let index = self.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
                     self.conversations[index].ownerConversationID = id

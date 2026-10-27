@@ -5,10 +5,19 @@ import Foundation
 /// same byte decoder as the URLSession client and records explicit mutations.
 actor FakeChatTurnClient: ChatTurnClient {
     enum Call: Equatable {
+        case upload(String, String, Data)
         case submit(ChatTurnRequest, after: Int)
         case stream(String, after: Int)
         case turn(String), cancel(String), respond(ChatPermissionResponse), operation(String)
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
+    }
+
+    var uploadError: ChatAttachmentUploadError?
+    func setUploadError(_ error: ChatAttachmentUploadError?) { uploadError = error }
+    func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String {
+        calls.append(.upload(conversationID, name, data))
+        if let uploadError { throw uploadError }
+        return "attachment-id"
     }
 
     var deliveryError: ChatTurnClientError?
