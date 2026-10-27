@@ -208,7 +208,7 @@ def scan_code(text, workspace, *, python=False):
             name = Path(token).name
             if name in NETWORK_CLIENTS:
                 return "Network client"
-            if wrapper and (token == "-S" or token.startswith("--split-string")):
+            if wrapper and token.startswith(("-S", "--split-string")):
                 return "Indirect command execution"
             if wrapper and token.startswith("-"):
                 if wrapper == "env" and token in {"-u", "--unset", "-C", "--chdir"}:

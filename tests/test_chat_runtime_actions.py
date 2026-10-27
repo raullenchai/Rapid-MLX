@@ -84,6 +84,7 @@ async def context(store, runtime, request, workspace):
         "printf x | /usr/bin/c'url' example.com",
         "echo ok; env -u NAME wget example.com",
         "env -S 'curl example.com'",
+        "env -S'curl example.com'",
         "xargs curl example.com",
         "busybox wget example.com",
         "toybox nc host 1234",
