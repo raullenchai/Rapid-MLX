@@ -208,6 +208,61 @@ def test_grep_result_cap_and_long_lines(tmp_path, monkeypatch):
     assert all("Line truncated" in item["text"] for item in result["matches"])
 
 
+@pytest.mark.parametrize("backend", ["python", "ripgrep", "stub", "stub_regex_error"])
+def test_grep_lookbehind_falls_back(tmp_path, monkeypatch, backend):
+    executable = shutil.which("rg")
+    if backend == "ripgrep" and executable is None:
+        pytest.skip("ripgrep not installed")
+    write(tmp_path, "matches.txt", "foobar\nbar\nfoobar again\n")
+    monkeypatch.setattr(
+        files.shutil,
+        "which",
+        lambda _: (
+            executable
+            if backend == "ripgrep"
+            else ("rg" if backend.startswith("stub") else None)
+        ),
+    )
+    if backend.startswith("stub"):
+        monkeypatch.setattr(
+            files.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=2,
+                stderr=(
+                    b"regex error: unsupported"
+                    if backend == "stub_regex_error"
+                    else b"regex parse error: unsupported"
+                ),
+                stdout=b"",
+            ),
+        )
+    result = request(tmp_path, "grep", pattern=r"(?<=foo)bar")
+    assert result["matches"] == [
+        {"path": "matches.txt", "line": 1, "text": "foobar"},
+        {"path": "matches.txt", "line": 3, "text": "foobar again"},
+    ]
+    assert result["backend"] == "python"
+    assert not result["truncated"]
+
+
+def test_grep_ripgrep_per_file_limit_reports_truncation(tmp_path, monkeypatch):
+    write(tmp_path, "matches.txt", "needle\n" * 4)
+    monkeypatch.setattr(files.shutil, "which", lambda _: "rg")
+
+    def run(command, **kwargs):
+        assert command[command.index("--max-count") + 1] == "4"
+        return SimpleNamespace(
+            returncode=0, stderr=b"", stdout=b"1:needle\n2:needle\n3:needle\n4:needle\n"
+        )
+
+    monkeypatch.setattr(files.subprocess, "run", run)
+    result = request(tmp_path, "grep", pattern="needle", max_results=3)
+    assert len(result["matches"]) == 3
+    assert result["truncated"]
+    assert result["backend"] == "ripgrep"
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_worker_timeout_and_cancel_reap_owned_process(
     tmp_path, monkeypatch, cancel

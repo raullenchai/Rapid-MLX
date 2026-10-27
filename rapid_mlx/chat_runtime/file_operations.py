@@ -298,11 +298,17 @@ def search(
                     capture_output=True,
                     timeout=max(0.01, deadline - time.monotonic()),
                 )
-                if completed.returncode not in (0, 1):
+                if completed.returncode == 2 and (
+                    b"regex parse error:" in completed.stderr
+                    or b"regex error:" in completed.stderr
+                ):
+                    rg = None
+                elif completed.returncode not in (0, 1):
                     raise FileError(
                         "invalid_pattern",
                         "The search backend rejected this regular expression.",
                     )
+            if rg:
                 hits = (
                     (int(number), line)
                     for number, line in (

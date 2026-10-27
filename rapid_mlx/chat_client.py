@@ -171,9 +171,9 @@ class ChatClient:
             except httpx.TransportError:
                 if not retry or attempt:
                     raise
-                self.connect()
                 if method.upper() not in {"GET", "DELETE"} and not idempotent:
                     raise
+                self.connect()
         raise RuntimeError("Could not reconnect to chat owner")
 
     def heartbeat(self):

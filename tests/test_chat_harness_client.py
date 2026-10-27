@@ -60,7 +60,7 @@ def test_transport_retry_respects_idempotency(
             "ok": True
         }
         assert len(calls) == 2
-    assert reconnects == [True]
+    assert reconnects == ([] if method == "POST" and not idempotent else [True])
 
 
 def test_unauthorized_mutation_is_retried(client_factory, monkeypatch):
