@@ -246,6 +246,7 @@ MARKUP_VALUES = {
     "<parameter=command>\n{}\n</parameter>\n</function>\n</tool_call>"
     "</think>Answer",
 }
+MARKUP_VALUES["hermes"] = MARKUP_VALUES["qwen3"]
 VALUE_CASES = [(tool, VALUE) for tool in sorted(MARKUP_VALUES)] + [
     ("qwen3", CLOSER_VALUE),
     ("qwen3_coder", CLOSER_VALUE),
@@ -262,6 +263,16 @@ def test_markers_inside_argument_values_are_argument_text(tool, value, split):
     assert [
         [call["name"], json.loads(call["arguments"])] for call in the_owner.calls
     ] == [["run_shell_command", {"command": value}]]
+
+
+@pytest.mark.parametrize("split", [1, 7, 1000])
+def test_inherited_reasoning_ends_at_the_tool_phase_for_good(split):
+    the_owner = owner()
+    raw = "plan " + HERMES + "Answer <think>x</think> tail"
+    reasoning, content, _ = stream(the_owner, raw, split)
+    # The later opener is literal; the inherited block's closer is consumed.
+    assert (reasoning, content) == ("plan ", "Answer <think>x tail")
+    assert len(the_owner.calls) == 1
 
 
 @pytest.mark.parametrize("surface", SURFACES)
