@@ -12303,15 +12303,17 @@ def _chat_startup_frame(status: dict, *, elapsed: int, tick: int, width: int) ->
     if isinstance(progress, dict):
         done, total = progress.get("done"), progress.get("total")
         if (
-            type(done) is not int
-            or type(total) is not int
+            not isinstance(done, int)
+            or isinstance(done, bool)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
             or not 0 < total <= 2**63 - 1
             or not 0 <= done <= total
         ):
             progress = None
     else:
         progress = None
-    if progress is not None:
+    if progress is not None and isinstance(done, int) and isinstance(total, int):
         percent = done * 100 // total
         if width < 59:
             return f"{percent}%"[:width]
@@ -12348,10 +12350,10 @@ def _chat_startup_frame(status: dict, *, elapsed: int, tick: int, width: int) ->
         "loading_weights": "Loading model…",
         "warming_up": "Warming up…",
         "initializing": "Initializing…",
-    }.get(phase if isinstance(phase, str) else None, "Loading model…")
+    }.get(phase if isinstance(phase, str) else "", "Loading model…")
     spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     frame = f"{spinner[tick % len(spinner)]} {label} {elapsed}s"
-    return set_cell_size(frame, min(width, cell_len(frame)))
+    return str(set_cell_size(frame, min(width, cell_len(frame))))
 
 
 def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:

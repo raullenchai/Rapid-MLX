@@ -9,6 +9,10 @@ retries and specialized loaders remain indeterminate rather than resetting it.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
+
+_Result = TypeVar("_Result")
 
 
 class StartupProgress:
@@ -71,9 +75,9 @@ class StartupProgress:
             if self._active and self._phase == "loading_weights":
                 self._done = min(self._total, max(self._done, done))
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            result = {"phase": self._phase}
+            result: dict[str, Any] = {"phase": self._phase}
             if self._model:
                 result["model"] = self._model
             if self._phase == "loading_weights" and self._total:
@@ -89,7 +93,9 @@ startup_progress = StartupProgress()
 _EVAL_BATCH_BYTES = 1024**3
 
 
-def load_with_progress(loader, *args, **kwargs):
+def load_with_progress(
+    loader: Callable[..., _Result], *args: Any, **kwargs: Any
+) -> _Result:
     """Replace an eager loader's final eval with bounded, observed evals.
 
     Called only at loaders with an explicit lazy contract. No global MLX hooks,
@@ -99,12 +105,16 @@ def load_with_progress(loader, *args, **kwargs):
     if kwargs.get("lazy") or not startup_progress.claim_weights():
         return loader(*args, **kwargs)
 
-    import mlx.core as mx
-    from mlx.utils import tree_flatten
+    try:
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+    except ImportError:
+        startup_progress.phase("initializing")
+        return loader(*args, **kwargs)
 
     try:
         result = loader(*args, **{**kwargs, "lazy": True})
-        model = result[0]
+        model = cast(Any, result)[0]
         # Tied parameters can appear more than once; count/evaluate each once.
         arrays = {id(value): value for _, value in tree_flatten(model.parameters())}
         startup_progress.weights_total(sum(value.nbytes for value in arrays.values()))

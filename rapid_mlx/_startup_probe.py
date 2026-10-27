@@ -22,7 +22,7 @@ class _ProbeHandler(BaseHTTPRequestHandler):
         super().handle_one_request()
 
     def _respond(self) -> None:
-        body = {"detail": "model loading"}
+        body: dict[str, object] = {"detail": "model loading"}
         if (
             self.command in {"GET", "HEAD"}
             and urlsplit(self.path).path == "/health/ready"
