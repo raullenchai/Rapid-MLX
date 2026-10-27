@@ -1737,7 +1737,7 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
         checkpoint = snapshot / subfolder if subfolder else snapshot
         resolved = resolve_model(model_id)
         cached = resolve_pinned_cached_snapshot(
-            model_id, checkpoint_subfolder=subfolder
+            model_id, checkpoint_subfolder=subfolder, cache_dir=cache_dir
         )
         if (
             Path(resolved).exists()
@@ -1750,10 +1750,13 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
             )
         # The snapshot directory name alone does not identify its leaves: an old
         # blob can be linked into a new snapshot. Covered mirrored aliases have
-        # packaged digests; validate the selected leaves by HF blob name and size
-        # without reading multi-GB weights. Uncovered models retain the existing
-        # containment/completeness check, which cannot prove blob identity.
-        from rapid_mlx._mirror import _packaged_digest_info
+        # packaged digests; verify selected leaves against their contents. Uncovered
+        # models retain containment/completeness checks, which cannot prove identity.
+        from rapid_mlx._mirror import (
+            _git_blob_oid,
+            _packaged_digest_info,
+            _sha256_digest,
+        )
 
         info = _packaged_digest_info(
             repo_id, pinned_revision, subfolder_allow_patterns(model_id)
@@ -1766,11 +1769,19 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
                 try:
                     # The snapshot link must name the canonical HF blob. The
                     # blob itself may link onward into the shared Hub store.
-                    linked_blob = Path(os.path.abspath(leaf.parent / leaf.readlink()))
-                    valid = (
-                        linked_blob == blob
+                    valid_link = not leaf.is_symlink() or (
+                        Path(os.path.abspath(leaf.parent / leaf.readlink())) == blob
                         and leaf.resolve(strict=True) == blob.resolve(strict=True)
+                    )
+                    valid = (
+                        valid_link
                         and leaf.stat().st_size == file.size
+                        and (
+                            _sha256_digest(leaf)
+                            if file.lfs is not None
+                            else _git_blob_oid(leaf)
+                        )
+                        == digest
                     )
                 except (OSError, ValueError):
                     valid = False

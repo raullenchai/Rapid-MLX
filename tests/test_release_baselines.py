@@ -392,6 +392,27 @@ def test_stress_consumer_reads_pinned_snapshot_without_main_ref(tmp_path, monkey
     assert stress_e2e_bench._cached_model_revision(model_id) == revision
 
 
+def test_stress_consumer_uses_selected_cache_for_pinned_snapshot(tmp_path, monkeypatch):
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "mlx-community/Qwen3.5-35B-A3B-8bit"
+    revision = resolve_revision(model_id)
+    cache = tmp_path / "selected"
+    snapshot = cache / f"models--{model_id.replace('/', '--')}" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "default")
+    )
+    monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
+
+    assert (
+        stress_e2e_bench._cached_model_revision(model_id, cache_dir=cache) == revision
+    )
+
+
 def test_stress_consumer_resolves_catalog_alias(tmp_path, monkeypatch):
     from rapid_mlx.model_aliases import resolve_model, resolve_revision
     from scripts.pr_validate.steps import stress_e2e_bench
@@ -446,7 +467,9 @@ def test_stress_consumer_accepts_pinned_subfolder(
     assert stress_e2e_bench._cached_model_revision(model_id) == revision
 
 
-@pytest.mark.parametrize("case", ["valid", "stale", "missing"])
+@pytest.mark.parametrize(
+    "case", ["valid", "regular", "stale", "missing", "corrupt_git", "corrupt_lfs"]
+)
 def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case):
     from types import SimpleNamespace
 
@@ -460,16 +483,30 @@ def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case
     blobs = repo / "blobs"
     snapshot.mkdir(parents=True)
     blobs.mkdir()
-    config_digest = "a" * 40
-    weight_digest = "b" * 64
+    import hashlib
+
+    config = b'{"model_type":"qwen3"}'
+    config_digest = hashlib.sha1(
+        b"blob " + str(len(config)).encode() + b"\0" + config
+    ).hexdigest()
+    weight_digest = hashlib.sha256(b"weights").hexdigest()
     (blobs / config_digest).write_text('{"model_type":"qwen3"}')
     (blobs / weight_digest).write_bytes(b"weights")
+    if case == "corrupt_git":
+        (blobs / config_digest).write_bytes(config.replace(b"qwen3", b"qwen4"))
+    if case == "corrupt_lfs":
+        (blobs / weight_digest).write_bytes(b"corrupt")
     stale_blob = blobs / ("c" * 64)
     stale_blob.write_bytes(b"weights")
     (snapshot / "config.json").symlink_to(blobs / config_digest)
     (snapshot / "model.safetensors").symlink_to(
         stale_blob if case == "stale" else blobs / weight_digest
     )
+    if case == "regular":
+        (snapshot / "config.json").unlink()
+        (snapshot / "config.json").write_bytes(config)
+        (snapshot / "model.safetensors").unlink()
+        (snapshot / "model.safetensors").write_bytes(b"weights")
     files = [
         SimpleNamespace(
             rfilename="config.json",
@@ -496,7 +533,7 @@ def test_stress_consumer_checks_pinned_blob_identity(tmp_path, monkeypatch, case
         lambda *a: SimpleNamespace(siblings=files),
     )
 
-    if case != "valid":
+    if case not in ("valid", "regular"):
         with pytest.raises(ValueError, match="does not match packaged blob"):
             stress_e2e_bench._cached_model_revision(alias)
     else:

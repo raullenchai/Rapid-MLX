@@ -281,7 +281,10 @@ def _complete_cached_checkpoint(
 
 
 def resolve_pinned_cached_snapshot(
-    model_name: str, *, checkpoint_subfolder: str | None = None
+    model_name: str,
+    *,
+    checkpoint_subfolder: str | None = None,
+    cache_dir: Path | None = None,
 ) -> Path | None:
     """Return only the catalog's complete immutable checkpoint, never main."""
     from huggingface_hub.constants import HF_HUB_CACHE
@@ -292,7 +295,9 @@ def resolve_pinned_cached_snapshot(
     if revision is None:
         return None
     repo_id = resolve_hub_model(model_name)
-    repo_root = Path(HF_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
+    repo_root = Path(cache_dir if cache_dir is not None else HF_HUB_CACHE) / (
+        "models--" + repo_id.replace("/", "--")
+    )
     from ._download_gate import _snapshot_is_complete_audio_model
     from .audio.registry import resolve_audio_alias
 
@@ -302,7 +307,7 @@ def resolve_pinned_cached_snapshot(
     audio = resolve_audio_alias(repo_id)
     if audio is not None and audio.family == "whisper" and not checkpoint_subfolder:
         if not snapshot.is_symlink() and _snapshot_is_complete_audio_model(
-            repo_id, audio.family
+            repo_id, audio.family, cache_dir=cache_dir
         ):
             return snapshot
         return None

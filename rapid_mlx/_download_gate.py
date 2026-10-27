@@ -1355,7 +1355,9 @@ def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
         return False
 
 
-def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
+def _snapshot_is_complete_audio_model(
+    repo_id: str, family: str, *, cache_dir: str | os.PathLike | None = None
+) -> bool:
     """True when a pinned audio snapshot carries its family-appropriate weights.
 
     Audio repos do not share the text ``model*.safetensors`` layout, so the
@@ -1380,7 +1382,7 @@ def _snapshot_is_complete_audio_model(repo_id: str, family: str) -> bool:
         from huggingface_hub.constants import HF_HUB_CACHE
 
         repo_root = os.path.join(
-            HF_HUB_CACHE,
+            cache_dir if cache_dir is not None else HF_HUB_CACHE,
             f"models--{repo_id.replace('/', '--')}",
         )
         resolved_sha = _catalog_snapshot_sha(repo_id, repo_root)

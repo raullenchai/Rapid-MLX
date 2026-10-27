@@ -767,6 +767,13 @@ def test_audio_family_runnable_with_family_weights(
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate._snapshot_is_complete_audio_model(repo, family) is True
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "other")
+    )
+    assert (
+        gate._snapshot_is_complete_audio_model(repo, family, cache_dir=cache_root)
+        is True
+    )
 
 
 @pytest.mark.parametrize(
