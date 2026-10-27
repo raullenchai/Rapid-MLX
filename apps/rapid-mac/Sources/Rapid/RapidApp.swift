@@ -137,7 +137,7 @@ struct RapidApp: App {
     /// MCP connectors (issue #1716) — the config file the engine reads, the
     /// live state it reports back, the per-tool consent gate, and the registry
     /// that ties them into the chat loop.
-    @State private var chatBackendConfig: ChatBackendConfig = ChatBackendConfig()
+    @State private var chatBackendConfig: ChatBackendConfig
     @State private var mcpConfig: MCPConfigStore
     @State private var mcpCatalog: MCPCatalog
     @State private var mcpApproval: MCPToolApprovalStore
@@ -304,7 +304,10 @@ struct RapidApp: App {
         }
         _perfConfig = State(initialValue: perfConfigStore)
 
+        let chatBackendConfig = ChatBackendConfig()
+        _chatBackendConfig = State(initialValue: chatBackendConfig)
         let chat = ChatViewModel(
+            chatBackendConfig: chatBackendConfig,
             tools: toolRegistry,
             sampling: samplingConfig,
             customInstructions: customInstructionsConfig,

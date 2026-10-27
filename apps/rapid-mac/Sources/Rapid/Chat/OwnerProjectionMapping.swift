@@ -34,6 +34,9 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
             rows.append(ChatMessage(id: rowID("tool:" + tool.callID), role: .tool, content: output, status: tool.result == nil ? .streaming : (tool.result?.outcome == .error ? .failed : .complete), toolCallID: tool.callID, createdAt: createdAt))
         }
     }
+    for permission in projection.pendingPermissions {
+        rows.append(ChatMessage(id: rowID("permission:" + permission.opID), role: .tool, content: "Waiting for approval", status: .streaming, toolCallID: permission.opID, createdAt: createdAt))
+    }
     for source in projection.sources {
         let detail = source.url ?? source.attachmentID ?? ""
         rows.append(ChatMessage(id: rowID("source:" + source.sourceID), role: .system, content: detail.isEmpty ? source.title : "\(source.title): \(detail)", wireVisibility: .transcriptOnly, createdAt: createdAt))

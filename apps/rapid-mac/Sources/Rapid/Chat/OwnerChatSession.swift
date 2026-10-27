@@ -35,6 +35,7 @@ actor OwnerChatSession {
         self.clientProvider = { client }
         self.conversationID = conversationID
     }
+    func ownerConversationID() -> String? { conversationID }
     func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: unavailable) }
     func snapshots() -> AsyncStream<Snapshot> {
         let id = UUID()

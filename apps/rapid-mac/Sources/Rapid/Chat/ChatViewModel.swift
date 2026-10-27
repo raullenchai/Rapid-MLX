@@ -152,6 +152,9 @@ final class ChatViewModel {
     /// would force every test that constructs a model to either
     /// inject a real URLSession or thread a mock through both layers.
     private var client: ChatStreamClient
+    private let chatBackendConfig: ChatBackendConfig
+    private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
+    private var ownerSessions: [UUID: OwnerChatSession] = [:]
 
     /// Tool runner. An ``EmptyToolRegistry`` short-circuits the tool-call
     /// request shape (we send no ``tools:`` field and the server emits plain
@@ -407,6 +410,8 @@ final class ChatViewModel {
 
     init(
         client: ChatStreamClient = ChatStreamClient(),
+        chatBackendConfig: ChatBackendConfig? = nil,
+        ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)? = nil,
         tools: any ToolRegistry = EmptyToolRegistry(),
         toolDefaults: UserDefaults = .standard,
         sampling: SamplingConfig? = nil,
@@ -420,6 +425,8 @@ final class ChatViewModel {
         documentCache: DocumentContentCache = .shared
     ) {
         self.client = client
+        self.chatBackendConfig = chatBackendConfig ?? ChatBackendConfig()
+        self.ownerClientFactory = ownerClientFactory
         self.tools = tools
         self.toolDefaults = toolDefaults
         self.sampling = sampling
@@ -568,7 +575,8 @@ final class ChatViewModel {
                     branchChoices: branchChoices,
                     createdAt: now,
                     updatedAt: now,
-                    customInstructions: Self.normalizedInstruction(conversationInstructions)
+                    customInstructions: Self.normalizedInstruction(conversationInstructions),
+                    backend: chatBackendConfig.chatBackend == .ownerV1 ? .ownerV1 : nil
                 ),
                 at: 0
             )
@@ -1479,6 +1487,10 @@ final class ChatViewModel {
                 client.baseURL = ChatStreamClient.loopbackURL(port: server.activePort)
             }
 
+            if conversations.first(where: { $0.id == activeConversationID })?.backend == .ownerV1 {
+                await sendViaOwner(text: messages[placeholderIndex - 1].content, alias: alias, placeholderIndex: placeholderIndex, epoch: epoch)
+                return
+            }
             await self.runToolLoop(
                 alias: alias,
                 initialPlaceholder: placeholderIndex,
@@ -1489,6 +1501,64 @@ final class ChatViewModel {
                 memoryContext: memoryContext
             )
         }
+    }
+
+    private func sendViaOwner(text: String, alias: String, placeholderIndex: Int, epoch: Int) async {
+        let conversationID = activeConversationID
+        let placeholder = messages[placeholderIndex]
+        do {
+            let session: OwnerChatSession
+            if let existing = ownerSessions[conversationID] { session = existing }
+            else {
+                let storedID = conversations.first(where: { $0.id == conversationID })?.ownerConversationID
+                if let ownerClientFactory {
+                    session = OwnerChatSession(client: try await ownerClientFactory(), conversationID: storedID)
+                } else {
+                    guard let connection = try await ChatOwnerConnection.connectIfEnabled(backend: .ownerV1) else { throw ChatOwnerConnectionError.ownerUnavailable }
+                    session = OwnerChatSession(connection: connection, conversationID: storedID)
+                }
+                guard epoch == conversationEpoch else { return }
+                if Task.isCancelled { finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch); persistActive(); return }
+                ownerSessions[conversationID] = session
+            }
+            let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
+            try await session.submit(text: text, target: target)
+            if Task.isCancelled { try? await session.stop() }
+            let snapshots = await session.snapshots()
+            if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+                conversations[index].ownerConversationID = await session.ownerConversationID()
+                saveConversations()
+            }
+            for await snapshot in snapshots {
+                guard !Task.isCancelled, epoch == conversationEpoch else { break }
+                guard let projection = snapshot.projection else { continue }
+                var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt)
+                rows[0].parentID = placeholder.parentID
+                for i in rows.indices.dropFirst() { rows[i].parentID = rows[i - 1].id }
+                guard let index = messages.firstIndex(where: { $0.id == placeholder.id }) else { break }
+                messages.replaceSubrange(index..<messages.count, with: rows)
+                treeShapeVersion += 1
+                if snapshot.state == .finished { break }
+            }
+            guard epoch == conversationEpoch else { return }
+            if Task.isCancelled, let index = messages.firstIndex(where: { $0.id == placeholder.id }) {
+                var row = messages[index]; Self.finaliseCancellation(message: &row); updateMessage(at: index, with: row)
+            }
+            isStreaming = false
+            persistActive()
+        } catch {
+            guard epoch == conversationEpoch else { return }
+            if let index = messages.firstIndex(where: { $0.id == placeholder.id }) {
+                var row = messages[index]; row.status = .failed; row.errorMessage = error.localizedDescription; updateMessage(at: index, with: row)
+            }
+            isStreaming = false
+            persistActive()
+        }
+    }
+
+    func resolveOwnerPermission(opID: String, allow: Bool) {
+        guard let session = ownerSessions[activeConversationID] else { return }
+        Task { try? await session.resolve(opID: opID, decision: allow ? .allow : .deny) }
     }
 
     /// Startup and tool rounds can change the live lane after attachment admission.
@@ -1654,6 +1724,7 @@ final class ChatViewModel {
     /// has produced so far. The placeholder transitions to ``.complete``
     /// with whatever bytes already arrived.
     func stop() {
+        if let session = ownerSessions[activeConversationID] { Task { try? await session.stop() } }
         cancelInflightWork()
     }
 
@@ -1669,6 +1740,7 @@ final class ChatViewModel {
     /// state if it ever gets to run.
     func stopAndPersist() {
         saveDrafts()
+        if let session = ownerSessions[activeConversationID] { Task { try? await session.stop() } }
         cancelInflightWork()
         guard isStreaming else { return }
         finaliseInterruptedLiveTurn()
