@@ -148,7 +148,7 @@ SHELL_OPERATORS = sorted(
 
 
 def shell_words(text):
-    """Split POSIX shell text into (word, is_operator) pairs.
+    """Split POSIX shell text into (word, is_operator, is_quoted) triples.
 
     Unlike shlex, this keeps whether punctuation was unquoted, so a quoted or
     escaped ``;`` is an argument rather than a command separator. Command
@@ -158,15 +158,17 @@ def shell_words(text):
     words = []
     word = []
     started = False
+    quoted = False
     quote = None
     index = 0
 
     def flush():
-        nonlocal started
+        nonlocal started, quoted
         if started:
-            words.append(("".join(word), False))
+            words.append(("".join(word), False, quoted))
         word.clear()
         started = False
+        quoted = False
 
     while index < len(text):
         char = text[index]
@@ -189,9 +191,11 @@ def shell_words(text):
             index += 1
             word.append(text[index])
             started = True
+            quoted = True
         elif char in "'\"":
             quote = char
             started = True
+            quoted = True
         elif char in " \t\r":
             flush()
         elif char == "#" and not started:
@@ -203,7 +207,7 @@ def shell_words(text):
             end = index + next(
                 (len(op) for op in SHELL_OPERATORS if text.startswith(op, index)), 1
             )
-            words.append((text[index:end], True))
+            words.append((text[index:end], True, False))
             index = end
             continue
         else:
@@ -259,8 +263,20 @@ def scan_code(text, workspace, *, python=False):
         words = shell_words(normalized)
     except ValueError:
         return "Shell quoting could not be inspected"
-    tokens = [token for token, _ in words]
-    operators = [operator for _, operator in words]
+    tokens = [token for token, _, _ in words]
+    operators = [operator for _, operator, _ in words]
+    # Backstop for shell forms the command-position walk below cannot model
+    # (compound commands, exec, option terminators): an unquoted client name
+    # anywhere needs approval unless it is the operand of a lookup.
+    for index, (token, operator, quoted) in enumerate(words):
+        previous = tokens[index - 1] if index else ""
+        if (
+            not operator
+            and not quoted
+            and Path(token).name in NETWORK_CLIENTS
+            and previous not in {"-v", "-V", "which", "type", "-u", "--unset"}
+        ):
+            return "Network client"
     command_start = True
     wrapper = None
     skip_operand = False
