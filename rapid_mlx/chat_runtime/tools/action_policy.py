@@ -205,6 +205,9 @@ def scan_code(text, workspace, *, python=False):
             if skip_operand:
                 skip_operand = False
                 continue
+            if wrapper == "command" and token in {"-v", "-V"}:
+                command_start = False
+                continue
             name = Path(token).name
             if name in NETWORK_CLIENTS:
                 return "Network client"
@@ -214,7 +217,16 @@ def scan_code(text, workspace, *, python=False):
                 if wrapper == "env" and token in {"-u", "--unset", "-C", "--chdir"}:
                     skip_operand = True
                 continue
-            if name in {"xargs", "timeout", "nice", "nohup", "stdbuf", "time"}:
+            if name in {
+                "xargs",
+                "timeout",
+                "nice",
+                "nohup",
+                "stdbuf",
+                "time",
+                "builtin",
+                "coproc",
+            }:
                 return "Indirect command execution"
             if name in {"env", "command", "busybox", "toybox"}:
                 wrapper = name
