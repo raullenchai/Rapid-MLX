@@ -104,10 +104,6 @@ dependencies = [
     # abort with ModuleNotFoundError on 3.10 — and only when a config already
     # existed, so every fresh-write test would still have passed.
     'tomli>=2.0.1,<3; python_version < "3.11"',
-    # Persistent chat harness; the agent runtime requires Python 3.11+.
-    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
-    "httpx>=0.27,<0.29",
-    "prompt-toolkit>=3.0.52,<4",
     "requests>=2.28.0,<3",
     "certifi>=2024.2.2,<2027",
     "rich>=13.8.0,<16",
@@ -277,7 +273,7 @@ clef = [
 mirror = [
     "boto3>=1.34.0",
 ]
-# Browser chat UI; the terminal harness is included in the base install.
+# Gradio chat UI
 chat = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
@@ -348,8 +344,6 @@ test = [
     # test. Without the plugin, those tests fail at collection with
     # "async def functions are not natively supported".
     "pytest-asyncio>=0.21.0",
-    "pexpect>=4.9,<5; sys_platform != 'win32'",
-    "pyte>=0.8.2,<0.9",  # Exercise terminal screen and scrollback contracts.
     # Parse the /metrics output through the official Prometheus parser
     # to catch format regressions. NOT used at runtime — the route
     # hand-rolls the exposition format to avoid a runtime dep.
@@ -405,8 +399,6 @@ test = [
 # pure-Python/core runtime surface while deliberately excluding mlx/mlx-lm,
 # then adds test-only packages required by automatically discovered modules.
 ci-linux = [
-    "pexpect>=4.9,<5; sys_platform != 'win32'",
-    "pyte>=0.8.2,<0.9",
     "tiktoken>=0.5.0,<0.14",
     # Test infra — floors mirrored from `test`.
     "pytest>=7.0.0",
@@ -425,6 +417,7 @@ ci-linux = [
     "fastapi>=0.100.0,<0.163",
     "jsonschema>=4.18.0,<5",
     "referencing>=0.28.4,<0.38",
+    "httpx",
     "psutil>=5.9.0,<8",
     "transformers>=5.0.0,!=5.13.0,<5.16",
     "tokenizers>=0.19.0,<0.23",
@@ -435,10 +428,6 @@ ci-linux = [
     "safetensors>=0.4.0,<0.9",
     "pypdf>=5.0.0,<7",  # Local-search text extraction; imported lazily.
     "tqdm>=4.66.0,<5",
-    # Persistent chat harness; the agent runtime requires Python 3.11+.
-    "pydantic-ai-slim[openai]==2.61.0; python_version >= '3.11'",
-    "httpx>=0.27,<0.29",
-    "prompt-toolkit>=3.0.52,<4",
     "requests>=2.28.0,<3",
     "pyyaml>=6.0,<7",
     "tomli-w>=1.0.0,<2",
@@ -472,8 +461,6 @@ ci-apple = [
     "prometheus_client>=0.16.0",
 ]
 dev = [
-    "pexpect>=4.9,<5; sys_platform != 'win32'",
-    "pyte>=0.8.2,<0.9",
     # Test runtime (must mirror the `test` extras above; a unit test in
     # tests/test_pr_validate_test_env.py asserts every `test` dep is
     # also in `dev` so a future drift can't silently break the
@@ -644,7 +631,6 @@ vllm-mlx-bench = "rapid_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
 rapid_mlx = [
-    "chat_runtime/store/migrations/*.sql",
     "aliases.json",
     "model_digests.json",
     "model_catalog_lock.json",
@@ -682,7 +668,6 @@ rapid_mlx = [
     "templates/*.jinja",
     "agents/profiles/*.yaml",
     "kernels/*.metal",
-    "chat_runtime/LICENSE-PROMPTS",
     # Adapted Qwen4 stage-one selector license must ship with the Python file.
     "kernels/LICENSE-QSA-STAGE1",
     "kernels/LICENSE-AFFINE8*",
