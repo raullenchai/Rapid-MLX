@@ -1404,10 +1404,6 @@ final class ChatViewModel {
             lastError = "Turn on the experimental harness in Settings to continue this chat."
             return
         }
-        if isOwnerBackedChat && !imageAttachments.isEmpty {
-            lastError = "Images aren't supported in harness chats yet — turn off the harness to send images."
-            return
-        }
 
         // The reader has taken the wheel. Anything we were asking the model
         // on our own account stops now — it would land on a transcript that
@@ -1583,7 +1579,11 @@ final class ChatViewModel {
             }
             let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
             let userFiles = messages.indices.contains(placeholderIndex - 1) ? messages[placeholderIndex - 1].fileAttachments : []
-            let attachments = userFiles.map { file in
+            let userImages = messages.indices.contains(placeholderIndex - 1) ? messages[placeholderIndex - 1].imageAttachments : []
+            let images = try userImages.enumerated().map { index, image in
+                try image.ownerUpload(index: index + 1)
+            }
+            let attachments = images + userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
             try await session.submit(text: text, target: target, attachments: attachments) { [weak self] id in

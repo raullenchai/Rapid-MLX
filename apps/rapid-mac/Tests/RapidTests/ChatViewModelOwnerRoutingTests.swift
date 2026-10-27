@@ -30,14 +30,32 @@ struct ChatViewModelOwnerRoutingTests {
         if case .submit(let request, _) = calls[2] { #expect(request.attachmentIDs == ["attachment-id", "attachment-id"]) }
         else { Issue.record("Expected turn submission after uploads") }
     }
-    @Test func imagesAreRejectedVisibly() async throws {
+    @Test func imagesAndFilesUploadInOrder() async throws {
         let config = config(); config.chatBackend = .ownerV1
-        let client = try await fake()
+        let client = try await fake(); await client.enableDistinctUploadIDs()
         let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
         let image = try ChatImageAttachment(filename: "photo.png", mimeType: "image/png", data: Data("photo".utf8))
-        model.send("hello", alias: "model", imageAttachments: [image])
-        #expect(model.lastError == "Images aren't supported in harness chats yet — turn off the harness to send images.")
-        #expect(await client.calls.isEmpty)
+        let file = try ChatFileAttachment(filename: "a.txt", kind: .txt, extractedText: "hello", sourceByteCount: 5)
+        model.send("hello", alias: "model", imageAttachments: [image], fileAttachments: [file])
+        await model._testingWaitForCurrentTurn()
+        let calls = await client.calls
+        #expect(calls[0] == .upload("c", "image-1.png", image.data))
+        #expect(calls[1] == .upload("c", "a.txt", Data("hello".utf8)))
+        if case .submit(let request, _) = calls[2] { #expect(request.attachmentIDs == ["attachment-1", "attachment-2"]) }
+        else { Issue.record("Expected turn submission after uploads") }
+    }
+    @Test func imageTerminalErrorsShowMessage() async throws {
+        for (code, message) in [("image_model_unsupported", "The selected model can't read images. Choose a vision model or remove the image."), ("image_capability_unknown", "Could not determine whether the selected model can read images. Please retry.")] {
+            let config = config(); config.chatBackend = .ownerV1
+            let client = try await fake()
+            let frame = Data("id: turn-1:1\nevent: turn.terminal\ndata: {\"turn_id\":\"turn-1\",\"seq\":1,\"event\":{\"type\":\"turn.terminal\",\"outcome\":\"error\",\"error_code\":\"\(code)\"}}\n\n".utf8)
+            await client.setFrames([frame])
+            let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+            model.send("hello", alias: "model")
+            await model._testingWaitForCurrentTurn()
+            #expect(model.messages.last?.status == .failed)
+            #expect(model.messages.last?.errorMessage == message)
+        }
     }
     @Test func uploadFailureFailsPlaceholder() async throws {
         let config = config(); config.chatBackend = .ownerV1

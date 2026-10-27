@@ -296,6 +296,33 @@ struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable
         return stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] < 255 }
     }
 
+    /// Prepare older persisted images that exceed the owner upload limits.
+    func ownerUpload(index: Int) throws -> (name: String, data: Data) {
+        let ext = mimeType == "image/jpeg" ? "jpg" : (mimeType == "image/gif" ? "gif" : "png")
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
+            return ("image-\(index).\(ext)", data)
+        }
+        guard data.count > Self.maxBytes || max(width, height) > 8192 else {
+            return ("image-\(index).\(ext)", data)
+        }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                         kCGImageSourceCreateThumbnailWithTransform: true,
+                                         kCGImageSourceThumbnailMaxPixelSize: Self.maxVisionLongEdge]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw ValidationError.unsupportedType
+        }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else {
+            throw ValidationError.unsupportedType
+        }
+        CGImageDestinationAddImage(destination, thumbnail, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        guard CGImageDestinationFinalize(destination), output.length <= Self.maxBytes else { throw ValidationError.tooLarge }
+        return ("image-\(index).jpg", output as Data)
+    }
+
     var dataURL: String { "data:\(mimeType);base64,\(data.base64EncodedString())" }
 
     /// Exact number of bytes this attachment's `dataURL` occupies on the wire,

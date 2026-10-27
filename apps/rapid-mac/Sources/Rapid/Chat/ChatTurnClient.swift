@@ -30,6 +30,11 @@ struct ChatCompactResponse: Decodable, Equatable, Sendable {
     let notice: String
 }
 
+struct ChatOwnerTurnRejection: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct ChatAttachmentUploadError: LocalizedError, Equatable {
     let message: String
     var errorDescription: String? { message }
@@ -237,6 +242,20 @@ actor URLSessionChatTurnClient: ChatTurnClient {
         // Explicitly release the read on malformed/status responses, consumer
         // failure, terminal, or task cancellation. This never calls owner cancel.
         defer { bytes.task.cancel() }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            var body = Data()
+            for try await byte in bytes {
+                body.append(byte)
+                if body.count >= 65536 { break }
+            }
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let detail = json["detail"] as? [String: Any],
+               let code = detail["code"] as? String,
+               ["image_model_unsupported", "image_capability_unknown"].contains(code),
+               let message = detail["message"] as? String {
+                throw ChatOwnerTurnRejection(message: message)
+            }
+        }
         try validate(response, contentType: "text/event-stream")
         var decoder = ChatSSEDecoder()
         var cursor = after

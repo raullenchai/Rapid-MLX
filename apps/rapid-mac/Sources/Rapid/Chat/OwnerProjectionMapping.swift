@@ -23,6 +23,8 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
     let error: String? = terminal.flatMap { event in
         guard event.outcome != .completed else { return nil }
         if event.errorCode == "owner_restarted" { return "Interrupted: the chat owner restarted." }
+        if event.errorCode == "image_model_unsupported" { return "The selected model can't read images. Choose a vision model or remove the image." }
+        if event.errorCode == "image_capability_unknown" { return "Could not determine whether the selected model can read images. Please retry." }
         if event.outcome == .cancelled { return "Interrupted." }
         return event.errorCode ?? "The turn failed."
     }

@@ -1367,10 +1367,6 @@ struct ChatView: View {
 
     private func send() {
         guard viewModel.startAndSendIntent.pending == nil else { return }
-        if viewModel.isOwnerBackedChat && !attachmentDraft.images.isEmpty {
-            viewModel.send(draft, alias: alias, imageAttachments: attachmentDraft.images)
-            return
-        }
         if let target = readiness.startAndSendAlias {
             guard sendEnabled, !viewModel.isStreaming else { return }
             viewModel.startAndSendIntent.begin(

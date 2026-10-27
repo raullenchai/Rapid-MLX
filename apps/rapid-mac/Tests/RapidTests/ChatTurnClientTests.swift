@@ -82,6 +82,15 @@ struct ChatTurnClientTests {
             }
         }
     }
+    @Test func imageRejectionPreservesOwnerMessage() async throws {
+        for code in ["image_model_unsupported", "image_capability_unknown"] {
+            let body = Data("{\"detail\":{\"code\":\"\(code)\",\"message\":\"Owner guidance\"}}".utf8)
+            let client = try makeClient([OwnerStubReply(status: 422, data: body)])
+            await #expect(throws: ChatOwnerTurnRejection(message: "Owner guidance")) {
+                try await client.submit(intent, after: 0) { _ in }
+            }
+        }
+    }
     private var intent: ChatTurnRequest {
         ChatTurnRequest(turnID: "turn-1", conversationID: "c", branchID: "b", expectedRevision: 7,
                         text: "hello", inferenceURL: "http://127.0.0.1:8000", model: "local",

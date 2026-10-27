@@ -12,12 +12,14 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    var distinctUploadIDs = false
+    func enableDistinctUploadIDs() { distinctUploadIDs = true }
     var uploadError: ChatAttachmentUploadError?
     func setUploadError(_ error: ChatAttachmentUploadError?) { uploadError = error }
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String {
         calls.append(.upload(conversationID, name, data))
         if let uploadError { throw uploadError }
-        return "attachment-id"
+        return distinctUploadIDs ? "attachment-\(calls.filter { if case .upload = $0 { true } else { false } }.count)" : "attachment-id"
     }
 
     var deliveryError: ChatTurnClientError?

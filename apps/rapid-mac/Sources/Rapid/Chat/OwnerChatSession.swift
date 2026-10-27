@@ -160,6 +160,7 @@ actor OwnerChatSession {
         task = nil
     }
     private static func isPermanent(_ error: Error) -> Bool {
+        if error is ChatOwnerTurnRejection { return true }
         if let error = error as? ChatTurnClientError {
             switch error {
             case .http(let status): return (400..<500).contains(status) && status != 401
