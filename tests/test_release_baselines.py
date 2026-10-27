@@ -386,10 +386,10 @@ def test_stress_consumer_reads_pinned_snapshot_without_main_ref(tmp_path, monkey
     (snapshot / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (snapshot / "model.safetensors").write_bytes(b"weights")
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
-    # Exercise the documented fallback for a pinned model without an inventory.
+    # A complete snapshot without an inventory cannot prove its identity.
     monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
 
-    assert stress_e2e_bench._cached_model_revision(model_id) == revision
+    assert stress_e2e_bench._cached_model_revision(model_id) is None
 
 
 def test_stress_consumer_uses_selected_cache_for_pinned_snapshot(tmp_path, monkeypatch):
@@ -409,7 +409,7 @@ def test_stress_consumer_uses_selected_cache_for_pinned_snapshot(tmp_path, monke
     monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
 
     assert (
-        stress_e2e_bench._cached_model_revision(model_id, cache_dir=cache) == revision
+        stress_e2e_bench._cached_model_revision(model_id, cache_dir=cache) is None
     )
 
 
@@ -432,7 +432,7 @@ def test_stress_consumer_resolves_catalog_alias(tmp_path, monkeypatch):
     monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
 
     assert resolve_model(alias) == "mlx-community/Qwen3.5-35B-A3B-8bit"
-    assert stress_e2e_bench._cached_model_revision(alias) == revision
+    assert stress_e2e_bench._cached_model_revision(alias) is None
 
 
 @pytest.mark.parametrize("loaded_at_root", [False, True])
@@ -464,7 +464,7 @@ def test_stress_consumer_accepts_pinned_subfolder(
     monkeypatch.setattr(model_aliases, "resolve_model", loaded_model)
 
     assert model_aliases.resolve_model(model_id) == str(loaded_path)
-    assert stress_e2e_bench._cached_model_revision(model_id) == revision
+    assert stress_e2e_bench._cached_model_revision(model_id) is None
 
 
 @pytest.mark.parametrize(

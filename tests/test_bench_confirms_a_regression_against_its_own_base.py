@@ -331,3 +331,12 @@ def test_only_a_root_build_file_counts_as_a_packaging_change(
         stress_e2e_bench._diff_defines_the_environment([changed, "README.md"])
         is defines_environment
     )
+
+
+def test_unverifiable_revision_skips_baseline(ctx, choice, baseline, monkeypatch):
+    monkeypatch.setattr(stress_e2e_bench, "_measure_bench", _fake_measure(500, 750))
+    monkeypatch.setattr(stress_e2e_bench, "_cached_model_revision", lambda *a: None)
+    result = stress_e2e_bench._run_bench(ctx, choice)
+    assert result["status"] == "skip"
+    assert "revision is unverifiable; baseline comparison skipped" in result["summary"]
+    assert result["executed"] is True

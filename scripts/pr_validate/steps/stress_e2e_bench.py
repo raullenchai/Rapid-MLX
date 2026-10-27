@@ -1578,6 +1578,16 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
     actual_revision = (
         _cached_model_revision(choice.model_id) if baseline_revision else None
     )
+    if baseline_revision and actual_revision is None:
+        return {
+            "status": "skip",
+            "summary": (
+                f"cold={cold:.0f}ms warm={warm:.0f}ms ({speedup:.2f}x) "
+                "— loaded model revision is unverifiable; baseline comparison skipped"
+            ),
+            "artifact": str(bench_path),
+            "executed": True,
+        }
     current_chip = _current_chip() if baseline_chip else None
     if baseline_revision != actual_revision:
         return {
@@ -1709,7 +1719,7 @@ def _load_benchmark_baseline(
     )
 
 
-def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str:
+def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str | None:
     """Return the revision resolved by Hugging Face for the loaded model."""
 
     from rapid_mlx.model_aliases import (
@@ -1751,7 +1761,7 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
         # The snapshot directory name alone does not identify its leaves: an old
         # blob can be linked into a new snapshot. Covered mirrored aliases have
         # packaged digests; verify selected leaves against their contents. Uncovered
-        # models retain containment/completeness checks, which cannot prove identity.
+        # models have no independent proof of identity.
         from rapid_mlx._mirror import (
             _git_blob_oid,
             _packaged_digest_info,
@@ -1761,35 +1771,36 @@ def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> s
         info = _packaged_digest_info(
             repo_id, pinned_revision, subfolder_allow_patterns(model_id)
         )
-        if info is not None:
-            for file in info.siblings:
-                digest = file.lfs.sha256 if file.lfs is not None else file.blob_id
-                leaf = snapshot / file.rfilename
-                blob = repo_cache / "blobs" / digest
-                try:
-                    # The snapshot link must name the canonical HF blob. The
-                    # blob itself may link onward into the shared Hub store.
-                    valid_link = not leaf.is_symlink() or (
-                        Path(os.path.abspath(leaf.parent / leaf.readlink())) == blob
-                        and leaf.resolve(strict=True) == blob.resolve(strict=True)
+        if info is None:
+            return None
+        for file in info.siblings:
+            digest = file.lfs.sha256 if file.lfs is not None else file.blob_id
+            leaf = snapshot / file.rfilename
+            blob = repo_cache / "blobs" / digest
+            try:
+                # The snapshot link must name the canonical HF blob. The
+                # blob itself may link onward into the shared Hub store.
+                valid_link = not leaf.is_symlink() or (
+                    Path(os.path.abspath(leaf.parent / leaf.readlink())) == blob
+                    and leaf.resolve(strict=True) == blob.resolve(strict=True)
+                )
+                valid = (
+                    valid_link
+                    and leaf.stat().st_size == file.size
+                    and (
+                        _sha256_digest(leaf)
+                        if file.lfs is not None
+                        else _git_blob_oid(leaf)
                     )
-                    valid = (
-                        valid_link
-                        and leaf.stat().st_size == file.size
-                        and (
-                            _sha256_digest(leaf)
-                            if file.lfs is not None
-                            else _git_blob_oid(leaf)
-                        )
-                        == digest
-                    )
-                except (OSError, ValueError):
-                    valid = False
-                if not valid:
-                    raise ValueError(
-                        f"cannot verify loaded revision for {model_id}: "
-                        f"{leaf} does not match packaged blob {digest}"
-                    )
+                    == digest
+                )
+            except (OSError, ValueError):
+                valid = False
+            if not valid:
+                raise ValueError(
+                    f"cannot verify loaded revision for {model_id}: "
+                    f"{leaf} does not match packaged blob {digest}"
+                )
         return pinned_revision
 
     ref = repo_cache / "refs" / "main"
