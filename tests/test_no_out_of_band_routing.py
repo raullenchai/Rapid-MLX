@@ -122,6 +122,7 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
+        "RAPID_MLX_HARNESS_TERMINAL_ENV",  # harness subprocess environment opt-in
         "RAPID_MLX_CHAT_APPROVALS",  # harness tool approval policy
         "RAPID_MLX_CHAT_ACTION_TOOLS",  # harness action tool availability
         "RAPID_MLX_CHAT_HARNESS",  # select the chat interface
