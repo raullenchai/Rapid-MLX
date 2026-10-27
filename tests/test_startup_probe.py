@@ -283,7 +283,9 @@ def test_malformed_target_still_gets_loading_response(progress):
         try:
             with socket.create_connection(listener.getsockname(), timeout=2) as client:
                 client.sendall(b"GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n")
-                reply = client.recv(4096)
+                reply = b""
+                while chunk := client.recv(4096):  # headers and body may split
+                    reply += chunk
             assert reply.startswith(b"HTTP/1.0 503") or reply.startswith(
                 b"HTTP/1.1 503"
             )
