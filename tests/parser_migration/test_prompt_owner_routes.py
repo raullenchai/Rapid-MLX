@@ -460,3 +460,28 @@ def test_native_first_event_retains_prompt_context(
         assert failure["response"]["error"]["code"] == "invalid_reasoning_event_order"
     else:
         assert result["reasoning"] == "private", result
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "model,contract,suffix,raw",
+    [
+        ("flint", "flint", "", "<think>\n</think>\nHello"),
+        ("lfm2.5", "chatml", "<think>", "\n</think>\nHello"),
+    ],
+)
+def test_messages_omits_blank_owned_thinking(stream, model, contract, suffix, raw):
+    context = PromptParseContext(suffix, None, None, False, contract)
+    result = route(
+        "qwen3",
+        "glm47" if contract == "flint" else "lfm",
+        raw,
+        "messages",
+        stream,
+        thinking=False,
+        model=model,
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert result["reasoning"] == ""
+    assert result["content"] == "\nHello"

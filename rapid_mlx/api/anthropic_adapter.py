@@ -653,7 +653,7 @@ def openai_to_anthropic(
         # which signals "do not emit a thinking block" (same shape as
         # the previous whitespace-only guard).
         thinking_body = (
-            reasoning_text
+            (reasoning_text if reasoning_text and reasoning_text.strip() else None)
             if channels_owned
             else _thinking_block_content(
                 reasoning_text, text, finish_reason=choice.finish_reason

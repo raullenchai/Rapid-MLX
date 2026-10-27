@@ -1965,6 +1965,8 @@ async def _stream_anthropic_messages(
     def _gate_thinking_pieces(
         pieces: list[tuple[str, str]],
         current_block_type: str | None,
+        *,
+        owned: bool = False,
     ) -> list[tuple[str, str]]:
         """Apply the #702 capability gate + non-stream parity filter.
 
@@ -2030,7 +2032,7 @@ async def _stream_anthropic_messages(
                         # because demotion below sets ``effective`` to
                         # "text" rather than "thinking".)
                         out.append(("thinking", text))
-                    elif effective == "text" and not _reasoning_enabled:
+                    elif effective == "text" and not (_reasoning_enabled or owned):
                         # Non-thinking branch with an open text block:
                         # demote the whitespace so it lands inside the
                         # current text block (codex r5 MAJOR — without
@@ -2048,7 +2050,7 @@ async def _stream_anthropic_messages(
                 # Non-whitespace thinking content. Reasoning-enabled
                 # keeps as thinking; non-thinking demotes to text.
                 held_text_ws = ""
-                if _reasoning_enabled:
+                if _reasoning_enabled or owned:
                     out.append(("thinking", text))
                     effective = "thinking"
                 else:
@@ -2452,7 +2454,9 @@ async def _stream_anthropic_messages(
                 if filtered:
                     pieces.append(("text", filtered))
         packets, current_block_type, block_index = _emit_and_track(
-            pieces, current_block_type, block_index
+            _gate_thinking_pieces(pieces, current_block_type, owned=True),
+            current_block_type,
+            block_index,
         )
         for packet in packets:
             captured = _capture(packet)

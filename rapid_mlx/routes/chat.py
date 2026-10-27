@@ -7145,7 +7145,7 @@ async def _create_chat_completion_impl(
     # rescue path (chat.py:~1580) can call the SAME predicate. Round
     # 1 inlined the check here only; codex round 2 caught the
     # streaming path drifting because it had no gate at all.
-    if not channels_owned and not _is_structured_output_requested(response_format):
+    if not _is_structured_output_requested(response_format):
         # PR #715 bundle, fuzz finding C / live-test repro: when the
         # parser's Case-4 fallback blanked ``cleaned_text`` (no tags +
         # ``enable_thinking=True`` → route the whole output to
