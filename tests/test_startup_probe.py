@@ -253,6 +253,8 @@ async def test_startup_failure_releases_probe_and_port(progress):
     "options",
     [
         {"host": "localhost"},
+        {"host": None},
+        {"host": ""},
         {"fd": 17},
         {"uds": "unused.sock"},
         {"ssl_certfile": "unused.pem"},
@@ -271,6 +273,29 @@ async def test_specialized_transports_keep_original_startup(monkeypatch, options
     instance.lifespan = SimpleNamespace(should_exit=False)
     await instance.startup()
     assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_listener_option_failure_closes_reserved_socket(monkeypatch):
+    created = []
+
+    class FailingSocket(socket.socket):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+        def setsockopt(self, *args):
+            raise OSError("unsupported option")
+
+    monkeypatch.setattr(socket, "socket", FailingSocket)
+    instance = AcceptingConnectionsServer(
+        uvicorn.Config("unused:app", host="127.0.0.1", port=0, log_level="error")
+    )
+    instance.lifespan = SimpleNamespace(should_exit=False, startup=None)
+    with pytest.raises(SystemExit):
+        await instance.startup()
+    assert created
+    assert all(sock.fileno() == -1 for sock in created)
 
 
 @pytest.mark.asyncio

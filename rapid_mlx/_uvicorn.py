@@ -178,26 +178,30 @@ class AcceptingConnectionsServer(uvicorn.Server):
 
         # A hostname can resolve to several IPv4/IPv6 listeners. Leave that
         # resolution to Uvicorn rather than silently narrowing its bind scope.
+        # No host means every address family; keep Uvicorn's own bind there.
+        if not config.host:
+            await super().startup(sockets=sockets)
+            return
         try:
-            ipaddress.ip_address(config.host or "0.0.0.0")
+            ipaddress.ip_address(config.host)
         except ValueError:
             await super().startup(sockets=sockets)
             return
 
         from ._startup_probe import StartupProbe
 
-        family = socket.AF_INET6 if ":" in (config.host or "") else socket.AF_INET
+        family = socket.AF_INET6 if ":" in config.host else socket.AF_INET
         listener = socket.socket(family, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if family == socket.AF_INET6:
-            # Match asyncio.create_server: an explicit IPv6 listener must not
-            # silently accept IPv4 connections or reserve the IPv4 port too.
-            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         probe = None
         original_startup = lifespan.startup
         try:
             try:
-                listener.bind((config.host or "0.0.0.0", config.port))
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    # Match asyncio.create_server: an explicit IPv6 listener must
+                    # not accept IPv4 connections or reserve the IPv4 port too.
+                    listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                listener.bind((config.host, config.port))
                 listener.listen(config.backlog)
             except OSError as exc:
                 logger.error(exc)
