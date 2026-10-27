@@ -33,13 +33,46 @@ struct ChatOwnerStatus: Equatable, Sendable {
 }
 
 /// Immutable interpreter contract used to invoke Python's lock-owning bootstrap.
-/// Shipping construction accepts only the authenticated bundle layout. Tests may
-/// inject the supplied development venv while retaining the same hardened flags.
+/// Bundled runtimes are authenticated; explicit developer overrides may use a
+/// bundle layout or a venv while retaining the same hardened launch flags.
 struct ChatOwnerRuntime: Sendable {
     let interpreter: URL
     let pythonHome: URL?
     let pythonPath: URL?
     let baseEnvironment: [String: String]
+
+    static func forResolution(
+        _ resolution: ServerLocator.Resolution,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        authenticateBundle: (URL) -> Bool = DesktopRuntimeTrust.authenticateUncached
+    ) throws -> Self {
+        if resolution.source == .bundled {
+            return try bundled(resolution: resolution, environment: environment, authenticateBundle: authenticateBundle)
+        }
+        guard resolution.source == .rapidBin,
+              resolution.binary.lastPathComponent == "rapid-mlx",
+              resolution.binary.deletingLastPathComponent().lastPathComponent == "bin" else {
+            throw ChatOwnerConnectionError.invalidRuntime
+        }
+        let bin = resolution.binary.deletingLastPathComponent()
+        let root = bin.deletingLastPathComponent()
+        let interpreter = root.appendingPathComponent("python/bin/python3.12")
+        let pythonPath = root.appendingPathComponent("site-packages")
+        if FileManager.default.isExecutableFile(atPath: interpreter.path),
+           FileManager.default.fileExists(atPath: pythonPath.path) {
+            return Self(interpreter: interpreter, pythonHome: root.appendingPathComponent("python"), pythonPath: pythonPath, baseEnvironment: environment)
+        }
+        for name in ["python3", "python"] {
+            let candidate = bin.appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                var cleanEnvironment = environment
+                cleanEnvironment.removeValue(forKey: "PYTHONHOME")
+                cleanEnvironment.removeValue(forKey: "PYTHONPATH")
+                return Self(interpreter: candidate, baseEnvironment: cleanEnvironment)
+            }
+        }
+        throw ChatOwnerConnectionError.invalidRuntime
+    }
 
     static func bundled(
         resolution: ServerLocator.Resolution,
@@ -337,8 +370,8 @@ actor ChatOwnerConnection {
     ) async throws -> ChatOwnerConnection? {
         guard backend == .ownerV1 else { return nil }
         guard let resolution else { throw ChatOwnerConnectionError.invalidRuntime }
-        let runtime = try ChatOwnerRuntime.bundled(
-            resolution: resolution,
+        let runtime = try ChatOwnerRuntime.forResolution(
+            resolution,
             environment: environment
         )
         let connection = try ChatOwnerConnection(
