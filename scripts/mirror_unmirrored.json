@@ -262,21 +262,6 @@
       "since": "2026-10-24"
     },
     {
-      "hf_path": "pratikgx/Nanbeige4.3-33B-MLX-4bit",
-      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
-      "since": "2026-10-26"
-    },
-    {
-      "hf_path": "mlx-community/Sage-A1.5-OptiQ-4bit",
-      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
-      "since": "2026-10-26"
-    },
-    {
-      "hf_path": "abenzerps/Spark-X2.6-4B-MLX-4bit",
-      "reason": "R2 catalog entry absent; Hugging Face fallback until mirrored",
-      "since": "2026-10-26"
-    },
-    {
       "hf_path": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
       "reason": "R2 catalog reports not_mirrored; Hugging Face fallback until mirrored",
       "since": "2026-10-26"
