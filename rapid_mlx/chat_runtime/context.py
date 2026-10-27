@@ -60,7 +60,7 @@ def clip_text(text, budget, marker=" [omitted]"):
     return text[:lo] + marker
 
 
-def squeeze(messages, budget):
+def squeeze(messages, budget, latest=None):
     """Last-resort synthesis projection; keep every call ID and matching return."""
     parts_count = sum(len(m.parts) for m in messages) or 1
     allowance = max(0, (budget - 16 * parts_count) // parts_count)
@@ -74,6 +74,8 @@ def squeeze(messages, budget):
                     part,
                     args={},
                 )
+            elif part is latest:
+                pass
             elif isinstance(
                 part, (UserPromptPart, SystemPromptPart, TextPart, ToolReturnPart)
             ) and isinstance(part.content, str):
@@ -136,6 +138,15 @@ def _retire_completed_pairs(messages):
 async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=False):
     """Recount bounded projections; never send a known oversized synthesis prompt."""
     original = messages
+    latest = next(
+        (
+            part
+            for message in reversed(original)
+            for part in reversed(message.parts)
+            if isinstance(part, UserPromptPart)
+        ),
+        None,
+    )
     for retire in (False, True):
         if retire:
             messages = _retire_completed_pairs(messages)
@@ -150,7 +161,7 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
                 / max(1, measured["used_tokens"] - measured["system_tools_tokens"])
                 * 0.7,
             )
-            shrunk = squeeze(messages, int(context_tokens(messages) * ratio))
+            shrunk = squeeze(messages, int(context_tokens(messages) * ratio), latest)
             if shrunk == messages:
                 break
             messages = shrunk
@@ -160,6 +171,8 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
     reference = []
     for message in _retire_completed_pairs(original):
         for part in message.parts:
+            if part is latest:
+                continue
             if isinstance(part, (ToolCallPart, ToolReturnPart)):
                 # A pending pair must stay protocol-valid, rather than become a
                 # false claim of completed work. Runtime history should not reach
@@ -188,7 +201,9 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
         + "\n".join(reference)
     )
     compact = identities + reference_text
-    messages = [ModelRequest(parts=[UserPromptPart(compact)])]
+    messages = [
+        ModelRequest(parts=[UserPromptPart(compact)] + ([latest] if latest else []))
+    ]
     for _ in range(8):
         measured = await counter.measure(messages, parameters)
         if measured["used_tokens"] <= budget:
@@ -204,7 +219,9 @@ async def fit_synthesis(messages, parameters, counter, budget, *, work_summary=F
             reference_text, max(0, allowance - estimate_text(identities))
         )
         compact = identities + reference_text
-        messages = [ModelRequest(parts=[UserPromptPart(compact)])]
+        messages = [
+            ModelRequest(parts=[UserPromptPart(compact)] + ([latest] if latest else []))
+        ]
     # A model's template/instructions alone may exhaust an exceptionally small
     # configured window. Use a compact synthesis instruction, with no tool schema.
     parameters = replace(

@@ -67,6 +67,21 @@ def test_text_formats(name, data, expected):
     assert "secret script" not in result
 
 
+def test_csv_accepts_large_field_and_converts_parser_error(monkeypatch):
+    import csv
+
+    value = "x" * 150000
+    assert extract_document(value.encode(), "large.csv") == value
+
+    def fail(*args, **kwargs):
+        raise csv.Error("private content")
+
+    monkeypatch.setattr(csv, "reader", fail)
+    with pytest.raises(DocumentError) as error:
+        extract_document(b"x", "bad.csv")
+    assert error.value.code == "document_invalid"
+
+
 def test_docx():
     data = archive(
         {

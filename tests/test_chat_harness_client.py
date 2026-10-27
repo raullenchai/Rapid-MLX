@@ -31,6 +31,79 @@ def client_factory():
 
 
 @pytest.mark.parametrize(
+    "method,idempotent",
+    [("POST", False), ("POST", True), ("GET", False), ("DELETE", False)],
+)
+def test_transport_retry_respects_idempotency(
+    client_factory, monkeypatch, method, idempotent
+):
+    client = client_factory()
+    calls = []
+    reconnects = []
+
+    def send(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise httpx.ConnectError("lost")
+        return httpx.Response(
+            200, json={"ok": True}, request=httpx.Request(method, "http://localhost")
+        )
+
+    monkeypatch.setattr(client.client, "request", send)
+    monkeypatch.setattr(client, "connect", lambda: reconnects.append(True))
+    if method == "POST" and not idempotent:
+        with pytest.raises(httpx.TransportError):
+            client.request(method, "/mutation", idempotent=idempotent)
+        assert len(calls) == 1
+    else:
+        assert client.request(method, "/mutation", idempotent=idempotent) == {
+            "ok": True
+        }
+        assert len(calls) == 2
+    assert reconnects == [True]
+
+
+def test_unauthorized_mutation_is_retried(client_factory, monkeypatch):
+    client = client_factory()
+    calls = []
+
+    def send(*args, **kwargs):
+        calls.append(args)
+        return httpx.Response(
+            401 if len(calls) == 1 else 200,
+            json={"ok": True},
+            request=httpx.Request("POST", "http://localhost"),
+        )
+
+    monkeypatch.setattr(client.client, "request", send)
+    monkeypatch.setattr(client, "connect", lambda: None)
+    assert client.request("POST", "/mutation") == {"ok": True}
+    assert len(calls) == 2
+
+
+def test_cancel_is_marked_idempotent(client_factory, monkeypatch):
+    client = client_factory()
+    monkeypatch.setattr(
+        client, "context_request", lambda *args, **kwargs: {"turn_id": "turn"}
+    )
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    monkeypatch.setattr(
+        client.client,
+        "stream",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    calls = []
+
+    def cancel(*args, **kwargs):
+        calls.append((args, kwargs))
+        client.last_state.terminal = {"outcome": "cancelled"}
+
+    monkeypatch.setattr(client, "request", cancel)
+    client.turn("hello")
+    assert calls == [(("POST", "/turns/turn/cancel"), {"json": {}, "idempotent": True})]
+
+
+@pytest.mark.parametrize(
     ("entry", "requested", "expected"),
     [
         ({"context_window": 262144, "max_model_len": 65536}, None, 32768),

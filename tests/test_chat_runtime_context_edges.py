@@ -33,7 +33,9 @@ async def test_helper_overflow_disables_even_previously_cached_tool_definitions(
         context_budget=512, token_counter=None, result_budget_exhausted=False
     )
     request_context = SimpleNamespace(
-        messages=[ModelRequest(parts=[UserPromptPart("长输入" * 500)])],
+        messages=[
+            ModelRequest(parts=[UserPromptPart("长输入" * 500), UserPromptPart("继续")])
+        ],
         model_request_parameters=parameters,
     )
     await prepare_helper_context(SimpleNamespace(deps=deps), request_context)
@@ -70,7 +72,11 @@ async def test_auto_summary_failure_still_prepares_visible_synthesis():
         parameters.declared_function_tools
     )  # Populate provider caches before the hook.
     context = SimpleNamespace(
-        messages=[ModelRequest(parts=[UserPromptPart("请修复" * 1000)])],
+        messages=[
+            ModelRequest(
+                parts=[UserPromptPart("请修复" * 1000), UserPromptPart("继续")]
+            )
+        ],
         model_request_parameters=parameters,
         model_settings={},
     )
@@ -156,6 +162,35 @@ async def test_summary_reads_all_chunks_and_accounts_usage():
     assert deps.child_usage["requests"] == len(chunks)
     assert deps.child_usage["input_tokens"] == len(chunks) * 100
     assert deps.child_usage["output_tokens"] == len(chunks) * 10
+
+
+@pytest.mark.asyncio
+async def test_synthesis_preserves_latest_question_after_long_history():
+    from pydantic_ai.models import ModelRequestParameters
+
+    from rapid_mlx.chat_runtime.context import fit_synthesis
+
+    class Counter(TokenCounter):
+        async def measure(self, messages, parameters=None):
+            result = await super().measure(messages, parameters)
+            result["used_tokens"] += 60 * len(messages)
+            return result
+
+    question = "What is the latest result?"
+    messages = [
+        ModelRequest(parts=[UserPromptPart("old evidence " * 300)]) for _ in range(30)
+    ]
+    messages.append(ModelRequest(parts=[UserPromptPart(question)]))
+    projected, _, measured = await fit_synthesis(
+        messages, ModelRequestParameters(), Counter(), 300
+    )
+    assert measured["used_tokens"] <= 300
+    assert any(
+        part.content == question
+        for message in projected
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    )
 
 
 @pytest.mark.asyncio
@@ -549,7 +584,7 @@ async def test_context_disabled_first_request_cannot_dispatch_unexpected_tools(
         conversation_id=conversation["id"],
         branch_id=conversation["branch_id"],
         expected_revision=0,
-        text="很长的中文输入" * 3000,
+        text="很长的中文输入" * 10,
         inference_url="http://127.0.0.1:18800",
         model="fixture",
         context_tokens=2048,

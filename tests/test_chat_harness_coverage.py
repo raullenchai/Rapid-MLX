@@ -289,7 +289,10 @@ def test_request_reconnects_once_and_retries_original_payload(
     client.client = httpx.Client(transport=httpx.MockTransport(respond))
     reconnect = Mock()
     monkeypatch.setattr(client, "connect", reconnect)
-    assert client.request("POST", "/clients", json={"client_id": "one"}) == {}
+    assert (
+        client.request("POST", "/clients", json={"client_id": "one"}, idempotent=True)
+        == {}
+    )
     assert reconnect.call_count == 1 and len(calls) == 2
     assert json.loads(calls[-1].content) == {"client_id": "one"}
 

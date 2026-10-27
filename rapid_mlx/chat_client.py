@@ -146,7 +146,15 @@ class ChatClient:
             "POST", "/clients", json={"client_id": self.client_id}, retry=False
         )
 
-    def request(self, method: str, path: str, *, retry: bool = True, **kwargs):
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        retry: bool = True,
+        idempotent: bool = False,
+        **kwargs,
+    ):
         for attempt in range(2):
             try:
                 response = self.client.request(
@@ -164,12 +172,19 @@ class ChatClient:
                 if not retry or attempt:
                     raise
                 self.connect()
+                if method.upper() not in {"GET", "DELETE"} and not idempotent:
+                    raise
         raise RuntimeError("Could not reconnect to chat owner")
 
     def heartbeat(self):
         while not self.stopping.wait(30):
             try:
-                self.request("POST", "/clients", json={"client_id": self.client_id})
+                self.request(
+                    "POST",
+                    "/clients",
+                    json={"client_id": self.client_id},
+                    idempotent=True,
+                )
             except (httpx.HTTPError, OSError, ValueError, RuntimeError):
                 # Interactive operations report errors and reconnect as needed.
                 pass
@@ -466,7 +481,12 @@ class ChatClient:
                 except KeyboardInterrupt:
                     cancelled = True
                     print("\nStopping…", flush=True)
-                    self.request("POST", f"/turns/{state.turn_id}/cancel", json={})
+                    self.request(
+                        "POST",
+                        f"/turns/{state.turn_id}/cancel",
+                        json={},
+                        idempotent=True,
+                    )
                     # Cancellation acknowledgement follows cleanup. Replay its terminal.
                     failures = 0
                 except (httpx.TransportError, ReplayRequiredError):

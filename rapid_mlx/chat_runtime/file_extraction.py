@@ -16,6 +16,8 @@ from pathlib import Path
 from rapid_mlx.local_search import extraction
 
 MAX_INPUT_BYTES = extraction.MAX_BYTES
+# The CSV parser's field limit is process-global; bound it to the input cap.
+csv.field_size_limit(MAX_INPUT_BYTES)
 MAX_TEXT_BYTES = 1024 * 1024
 MAX_TABLE_ROWS = 1000
 MAX_TABLE_CELLS = extraction.XLSX_MAX_CELLS_PER_SHEET
