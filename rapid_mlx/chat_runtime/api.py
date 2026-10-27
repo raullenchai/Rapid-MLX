@@ -50,29 +50,33 @@ class ChatBodyLimitMiddleware:
                 headers={"WWW-Authenticate": "Bearer"},
             )(scope, receive, send)
         body = bytearray()
+
+        async def read_body() -> str:
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return "disconnect"
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) > MAX_REQUEST_BYTES:
+                    return "too_large"
+                body.extend(chunk)
+                if not message.get("more_body", False):
+                    return "complete"
+
         try:
-            async with asyncio.timeout(BODY_READ_TIMEOUT):
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        return await self.app(
-                            scope, _replay_with_disconnect([bytes(body)]), send
-                        )
-                    chunk = message.get("body", b"")
-                    if len(body) + len(chunk) > MAX_REQUEST_BYTES:
-                        response = JSONResponse(
-                            {"detail": "Request too large"},
-                            status_code=413,
-                            headers={"Connection": "close"},
-                        )
-                        return await response(scope, receive, send)
-                    body.extend(chunk)
-                    if not message.get("more_body", False):
-                        break
-        except TimeoutError:
+            outcome = await asyncio.wait_for(read_body(), BODY_READ_TIMEOUT)
+        except asyncio.TimeoutError:
             return await JSONResponse(
                 {"detail": "Request body timeout"},
                 status_code=408,
+                headers={"Connection": "close"},
+            )(scope, receive, send)
+        if outcome == "disconnect":
+            return await self.app(scope, _replay_with_disconnect([bytes(body)]), send)
+        if outcome == "too_large":
+            return await JSONResponse(
+                {"detail": "Request too large"},
+                status_code=413,
                 headers={"Connection": "close"},
             )(scope, receive, send)
         # Share the server's replay helper so streaming response readers see real

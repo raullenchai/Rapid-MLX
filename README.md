@@ -823,7 +823,8 @@ smaller of those limits and 32,768 tokens. Newly spawned harness chat servers us
 same default, bounded by locally cached model metadata. A server started with
 `--context-length` remains authoritative; set that flag on `serve` when
 attaching to an existing server. An explicit chat startup context can exceed
-the default budget, but cannot exceed the model or serving limit. The runtime
+the default budget, but cannot exceed the model or serving limit or the
+harness ceiling of 131,072 tokens. The runtime
 counts tokens using the inference server when available and falls back to a
 conservative text estimate. It reserves room for the answer, compacts older
 tool outputs, and saves summary checkpoints to keep longer conversations usable.

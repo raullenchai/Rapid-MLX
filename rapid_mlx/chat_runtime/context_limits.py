@@ -14,7 +14,11 @@ def context_limit(
     model: dict[str, Any] | None = None,
     previous: int | None = None,
 ) -> int:
-    """Respect an explicit request and every positive advertised server limit."""
+    """Respect an explicit request, the harness ceiling and advertised server limits.
+
+    Harness chats are capped at ``MAX_CONTEXT_TOKENS`` even when a larger window is
+    requested: longer transcripts are compacted instead.
+    """
     limits = [requested or DEFAULT_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS]
     advertised = [
         value
