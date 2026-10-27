@@ -851,8 +851,9 @@ symlink escapes. Use `/attach PATH` to explicitly share a file from another
 folder (or a sensitive file you choose to share). Attachments accept the same
 formats up to 20 MiB and save an extracted text snapshot capped at 1 MiB.
 Spreadsheet extraction caps each sheet at 1,000 rows/10,000 cells and reads
-cached formula values; it does not calculate formulas. Images and scanned PDFs
-without text are currently unsupported. `/regen` reruns workspace reads, so it
+cached formula values; it does not calculate formulas. PNG, JPEG, WebP, and GIF
+images work with vision models. Only the current message’s images are sent;
+earlier images become placeholders. Scanned PDFs without text are unsupported. `/regen` reruns workspace reads, so it
 can see file changes; attached snapshots stay fixed.
 `/export [PATH]` exports the selected branch as Markdown; `/help` lists commands.
 New conversations show `New chat · Type / for commands`; resuming shows the

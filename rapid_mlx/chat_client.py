@@ -56,9 +56,7 @@ COMMANDS = (
     ChatCommand(
         "/show-thinking", (), "", "Expand/collapse thinking (this session only)"
     ),
-    ChatCommand(
-        "/attach", (), "PATH", "Attach text, PDF, or Office documents (up to 20 MiB)"
-    ),
+    ChatCommand("/attach", (), "PATH", "Attach an image or document (up to 20 MiB)"),
     ChatCommand("/undo", (), "", "Restore the last file edit in this conversation"),
     ChatCommand("/export", ("/save",), "[PATH]", "Export this branch as Markdown"),
     ChatCommand("/help", ("/?",), "", "Show commands"),
@@ -466,6 +464,22 @@ class ChatClient:
                     ) as response:
                         if response.status_code == 401:
                             raise httpx.ConnectError("Owner restarted")
+                        if response.status_code >= 400:
+                            response.read()
+                            try:
+                                detail = response.json().get("detail")
+                            except ValueError:
+                                detail = None
+                            if (
+                                isinstance(detail, dict)
+                                and detail.get("code")
+                                in {
+                                    "image_model_unsupported",
+                                    "image_capability_unknown",
+                                }
+                                and isinstance(detail.get("message"), str)
+                            ):
+                                raise ValueError(detail["message"])
                         response.raise_for_status()
                         submitted = True
 
@@ -656,9 +670,12 @@ class ChatClient:
                     raise ValueError(message) from None
                 raise
             self.attachments.append(result["id"])
-            print(
-                f"Attached {terminal_safe_text(path.name)}. Ask a question to send it."
-            )
+            if result.get("mime", "").startswith("image/"):
+                print(f"Attached {terminal_safe_text(path.name)} (image).")
+            else:
+                print(
+                    f"Attached {terminal_safe_text(path.name)}. Ask a question to send it."
+                )
         elif command in {"/edit", "/regen"}:
             self.refresh()
             users = [

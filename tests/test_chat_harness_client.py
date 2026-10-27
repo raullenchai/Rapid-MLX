@@ -1074,3 +1074,81 @@ def test_permission_transport_error_replays_request(
     client.turn("hello")
     assert len(prompts) == (1 if accepted else 2)
     assert client.last_state.terminal["outcome"] == "completed"
+
+
+def test_attach_image_uses_owner_result(client_factory, monkeypatch, tmp_path, capsys):
+    client = client_factory()
+    client.conversation_id = "c"
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"pixels")
+    calls = []
+
+    def upload(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"id": "image-id", "mime": "image/png"}
+
+    monkeypatch.setattr(client, "request", upload)
+    client.command(f"/attach {path}")
+    assert calls[0][0] == ("POST", "/conversations/c/attachments")
+    assert calls[0][1]["content"] == b"pixels"
+    assert client.attachments == ["image-id"]
+    assert "Attached photo.png (image)." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [413, 415, 422])
+def test_image_upload_error_message(client_factory, monkeypatch, tmp_path, status):
+    client = client_factory()
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"pixels")
+    response = httpx.Response(
+        status,
+        json={"detail": {"message": "Owner says no"}},
+        request=httpx.Request("POST", "http://owner"),
+    )
+    monkeypatch.setattr(client, "request", lambda *a, **k: response.raise_for_status())
+    with pytest.raises(ValueError, match="Owner says no"):
+        client.command(f"/attach {path}")
+
+
+@pytest.mark.parametrize(
+    "code", ["image_model_unsupported", "image_capability_unknown"]
+)
+def test_image_turn_error_message(client_factory, monkeypatch, code):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    client.client.close()
+    client.client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                422, json={"detail": {"code": code, "message": "Owner image error"}}
+            )
+        )
+    )
+    with pytest.raises(ValueError, match="Owner image error"):
+        client.turn("look")
+
+
+def test_attach_document_confirmation(client_factory, monkeypatch, tmp_path, capsys):
+    client = client_factory()
+    path = tmp_path / "doc.txt"
+    path.write_text("hello")
+    monkeypatch.setattr(
+        client, "request", lambda *a, **k: {"id": "doc", "mime": "text/plain"}
+    )
+    client.command(f"/attach {path}")
+    assert "Attached doc.txt. Ask a question to send it." in capsys.readouterr().out
+
+
+def test_turn_invalid_error_body_keeps_http_error(client_factory, monkeypatch):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    client.client.close()
+    client.client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(500, content=b"invalid")
+        )
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        client.turn("hello")
