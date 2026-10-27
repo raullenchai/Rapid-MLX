@@ -57,3 +57,28 @@ def test_flint_stop_waits_for_model_written_reasoning():
     raw = "<think>Observation: private</think>Answer. Observation: x"
     hit = find_stop_in_answer(raw, ["Observation:"], scope, terminal=True)
     assert hit is not None and raw[: hit[1]].endswith("Answer. ")
+
+
+@pytest.mark.parametrize(
+    "model,contract,suffix,expected",
+    [
+        ("flint-40b-a2.5b-4bit", "flint", "<think>", True),
+        ("flint-40b-a2.5b-4bit", "flint", "", False),
+        ("LiquidAI/LFM2.5-24B-A2B-MLX-4bit", "chatml", "<think>", True),
+        ("LiquidAI/LFM2.5-24B-A2B-MLX-4bit", "chatml", "<think>x</think>", False),
+        ("qwen3.5-4b-4bit", "chatml", "", True),
+    ],
+)
+def test_engine_scopes_stop_by_rendered_suffix(model, contract, suffix, expected):
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.prompt_parse_context import PromptParseContext
+    from rapid_mlx.reasoning.think_stop import ReasoningStopScope
+
+    engine = object.__new__(BatchedEngine)
+    engine._model_name = model
+    # Non-owned families keep the request-time scope unchanged.
+    kwargs = {"reasoning_stop_scope": ReasoningStopScope("<think>", "</think>", True)}
+    engine._align_owned_stop_scope(
+        kwargs, PromptParseContext(suffix, None, None, False, contract)
+    )
+    assert kwargs["reasoning_stop_scope"].starts_in_reasoning is expected

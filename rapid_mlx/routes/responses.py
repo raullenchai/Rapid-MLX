@@ -3915,6 +3915,9 @@ async def _stream_responses(
                     output, include_timing=not nonprogress_retry
                 )
 
+            if getattr(output, "reasoning_text", ""):
+                # Hidden sidecar proof of reasoning; see the note below.
+                terminal_reasoning_sidecar_seen = True
             for content in owned_content(prompt_owner.release_held(output)):
                 async for packet in _emit_text_delta(content):
                     yield packet
@@ -3928,14 +3931,10 @@ async def _stream_responses(
                 continue
             merge_owned_reasoning()
 
-            terminal_reasoning_text = getattr(output, "reasoning_text", "")
-            if terminal_reasoning_text:
-                # Treat terminal ``reasoning_text`` as a hidden sidecar:
-                # it proves the model generated reasoning before stopping,
-                # but it is not a safe public summary. Parser/channel
-                # reasoning deltas accumulated below remain the only text
-                # we expose in ``reasoning.summary``.
-                terminal_reasoning_sidecar_seen = True
+            # Terminal ``reasoning_text`` is a hidden sidecar: it proves the
+            # model generated reasoning before stopping, but it is not a safe
+            # public summary. Parser/channel reasoning deltas accumulated
+            # below remain the only text we expose in ``reasoning.summary``.
             terminal_raw_text = getattr(output, "raw_text", "")
             if chunk_is_terminal and terminal_raw_text:
                 accumulated_raw_parts.append(terminal_raw_text)

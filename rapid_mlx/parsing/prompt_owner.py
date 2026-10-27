@@ -70,6 +70,14 @@ def owns_prompt_state(model: str | None, *, flint: bool) -> bool:
     return flint or "lfm2.5" in (model or "").lower()
 
 
+def owned_initial_channel(context: PromptParseContext) -> str:
+    """Channel the rendered assistant suffix leaves open for owned families."""
+    suffix = context.assistant_suffix
+    return (
+        "reasoning" if suffix.rfind("<think>") > suffix.rfind("</think>") else "content"
+    )
+
+
 class PromptOutputOwner:
     def __init__(self, model: str | None = ""):
         self.model = (model or "").lower()
@@ -96,13 +104,9 @@ class PromptOutputOwner:
             ):
                 # mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647:
                 # rendered prompt state, never the requested thinking switch.
-                suffix = context.assistant_suffix
-                initial = (
-                    "reasoning"
-                    if suffix.rfind("<think>") > suffix.rfind("</think>")
-                    else "content"
+                context = replace(
+                    context, initial_channel=owned_initial_channel(context)
                 )
-                context = replace(context, initial_channel=initial)
                 config = ParseContext(
                     prompt=context,
                     terminals=(
