@@ -1014,3 +1014,63 @@ def test_cancel_before_first_event_replays_without_resubmission(
     assert [r.method for r in calls] == ["POST", "POST", "GET"]
     assert calls[-1].headers["Last-Event-ID"] == "turn:0"
     assert client.last_state.terminal["outcome"] == "cancelled"
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_permission_transport_error_replays_request(
+    client_factory, monkeypatch, accepted
+):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(client, "connect", lambda: None)
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    monkeypatch.setattr("rapid_mlx.chat_client.time.sleep", lambda _: None)
+    prompts = []
+    monkeypatch.setattr(
+        client.input, "approval", lambda **kwargs: prompts.append(kwargs) or "y"
+    )
+    permission = event(
+        1,
+        "permission.request",
+        op_id="op",
+        revision=1,
+        options=["once"],
+        expires_at=9999999999,
+        reason="test",
+    )
+    decisions = []
+
+    def handle(request):
+        if request.url.path.endswith("/operations/op"):
+            return httpx.Response(
+                200,
+                json={
+                    "state": "resolved" if accepted and decisions else "intent",
+                    "revision": 1,
+                },
+            )
+        if request.url.path.endswith("/permission.response"):
+            decisions.append(True)
+            if len(decisions) == 1:
+                raise httpx.ReadError("decision response lost")
+            return httpx.Response(200, json={})
+        if request.method == "POST":
+            return httpx.Response(200, text=encode([permission]))
+        assert request.headers["Last-Event-ID"] == "turn:0"
+        return httpx.Response(
+            200,
+            text=encode(
+                [
+                    permission,
+                    event(2, "text.delta", part_id="a", text="done"),
+                    event(3, "turn.terminal", outcome="completed"),
+                ]
+            ),
+        )
+
+    client.client.close()
+    client.client = httpx.Client(transport=httpx.MockTransport(handle))
+    client.turn("hello")
+    assert len(prompts) == (1 if accepted else 2)
+    assert client.last_state.terminal["outcome"] == "completed"

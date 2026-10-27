@@ -470,6 +470,7 @@ class ChatClient:
                         submitted = True
 
                         for event in sse_events(response.iter_lines()):
+                            previous_cursor = state.cursor
                             if state.apply(event):
                                 failures = 0
                                 renderer.update(event)
@@ -480,7 +481,11 @@ class ChatClient:
                                             "percent", 0
                                         )
                                 if event["event"]["type"] == "permission.request":
-                                    self.permission(event["event"], renderer)
+                                    try:
+                                        self.permission(event["event"], renderer)
+                                    except httpx.TransportError:
+                                        state.cursor = previous_cursor
+                                        raise
                     if state.terminal is None:
                         failures += 1
                         self.connect()
