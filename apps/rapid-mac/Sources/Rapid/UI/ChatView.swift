@@ -634,6 +634,8 @@ struct ChatView: View {
                         message: ChatView.transcriptPresentationMessage(message),
                         isStreaming: viewModel.isStreaming,
                         toolResults: toolResults,
+                        ownerApprovals: viewModel.ownerApprovals,
+                        onOwnerApproval: { viewModel.resolveOwnerPermission(opID: $0, allow: $1) },
                         assistantHasContent: message.role == .assistant
                             ? !message.content.isEmpty
                             : nil,
@@ -1803,6 +1805,8 @@ private struct MessageRow: View {
     /// Tool-result rows keyed by the ``ToolCall.id`` they answer. Used to
     /// pair each dispatched call with its outcome inside this row.
     var toolResults: [String: ChatMessage] = [:]
+    var ownerApprovals: [String: ChatViewModel.OwnerApproval] = [:]
+    var onOwnerApproval: (String, Bool) -> Void = { _, _ in }
     /// The authoritative body is deliberately not part of `message` while it
     /// streams. This one-bit projection changes only when content first lands.
     var assistantHasContent: Bool? = nil
@@ -2123,7 +2127,7 @@ private struct MessageRow: View {
             if let calls = message.toolCalls, !calls.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(calls) { call in
-                        ToolCallChip(call: call, result: toolResults[call.id])
+                        ToolCallChip(call: call, result: toolResults[call.id], approval: ownerApprovals[call.id], onApproval: onOwnerApproval)
                     }
                 }
             }
@@ -2498,6 +2502,8 @@ private struct MessageRow: View {
 private struct ToolCallChip: View {
     let call: ToolCall
     let result: ChatMessage?
+    var approval: ChatViewModel.OwnerApproval? = nil
+    var onApproval: (String, Bool) -> Void = { _, _ in }
 
     /// Deep-link channel into Settings. Optional so the chip still renders in
     /// any host that hasn't injected the router (previews, snapshot harness) —
@@ -2645,6 +2651,22 @@ private struct ToolCallChip: View {
             .accessibilityLabel("Tool call \(call.function.name)")
             .accessibilityIdentifier("ToolCallChip.Toggle.\(call.id)")
 
+            if let approval {
+                HStack(spacing: 8) {
+                    if approval.unavailable {
+                        Text("Approval expired").font(.rapid(size: 11)).foregroundStyle(.secondary)
+                    }
+                    Button("Allow") { onApproval(approval.opID, true) }
+                        .accessibilityLabel("Allow \(call.function.name)")
+                    Button("Deny") { onApproval(approval.opID, false) }
+                        .accessibilityLabel("Deny \(call.function.name)")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(approval.unavailable)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     Divider()

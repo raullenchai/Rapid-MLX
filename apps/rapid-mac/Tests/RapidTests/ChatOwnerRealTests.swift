@@ -29,9 +29,9 @@ private actor RealProjection {
 
 @Suite(.serialized) struct ChatOwnerRealTests {
     @Test(.enabled(if: realOwnerPythonAvailable()))
-    func realOwnerLifecycle() async throws {
+    @MainActor func realOwnerLifecycle() async throws {
         let python = try #require(ProcessInfo.processInfo.environment["RAPID_MLX_CHAT_OWNER_PYTHON"])
-        let root = URL(fileURLWithPath: "/private/tmp/rapid-mlx-chat-cli-slice/p02-scratch/e2e-home-" + UUID().uuidString)
+        let root = URL(fileURLWithPath: "/private/tmp/rapid-mlx-chat-cli-slice/p04-scratch/e2e-home-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let fake = Process()
@@ -72,6 +72,13 @@ s.serve_forever()
             if let start = ChatOwnerDiscovery.liveProcessStartTime(status.pid), abs(start - status.processStartTime) <= 0.01 { _ = kill(status.pid, SIGTERM) }
         }
         defer { stop(owner) }
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.chatBackend = .ownerV1
+        let model = ChatViewModel(client: ChatStreamClient(baseURL: URL(string: "http://127.0.0.1:\(port)/v1")!), chatBackendConfig: config, ownerClientFactory: { try await a.turnClient() }, persistsConversations: false)
+        model.send("hello", alias: "fixture")
+        await model._testingWaitForCurrentTurn()
+        #expect(model.messages.contains { $0.role == .assistant && $0.content.contains("Hello from fixture.") })
+        #expect(model.conversations.first?.backend == .ownerV1)
         let bearerURL = root.appendingPathComponent("default/run/" + owner.credentialFile)
         let token = try String(contentsOf: bearerURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         func request(_ status: ChatOwnerStatus, _ token: String, _ path: String, method: String, body: String? = nil) async throws -> Data {
