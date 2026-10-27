@@ -18,7 +18,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
-from urllib.parse import urlsplit
 
 from pydantic_ai import ApprovalRequired, RunContext
 from pydantic_ai.tools import DeferredToolResults, ToolDenied
@@ -204,13 +203,11 @@ def terminal_environment():
         ):
             continue
         # URLs with userinfo can hide credentials under otherwise innocuous names.
-        try:
-            if ("://" in value or value.startswith("//")) and "@" in urlsplit(
-                value
-            ).netloc:
-                continue
-        except ValueError:
-            # Malformed URL authority: fail closed rather than expose userinfo.
+        authorities = value.split("//")[1:]
+        if any(
+            "@" in part.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+            for part in authorities
+        ):
             continue
         env[name] = value
     env.update(PYTHONUNBUFFERED="1", GIT_TERMINAL_PROMPT="0", PAGER="cat")

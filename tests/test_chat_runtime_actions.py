@@ -968,6 +968,7 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
         "SAFE_URL": "https://example.test?email=user@example.test",
         "BAD_URL": "https://user:pass@[invalid",
         "RELATIVE_URL": "//user:pass@example.test/path",
+        "JDBC_URL": "jdbc:postgresql://user:pass@example.test/db",
         "CUSTOM_SETTING": "ordinary-setting",
     }
     for name, value in values.items():
@@ -991,6 +992,7 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
             "CUSTOM_URL",
             "BAD_URL",
             "RELATIVE_URL",
+            "JDBC_URL",
         ):
             assert name not in result and values[name] not in result
             assert name not in recorded and values[name] not in recorded
