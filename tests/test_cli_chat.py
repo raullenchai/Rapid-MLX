@@ -3870,7 +3870,7 @@ def test_harness_preflight_fails_before_model_download_or_spawn(
         cli.chat_command(_ns_for_chat(0, base_url=None, harness=not env_enabled))
     assert error.value.code == 2
     message = capsys.readouterr().err
-    assert "pip install 'rapid-mlx[chat]'" in message
+    assert "pip install rapid-mlx" in message
     assert (
         "Python 3.11" in message
         if missing == "python"

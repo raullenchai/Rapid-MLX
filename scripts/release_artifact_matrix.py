@@ -51,7 +51,7 @@ MATRIX_FILES = (
 )
 
 # These are the client libraries that the strict matrix imports.  They remain
-# test-only: none are added to the released package's runtime dependency set.
+# installed in the isolated client venv; HTTPX is also a base runtime dependency.
 MATRIX_TEST_DEPENDENCIES = (
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

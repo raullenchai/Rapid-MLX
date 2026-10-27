@@ -172,11 +172,11 @@ def _canonical_pkg_name(spec: str) -> str:
 def test_matrix_test_dependencies_are_client_only(matrix):
     """The SDK/test clients must never leak into the wheel's RUNTIME deps.
 
-    They belong only in the CLIENT venv, isolated from the server venv, so a
-    missing runtime dep in the wheel cannot be masked by a client's transitive
+    The client SDKs belong in the CLIENT venv, isolated from the server venv,
+    so a missing runtime dependency cannot be masked by their transitive
     closure. A presence check alone is not enough (it stays green even if a
-    client is ALSO added to ``[project].dependencies``); assert the client set
-    is disjoint from the released package's declared runtime dependencies.
+    client is ALSO added to ``[project].dependencies``); permit only HTTPX,
+    which is independently required by the built-in chat runtime.
     """
     try:
         import tomllib  # type: ignore[import-not-found]
@@ -201,7 +201,7 @@ def test_matrix_test_dependencies_are_client_only(matrix):
     # Sanity: the known client SDKs really are in the client tuple.
     assert {"openai", "langchain-openai", "aider-chat"} <= client_pkgs
 
-    leaked = client_pkgs & runtime_deps
+    leaked = (client_pkgs & runtime_deps) - {"httpx"}
     assert not leaked, (
         "matrix client/test package(s) also appear in the released package's "
         "runtime [project].dependencies — this defeats the server/client venv "

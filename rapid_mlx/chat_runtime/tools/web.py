@@ -435,10 +435,8 @@ class WebTools:
     async def _search(self, client: httpx.AsyncClient, query: str) -> WebResult:
         keys = {
             "keenable": self.environ.get("KEENABLE_API_KEY", "").strip(),
-            **{
-                name: self.environ.get(f"RAPID_MLX_{name.upper()}_API_KEY", "").strip()
-                for name in ("tavily", "brave")
-            },
+            "tavily": self.environ.get("RAPID_MLX_TAVILY_API_KEY", "").strip(),
+            "brave": self.environ.get("RAPID_MLX_BRAVE_API_KEY", "").strip(),
         }
         explicit = self.environ.get("RAPID_MLX_WEB_SEARCH_PROVIDER", "").strip().lower()
         if explicit and explicit not in keys:

@@ -12893,11 +12893,11 @@ def _chat_server_log_target(args) -> str | None:
 
 
 def _preflight_chat_harness() -> None:
-    """Fail before starting inference when the optional chat runtime is unavailable."""
+    """Fail before starting inference when the chat runtime is unavailable."""
     if sys.version_info < (3, 11):
         print(
             "Error: --harness requires Python 3.11 or newer. Install with "
-            "python3.11 -m pip install 'rapid-mlx[chat]'.",
+            "python3.11 -m pip install rapid-mlx.",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -12908,8 +12908,8 @@ def _preflight_chat_harness() -> None:
             importlib.import_module(module)
     except ImportError:
         print(
-            "Error: --harness requires the chat dependencies. Install with "
-            "python -m pip install 'rapid-mlx[chat]'.",
+            "Error: --harness requires the chat dependencies. Repair with "
+            "python -m pip install rapid-mlx.",
             file=sys.stderr,
         )
         raise SystemExit(2) from None

@@ -244,6 +244,9 @@ def test_grep_lookbehind_falls_back(tmp_path, monkeypatch, backend):
     ]
     assert result["backend"] == "python"
     assert not result["truncated"]
+    lookahead = request(tmp_path, "grep", pattern=r"foo(?=bar)")
+    assert lookahead["matches"] == result["matches"]
+    assert lookahead["backend"] == "python"
 
 
 def test_grep_ripgrep_per_file_limit_reports_truncation(tmp_path, monkeypatch):

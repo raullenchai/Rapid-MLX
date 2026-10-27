@@ -122,6 +122,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
+        "RAPID_MLX_CHAT_APPROVALS",  # harness tool approval policy
+        "RAPID_MLX_CHAT_ACTION_TOOLS",  # harness action tool availability
+        "RAPID_MLX_CHAT_HARNESS",  # select the chat interface
+        "RAPID_MLX_CHAT_IDLE_SECONDS",  # harness owner idle timeout
+        "RAPID_MLX_CHAT_HOME",  # harness state directory
+        "RAPID_MLX_CHAT_WEB_TOOLS",  # harness web tool availability
+        "RAPID_MLX_WEB_SEARCH_PROVIDER",  # harness web search provider
+        "RAPID_MLX_TAVILY_API_KEY",  # harness search provider credential
+        "RAPID_MLX_BRAVE_API_KEY",  # harness search provider credential
         "RAPID_MLX_RUNTIME_PYTHON",
         # Loopback-only test override for the telemetry endpoint. A non-loopback
         # value is ignored, so it cannot route telemetry to a third party.

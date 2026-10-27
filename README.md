@@ -802,11 +802,11 @@ Apache 2.0 — see [LICENSE](https://github.com/raullenchai/Rapid-MLX/blob/main/
 
 ### Experimental persistent chat
 
-The harness requires Python 3.11 or newer and the optional `chat` dependencies.
-Install them, then try the harness with a local inference server:
+The harness is included in the base install and requires Python 3.11 or newer.
+Try it with a local inference server:
 
 ```bash
-python -m pip install 'rapid-mlx[chat]'
+python -m pip install rapid-mlx
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
 # In another terminal:
 rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood

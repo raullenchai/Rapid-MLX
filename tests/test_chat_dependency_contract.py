@@ -1,4 +1,4 @@
-"""Keep the opt-in harness installable without raising the base Python floor."""
+"""Keep the base harness installable without raising the Python floor."""
 
 import sys
 from types import SimpleNamespace
@@ -7,7 +7,7 @@ import pytest
 from packaging.requirements import Requirement
 
 
-def test_harness_extra_and_test_lanes_respect_python_floor():
+def test_base_harness_respects_python_floor():
     if sys.version_info >= (3, 11):
         import tomllib
     else:
@@ -17,18 +17,17 @@ def test_harness_extra_and_test_lanes_respect_python_floor():
     config = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())[
         "project"
     ]
-    assert not any("pydantic-ai" in dep for dep in config["dependencies"])
+    requirements = {
+        Requirement(dep).name: Requirement(dep) for dep in config["dependencies"]
+    }
+    agent = requirements["pydantic-ai-slim"]
+    assert "openai" in agent.extras
+    assert str(agent.specifier) == "==2.61.0"
+    assert agent.marker is not None
+    assert not agent.marker.evaluate({"python_version": "3.10"})
+    assert agent.marker.evaluate({"python_version": "3.11"})
+    assert {"httpx", "prompt-toolkit"} <= requirements.keys()
     extras = config["optional-dependencies"]
-    for extra in ("chat", "all", "test", "dev", "ci-linux"):
-        requirements = {
-            Requirement(dep).name: Requirement(dep) for dep in extras[extra]
-        }
-        agent = requirements["pydantic-ai-slim"]
-        assert "openai" in agent.extras
-        assert agent.marker is not None
-        assert not agent.marker.evaluate({"python_version": "3.10"})
-        assert agent.marker.evaluate({"python_version": "3.11"})
-        assert {"httpx", "prompt-toolkit"} <= requirements.keys()
     for extra in ("chat", "all"):
         assert not any(Requirement(dep).name == "pyte" for dep in extras[extra])
 

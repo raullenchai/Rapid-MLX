@@ -164,6 +164,9 @@ full. The ranges below are the **root manifest's**; the sidecar build pins
 | tqdm | `>=4.66.0` | MPL-2.0 AND MIT | https://github.com/tqdm/tqdm |
 | pyyaml | `>=6.0` | MIT | https://github.com/yaml/pyyaml |
 | tomli-w | `>=1.0.0` | MIT | https://github.com/hukkin/tomli-w |
+| pydantic-ai-slim | `==2.61.0` (Python 3.11+) | MIT | https://github.com/pydantic/pydantic-ai |
+| prompt-toolkit | `>=3.0.52,<4` | BSD-3-Clause | https://github.com/prompt-toolkit/python-prompt-toolkit |
+| httpx | `>=0.27,<0.29` | BSD-3-Clause | https://github.com/encode/httpx |
 | requests | `>=2.28.0` | Apache-2.0 | https://github.com/psf/requests |
 | rich | `>=13.8.0` | MIT | https://github.com/Textualize/rich |
 | tabulate | `>=0.9.0` | MIT | https://github.com/astanin/python-tabulate |

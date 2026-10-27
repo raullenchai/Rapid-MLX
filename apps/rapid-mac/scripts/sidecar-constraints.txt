@@ -106,3 +106,16 @@ tzdata==2026.5
 urllib3==2.8.0
 uvicorn==0.54.0
 websockets==17.3
+genai-prices==0.1.13
+griffelib==2.4.1
+httpcore2==2.16.0
+httpx2==2.16.0
+jiter==0.18.0
+logfire-api==5.4.0
+openai==3.39.0
+prompt-toolkit==3.0.53
+pydantic-ai-slim==2.61.0
+pydantic-graph==2.61.0
+sniffio==1.3.1
+truststore==0.10.5
+wcwidth==0.9.4
