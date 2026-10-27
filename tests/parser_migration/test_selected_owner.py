@@ -205,6 +205,18 @@ def test_new_opener_flushes_the_partial_envelope(split):
     assert [call["name"] for call in the_owner.calls] == ["run_shell_command"]
 
 
+@pytest.mark.parametrize("split", [1, 7, 1000])
+def test_reasoning_closer_ends_an_unfinished_envelope(split):
+    the_owner = owner()
+    raw = "<think>plan <tool_call>example</think>Answer"
+    reasoning, content, _ = stream(the_owner, raw, split)
+    assert (reasoning, content, the_owner.calls) == (
+        "plan <tool_call>example",
+        "Answer",
+        [],
+    )
+
+
 @pytest.mark.parametrize("surface", SURFACES)
 def test_buffered_routes_keep_literal_envelopes_and_later_calls(surface):
     result = route("qwen3", "hermes", MARKER, surface, False)

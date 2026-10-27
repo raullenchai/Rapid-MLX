@@ -175,7 +175,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
     still consumed once. A closed envelope is
     decoded once; a closer or opener inside a JSON body's string is argument
     text. An envelope that yields no call, a partial envelope interrupted by a
-    new opener, and an envelope left open at finish stay verbatim in the
+    new opener or by its reasoning block's closer, and an envelope left open at finish stay verbatim in the
     channel they arrived in. A closed GLM argument list without its opener is
     an unpublished parse failure.
     """
@@ -208,6 +208,15 @@ class EnvelopeToolGrammar(ChannelGrammar):
                 flushed = self._flush()
                 self._open(lexeme)
                 return flushed
+            if (
+                terminal == "reasoning_end"
+                and self.origin == "reasoning"
+                and self.reasoning_open
+                and not self.json_string
+            ):
+                # The reasoning block the envelope interrupted ends first; the
+                # unfinished envelope stays verbatim in that reasoning.
+                return self._flush() + self.consume(lexeme)
             self.envelope.append(lexeme)
             if terminal == "tool_end" and not self.json_string:
                 return self._close()
