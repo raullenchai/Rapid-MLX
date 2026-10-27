@@ -51,7 +51,9 @@ def test_one_tool_owner(reasoning):
     assert result["calls"] == EXPECTED
 
 
-@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
+@pytest.mark.parametrize(
+    "surface,stream", list(itertools.product(SURFACES, [False, True]))
+)
 def test_promotion(surface, stream):
     result = route(
         "qwen3", "hermes", "<think>Secret." + CALL + "</think>Answer", surface, stream

@@ -417,7 +417,9 @@ class PromptOutputOwner:
     def call(self, event: ToolEnd) -> dict:
         """The decoded call a ``ToolEnd`` event completed."""
         assert self.parser is not None
-        return self.parser.grammar.calls[event.index]
+        grammar = self.parser.grammar
+        assert isinstance(grammar, EnvelopeToolGrammar)
+        return grammar.calls[event.index]
 
 
 def split_buffered(
