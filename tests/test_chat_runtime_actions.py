@@ -965,6 +965,8 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
         "AWS_REGION": "test-region-value",
         "DB_PASSWORD": "test-password-value",
         "CUSTOM_URL": "https://user:pass@example.test/path",
+        "SAFE_URL": "https://example.test?email=user@example.test",
+        "BAD_URL": "https://user:pass@[invalid",
         "CUSTOM_SETTING": "ordinary-setting",
     }
     for name, value in values.items():
@@ -980,10 +982,18 @@ async def test_terminal_environment_and_durable_receipt(tmp_path, monkeypatch):
         )
         operations = await store.list_operations(req.conversation_id)
         recorded = json.dumps(operations)
-        for name in list(values)[:-1]:
+        for name in (
+            "DATABASE_URL",
+            "SERVICE_TOKEN",
+            "AWS_REGION",
+            "DB_PASSWORD",
+            "CUSTOM_URL",
+            "BAD_URL",
+        ):
             assert name not in result and values[name] not in result
             assert name not in recorded and values[name] not in recorded
         assert "NOT_SELECTED" not in result and "LC_TOKEN" not in result
+        assert "SAFE_URL=https://example.test?email=user@example.test" in result
         assert "CUSTOM_SETTING=ordinary-setting" in result
         assert "CUSTOM_SETTING=ordinary-setting" in recorded
         for command in ("python3 -c 'print(42)'", "git --version", "pwd"):
