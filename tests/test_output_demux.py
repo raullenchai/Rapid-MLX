@@ -331,6 +331,31 @@ def test_adapter_exception_is_terminal_and_cannot_replay(failure):
         parser.accept_native([], end_offset=parser.offset)
 
 
+def test_release_pending_resolves_held_prefix_once():
+    ctx = context(terminals=(Terminal("reasoning_start", "<think>"),))
+    parser = OutputDemultiplexer(ctx)
+    assert parser.feed("Hi <thi") == [ContentDelta(Span(0, 3), "Hi ")]
+    assert parser.release_pending() == [ContentDelta(Span(3, 7), "<thi")]
+    assert parser.release_pending() == []
+    parser.finish()
+    assert parser.release_pending() == []
+
+
+def test_release_pending_failure_is_terminal():
+    class FailingGrammar(ChannelGrammar):
+        def consume(self, lexeme):
+            raise RuntimeError("adapter failed on released text")
+
+    ctx = context(terminals=(Terminal("reasoning_start", "<think>"),))
+    parser = OutputDemultiplexer(ctx, FailingGrammar(ctx))
+    parser.feed("<thi")
+    with pytest.raises(RuntimeError):
+        parser.release_pending()
+    assert parser.release_pending() == []
+    with pytest.raises(ValueError, match="parser failed"):
+        parser.finish()
+
+
 def test_empty_feed_does_not_select_a_routing_mode():
     parser = OutputDemultiplexer(context())
     assert parser.feed("") == []
