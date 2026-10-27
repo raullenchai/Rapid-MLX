@@ -348,9 +348,21 @@ async def run_owner(profile: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Internal model-free chat owner")
     parser.add_argument("--profile", default="default")
+    parser.add_argument(
+        "--ensure",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
     try:
-        asyncio.run(run_owner(args.profile))
+        if args.ensure:
+            # Packaged clients need Python's startup/lifetime-lock protocol and
+            # detached spawn semantics, but credentials must only travel via the
+            # private bearer file. Keep stdout empty and let the client perform
+            # the same authenticated discovery validation after this returns.
+            discover_or_start(args.profile)
+        else:
+            asyncio.run(run_owner(args.profile))
     except (RuntimeError, ValueError, OSError) as error:
         # Fixed operational errors only; never dump model prompts or credentials.
         print(f"Chat owner unavailable: {type(error).__name__}", file=sys.stderr)

@@ -4,6 +4,8 @@ import json
 import os
 import signal
 import stat
+import subprocess
+import sys
 import time
 
 import httpx
@@ -108,6 +110,52 @@ def test_owner_idle_exit(tmp_path, monkeypatch):
     finally:
         if process.is_running():
             stop_owned(owner)
+
+
+def test_ensure_bootstrap_is_credential_silent(tmp_path):
+    environment = {
+        **os.environ,
+        "RAPID_MLX_CHAT_HOME": str(tmp_path),
+        "RAPID_MLX_CHAT_IDLE_SECONDS": "60",
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "rapid_mlx.chat_runtime.owner",
+            "--profile",
+            "ensure-test",
+            "--ensure",
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    run = tmp_path / "ensure-test" / "run"
+    record = json.loads((run / "discovery.json").read_text())
+    token = (run / record["credential_file"]).read_text().strip()
+    assert token and token not in result.stderr
+    try:
+        again = subprocess.run(result.args, env=environment, capture_output=True, text=True, timeout=25)
+        assert again.returncode == 0, again.stderr
+        assert again.stdout == "" and token not in again.stderr
+        assert json.loads((run / "discovery.json").read_text())["owner_epoch"] == record["owner_epoch"]
+    finally:
+        stop_owned({**record, "token": token})
+
+
+def test_ensure_failure_is_silent_and_nonzero(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-m", "rapid_mlx.chat_runtime.owner", "--profile", "../invalid", "--ensure"],
+        env={**os.environ, "RAPID_MLX_CHAT_HOME": str(tmp_path)},
+        capture_output=True, text=True, timeout=25,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.strip() == "Chat owner unavailable: ValueError"
 
 
 def test_lease_expiry_active_work_and_detach(monkeypatch):
