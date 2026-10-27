@@ -80,8 +80,8 @@ class PromptOutputOwner:
         if (
             self.parser is None
             and context is not None
-            and output.channel is None
-            and not output.tool_calls
+            and getattr(output, "channel", None) is None
+            and not getattr(output, "tool_calls", None)
         ):
             if context.template_contract == "flint" or "lfm2.5" in self.model:
                 # mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647:
@@ -119,12 +119,13 @@ class PromptOutputOwner:
         # whose first event used text parsing. Let the existing route handlers
         # consume structured calls without feeding their argument summaries back
         # into the text grammar. Retain native narration in the final projection.
-        if output.channel is not None or output.tool_calls:
+        channel = getattr(output, "channel", None)
+        if channel is not None or getattr(output, "tool_calls", None):
             selected = self.prompt_context is not None and (
                 self.prompt_context.template_contract == "flint"
                 or "lfm2.5" in self.model
             )
-            if selected and output.channel in (None, "content"):
+            if selected and channel in (None, "content"):
                 self.content.append(output.new_text)
             return None
         if self.parser is None:
