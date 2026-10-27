@@ -247,6 +247,19 @@ def _mlx_default_device_guard():
         mx.set_default_device(before)
 
 
+@pytest.fixture(autouse=True)
+def _idle_startup_progress():
+    """Leave the process-wide startup tracker idle after every test.
+
+    Lifespan tests can begin startup without reaching ``ready``; a live
+    tracker would make later checked loads take the progress path.
+    """
+    yield
+    from rapid_mlx.startup_progress import startup_progress
+
+    startup_progress.__init__()
+
+
 @pytest.fixture(autouse=True, scope="module")
 def _restore_mlx_default_device_per_module():
     """Also cover module-scoped fixtures, which the per-test guard sees as baseline."""
