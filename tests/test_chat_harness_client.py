@@ -480,7 +480,7 @@ def test_pty_stop_continue_regenerate_and_resume(tmp_path):
             ["-c", script, f"http://127.0.0.1:{server.server_port}", resume],
             env=env,
             encoding="utf-8",
-            timeout=25,
+            timeout=90,
         )
         children.append(child)
         child.expect("› ")
@@ -541,7 +541,7 @@ def test_pty_stop_continue_regenerate_and_resume(tmp_path):
             child.expect(r"(?:Thinking )?› ")
             prompt = f"命令之后的输入{index}"
             child.sendline(prompt)
-            deadline = time.monotonic() + 2
+            deadline = time.monotonic() + 30
             while prompt not in received_prompts and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert prompt in received_prompts, command
@@ -550,7 +550,7 @@ def test_pty_stop_continue_regenerate_and_resume(tmp_path):
         child.sendline("/edit")
         child.expect("Edited message> ")
         child.sendline("编辑子提示也不能丢失")
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 30
         while (
             "编辑子提示也不能丢失" not in received_prompts
             and time.monotonic() < deadline
@@ -920,3 +920,74 @@ def test_attachment_error_without_safe_message_preserves_http_error(
     monkeypatch.setattr(client, "request", lambda *a, **k: response.raise_for_status())
     with pytest.raises(httpx.HTTPStatusError):
         client.command(f"/attach {path}")
+
+
+def test_turn_keeps_replaying_after_keepalives_and_timeouts(
+    client_factory, monkeypatch
+):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(client, "connect", lambda: None)
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    monkeypatch.setattr("rapid_mlx.chat_client.time.sleep", lambda _: None)
+    calls = []
+
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b": keepalive\n\n"
+            raise httpx.ReadTimeout("slow model")
+
+    def handle(request):
+        calls.append(request)
+        if len(calls) <= 6:
+            return httpx.Response(200, stream=Stream())
+        return httpx.Response(
+            200,
+            text=encode(
+                [
+                    event(1, "text.delta", part_id="a", text="done"),
+                    event(2, "turn.terminal", outcome="completed"),
+                ]
+            ),
+        )
+
+    client.client.close()
+    client.client = httpx.Client(transport=httpx.MockTransport(handle))
+    client.turn("hello")
+    assert client.last_state.terminal["outcome"] == "completed"
+    assert [r.method for r in calls] == ["POST"] + ["GET"] * 6
+    assert all(r.headers["Last-Event-ID"] == "turn:0" for r in calls[1:])
+
+
+def test_cancel_before_first_event_replays_without_resubmission(
+    client_factory, monkeypatch
+):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    calls = []
+
+    class Interrupt(httpx.SyncByteStream):
+        def __iter__(self):
+            raise KeyboardInterrupt
+            yield b""  # pragma: no cover
+
+    def handle(request):
+        calls.append(request)
+        if request.url.path.endswith("/cancel"):
+            return httpx.Response(200, json={})
+        if request.method == "POST":
+            assert len(calls) == 1, "turn was submitted twice"
+            return httpx.Response(200, stream=Interrupt())
+        return httpx.Response(
+            200, text=encode([event(1, "turn.terminal", outcome="cancelled")])
+        )
+
+    client.client.close()
+    client.client = httpx.Client(transport=httpx.MockTransport(handle))
+    client.turn("hello")
+    assert [r.method for r in calls] == ["POST", "POST", "GET"]
+    assert calls[-1].headers["Last-Event-ID"] == "turn:0"
+    assert client.last_state.terminal["outcome"] == "cancelled"

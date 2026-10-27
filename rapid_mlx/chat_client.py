@@ -447,26 +447,34 @@ class ChatClient:
         renderer = HarnessRenderer(state, expanded=self.expanded)
         cancelled = False
         failures = 0
+        submitted = False
         try:
             while state.terminal is None and failures < 4:
                 try:
-                    method = "GET" if state.cursor else "POST"
-                    path = (
-                        f"/turns/{state.turn_id}/events" if state.cursor else "/turns"
-                    )
+                    method = "GET" if submitted else "POST"
+                    path = f"/turns/{state.turn_id}/events" if submitted else "/turns"
                     headers = dict(self.headers)
-                    if state.cursor:
+                    if submitted:
                         headers["Last-Event-ID"] = f"{state.turn_id}:{state.cursor}"
                     with self.client.stream(
                         method,
                         self.endpoint + PREFIX + path,
                         headers=headers,
-                        **({"json": body} if not state.cursor else {}),
+                        **({"json": body} if not submitted else {}),
                     ) as response:
                         if response.status_code == 401:
                             raise httpx.ConnectError("Owner restarted")
                         response.raise_for_status()
-                        for event in sse_events(response.iter_lines()):
+                        submitted = True
+                        failures = 0
+
+                        def active_lines():
+                            nonlocal failures
+                            for line in response.iter_lines():
+                                failures = 0
+                                yield line
+
+                        for event in sse_events(active_lines()):
                             if state.apply(event):
                                 renderer.update(event)
                                 if event["event"]["type"] in {"context", "usage"}:
@@ -504,6 +512,7 @@ class ChatClient:
                         )
                         return
                     # Cancellation acknowledgement follows cleanup. Replay its terminal.
+                    submitted = True
                     failures = 0
                 except (httpx.TransportError, ReplayRequiredError):
                     failures += 1

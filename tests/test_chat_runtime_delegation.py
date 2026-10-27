@@ -451,7 +451,24 @@ async def test_duplicate_call_id_shares_one_child_and_rejects_changed_task(tmp_p
         await store.close()
 
 
-async def test_timeout_settles_child_approval_without_side_effect(tmp_path):
+async def test_timeout_settles_child_approval_without_side_effect(
+    tmp_path, monkeypatch
+):
+    import rapid_mlx.chat_runtime.delegation as delegation
+
+    timeouts = []
+
+    class AsyncioProxy:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        def timeout(self, delay):
+            scope = asyncio.timeout(delay)
+            timeouts.append(scope)
+            return scope
+
+    monkeypatch.setattr(delegation, "asyncio", AsyncioProxy())
+
     async def stream(messages, info):
         if child_prompt(messages):
             yield {
@@ -468,14 +485,20 @@ async def test_timeout_settles_child_approval_without_side_effect(tmp_path):
             yield delegate_calls(["Write file"], ["write_file"])
 
     store, runtime, request, workspace = await setup(tmp_path, stream)
-    runtime.delegation.limits = ChildLimits(timeout=0.1)
+    runtime.delegation.limits = ChildLimits(timeout=30)
     request = request.model_copy(update={"approvals": "always"})
     try:
-        events = await collect(runtime, request)
+        await runtime.submit(request)
+        events = []
+        async with asyncio.timeout(30):
+            async for envelope in runtime.events(request.turn_id):
+                if not envelope:
+                    continue
+                events.append(envelope)
+                if envelope["event"]["type"] == "permission.request":
+                    permission = envelope["event"]
+                    timeouts[-1].reschedule(asyncio.get_running_loop().time())
         assert events[-1]["event"]["outcome"] == "completed"
-        permission = next(
-            e["event"] for e in events if e["event"]["type"] == "permission.request"
-        )
         assert (await store.get_operation(permission["op_id"]))[
             "state"
         ] == "cancelled_before_effect"
