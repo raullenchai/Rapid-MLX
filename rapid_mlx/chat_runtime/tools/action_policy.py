@@ -6,7 +6,6 @@ from __future__ import annotations
 import ast
 import os
 import re
-import shlex
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,6 +138,77 @@ NETWORK_CLIENTS = {
 }
 
 
+SHELL_OPERATOR_CHARS = ";&|<>()\n"
+
+
+def shell_words(text):
+    """Split POSIX shell text into (word, is_operator) pairs.
+
+    Unlike shlex, this keeps whether punctuation was unquoted, so a quoted or
+    escaped ``;`` is an argument rather than a command separator.
+    """
+
+    words = []
+    word = []
+    started = False
+    quote = None
+    index = 0
+
+    def flush():
+        nonlocal started
+        if started:
+            words.append(("".join(word), False))
+        word.clear()
+        started = False
+
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word.append(char)
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif char == "\\" and text[index + 1 : index + 2] in {'"', "\\", "$", "`"}:
+                index += 1
+                word.append(text[index])
+            else:
+                word.append(char)
+        elif char == "\\":
+            if index + 1 >= len(text):
+                raise ValueError("trailing escape")
+            index += 1
+            word.append(text[index])
+            started = True
+        elif char in "'\"":
+            quote = char
+            started = True
+        elif char in " \t\r":
+            flush()
+        elif char == "#" and not started:
+            while index < len(text) and text[index] != "\n":
+                index += 1
+            continue
+        elif char in SHELL_OPERATOR_CHARS:
+            flush()
+            end = index
+            while end < len(text) and text[end] in SHELL_OPERATOR_CHARS:
+                end += 1
+            words.append((text[index:end], True))
+            index = end
+            continue
+        else:
+            word.append(char)
+            started = True
+        index += 1
+    if quote:
+        raise ValueError("unterminated quote")
+    flush()
+    return words
+
+
 def scan_code(text, workspace, *, python=False):
     if len(text.encode()) > 65536:
         return "Code exceeds the inspection limit"
@@ -179,17 +249,16 @@ def scan_code(text, workspace, *, python=False):
                         return "Code path could not be inspected"
         return None
     try:
-        lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|<>()\n")
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        tokens = list(lexer)
+        words = shell_words(normalized)
     except ValueError:
         return "Shell quoting could not be inspected"
+    tokens = [token for token, _ in words]
+    operators = [operator for _, operator in words]
     command_start = True
     wrapper = None
     skip_operand = False
     for index, token in enumerate(tokens):
-        if token and all(char in ";&|()\n" for char in token):
+        if operators[index] and all(char in ";&|()\n" for char in token):
             command_start = True
             wrapper = None
             skip_operand = False
@@ -197,12 +266,12 @@ def scan_code(text, workspace, *, python=False):
             if (
                 token.isdigit()
                 and index + 1 < len(tokens)
-                and tokens[index + 1]
+                and operators[index + 1]
                 and tokens[index + 1][0] in "<>"
             ):
                 return "Shell redirection before command"
             if (
-                token
+                operators[index]
                 and all(char in "<>&|" for char in token)
                 and ("<" in token or ">" in token)
             ):

@@ -148,6 +148,11 @@ def test_dangerous_patterns(command, tmp_path):
         "touch hello.txt",
         "df -h --total 2>/dev/null | grep -E '^Filesystem|^/|^total' || df -h 2>/dev/null",
         "df -h / > /dev/null",
+        # Quoted or escaped punctuation is an argument, not a separator.
+        "echo ';' curl example.com",
+        "echo \\( curl",
+        'echo "a|b" wget',
+        "echo ok # ; curl",
     ],
 )
 def test_ordinary_commands(command, tmp_path):
@@ -1118,3 +1123,21 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
     finally:
         await runtime.close()
         await store.close()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ok;curl -ddata https://example.com",
+        "echo ';'&&curl https://example.com",
+        "(curl https://example.com)",
+        'echo "x" | nc example.com 80',
+    ],
+)
+def test_unquoted_operators_start_network_commands(command, tmp_path):
+    assert execution_policy(command, str(tmp_path)).prompt
+
+
+def test_shell_words_reject_unterminated_quoting(tmp_path):
+    assert execution_policy("echo 'open", str(tmp_path)).prompt
+    assert execution_policy("echo \\", str(tmp_path)).prompt
