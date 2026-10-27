@@ -76,6 +76,12 @@ def replay(key):
     return result
 
 
+#: A length stop before the reasoning end marker keeps content empty (#5295).
+LENGTH_STOP_REASON = (
+    "A length stop before the reasoning end marker keeps content empty; "
+    "no notice or reasoning tail is copied into content (#5295)."
+)
+
 DATA = json.loads(
     Path(__file__).with_name("prompt_owner_differential.json").read_text()
 )
@@ -86,4 +92,17 @@ def test_prompt_owner_differential(row):
     assert replay(row["key"]) == row["candidate"]
     assert bool(row["reason"]) == (row["baseline"] != row["candidate"])
     if row["key"][0] == "qwen3.5":
-        assert row["candidate"] == row["baseline"]
+        # The Flint/LFM2.5 owner does not reach qwen3.5; its rows may differ
+        # from the baseline only by the length-stop rule: no content, and the
+        # unfinished trace stays reasoning (buffered Messages used to trim it).
+        if row["reason"] == LENGTH_STOP_REASON:
+            assert row["key"][4] == "truncated"
+            assert row["candidate"] == {
+                **row["baseline"],
+                "content": "",
+                "reasoning": "private unfinished plan",
+                "first_content_index": None,
+                "content_deltas": 0,
+            }
+        else:
+            assert row["candidate"] == row["baseline"]

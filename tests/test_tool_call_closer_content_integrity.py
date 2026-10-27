@@ -155,15 +155,15 @@ class TestAnthropicThinkingBlockStillStrips:
     """
 
     def test_thinking_block_strips_the_closer(self):
-        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.anthropic_adapter import _sanitize_reasoning_channel
 
-        assert _thinking_block_content("x</tool_call>y", "answer") == "xy"
+        assert _sanitize_reasoning_channel("x</tool_call>y") == "xy"
 
     def test_thinking_block_keeps_ordinary_prose(self):
-        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.anthropic_adapter import _sanitize_reasoning_channel
 
         assert (
-            _thinking_block_content("weighing the options", "answer")
+            _sanitize_reasoning_channel("weighing the options")
             == "weighing the options"
         )
 
@@ -194,53 +194,3 @@ class TestStreamingSanitizerHelpersKeepTheCloser:
         )
         assert delta.content == AGENT_LINE
         assert "</tool_call>" not in (delta.reasoning_content or "")
-
-
-class TestRescuePrefixBranchAlsoStrips:
-    """The length-cut rescue branch is the OTHER call site that moved.
-
-    raised in review, twice: my first attempt at this test passed neither
-    ``finish_reason="length"`` nor rescue-shaped content, so it ran the
-    ORDINARY path and would have stayed green with the rescue line
-    reverted. Reviewer mutated that line in memory and confirmed it.
-
-    Entering the branch needs all three at once:
-
-    * ``finish_reason == "length"``
-    * ``text`` that satisfies ``is_rescue_payload`` (the cutoff sentinel)
-    * a reasoning trace LONGER than ``RESCUE_TAIL_LENGTH``, so a
-      non-empty prefix survives the tail slice
-
-    The assertion below is on the PREFIX, so the closer under test must
-    sit in the first ``len(reasoning) - RESCUE_TAIL_LENGTH`` characters.
-    """
-
-    def test_length_cut_rescue_prefix_strips_the_closer(self):
-        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
-        from rapid_mlx.api.constants import (
-            REASONING_CUTOFF_SENTINEL,
-            RESCUE_TAIL_LENGTH,
-        )
-
-        # Closer up front, then enough filler that the prefix survives
-        # the tail slice.
-        reasoning = "planning </tool_call> the next step. " + (
-            "x" * RESCUE_TAIL_LENGTH * 2
-        )
-        rescue_text = f"{REASONING_CUTOFF_SENTINEL}\n\nsome tail"
-
-        out = _thinking_block_content(reasoning, rescue_text, "length")
-
-        assert out, "expected a non-empty thinking prefix from the rescue branch"
-        assert "planning" in out, (
-            f"did not enter the rescue-prefix branch; got {out[:80]!r}"
-        )
-        assert "</tool_call>" not in out, (
-            f"closer leaked through the rescue prefix: {out[:120]!r}"
-        )
-
-    def test_ordinary_path_still_strips_the_closer(self):
-        """The non-rescue path, for contrast — both must hold."""
-        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
-
-        assert _thinking_block_content("x</tool_call>y", "answer") == "xy"

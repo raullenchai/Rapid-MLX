@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Cross-route truncation contract under the opt-out env var: no
-synthetic text injection when the operator explicitly disables the
-sentinel.
-
-NOTE — issue #858 (0.8.11) reverts R-01. The default is now ON again
-(PR #802 / H-01 restored), because GUI clients that only render the
-``content`` field showed empty bubbles under R-01's default-off. This
-file pins the OPT-OUT branch: with
-``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` set, every transport
-must keep ``content``/``output_text``/``text`` free of the literal
-sentinel. The autouse fixture below sets that env var for every test
-in this module.
+"""Cross-route truncation contract (#5295): no synthetic text injection.
 
 When a reasoning model is cut short mid-``<think>`` by a ``max_tokens``
-cap, no transport may inject a literal placeholder string into the
-model's ``content`` / ``output_text`` / ``text`` field under the
-opt-out env var. Every transport already carries an unambiguous
-structured truncation signal — that, plus the populated
-``reasoning_content`` (or ``thinking`` block), is the canonical cue
-for callers that take the opt-out path.
+cap, no transport may inject a notice or a copy of the reasoning tail
+into the model's ``content`` / ``output_text`` / ``text`` field. Every
+transport carries an unambiguous structured truncation signal — that,
+plus the populated ``reasoning_content`` (or ``thinking`` block), is the
+cue. The retired opt-out knobs are set to ``on`` by the autouse fixture
+below to pin that they no longer change the output.
 
 Transports under test:
     * ``/v1/chat/completions``    → ``finish_reason="length"``
@@ -29,10 +18,7 @@ Transports under test:
 
 Each transport is covered for BOTH streaming and non-streaming paths.
 
-The fix lives at a single source of truth
-(``rapid_mlx.service.helpers._apply_reasoning_cutoff_notice``); these
-tests pin the user-visible behaviour on every route boundary so the
-helper cannot drift between surfaces.
+These tests pin the user-visible behaviour on every route boundary.
 """
 
 from __future__ import annotations
@@ -42,7 +28,8 @@ import re
 
 import pytest
 
-from rapid_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+#: Literal of the removed notice, kept only so tests can pin its absence.
+REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
 
 # Substrings that flag synthetic truncation text. Case-insensitive.
 _TRUNCATED_SUBSTRING = "truncated"
@@ -169,14 +156,10 @@ def _parse_sse_named(text: str) -> list[tuple[str | None, dict]]:
 
 
 @pytest.fixture(autouse=True)
-def _opt_out_env(monkeypatch):
-    """Issue #858 revert: default is now ON, so this file pins the
-    explicit-opt-out branch (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``).
-    The cross-route no-injection contract still holds — callers who set
-    the opt-out env var get strict-null on every transport. The default-on
-    path (PR #802 / H-01 restored) is exercised in
-    ``test_reasoning_content_null_rescue.py``."""
-    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+def _legacy_notice_env_on(monkeypatch):
+    """The retired notice knobs must not bring the notice back."""
+    monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
 
 
 # ---------------------------------------------------------------------
@@ -500,39 +483,9 @@ def test_messages_stream_no_truncated_injection():
         reset_config()
 
 
-# ---------------------------------------------------------------------
-# Belt-and-braces: helper truth table on the opt-out branch
-# ---------------------------------------------------------------------
-
-
-def test_helper_returns_none_on_opt_out_env(monkeypatch):
-    """Direct helper assertion at opt-out: when
-    ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` is set (the only way
-    to suppress the sentinel since the issue #858 revert flipped the
-    default back to ON), the helper must be a strict no-op. Pins that
-    no synthetic text can leak under the opt-out path even if a future
-    route call site forgets to pass every predicate."""
-    from rapid_mlx.service.helpers import _apply_reasoning_cutoff_notice
-
-    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
-    result = _apply_reasoning_cutoff_notice(
-        final_content=None,
-        reasoning_text="<incomplete thought>",
-        tool_calls=None,
-        finish_reason="length",
-    )
-    assert result is None, (
-        f"issue #858 opt-out: helper must return None on length-cut "
-        f"mid-think when env var disables the sentinel; got {result!r}"
-    )
-
-
 def test_no_truncated_literal_in_route_module_call_sites():
-    """Static guard: the literal sentinel string must NOT appear inline
-    in any route module. The only legitimate definition site is the
-    ``REASONING_CUTOFF_SENTINEL`` constant in ``service.helpers``. A
-    future regression that hard-codes the literal at a route call site
-    (e.g. a regex band-aid) fails this test."""
+    """Static guard: the removed notice literal must not reappear in the
+    route, adapter or service modules that assemble replies."""
     import importlib
     import inspect
 
@@ -541,13 +494,13 @@ def test_no_truncated_literal_in_route_module_call_sites():
         "rapid_mlx.routes.chat",
         "rapid_mlx.routes.responses",
         "rapid_mlx.routes.anthropic",
+        "rapid_mlx.api.anthropic_adapter",
+        "rapid_mlx.api.responses_adapter",
+        "rapid_mlx.api.constants",
+        "rapid_mlx.service.helpers",
     ):
         mod = importlib.import_module(module_name)
         src = inspect.getsource(mod)
         assert not pattern.search(src), (
-            f"R-01 single-source-of-truth: the truncated sentinel literal "
-            f"must NOT appear inline in {module_name}; it is defined once "
-            f"in rapid_mlx.service.helpers.REASONING_CUTOFF_SENTINEL and "
-            f"applied via _apply_reasoning_cutoff_notice. A literal here "
-            f"indicates a regex band-aid that bypasses the helper."
+            f"#5295: the removed truncation notice must not reappear in {module_name}"
         )

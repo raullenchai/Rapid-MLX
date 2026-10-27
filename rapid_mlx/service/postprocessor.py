@@ -2501,9 +2501,10 @@ class StreamingPostProcessor:
     def _new_prompt_owner(self) -> PromptOutputOwner:
         return PromptOutputOwner.for_request(
             self.cfg,
-            self.request if self.tools_requested else None,
+            self.request,
             thinking=self.enable_thinking,
             reasoning_max_tokens=self._reasoning_max_tokens,
+            envelope_tools=bool(self.tools_requested),
         )
 
     def reset(self):

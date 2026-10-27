@@ -2488,18 +2488,10 @@ async def test_buffered_replay_covers_empty_and_failure_protocol_shapes():
 
 
 @pytest.mark.asyncio
-async def test_responses_replay_id_builder_covers_rescue_and_computer_items(
-    monkeypatch,
-):
+async def test_responses_replay_id_builder_covers_length_stop_and_computer_items():
     from rapid_mlx.api.responses_adapter import responses_to_openai
     from rapid_mlx.api.responses_models import ResponsesRequest
     from rapid_mlx.routes import responses as responses_route
-
-    monkeypatch.setattr(
-        responses_route,
-        "_apply_reasoning_cutoff_notice",
-        lambda *_args, **_kwargs: "generation stopped during reasoning",
-    )
 
     async def collect(request_payload, outputs):
         request = ResponsesRequest.model_validate(request_payload)
@@ -2521,7 +2513,7 @@ async def test_responses_replay_id_builder_covers_rescue_and_computer_items(
             )
         ]
 
-    rescue_events = await collect(
+    length_events = await collect(
         {"model": "test-model", "input": "hi", "stream": True},
         [
             GenerationOutput(
@@ -2533,7 +2525,9 @@ async def test_responses_replay_id_builder_covers_rescue_and_computer_items(
             )
         ],
     )
-    assert any('"type": "message"' in event for event in rescue_events)
+    # #5295: a length stop inside reasoning adds no synthesized message item.
+    assert not any('"type": "message"' in event for event in length_events)
+    assert any('"status": "incomplete"' in event for event in length_events)
 
     computer_events = await collect(
         {

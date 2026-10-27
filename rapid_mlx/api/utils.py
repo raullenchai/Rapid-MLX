@@ -100,9 +100,8 @@ def strip_special_tokens(text: str) -> str:
 # ``reasoning_text="<think>"`` at ``max_tokens=1`` because the prompt
 # template's pre-injected opener was the only token the parser saw) are
 # handled at the REASONING-channel layer instead — see
-# ``api.anthropic_adapter._thinking_block_content`` and
-# ``service.helpers._build_reasoning_rescue_payload``, both of which
-# call the dedicated ``strip_reasoning_channel_markup`` helper below.
+# ``api.anthropic_adapter._sanitize_reasoning_channel``, which calls
+# the dedicated ``strip_reasoning_channel_markup`` helper below.
 # Requests that do not parse tools use a content-only variant which
 # preserves tool-call-shaped text while stripping every other marker.
 # =============================================================================
@@ -183,10 +182,7 @@ _REASONING_FINAL_SANITIZER = re.compile(
 #: survive). Current consumers (R12-M1b):
 #:
 #: * the Anthropic ``thinking`` content block (via
-#:   ``_thinking_block_content`` in ``api.anthropic_adapter``)
-#: * the rescue-tail copy of the reasoning trace that surfaces in
-#:   ``content`` (via ``_build_reasoning_rescue_payload`` in
-#:   ``service.helpers``)
+#:   ``_sanitize_reasoning_channel`` in ``api.anthropic_adapter``)
 #:
 #: OpenAI ``message.reasoning_content`` and ``/v1/responses`` reasoning
 #: items intentionally DO NOT route through this regex in this PR; if
@@ -205,11 +201,8 @@ def strip_reasoning_channel_markup(text: str) -> str:
 
     Current call sites (R12-M1b):
 
-    * ``api.anthropic_adapter._thinking_block_content`` — sanitizes
+    * ``api.anthropic_adapter._sanitize_reasoning_channel`` — sanitizes
       bytes destined for the Anthropic ``thinking`` content block.
-    * ``service.helpers._build_reasoning_rescue_payload`` — sanitizes
-      the rescue tail that surfaces a slice of the reasoning trace
-      into the user-visible ``content`` channel.
 
     The OpenAI ``reasoning_content`` field and the ``/v1/responses``
     reasoning item DO NOT currently route through this helper — they

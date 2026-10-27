@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import pytest
 
-from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 from rapid_mlx.api.utils import clean_output_text, strip_thinking_tags
 from rapid_mlx.reasoning import finalize_truncation
 from rapid_mlx.reasoning.deepseek_r1_parser import (
@@ -53,7 +52,6 @@ from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
 from rapid_mlx.reasoning.minimax_parser import MiniMaxReasoningParser
 from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from rapid_mlx.service.helpers import (
-    _apply_reasoning_cutoff_notice,
     _finalize_content_and_reasoning,
     _rescue_silent_drop_from_reasoning,
 )
@@ -903,10 +901,8 @@ class TestR1DistillNoTagPromptPrimedLeak:
     primes ``<think>``, the two conditions diverge: the parser routes to
     reasoning, but the plug does not clear ``cleaned_text``. The raw
     thought trace then ships byte-identically as BOTH ``content`` and
-    ``reasoning_content``, and — because ``content`` is now non-empty —
-    the ``_apply_reasoning_cutoff_notice`` truncation marker is skipped
-    too. The streaming path (different gate) added the marker, so the
-    two surfaces disagreed.
+    ``reasoning_content``, while the streaming path (different gate) kept
+    content empty, so the two surfaces disagreed.
 
     Fix: the Case-4 clear plug honours ``prompt_thinking_active`` in
     addition to ``enable_thinking`` — matching the exact union of
@@ -947,11 +943,10 @@ class TestR1DistillNoTagPromptPrimedLeak:
         assert cleaned_text == "" or cleaned_text is None
         assert cleaned_text != reasoning_text
 
-    def test_distill_no_tag_end_to_end_gets_truncation_marker(self):
+    def test_distill_no_tag_end_to_end_keeps_content_empty(self):
         """End-to-end: after the fix clears ``content``, the downstream
-        rescue keeps content empty and the cutoff notice injects the
-        truncation sentinel — matching the streaming path (no silent,
-        marker-less headless-thought answer)."""
+        rescue keeps content empty — matching the streaming path. The
+        length stop is reported structurally (#5295)."""
         parser = DeepSeekR1DistillReasoningParser()
         parser.configure_request(prompt_thinking_active=True)
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
@@ -977,14 +972,9 @@ class TestR1DistillNoTagPromptPrimedLeak:
             prompt_thinking_active=True,
             implicit_reasoning_until_close=True,
         )
-        final_content = _apply_reasoning_cutoff_notice(
-            final_content, reasoning_text, [], "length"
-        )
-        # The trace never masquerades as the answer: content is the
-        # truncation sentinel, not the reasoning bytes.
-        assert final_content is not None
-        assert final_content.startswith(REASONING_CUTOFF_SENTINEL)
-        assert final_content.strip() != (reasoning_text or "").strip()
+        # The trace never masquerades as the answer.
+        assert not final_content
+        assert "step by step" in (reasoning_text or "")
 
     def test_distill_no_tag_thinking_off_stays_content(self):
         """No-regression: when the template did NOT prime thinking

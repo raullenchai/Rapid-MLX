@@ -885,11 +885,16 @@ def test_reasoning_cleanup_preserves_whitespace(
     if truncated:
         visible += "<tool_call>\n<function=get_weather"
     # Isolate the finalized visible lane from the earlier, pre-existing
-    # sanitizer normalization. Cleanup must preserve whatever reaches it.
+    # sanitizer normalization: feed ``visible`` straight into the cleanup.
+    # Cleanup must preserve whatever reaches it.
+    from rapid_mlx.service.helpers import _clean_final_content_tool_envelope
+
     module = {"chat": "chat", "messages": "anthropic", "responses": "responses"}[route]
     monkeypatch.setattr(
-        f"rapid_mlx.routes.{module}._apply_reasoning_cutoff_notice",
-        lambda *args, **kwargs: visible,
+        f"rapid_mlx.routes.{module}._clean_final_content_tool_envelope",
+        lambda _content, *args, **kwargs: _clean_final_content_tool_envelope(
+            visible, *args, **kwargs
+        ),
     )
     content, calls, _ = _reply(client, route, visible, finish_reason=finish_reason)
     expected = "  answer" if truncated and finish_reason == "length" else visible
@@ -900,13 +905,9 @@ def test_reasoning_cleanup_preserves_whitespace(
 @pytest.mark.parametrize("parser", PARSERS)
 @pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("inside_reasoning", [False, True, "combined"])
-@pytest.mark.parametrize("rescue_enabled", [False, True])
-def test_reasoning_boundaries(
-    client, parser, route, inside_reasoning, rescue_enabled, monkeypatch
-):
+def test_reasoning_boundaries(client, parser, route, inside_reasoning):
     from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
-    monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on" if rescue_enabled else "off")
     cfg = client[1]
     cfg.tool_call_parser = parser
     cfg.reasoning_parser_name = "qwen3"
@@ -943,7 +944,7 @@ def test_reasoning_boundaries(
         )
     if not inside_reasoning:
         assert reasoning == "Let me think."
-    if route == "chat" and not inside_reasoning and not rescue_enabled:
+    if route == "chat" and not inside_reasoning:
         assert content == _reply(client, route, raw, stream=True)[0]
 
 

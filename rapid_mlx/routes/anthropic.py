@@ -62,7 +62,6 @@ from ..request import (
 from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
-    _apply_reasoning_cutoff_notice,
     _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
@@ -81,7 +80,6 @@ from ..service.helpers import (
     _resolve_temperature,
     _resolve_top_p,
     _tool_use_required_named_suffix,
-    _uses_deepseek_v4_reasoning,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
@@ -1288,22 +1286,6 @@ async def create_anthropic_message(
                     )
                 ),
             )
-        # Issue #858: Anthropic-side mirror of the chat-route cutoff
-        # sentinel. Default-on (PR #802 / H-01 semantics restored) — the
-        # Anthropic envelope already carries ``stop_reason="max_tokens"``
-        # + the ``thinking`` content block as the structured truncation
-        # signal, but GUI clients that only render ``text`` blocks
-        # benefit from the literal cue surfacing in ``content`` too.
-        # Opt out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
-        # See helper docstring for the full predicate set.
-        final_content = _apply_reasoning_cutoff_notice(
-            final_content,
-            reasoning_text,
-            tool_calls,
-            finish_reason,
-            include_reasoning_tail=not channels_owned
-            and not _uses_deepseek_v4_reasoning(cfg),
-        )
 
         # Clean only the finalized visible lane; keep raw reasoning boundaries.
         if (

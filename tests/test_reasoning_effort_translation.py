@@ -4,9 +4,8 @@
 Before this fix the ``reasoning_effort`` field was declared + validated at
 the schema layer (garbage 400s at parse time) but ``accepted-but-not-yet-
 translated`` at the engine layer: a request with ``reasoning_effort="none"``
-still emitted reasoning tokens, blew ``max_tokens`` mid-``<think>``, and had
-``REASONING_CUTOFF_SENTINEL`` injected into ``content`` — corrupting the
-field an OpenAI-spec agent re-feeds verbatim into the next turn.
+still emitted reasoning tokens and blew ``max_tokens`` mid-``<think>``,
+leaving no answer in ``content``.
 
 ``maybe_apply_reasoning_effort`` closes that gap:
 

@@ -2,12 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 from rapid_mlx.config import ServerConfig
 from rapid_mlx.engine.base import GenerationOutput
 from rapid_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
 from rapid_mlx.service.helpers import (
-    _apply_reasoning_cutoff_notice,
     _uses_deepseek_v4_reasoning,
 )
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
@@ -199,19 +197,6 @@ def test_chat_postprocessor_fails_closed_on_request_config_error(monkeypatch) ->
 
     with pytest.raises(RuntimeError, match="cannot establish reasoning state"):
         StreamingPostProcessor(cfg, enable_thinking=None)
-
-
-def test_truncated_deepseek_reasoning_notice_never_copies_reasoning_tail() -> None:
-    content = _apply_reasoning_cutoff_notice(
-        None,
-        "private scratch that must remain reasoning-only",
-        None,
-        "length",
-        include_reasoning_tail=False,
-    )
-
-    assert content == REASONING_CUTOFF_SENTINEL
-    assert "private scratch" not in content
 
 
 def test_runtime_deepseek_detection_covers_auto_config_forms() -> None:

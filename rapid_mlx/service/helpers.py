@@ -27,22 +27,6 @@ from typing import Any, NoReturn, cast
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from .._env import env_falsey
-
-# Re-export of the wire-level sentinel literal + rescue-tail length.
-# Single source of truth lives in :mod:`rapid_mlx.api.constants` to
-# preserve the layering rule (api is the lower layer that service
-# depends on, not the reverse) so the Responses adapter and the
-# Anthropic adapter can both consume them without dragging the engine
-# into the adapter's import graph. The names are re-exported through
-# this module so existing callers that import
-# ``REASONING_CUTOFF_SENTINEL`` / ``RESCUE_TAIL_LENGTH`` from
-# ``rapid_mlx.service.helpers`` (route helpers + their tests) continue
-# to work unchanged.
-from ..api.constants import (  # noqa: F401
-    REASONING_CUTOFF_SENTINEL,
-    RESCUE_TAIL_LENGTH,
-)
 from ..api.models import (
     OPENAI_REASONING_EFFORT_TO_MAX_TOKENS,
     CompletionTokensDetails,
@@ -57,10 +41,6 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
-from ..api.utils import (
-    sanitize_reasoning_content,
-    strip_reasoning_channel_markup,
-)
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..errors import BackpressureError, MetalMemoryBackpressureError
@@ -1255,282 +1235,19 @@ def _rescue_silent_drop_from_reasoning(
 
 
 # ---------------------------------------------------------------------------
-# Reasoning-cutoff sentinel (default ON; opt out via
-# RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled). H-01 / R-01 / issue #858.
+# Length stop before the reasoning end marker (#5295)
 # ---------------------------------------------------------------------------
 #
-# When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,
-# gemma4, vibethinker, …) is called with a low ``max_tokens`` budget and
-# generation is cut short BEFORE ``</think>`` (or the harmony final-channel
-# marker), the parser-wide rule pinned by D-STOP-THINK + D-HARMONY-LEAK is
-# "route everything to ``reasoning_content`` and leave ``content``
-# null/empty" — the in-progress thought trace is NOT the final answer, so
-# promoting it to ``content`` would ship byte-identical bytes in both
-# fields (the leak shape those PRs explicitly closed).
+# When generation stops for ``max_tokens`` before ``</think>`` (or the
+# harmony final-channel marker), the unfinished output stays in the
+# reasoning channel and ``content`` stays empty/null on every transport,
+# buffered and streaming. No notice and no copy of the reasoning tail is
+# synthesized into ``content``. Clients read the structured signals:
 #
-# History:
-#
-# * H-01 (PR #802, 2026-06-21, v0.8.3): introduced an opt-OUT sentinel
-#   that was injected into ``content`` by default to give SDK consumers
-#   a literal "truncated, raise max_tokens" cue instead of an empty
-#   bubble.
-# * R-01 (PR #815, v0.8.5): flipped the default to opt-IN on
-#   structured-purity rationale (every transport already carries an
-#   unambiguous ``finish_reason="length"`` / ``status="incomplete"`` /
-#   ``stop_reason="max_tokens"``, so synthesizing a literal text block
-#   the model never produced was deemed harmful injection).
-# * Issue #858 (this commit, v0.8.12): reverts R-01. Every GUI client
-#   (rapid-desktop, vanilla OpenAI SDK consumers, OpenWebUI compat
-#   layers) renders only ``message.content`` and ignores the structured
-#   ``finish_reason`` field — under R-01's default-off, they showed an
-#   empty bubble whenever a reasoning model hit ``max_tokens`` mid-think.
-#   The literal sentinel is the user-visible cue that ``max_tokens`` was
-#   too low, and restoring it as the default outweighs the
-#   structured-purity gain. Power callers that want strict-null behaviour
-#   set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` /
-#   ``false`` / ``no`` / ``off``).
-#
-# Structured truncation signals — also present on every transport,
-# regardless of the env var setting — for callers that DO want to gate
-# on them:
-#
-#   * /v1/chat/completions  → ``finish_reason="length"``
-#   * /v1/responses         → ``status="incomplete"`` +
-#                              ``output_tokens_details.reasoning_tokens``
-#   * /v1/messages          → ``stop_reason="max_tokens"`` +
-#                              ``thinking`` content block
-#
-# Scope (unchanged across the R-01 ↔ issue #858 flip):
-#
-# * Fires ONLY when the env var has NOT been set to a disable value.
-# * Fires ONLY on ``finish_reason="length"`` (NOT on ``"stop"`` —
-#   stop-string mid-think is D-STOP-THINK's exact case, where the strict
-#   null contract must hold and the caller can re-request to drive the
-#   model past the stop string).
-# * Fires ONLY when ``content`` is empty/None AND ``reasoning_text`` is
-#   non-empty — the silent-drop shape clients actually trip on. Happy-
-#   path (closed ``</think>answer`` split) flows untouched.
-# * Fires ONLY when no ``tool_calls`` were extracted — tool-only responses
-#   legitimately ship ``content=None`` per the OpenAI spec.
-#
-# Single source of truth — both the OpenAI ``/v1/chat/completions``
-# non-stream + stream paths AND the Anthropic ``/v1/messages`` adapter
-# AND the ``/v1/responses`` adapter call this helper, so the user-visible
-# behaviour cannot drift between surfaces. (The streaming path emits the
-# sentinel as one final-chunk ``delta.content`` event, not per-token, so
-# no token-by-token leak of the sentinel string itself.)
-
-
-#: ``RESCUE_TAIL_LENGTH`` is re-exported above from
-#: :mod:`rapid_mlx.api.constants` — kept at module scope so existing
-#: callers (route helpers + tests) continue to import it from
-#: ``rapid_mlx.service.helpers``. The Anthropic adapter consumes the
-#: SAME constant from the lower-layer ``api.constants`` to compute the
-#: matching suffix it must trim from the ``thinking`` content block
-#: (R12-M1b dedupe fix).
-
-#: Env var values that EXPLICITLY DISABLE the rescue notice. The
-#: primary knob is ``RAPID_MLX_REASONING_RESCUE`` (R12-8 / issue #259);
-#: the legacy ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` (PR #802 / #815 /
-#: #860) is still honoured as a back-compat alias so existing
-#: rapid-desktop / agent deployments don't break on upgrade.
-#:
-#: GUI clients (rapid-desktop ChatView, OpenAI-SDK consumers, etc.)
-#: render blank message bubbles when ``content`` is ``None`` even
-#: though ``finish_reason="length"`` is set — the rescue string is the
-#: user-facing signal that ``max_tokens`` was too low PLUS a glimpse of
-#: the truncated thought trace. Power callers that prefer the strict-
-#: null shape can opt out with any falsey spelling
-#: (``rapid_mlx._env.FALSEY_VALUES``) on either env var.
-
-#: Primary R12-8 env var. ``RAPID_MLX_REASONING_RESCUE=off`` disables
-#: the rescue; default is ``on``. Both this name and the legacy alias
-#: below are read; if either is set to a disable value, the rescue is
-#: off (operator intent: "I do not want the literal text injection").
-_RESCUE_ENV_PRIMARY = "RAPID_MLX_REASONING_RESCUE"
-#: Legacy alias from PR #802 / #860 (issue #858). Kept for back-compat
-#: so callers that already set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``
-#: don't need to re-deploy when they upgrade to the R12-8 build.
-_RESCUE_ENV_LEGACY = "RAPID_MLX_REASONING_CUTOFF_NOTICE"
-
-
-def _cutoff_notice_enabled() -> bool:
-    """Whether the cutoff rescue is enabled for this process.
-
-    R12-8 / issue #259 expands the rescue from a bare sentinel string
-    to ``sentinel + tail-of-reasoning`` (the 8-round carry kept getting
-    reopened because the bare sentinel still felt like "the model
-    didn't answer" to six independent reviewers). The default-on /
-    opt-out policy is unchanged from PR #860 — only the rescue payload
-    grew. Issue #858 revert (PR #860) settled the default-on question:
-    GUI clients that only render ``content`` showed empty bubbles
-    under R-01's default-off, and that ships as a user-visible bug.
-
-    Reads the env vars on each call so test harnesses can flip the
-    gate per-request via ``monkeypatch.setenv`` without restarting the
-    process. The cost is negligible (``os.environ.get`` is a dict
-    lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
-    is read in this module.
-
-    Two env vars are honoured (in this priority order):
-
-    * ``RAPID_MLX_REASONING_RESCUE`` — R12-8 primary name. Easier to
-      discover than the legacy alias (``RESCUE`` is what the operator
-      thinks of it as) and aligns with the task spec.
-    * ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` — legacy alias from PR
-      #802 / #860 (issue #858). Still honoured so existing
-      rapid-desktop deployments and operator runbooks that already
-      reference this name keep working without a rebuild.
-
-    The rescue is DISABLED when EITHER env var is set to a falsey
-    spelling (``rapid_mlx._env.FALSEY_VALUES``, case-insensitive,
-    whitespace-stripped). Operator
-    intent: "I do not want the rescue", regardless of which name was
-    used. Anything else — including unset, the empty string, a truthy
-    spelling, or any arbitrary unrecognised value — leaves the rescue
-    enabled.
-    """
-    return not any(
-        env_falsey(env_name) for env_name in (_RESCUE_ENV_PRIMARY, _RESCUE_ENV_LEGACY)
-    )
-
-
-def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
-    """Build the rescue ``content`` string for R12-8.
-
-    Layout: ``"<sentinel>\\n\\n<tail-of-reasoning>"``. The sentinel
-    anchors the opening (agentic auto-retry clients pattern-match the
-    prefix), then a blank line, then the LAST ``RESCUE_TAIL_LENGTH``
-    chars of the reasoning trace so a human sees the partial
-    conclusion. The tail is taken from the END of ``reasoning_text``
-    because that's where the partial answer lives in every reasoning
-    parser dialect we ship (qwen3, deepseek_r1, glm4, vibethinker,
-    harmony — all build the answer at the tail of the thought).
-
-    Trailing whitespace on the reasoning trace is stripped before the
-    slice so the rescue doesn't end on a partial newline. The caller
-    has already verified ``reasoning_text`` is non-empty + non-
-    whitespace (see ``_apply_reasoning_cutoff_notice``), so an empty
-    tail is impossible by construction.
-
-    The reasoning trace is stripped of channel markup BEFORE the
-    tail slice is chosen, then the slice runs through
-    :func:`sanitize_output` (general special-token catch-all:
-    ``<|...|>``, harmony channel markers, ``</tool_call>``, etc.).
-    The strip-before-slice order matters: a naive slice of the raw
-    reasoning bytes can bisect a structural ``<think>`` /
-    ``</think>`` tag (codex r3 P2: when reasoning is just slightly
-    longer than ``RESCUE_TAIL_LENGTH`` and starts with ``<think>``,
-    the raw slice begins ``hink>...`` and the regex stripper no
-    longer matches the orphaned fragment — so the literal ``ink>``
-    bytes leak into ``content``). Stripping channel markup first
-    means the slice operates on the clean, in-channel byte stream
-    and can never bisect a tag because there are no tags left to
-    bisect.
-    ``reasoning_content`` keeps the full original trace addressable
-    for clients that walk both fields. Codex r1 (R12-8): the rescue
-    path previously bypassed the sanitizer that ``content``
-    consumers rely on. R12-M1b (Mira r12 R-3 bonus regression):
-    also strip the ``<think>`` OPENER — at ``max_tokens=1`` the
-    reasoning trace IS the literal opener, and ``sanitize_output``
-    deliberately leaves the opener alone on the ``content`` channel
-    (where it can be legit Nemotron prefix injection or literal-tag
-    prose). The rescue tail is from the reasoning channel, so the
-    channel-aware strip applies.
-    """
-    # Strip BEFORE slicing — see docstring for the bisection
-    # regression this order closes.
-    stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
-    tail = stripped[-RESCUE_TAIL_LENGTH:]
-    # Reasoning-channel sanitizer, not the content one: this slice is a
-    # copy of the reasoning trace (see docstring above), so bare wire
-    # markers in it are parser artifacts rather than requested text.
-    sanitized = sanitize_reasoning_content(tail)
-    if not sanitized:
-        return REASONING_CUTOFF_SENTINEL
-    return f"{REASONING_CUTOFF_SENTINEL}\n\n{sanitized}"
-
-
-def _apply_reasoning_cutoff_notice(
-    final_content: str | None,
-    reasoning_text: str | None,
-    tool_calls: list | None,
-    finish_reason: str | None,
-    *,
-    include_reasoning_tail: bool = True,
-) -> str | None:
-    """R12-8 / H-01: rescue ``content`` when generation was cut short
-    mid-think and the strict rescue path left it empty.
-
-    Runs AFTER ``_rescue_silent_drop_from_reasoning`` — its job is the
-    UX rescue for the cases the silent-drop rescue deliberately
-    SUPPRESSED (truncated ``<think>``, harmony analysis-without-final,
-    Case-4 no-tag fallback). All those cases share the same observable
-    shape: ``finish_reason="length"`` + empty content + non-empty
-    reasoning + no tool calls.
-
-    R12-8 (issue #259, 8-round D-carry) extends PR #802 / #860: the
-    rescue is now ``sentinel + tail-of-reasoning`` rather than the bare
-    sentinel, because six independent reviewers kept reopening the H-01
-    carry — the bare sentinel still felt like "the model didn't
-    answer". The tail is the LAST ``RESCUE_TAIL_LENGTH`` chars of the
-    reasoning trace — that gives a human reader a glimpse of the
-    partial conclusion without dumping the whole trace into
-    ``content`` (which would re-introduce the D-STOP-THINK /
-    D-HARMONY-LEAK byte-identical leak shape the rescue is allowed to
-    exist alongside). ``reasoning_content`` is NEVER touched — the
-    full original trace stays addressable to clients that walk both
-    fields.
-
-    Returns ``final_content`` unchanged when:
-    * the env var disables the rescue (``RAPID_MLX_REASONING_RESCUE=off``
-      or the legacy ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``)
-    * ``finish_reason`` is anything other than ``"length"`` (stop-string
-      cut mid-think hits the D-STOP-THINK regression guard — strict
-      null wins; a clean ``"stop"`` finish on an empty answer is a
-      legitimate model decision and gets no "raise max_tokens" hint)
-    * ``final_content`` already carries a non-whitespace payload
-    * ``tool_calls`` were extracted (OpenAI-spec ``content=None`` path)
-    * ``reasoning_text`` is empty / whitespace (nothing to signal — the
-      model produced nothing semantically, which is a different bug
-      class and shouldn't get a "raise max_tokens" hint)
-
-    Otherwise returns the rescue payload produced by
-    :func:`_build_reasoning_rescue_payload` — the canonical shape is
-    ``sentinel + "\\n\\n" + sanitized_tail``. The builder applies
-    operations in this order (codex r3 P2 strip-before-slice):
-
-    1. :func:`strip_reasoning_channel_markup` on
-       ``reasoning_text.rstrip()`` — strips ``<think>`` / ``</think>``
-       on the FULL trace so the next slice operates on a clean,
-       in-channel byte stream. Doing it before the slice means a tag
-       straddling the ``L - RESCUE_TAIL_LENGTH`` boundary can never
-       leave an orphan ``<th`` / ``ink>`` fragment in the tail.
-    2. ``[-RESCUE_TAIL_LENGTH:]`` slice on the stripped trace.
-    3. :func:`sanitize_output` on the slice — general special-token
-       catch-all (``<|...|>``, harmony markers, ``</tool_call>``, …).
-
-    When sanitization collapses the tail to empty (e.g.
-    ``reasoning_text="<think>"`` at ``max_tokens=1``), the rescue
-    builder returns the bare sentinel — clients still see the
-    structural truncation signal without a stray markup byte in
-    ``content``. The caller writes the returned string into
-    ``message.content`` (non-stream) or the final SSE ``delta.content``
-    chunk (stream).
-    """
-    if not _cutoff_notice_enabled():
-        return final_content
-    if finish_reason != "length":
-        return final_content
-    if final_content and final_content.strip():
-        return final_content
-    if tool_calls:
-        return final_content
-    if not reasoning_text or not reasoning_text.strip():
-        return final_content
-    if not include_reasoning_tail:
-        return REASONING_CUTOFF_SENTINEL
-    return _build_reasoning_rescue_payload(reasoning_text)
+#   * /v1/chat/completions  -> ``finish_reason="length"``
+#   * /v1/responses         -> ``status="incomplete"``
+#                              (``incomplete_details.reason="max_output_tokens"``)
+#   * /v1/messages          -> ``stop_reason="max_tokens"`` + ``thinking`` block
 
 
 def _uses_deepseek_v4_reasoning(cfg, parser=None) -> bool:
@@ -2263,9 +1980,8 @@ def maybe_apply_reasoning_effort(request, *, chat_template=None) -> bool:
         ``<think>`` segment. This is the load-bearing fix for #448: an
         agent built against the OpenAI spec that passed
         ``reasoning_effort="none"`` for concise answers previously got
-        reasoning anyway, blew ``max_tokens`` mid-think, and had
-        ``REASONING_CUTOFF_SENTINEL`` injected into ``content`` — corrupting
-        the field it re-feeds verbatim into the next turn. Suppressing the
+        reasoning anyway and blew ``max_tokens`` mid-think, leaving no
+        answer in ``content``. Suppressing the
         reasoning at the source means the truncation scenario never arises.
       * graded ``reasoning_effort`` on a template that publishes its own
         effort vocabulary (Qwen3.8 validates ``reasoning_effort`` against

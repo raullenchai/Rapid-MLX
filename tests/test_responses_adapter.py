@@ -1690,30 +1690,10 @@ class TestOpenaiToResponses:
         assert resp.instructions == "be brief"
 
 
-class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
-    """Regression for the PR #860 → v0.8.13/v0.8.14 cutoff-sentinel /
-    Responses-adapter parity bug.
-
-    PR #860 (closes #858) restored ``REASONING_CUTOFF_SENTINEL`` injection
-    into ``message.content`` by default for length-stopped reasoning
-    generations. The chat / anthropic / responses non-stream routes call
-    ``_apply_reasoning_cutoff_notice`` BEFORE handing the
-    ``ChatCompletionResponse`` to ``openai_to_responses``. The adapter
-    then computes ``downstream_output_seen`` from ``message.content`` —
-    so the sentinel injection was being mis-classified as "the model
-    produced real downstream output", flipping
-    ``output[0].reasoning.status`` from ``"incomplete"`` to
-    ``"completed"`` on the non-stream surface only. The streaming surface
-    uses its own ``reasoning_block_closed`` predicate (the parser's own
-    content channel signal, never the sentinel) so the streaming side
-    still reported ``"incomplete"`` — visible as a cross-path parity
-    breakage caught by
-    ``test_responses_budget_exhaust_streaming.py::TestStreamingNonStreamingParity::test_same_output_shape_under_cutoff``.
-
-    These tests pin the contract at the adapter boundary so a future
-    refactor of either ``_apply_reasoning_cutoff_notice`` or the
-    adapter's ``downstream_output_seen`` predicate can't silently
-    reintroduce the regression.
+class TestReasoningStatusUnderLengthStop:
+    """Adapter-boundary pins for the reasoning item status on a length
+    stop: empty content keeps reasoning ``incomplete`` (#5295), while real
+    content or a tool call after the reasoning marks it ``completed``.
     """
 
     def _chat_response_with_reasoning(
@@ -1739,24 +1719,18 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
             usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
 
-    def test_sentinel_in_content_keeps_reasoning_incomplete_on_length(self):
-        from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
-
+    def test_empty_content_keeps_reasoning_incomplete_on_length(self):
         chat_resp = self._chat_response_with_reasoning(
-            text=REASONING_CUTOFF_SENTINEL,
+            text=None,
             reasoning_text="Hmm, let me think about this carefully...",
             finish_reason="length",
         )
         resp = openai_to_responses(
             chat_resp, model="test-model", request=_bare_request(), created_at=0
         )
-        assert len(resp.output) >= 1
-        assert resp.output[0].type == "reasoning"
-        assert resp.output[0].status == "incomplete", (
-            "REASONING_CUTOFF_SENTINEL injected by the chat route helper "
-            "must NOT flip reasoning_item_status to 'completed' — it is a "
-            "UX fallback, not real downstream output."
-        )
+        assert [item.type for item in resp.output] == ["reasoning"]
+        assert resp.output[0].status == "incomplete"
+        assert resp.status == "incomplete"
 
     def test_real_downstream_content_still_marks_reasoning_completed(self):
         chat_resp = self._chat_response_with_reasoning(
@@ -1770,7 +1744,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         assert len(resp.output) >= 1
         assert resp.output[0].type == "reasoning"
         assert resp.output[0].status == "completed", (
-            "Real model content (not the sentinel) IS downstream output — "
+            "Real model content IS downstream output — "
             "reasoning has closed and the cutoff scope shrinks to the "
             "message body, so reasoning_item_status must be 'completed'."
         )
@@ -1794,27 +1768,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         assert resp.output[0].type == "reasoning"
         assert resp.output[0].status == "completed", (
             "Closed-</think> + tool_call shape: reasoning IS complete, "
-            "only tool args were truncated — same contract as before "
-            "the sentinel parity fix."
-        )
-
-    def test_sentinel_with_no_finish_length_keeps_reasoning_completed(self):
-        from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
-
-        chat_resp = self._chat_response_with_reasoning(
-            text=REASONING_CUTOFF_SENTINEL,
-            reasoning_text="Hmm, let me think...",
-            finish_reason="stop",
-        )
-        resp = openai_to_responses(
-            chat_resp, model="test-model", request=_bare_request(), created_at=0
-        )
-        assert len(resp.output) >= 1
-        assert resp.output[0].type == "reasoning"
-        assert resp.output[0].status == "completed", (
-            "The 'incomplete' branch requires finish_reason='length'; the "
-            "sentinel-exclusion fix must not over-extend to non-length "
-            "completions."
+            "only tool args were truncated."
         )
 
 

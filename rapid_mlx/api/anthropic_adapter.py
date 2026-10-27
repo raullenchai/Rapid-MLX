@@ -27,10 +27,6 @@ from .anthropic_models import (
     AnthropicToolDef,
     AnthropicUsage,
 )
-from .constants import (
-    RESCUE_TAIL_LENGTH,
-    is_rescue_payload,
-)
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -461,112 +457,6 @@ def _sanitize_reasoning_channel(text: str | None) -> str | None:
     return sanitized
 
 
-def _thinking_block_content(
-    reasoning_text: str | None,
-    text: str | None,
-    finish_reason: str | None = None,
-) -> str | None:
-    """Compute the body of the Anthropic ``thinking`` content block.
-
-    Two systematic invariants on top of the raw ``reasoning_text``:
-
-    1. **Sanitization (R12-M1b fix #1)** — strips the ``<think>`` /
-       ``</think>`` tags that the reasoning parser may have left in
-       the trace, then runs :func:`sanitize_reasoning_content` for the
-       rest of the special-token catch-all (the REASONING variant — the
-       content one preserves ``</tool_call>``). Mira r12 R-3 bonus
-       regression: at ``max_tokens=1`` on a thinking model, the prompt
-       template's pre-injected ``<think>`` is the only token seen by
-       the parser and it ended up as the literal ``thinking`` block
-       content; routing through the channel-aware sanitizer closes
-       that without disturbing the ``content`` channel (where the
-       opener can be legit Nemotron prefix injection or literal-tag
-       prose).
-
-    2. **Rescue-tail dedupe (R12-M1b fix #2)** — when ``content``
-       carries the R12-8 / H-01 rescue payload
-       (``sentinel + "\\n\\n" + tail-of-reasoning``), the LAST
-       ``RESCUE_TAIL_LENGTH`` chars of the reasoning trace have already
-       been published to the user via the ``text`` block. Re-emitting
-       the same slice as the suffix of the ``thinking`` block makes
-       the same partial sentence render twice (Mira r12 R-3 dupe arm).
-       Trim that suffix off the ``thinking`` body so each byte of the
-       reasoning trace surfaces on EXACTLY one Anthropic content block.
-
-       The full original ``reasoning_content`` is unchanged on the
-       OpenAI-side ``AssistantMessage`` field (the Anthropic envelope
-       does not surface it, but the OpenAI-side response — which the
-       adapter is being called on — keeps the full trace for
-       cross-route observability). PR #802's intentional design
-       (rescue surfaces to Anthropic) is preserved: the sentinel +
-       tail remain in the ``text`` block; only the duplication is
-       fixed.
-
-       Gated on ``finish_reason == "length"`` (codex r4 P3 R12-M1b):
-       the R12-8 rescue helper only fires on length-cut truncation
-       (see ``_apply_reasoning_cutoff_notice``), so a content payload
-       that looks like a rescue payload on a non-length finish (e.g.
-       a model legitimately echoing the literal sentinel followed by
-       ``\\n\\n`` and more text) is NOT a rescue artifact and the
-       dedupe must not fire. ``finish_reason`` defaults to ``None``
-       for back-compat with external callers that don't pass the
-       field; in that case the dedupe is SKIPPED entirely (the full
-       sanitized reasoning trace is preserved in the thinking block).
-       This is the safe default: when the caller can't tell us
-       whether the truncation was a length-cut, we MUST NOT silently
-       drop a legitimate suffix of the reasoning trace. Direct
-       callers that intend to trigger the dedupe MUST pass
-       ``finish_reason="length"``.
-
-    Returns ``None`` when sanitization + trimming leave nothing —
-    callers MUST treat ``None`` as "do not emit a thinking block",
-    matching the existing whitespace-only guard.
-    """
-    if not reasoning_text:
-        return None
-    # Dedupe rescue tail: strip channel markup FIRST so the trim
-    # boundary aligns with the rescue builder's slice boundary (which
-    # ALSO strips first — see
-    # ``service.helpers._build_reasoning_rescue_payload``). Codex r3
-    # P2 (R12-M1b): if we slice the raw reasoning bytes, a
-    # ``<think>`` tag that straddles the slice boundary leaves an
-    # orphaned ``<th`` / ``ink>`` fragment in the thinking block (the
-    # regex stripper no longer matches the orphaned partial). Stripping
-    # first means the slice operates on the clean, in-channel byte
-    # stream and can never bisect a tag because there are no tags
-    # left to bisect.
-    #
-    # Codex r4 P3 (R12-M1b): gate the dedupe on
-    # ``finish_reason == "length"`` AND the rescue-payload shape. The
-    # rescue helper only fires on length-cut truncation, so a content
-    # body that happens to look like a rescue payload on a clean
-    # ``stop`` finish (e.g. a model echoing the literal sentinel
-    # followed by ``\n\n`` and more text) is NOT a rescue artifact.
-    # The shape gate alone would still false-positive in that case
-    # and silently drop a legit thinking block.
-    is_length_cut = finish_reason == "length"
-    if is_length_cut and is_rescue_payload(text):
-        stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
-        prefix = (
-            stripped[:-RESCUE_TAIL_LENGTH] if len(stripped) > RESCUE_TAIL_LENGTH else ""
-        )
-        if not prefix:
-            # Entire reasoning trace already surfaces in the rescue
-            # ``text`` block — suppress the ``thinking`` block so the
-            # tail is not duplicated. The text block alone carries the
-            # truncated reasoning excerpt; clients still see the full
-            # structural truncation signal via ``stop_reason="max_tokens"``.
-            return None
-        # Channel markup already stripped above; only the general
-        # special-token catch-all remains. Reasoning channel -> reasoning
-        # sanitizer (see ``_sanitize_reasoning_channel``).
-        sanitized = sanitize_reasoning_content(prefix)
-        if not sanitized or not sanitized.strip():
-            return None
-        return sanitized
-    return _sanitize_reasoning_channel(reasoning_text)
-
-
 def openai_to_anthropic(
     response: ChatCompletionResponse,
     model: str,
@@ -641,23 +531,14 @@ def openai_to_anthropic(
         reasoning_text = choice.message.reasoning_content
         text = choice.message.content
         # R12-M1b: route the thinking block content through the
-        # canonical sanitizer + rescue-tail dedupe helper. This:
-        #   * strips ``<think>`` / ``</think>`` / ``<|...|>`` leaks
-        #     that the reasoning parser may have left in the trace
-        #     (Mira r12 R-3 ``<think>`` literal at ``max_tokens=1``)
-        #   * trims the trailing slice that already surfaces in the
-        #     rescue ``text`` block, so the same partial sentence is
-        #     never rendered on BOTH content blocks (Mira r12 R-3
-        #     duped-rescue-tail arm)
-        # Returns ``None`` when sanitization + trimming leave nothing,
-        # which signals "do not emit a thinking block" (same shape as
-        # the previous whitespace-only guard).
+        # canonical reasoning sanitizer, which strips ``<think>`` /
+        # ``</think>`` / ``<|...|>`` leaks the reasoning parser may have
+        # left in the trace (``<think>`` literal at ``max_tokens=1``).
+        # ``None`` signals "do not emit a thinking block".
         thinking_body = (
             (reasoning_text if reasoning_text and reasoning_text.strip() else None)
             if channels_owned
-            else _thinking_block_content(
-                reasoning_text, text, finish_reason=choice.finish_reason
-            )
+            else _sanitize_reasoning_channel(reasoning_text)
         )
         # Compare BOTH sides post-sanitize so visible-byte equality
         # decides the duplicate-block gate. Codex r1 P2 + r3 BLOCKING
@@ -675,10 +556,7 @@ def openai_to_anthropic(
         # bytes to the client. Normalising ``text`` with the canonical
         # content-channel ``sanitize_output`` here makes the gate
         # robust regardless of how much upstream sanitization has
-        # already run. The rescue path is unaffected:
-        # ``_thinking_block_content`` already trims the rescue-tail
-        # suffix from ``thinking_body`` before this gate runs, so the
-        # comparison stays True there.
+        # already run.
         sanitized_text = (
             sanitize_output(text, strip_tool_markup=strip_tool_markup)
             if text and not channels_owned

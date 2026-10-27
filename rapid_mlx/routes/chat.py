@@ -99,7 +99,6 @@ from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _aggregate_generation_attempts,
     _append_tool_use_suffix,
-    _apply_reasoning_cutoff_notice,
     _build_prompt_with_thinking_compat,
     _build_response_metrics,
     _build_usage,
@@ -7218,23 +7217,6 @@ async def _create_chat_completion_impl(
                     )
                 ),
             )
-        # Issue #858: cutoff sentinel is ON by default — restores PR #802
-        # (H-01) semantics after the R-01 (#815) opt-in flip produced
-        # empty-bubble regressions in every GUI client that only renders
-        # ``message.content``. Power callers that want strict-null
-        # behaviour set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``
-        # (or ``0`` / ``false`` / ``no`` / ``off``). The helper itself
-        # owns ALL the predicates (env gate, finish_reason, content
-        # emptiness, tool-call gate, reasoning presence) so this call
-        # site stays trivial.
-        final_content = _apply_reasoning_cutoff_notice(
-            final_content,
-            reasoning_text,
-            tool_calls,
-            finish_reason,
-            include_reasoning_tail=not channels_owned
-            and not _uses_deepseek_v4_reasoning(cfg),
-        )
 
     if (
         undeclared_tool_dropped
@@ -8713,39 +8695,6 @@ async def stream_chat_completion(
                         "tool calls; surfacing %d-char reasoning trace as "
                         "content",
                         len(terminal_content),
-                    )
-            # Issue #858 streaming mirror: helper is ON by default (PR
-            # #802 / H-01 semantics restored). When the SSE rescue above
-            # did NOT promote reasoning into ``terminal_content`` (strict
-            # null path won — truncated ``<think>`` / harmony
-            # analysis-without-final / Case-4 no-tag), emit the literal
-            # cutoff sentinel as ONE final-chunk ``delta.content`` event
-            # so streaming SDK consumers see the same signal as their
-            # non-streaming counterparts. Per-token reasoning deltas have
-            # already been sent during the loop; this is a single
-            # extra-bytes-on-the-final-chunk event, NOT a per-token
-            # mirror of the reasoning trace (D-STOP-THINK regression
-            # guard). Default-on: opt out via
-            # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. Gating
-            # logic matches the non-streaming call site — the helper
-            # owns it.
-            if not has_any_tool_calls and not structured_output_requested:
-                cutoff_content = _apply_reasoning_cutoff_notice(
-                    terminal_content or None,
-                    processor.accumulated_reasoning,
-                    None,
-                    finish_event.finish_reason,
-                    include_reasoning_tail=not processor.channels_owned
-                    and not _uses_deepseek_v4_reasoning(
-                        cfg, processor.reasoning_parser
-                    ),
-                )
-                if cutoff_content and cutoff_content != (terminal_content or None):
-                    terminal_content = cutoff_content
-                    logger.info(
-                        "[SSE-CUTOFF-H01] terminal chunk content empty + "
-                        "finish=length + reasoning present; surfacing "
-                        "cutoff sentinel as content"
                     )
             if (
                 not visible_content_streamed

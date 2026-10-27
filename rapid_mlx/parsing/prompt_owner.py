@@ -170,6 +170,25 @@ def selected_envelope_tools(
     return EnvelopeTools(parser, request, getattr(engine, "_tokenizer", None))
 
 
+def selected_reasoning_only(cfg, request, reasoning_max_tokens=None) -> bool:
+    """Tool-free Qwen-family requests whose rendered prompt fixes the channel.
+
+    The owner resolves them only when the engine reports the current-turn
+    initial channel; unknown prompt state keeps the existing parser.
+    """
+    from ..tool_call_authorization import declared_names
+
+    return (
+        getattr(cfg, "reasoning_parser_name", None) in QWEN_REASONING
+        and request is not None
+        and not declared_names(request)
+        # Reasoning budgets remain owned by the existing reasoning parser.
+        and reasoning_max_tokens is None
+        and _field(request, "reasoning_max_tokens") is None
+        and not prompt_state_family(cfg, request)
+    )
+
+
 def prompt_state_family(cfg, request) -> bool:
     """Whether the served template or model uses the prompt-state owner."""
     from types import SimpleNamespace
@@ -215,7 +234,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
     an unpublished parse failure.
     """
 
-    def __init__(self, context: ParseContext, tools: EnvelopeTools):
+    def __init__(self, context: ParseContext, tools: EnvelopeTools | None):
         super().__init__(context)
         self.tools = tools
         self.reasoning_seen = self.channel == "reasoning"
@@ -354,6 +373,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
     def _close(self, closed: bool = True) -> list[Event]:
         assert self.envelope is not None
         lexemes = self.envelope
+        assert self.tools is not None  # envelopes open only on tool terminals
         calls = self.tools.decode("".join(lexeme.text for lexeme in lexemes))
         if not calls:
             if closed and lexemes[0].terminal == "tool_args":
@@ -404,9 +424,12 @@ class PromptOutputOwner:
         model: str | None = "",
         *,
         tools: EnvelopeTools | None = None,
+        reasoning_only: bool = False,
     ):
         self.model = (model or "").lower()
         self.tools = tools
+        # Tool-free selection: owned only when the prompt state is known.
+        self.reasoning_only = reasoning_only and tools is None
         self.parser: OutputDemultiplexer | None = None
         self.prompt_context: PromptParseContext | None = None
         self.content: list[str] = []
@@ -415,15 +438,31 @@ class PromptOutputOwner:
 
     @classmethod
     def for_request(
-        cls, cfg, request, *, thinking=None, reasoning_max_tokens=None
+        cls,
+        cfg,
+        request,
+        *,
+        thinking=None,
+        reasoning_max_tokens=None,
+        envelope_tools=True,
     ) -> "PromptOutputOwner":
-        tools = selected_envelope_tools(cfg, request, reasoning_max_tokens)
-        if tools is not None and thinking is None:
+        tools = (
+            selected_envelope_tools(cfg, request, reasoning_max_tokens)
+            if envelope_tools
+            else None
+        )
+        reasoning_only = tools is None and selected_reasoning_only(
+            cfg, request, reasoning_max_tokens
+        )
+        if (tools is not None or reasoning_only) and thinking is None:
             thinking = requested_thinking(cfg, request)
         # A thinking-off template closes reasoning before generation; its
         # implicit-reasoning policy stays with the existing parser.
+        on = thinking is not False
         return cls(
-            served_model_identity(cfg), tools=tools if thinking is not False else None
+            served_model_identity(cfg),
+            tools=tools if on else None,
+            reasoning_only=reasoning_only and on,
         )
 
     @property
@@ -468,7 +507,14 @@ class PromptOutputOwner:
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))
         if (
             self.parser is None
-            and self.tools is not None
+            and (
+                self.tools is not None
+                or (
+                    self.reasoning_only
+                    and context is not None
+                    and context.initial_channel is not None
+                )
+            )
             and getattr(output, "channel", None) is None
             and not getattr(output, "tool_calls", None)
             and not (
@@ -486,7 +532,7 @@ class PromptOutputOwner:
                 terminals=(
                     Terminal("reasoning_start", "<think>"),
                     Terminal("reasoning_end", "</think>"),
-                    *self.tools.terminals,
+                    *(self.tools.terminals if self.tools is not None else ()),
                 ),
             )
             self.parser = OutputDemultiplexer(
@@ -570,7 +616,7 @@ def split_buffered(
     )
     content = "".join(owner.content)
     reasoning = "".join(owner.reasoning)
-    if owner.tools is not None:
+    if owner.tools is not None or owner.reasoning_only:
         # The selected families keep the existing buffered reasoning-parser
         # normalization: complete fields are trimmed, so separator whitespace
         # around a decoded envelope is not a visible answer.

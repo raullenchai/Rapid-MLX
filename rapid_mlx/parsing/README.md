@@ -96,6 +96,21 @@ call opener is an unpublished parse failure (#5274). Routes' existing
 streaming markup filters still apply to that literal text. Buffered fields
 keep the existing trimmed normalization.
 
+## Prompt-owned Qwen reasoning without tools
+
+A tool-free Qwen-family request that asks for thinking and sets no reasoning
+budget selects the same grammar without tool terminals, but only when the
+engine reports the rendered prompt's initial channel. A prompt that opens
+`<think>` starts the output in reasoning even when the model never repeats the
+opener; a prompt whose block is already closed starts in content. Unknown
+prompt state, declared tools the envelope owner does not select, and budgets
+keep their existing parser policy.
+
+A length stop before the reasoning end marker keeps the unfinished output in
+reasoning and leaves content empty in every API mode (#5295). No notice and no
+reasoning tail is copied into content; clients read `finish_reason="length"`,
+Responses `status="incomplete"` or Messages `stop_reason="max_tokens"`.
+
 Remaining migration work includes other families' reasoning parsers and think
 routers, content sanitizers, format-specific tool filters and fallback parsing,
 and API-specific tool serialization/validation. These remain active; this change

@@ -97,7 +97,6 @@ from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _aggregate_generation_attempts,
-    _apply_reasoning_cutoff_notice,
     _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
@@ -2426,26 +2425,6 @@ async def _non_stream(
     )
     if is_cancellation_finish_reason(finish_reason):
         return Response(status_code=499)
-
-    # Issue #858: /v1/responses mirror of the cutoff sentinel.
-    # Default-on (PR #802 / H-01 semantics restored) — clients that only
-    # render ``output_text`` blocks (rather than walking ``status`` +
-    # ``usage.output_tokens_details.reasoning_tokens``) get the literal
-    # cue in-band. Opt out via
-    # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. The Responses
-    # surface intentionally does NOT run
-    # ``_rescue_silent_drop_from_reasoning`` (this endpoint never
-    # carried the issue#569 silent-drop pre-history), so the helper sees
-    # a broader predicate set here than on chat/anthropic — that scope
-    # is fine because the helper itself owns all the gates.
-    final_content = _apply_reasoning_cutoff_notice(
-        final_content,
-        reasoning_text,
-        tool_calls,
-        finish_reason,
-        include_reasoning_tail=not channels_owned
-        and not _uses_deepseek_v4_reasoning(cfg),
-    )
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
     if (
@@ -5035,124 +5014,6 @@ async def _stream_responses(
                 completed_output[reasoning_output_index] = reasoning_item_payload_done
             else:
                 completed_output.append(reasoning_item_payload_done)
-
-        # R12-8 codex r2 #4: streaming Responses parity with non-stream.
-        # Non-stream Responses runs `_apply_reasoning_cutoff_notice` via
-        # the chat layer, then `openai_to_responses` materializes the
-        # rescue text into an `output_text` message item. The streaming
-        # path emits the reasoning item with status=incomplete (above)
-        # but never surfaces the rescue payload — clients rendering only
-        # text output see empty output despite the reasoning being
-        # available. Mirror the non-stream shape: when the mid-think
-        # cutoff fired AND no real downstream output was seen, build the
-        # rescue payload and emit a synthetic message item using the
-        # canonical added → content_part.added → output_text.delta →
-        # output_text.done → content_part.done → output_item.done
-        # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
-        # message_open + tool_calls already preclude rescue.
-        # R12-M3 codex r2 BLOCKING: gate the rescue path on
-        # ``mid_think_cutoff`` directly (the single source of truth for
-        # "model was still mid-think when cut off"), not on a redundant
-        # ``accumulated_reasoning_text`` check. ``mid_think_cutoff``
-        # itself already requires ``bool(accumulated_reasoning_text)``
-        # above, so this is equivalent today, but the structural change
-        # ensures that any future widening of the rescue trigger (e.g.,
-        # rescue on a different cap signal) routes through the same
-        # invariant rather than getting silently skipped because the
-        # outer text gate was forgotten.
-        if mid_think_cutoff and not message_open and not tool_calls:
-            rescue_text = _apply_reasoning_cutoff_notice(
-                final_content=None,
-                reasoning_text=accumulated_reasoning_text,
-                tool_calls=None,
-                finish_reason=last_finish_reason,
-                include_reasoning_tail=not prompt_owner.active
-                and not _uses_deepseek_v4_reasoning(cfg),
-            )
-            if rescue_text:
-                rescue_output_index = len(completed_output)
-                rescue_item_id = _item_id("message", "msg")
-                rescue_part = {
-                    "type": "output_text",
-                    "text": rescue_text,
-                    "annotations": [],
-                }
-                yield _emit(
-                    "response.output_item.added",
-                    {
-                        "type": "response.output_item.added",
-                        "output_index": rescue_output_index,
-                        "item": {
-                            "type": "message",
-                            "id": rescue_item_id,
-                            "status": "in_progress",
-                            "role": "assistant",
-                            "content": [],
-                        },
-                    },
-                )
-                yield _emit(
-                    "response.content_part.added",
-                    {
-                        "type": "response.content_part.added",
-                        "item_id": rescue_item_id,
-                        "output_index": rescue_output_index,
-                        "content_index": 0,
-                        "part": {
-                            "type": "output_text",
-                            "text": "",
-                            "annotations": [],
-                        },
-                    },
-                )
-                yield _emit(
-                    "response.output_text.delta",
-                    {
-                        "type": "response.output_text.delta",
-                        "item_id": rescue_item_id,
-                        "output_index": rescue_output_index,
-                        "content_index": 0,
-                        "delta": rescue_text,
-                        "logprobs": [],
-                    },
-                )
-                yield _emit(
-                    "response.output_text.done",
-                    {
-                        "type": "response.output_text.done",
-                        "item_id": rescue_item_id,
-                        "output_index": rescue_output_index,
-                        "content_index": 0,
-                        "text": rescue_text,
-                        "logprobs": [],
-                    },
-                )
-                yield _emit(
-                    "response.content_part.done",
-                    {
-                        "type": "response.content_part.done",
-                        "item_id": rescue_item_id,
-                        "output_index": rescue_output_index,
-                        "content_index": 0,
-                        "part": rescue_part,
-                    },
-                )
-                rescue_message_done = {
-                    "type": "message",
-                    "id": rescue_item_id,
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [rescue_part],
-                }
-                yield _emit(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "output_index": rescue_output_index,
-                        "item": rescue_message_done,
-                    },
-                )
-                completed_output.append(rescue_message_done)
 
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
