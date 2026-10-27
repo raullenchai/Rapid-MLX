@@ -408,9 +408,7 @@ def test_stress_consumer_uses_selected_cache_for_pinned_snapshot(tmp_path, monke
     )
     monkeypatch.setattr("rapid_mlx._mirror._packaged_digest_info", lambda *a: None)
 
-    assert (
-        stress_e2e_bench._cached_model_revision(model_id, cache_dir=cache) is None
-    )
+    assert stress_e2e_bench._cached_model_revision(model_id, cache_dir=cache) is None
 
 
 def test_stress_consumer_resolves_catalog_alias(tmp_path, monkeypatch):

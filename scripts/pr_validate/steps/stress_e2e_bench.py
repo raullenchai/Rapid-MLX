@@ -1719,7 +1719,9 @@ def _load_benchmark_baseline(
     )
 
 
-def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str | None:
+def _cached_model_revision(
+    model_id: str, *, cache_dir: Path | None = None
+) -> str | None:
     """Return the revision resolved by Hugging Face for the loaded model."""
 
     from rapid_mlx.model_aliases import (
