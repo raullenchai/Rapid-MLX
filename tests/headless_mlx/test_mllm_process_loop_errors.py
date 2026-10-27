@@ -232,7 +232,9 @@ def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
     monkeypatch.setattr(
         cache_module, "make_prompt_cache", lambda _model: object(), raising=False
     )
-    monkeypatch.setattr(module.mx, "stream", stream_context)
+    # Replace the module binding: on hosts without MLX, module.mx may be a
+    # shared stub another test has restricted.
+    monkeypatch.setattr(module, "mx", SimpleNamespace(stream=stream_context))
     monkeypatch.setattr(module, "_prefill_cap_violation", lambda *_args: None)
 
     with pytest.raises(RuntimeError, match="prefill reached"):
@@ -258,7 +260,9 @@ def test_batch_generator_next_uses_owned_stream(monkeypatch) -> None:
     generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
     generator._stream = owned_stream
     generator._next = lambda: ["token"]
-    monkeypatch.setattr(module.mx, "stream", stream_context)
+    # Replace the module binding: on hosts without MLX, module.mx may be a
+    # shared stub another test has restricted.
+    monkeypatch.setattr(module, "mx", SimpleNamespace(stream=stream_context))
 
     assert generator.next() == ["token"]
     assert entered == [owned_stream]

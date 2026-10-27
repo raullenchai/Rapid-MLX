@@ -1190,6 +1190,9 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
     so._crash_path = tmp_path / "crash.txt"
     so._crash_pipe = None
     so._crash_tee = None
+    real_fstat = so.os.fstat
+    # so.os is the global os module; fake only the test's descriptors so
+    # pytest's own fstat calls still work.
     monkeypatch.setattr(
         so.os,
         "fstat",
@@ -1197,6 +1200,8 @@ def test_closed_crash_fd_rearm_failure_closes_replacement(monkeypatch, tmp_path)
             (_ for _ in ()).throw(OSError("closed"))
             if fd == 123
             else SimpleNamespace(st_dev=1, st_ino=2, st_mode=stat.S_IFREG)
+            if fd == 456
+            else real_fstat(fd)
         ),
     )
     monkeypatch.setattr(so.os, "open", lambda *_args: 456)

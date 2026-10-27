@@ -858,6 +858,10 @@ def test_credential_directory_fd_validation_closes_rejected_fd(
     inspected = []
 
     def fake_fstat(fd):
+        # os is global; only the first call is the credential directory, and
+        # later calls (from pytest itself) must see real metadata.
+        if inspected:
+            return real_fstat(fd)
         inspected.append(fd)
         return types.SimpleNamespace(st_mode=fake_mode, st_uid=fake_uid)
 
