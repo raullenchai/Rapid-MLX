@@ -64,6 +64,23 @@ private final class LaunchCounter: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: run.appendingPathComponent("bearer-\(epoch)").path)
     }
+    @Test func closeDuringLaunchPreventsEstablishment() async throws {
+        actor Gate {
+            var started = false
+            var continuation: CheckedContinuation<Void, Never>?
+            func wait() async { started = true; await withCheckedContinuation { continuation = $0 } }
+            func release() { continuation?.resume(); continuation = nil }
+        }
+        let (root, _, _, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = Gate()
+        let connection = try ChatOwnerConnection(runtime: ChatOwnerRuntime(interpreter: URL(fileURLWithPath: "/bin/false")), environment: ["RAPID_MLX_CHAT_HOME": root.path], launcher: { _, _ in await gate.wait() }, processStartTime: { _ in nil })
+        let establishing = Task { try await connection.status() }
+        for _ in 0..<100 { if await gate.started { break }; try await Task.sleep(for: .milliseconds(10)) }
+        await connection.close()
+        await gate.release()
+        await #expect(throws: CancellationError.self) { try await establishing.value }
+    }
     @Test func parsingAndStaleIdentity() throws {
         let (root, run, epoch, store) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

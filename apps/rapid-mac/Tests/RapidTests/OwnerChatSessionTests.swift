@@ -90,7 +90,8 @@ struct OwnerChatSessionTests {
         await disconnected.setDeliveryError(.disconnected(lastEventID: ""))
         let second = try await start(disconnected)
         try await wait(second) { if case .failed = $0.state { true } else { false } }
-        #expect(await disconnected.calls.count == 4)
+        #expect(await disconnected.calls.count == 5)
+        #expect(await disconnected.calls.contains { if case .cancel = $0 { true } else { false } })
     }
     @Test func reconnectReacquiresClient() async throws {
         let client = try await fake([])
@@ -140,6 +141,21 @@ struct OwnerChatSessionTests {
         do { try await session.resolve(opID: "op", decision: .allow); Issue.record("stale approval accepted") } catch {}
         #expect(await session.snapshot().unavailablePermissions.contains("op"))
         #expect(!(await client.calls).contains { if case .respond = $0 { true } else { false } })
+    }
+    @Test func newerPermissionRevisionIsActionable() async throws {
+        let first = frame(#"{"type":"permission.request","op_id":"op","revision":1,"tool":"write_file","summary":"Edit","preview":"x","risk":"file","reason":"Approval","options":["once","deny"],"expires_at":2000000000}"#, 1)
+        let second = frame(#"{"type":"permission.request","op_id":"op","revision":2,"tool":"write_file","summary":"Edit","preview":"x","risk":"file","reason":"Approval","options":["once","deny"],"expires_at":2000000000}"#, 2)
+        let client = try await fake([first])
+        await client.setReceipt(.object(["id": .string("op"), "state": .string("intent"), "revision": .integer(2), "expires_at": .integer(2000000000)]))
+        let session = try await start(client)
+        try await wait(session) { $0.projection?.pendingPermission != nil }
+        do { try await session.resolve(opID: "op", decision: .allow); Issue.record("expected stale permission") } catch {}
+        #expect(await session.snapshot().unavailablePermissions.contains("op"))
+        await client.setFrames([second])
+        try await wait(session) { $0.projection?.pendingPermission?.revision == 2 }
+        #expect(!(await session.snapshot().unavailablePermissions.contains("op")))
+        try await session.resolve(opID: "op", decision: .allow)
+        #expect(await client.calls.contains { if case .respond = $0 { true } else { false } })
     }
     @Test func approvalCopyIsProjected() async throws {
         let client = try await fake([

@@ -424,17 +424,21 @@ actor ChatOwnerConnection {
         if let candidate = discovery {
             do {
                 try await transport.validate(candidate)
+                guard !closed else { throw CancellationError() }
             } catch ChatOwnerConnectionError.incompatibleOwner {
                 throw ChatOwnerConnectionError.incompatibleOwner
             } catch {
+                guard !closed else { throw CancellationError() }
                 discovery = nil
             }
         }
         if discovery == nil {
             try await launcher(profile, profileDirectory.deletingLastPathComponent())
+            guard !closed else { throw CancellationError() }
             discovery = try ChatOwnerDiscovery.read(profileDirectory: profileDirectory, processStartTime: processStartTime)
             guard let discovery else { throw ChatOwnerConnectionError.ownerUnavailable }
             try await transport.validate(discovery)
+            guard !closed else { throw CancellationError() }
         }
         guard let discovery else { throw ChatOwnerConnectionError.ownerUnavailable }
         if let live, live.discovery.status == discovery.status,
@@ -445,6 +449,10 @@ actor ChatOwnerConnection {
             discovery,
             clientID: clientID
         )
+        guard !closed else {
+            try? await transport.detach(endpoint: discovery.status.endpoint, bearer: discovery.bearer, clientID: clientID)
+            throw CancellationError()
+        }
         let established = LiveOwner(discovery: discovery, leaseSeconds: lease)
         live = established
         startHeartbeatIfNeeded()
@@ -471,6 +479,10 @@ actor ChatOwnerConnection {
         guard !closed, let current = live else { return }
         do {
             let lease = try await transport.attach(current.discovery, clientID: clientID)
+            guard !closed else {
+                try? await transport.detach(endpoint: current.discovery.status.endpoint, bearer: current.discovery.bearer, clientID: clientID)
+                return
+            }
             live = LiveOwner(discovery: current.discovery, leaseSeconds: lease)
         } catch {
             live = nil

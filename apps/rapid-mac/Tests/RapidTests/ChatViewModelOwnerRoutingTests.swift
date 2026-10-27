@@ -62,6 +62,19 @@ struct ChatViewModelOwnerRoutingTests {
         #expect(await client.calls.contains { if case .submit = $0 { true } else { false } })
         #expect(!model.isStreaming)
     }
+    @Test func disabledHarnessBlocksExistingOwnerConversation() async throws {
+        let config = config(); config.harnessEnabled = true
+        let client = try await fake()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("first", alias: "model"); await model._testingWaitForCurrentTurn()
+        let calls = await client.calls.count
+        let messages = model.messages.count
+        config.harnessEnabled = false
+        model.send("second", alias: "model")
+        #expect(model.lastError == "Turn on the experimental harness in Settings to continue this chat.")
+        #expect(model.messages.count == messages)
+        #expect(await client.calls.count == calls)
+    }
     @Test func unavailableIsVisible() async {
         let config = config(); config.chatBackend = .ownerV1
         let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { throw ChatOwnerConnectionError.ownerUnavailable }, persistsConversations: false)

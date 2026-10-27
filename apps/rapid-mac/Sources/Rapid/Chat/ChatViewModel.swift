@@ -1400,6 +1400,10 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
+        if isOwnerBackedChat && !chatBackendConfig.harnessEnabled {
+            lastError = "Turn on the experimental harness in Settings to continue this chat."
+            return
+        }
         if isOwnerBackedChat && !imageAttachments.isEmpty {
             lastError = "Images aren't supported in harness chats yet — turn off the harness to send images."
             return

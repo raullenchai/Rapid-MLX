@@ -19,7 +19,7 @@ actor OwnerChatSession {
     private var client: (any ChatTurnClient)?
     private var reducer: ChatTurnReducer?
     private var state: State = .idle
-    private var unavailable: Set<String> = []
+    private var unavailable: [String: Int] = [:]
     private var observers: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
     private let workspace: URL
     private var conversationID: String?
@@ -50,7 +50,7 @@ actor OwnerChatSession {
         observers.removeAll()
     }
     func ownerConversationID() -> String? { conversationID }
-    func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: unavailable) }
+    func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: Set((reducer?.projection.pendingPermissions ?? []).filter { unavailable[$0.opID] == $0.revision }.map(\.opID))) }
     func snapshots() -> AsyncStream<Snapshot> {
         let id = UUID()
         return AsyncStream { continuation in
@@ -92,7 +92,7 @@ actor OwnerChatSession {
         }
         let turnID = UUID().uuidString.lowercased()
         let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, approvals: .default, inferenceAPIKey: target.bearer)
-        reducer = ChatTurnReducer(turnID: turnID); unavailable = []; state = .streaming; publish()
+        reducer = ChatTurnReducer(turnID: turnID); unavailable = [:]; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
     private func checkPreparation() throws {
@@ -126,6 +126,7 @@ actor OwnerChatSession {
             if reducer?.projection.terminal == nil && !Task.isCancelled {
                 failures = (reducer?.lastApplied ?? 0) > cursor ? 1 : failures + 1
                 if failures >= 4 {
+                    _ = try? await client.cancel(turnID: request.turnID)
                     state = .failed("Could not reconnect to chat owner."); publish(); break
                 }
                 state = .reconnecting; publish()
@@ -139,7 +140,10 @@ actor OwnerChatSession {
                     catch {
                         if Self.isPermanent(error) { state = .failed(error.localizedDescription); publish(); break }
                         failures += 1
-                        if failures >= 4 { state = .failed("Could not reconnect to chat owner."); publish(); break }
+                        if failures >= 4 {
+                            _ = try? await client.cancel(turnID: request.turnID)
+                            state = .failed("Could not reconnect to chat owner."); publish(); break
+                        }
                     }
                 }
                 if Task.isCancelled { break }
@@ -176,7 +180,7 @@ actor OwnerChatSession {
         throw lastError!
     }
     func resolve(opID: String, decision: ChatPermissionResponse.Decision) async throws {
-        guard let client, let permission = reducer?.projection.pendingPermissions.first(where: { $0.opID == opID }), !unavailable.contains(opID), !resolving.contains(opID) else { throw SessionError.permissionUnavailable }
+        guard let client, let permission = reducer?.projection.pendingPermissions.first(where: { $0.opID == opID }), unavailable[opID] != permission.revision, !resolving.contains(opID) else { throw SessionError.permissionUnavailable }
         resolving.insert(opID)
         defer { resolving.remove(opID) }
         do {
@@ -186,12 +190,12 @@ actor OwnerChatSession {
                   permission.expiresAt > Date().timeIntervalSince1970,
                   reducer?.projection.pendingPermissions.contains(permission) == true else { throw SessionError.permissionUnavailable }
             _ = try await client.respond(ChatPermissionResponse(opID: opID, revision: permission.revision, decision: decision))
-            unavailable.insert(opID); publish()
+            unavailable[opID] = permission.revision; publish()
         } catch {
             if case SessionError.permissionUnavailable = error {
-                unavailable.insert(opID); publish()
+                unavailable[opID] = permission.revision; publish()
             } else if case ChatTurnClientError.http(let status) = error, status == 404 || status == 409 {
-                unavailable.insert(opID); publish()
+                unavailable[opID] = permission.revision; publish()
             }
             throw error
         }
