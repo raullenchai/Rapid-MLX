@@ -6,6 +6,8 @@ typealias ChatTurnEventHandler = @Sendable (ChatWireEnvelope) async throws -> Vo
 /// can stop a gapped stream before any cursor is advanced. Cancelling the reader
 /// only detaches; cancel(turnID:) is the explicit owner operation.
 protocol ChatTurnClient: Sendable {
+    func createConversation() async throws -> ChatWireJSON
+    func conversation(id: String) async throws -> ChatWireJSON
     func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func turn(turnID: String) async throws -> ChatWireJSON
@@ -15,6 +17,11 @@ protocol ChatTurnClient: Sendable {
     func context(_ request: ChatTurnRequest) async throws -> ChatWireContextEvent
     func compact(_ request: ChatTurnRequest, instructions: String) async throws -> ChatCompactResponse
     func undo(conversationID: String, operationID: String) async throws -> ChatWireJSON
+}
+
+extension ChatTurnClient {
+    func createConversation() async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
+    func conversation(id: String) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
 }
 
 struct ChatCompactResponse: Decodable, Equatable, Sendable {
@@ -57,6 +64,14 @@ actor URLSessionChatTurnClient: ChatTurnClient {
             config.connectionProxyDictionary = [:]
             self.session = URLSession(configuration: config)
         }
+    }
+
+    func createConversation() async throws -> ChatWireJSON {
+        try await json(["conversations"], method: "POST", body: Data("{}".utf8))
+    }
+
+    func conversation(id: String) async throws -> ChatWireJSON {
+        try await json(["conversations", id])
     }
 
     func submit(_ intent: ChatTurnRequest, after: Int = 0, onEvent: @escaping ChatTurnEventHandler) async throws {

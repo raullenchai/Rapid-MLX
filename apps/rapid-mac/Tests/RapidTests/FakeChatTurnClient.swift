@@ -11,6 +11,12 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    var substituteTurnID = false
+    func enableTurnSubstitution() { substituteTurnID = true }
+    func setFrames(_ value: [Data]) { frames = value }
+    func setReceipt(_ value: ChatWireJSON) { receipt = value }
+    func createConversation() async throws -> ChatWireJSON { .object(["id": .string("c"), "branch_id": .string("b"), "branches": .array([.object(["id": .string("b"), "revision": .integer(0)])])]) }
+    func conversation(id: String) async throws -> ChatWireJSON { try await createConversation() }
     private(set) var calls: [Call] = []
     var frames: [Data]
     let contextValue: ChatWireContextEvent
@@ -23,11 +29,11 @@ actor FakeChatTurnClient: ChatTurnClient {
 
     func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws {
         calls.append(.submit(request, after: after))
-        try await deliver(after: after, onEvent: onEvent)
+        try await deliver(turnID: request.turnID, after: after, onEvent: onEvent)
     }
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws {
         calls.append(.stream(turnID, after: after))
-        try await deliver(after: after, onEvent: onEvent)
+        try await deliver(turnID: turnID, after: after, onEvent: onEvent)
     }
     func turn(turnID: String) async throws -> ChatWireJSON { calls.append(.turn(turnID)); return receipt }
     func cancel(turnID: String) async throws -> ChatWireJSON { calls.append(.cancel(turnID)); return receipt }
@@ -43,11 +49,12 @@ actor FakeChatTurnClient: ChatTurnClient {
         calls.append(.undo(conversationID, operationID)); return receipt
     }
 
-    private func deliver(after: Int, onEvent: ChatTurnEventHandler) async throws {
+    private func deliver(turnID: String, after: Int, onEvent: ChatTurnEventHandler) async throws {
         var decoder = ChatSSEDecoder()
         for frame in frames {
             try Task.checkCancellation()
-            for event in try decoder.append(frame) where event.seq > after { try await onEvent(event) }
+            let data = substituteTurnID ? Data(String(decoding: frame, as: UTF8.self).replacingOccurrences(of: "turn-1", with: turnID).utf8) : frame
+            for event in try decoder.append(data) where event.seq > after { try await onEvent(event) }
         }
         try decoder.finish()
     }
