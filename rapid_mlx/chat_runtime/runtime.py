@@ -268,15 +268,16 @@ class Runtime:
             ids = request.attachment_ids
             if request.mode == "regenerate":
                 rows = await self.store.branch_messages(request.branch_id)
-                ids = (
-                    [
-                        p["attachment_id"]
-                        for p in rows[-1]["parts"]
-                        if p["type"] == "attachment"
-                    ]
-                    if rows and rows[-1]["role"] == "user"
-                    else []
+                # Regenerate replays the latest user message, even when the
+                # branch ends with the assistant reply being replaced.
+                replayed = next(
+                    (row for row in reversed(rows) if row["role"] == "user"), None
                 )
+                ids = [
+                    p["attachment_id"]
+                    for p in (replayed or {"parts": []})["parts"]
+                    if p["type"] == "attachment"
+                ]
             images = []
             for aid in ids:
                 mime, _ = await self.store.attachment_metadata(
@@ -522,7 +523,14 @@ class Runtime:
                     )
                 ]
             )
-        ] + _project_messages(manager.rows, attachments=manager.attachments)
+        ] + _project_messages(
+            manager.rows,
+            current_id=next(
+                (row["id"] for row in reversed(manager.rows) if row["role"] == "user"),
+                None,
+            ),
+            attachments=manager.attachments,
+        )
         measured = await manager.counter.measure(history, parameters)
         return context_event(measured, request.context_tokens)
 

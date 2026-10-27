@@ -308,3 +308,49 @@ async def test_image_overflow_never_drops_pixels():
             TokenCounter(),
             500,
         )
+
+
+async def test_regenerate_checks_the_replayed_user_images(tmp_path, monkeypatch):
+    store = await Store.open(tmp_path)
+    conversation = await store.create_conversation()
+    attachment = await store.put_attachment(
+        conversation["id"], "x.png", b"image", "image/png"
+    )
+    rows = [
+        {
+            "id": "u",
+            "role": "user",
+            "parts": [{"type": "attachment", "attachment_id": attachment["id"]}],
+        },
+        {"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "hi"}]},
+    ]
+
+    async def branch_messages(_branch_id):
+        return rows
+
+    monkeypatch.setattr(store, "branch_messages", branch_messages)
+    runtime = Runtime(store, web_enabled=False)
+    runtime.clients._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                200, json={"data": [{"id": "local", "capabilities": []}]}
+            )
+        )
+    )
+    request = TurnRequest(
+        turn_id="regen",
+        conversation_id=conversation["id"],
+        branch_id=conversation["branch_id"],
+        expected_revision=0,
+        text="",
+        inference_url="http://localhost:1234",
+        model="local",
+        mode="regenerate",
+    )
+    try:
+        with pytest.raises(ImageCapabilityError) as error:
+            await runtime.submit(request)
+        assert error.value.code == "image_model_unsupported"
+    finally:
+        await runtime.close()
+        await store.close()
