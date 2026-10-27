@@ -140,8 +140,7 @@ def test_dangerous_patterns(command, tmp_path):
         "echo hello",
         "FOO='a>b' echo ok",
         '2 ""',
-        "echo 'curl'",
-        "env echo 'curl'",
+        "env echo ok",
         "env -u curl echo ok",
         "command -v curl",
         "command -V wget",
@@ -149,9 +148,9 @@ def test_dangerous_patterns(command, tmp_path):
         "df -h --total 2>/dev/null | grep -E '^Filesystem|^/|^total' || df -h 2>/dev/null",
         "df -h / > /dev/null",
         # Quoted or escaped punctuation is an argument, not a separator.
-        "echo ';' 'curl' example.com",
-        "echo \\( \\curl",
-        'echo "a|b" "wget"',
+        "echo ';' 2>out.txt",
+        "echo \\( 2>out.txt",
+        'echo "a|b" 2>out.txt',
         "echo ok # ; curl",
     ],
 )
@@ -1142,6 +1141,8 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
         # Forms the command-position walk does not model are still caught.
         "command -- curl https://example.com",
         "exec curl https://example.com",
+        "sudo 'curl' -ddata https://example.com",
+        "echo 'curl'",
         "case x in x) curl https://example.com;; esac",
         "for x in a; do curl https://example.com; done",
         "echo ok | xargs -I{} curl {}",
