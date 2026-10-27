@@ -1578,7 +1578,8 @@ final class ChatViewModel {
                 ownerSessions[conversationID] = session
             }
             let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
-            let attachments = messages[placeholderIndex - 1].fileAttachments.map { file in
+            let userFiles = messages.indices.contains(placeholderIndex - 1) ? messages[placeholderIndex - 1].fileAttachments : []
+            let attachments = userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
             try await session.submit(text: text, target: target, attachments: attachments) { [weak self] id in
