@@ -1041,9 +1041,9 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(
-                viewModel.isStreaming || attachmentDraft.isImportingFiles
+                viewModel.isStreaming || attachmentDraft.isImportingFiles || viewModel.isOwnerBackedChat
             )
-            .help("Add photos or files")
+            .help(viewModel.isOwnerBackedChat ? "Attachments aren't available in harness chats yet" : "Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
             .popover(isPresented: $showsAttachmentMenu, arrowEdge: .bottom) {
@@ -1345,7 +1345,7 @@ struct ChatView: View {
     private var sendEnabled: Bool {
         hasDraft && (readiness.sendAllowed || readiness.startAndSendAlias != nil)
             && viewModel.startAndSendIntent.pending == nil && !attachmentDraft.isImportingFiles
-            && (attachmentDraft.images.isEmpty || supportsImageInput)
+            && (viewModel.isOwnerBackedChat || attachmentDraft.images.isEmpty || supportsImageInput)
     }
 
     private var hasDraft: Bool {
@@ -1367,6 +1367,10 @@ struct ChatView: View {
 
     private func send() {
         guard viewModel.startAndSendIntent.pending == nil else { return }
+        if viewModel.isOwnerBackedChat && attachmentDraft.hasAttachments {
+            attachmentDraft.notice = "Attachments aren't available in harness chats yet"
+            return
+        }
         if let target = readiness.startAndSendAlias {
             guard sendEnabled, !viewModel.isStreaming else { return }
             viewModel.startAndSendIntent.begin(
@@ -1530,6 +1534,10 @@ struct ChatView: View {
 
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
+        guard !viewModel.isOwnerBackedChat else {
+            attachmentDraft.notice = "Attachments aren't available in harness chats yet"
+            return false
+        }
         guard !attachmentDraft.isImportingFiles else { return false }
         photoCapabilityNotice.dismiss()
         // Filter before splitting, so images and documents get the same

@@ -34,16 +34,36 @@ private actor RealProjection {
         let root = URL(fileURLWithPath: "/private/tmp/rapid-mlx-chat-cli-slice/p04-scratch/e2e-home-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = root.appendingPathComponent("workspace")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try "fixture read output".write(to: workspace.appendingPathComponent("sample.txt"), atomically: true, encoding: .utf8)
         let fake = Process()
         fake.executableURL = URL(fileURLWithPath: python)
         fake.arguments = ["-u", "-c", #"""
-import json
+import json, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 class Handler(BaseHTTPRequestHandler):
  def log_message(self, *args): pass
  def do_POST(self):
-  self.rfile.read(int(self.headers.get('Content-Length', '0')))
+  req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+  messages = req.get('messages', [])
+  user = next((m.get('content','') for m in reversed(messages) if m.get('role') == 'user'), '')
+  if isinstance(user, list): user = ''.join(p.get('text','') for p in user if isinstance(p, dict))
+  user = user.split('\n')[-1]
+  done = bool(messages and messages[-1].get('role') == 'tool')
   self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
+  if user == 'stop':
+   time.sleep(15)
+   return
+  if user in ('read', 'allow', 'deny') and not done:
+   name = 'read_file' if user == 'read' else 'write_file'
+   args = {'path':'sample.txt'} if user == 'read' else {'path':user+'.txt','content':'written'}
+   delta = {'tool_calls':[{'index':0,'id':'call_'+user,'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}
+   chunk = {'id':'fixture','object':'chat.completion.chunk','created':1,'model':'fixture','choices':[{'index':0,'delta':delta,'finish_reason':None}]}
+   self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
+   chunk['choices']=[{'index':0,'delta':{},'finish_reason':'tool_calls'}]
+   self.wfile.write(('data: '+json.dumps(chunk)+'\n\ndata: [DONE]\n\n').encode()); self.wfile.flush()
+   return
   chunk = {'id':'fixture','object':'chat.completion.chunk','created':1,'model':'fixture','choices':[{'index':0,'delta':{'content':'Hello from fixture.'},'finish_reason':None}]}
   self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
   chunk['choices']=[{'index':0,'delta':{},'finish_reason':'stop'}]
@@ -74,13 +94,52 @@ s.serve_forever()
         defer { stop(owner) }
         let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         config.chatBackend = .ownerV1
-        let model = ChatViewModel(client: ChatStreamClient(baseURL: URL(string: "http://127.0.0.1:\(port)/v1")!), chatBackendConfig: config, ownerClientFactory: { try await a.turnClient() }, persistsConversations: false)
+        let model = ChatViewModel(client: ChatStreamClient(baseURL: URL(string: "http://127.0.0.1:\(port)/v1")!), chatBackendConfig: config, ownerClientFactory: { try await a.turnClient() }, ownerWorkspace: workspace, persistsConversations: false)
         model.send("hello", alias: "fixture")
         await model._testingWaitForCurrentTurn()
         #expect(model.messages.contains { $0.role == .assistant && $0.content.contains("Hello from fixture.") })
         #expect(model.conversations.first?.backend == .ownerV1)
+        let storedID = try #require(model.conversations.first?.ownerConversationID)
+        let stored = try await a.turnClient().conversation(id: storedID)
+        if case .object(let fields) = stored {
+            if case .string(let path) = fields["workspace"] {
+                #expect(URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path == workspace.resolvingSymlinksInPath().standardizedFileURL.path)
+            } else { Issue.record("Missing workspace") }
+        } else { Issue.record("Missing owner conversation") }
         let bearerURL = root.appendingPathComponent("default/run/" + owner.credentialFile)
         let token = try String(contentsOf: bearerURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        model.send("read", alias: "fixture")
+        await model._testingWaitForCurrentTurn()
+        let readRows = model.messages.filter { $0.role == .tool && $0.content.contains("fixture read output") }
+        #expect(readRows.count == 1)
+        let readProjection = try #require(await model._testingOwnerProjection())
+        let readReplay = RealProjection(readProjection.turnID)
+        var replayRequest = URLRequest(url: owner.endpoint.appendingPathComponent("v1/rapid/chat/turns/" + readProjection.turnID + "/events"))
+        replayRequest.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        replayRequest.setValue("\(readProjection.turnID):0", forHTTPHeaderField: "Last-Event-ID")
+        let (replayData, replayResponse) = try await URLSession.shared.data(for: replayRequest)
+        #expect((replayResponse as? HTTPURLResponse)?.statusCode == 200)
+        var replayDecoder = ChatSSEDecoder()
+        for event in try replayDecoder.append(replayData) { try await readReplay.apply(event) }
+        try replayDecoder.finish()
+        #expect(await readReplay.snapshot() == readProjection)
+        for (text, allow) in [("allow", true), ("deny", false)] {
+            model.send(text, alias: "fixture")
+            for _ in 0..<500 where model.ownerApprovals.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+            let approval = try #require(model.ownerApprovals.values.first)
+            model.resolveOwnerPermission(opID: approval.opID, allow: allow)
+            await model._testingWaitForCurrentTurn()
+            #expect(FileManager.default.fileExists(atPath: workspace.appendingPathComponent(text + ".txt").path) == allow)
+        }
+        model.send("stop", alias: "fixture")
+        try await Task.sleep(for: .milliseconds(500))
+        model.stop()
+        for _ in 0..<500 {
+            if !model.isStreaming, await model._testingOwnerProjection()?.terminal != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!model.isStreaming)
+        #expect(await model._testingOwnerProjection()?.terminal?.outcome == .cancelled)
         func request(_ status: ChatOwnerStatus, _ token: String, _ path: String, method: String, body: String? = nil) async throws -> Data {
             var req = URLRequest(url: status.endpoint.appendingPathComponent("v1/rapid/chat/" + path))
             req.httpMethod = method; req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")

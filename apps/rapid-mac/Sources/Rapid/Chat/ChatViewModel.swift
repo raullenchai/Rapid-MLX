@@ -156,6 +156,7 @@ final class ChatViewModel {
     /// inject a real URLSession or thread a mock through both layers.
     private var client: ChatStreamClient
     private let chatBackendConfig: ChatBackendConfig
+    private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
     private var ownerSessions: [UUID: OwnerChatSession] = [:]
     struct OwnerApproval { let opID: String; let unavailable: Bool }
@@ -417,6 +418,7 @@ final class ChatViewModel {
         client: ChatStreamClient = ChatStreamClient(),
         chatBackendConfig: ChatBackendConfig? = nil,
         ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)? = nil,
+        ownerWorkspace: URL = FileManager.default.homeDirectoryForCurrentUser,
         tools: any ToolRegistry = EmptyToolRegistry(),
         toolDefaults: UserDefaults = .standard,
         sampling: SamplingConfig? = nil,
@@ -432,6 +434,7 @@ final class ChatViewModel {
         self.client = client
         self.chatBackendConfig = chatBackendConfig ?? ChatBackendConfig()
         self.ownerClientFactory = ownerClientFactory
+        self.ownerWorkspace = ownerWorkspace
         self.tools = tools
         self.toolDefaults = toolDefaults
         self.sampling = sampling
@@ -1355,6 +1358,13 @@ final class ChatViewModel {
     /// Append the user message, open a placeholder assistant row, and
     /// kick off the streaming task. The text field clears immediately on
     /// the caller's side.
+    var isOwnerBackedChat: Bool {
+        if let conversation = conversations.first(where: { $0.id == activeConversationID }) {
+            return conversation.backend == .ownerV1
+        }
+        return chatBackendConfig.chatBackend == .ownerV1
+    }
+
     func send(
         _ text: String,
         alias: String,
@@ -1365,6 +1375,7 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
+        guard !isOwnerBackedChat || (imageAttachments.isEmpty && fileAttachments.isEmpty) else { return }
 
         // The reader has taken the wheel. Anything we were asking the model
         // on our own account stops now — it would land on a transcript that
@@ -1517,10 +1528,10 @@ final class ChatViewModel {
             else {
                 let storedID = conversations.first(where: { $0.id == conversationID })?.ownerConversationID
                 if let ownerClientFactory {
-                    session = OwnerChatSession(client: try await ownerClientFactory(), conversationID: storedID)
+                    session = OwnerChatSession(client: try await ownerClientFactory(), conversationID: storedID, workspace: ownerWorkspace)
                 } else {
                     guard let connection = try await ChatOwnerConnection.connectIfEnabled(backend: .ownerV1) else { throw ChatOwnerConnectionError.ownerUnavailable }
-                    session = OwnerChatSession(connection: connection, conversationID: storedID)
+                    session = OwnerChatSession(connection: connection, conversationID: storedID, workspace: ownerWorkspace)
                 }
                 guard epoch == conversationEpoch else { return }
                 if Task.isCancelled { finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch); persistActive(); return }
@@ -1564,6 +1575,10 @@ final class ChatViewModel {
             isStreaming = false
             persistActive()
         }
+    }
+
+    func _testingOwnerProjection() async -> ChatTurnProjection? {
+        await ownerSessions[activeConversationID]?.snapshot().projection
     }
 
     func resolveOwnerPermission(opID: String, allow: Bool) {

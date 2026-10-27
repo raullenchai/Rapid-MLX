@@ -15,8 +15,8 @@ actor FakeChatTurnClient: ChatTurnClient {
     func enableTurnSubstitution() { substituteTurnID = true }
     func setFrames(_ value: [Data]) { frames = value }
     func setReceipt(_ value: ChatWireJSON) { receipt = value }
-    func createConversation() async throws -> ChatWireJSON { .object(["id": .string("c"), "branch_id": .string("b"), "branches": .array([.object(["id": .string("b"), "revision": .integer(0)])])]) }
-    func conversation(id: String) async throws -> ChatWireJSON { try await createConversation() }
+    func createConversation(workspace: String) async throws -> ChatWireJSON { .object(["id": .string("c"), "branch_id": .string("b"), "branches": .array([.object(["id": .string("b"), "revision": .integer(0)])])]) }
+    func conversation(id: String) async throws -> ChatWireJSON { try await createConversation(workspace: "") }
     private(set) var calls: [Call] = []
     var frames: [Data]
     let contextValue: ChatWireContextEvent

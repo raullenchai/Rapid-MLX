@@ -21,17 +21,20 @@ actor OwnerChatSession {
     private var state: State = .idle
     private var unavailable: Set<String> = []
     private var observers: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
+    private let workspace: URL
     private var conversationID: String?
     private var branchID: String?
     private var task: Task<Void, Never>?
     private var preparing = false
     private var resolving: Set<String> = []
 
-    init(connection: ChatOwnerConnection, conversationID: String? = nil) {
+    init(connection: ChatOwnerConnection, conversationID: String? = nil, workspace: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.workspace = workspace.resolvingSymlinksInPath().standardizedFileURL
         self.clientProvider = { try await connection.turnClient() }
         self.conversationID = conversationID
     }
-    init(client: any ChatTurnClient, conversationID: String? = nil) {
+    init(client: any ChatTurnClient, conversationID: String? = nil, workspace: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.workspace = workspace.resolvingSymlinksInPath().standardizedFileURL
         self.clientProvider = { client }
         self.conversationID = conversationID
     }
@@ -56,7 +59,7 @@ actor OwnerChatSession {
         self.client = client
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
-        else { conversation = try await client.createConversation() }
+        else { conversation = try await client.createConversation(workspace: workspace.path) }
         guard case .object(let object) = conversation,
               case .string(let id) = object["id"], case .string(let branch) = object["branch_id"],
               case .array(let branches) = object["branches"],
@@ -64,7 +67,7 @@ actor OwnerChatSession {
               case .object(let fields) = selected, case .integer(let revision) = fields["revision"] else { throw SessionError.invalidConversation }
         conversationID = id; branchID = branch
         let turnID = UUID().uuidString.lowercased()
-        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, inferenceURL: target.url.absoluteString, model: target.model, inferenceAPIKey: target.bearer)
+        let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, inferenceURL: target.url.absoluteString, model: target.model, approvals: .always, inferenceAPIKey: target.bearer)
         reducer = ChatTurnReducer(turnID: turnID); unavailable = []; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
