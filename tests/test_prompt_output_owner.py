@@ -65,12 +65,15 @@ def test_request_instances_do_not_share_state():
 
 def test_postprocessor_prefix_replay_and_reset():
     from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning import get_parser
     from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
     cfg = reset_config()
     cfg.model_name = "flint"
     cfg.tool_call_parser = "glm47"
     cfg.enable_auto_tool_choice = True
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = get_parser("qwen3")()
     processor = StreamingPostProcessor(
         cfg,
         tools_requested=True,
@@ -87,6 +90,7 @@ def test_postprocessor_prefix_replay_and_reset():
         },
     )
     prefix = "<tool_call>run_shell_command"
+    legacy_reasoning = processor.reasoning_parser
     processor.seed_forced_assistant_prefix(prefix)
     processor.process_chunk(output(prefix))
     events = processor.process_chunk(
@@ -100,4 +104,6 @@ def test_postprocessor_prefix_replay_and_reset():
     processor.finalize()
     processor.reset()
     assert not processor.channels_owned
+    assert processor.reasoning_parser is legacy_reasoning
+    assert not processor.tool_parser.skip_reasoning_parsing
     assert processor._prompt_owner.finish() == []

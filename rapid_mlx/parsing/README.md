@@ -1,8 +1,8 @@
 # Output parser migration core
 
-`OutputDemultiplexer` is a request-local lexer, grammar and commit cursor. Phase
-three introduces it in shadow mode; production parsing remains unchanged until
-the selected format adapters move onto this contract.
+`OutputDemultiplexer` is a request-local lexer, grammar and commit cursor. It was
+introduced in shadow mode; the selected production adapters described below now
+use this contract.
 
 - `ParseContext` carries rendered current-turn evidence and an explicit grammar
   default for unknown prompts. Requested thinking mode alone is not evidence.
@@ -63,6 +63,10 @@ arguments from reasoning transitions. Chat, Responses and Messages pass only
 content to tool extraction, including buffered replies. Owned reasoning bypasses
 serializer stripping and EOF promotion. Native channel events and other model
 families retain their existing paths.
+
+LFM2.5's native tool-envelope terminals produce control events in content and
+remain literal in reasoning. The existing tool parser receives the pythonic
+payload. Reset restores legacy parser configuration before the next stream.
 
 Remaining migration work includes other families' reasoning parsers and think
 routers, content sanitizers, format-specific tool filters and fallback parsing,

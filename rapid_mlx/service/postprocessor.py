@@ -338,6 +338,7 @@ class StreamingPostProcessor:
             self.reasoning_parser = self._create_reasoning_parser(cfg)
         else:
             self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
+        self._legacy_reasoning_parser = self.reasoning_parser
 
         # R10-M1 (2026-06-23): propagate the request-level
         # ``enable_thinking`` to parsers that expose ``set_enable_thinking``
@@ -1592,6 +1593,8 @@ class StreamingPostProcessor:
         accumulated-buffer signal (sufficient post-first-chunk).
         """
         if self._prompt_owner.active:
+            # Prompt-selected ownership must inspect content too: an explicit
+            # opener may follow it, regardless of the requested switch.
             return True
         if self.enable_thinking is not False:
             return True
@@ -2496,6 +2499,7 @@ class StreamingPostProcessor:
         because that would clear another active stream's parser state.
         """
         self.prompt_parse_context = None
+        self.reasoning_parser = self._legacy_reasoning_parser
         self._prompt_owner = PromptOutputOwner(
             self.cfg.model_path or self.cfg.model_name
         )
@@ -2625,6 +2629,7 @@ class StreamingPostProcessor:
                     pass
         if self.tool_parser and self._tool_parser_request_local:
             self.tool_parser.reset()
+            self.tool_parser.skip_reasoning_parsing = False
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:
         """Process a single engine output chunk.
