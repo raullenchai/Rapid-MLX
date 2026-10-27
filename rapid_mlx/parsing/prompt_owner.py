@@ -186,6 +186,8 @@ class EnvelopeToolGrammar(ChannelGrammar):
         # True while a reasoning block opened by the output itself is open.
         self.delimited = False
         self.envelope: list[Lexeme] | None = None
+        self.json_body: bool | None = False
+        self.json_string = self.json_escape = False
         self.origin = self.channel
         self.calls: dict[int, dict] = {}
 
@@ -199,13 +201,17 @@ class EnvelopeToolGrammar(ChannelGrammar):
         terminal = lexeme.terminal
         if self.envelope is not None:
             self.envelope.append(lexeme)
-            if terminal == "tool_end" and not self._in_json_string():
+            if terminal == "tool_end" and not self.json_string:
                 return self._close()
+            self._scan(lexeme.text)
             return []
         # The tool parser owns the envelope; the channel it interrupts is
         # resolved when the envelope closes.
         if terminal in ("tool_start", "tool_args"):
             self.envelope = [lexeme]
+            # Only a ``<tool_call>`` body may be JSON; GLM arguments are not.
+            self.json_body = None if terminal == "tool_start" else False
+            self.json_string = self.json_escape = False
             self.origin = self.channel
             return []
         # python/sglang/srt/parser/reasoning_parser.py::
@@ -236,25 +242,26 @@ class EnvelopeToolGrammar(ChannelGrammar):
             ]
         return events
 
-    def _in_json_string(self) -> bool:
-        """Whether the just-read closer sits inside a JSON body's string.
+    def _scan(self, text: str) -> None:
+        """Track whether the envelope body is inside a JSON string.
 
         The JSON extractors decode the body with a JSON decoder, so a closer
-        spelled inside an argument string belongs to the arguments.
+        spelled inside an argument string belongs to the arguments. State is
+        incremental: each body character is read once.
         """
-        assert self.envelope is not None
-        body = "".join(lexeme.text for lexeme in self.envelope[1:-1]).lstrip()
-        if self.envelope[0].terminal != "tool_start" or not body.startswith("{"):
-            return False
-        inside = escaped = False
-        for char in body:
-            if escaped:
-                escaped = False
+        for char in text:
+            if self.json_body is None:
+                if char.isspace():
+                    continue
+                self.json_body = char == "{"
+            if not self.json_body:
+                return
+            if self.json_escape:
+                self.json_escape = False
             elif char == "\\":
-                escaped = inside
+                self.json_escape = self.json_string
             elif char == '"':
-                inside = not inside
-        return inside
+                self.json_string = not self.json_string
 
     def _close(self) -> list[Event]:
         lexemes, self.envelope = self.envelope or [], None
