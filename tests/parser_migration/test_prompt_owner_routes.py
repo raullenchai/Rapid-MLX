@@ -339,3 +339,39 @@ def test_native_tool_event_after_text_ownership(surface, channel, model, monkeyp
     assert result["calls"] == [["run_shell_command", {"command": "pwd"}]], result
     expected = "Starting. Done." + ("Narration. " if channel != "tool_call" else "")
     assert result["content"] == expected, result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("model", ["flint", "lfm2.5"])
+def test_buffered_native_reasoning_sidecar(surface, model, monkeypatch):
+    from rapid_mlx.engine.base import GenerationOutput
+
+    from .harness import Engine
+
+    context = PromptParseContext(
+        "<think>", None, "reasoning", False, "flint" if model == "flint" else "chatml"
+    )
+
+    async def native_result(self, **kwargs):
+        return GenerationOutput(
+            text="Answer.",
+            reasoning_text="Private plan.",
+            prompt_parse_context=context,
+            finished=True,
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(Engine, "chat", native_result)
+    result = route(
+        "qwen3",
+        "glm47" if model == "flint" else "lfm",
+        "",
+        surface,
+        False,
+        model=model,
+        prompt_context=context,
+        thinking=True,
+        tools_mode="absent",
+    )
+    assert result["content"] == "Answer.", result
+    assert result["reasoning"] == "Private plan.", result

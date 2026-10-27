@@ -143,6 +143,8 @@ class PromptOutputOwner:
 
 def split_buffered(output: GenerationOutput, model: str | None):
     """Apply the same owner before buffered tool extraction."""
+    if getattr(output, "reasoning_text", ""):
+        return output, False
     owner = PromptOutputOwner(model)
     owner._initialize(output)
     if not owner.active:
