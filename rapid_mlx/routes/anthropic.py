@@ -2488,6 +2488,8 @@ async def _stream_anthropic_messages(
         if _chunk_finish_reason:
             stream_finish_reason = _chunk_finish_reason
 
+        for packet in emit_owned(prompt_owner.release_held(output)):
+            yield packet
         owned = prompt_owner.observe(output)
         if owned is not None:
             tool_filter.channels_owned = True

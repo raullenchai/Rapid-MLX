@@ -2641,6 +2641,7 @@ class StreamingPostProcessor:
         if getattr(output, "prompt_parse_context", None) is not None:
             self.prompt_parse_context = output.prompt_parse_context
         was_owned = self.channels_owned
+        released = self._prompt_owner.release_held(output)
         owned = self._prompt_owner.observe(output)
         if owned is not None:
             if not was_owned:
@@ -2657,6 +2658,8 @@ class StreamingPostProcessor:
                 events.append(self._make_finish_event(output))
         else:
             events = self._process_chunk_events(output)
+        if released:
+            events = self._process_owned_events(released, output) + events
         if any(event.type == "tool_call" for event in events):
             tail = ""
             if getattr(output, "tool_calls", None):

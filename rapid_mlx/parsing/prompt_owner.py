@@ -120,6 +120,20 @@ class PromptOutputOwner:
                 )
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))
 
+    def release_held(self, output: GenerationOutput) -> list[Event]:
+        """Resolve held marker text before a native event is routed.
+
+        A native event cannot complete a marker spelling started by earlier
+        text, so the held prefix is plain text of the current channel and must
+        be emitted ahead of the native event to keep stream order.
+        """
+        if self.parser is None or (
+            getattr(output, "channel", None) is None
+            and not getattr(output, "tool_calls", None)
+        ):
+            return []
+        return self._record(self.parser.release_pending())
+
     def observe(self, output: GenerationOutput) -> list[Event] | None:
         self._initialize(output)
         # Native metadata is authoritative on every event, including streams

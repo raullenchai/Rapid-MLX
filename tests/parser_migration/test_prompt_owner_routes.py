@@ -485,3 +485,43 @@ def test_messages_omits_blank_owned_thinking(stream, model, contract, suffix, ra
     )
     assert result["reasoning"] == ""
     assert result["content"] == "\nHello"
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+def test_native_event_releases_held_marker_prefix(surface, monkeypatch):
+    from rapid_mlx.engine.base import GenerationOutput
+
+    from .harness import Engine
+
+    context = PromptParseContext("", None, "content", False, "flint")
+
+    async def interrupted_marker(self, **kwargs):
+        yield GenerationOutput(
+            text="",
+            new_text="Hi <thi",
+            finished=False,
+            prompt_parse_context=context,
+        )
+        yield GenerationOutput(
+            text="", new_text="Native. ", finished=False, channel="content"
+        )
+        yield GenerationOutput(text="", new_text="nk>secret", finished=False)
+        yield GenerationOutput(text="", finished=True, finish_reason="stop")
+
+    monkeypatch.setattr(Engine, "stream_chat", interrupted_marker)
+    result = route(
+        "qwen3",
+        "glm47",
+        "",
+        surface,
+        True,
+        model="flint",
+        prompt_context=context,
+        thinking=False,
+        tools_mode="absent",
+        capture=True,
+    )
+    # The native event cannot complete "<thi" + "nk>", so no reasoning opens
+    # and the held prefix is emitted before the native narration.
+    assert result["reasoning"] == "", result
+    assert result["content"] == "Hi <thiNative. nk>secret", result

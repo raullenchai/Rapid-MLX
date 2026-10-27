@@ -3853,17 +3853,24 @@ async def _stream_responses(
             failure_latch=telemetry_failure_emitted,
         )
         prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+        owned_reasoning_parts: list[str] = []
+
+        def merge_owned_reasoning():
+            # Join owned fragments once instead of growing an immutable string
+            # per delta; merge before visible text or any other path reads it.
+            nonlocal accumulated_reasoning_text
+            if owned_reasoning_parts:
+                accumulated_reasoning_text += "".join(owned_reasoning_parts)
+                owned_reasoning_parts.clear()
 
         def owned_content(events):
-            nonlocal \
-                reasoning_block_closed, \
-                accumulated_reasoning_text, \
-                reasoning_stream_seen
+            nonlocal reasoning_block_closed, reasoning_stream_seen
             for event in events:
                 if isinstance(event, ReasoningDelta):
                     reasoning_stream_seen = True
-                    accumulated_reasoning_text += event.text
+                    owned_reasoning_parts.append(event.text)
                 elif isinstance(event, ContentDelta):
+                    merge_owned_reasoning()
                     reasoning_block_closed = True
                     filtered = tool_filter.process(event.text)
                     if filtered:
@@ -3908,6 +3915,9 @@ async def _stream_responses(
                     output, include_timing=not nonprogress_retry
                 )
 
+            for content in owned_content(prompt_owner.release_held(output)):
+                async for packet in _emit_text_delta(content):
+                    yield packet
             owned = prompt_owner.observe(output)
             if owned is not None:
                 tool_filter.channels_owned = True
@@ -3916,6 +3926,7 @@ async def _stream_responses(
                     async for packet in _emit_text_delta(content):
                         yield packet
                 continue
+            merge_owned_reasoning()
 
             terminal_reasoning_text = getattr(output, "reasoning_text", "")
             if terminal_reasoning_text:
@@ -4229,6 +4240,7 @@ async def _stream_responses(
         if prompt_owner.active:
             owned_tail = "".join(owned_content(prompt_owner.finish()))
             accumulated_raw = "".join(prompt_owner.content)
+        merge_owned_reasoning()
 
         # Flush the same content-only tool input, including a partial final marker.
         remaining = owned_tail + tool_filter.flush()

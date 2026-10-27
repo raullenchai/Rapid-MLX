@@ -244,13 +244,7 @@ class OutputDemultiplexer:
         if token_id is not None and token_id in self._tokens:
             # The pending text preceded this atomic control. Its possible
             # spelling cannot absorb any portion of the new token.
-            if self.pending:
-                result += self._consume(
-                    Lexeme(
-                        Span(self.offset - len(self.pending), self.offset), self.pending
-                    )
-                )
-                self.pending = ""
+            result += self._release_pending()
             start = self.offset
             self.offset += len(text)
             result += self._consume(
@@ -295,6 +289,25 @@ class OutputDemultiplexer:
         flush()
         return result
 
+    def _release_pending(self) -> list[Event]:
+        if not self.pending:
+            return []
+        lexeme = Lexeme(
+            Span(self.offset - len(self.pending), self.offset), self.pending
+        )
+        self.pending = ""
+        return self._consume(lexeme)
+
+    def release_pending(self) -> list[Event]:
+        """Resolve a held marker prefix that an out-of-band event interrupted."""
+        if self._failed or self._finished:
+            return []
+        try:
+            return self._release_pending()
+        except Exception:
+            self._failed = True
+            raise
+
     def accept_native(self, events: list[Event], *, end_offset: int) -> list[Event]:
         """Accept already routed events without interpreting their text again.
 
@@ -334,11 +347,7 @@ class OutputDemultiplexer:
 
     def _finish(self, reason: str) -> list[Event]:
         result: list[Event] = []
-        if self.pending:
-            result += self._consume(
-                Lexeme(Span(self.offset - len(self.pending), self.offset), self.pending)
-            )
-            self.pending = ""
+        result += self._release_pending()
         if self._mode != "native":
             result += self._commit(self.grammar.finish(self.offset, reason))
         if self.commit_cursor != self.offset:
