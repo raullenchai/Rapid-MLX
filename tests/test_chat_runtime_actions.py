@@ -152,6 +152,8 @@ def test_dangerous_patterns(command, tmp_path):
         "echo \\( 2>out.txt",
         'echo "a|b" 2>out.txt',
         "echo ok # ; curl",
+        'echo "a\\"b"',
+        "if true; then ls; fi",
     ],
 )
 def test_ordinary_commands(command, tmp_path):
@@ -1158,3 +1160,16 @@ def test_unquoted_operators_start_network_commands(command, tmp_path):
 def test_shell_words_reject_unterminated_quoting(tmp_path):
     assert execution_policy("echo 'open", str(tmp_path)).prompt
     assert execution_policy("echo \\", str(tmp_path)).prompt
+
+
+@pytest.mark.parametrize(
+    ("command", "reason"),
+    [
+        ("echo ok;>out.txt ls", "Shell redirection before command"),
+        ("echo ok; 2>out.txt ls", "Shell redirection before command"),
+        ("xargs ls", "Indirect command execution"),
+    ],
+)
+def test_command_position_walk_without_client_names(command, reason, tmp_path):
+    policy = execution_policy(command, str(tmp_path))
+    assert policy.prompt and policy.reason.startswith(reason)

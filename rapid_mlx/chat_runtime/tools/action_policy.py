@@ -302,8 +302,6 @@ def scan_code(text, workspace, *, python=False):
                 command_start = False
                 continue
             name = Path(token).name.lower()
-            if name in NETWORK_CLIENTS:
-                return "Network client"
             if wrapper and token.startswith(("-S", "--split-string")):
                 return "Indirect command execution"
             if wrapper and token.startswith("-"):
