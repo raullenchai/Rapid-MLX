@@ -62,6 +62,11 @@ class ContentToolGrammar(ChannelGrammar):
         return super().consume(lexeme)
 
 
+def owns_prompt_state(model: str | None, *, flint: bool) -> bool:
+    """Families whose output channel follows the rendered prompt state."""
+    return flint or "lfm2.5" in (model or "").lower()
+
+
 class PromptOutputOwner:
     def __init__(self, model: str | None = ""):
         self.model = (model or "").lower()
@@ -83,7 +88,9 @@ class PromptOutputOwner:
             and getattr(output, "channel", None) is None
             and not getattr(output, "tool_calls", None)
         ):
-            if context.template_contract == "flint" or "lfm2.5" in self.model:
+            if owns_prompt_state(
+                self.model, flint=context.template_contract == "flint"
+            ):
                 # mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647:
                 # rendered prompt state, never the requested thinking switch.
                 suffix = context.assistant_suffix
@@ -121,9 +128,8 @@ class PromptOutputOwner:
         # into the text grammar. Retain native narration in the final projection.
         channel = getattr(output, "channel", None)
         if channel is not None or getattr(output, "tool_calls", None):
-            selected = self.prompt_context is not None and (
-                self.prompt_context.template_contract == "flint"
-                or "lfm2.5" in self.model
+            selected = self.prompt_context is not None and owns_prompt_state(
+                self.model, flint=self.prompt_context.template_contract == "flint"
             )
             if selected and channel in (None, "content"):
                 self.content.append(output.new_text)

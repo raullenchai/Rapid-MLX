@@ -2799,14 +2799,35 @@ def reasoning_stop_scope_kwargs(engine: Any, request: Any) -> dict:
     # advertises a different one; classifying against the latter would make
     # stop matching disagree with the actual assistant prefix.
     chat_template = served_chat_template(engine) or ""
-    starts_in_reasoning = _should_start_in_thinking(
-        chat_template,
-        _resolve_enable_thinking(request),
-        unconditional=bool(
-            getattr(reasoning_parser, "implicit_reasoning_until_close", False)
-        ),
-        tools_requested=bool(getattr(request, "tools", None)),
+    from types import SimpleNamespace
+
+    from ..parsing.prompt_owner import owns_prompt_state
+    from ..utils.chat_template import is_flint_chat_template
+
+    flint = is_flint_chat_template(
+        SimpleNamespace(chat_template=chat_template),
+        tools=getattr(request, "tools", None),
+        chat_template_kwargs=getattr(request, "chat_template_kwargs", None),
     )
+    if owns_prompt_state(
+        getattr(cfg, "model_path", "") or getattr(cfg, "model_name", ""),
+        flint=flint,
+    ):
+        # Agree with PromptOutputOwner: the rendered generation prompt decides
+        # (mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647), never the
+        # thinking switch. Flint renders no think prefix (official conventions).
+        starts_in_reasoning = not flint and _should_start_in_thinking(
+            chat_template, None, unconditional=True
+        )
+    else:
+        starts_in_reasoning = _should_start_in_thinking(
+            chat_template,
+            _resolve_enable_thinking(request),
+            unconditional=bool(
+                getattr(reasoning_parser, "implicit_reasoning_until_close", False)
+            ),
+            tools_requested=bool(getattr(request, "tools", None)),
+        )
     scope = build_reasoning_stop_scope(
         reasoning_parser, starts_in_reasoning=starts_in_reasoning
     )
