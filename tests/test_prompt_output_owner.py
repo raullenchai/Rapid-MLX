@@ -32,6 +32,8 @@ def test_last_prompt_marker_wins_and_finish_is_idempotent():
 
 
 def test_unselected_and_native_requests_are_untouched():
+    from types import SimpleNamespace
+
     owner = PromptOutputOwner("qwen3.5")
     assert owner.observe(output("answer", contract="chatml")) is None
     assert owner.finish() == []
@@ -40,6 +42,8 @@ def test_unselected_and_native_requests_are_untouched():
     assert owner.observe(GenerationOutput(text="answer")) is None
     original = GenerationOutput(text="answer")
     assert split_buffered(original, "qwen3.5") == (original, False)
+    duck_output = SimpleNamespace(text="answer")
+    assert split_buffered(duck_output, "qwen3.5") == (duck_output, False)
 
 
 def test_literal_tool_markers_in_reasoning_and_stray_tool_end():

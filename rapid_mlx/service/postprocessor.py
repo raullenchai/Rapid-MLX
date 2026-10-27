@@ -224,7 +224,9 @@ class StreamingPostProcessor:
     ):
         self.cfg = cfg
         self.prompt_parse_context: PromptParseContext | None = None
-        self._prompt_owner = PromptOutputOwner(cfg.model_path or cfg.model_name)
+        self._prompt_owner = PromptOutputOwner(
+            getattr(cfg, "model_path", "") or getattr(cfg, "model_name", "")
+        )
         if tools_requested is None:
             # Backward-compatible inference for direct/internal callers that
             # already pass the request payload but predate this constructor
@@ -2501,7 +2503,7 @@ class StreamingPostProcessor:
         self.prompt_parse_context = None
         self.reasoning_parser = self._legacy_reasoning_parser
         self._prompt_owner = PromptOutputOwner(
-            self.cfg.model_path or self.cfg.model_name
+            getattr(self.cfg, "model_path", "") or getattr(self.cfg, "model_name", "")
         )
         self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
         self.accumulated_text = ""

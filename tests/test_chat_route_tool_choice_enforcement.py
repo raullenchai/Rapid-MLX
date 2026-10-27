@@ -1197,7 +1197,12 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
     real_parse = chat_module._parse_tool_calls_with_parser
 
     def _bypass_then_parse(
-        text, request, structured_tool_calls=None, *, finish_reason=None
+        text,
+        request,
+        structured_tool_calls=None,
+        *,
+        finish_reason=None,
+        channels_owned=False,
     ):
         # Rewrite ``tool_choice`` to a ghost target while leaving
         # ``request.tools`` intact (it still contains ``real_function``)
@@ -1214,6 +1219,7 @@ def test_named_function_outside_tools_returns_422(monkeypatch):
             request,
             structured_tool_calls=structured_tool_calls,
             finish_reason=finish_reason,
+            channels_owned=channels_owned,
         )
 
     monkeypatch.setattr(

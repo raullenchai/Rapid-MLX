@@ -68,7 +68,7 @@ class PromptOutputOwner:
     def active(self) -> bool:
         return self.parser is not None
 
-    def observe(self, output: GenerationOutput) -> list[Event] | None:
+    def _initialize(self, output: GenerationOutput) -> None:
         context = getattr(output, "prompt_parse_context", None)
         if self.parser is None and context is not None and output.channel is None:
             if context.template_contract == "flint" or "lfm2.5" in self.model:
@@ -99,6 +99,9 @@ class PromptOutputOwner:
                     ),
                 )
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))
+
+    def observe(self, output: GenerationOutput) -> list[Event] | None:
+        self._initialize(output)
         if self.parser is None:
             return None
         events = self.parser.feed(output.new_text)
@@ -123,11 +126,12 @@ class PromptOutputOwner:
 def split_buffered(output: GenerationOutput, model: str | None):
     """Apply the same owner before buffered tool extraction."""
     owner = PromptOutputOwner(model)
-    events = owner.observe(
+    owner._initialize(output)
+    if not owner.active:
+        return output, False
+    owner.observe(
         replace(output, new_text=output.raw_text or output.text, finished=True)
     )
-    if events is None:
-        return output, False
     content = "".join(owner.content)
     return replace(
         output, text=content, raw_text=content, reasoning_text="".join(owner.reasoning)

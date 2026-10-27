@@ -137,7 +137,12 @@ class TestRouteIntegration:
         from rapid_mlx.routes.chat import router as chat_router
 
         def _fake_parse(
-            text, request, *, structured_tool_calls=None, finish_reason=None
+            text,
+            request,
+            *,
+            structured_tool_calls=None,
+            finish_reason=None,
+            channels_owned=False,
         ):
             return (
                 "",
