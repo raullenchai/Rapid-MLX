@@ -19,6 +19,13 @@ lists the immutable revisions, measured memory, and serving checks. MiniMax
 M3.1 Flash's available MLX conversions require at least 320 GB by weight
 footprint and are not in this catalog.
 
+`ornith-1.5-122b-a10b-4bit` adds the publisher’s pinned 122B hybrid MoE
+checkpoint with a 96 GB memory floor and a 69.6 GB download. It uses the
+`[vision]` runtime for text serving; image input is not qualified. Chat,
+streaming, named XML tools, and thinking on/off use the existing parsers.
+The [October 27 qualification record](../engineering/performance/2026-10-27-trending-models.md)
+records serving evidence and why Unlimited-OCR-2 and LFM3 remain excluded.
+
 ## Text and vision
 
 Run `rapid-mlx models` to browse current text and vision aliases. Start a recommended text model with `rapid-mlx chat` or `rapid-mlx serve <alias>`. For images in a request, follow the [multimodal guide](../guides/multimodal.md).

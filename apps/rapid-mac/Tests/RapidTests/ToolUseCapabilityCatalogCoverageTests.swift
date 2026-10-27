@@ -152,6 +152,9 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "lfm2.5-8b-a1b-4bit": .unknown,
         "lfm2-24b-a2b-4bit": .unknown,
         "lfm2.5-24b-a2b-4bit": .unknown,
+        // This exact quant has CLI qualification; desktop tool confidence
+        // remains conservative until its product-path bench is complete.
+        "ornith-1.5-122b-a10b-4bit": .unknown,
         // Hy3 preview — tool + reasoning parser landed engine-side
         // (rapid-mlx #1070/#1072), Ultra-only integration matrix; not
         // yet benched by the desktop loop → .unknown until covered.
@@ -478,6 +481,8 @@ struct ToolUseCapabilityCatalogCoverageTests {
         ("", ToolUseConfidence.unknown),
         // Random unknown alias — must not match any family.
         ("random-alias-xyz", ToolUseConfidence.unknown),
+        // A new Ornith quant does not inherit the exact-known bf16 verdicts.
+        ("ornith-1.5-122b-a10b-4bit", ToolUseConfidence.unknown),
         // Just a number — must not crash.
         ("9b", ToolUseConfidence.unknown),
         // Verified family root without trailing ``-`` or size suffix.

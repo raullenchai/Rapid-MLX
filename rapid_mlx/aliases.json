@@ -3060,6 +3060,16 @@
     "is_moe": true,
     "supports_spec_decode": false
   },
+  "ornith-1.5-122b-a10b-4bit": {
+    "hf_path": "ornith-ai/Ornith-1.5-122B-MLX-4bit",
+    "revision": "06a57aba4fbae218efc9716bcdf7d6b3035331c8",
+    "min_memory_gb": 96,
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false
+  },
   "minicpm-v4.7-1b-8bit": {
     "hf_path": "mlx-community/MiniCPM-V-4.7-1B-8bit",
     "revision": "90b81ccaefd20ab8d3d2495704f49e33ea919885",
