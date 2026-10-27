@@ -186,32 +186,52 @@ def scan_code(text, workspace, *, python=False):
     except ValueError:
         return "Shell quoting could not be inspected"
     command_start = True
-    wrapper = False
-    for token in tokens:
+    wrapper = None
+    skip_operand = False
+    for index, token in enumerate(tokens):
         if token and all(char in ";&|()\n" for char in token):
             command_start = True
-            wrapper = False
+            wrapper = None
+            skip_operand = False
         elif command_start:
+            if (
+                token.isdigit()
+                and index + 1 < len(tokens)
+                and tokens[index + 1][0] in "<>"
+            ):
+                return "Shell redirection before command"
             if token and all(char in "<>" for char in token):
                 return "Shell redirection before command"
+            if skip_operand:
+                skip_operand = False
+                continue
             name = Path(token).name
             if name in NETWORK_CLIENTS:
                 return "Network client"
             if wrapper and (token == "-S" or token.startswith("--split-string")):
                 return "Indirect command execution"
-            if name in {
-                "env",
-                "sudo",
-                "doas",
-                "command",
-                "xargs",
-                "timeout",
-                "nice",
-                "nohup",
-                "stdbuf",
-                "time",
-            }:
-                wrapper = True
+            if wrapper and token.startswith("-"):
+                if token in {
+                    "-u",
+                    "--unset",
+                    "-C",
+                    "--chdir",
+                    "-n",
+                    "--adjustment",
+                    "-I",
+                    "-L",
+                    "-P",
+                    "-s",
+                    "-d",
+                    "-E",
+                    "-a",
+                }:
+                    skip_operand = True
+                continue
+            if name in {"xargs", "timeout", "nice", "nohup", "stdbuf", "time"}:
+                return "Indirect command execution"
+            if name in {"env", "sudo", "doas", "command"}:
+                wrapper = name
             elif token in {
                 "if",
                 "then",
@@ -224,7 +244,7 @@ def scan_code(text, workspace, *, python=False):
                 "{",
             }:
                 continue
-            elif not wrapper and not (
+            elif not (
                 token.startswith("-")
                 or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*=.*", token)
             ):

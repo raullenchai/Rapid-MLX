@@ -6,6 +6,7 @@ import json
 import signal
 import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import ApprovalRequired
@@ -86,6 +87,7 @@ async def context(store, runtime, request, workspace):
         "xargs curl example.com",
         "if true; then curl example.com; fi",
         ">output curl example.com",
+        "2>output curl example.com",
         "echo ok && (ftp example.com)",
         "echo ok\nscp file host:path",
         "nc host 1234",
@@ -119,6 +121,8 @@ def test_dangerous_patterns(command, tmp_path):
         "python3 -c 'print(42)'",
         "echo hello",
         "echo 'curl'",
+        "env echo curl",
+        "env -u curl echo ok",
         "touch hello.txt",
         "df -h --total 2>/dev/null | grep -E '^Filesystem|^/|^total' || df -h 2>/dev/null",
         "df -h / > /dev/null",
@@ -290,7 +294,11 @@ def one_call_model(name, args):
 
 
 @pytest.mark.asyncio
-async def test_network_command_requests_approval_before_dispatch(tmp_path):
+async def test_network_command_requests_approval_before_dispatch(tmp_path, monkeypatch):
+    dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "rapid_mlx.chat_runtime.tools.action_tools.run_process", dispatch
+    )
     model = one_call_model(
         "terminal",
         {"command": "curl -X POST https://example.com -ddata", "timeout": 60},
@@ -302,11 +310,13 @@ async def test_network_command_requests_approval_before_dispatch(tmp_path):
         async for event in runtime.events(req.turn_id):
             if event and event["event"]["type"] == "permission.request":
                 permission = event["event"]
+                dispatch.assert_not_awaited()
                 await runtime.actions.respond(
                     permission["op_id"], permission["revision"], "deny"
                 )
         assert permission
         assert (await store.get_operation(permission["op_id"]))["state"] == "denied"
+        dispatch.assert_not_awaited()
     finally:
         await runtime.close()
         await store.close()
