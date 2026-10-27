@@ -49,6 +49,7 @@ from ..parsing.prompt_owner import (
     ContentDelta,
     PromptOutputOwner,
     ReasoningDelta,
+    ToolEnd,
     served_model_identity,
     split_buffered,
 )
@@ -1089,7 +1090,9 @@ async def create_anthropic_message(
         # for the rationale (PR #515 codex round-12 / round-14 BLOCKING
         # — wire-text round-trip lost calls whose JSON args contained
         # harmony sentinels).
-        output, channels_owned = split_buffered(output, served_model_identity(cfg))
+        output, channels_owned = split_buffered(
+            output, served_model_identity(cfg), cfg=cfg, request=openai_request
+        )
         engine_tool_calls = getattr(output, "tool_calls", None)
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             output.text,
@@ -2440,7 +2443,9 @@ async def _stream_anthropic_messages(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    prompt_owner = PromptOutputOwner(served_model_identity(cfg))
+    prompt_owner = PromptOutputOwner.for_request(
+        cfg, openai_request, thinking=chat_kwargs.get("enable_thinking")
+    )
 
     def emit_owned(events):
         nonlocal current_block_type, block_index
@@ -2452,6 +2457,8 @@ async def _stream_anthropic_messages(
                 filtered = tool_filter.process(event.text)
                 if filtered:
                     pieces.append(("text", filtered))
+            elif isinstance(event, ToolEnd):
+                accumulated_structured_tool_calls.append(prompt_owner.call(event))
         packets, current_block_type, block_index = _emit_and_track(
             _gate_thinking_pieces(pieces, current_block_type, owned=True),
             current_block_type,

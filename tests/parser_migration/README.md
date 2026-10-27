@@ -36,10 +36,12 @@ and API consolidation remain separate work.
 | Orphan native args | #5274 | Native argument syntax is not published as reasoning |
 | Generated fenced echo | #5268 | Pending explicit literal/model-echo policy |
 
-R1, R2 and R2b pass after reverting #5258 and #5267. Other known defects
-remain tracked by their contracts. R3 streaming Chat and R4 retain strict
-expected failures for v0.16.9 baseline parity, authorized for 0.16.10; their
-upstream-aligned parser port is tracked for 0.17.0 in #5273. The unchanged R4
+R1, R2 and R2b pass after reverting #5258 and #5267. R3, buffered ownership
+and orphan native arguments pass for thinking-on Qwen requests with declared
+envelope tools, which the request-local owner now selects; thinking-off and
+tool-free requests keep the earlier parser policy. Other known defects remain
+tracked by their contracts. R4 retains a strict expected failure for v0.16.9
+baseline parity; its upstream-aligned parser port is tracked in #5273. The unchanged R4
 probe on v0.16.9 measured 22.154/46.640/142.830 microseconds per chunk for
 1K/4K/16K bodies (2.105x and 3.062x growth; median of three CPU samples).
 No scaling threshold or call/argument assertion is relaxed. An unexpected pass requires a deliberate
@@ -60,8 +62,11 @@ new pairs from silently escaping the gate. Required/named/none/auto choices and
 undeclared names are separate executable controls. The forced Chat fixture uses
 the actual synthetic assistant prefix, as the real engine does.
 
-`ledger.json` classifies the remaining 124 changed Qwen/Hermes focused observations
-between the two fixed revisions. The revert refreshes 274 reviewed-head rows: 206
+`ledger.json` classifies the 183 changed Qwen/Hermes focused observations
+between the immutable baseline and the reviewed head. The selected owner added 59
+entries and refreshed 30; every thinking-on tools-enabled row it changed now
+agrees across the six API modes on content, reasoning and calls, apart from
+existing surface policy for malformed arguments. The revert refreshes 274 reviewed-head rows: 206
 return exactly to the immutable v0.16.9 baseline. The other 68 changed rows
 remain different from baseline because the rollback preserves later merged
 changes; their exact observations and remaining differences stay in the ledger. Thinking-off implicit reasoning leakage and the

@@ -68,6 +68,23 @@ LFM2.5's native tool-envelope terminals produce control events in content and
 remain literal in reasoning. The existing tool parser receives the pythonic
 payload. Reset restores legacy parser configuration before the next stream.
 
+## Prompt-owned Qwen tool envelopes
+
+`PromptOutputOwner.for_request` also selects one owner for Qwen-family
+reasoning (`qwen3`, `hy_v3`, `hy3`) paired with a `<tool_call>` envelope parser
+(Hermes/Qwen JSON, Qwen XML, GLM 4.x) when the request declares tools, enables
+automatic tool choice, asks for thinking and sets no reasoning budget. Disabled
+tools, thinking-off templates and reasoning budgets keep their existing paths.
+
+Reasoning is lexed first; the start marker is honored once and a closer ends
+only an open block. Each envelope, from reasoning or content, is one tool phase:
+its source span is decoded once by the configured parser's complete-output
+extractor and published as typed tool events, so every API mode receives the
+same calls through its existing structured-call lane. A span that yields no
+call is a parse failure and is not published; GLM argument markers open such a
+span. An envelope still open at finish is decoded, or stays literal in its
+original channel. Buffered fields keep the existing trimmed normalization.
+
 Remaining migration work includes other families' reasoning parsers and think
 routers, content sanitizers, format-specific tool filters and fallback parsing,
 and API-specific tool serialization/validation. These remain active; this change

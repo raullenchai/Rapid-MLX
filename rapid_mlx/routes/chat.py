@@ -6670,7 +6670,9 @@ async def _create_chat_completion_impl(
     # whereas the regex round-trip lost calls whose JSON arguments
     # contained literal harmony sentinel substrings (PR #515 codex
     # round-12 / round-14 BLOCKING).
-    output, channels_owned = split_buffered(output, served_model_identity(cfg))
+    output, channels_owned = split_buffered(
+        output, served_model_identity(cfg), cfg=cfg, request=request
+    )
     engine_tool_calls = getattr(output, "tool_calls", None)
     # LINE① (#558, codex r4 #4) — reasoning-first extraction. When the reasoning
     # gate is engaged (and the engine did NOT already produce structured calls via

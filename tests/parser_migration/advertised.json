@@ -1600,7 +1600,7 @@
     "raw": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value>",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -1674,7 +1674,7 @@
     "raw": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value>",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -1711,7 +1711,7 @@
     "raw": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value>",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -1748,7 +1748,7 @@
     "raw": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value>",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -1785,7 +1785,7 @@
     "raw": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -6057,7 +6057,7 @@
     "raw": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}</tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -6131,7 +6131,7 @@
     "raw": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}</tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}",
+      "reasoning": "",
       "calls": [
         [
           "read_file",
@@ -6205,7 +6205,7 @@
     "raw": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}</tool_call>",
     "result": {
       "content": "",
-      "reasoning": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"/etc/hostname\"}}",
+      "reasoning": "",
       "calls": [
         [
           "read_file",

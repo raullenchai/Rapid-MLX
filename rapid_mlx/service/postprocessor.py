@@ -21,7 +21,7 @@ from unittest.mock import Mock
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
-from ..parsing.output_demux import Event
+from ..parsing.output_demux import Event, ToolEnd
 from ..parsing.prompt_owner import (
     ContentDelta,
     PromptOutputOwner,
@@ -299,6 +299,7 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
+        self._prompt_owner = self._new_prompt_owner()
         # R8-M2 (2026-06-22): one-way latch tracking whether the model
         # has emitted an explicit ``<think>`` token despite
         # ``enable_thinking=False``. Set by
@@ -2497,6 +2498,14 @@ class StreamingPostProcessor:
             allowed.append(tc)
         return allowed
 
+    def _new_prompt_owner(self) -> PromptOutputOwner:
+        return PromptOutputOwner.for_request(
+            self.cfg,
+            self.request if self.tools_requested else None,
+            thinking=self.enable_thinking,
+            reasoning_max_tokens=self._reasoning_max_tokens,
+        )
+
     def reset(self):
         """Reset all parser states for a new stream.
 
@@ -2506,7 +2515,7 @@ class StreamingPostProcessor:
         """
         self.prompt_parse_context = None
         self.reasoning_parser = self._legacy_reasoning_parser
-        self._prompt_owner = PromptOutputOwner(served_model_identity(self.cfg))
+        self._prompt_owner = self._new_prompt_owner()
         self._parser_shadow = make_shadow(self.cfg, self.tools_requested)
         self.accumulated_text = ""
         self._content_sanitizer = StreamingContentSanitizer()
@@ -2690,6 +2699,18 @@ class StreamingPostProcessor:
                 chunk.finished = False
                 chunk.finish_reason = None
                 events.extend(self._process_standard(event.text, chunk))
+            elif isinstance(event, ToolEnd):
+                # An owner-decoded envelope uses the structured-call lane,
+                # including declaration, forced-choice and parallel gates.
+                # Later owned content is classified text, as in buffered.
+                self._preserve_post_tool_content = True
+                chunk = copy.copy(output)
+                chunk.new_text = ""
+                chunk.channel = "tool_call"
+                chunk.tool_calls = [self._prompt_owner.call(event)]
+                chunk.finished = False
+                chunk.finish_reason = None
+                events.extend(self._process_channel_routed("", chunk))
         return events
 
     @property

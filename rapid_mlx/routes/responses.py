@@ -89,6 +89,7 @@ from ..parsing.prompt_owner import (
     ContentDelta,
     PromptOutputOwner,
     ReasoningDelta,
+    ToolEnd,
     served_model_identity,
     split_buffered,
 )
@@ -2298,7 +2299,9 @@ async def _non_stream(
                 },
             )
 
-    output, channels_owned = split_buffered(output, served_model_identity(cfg))
+    output, channels_owned = split_buffered(
+        output, served_model_identity(cfg), cfg=cfg, request=openai_request
+    )
     engine_tool_calls = getattr(output, "tool_calls", None)
     tool_parse_request = _tool_parse_request(openai_request)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
@@ -3853,7 +3856,9 @@ async def _stream_responses(
             caller_client=caller_client,
             failure_latch=telemetry_failure_emitted,
         )
-        prompt_owner = PromptOutputOwner(served_model_identity(cfg))
+        prompt_owner = PromptOutputOwner.for_request(
+            cfg, openai_request, thinking=chat_kwargs.get("enable_thinking")
+        )
         owned_reasoning_parts: list[str] = []
 
         def merge_owned_reasoning():
@@ -3876,6 +3881,8 @@ async def _stream_responses(
                     filtered = tool_filter.process(event.text)
                     if filtered:
                         yield filtered
+                elif isinstance(event, ToolEnd):
+                    accumulated_structured_tool_calls.append(prompt_owner.call(event))
 
         async for output in engine_stream:
             delta_text = output.new_text

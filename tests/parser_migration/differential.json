@@ -14063,7 +14063,7 @@
         "chars"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
         "first_content_index": null,
@@ -14152,7 +14152,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -14173,11 +14173,11 @@
         "chars"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 40,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 39
       },
       "raw": "Hello world. This is a streamed answer."
@@ -14195,11 +14195,11 @@
         "whole"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "Hello world. This is a streamed answer."
@@ -14217,11 +14217,11 @@
         "seven"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 7,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 6
       },
       "raw": "Hello world. This is a streamed answer."
@@ -14239,8 +14239,8 @@
         "chars"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
-        "reasoning": "",
+        "content": "",
+        "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -14261,11 +14261,11 @@
         "chars"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 40,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 39
       },
       "raw": "Hello world. This is a streamed answer."
@@ -14283,11 +14283,11 @@
         "whole"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "Hello world. This is a streamed answer."
@@ -14305,11 +14305,11 @@
         "seven"
       ],
       "result": {
-        "content": "Hello world. This is a streamed answer.",
+        "content": "",
         "reasoning": "Hello world. This is a streamed answer.",
         "calls": [],
-        "first_content_index": 7,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 6
       },
       "raw": "Hello world. This is a streamed answer."
@@ -17231,7 +17231,7 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17253,11 +17253,11 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 10,
+        "content_deltas": 11,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17275,11 +17275,11 @@
         "whole"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 1,
+        "content_deltas": 3,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17297,11 +17297,11 @@
         "seven"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 2,
+        "content_deltas": 3,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17319,7 +17319,7 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17341,11 +17341,11 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 10,
+        "content_deltas": 11,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17363,11 +17363,11 @@
         "whole"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 1,
+        "content_deltas": 3,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17385,11 +17385,11 @@
         "seven"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 2,
+        "content_deltas": 3,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17407,7 +17407,7 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": null,
@@ -17429,11 +17429,11 @@
         "chars"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 36,
-        "content_deltas": 10,
+        "content_deltas": 11,
         "input_chunks": 53
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17451,11 +17451,11 @@
         "whole"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 1,
-        "content_deltas": 1,
+        "content_deltas": 3,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -17473,11 +17473,11 @@
         "seven"
       ],
       "result": {
-        "content": "AnswerTail",
+        "content": "Answer</think>Tail",
         "reasoning": "Secret.Nested",
         "calls": [],
         "first_content_index": 6,
-        "content_deltas": 2,
+        "content_deltas": 3,
         "input_chunks": 8
       },
       "raw": "<think>Secret.<think>Nested</think>Answer</think>Tail"
@@ -18372,7 +18372,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
@@ -18488,7 +18488,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
@@ -18604,7 +18604,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
@@ -19624,7 +19624,7 @@
         "chars"
       ],
       "result": {
-        "content": "",
+        "content": "Answer",
         "reasoning": "Secret.",
         "calls": [
           [
@@ -19634,8 +19634,8 @@
             }
           ]
         ],
-        "first_content_index": null,
-        "content_deltas": 0,
+        "first_content_index": 104,
+        "content_deltas": 6,
         "input_chunks": 109
       },
       "raw": "<think>Secret.<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call></think>Answer"
@@ -19653,8 +19653,8 @@
         "whole"
       ],
       "result": {
-        "content": "",
-        "reasoning": "",
+        "content": "Answer",
+        "reasoning": "Secret.",
         "calls": [
           [
             "run_shell_command",
@@ -19663,8 +19663,8 @@
             }
           ]
         ],
-        "first_content_index": null,
-        "content_deltas": 0,
+        "first_content_index": 1,
+        "content_deltas": 1,
         "input_chunks": 1
       },
       "raw": "<think>Secret.<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call></think>Answer"
@@ -19682,7 +19682,7 @@
         "seven"
       ],
       "result": {
-        "content": "",
+        "content": "Answer",
         "reasoning": "Secret.",
         "calls": [
           [
@@ -19692,8 +19692,8 @@
             }
           ]
         ],
-        "first_content_index": null,
-        "content_deltas": 0,
+        "first_content_index": 15,
+        "content_deltas": 2,
         "input_chunks": 16
       },
       "raw": "<think>Secret.<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call></think>Answer"
@@ -20735,8 +20735,8 @@
         "chars"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -20780,7 +20780,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -20824,7 +20824,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -20845,11 +20845,11 @@
         "chars"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 71,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 70
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -20867,11 +20867,11 @@
         "whole"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -20889,11 +20889,11 @@
         "seven"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 11,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 10
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -20911,8 +20911,8 @@
         "chars"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -20933,11 +20933,11 @@
         "chars"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
+        "content": "",
         "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 71,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 70
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -20955,11 +20955,11 @@
         "whole"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
-        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value>Answer",
+        "content": "",
+        "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -20977,11 +20977,11 @@
         "seven"
       ],
       "result": {
-        "content": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
+        "content": "",
         "reasoning": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer",
         "calls": [],
-        "first_content_index": 11,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 10
       },
       "raw": "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
@@ -21832,7 +21832,7 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}Answer",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
@@ -21885,7 +21885,7 @@
         "whole"
       ],
       "result": {
-        "content": "",
+        "content": "Answer",
         "reasoning": "",
         "calls": [
           [
@@ -21893,8 +21893,8 @@
             "<malformed_json_arguments>{\"name\":\"run_shell_command\",\"arguments\":oops}"
           ]
         ],
-        "first_content_index": null,
-        "content_deltas": 0,
+        "first_content_index": 1,
+        "content_deltas": 1,
         "input_chunks": 1
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -21912,7 +21912,7 @@
         "seven"
       ],
       "result": {
-        "content": "swer",
+        "content": "Answer",
         "reasoning": "",
         "calls": [
           [
@@ -21920,8 +21920,8 @@
             "<malformed_json_arguments>{\"name\":\"run_shell_command\",\"arguments\":oops}"
           ]
         ],
-        "first_content_index": 11,
-        "content_deltas": 1,
+        "first_content_index": 10,
+        "content_deltas": 2,
         "input_chunks": 11
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -21962,10 +21962,10 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [],
-        "first_content_index": 75,
-        "content_deltas": 1,
+        "first_content_index": 69,
+        "content_deltas": 6,
         "input_chunks": 74
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -21984,9 +21984,9 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [],
-        "first_content_index": 2,
+        "first_content_index": 1,
         "content_deltas": 1,
         "input_chunks": 1
       },
@@ -22006,10 +22006,10 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [],
-        "first_content_index": 12,
-        "content_deltas": 1,
+        "first_content_index": 10,
+        "content_deltas": 2,
         "input_chunks": 11
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -22028,7 +22028,7 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}Answer",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
@@ -22055,15 +22055,15 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
             {}
           ]
         ],
-        "first_content_index": 75,
-        "content_deltas": 1,
+        "first_content_index": 69,
+        "content_deltas": 6,
         "input_chunks": 74
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -22082,14 +22082,14 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
             {}
           ]
         ],
-        "first_content_index": 2,
+        "first_content_index": 1,
         "content_deltas": 1,
         "input_chunks": 1
       },
@@ -22109,15 +22109,15 @@
       ],
       "result": {
         "content": "Answer",
-        "reasoning": "Answer",
+        "reasoning": "",
         "calls": [
           [
             "run_shell_command",
             {}
           ]
         ],
-        "first_content_index": 12,
-        "content_deltas": 1,
+        "first_content_index": 10,
+        "content_deltas": 2,
         "input_chunks": 11
       },
       "raw": "<tool_call>{\"name\":\"run_shell_command\",\"arguments\":oops}</tool_call>Answer"
@@ -22927,8 +22927,8 @@
         "chars"
       ],
       "result": {
-        "content": "Example <tool_call> and  are literal markers.",
-        "reasoning": "Example <tool_call> and  are literal markers.",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -22950,7 +22950,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "Example ",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -22972,7 +22972,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -22994,7 +22994,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "Example ",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -23016,7 +23016,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -23037,11 +23037,11 @@
         "chars"
       ],
       "result": {
-        "content": "Example ",
-        "reasoning": "Example <tool_call> and  are literal markers.",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 56,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 55
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -23059,11 +23059,11 @@
         "whole"
       ],
       "result": {
-        "content": "Example ",
-        "reasoning": "Example <tool_call> and  are literal markers.",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -23081,11 +23081,11 @@
         "seven"
       ],
       "result": {
-        "content": "Example ",
-        "reasoning": "Example <tool_call> and  are literal markers.",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 9,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 8
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -23103,8 +23103,8 @@
         "chars"
       ],
       "result": {
-        "content": "Example <tool_call> and  are literal markers.",
-        "reasoning": "",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -23125,11 +23125,11 @@
         "chars"
       ],
       "result": {
-        "content": "Example ",
+        "content": "",
         "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 56,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 55
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -23147,11 +23147,11 @@
         "whole"
       ],
       "result": {
-        "content": "Example ",
-        "reasoning": "Example <tool_call> and  are literal markers.",
+        "content": "",
+        "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -23169,11 +23169,11 @@
         "seven"
       ],
       "result": {
-        "content": "Example ",
+        "content": "",
         "reasoning": "Example <tool_call> and <|im_end|> are literal markers.",
         "calls": [],
-        "first_content_index": 9,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 8
       },
       "raw": "Example <tool_call> and <|im_end|> are literal markers."
@@ -24067,8 +24067,8 @@
         "chars"
       ],
       "result": {
-        "content": "```json {\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}} ```",
-        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "content": "",
+        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
             "run_shell_command",
@@ -24126,7 +24126,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
             "run_shell_command",
@@ -24183,8 +24183,8 @@
         "chars"
       ],
       "result": {
-        "content": "```json {\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}} ```",
-        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "content": "",
+        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
             "run_shell_command",
@@ -24212,7 +24212,7 @@
         "chars"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24222,8 +24222,8 @@
             }
           ]
         ],
-        "first_content_index": 152,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 151
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -24241,7 +24241,7 @@
         "whole"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24251,8 +24251,8 @@
             }
           ]
         ],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -24270,7 +24270,7 @@
         "seven"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24280,8 +24280,8 @@
             }
           ]
         ],
-        "first_content_index": 23,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 22
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -24299,8 +24299,8 @@
         "chars"
       ],
       "result": {
-        "content": "```json {\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}} ```",
-        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}",
+        "content": "",
+        "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
             "run_shell_command",
@@ -24328,7 +24328,7 @@
         "chars"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24338,8 +24338,8 @@
             }
           ]
         ],
-        "first_content_index": 152,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 151
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -24357,7 +24357,7 @@
         "whole"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24367,8 +24367,8 @@
             }
           ]
         ],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -24386,7 +24386,7 @@
         "seven"
       ],
       "result": {
-        "content": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
+        "content": "",
         "reasoning": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```",
         "calls": [
           [
@@ -24396,8 +24396,8 @@
             }
           ]
         ],
-        "first_content_index": 23,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 22
       },
       "raw": "```json\n{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}\n```<tool_call>{\"name\":\"run_shell_command\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
@@ -25207,8 +25207,8 @@
         "chars"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "assistantanalysisSecretassistantfinalAnswer",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -25252,7 +25252,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "assistantanalysisSecretassistantfinalAnswer",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -25296,7 +25296,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -25317,11 +25317,11 @@
         "chars"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "<|start|>assistantanalysisSecret<|end|><|start|>assistantfinalAnswer<|return|>",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 123,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 122
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -25339,11 +25339,11 @@
         "whole"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "assistantanalysisSecretassistantfinalAnswer",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -25361,11 +25361,11 @@
         "seven"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "<|start|>assistantanalysisSecretassistantfinalAnswer<|return|>",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 19,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 18
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -25383,8 +25383,8 @@
         "chars"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -25405,11 +25405,11 @@
         "chars"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
+        "content": "",
         "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 123,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 122
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -25427,11 +25427,11 @@
         "whole"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
-        "reasoning": "assistantanalysisSecretassistantfinalAnswer",
+        "content": "",
+        "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -25449,11 +25449,11 @@
         "seven"
       ],
       "result": {
-        "content": "assistantanalysisSecretassistantfinalAnswer",
+        "content": "",
         "reasoning": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>",
         "calls": [],
-        "first_content_index": 19,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 18
       },
       "raw": "<|start|>assistant<|channel|>analysis<|message|>Secret<|end|><|start|>assistant<|channel|>final<|message|>Answer<|return|>"
@@ -26263,8 +26263,8 @@
         "chars"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "thought\nSecretAnswer",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -26308,7 +26308,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "thought\nSecretAnswer",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -26352,7 +26352,7 @@
       ],
       "result": {
         "content": "",
-        "reasoning": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -26373,11 +26373,11 @@
         "chars"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "thought\nSecret<channel|>Answer",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 41,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 40
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"
@@ -26395,11 +26395,11 @@
         "whole"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "thought\nSecretAnswer",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"
@@ -26417,11 +26417,11 @@
         "seven"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "thought\nSecret<channel|>Answer",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 7,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 6
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"
@@ -26439,8 +26439,8 @@
         "chars"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
         "first_content_index": null,
         "content_deltas": 0,
@@ -26461,11 +26461,11 @@
         "chars"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
+        "content": "",
         "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 41,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 40
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"
@@ -26483,11 +26483,11 @@
         "whole"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
-        "reasoning": "thought\nSecretAnswer",
+        "content": "",
+        "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 2,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 1
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"
@@ -26505,11 +26505,11 @@
         "seven"
       ],
       "result": {
-        "content": "thought\nSecretAnswer",
+        "content": "",
         "reasoning": "<|channel>thought\nSecret<channel|>Answer",
         "calls": [],
-        "first_content_index": 7,
-        "content_deltas": 1,
+        "first_content_index": null,
+        "content_deltas": 0,
         "input_chunks": 6
       },
       "raw": "<|channel>thought\nSecret<channel|>Answer"

@@ -51,23 +51,7 @@ def test_one_tool_owner(reasoning):
     assert result["calls"] == EXPECTED
 
 
-@pytest.mark.parametrize(
-    "surface,stream",
-    [
-        pytest.param(
-            surface,
-            stream,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="pre-existing in v0.16.9 (baseline parity); fix via upstream-aligned parser port in 0.17.0 — #5273 / R4",
-            )
-            if surface == "chat" and stream
-            else (),
-        )
-        for surface, stream in itertools.product(SURFACES, [False, True])
-    ],
-)
+@pytest.mark.parametrize("surface,stream", itertools.product(SURFACES, [False, True]))
 def test_promotion(surface, stream):
     result = route(
         "qwen3", "hermes", "<think>Secret." + CALL + "</think>Answer", surface, stream
@@ -78,11 +62,6 @@ def test_promotion(surface, stream):
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="#5272: tool wire duplicated into buffered reasoning",
-)
 def test_no_tool_wire_in_reasoning(surface):
     result = route("qwen3", "hermes", CALL, surface, False)
     assert result["calls"] == EXPECTED
@@ -91,9 +70,6 @@ def test_no_tool_wire_in_reasoning(surface):
 
 
 @pytest.mark.parametrize("surface", SURFACES)
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="#5274: orphan native argument markup"
-)
 def test_orphan_arguments(surface):
     raw = "<arg_key>command</arg_key><arg_value>pwd</arg_value></tool_call>Answer"
     result = route("qwen3", "glm47", raw, surface, True)
