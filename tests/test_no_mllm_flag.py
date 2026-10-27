@@ -197,6 +197,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # Agent setup UX knob: skips a post-write HTTP connectivity probe.
         # It does not change model/runtime routing or any auto-detection.
         "--no-check",
+        # Chat harness UX knob: omits write/patch/terminal tools for a session.
+        # It does not change model/runtime routing or any auto-detection.
+        "--no-action-tools",
         # ``rapid-mlx start`` (#150) UX knobs, not routing decisions.
         # --no-download refuses to fetch a model (offline/prefer-cached
         # preference); --no-setup skips the post-readiness agent-config write.
