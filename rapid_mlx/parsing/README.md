@@ -81,13 +81,15 @@ only an open block. Every closer outside an envelope is a reasoning control, as
 in the existing thinking parser, so a repeated closer is not answer text. A thinking request whose rendered prompt state is unknown
 starts in reasoning; there is no end-of-output rescue. A block the output
 opened resumes after an envelope; reasoning inherited from the prompt ends at
-the tool phase. A closer inside a JSON body's string is argument text. Each
+the tool phase. Markers inside a JSON string or a markup argument value (GLM `<arg_value>`,
+Qwen XML `<parameter=...>`) are argument text; the decoder skips its own
+reasoning-tag stripping because reasoning is already separated. Each
 envelope, from reasoning or content, is one tool phase:
 its source span is decoded once by the configured parser's complete-output
 extractor and published as typed tool events, so every API mode receives the
 same calls through its existing structured-call lane. An envelope that yields
 no call stays verbatim (opener, body and closer) in the channel it arrived in,
-as does a partial envelope interrupted by a new opener outside a JSON string,
+as does a partial envelope interrupted by a new opener outside an argument value,
 or by the closer of the reasoning block it interrupted, and an envelope still
 open at finish. A closed GLM argument list without its
 call opener is an unpublished parse failure (#5274). Routes' existing

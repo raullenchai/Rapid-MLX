@@ -218,27 +218,35 @@ def test_reasoning_closer_ends_an_unfinished_envelope(split):
     )
 
 
-VALUE = "echo </think> <tool_call> done"
+VALUE = "echo </think> <think>x</think> <tool_call> <arg_value> done"
+# The XML and JSON extractors also read a call closer and a nested value
+# opener inside an argument as text; GLM's extractor ends a call at its closer.
+CLOSER_VALUE = VALUE + " </tool_call> <parameter=b>"
 MARKUP_VALUES = {
     "glm47": "<think>plan <tool_call>run_shell_command<arg_key>command</arg_key>"
-    f"<arg_value>{VALUE}</arg_value></tool_call></think>Answer",
-    "qwen3": '<think>plan <tool_call>{"name": "run_shell_command", "arguments": '
-    f'{{"command": "{VALUE}"}}}}</tool_call></think>Answer',
+    "<arg_value>{}</arg_value></tool_call></think>Answer",
+    "qwen3": '<think>plan <tool_call>{{"name": "run_shell_command", "arguments": '
+    '{{"command": "{}"}}}}</tool_call></think>Answer',
     "qwen3_coder": "<think>plan <tool_call>\n<function=run_shell_command>\n"
-    f"<parameter=command>\n{VALUE}\n</parameter>\n</function>\n</tool_call>"
+    "<parameter=command>\n{}\n</parameter>\n</function>\n</tool_call>"
     "</think>Answer",
 }
+VALUE_CASES = [(tool, VALUE) for tool in sorted(MARKUP_VALUES)] + [
+    ("qwen3", CLOSER_VALUE),
+    ("qwen3_coder", CLOSER_VALUE),
+]
 
 
 @pytest.mark.parametrize("split", [1, 7, 1000])
-@pytest.mark.parametrize("tool", sorted(MARKUP_VALUES))
-def test_markers_inside_argument_values_are_argument_text(tool, split):
+@pytest.mark.parametrize("tool,value", VALUE_CASES)
+def test_markers_inside_argument_values_are_argument_text(tool, value, split):
     the_owner = owner(tool)
-    reasoning, content, _ = stream(the_owner, MARKUP_VALUES[tool], split)
+    raw = MARKUP_VALUES[tool].format(value)
+    reasoning, content, _ = stream(the_owner, raw, split)
     assert (reasoning, content) == ("plan ", "Answer")
     assert [
         [call["name"], json.loads(call["arguments"])] for call in the_owner.calls
-    ] == [["run_shell_command", {"command": VALUE}]]
+    ] == [["run_shell_command", {"command": value}]]
 
 
 @pytest.mark.parametrize("surface", SURFACES)

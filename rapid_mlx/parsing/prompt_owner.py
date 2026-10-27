@@ -83,16 +83,13 @@ class ContentToolGrammar(ChannelGrammar):
 
 
 # Markup argument values (GLM ``<arg_value>``, Qwen XML ``<parameter=...>``)
-# are opaque to the envelope grammar, like JSON strings: markers inside them
-# are argument text for the configured extractor.
-VALUE_MARKERS = {
-    "<arg_value>": True,
-    "</arg_value>": False,
-    "<parameter=": True,
-    "</parameter>": False,
-}
-VALUE_MARKER = re.compile("|".join(map(re.escape, VALUE_MARKERS)))
-VALUE_TAIL = max(map(len, VALUE_MARKERS)) - 1
+# are opaque to the envelope grammar, like JSON strings: until the value's own
+# closer, markers inside them are argument text for the configured extractor.
+VALUE_CLOSERS = {"<arg_value>": "</arg_value>", "<parameter=": "</parameter>"}
+VALUE_MARKER = re.compile(
+    "|".join(map(re.escape, [*VALUE_CLOSERS, *VALUE_CLOSERS.values()]))
+)
+VALUE_TAIL = max(map(len, [*VALUE_CLOSERS, *VALUE_CLOSERS.values()])) - 1
 
 # Families whose Qwen-derived reasoning grammar pairs with a ``<tool_call>``
 # envelope. Each format keeps its existing complete-output extractor; the
@@ -207,7 +204,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
         self.envelope: list[Lexeme] | None = None
         self.json_body: bool | None = False
         self.json_string = self.json_escape = False
-        self.value_open = False
+        self.value_closer: str | None = None
         self.value_tail = ""
         self.origin = self.channel
         self.calls: dict[int, dict] = {}
@@ -237,7 +234,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
                 # unfinished envelope stays verbatim in that reasoning.
                 return self._flush() + self.consume(lexeme)
             self.envelope.append(lexeme)
-            if terminal == "tool_end" and not self.json_string:
+            if terminal == "tool_end" and not self._in_argument():
                 return self._close()
             self._scan(lexeme.text)
             return []
@@ -270,7 +267,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
         # Only a ``<tool_call>`` body may be JSON; GLM arguments are not.
         self.json_body = None if lexeme.terminal == "tool_start" else False
         self.json_string = self.json_escape = False
-        self.value_open = False
+        self.value_closer = None
         self.value_tail = ""
         self.origin = self.channel
 
@@ -296,7 +293,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
         return events
 
     def _in_argument(self) -> bool:
-        return self.json_string or self.value_open
+        return self.json_string or self.value_closer is not None
 
     def _scan(self, text: str) -> None:
         """Track whether the envelope body is inside an argument value.
@@ -325,7 +322,11 @@ class EnvelopeToolGrammar(ChannelGrammar):
         buffer = self.value_tail + text
         end = 0
         for match in VALUE_MARKER.finditer(buffer):
-            self.value_open = VALUE_MARKERS[match.group()]
+            marker = match.group()
+            if self.value_closer is None:
+                self.value_closer = VALUE_CLOSERS.get(marker)
+            elif marker == self.value_closer:
+                self.value_closer = None
             end = match.end()
         self.value_tail = buffer[max(end, len(buffer) - VALUE_TAIL) :]
 
