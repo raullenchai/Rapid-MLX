@@ -74,7 +74,12 @@ class PromptOutputOwner:
 
     def _initialize(self, output: GenerationOutput) -> None:
         context = getattr(output, "prompt_parse_context", None)
-        if self.parser is None and context is not None and output.channel is None:
+        if (
+            self.parser is None
+            and context is not None
+            and output.channel is None
+            and not output.tool_calls
+        ):
             if context.template_contract == "flint" or "lfm2.5" in self.model:
                 # mlx_lm/server.py::ResponseGenerator._tokenize@4cfc647:
                 # rendered prompt state, never the requested thinking switch.
@@ -106,6 +111,14 @@ class PromptOutputOwner:
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))
 
     def observe(self, output: GenerationOutput) -> list[Event] | None:
+        # Native metadata is authoritative on every event, including streams
+        # whose first event used text parsing. Let the existing route handlers
+        # consume structured calls without feeding their argument summaries back
+        # into the text grammar. Retain native narration in the final projection.
+        if output.channel is not None or output.tool_calls:
+            if self.active and output.channel in (None, "content"):
+                self.content.append(output.new_text)
+            return None
         self._initialize(output)
         if self.parser is None:
             return None

@@ -2843,7 +2843,7 @@ class StreamingPostProcessor:
                         return []
 
         # Step 1: Separate content from reasoning
-        if output.channel is not None:
+        if output.channel is not None or (self.channels_owned and output.tool_calls):
             events = self._process_channel_routed(delta_text, output)
         elif self.reasoning_parser and self._should_route_through_reasoning(delta_text):
             # When enable_thinking is explicitly False, the model is told to

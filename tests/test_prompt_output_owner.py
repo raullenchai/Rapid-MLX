@@ -111,3 +111,12 @@ def test_postprocessor_prefix_replay_and_reset():
     assert processor.reasoning_parser is legacy_reasoning
     assert not processor.tool_parser.skip_reasoning_parsing
     assert processor._prompt_owner.finish() == []
+
+
+def test_structured_buffered_output_is_already_owned():
+    original = output("Narration.")
+    original.tool_calls = [{"name": "run_shell_command", "arguments": "{}"}]
+    assert split_buffered(original, "flint") == (original, False)
+    owner = PromptOutputOwner("flint")
+    assert owner.observe(original) is None
+    assert not owner.active

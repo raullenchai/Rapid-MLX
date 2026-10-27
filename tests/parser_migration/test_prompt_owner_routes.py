@@ -286,3 +286,56 @@ def test_foreign_marker_spelling_is_literal_flint_content(surface, stream):
         prompt_context=PromptParseContext("", None, "content", False, "flint"),
     )
     assert result["content"] == raw, result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("channel", [None, "content", "tool_call"])
+@pytest.mark.parametrize("model", ["flint", "lfm2.5"])
+def test_native_tool_event_after_text_ownership(surface, channel, model, monkeypatch):
+    from rapid_mlx.engine.base import GenerationOutput
+
+    from .harness import Engine
+
+    context = PromptParseContext(
+        "<think>" if model == "lfm2.5" else "",
+        None,
+        "reasoning" if model == "lfm2.5" else "content",
+        False,
+        "chatml" if model == "lfm2.5" else "flint",
+    )
+
+    async def mixed_stream(self, **kwargs):
+        yield GenerationOutput(
+            text="",
+            finished=False,
+            new_text=("private</think>" if model == "lfm2.5" else "") + "Starting. ",
+            prompt_parse_context=context,
+        )
+        yield GenerationOutput(
+            text="", finished=False, new_text="Done.", channel="content"
+        )
+        yield GenerationOutput(
+            text="",
+            finished=False,
+            new_text="Narration. " if channel != "tool_call" else '{"command":"pwd"}',
+            channel=channel,
+            tool_calls=[
+                {"name": "run_shell_command", "arguments": '{"command":"pwd"}'}
+            ],
+        )
+        yield GenerationOutput(text="", finished=True, finish_reason="tool_calls")
+
+    monkeypatch.setattr(Engine, "stream_chat", mixed_stream)
+    result = route(
+        "qwen3",
+        "lfm" if model == "lfm2.5" else "glm47",
+        "",
+        surface,
+        True,
+        model=model,
+        prompt_context=context,
+        thinking=False,
+    )
+    assert result["calls"] == [["run_shell_command", {"command": "pwd"}]], result
+    expected = "Starting. Done." + ("Narration. " if channel != "tool_call" else "")
+    assert result["content"] == expected, result
