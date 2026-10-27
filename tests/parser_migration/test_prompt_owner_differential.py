@@ -13,7 +13,14 @@ CASES = list(
         ["chat", "responses", "messages"],
         [False, True],
         [1, 1000],
-        ["plain", "explicit", "tool_in_reasoning", "truncated"],
+        [
+            "plain",
+            "explicit",
+            "tool_in_reasoning",
+            "truncated",
+            "stray_close",
+            "native_tool",
+        ],
     )
 )
 
@@ -37,7 +44,12 @@ def replay(key):
     )
     if tool == "lfm":
         call = '[run_shell_command(command="pwd")]'
+    native = '<|tool_call_start|>[run_shell_command(command="pwd")]<|tool_call_end|>'
     raw = {
+        "stray_close": "unmarked</think>answer",
+        "native_tool": ("<think>" if initial == "content" else "")
+        + "private</think>"
+        + native,
         "plain": "Hello world.",
         "explicit": ("<think>" if initial == "content" else "")
         + "private plan</think>Answer one. Answer two.",

@@ -157,9 +157,12 @@ def test_partial_marker_drains_once(surface, terminal, raw):
 
 @pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_lfm_tools_only_from_content(surface, stream):
-    hidden = '[run_shell_command(command="secret")]'
-    raw = hidden + '</think>[run_shell_command(command="pwd")]'
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("split", [1, 1000])
+def test_lfm_tools_only_from_content(surface, stream, native, split):
+    start, end = ("<|tool_call_start|>", "<|tool_call_end|>") if native else ("", "")
+    hidden = start + '[run_shell_command(command="secret")]' + end
+    raw = hidden + "</think>" + start + '[run_shell_command(command="pwd")]' + end
     context = PromptParseContext("<think>", None, "reasoning", False, "chatml")
     result = route(
         "qwen3",
@@ -170,7 +173,50 @@ def test_lfm_tools_only_from_content(surface, stream):
         thinking=False,
         model="lfm2.5-24b-a2b-4bit",
         prompt_context=context,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
     )
     assert result["calls"] == [["run_shell_command", {"command": "pwd"}]], result
     assert result["reasoning"] == hidden, result
     assert "secret" not in result["content"], result
+    assert result["content"] == "", result
+
+
+@pytest.mark.parametrize("surface", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("split", [1, 1000])
+@pytest.mark.parametrize("tools_mode", ["absent", "enabled"])
+def test_stray_closer_is_not_sanitized(surface, stream, split, tools_mode):
+    raw = "unmarked deliberation</think>answer"
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        surface,
+        stream,
+        thinking=False,
+        chunks=[raw[i : i + split] for i in range(0, len(raw), split)],
+        model="flint-40b-a2.5b-4bit",
+        tools_mode="absent",
+        prompt_context=context,
+    )
+    assert result["content"] == raw, result
+    assert result["reasoning"] == "", result
+
+
+def test_owned_content_survives_logprob_serializer():
+    raw = "literal</think>answer"
+    context = PromptParseContext("", None, "content", False, "flint")
+    result = route(
+        "qwen3",
+        "glm47",
+        raw,
+        "chat",
+        True,
+        thinking=False,
+        model="flint-40b-a2.5b-4bit",
+        tools_mode="absent",
+        prompt_context=context,
+        logprobs=True,
+    )
+    assert result["content"] == raw, result

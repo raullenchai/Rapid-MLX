@@ -11,6 +11,7 @@ from ..engine.base import GenerationOutput
 from .output_demux import (
     ChannelGrammar,
     ContentDelta,
+    Control,
     Event,
     Lexeme,
     OutputDemultiplexer,
@@ -28,6 +29,14 @@ class ContentToolGrammar(ChannelGrammar):
         self.in_tool = False
 
     def consume(self, lexeme: Lexeme) -> list[Event]:
+        # mlx_lm/tool_parsers/pythonic.py::parse_tool_call@4cfc647:
+        # native LFM envelope tokens delimit the pythonic payload. Consume
+        # controls here; the existing tool parser receives only that payload.
+        if lexeme.terminal in ("lfm_tool_start", "lfm_tool_end"):
+            if self.channel == "reasoning":
+                return [ReasoningDelta(lexeme.span, lexeme.text)]
+            self.in_tool = lexeme.terminal == "lfm_tool_start"
+            return [Control(lexeme.span, lexeme.terminal)]
         # vllm/parser/abstract_parser.py::DelegatingParser.parse_delta@5df63a7:
         # once a content tool starts, its bytes belong to the tool parser.
         if self.in_tool:
@@ -39,6 +48,12 @@ class ContentToolGrammar(ChannelGrammar):
                 self.in_tool = lexeme.terminal == "tool_start"
                 return [ContentDelta(lexeme.span, lexeme.text)]
             return [ReasoningDelta(lexeme.span, lexeme.text)]
+        # python/sglang/srt/parser/reasoning_parser.py::
+        # BaseReasoningFormatDetector._parse_streaming_increment_impl@baa9bef:
+        # a closer ends reasoning only while reasoning is open. A stray closer
+        # is literal output; removing it would hide a model/grammar failure.
+        if lexeme.terminal == "reasoning_end" and self.channel == "content":
+            return [ContentDelta(lexeme.span, lexeme.text)]
         return super().consume(lexeme)
 
 
@@ -73,6 +88,14 @@ class PromptOutputOwner:
                         Terminal("reasoning_end", "</think>"),
                         Terminal("tool_start", "<tool_call>"),
                         Terminal("tool_end", "</tool_call>"),
+                        *(
+                            (
+                                Terminal("lfm_tool_start", "<|tool_call_start|>"),
+                                Terminal("lfm_tool_end", "<|tool_call_end|>"),
+                            )
+                            if "lfm2.5" in self.model
+                            else ()
+                        ),
                     ),
                 )
                 self.parser = OutputDemultiplexer(config, ContentToolGrammar(config))

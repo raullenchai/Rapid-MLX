@@ -680,7 +680,9 @@ def openai_to_anthropic(
         # suffix from ``thinking_body`` before this gate runs, so the
         # comparison stays True there.
         sanitized_text = (
-            sanitize_output(text, strip_tool_markup=strip_tool_markup) if text else text
+            sanitize_output(text, strip_tool_markup=strip_tool_markup)
+            if text and not channels_owned
+            else text
         )
         emit_thinking = (
             reasoning_enabled

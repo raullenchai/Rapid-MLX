@@ -2387,11 +2387,14 @@ async def _non_stream(
 
     final_content = None
     if cleaned_text:
-        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        final_content = sanitize_output(
-            final_content,
-            strip_tool_markup=bool(tool_parse_request.tools),
-        )
+        if channels_owned:
+            final_content = cleaned_text
+        else:
+            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            final_content = sanitize_output(
+                final_content,
+                strip_tool_markup=bool(tool_parse_request.tools),
+            )
         # R7-M4 (Vlad r7 — 0.8.8 sweep): mirror the chat-route fence-strip
         # so a model that wraps a ``json_object`` / ``json_schema`` body
         # in a ```json ... ``` markdown fence has the fence peeled off
@@ -2441,7 +2444,8 @@ async def _non_stream(
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
     if (
-        cfg.reasoning_parser is not None
+        not channels_owned
+        and cfg.reasoning_parser is not None
         and openai_request.tools
         and not engine_tool_calls
     ):
@@ -2502,6 +2506,7 @@ async def _non_stream(
     )
     if channels_owned:
         assistant_message.reasoning_content = reasoning_text
+        assistant_message.content = final_content
     if not tool_parse_request.tools:
         # The request-aware sanitizer already handled non-tool markup. Restore
         # tool-shaped text removed by AssistantMessage's context-free validator.
@@ -3900,6 +3905,7 @@ async def _stream_responses(
 
             owned = prompt_owner.observe(output)
             if owned is not None:
+                tool_filter.channels_owned = True
                 reasoning_parser = None
                 for content in owned_content(owned):
                     async for packet in _emit_text_delta(content):

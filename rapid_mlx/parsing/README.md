@@ -70,3 +70,7 @@ and API-specific tool serialization/validation. These remain active; this change
 does not install a grammar dependency or introduce new request errors. The
 prompt-owner differential ledger records every change from v0.16.10, including
 unchanged Qwen control cases. The source comments identify the reference rules.
+
+A closing thinking marker without an open reasoning block remains literal output,
+matching the reference detector. Live acceptance must reject such model output;
+the adapter does not hide it with a sanitizer.

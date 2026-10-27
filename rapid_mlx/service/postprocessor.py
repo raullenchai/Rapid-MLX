@@ -21,6 +21,7 @@ from unittest.mock import Mock
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import StreamingContentSanitizer, sanitize_output, strip_special_tokens
 from ..domain.events import StreamEvent
+from ..parsing.output_demux import Event
 from ..parsing.prompt_owner import ContentDelta, PromptOutputOwner, ReasoningDelta
 from ..parsing.shadow import make_shadow
 from ..streaming_markers import StreamingMarkerBuffer
@@ -2661,7 +2662,9 @@ class StreamingPostProcessor:
             self._parser_shadow.observe(output, events)
         return events
 
-    def _process_owned_events(self, owned, output):
+    def _process_owned_events(
+        self, owned: list[Event], output: GenerationOutput
+    ) -> list[StreamEvent]:
         events = []
         for event in owned:
             if isinstance(event, ReasoningDelta):
@@ -3652,7 +3655,9 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle standard models (no reasoning parser, no channel router)."""
-        content = strip_special_tokens(delta_text)
+        content = (
+            delta_text if self.channels_owned else strip_special_tokens(delta_text)
+        )
 
         # JSON mode preamble stripping (#46): when response_format is set and
         # no reasoning parser is active, the model may emit a thinking preamble
@@ -3723,7 +3728,11 @@ class StreamingPostProcessor:
                 mixed_content = result.get("content")
                 events: list[StreamEvent] = []
                 if isinstance(mixed_content, str) and mixed_content:
-                    mixed_content = strip_special_tokens(mixed_content)
+                    mixed_content = (
+                        mixed_content
+                        if self.channels_owned
+                        else strip_special_tokens(mixed_content)
+                    )
                     if mixed_content:
                         mixed_content = self._sanitize_content(mixed_content)
                     if mixed_content:
@@ -3810,7 +3819,11 @@ class StreamingPostProcessor:
                     )
                 )
                 return events
-            content = strip_special_tokens(result.get("content", ""))
+            content = (
+                result.get("content", "")
+                if self.channels_owned
+                else strip_special_tokens(result.get("content", ""))
+            )
 
         if self.tool_calls_detected:
             if self._preserve_post_tool_content and content:
@@ -3900,6 +3913,8 @@ class StreamingPostProcessor:
         already accumulates raw parser input and the standard path does not
         accumulate content. Remember which contract owns the held tail.
         """
+        if self.channels_owned:
+            return content
         self._content_sanitizer_accumulates = accumulate
         content = self._content_sanitizer.process(content)
         if accumulate:

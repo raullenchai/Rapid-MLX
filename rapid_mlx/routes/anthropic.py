@@ -1215,15 +1215,18 @@ async def create_anthropic_message(
 
         final_content = None
         if cleaned_text:
-            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-            # Final defense against special-token / markup leakage — mirrors
-            # chat.py:669 so the two surfaces don't diverge on what they
-            # consider "sanitized" client-facing content. Pre-existing gap
-            # flagged by codex during the #413 review.
-            final_content = sanitize_output(
-                final_content,
-                strip_tool_markup=bool(chat_kwargs.get("tools")),
-            )
+            if channels_owned:
+                final_content = cleaned_text
+            else:
+                final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+                # Final defense against special-token / markup leakage — mirrors
+                # chat.py:669 so the two surfaces don't diverge on what they
+                # consider "sanitized" client-facing content. Pre-existing gap
+                # flagged by codex during the #413 review.
+                final_content = sanitize_output(
+                    final_content,
+                    strip_tool_markup=bool(chat_kwargs.get("tools")),
+                )
 
         # Issue #569: never silently drop. Mirror the OpenAI route's
         # rescue so the Anthropic surface gets the same protection
@@ -1302,7 +1305,8 @@ async def create_anthropic_message(
 
         # Clean only the finalized visible lane; keep raw reasoning boundaries.
         if (
-            cfg.reasoning_parser is not None
+            not channels_owned
+            and cfg.reasoning_parser is not None
             and openai_request.tools
             and not engine_tool_calls
         ):
@@ -1333,6 +1337,7 @@ async def create_anthropic_message(
         )
         if channels_owned:
             assistant_message.reasoning_content = reasoning_text
+            assistant_message.content = final_content
         if not chat_kwargs.get("tools"):
             # The request-aware sanitizer already handled non-tool markup.
             # Preserve tool-shaped text through the context-free validator.
@@ -2481,6 +2486,7 @@ async def _stream_anthropic_messages(
 
         owned = prompt_owner.observe(output)
         if owned is not None:
+            tool_filter.channels_owned = True
             reasoning_parser = None
             for packet in emit_owned(owned):
                 yield packet

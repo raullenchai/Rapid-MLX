@@ -219,6 +219,7 @@ def route(
     tool_choice=None,
     prompt_context=None,
     terminal=True,
+    logprobs=False,
 ):
     cfg = reset_config()
     cfg.model_name = model
@@ -255,6 +256,8 @@ def route(
             {"role": "user", "content": "Continue."},
         ]
     if surface == "chat":
+        if logprobs:
+            b["logprobs"] = True
         b.update(
             messages=hist,
             tools=declared_tools,

@@ -6683,7 +6683,7 @@ async def _create_chat_completion_impl(
     # hermes) never engage line①. ``_line1_split_reasoning_for_tool_parse`` FAILS
     # CLOSED (never returns the raw text), so an engaged gate never re-exposes the
     # think span even on a reasoning-parser error (codex r5 #3).
-    if _line1_gate_engaged and engine_tool_calls is None:
+    if not channels_owned and _line1_gate_engaged and engine_tool_calls is None:
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             _line1_split_reasoning_for_tool_parse(cfg.reasoning_parser, output.text),
             request,
@@ -7112,8 +7112,11 @@ async def _create_chat_completion_impl(
     # Clean and strip thinking tags from content
     final_content = None
     if cleaned_text:
-        final_content = strip_thinking_tags(clean_output_text(cleaned_text))
-        final_content = sanitize_output(final_content)
+        if channels_owned:
+            final_content = cleaned_text
+        else:
+            final_content = strip_thinking_tags(clean_output_text(cleaned_text))
+            final_content = sanitize_output(final_content)
         if response_format and final_content:
             final_content = extract_json_from_response(final_content)
 
@@ -7241,7 +7244,12 @@ async def _create_chat_completion_impl(
         final_content = UNAVAILABLE_TOOL_NOTICE
 
     # Clean only the finalized visible lane; keep raw reasoning boundaries.
-    if cfg.reasoning_parser is not None and request.tools and not engine_tool_calls:
+    if (
+        not channels_owned
+        and cfg.reasoning_parser is not None
+        and request.tools
+        and not engine_tool_calls
+    ):
         final_content = _clean_final_content_tool_envelope(
             final_content,
             request,
@@ -7287,6 +7295,7 @@ async def _create_chat_completion_impl(
     )
     if channels_owned:
         chat_response.choices[0].message.reasoning_content = reasoning_text
+        chat_response.choices[0].message.content = final_content
     # ── Response cache — STORE ───────────────────────────────────────
     #
     # Store the assembled response under the key computed at the lookup
@@ -7602,7 +7611,9 @@ async def stream_chat_completion(
             text: str, chunk_logprobs: ChoiceLogProbs | None = None
         ) -> str:
             """Serialize one content delta, preserving requested logprobs."""
-            wire_text = sanitize_content_for_stream(text)
+            wire_text = (
+                text if processor.channels_owned else sanitize_content_for_stream(text)
+            )
             _streamed_content_parts.append(wire_text)
             if not want_logprobs:
                 return _fast_sse_chunk(wire_text, "content")
@@ -7617,6 +7628,8 @@ async def stream_chat_completion(
                     )
                 ],
             )
+            if processor.channels_owned:
+                chunk.choices[0].delta.content = wire_text
             return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
         # Start the engine and wait only for scheduler admission before
