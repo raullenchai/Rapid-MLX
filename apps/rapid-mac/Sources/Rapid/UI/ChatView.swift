@@ -2683,8 +2683,10 @@ private struct ToolCallChip: View {
                     }
                     Button("Allow") { onApproval(approval.opID, true) }
                         .accessibilityLabel("Allow \(call.function.name)")
+                        .accessibilityIdentifier("OwnerApproval.Allow.\(approval.opID)")
                     Button("Deny") { onApproval(approval.opID, false) }
                         .accessibilityLabel("Deny \(call.function.name)")
+                        .accessibilityIdentifier("OwnerApproval.Deny.\(approval.opID)")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)

@@ -31,7 +31,7 @@ struct OwnerChatSessionTests {
         let projection = try #require(await session.snapshot().projection)
         let rows = ownerProjectionMessages(projection, assistantID: UUID(), createdAt: Date())
         #expect(rows[0].content == "Hi")
-        #expect(rows[0].toolCalls?.count == 1)
+        #expect(rows[1].toolCalls?.count == 1)
         #expect(rows.filter { $0.toolCallID == "x" }.count == 1)
     }
     @Test func disconnectAndStop() async throws {
@@ -44,6 +44,49 @@ struct OwnerChatSessionTests {
         #expect(!calls.contains { if case .cancel = $0 { true } else { false } })
         try await session.stop()
         #expect(await client.calls.contains { if case .cancel = $0 { true } else { false } })
+    }
+    @Test func permanentFailureAndReconnectLimit() async throws {
+        let rejected = try await fake([])
+        await rejected.setDeliveryError(.http(status: 409))
+        let first = try await start(rejected)
+        try await wait(first) { if case .failed = $0.state { true } else { false } }
+        #expect(await rejected.calls.count == 1)
+        let disconnected = try await fake([])
+        await disconnected.setDeliveryError(.disconnected(lastEventID: ""))
+        let second = try await start(disconnected)
+        try await wait(second) { if case .failed = $0.state { true } else { false } }
+        #expect(await disconnected.calls.count == 4)
+    }
+    @Test func reconnectReacquiresClient() async throws {
+        let client = try await fake([])
+        await client.setDeliveryError(.http(status: 401))
+        actor Provider {
+            var count = 0
+            let client: FakeChatTurnClient
+            init(_ client: FakeChatTurnClient) { self.client = client }
+            func get() -> any ChatTurnClient { count += 1; return client }
+        }
+        let provider = Provider(client)
+        let session = OwnerChatSession(clientProvider: { await provider.get() })
+        try await session.submit(text: "Hello", target: .init(url: URL(string: "http://localhost:8000/v1")!, bearer: nil, model: "m"))
+        try await wait(session) { if case .failed = $0.state { true } else { false } }
+        #expect(await provider.count == 4)
+    }
+    @Test func approvalTransportFailureRemainsActionable() async throws {
+        let client = try await fake([frame(#"{"type":"permission.request","op_id":"op","revision":1,"tool":"write_file","summary":"Edit","preview":"x","risk":"file","reason":"Approval","options":["once","deny"],"expires_at":2000000000}"#, 1)])
+        await client.setOperationError(.disconnected(lastEventID: ""))
+        let session = try await start(client)
+        try await wait(session) { $0.projection?.pendingPermission != nil }
+        do { try await session.resolve(opID: "op", decision: .allow); Issue.record("expected failure") } catch {}
+        #expect(!(await session.snapshot().unavailablePermissions.contains("op")))
+    }
+    @Test func orderedTextAndTools() async throws {
+        let client = try await fake([frame(#"{"type":"text.delta","part_id":"a","text":"before"}"#, 1), frame(#"{"type":"tool.started","call_id":"x","name":"search","args":{}}"#, 2), frame(#"{"type":"tool.result","call_id":"x","result":"found"}"#, 3), frame(#"{"type":"text.delta","part_id":"b","text":"after"}"#, 4), frame(#"{"type":"turn.terminal","outcome":"completed"}"#, 5)])
+        let session = try await start(client)
+        try await wait(session) { $0.state == .finished }
+        let projection = try #require(await session.snapshot().projection)
+        let rows = ownerProjectionMessages(projection, assistantID: UUID(), createdAt: Date())
+        #expect(rows.map(\.content) == ["before", "", "found", "after"])
     }
     @Test func interrupted() async throws {
         let client = try await fake([frame(#"{"type":"turn.terminal","outcome":"error","error_code":"owner_restarted"}"#, 1)])

@@ -11,6 +11,10 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    var deliveryError: ChatTurnClientError?
+    var operationError: ChatTurnClientError?
+    func setDeliveryError(_ error: ChatTurnClientError?) { deliveryError = error }
+    func setOperationError(_ error: ChatTurnClientError?) { operationError = error }
     var substituteTurnID = false
     func enableTurnSubstitution() { substituteTurnID = true }
     func setFrames(_ value: [Data]) { frames = value }
@@ -38,7 +42,7 @@ actor FakeChatTurnClient: ChatTurnClient {
     func turn(turnID: String) async throws -> ChatWireJSON { calls.append(.turn(turnID)); return receipt }
     func cancel(turnID: String) async throws -> ChatWireJSON { calls.append(.cancel(turnID)); return receipt }
     func respond(_ response: ChatPermissionResponse) async throws -> ChatWireJSON { calls.append(.respond(response)); return receipt }
-    func operation(opID: String) async throws -> ChatWireJSON { calls.append(.operation(opID)); return receipt }
+    func operation(opID: String) async throws -> ChatWireJSON { calls.append(.operation(opID)); if let operationError { throw operationError }; return receipt }
     func context(_ request: ChatTurnRequest) async throws -> ChatWireContextEvent {
         calls.append(.context(request)); return contextValue
     }
@@ -50,6 +54,7 @@ actor FakeChatTurnClient: ChatTurnClient {
     }
 
     private func deliver(turnID: String, after: Int, onEvent: ChatTurnEventHandler) async throws {
+        if let deliveryError { throw deliveryError }
         var decoder = ChatSSEDecoder()
         for frame in frames {
             try Task.checkCancellation()

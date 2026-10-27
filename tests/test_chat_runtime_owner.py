@@ -139,19 +139,33 @@ def test_ensure_bootstrap_is_credential_silent(tmp_path):
     token = (run / record["credential_file"]).read_text().strip()
     assert token and token not in result.stderr
     try:
-        again = subprocess.run(result.args, env=environment, capture_output=True, text=True, timeout=25)
+        again = subprocess.run(
+            result.args, env=environment, capture_output=True, text=True, timeout=25
+        )
         assert again.returncode == 0, again.stderr
         assert again.stdout == "" and token not in again.stderr
-        assert json.loads((run / "discovery.json").read_text())["owner_epoch"] == record["owner_epoch"]
+        assert (
+            json.loads((run / "discovery.json").read_text())["owner_epoch"]
+            == record["owner_epoch"]
+        )
     finally:
         stop_owned({**record, "token": token})
 
 
 def test_ensure_failure_is_silent_and_nonzero(tmp_path):
     result = subprocess.run(
-        [sys.executable, "-m", "rapid_mlx.chat_runtime.owner", "--profile", "../invalid", "--ensure"],
+        [
+            sys.executable,
+            "-m",
+            "rapid_mlx.chat_runtime.owner",
+            "--profile",
+            "../invalid",
+            "--ensure",
+        ],
         env={**os.environ, "RAPID_MLX_CHAT_HOME": str(tmp_path)},
-        capture_output=True, text=True, timeout=25,
+        capture_output=True,
+        text=True,
+        timeout=25,
     )
     assert result.returncode != 0
     assert result.stdout == ""

@@ -16,20 +16,8 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
         let bytes = Array(SHA256.hash(data: Data("\(projection.turnID):\(key)".utf8)).prefix(16))
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
-    let text = projection.parts.compactMap { part -> String? in
-        if case .text(_, let text) = part { return text }; return nil
-    }.joined()
-    let tools = projection.parts.compactMap { part -> ChatTurnProjection.Tool? in
-        if case .tool(let tool) = part { return tool }; return nil
-    }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let calls = tools.map { tool in
-        var args = tool.started?.args ?? [:]
-        args.removeValue(forKey: "op_id")
-        let data = (try? encoder.encode(args)) ?? Data("{}".utf8)
-        return ToolCall(id: tool.callID, name: tool.started?.name ?? "", arguments: String(decoding: data, as: UTF8.self))
-    }
     let terminal = projection.terminal
     let status: ChatMessage.Status = terminal == nil ? .streaming : (terminal?.outcome == .completed ? .complete : .failed)
     let error: String? = terminal.flatMap { event in
@@ -38,13 +26,24 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
         if event.outcome == .cancelled { return "Interrupted." }
         return event.errorCode ?? "The turn failed."
     }
-    var rows = [ChatMessage(id: assistantID, role: .assistant, content: text, status: status, errorMessage: error, toolCalls: calls.isEmpty ? nil : calls, createdAt: createdAt)]
-    for tool in tools {
-        let output = tool.result.map { tool.output.isEmpty || tool.output == $0.result ? $0.result : tool.output + "\n" + $0.result } ?? tool.output
-        if !output.isEmpty || tool.result != nil {
-            rows.append(ChatMessage(id: rowID("tool:" + tool.callID), role: .tool, content: output, status: tool.result == nil ? .streaming : (tool.result?.outcome == .error ? .failed : .complete), toolCallID: tool.callID, createdAt: createdAt))
+    var rows: [ChatMessage] = []
+    for part in projection.parts {
+        switch part {
+        case .text(let id, let text):
+            rows.append(ChatMessage(id: rows.isEmpty ? assistantID : rowID("text:" + id), role: .assistant, content: text, status: status, errorMessage: error, createdAt: createdAt))
+        case .tool(let tool):
+            var args = tool.started?.args ?? [:]
+            args.removeValue(forKey: "op_id")
+            let data = (try? encoder.encode(args)) ?? Data("{}".utf8)
+            let call = ToolCall(id: tool.callID, name: tool.started?.name ?? "", arguments: String(decoding: data, as: UTF8.self))
+            rows.append(ChatMessage(id: rows.isEmpty ? assistantID : rowID("call:" + tool.callID), role: .assistant, content: "", status: status, errorMessage: error, toolCalls: [call], createdAt: createdAt))
+            let output = tool.result.map { tool.output.isEmpty || tool.output == $0.result ? $0.result : tool.output + "\n" + $0.result } ?? tool.output
+            if !output.isEmpty || tool.result != nil {
+                rows.append(ChatMessage(id: rowID("tool:" + tool.callID), role: .tool, content: output, status: tool.result == nil ? .streaming : (tool.result?.outcome == .error ? .failed : .complete), toolCallID: tool.callID, createdAt: createdAt))
+            }
         }
     }
+    if rows.isEmpty { rows.append(ChatMessage(id: assistantID, role: .assistant, content: "", status: status, errorMessage: error, createdAt: createdAt)) }
     for permission in projection.pendingPermissions {
         rows.append(ChatMessage(id: rowID("permission:" + permission.opID), role: .tool, content: "Waiting for approval", status: .streaming, toolCallID: permission.opID, createdAt: createdAt))
     }

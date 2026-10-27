@@ -7,7 +7,7 @@ actor OwnerChatSession {
         let bearer: String?
         let model: String
     }
-    enum State: Equatable, Sendable { case idle, streaming, reconnecting, finished }
+    enum State: Equatable, Sendable { case idle, streaming, reconnecting, finished, failed(String) }
     enum SessionError: Error { case busy, invalidConversation, permissionUnavailable }
     struct Snapshot: Sendable {
         let projection: ChatTurnProjection?
@@ -30,13 +30,17 @@ actor OwnerChatSession {
 
     init(connection: ChatOwnerConnection, conversationID: String? = nil, workspace: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.workspace = workspace.resolvingSymlinksInPath().standardizedFileURL
-        self.clientProvider = { try await connection.turnClient() }
+        self.clientProvider = { try await connection.reconnect() }
         self.conversationID = conversationID
     }
     init(client: any ChatTurnClient, conversationID: String? = nil, workspace: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.workspace = workspace.resolvingSymlinksInPath().standardizedFileURL
         self.clientProvider = { client }
         self.conversationID = conversationID
+    }
+    init(clientProvider: @escaping @Sendable () async throws -> any ChatTurnClient) {
+        self.workspace = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().standardizedFileURL
+        self.clientProvider = clientProvider
     }
     func ownerConversationID() -> String? { conversationID }
     func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: unavailable) }
@@ -78,23 +82,59 @@ actor OwnerChatSession {
         if effect == .resume(after: current.lastApplied) { throw Resume.gap }
         if effect == .applied { publish() }
     }
-    private func run(_ request: ChatTurnRequest, client: any ChatTurnClient) async {
+    private func run(_ request: ChatTurnRequest, client initialClient: any ChatTurnClient) async {
+        var client = initialClient
         var initial = true
+        var failures = 0
         while !Task.isCancelled, reducer?.projection.terminal == nil {
+            let cursor = reducer?.lastApplied ?? 0
             do {
                 let handler: ChatTurnEventHandler = { [weak self] event in try await self?.apply(event) }
                 if initial { initial = false; try await client.submit(request, after: 0, onEvent: handler) }
-                else { try await client.stream(turnID: request.turnID, after: reducer?.lastApplied ?? 0, onEvent: handler) }
+                else { try await client.stream(turnID: request.turnID, after: cursor, onEvent: handler) }
             } catch is CancellationError { break }
-            catch { /* A detached reader never implies completion. */ }
+            catch {
+                if Self.isPermanent(error) {
+                    state = .failed(error.localizedDescription); publish(); break
+                }
+            }
             if reducer?.projection.terminal == nil && !Task.isCancelled {
+                failures = (reducer?.lastApplied ?? 0) > cursor ? 1 : failures + 1
+                if failures >= 4 {
+                    state = .failed("Could not reconnect to chat owner."); publish(); break
+                }
                 state = .reconnecting; publish()
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(for: .milliseconds(250))
+                        client = try await clientProvider()
+                        self.client = client
+                        break
+                    } catch is CancellationError { break }
+                    catch {
+                        if Self.isPermanent(error) { state = .failed(error.localizedDescription); publish(); break }
+                        failures += 1
+                        if failures >= 4 { state = .failed("Could not reconnect to chat owner."); publish(); break }
+                    }
+                }
+                if Task.isCancelled { break }
+                if case .failed = state { break }
                 state = .streaming; publish()
             }
         }
         if reducer?.projection.terminal != nil { state = .finished; publish() }
         task = nil
+    }
+    private static func isPermanent(_ error: Error) -> Bool {
+        if let error = error as? ChatTurnClientError {
+            switch error {
+            case .http(let status): return (400..<500).contains(status) && status != 401
+            case .invalidResponse, .invalidEndpoint, .invalidCursor: return true
+            case .disconnected: return false
+            }
+        }
+        if let wire = error as? ChatWireError { return wire != .unexpectedEOF }
+        return error is DecodingError
     }
     func stop() async throws {
         guard let client, let turnID = reducer?.projection.turnID, reducer?.projection.terminal == nil else { return }
@@ -113,7 +153,12 @@ actor OwnerChatSession {
             _ = try await client.respond(ChatPermissionResponse(opID: opID, revision: permission.revision, decision: decision))
             unavailable.insert(opID); publish()
         } catch {
-            unavailable.insert(opID); publish(); throw error
+            if case SessionError.permissionUnavailable = error {
+                unavailable.insert(opID); publish()
+            } else if case ChatTurnClientError.http(let status) = error, status == 404 || status == 409 {
+                unavailable.insert(opID); publish()
+            }
+            throw error
         }
     }
     private static func number(_ value: ChatWireJSON?) -> Double? {

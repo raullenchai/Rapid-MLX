@@ -1533,14 +1533,16 @@ final class ChatViewModel {
             if let existing = ownerSessions[conversationID] { session = existing }
             else {
                 let storedID = conversations.first(where: { $0.id == conversationID })?.ownerConversationID
+                var newConnection: ChatOwnerConnection?
                 if let ownerClientFactory {
                     session = OwnerChatSession(client: try await ownerClientFactory(), conversationID: storedID, workspace: ownerWorkspace)
                 } else {
                     guard let connection = try await ChatOwnerConnection.connectIfEnabled(backend: .ownerV1) else { throw ChatOwnerConnectionError.ownerUnavailable }
+                    newConnection = connection
                     session = OwnerChatSession(connection: connection, conversationID: storedID, workspace: ownerWorkspace)
                 }
-                guard epoch == conversationEpoch else { return }
-                if Task.isCancelled { finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch); persistActive(); return }
+                guard epoch == conversationEpoch else { await newConnection?.close(); return }
+                if Task.isCancelled { await newConnection?.close(); finishStartupCancellation(placeholderIndex: placeholderIndex, epoch: epoch); persistActive(); return }
                 ownerSessions[conversationID] = session
             }
             let target = OwnerChatSession.Target(url: server.map { ChatStreamClient.loopbackURL(port: $0.activePort) } ?? client.baseURL, bearer: server?.activeBearer, model: alias)
@@ -1556,12 +1558,14 @@ final class ChatViewModel {
                 guard let projection = snapshot.projection else { continue }
                 ownerApprovals = ownerProjectionApprovals(projection, unavailable: snapshot.unavailablePermissions)
                 var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt)
+                if case .failed(let message) = snapshot.state { rows[0].status = .failed; rows[0].errorMessage = message }
                 rows[0].parentID = placeholder.parentID
                 for i in rows.indices.dropFirst() { rows[i].parentID = rows[i - 1].id }
                 guard let index = messages.firstIndex(where: { $0.id == placeholder.id }) else { break }
                 messages.replaceSubrange(index..<messages.count, with: rows)
                 treeShapeVersion += 1
                 if snapshot.state == .finished { break }
+                if case .failed = snapshot.state { break }
             }
             guard epoch == conversationEpoch else { return }
             if Task.isCancelled, let index = messages.firstIndex(where: { $0.id == placeholder.id }) {
