@@ -423,4 +423,4 @@ async def direct_fetch(url: str, transport=None) -> WebResult:
                 parser.close()
                 title, text = "".join(parser.title), parser.text()
             return page_result(str(target), title, text)
-    raise AssertionError("unreachable")
+    raise AssertionError("unreachable")  # pragma: no cover - loop always exits
