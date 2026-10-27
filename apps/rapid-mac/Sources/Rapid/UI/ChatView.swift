@@ -2502,16 +2502,17 @@ private struct MessageRow: View {
     }
 }
 
-/// One dispatched tool call, with its arguments and (once it lands) its
-/// result behind a disclosure. Expanded while the tool is still running so
-/// the user sees what is happening; auto-collapses on success so a long
-/// transcript stays skimmable. Clarifications also collapse; other failures
-/// stay expanded because the error detail is the useful part.
+/// Measures an approval preview at its collapsed and full heights.
 private struct OwnerPreviewHeightKey: PreferenceKey {
     static let defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) { value.merge(nextValue(), uniquingKeysWith: { _, new in new }) }
 }
 
+/// One dispatched tool call, with its arguments and (once it lands) its
+/// result behind a disclosure. Expanded while the tool is still running so
+/// the user sees what is happening; auto-collapses on success so a long
+/// transcript stays skimmable. Clarifications also collapse; other failures
+/// stay expanded because the error detail is the useful part.
 private struct ToolCallChip: View {
     let call: ToolCall
     let result: ChatMessage?
