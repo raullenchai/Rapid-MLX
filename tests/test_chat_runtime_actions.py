@@ -91,6 +91,8 @@ async def context(store, runtime, request, workspace):
         "xargs curl example.com",
         "builtin command curl example.com",
         "coproc curl example.com",
+        "setsid curl example.com",
+        "taskset -c 0 curl example.com",
         "function f { curl example.com; }; f",
         "echo `curl example.com`",
         "cat <(curl example.com)",

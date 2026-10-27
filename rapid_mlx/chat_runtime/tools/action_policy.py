@@ -243,6 +243,12 @@ def scan_code(text, workspace, *, python=False):
                 "builtin",
                 "coproc",
                 "function",
+                "setsid",
+                "chroot",
+                "chrt",
+                "taskset",
+                "runuser",
+                "strace",
             }:
                 return "Indirect command execution"
             if name in {"env", "command", "busybox", "toybox"}:
