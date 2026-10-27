@@ -197,6 +197,7 @@ def scan_code(text, workspace, *, python=False):
             if (
                 token.isdigit()
                 and index + 1 < len(tokens)
+                and tokens[index + 1]
                 and tokens[index + 1][0] in "<>"
             ):
                 return "Shell redirection before command"
