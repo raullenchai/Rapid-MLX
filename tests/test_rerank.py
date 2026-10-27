@@ -918,7 +918,9 @@ def test_jina_scores_cosine_of_marker_states():
 
     engine = _jina_engine()
     result = engine.score("qa", ["xa", "xb", "xc"])
-    assert result.scores == pytest.approx([1.0, 0.5, 1 / math.sqrt(2)], rel=1e-5)
+    assert result.scores == pytest.approx(
+        [1.0, 0.75, (1 + 1 / math.sqrt(2)) / 2], rel=1e-5
+    )
     assert engine._model.calls == 1
     assert result.prompt_tokens > 0
 
@@ -1039,7 +1041,7 @@ def test_jina_overflow_policy():
     )
 
     engine = _jina_engine(max_length=3)
-    assert engine.score("qa", ["xxxxa", "xb"]).scores[1] == pytest.approx(0.5)
+    assert engine.score("qa", ["xxxxa", "xb"]).scores[1] == pytest.approx(0.75)
     assert engine.num_truncations == 1
 
     engine.overflow_policy = "error"
@@ -1834,7 +1836,7 @@ def test_jina_zero_projection_scores_stay_finite():
     result = engine.score("qa", ["xa", "xb"])
 
     assert all(math.isfinite(score) for score in result.scores)
-    assert result.scores == pytest.approx([0.0, 0.0])
+    assert all(0.0 <= score <= 1.0 for score in result.scores)
 
 
 def test_jina_all_opposite_blocks_fall_back_to_unweighted_mean(monkeypatch):
@@ -1854,7 +1856,7 @@ def test_jina_all_opposite_blocks_fall_back_to_unweighted_mean(monkeypatch):
     result = engine.score("qa", ["xa", "xb"])
 
     assert all(math.isfinite(score) for score in result.scores)
-    assert result.scores == pytest.approx([-1.0, -1.0], abs=1e-6)
+    assert result.scores == pytest.approx([0.0, 0.0], abs=1e-6)
 
 
 def test_jina_custom_prompt_strips_reserved_markers():

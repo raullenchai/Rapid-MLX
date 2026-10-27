@@ -41,13 +41,15 @@ the model's relevance logit as `relevance_score`.
 jina-reranker-v3 is listwise: it reads the query and up to 125 documents in one
 prompt and scores each document by the similarity of its hidden state to the
 query's, so a document's score depends on the other documents in the request.
-Its `relevance_score` is the raw cosine similarity, from -1 to 1. Its query is
+Its `relevance_score` is that cosine similarity mapped to 0 to 1, as
+`(1 + cosine) / 2`; to compare with tools that report the raw cosine, use
+`2 * relevance_score - 1`. Its query is
 limited to 512 tokens and `--rerank-max-length` applies to each document.
 
 ## Request and Response
 
 `documents` accepts strings or `{"text": ...}` objects. Results are sorted by
-`relevance_score` and include the document text unless
+`relevance_score` (0 to 1) and include the document text unless
 `return_documents` is `false`; `top_n` limits the result count.
 
 ## Query, Instruction and Prompt

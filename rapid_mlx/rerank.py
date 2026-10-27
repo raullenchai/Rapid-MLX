@@ -990,7 +990,10 @@ class RerankEngine:
         # unweighted mean instead of dividing by zero.
         weight = mx.where(weight.sum() > 0, weight, mx.ones_like(weight))
         query_embed = (mx.stack(query_embeds) * weight[:, None]).sum(0) / weight.sum()
-        scores = cosine(query_embed, mx.concatenate(doc_embeds))
+        # Cosine similarity is in [-1, 1]; map it to the API's [0, 1] range.
+        scores = (1.0 + cosine(query_embed, mx.concatenate(doc_embeds))) / 2.0
+        # Clamp float rounding so scores never leave the documented range.
+        scores = mx.clip(scores, 0.0, 1.0)
         mx.eval(scores)
         return RerankScores(scores=scores.tolist(), prompt_tokens=prompt_tokens)
 
@@ -1001,7 +1004,7 @@ class RerankEngine:
         *,
         instruction: str | None = None,
     ) -> RerankScores:
-        """Return one family-specific relevance score per document, in input order."""
+        """Return one relevance score in ``[0, 1]`` per document, in input order."""
         if not self.is_loaded:
             self.load()
         if instruction and not self.accepts_instruction:
