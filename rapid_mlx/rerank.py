@@ -20,6 +20,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,13 @@ _CROSS_ENCODER_FILES = ["*.json", "model*.safetensors", "sentencepiece.bpe.model
 # Splits the rendered template around the document so its tokens can be
 # truncated without re-tokenizing the query part for every document.
 _DOCUMENT_MARK = "\x00rapid-mlx-rerank-document\x00"
-_JINA3_FILES = ["*.json", "model*.safetensors", "*.jinja", "*.txt"]
+_JINA3_FILES = [
+    "*.json",
+    "model*.safetensors",
+    "projector.safetensors",
+    "*.jinja",
+    "*.txt",
+]
 _MAX_BATCH_SEQUENCES = 16
 _MAX_BATCH_TOKENS = 16384
 _NO_THINKING = "<think>\n\n</think>\n\n"
@@ -382,7 +389,7 @@ def _load_cross_encoder(model_name: str, config: dict):
     )
 
 
-def _jina_model_classes(config: dict):
+def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
     from mlx_lm.models import qwen3
 
     class JinaForRanking(qwen3.Model):
@@ -400,6 +407,8 @@ def _jina_model_classes(config: dict):
         def sanitize(self, weights):
             # Transformers names the projector layers ``projector.0`` and
             # ``projector.2``; MLX conversions use ``projector.layers.N``.
+            if projector_path is not None and projector_path.is_file():
+                weights.update(mx.load(str(projector_path)))
             weights = {
                 re.sub(r"^projector\.(\d+)\.", r"projector.layers.\1.", k): v
                 for k, v in weights.items()
@@ -423,7 +432,11 @@ def _load_jina(model_name: str):
 
     try:
         model, _config = load_model_checked(
-            load_model, path, get_model_classes=_jina_model_classes
+            load_model,
+            path,
+            get_model_classes=partial(
+                _jina_model_classes, projector_path=path / "projector.safetensors"
+            ),
         )
     except ValueError as exc:
         raise UnsupportedRerankModelError(
@@ -432,7 +445,7 @@ def _load_jina(model_name: str):
     from .utils.tokenizer import apply_remote_code_policy
 
     tokenizer_config, _ = apply_remote_code_policy(None)
-    return model, load_tokenizer(path, tokenizer_config=tokenizer_config)
+    return model, load_tokenizer(path, tokenizer_config_extra=tokenizer_config)
 
 
 class RerankEngine:
@@ -977,10 +990,7 @@ class RerankEngine:
         # unweighted mean instead of dividing by zero.
         weight = mx.where(weight.sum() > 0, weight, mx.ones_like(weight))
         query_embed = (mx.stack(query_embeds) * weight[:, None]).sum(0) / weight.sum()
-        # Cosine similarity is in [-1, 1]; map it to the API's [0, 1] range.
-        scores = (1.0 + cosine(query_embed, mx.concatenate(doc_embeds))) / 2.0
-        # Clamp float rounding so scores never leave the documented range.
-        scores = mx.clip(scores, 0.0, 1.0)
+        scores = cosine(query_embed, mx.concatenate(doc_embeds))
         mx.eval(scores)
         return RerankScores(scores=scores.tolist(), prompt_tokens=prompt_tokens)
 
@@ -991,7 +1001,7 @@ class RerankEngine:
         *,
         instruction: str | None = None,
     ) -> RerankScores:
-        """Return one relevance score in ``[0, 1]`` per document, in input order."""
+        """Return one family-specific relevance score per document, in input order."""
         if not self.is_loaded:
             self.load()
         if instruction and not self.accepts_instruction:

@@ -918,9 +918,7 @@ def test_jina_scores_cosine_of_marker_states():
 
     engine = _jina_engine()
     result = engine.score("qa", ["xa", "xb", "xc"])
-    assert result.scores == pytest.approx(
-        [1.0, 0.75, (1 + 1 / math.sqrt(2)) / 2], rel=1e-5
-    )
+    assert result.scores == pytest.approx([1.0, 0.5, 1 / math.sqrt(2)], rel=1e-5)
     assert engine._model.calls == 1
     assert result.prompt_tokens > 0
 
@@ -1041,7 +1039,7 @@ def test_jina_overflow_policy():
     )
 
     engine = _jina_engine(max_length=3)
-    assert engine.score("qa", ["xxxxa", "xb"]).scores[1] == pytest.approx(0.75)
+    assert engine.score("qa", ["xxxxa", "xb"]).scores[1] == pytest.approx(0.5)
     assert engine.num_truncations == 1
 
     engine.overflow_policy = "error"
@@ -1052,7 +1050,10 @@ def test_jina_overflow_policy():
         engine.score("q" * 513, ["xa"])
 
 
-def test_jina_loads_transformers_projector_names(monkeypatch, tmp_path):
+@pytest.mark.parametrize("separate_projector", [False, True])
+def test_jina_loads_transformers_projector_names(
+    monkeypatch, tmp_path, separate_projector
+):
     import json
 
     import mlx.core as mx
@@ -1085,10 +1086,15 @@ def test_jina_loads_transformers_projector_names(monkeypatch, tmp_path):
         for k, v in tree_flatten(reference.parameters())
     }
     assert "projector.2.weight" in weights
+    if separate_projector:
+        projector = {
+            k: weights.pop(k) for k in list(weights) if k.startswith("projector.")
+        }
+        mx.save_safetensors(str(tmp_path / "projector.safetensors"), projector)
     mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
 
-    def load_tokenizer(path, *, tokenizer_config):
-        assert tokenizer_config["trust_remote_code"] is False
+    def load_tokenizer(path, *, tokenizer_config_extra):
+        assert tokenizer_config_extra["trust_remote_code"] is False
         return "tok", path
 
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
@@ -1123,6 +1129,7 @@ def test_jina_remote_download_and_bad_weight_layout(monkeypatch, tmp_path):
     with pytest.raises(rerank.UnsupportedRerankModelError, match="projector mismatch"):
         rerank._load_jina("org/remote-jina")
     assert seen == [("org/remote-jina", rerank._JINA3_FILES)]
+    assert "projector.safetensors" in seen[0][1]
 
 
 def test_engine_loads_listwise_markers_and_eos_padding(monkeypatch):
@@ -1827,7 +1834,7 @@ def test_jina_zero_projection_scores_stay_finite():
     result = engine.score("qa", ["xa", "xb"])
 
     assert all(math.isfinite(score) for score in result.scores)
-    assert all(0.0 <= score <= 1.0 for score in result.scores)
+    assert result.scores == pytest.approx([0.0, 0.0])
 
 
 def test_jina_all_opposite_blocks_fall_back_to_unweighted_mean(monkeypatch):
@@ -1847,7 +1854,7 @@ def test_jina_all_opposite_blocks_fall_back_to_unweighted_mean(monkeypatch):
     result = engine.score("qa", ["xa", "xb"])
 
     assert all(math.isfinite(score) for score in result.scores)
-    assert result.scores == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert result.scores == pytest.approx([-1.0, -1.0], abs=1e-6)
 
 
 def test_jina_custom_prompt_strips_reserved_markers():
@@ -2043,12 +2050,15 @@ def test_local_jina_positive_checked_load(tmp_path, monkeypatch):
 
     def load(path, **kwargs):
         assert path == tmp_path
-        assert kwargs == {"get_model_classes": _jina_model_classes}
+        assert kwargs["get_model_classes"].func is _jina_model_classes
+        assert kwargs["get_model_classes"].keywords == {
+            "projector_path": tmp_path / "projector.safetensors"
+        }
         return model, {}
 
-    def load_tokenizer(path, tokenizer_config):
+    def load_tokenizer(path, tokenizer_config_extra):
         assert path == tmp_path
-        assert tokenizer_config == {"trust_remote_code": False}
+        assert tokenizer_config_extra == {"trust_remote_code": False}
         return tokenizer
 
     monkeypatch.setattr(mlx_lm.utils, "load_model", load)
