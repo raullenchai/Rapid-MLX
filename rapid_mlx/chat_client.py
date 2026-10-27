@@ -466,16 +466,10 @@ class ChatClient:
                             raise httpx.ConnectError("Owner restarted")
                         response.raise_for_status()
                         submitted = True
-                        failures = 0
 
-                        def active_lines():
-                            nonlocal failures
-                            for line in response.iter_lines():
-                                failures = 0
-                                yield line
-
-                        for event in sse_events(active_lines()):
+                        for event in sse_events(response.iter_lines()):
                             if state.apply(event):
+                                failures = 0
                                 renderer.update(event)
                                 if event["event"]["type"] in {"context", "usage"}:
                                     context = state.context

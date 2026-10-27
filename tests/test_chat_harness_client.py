@@ -940,7 +940,7 @@ def test_turn_keeps_replaying_after_keepalives_and_timeouts(
 
     def handle(request):
         calls.append(request)
-        if len(calls) <= 6:
+        if len(calls) <= 3:
             return httpx.Response(200, stream=Stream())
         return httpx.Response(
             200,
@@ -956,8 +956,31 @@ def test_turn_keeps_replaying_after_keepalives_and_timeouts(
     client.client = httpx.Client(transport=httpx.MockTransport(handle))
     client.turn("hello")
     assert client.last_state.terminal["outcome"] == "completed"
-    assert [r.method for r in calls] == ["POST"] + ["GET"] * 6
+    assert [r.method for r in calls] == ["POST"] + ["GET"] * 3
     assert all(r.headers["Last-Event-ID"] == "turn:0" for r in calls[1:])
+
+
+def test_turn_gives_up_after_keepalive_only_streams(
+    client_factory, monkeypatch, capsys
+):
+    client = client_factory()
+    client.endpoint = "http://owner"
+    monkeypatch.setattr(client, "context_request", lambda *a, **k: {"turn_id": "turn"})
+    monkeypatch.setattr(client, "connect", lambda: None)
+    monkeypatch.setattr(client, "refresh", lambda: None)
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        assert len(calls) <= 4, "keepalive-only streams must not reconnect indefinitely"
+        return httpx.Response(200, text=": keepalive\n\n")
+
+    client.client.close()
+    client.client = httpx.Client(transport=httpx.MockTransport(handle))
+    client.turn("hello")
+    assert [r.method for r in calls] == ["POST"] + ["GET"] * 3
+    assert client.last_state.terminal is None
+    assert "Connection interrupted" in capsys.readouterr().out
 
 
 def test_cancel_before_first_event_replays_without_resubmission(
