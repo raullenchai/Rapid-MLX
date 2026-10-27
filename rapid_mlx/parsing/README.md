@@ -77,7 +77,11 @@ automatic tool choice, asks for thinking and sets no reasoning budget. Disabled
 tools, thinking-off templates and reasoning budgets keep their existing paths.
 
 Reasoning is lexed first; the start marker is honored once and a closer ends
-only an open block. Each envelope, from reasoning or content, is one tool phase:
+only an open block. A thinking request whose rendered prompt state is unknown
+starts in reasoning; there is no end-of-output rescue. A block the output
+opened resumes after an envelope; reasoning inherited from the prompt ends at
+the tool phase. A closer inside a JSON body's string is argument text. Each
+envelope, from reasoning or content, is one tool phase:
 its source span is decoded once by the configured parser's complete-output
 extractor and published as typed tool events, so every API mode receives the
 same calls through its existing structured-call lane. A span that yields no

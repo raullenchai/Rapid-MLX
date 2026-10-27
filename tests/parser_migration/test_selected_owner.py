@@ -61,6 +61,32 @@ CASES = {
         "Answer",
         [],
     ),
+    # A closer spelled inside a JSON argument string is argument text.
+    "closer_in_argument": (
+        "hermes",
+        '</think><tool_call>{"name":"run_shell_command","arguments":'
+        '{"command":"echo \\"</tool_call>"}}</tool_call>Answer',
+        "",
+        "Answer",
+        [["run_shell_command", {"command": 'echo "</tool_call>'}]],
+    ),
+    # Reasoning interrupted by an envelope resumes until its own closer.
+    "resumed_reasoning": (
+        "hermes",
+        "<think>plan" + HERMES + "more</think>Answer",
+        "planmore",
+        "Answer",
+        EXPECTED,
+    ),
+    # Reasoning inherited from the prompt ends at the tool phase; its later
+    # closer is consumed once rather than published.
+    "inherited_reasoning": (
+        "hermes",
+        "plan" + HERMES + "more</think>Answer",
+        "plan",
+        "moreAnswer",
+        EXPECTED,
+    ),
     "implicit": (
         "hermes",
         "Secret.</think>" + HERMES + "Answer",

@@ -168,9 +168,12 @@ def requested_thinking(cfg, request) -> bool:
 class EnvelopeToolGrammar(ChannelGrammar):
     """Reasoning first; each ``<tool_call>`` envelope is one tool phase.
 
-    Text outside envelopes is ordinary content or reasoning. An envelope
-    opened from reasoning ends that reasoning phase, and a later closer for the
-    still-open block is consumed once. A closed envelope is decoded once; a
+    Text outside envelopes is ordinary content or reasoning. An envelope is a
+    tool phase nested in the channel it interrupts. A reasoning block the
+    output opened resumes after it and ends only at its closer; reasoning
+    inherited from the prompt ends at the tool phase, and its later closer is
+    still consumed once. A closed envelope is
+    decoded once; a closer inside a JSON body's string is argument text. A
     span that yields no call is a parse failure and is not published. An
     envelope left open at finish is decoded, or stays literal in its channel.
     """
@@ -180,6 +183,8 @@ class EnvelopeToolGrammar(ChannelGrammar):
         self.tools = tools
         self.reasoning_seen = self.channel == "reasoning"
         self.reasoning_open = self.channel == "reasoning"
+        # True while a reasoning block opened by the output itself is open.
+        self.delimited = False
         self.envelope: list[Lexeme] | None = None
         self.origin = self.channel
         self.calls: dict[int, dict] = {}
@@ -194,9 +199,11 @@ class EnvelopeToolGrammar(ChannelGrammar):
         terminal = lexeme.terminal
         if self.envelope is not None:
             self.envelope.append(lexeme)
-            return self._close() if terminal == "tool_end" else []
-        # vllm/reasoning/kimi_k2_reasoning_parser.py@5df63a7: a tool section
-        # opener ends the reasoning phase; the tool parser owns the section.
+            if terminal == "tool_end" and not self._in_json_string():
+                return self._close()
+            return []
+        # The tool parser owns the envelope; the channel it interrupts is
+        # resolved when the envelope closes.
         if terminal in ("tool_start", "tool_args"):
             self.envelope = [lexeme]
             self.origin = self.channel
@@ -207,11 +214,11 @@ class EnvelopeToolGrammar(ChannelGrammar):
         if terminal == "reasoning_start":
             if self.reasoning_seen and self.channel == "content":
                 return [self._literal(lexeme)]
-            self.reasoning_seen = self.reasoning_open = True
+            self.reasoning_seen = self.reasoning_open = self.delimited = True
             self.channel = "reasoning"
             return [Control(lexeme.span, terminal)]
         if terminal == "reasoning_end" and self.reasoning_open:
-            self.reasoning_open = False
+            self.reasoning_open = self.delimited = False
             self.channel = "content"
             return [Control(lexeme.span, terminal)]
         return [self._literal(lexeme)]
@@ -229,10 +236,34 @@ class EnvelopeToolGrammar(ChannelGrammar):
             ]
         return events
 
+    def _in_json_string(self) -> bool:
+        """Whether the just-read closer sits inside a JSON body's string.
+
+        The JSON extractors decode the body with a JSON decoder, so a closer
+        spelled inside an argument string belongs to the arguments.
+        """
+        assert self.envelope is not None
+        body = "".join(lexeme.text for lexeme in self.envelope[1:-1]).lstrip()
+        if self.envelope[0].terminal != "tool_start" or not body.startswith("{"):
+            return False
+        inside = escaped = False
+        for char in body:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = inside
+            elif char == '"':
+                inside = not inside
+        return inside
+
     def _close(self) -> list[Event]:
         lexemes, self.envelope = self.envelope or [], None
         span = Span(lexemes[0].span.start, lexemes[-1].span.end)
-        self.channel = "content"
+        # python/sglang/srt/parser/reasoning_parser.py::
+        # BaseReasoningFormatDetector@baa9bef: a delimited block ends only at
+        # its closer. vllm/reasoning/kimi_k2_reasoning_parser.py@5df63a7: a
+        # tool section ends reasoning the output did not delimit.
+        self.channel = self.origin if self.delimited else "content"
         calls = self.tools.decode("".join(lexeme.text for lexeme in lexemes))
         if not calls:
             return [ParseFailure(span, "invalid_tool_call")]
