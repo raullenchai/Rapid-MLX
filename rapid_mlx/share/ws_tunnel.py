@@ -53,6 +53,8 @@ import http.client
 import inspect
 import json
 import logging
+import posixpath
+import re
 import secrets
 import socket
 import threading
@@ -101,6 +103,90 @@ CHUNK_SIZE = 4096
 # discard it. 5 s is orders of magnitude above any scheduling delay
 # while staying far below id-reuse timescales.
 _ABORT_MARKER_STALE_SECONDS = 5.0
+
+# A public share is a model-serving surface, not a general authenticated
+# proxy.  The relay authenticates the tunnel owner but cannot be trusted to
+# choose which loopback route a request reaches.  Keep the reachable surface
+# to inference endpoints; CUA, MCP, cache import/export, admin, residency,
+# local-search, and agent control-plane routes remain loopback-only.
+_SHARE_ALLOWED_EXACT: dict[str, frozenset[str]] = {
+    "/healthz": frozenset({"GET"}),
+    "/v1/models": frozenset({"GET"}),
+    "/v1/chat/completions": frozenset({"POST"}),
+    "/v1/completions": frozenset({"POST"}),
+    "/v1/responses": frozenset({"POST"}),
+    "/v1/messages": frozenset({"POST"}),
+    "/v1/embeddings": frozenset({"POST"}),
+    "/v1/rerank": frozenset({"POST"}),
+    "/v1/images/generations": frozenset({"POST"}),
+    "/v1/images/edits": frozenset({"POST"}),
+    "/v1/images/progress": frozenset({"GET"}),
+    "/v1/images/cancel": frozenset({"POST"}),
+    "/v1/audio/transcriptions": frozenset({"POST"}),
+    "/v1/audio/translations": frozenset({"POST"}),
+    "/v1/audio/speech": frozenset({"POST"}),
+    "/v1/audio/music": frozenset({"POST"}),
+    "/v1/audio/voices": frozenset({"GET"}),
+    "/v1/videos": frozenset({"GET", "POST"}),
+    "/v1/videos/extend": frozenset({"POST"}),
+    "/v1/videos/capabilities": frozenset({"GET"}),
+}
+_SHARE_ALLOWED_VIDEO_PATH = re.compile(r"/v1/videos/video_[0-9a-f]{32}(?:/content)?\Z")
+
+
+def _normalize_share_path(path: object) -> str | None:
+    """Return a canonical origin-form path, or None when it is ambiguous.
+
+    The local serve sees a different decoding than this process does: the
+    relay hands us a raw request target, ``http.client`` forwards it, and
+    Uvicorn/Starlette percent-decodes it before routing.  Matching the raw
+    string would therefore let ``/%76%31/cua`` or ``/v1/../v1/cua`` pass a
+    prefix check while the server routes to ``/v1/cua``.  Decode first, reject
+    dot segments and duplicate slashes, then match the canonical path.
+    """
+
+    if not isinstance(path, str) or not path.startswith("/"):
+        return None
+    split = urllib.parse.urlsplit(path)
+    if split.scheme or split.netloc or split.fragment:
+        return None
+    try:
+        decoded = urllib.parse.unquote(split.path, errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if "\x00" in decoded or "\\" in decoded or "//" in decoded:
+        return None
+    normalized = posixpath.normpath(decoded)
+    if normalized != decoded:
+        return None
+    return decoded
+
+
+def _share_path_is_allowed(path: str) -> bool:
+    if path in _SHARE_ALLOWED_EXACT:
+        return True
+    return _SHARE_ALLOWED_VIDEO_PATH.fullmatch(path) is not None
+
+
+def _is_allowed_share_request(method: object, path: object) -> bool:
+    """Return True only for a public-share inference request.
+
+    ``OPTIONS`` is allowed for an otherwise-allowed path so browser CORS
+    preflight still works.  Everything else must match the exact method for
+    that path; a GET to a POST-only route (or a DELETE to a video) is rejected
+    before it reaches the loopback serve.
+    """
+
+    normalized = _normalize_share_path(path)
+    if normalized is None or not _share_path_is_allowed(normalized):
+        return False
+    normalized_method = str(method).upper()
+    if normalized_method == "OPTIONS":
+        return True
+    allowed_methods = _SHARE_ALLOWED_EXACT.get(normalized)
+    if allowed_methods is not None:
+        return normalized_method in allowed_methods
+    return normalized_method == "GET"
 
 
 class _CredentialFilter(logging.Filter):
@@ -702,6 +788,9 @@ class TunnelClient:
     async def _serve_request(self, msg: dict[str, Any], req_id: str) -> None:
         method = msg.get("method", "GET")
         path = msg.get("path", "/")
+        if not _is_allowed_share_request(method, path):
+            await self._send_not_found(req_id)
+            return
         headers: dict[str, str] = msg.get("headers") or {}
         body_b64: str = msg.get("body") or ""
         try:
@@ -714,9 +803,9 @@ class TunnelClient:
 
         if self._override_authorization is not None:
             # Pool traffic bears a QuickSilver credential our loopback
-            # serve has never seen — ANY method (GET /v1/models, DELETE
-            # /v1/requests/…) must arrive with the bearer the serve
-            # actually minted, or serve's auth gate 401s it.
+            # serve has never seen. Every allowed method (GET /v1/models,
+            # POST /v1/chat/completions, ...) must arrive with the bearer
+            # the serve actually minted, or serve's auth gate 401s it.
             # Case-insensitive replace: the relay may forward any
             # casing of the inbound header name.
             # Pool browser Origin belongs to the gateway, which already owns
@@ -755,6 +844,28 @@ class TunnelClient:
             )
         except Exception as exc:  # noqa: BLE001 — surfaced to the chat client
             await self._send({"t": "err", "id": req_id, "msg": str(exc)[:200]})
+
+    async def _send_not_found(self, req_id: str) -> None:
+        """Return a synthetic 404 without touching the loopback serve.
+
+        A 404 keeps the public surface indistinguishable from an absent route
+        and avoids teaching a hostile relay which control-plane paths exist.
+        """
+
+        body = b'{"error":{"message":"not found","type":"invalid_request_error"}}'
+        headers = {
+            "content-type": "application/json",
+            "content-length": str(len(body)),
+        }
+        await self._send({"t": "head", "id": req_id, "status": 404, "headers": headers})
+        await self._send(
+            {
+                "t": "chunk",
+                "id": req_id,
+                "data": base64.b64encode(body).decode("ascii"),
+            }
+        )
+        await self._send({"t": "end", "id": req_id})
 
     def _perform_local_fetch(
         self,

@@ -765,7 +765,7 @@ def test_override_authorization_applies_to_get_requests():
     carrying the pool credential would 401 locally if the swap were
     POST-only."""
     client = ws_tunnel.TunnelClient(local_port=1, override_authorization="local-bearer")
-    msg = _req_msg(method="GET")
+    msg = _req_msg(method="GET", path="/v1/models")
     msg["headers"]["Authorization"] = "Bearer qsp-pool-key"
     got = _run_handle_request(client, msg)
     lowered = {k.lower(): v for k, v in got["headers"].items()}

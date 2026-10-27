@@ -299,7 +299,9 @@ async def test_tunnel_request_signal_is_shared_across_reconnects():
     client._dispatch_inbound({"t": "abort", "id": "absent"})
     client._dispatch_inbound({"t": "req"})  # malformed: no request id
     client._dispatch_inbound({"t": "req", "id": 7})
-    client._dispatch_inbound({"t": "req", "id": "bad-body", "body": "a"})
+    client._dispatch_inbound(
+        {"t": "req", "id": "bad-body", "path": "/v1/models", "body": "a"}
+    )
     await asyncio.gather(*client._tasks)
     assert not started.is_set()
     assert [frame["t"] for frame in sent] == ["err"]
