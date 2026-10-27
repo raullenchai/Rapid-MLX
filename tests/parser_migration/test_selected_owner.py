@@ -171,10 +171,59 @@ def test_markers_are_honored_once_and_stray_closers_stay_literal():
     assert (reasoning, content) == ("a", "b<think>c</think></tool_call>")
 
 
-def test_failed_envelope_is_not_published():
+MARKER = "</think>Use <tool_call> as a marker</tool_call> in the example"
+STRAY = '</think><tool_call>{"name":"run_shell_command"' + HERMES + "Answer"
+PARTIAL = '<tool_call>{"name":"run_shell_command"'
+
+
+def stream(owner, text, split):
+    events = []
+    for start in range(0, len(text), split):
+        chunk = text[start : start + split]
+        events += owner.observe(
+            GenerationOutput(text=chunk, new_text=chunk, finished=False)
+        )
+    events += owner.finish()
+    return "".join(owner.reasoning), "".join(owner.content), events
+
+
+@pytest.mark.parametrize("split", [1, 7, 1000])
+def test_undecodable_envelope_stays_verbatim_in_its_channel(split):
     the_owner = owner()
-    reasoning, content, _ = run(the_owner, "</think><tool_call>oops</tool_call>Answer")
-    assert (reasoning, content, the_owner.calls) == ("", "Answer", [])
+    reasoning, content, _ = stream(the_owner, MARKER, split)
+    assert (reasoning, content, the_owner.calls) == ("", MARKER[8:], [])
+    the_owner = owner()
+    reasoning, _, _ = stream(the_owner, "<think>a <tool_call>b</tool_call> c", split)
+    assert (reasoning, the_owner.calls) == ("a <tool_call>b</tool_call> c", [])
+
+
+@pytest.mark.parametrize("split", [1, 7, 1000])
+def test_new_opener_flushes_the_partial_envelope(split):
+    the_owner = owner()
+    reasoning, content, _ = stream(the_owner, STRAY, split)
+    assert (reasoning, content) == ("", PARTIAL + "Answer")
+    assert [call["name"] for call in the_owner.calls] == ["run_shell_command"]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_buffered_routes_keep_literal_envelopes_and_later_calls(surface):
+    result = route("qwen3", "hermes", MARKER, surface, False)
+    assert (result["content"], result["calls"]) == (MARKER[8:], [])
+    result = route("qwen3", "hermes", STRAY, surface, False)
+    assert (result["content"], result["calls"]) == (PARTIAL + "Answer", EXPECTED)
+
+
+@pytest.mark.parametrize("split", [1, 1000])
+def test_chat_stream_keeps_literal_envelopes_and_later_calls(split):
+    chunks = [MARKER[i : i + split] for i in range(0, len(MARKER), split)]
+    result = route("qwen3", "hermes", MARKER, "chat", True, chunks)
+    assert (result["content"], result["calls"]) == (MARKER[8:], [])
+    # The route's existing streaming markup filter decides how the flushed
+    # partial opener is shown; the later call is still published.
+    chunks = [STRAY[i : i + split] for i in range(0, len(STRAY), split)]
+    for surface in SURFACES:
+        result = route("qwen3", "hermes", STRAY, surface, True, chunks)
+        assert result["calls"] == EXPECTED
 
 
 def test_open_envelope_at_finish_decodes_or_stays_in_its_channel():

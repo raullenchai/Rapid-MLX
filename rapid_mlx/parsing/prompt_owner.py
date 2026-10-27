@@ -173,9 +173,11 @@ class EnvelopeToolGrammar(ChannelGrammar):
     output opened resumes after it and ends only at its closer; reasoning
     inherited from the prompt ends at the tool phase, and its later closer is
     still consumed once. A closed envelope is
-    decoded once; a closer inside a JSON body's string is argument text. A
-    span that yields no call is a parse failure and is not published. An
-    envelope left open at finish is decoded, or stays literal in its channel.
+    decoded once; a closer or opener inside a JSON body's string is argument
+    text. An envelope that yields no call, a partial envelope interrupted by a
+    new opener, and an envelope left open at finish stay verbatim in the
+    channel they arrived in. A closed GLM argument list without its opener is
+    an unpublished parse failure.
     """
 
     def __init__(self, context: ParseContext, tools: EnvelopeTools):
@@ -200,6 +202,12 @@ class EnvelopeToolGrammar(ChannelGrammar):
     def consume(self, lexeme: Lexeme) -> list[Event]:
         terminal = lexeme.terminal
         if self.envelope is not None:
+            if terminal == "tool_start" and not self.json_string:
+                # A new opener outside a JSON string starts the next envelope;
+                # the unfinished one before it is ordinary text.
+                flushed = self._flush()
+                self._open(lexeme)
+                return flushed
             self.envelope.append(lexeme)
             if terminal == "tool_end" and not self.json_string:
                 return self._close()
@@ -208,11 +216,7 @@ class EnvelopeToolGrammar(ChannelGrammar):
         # The tool parser owns the envelope; the channel it interrupts is
         # resolved when the envelope closes.
         if terminal in ("tool_start", "tool_args"):
-            self.envelope = [lexeme]
-            # Only a ``<tool_call>`` body may be JSON; GLM arguments are not.
-            self.json_body = None if terminal == "tool_start" else False
-            self.json_string = self.json_escape = False
-            self.origin = self.channel
+            self._open(lexeme)
             return []
         # python/sglang/srt/parser/reasoning_parser.py::
         # BaseReasoningFormatDetector@baa9bef: the opener is honored once and a
@@ -228,6 +232,21 @@ class EnvelopeToolGrammar(ChannelGrammar):
             self.channel = "content"
             return [Control(lexeme.span, terminal)]
         return [self._literal(lexeme)]
+
+    def _open(self, lexeme: Lexeme) -> None:
+        self.envelope = [lexeme]
+        # Only a ``<tool_call>`` body may be JSON; GLM arguments are not.
+        self.json_body = None if lexeme.terminal == "tool_start" else False
+        self.json_string = self.json_escape = False
+        self.origin = self.channel
+
+    def _flush(self) -> list[Event]:
+        """Publish the current envelope's source verbatim in its channel."""
+        lexemes, self.envelope = self.envelope or [], None
+        span = Span(lexemes[0].span.start, lexemes[-1].span.end)
+        self.channel = self.origin
+        text = "".join(lexeme.text for lexeme in lexemes)
+        return [self._literal(Lexeme(span, text))]
 
     def _calls(self, span: Span, calls: list[dict]) -> list[Event]:
         events: list[Event] = []
@@ -263,29 +282,32 @@ class EnvelopeToolGrammar(ChannelGrammar):
             elif char == '"':
                 self.json_string = not self.json_string
 
-    def _close(self) -> list[Event]:
-        lexemes, self.envelope = self.envelope or [], None
+    def _close(self, closed: bool = True) -> list[Event]:
+        assert self.envelope is not None
+        lexemes = self.envelope
+        calls = self.tools.decode("".join(lexeme.text for lexeme in lexemes))
+        if not calls:
+            if closed and lexemes[0].terminal == "tool_args":
+                # A closed GLM argument list without its call opener is tool
+                # syntax, not prose; it is an unpublished parse failure.
+                self.envelope = None
+                self.channel = self.origin if self.delimited else "content"
+                span = Span(lexemes[0].span.start, lexemes[-1].span.end)
+                return [ParseFailure(span, "invalid_tool_call")]
+            # Complete-output extractors return undecodable text as content:
+            # the whole source span stays verbatim in the channel it arrived in.
+            return self._flush()
+        self.envelope = None
         span = Span(lexemes[0].span.start, lexemes[-1].span.end)
         # python/sglang/srt/parser/reasoning_parser.py::
         # BaseReasoningFormatDetector@baa9bef: a delimited block ends only at
         # its closer. vllm/reasoning/kimi_k2_reasoning_parser.py@5df63a7: a
         # tool section ends reasoning the output did not delimit.
         self.channel = self.origin if self.delimited else "content"
-        calls = self.tools.decode("".join(lexeme.text for lexeme in lexemes))
-        if not calls:
-            return [ParseFailure(span, "invalid_tool_call")]
         return self._calls(span, calls)
 
     def finish(self, offset: int, reason: str) -> list[Event]:
-        if self.envelope is None:
-            return []
-        lexemes, self.envelope = self.envelope, None
-        span = Span(lexemes[0].span.start, lexemes[-1].span.end)
-        text = "".join(lexeme.text for lexeme in lexemes)
-        calls = self.tools.decode(text)
-        if calls:
-            return self._calls(span, calls)
-        return [self._literal(Lexeme(span, text), self.origin)]
+        return [] if self.envelope is None else self._close(closed=False)
 
 
 def served_model_identity(cfg) -> str:

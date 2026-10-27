@@ -84,10 +84,13 @@ the tool phase. A closer inside a JSON body's string is argument text. Each
 envelope, from reasoning or content, is one tool phase:
 its source span is decoded once by the configured parser's complete-output
 extractor and published as typed tool events, so every API mode receives the
-same calls through its existing structured-call lane. A span that yields no
-call is a parse failure and is not published; GLM argument markers open such a
-span. An envelope still open at finish is decoded, or stays literal in its
-original channel. Buffered fields keep the existing trimmed normalization.
+same calls through its existing structured-call lane. An envelope that yields
+no call stays verbatim (opener, body and closer) in the channel it arrived in,
+as does a partial envelope interrupted by a new opener outside a JSON string
+and an envelope still open at finish. A closed GLM argument list without its
+call opener is an unpublished parse failure (#5274). Routes' existing
+streaming markup filters still apply to that literal text. Buffered fields
+keep the existing trimmed normalization.
 
 Remaining migration work includes other families' reasoning parsers and think
 routers, content sanitizers, format-specific tool filters and fallback parsing,
