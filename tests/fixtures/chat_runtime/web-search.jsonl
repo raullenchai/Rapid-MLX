@@ -1,0 +1,6 @@
+{"wire_version": 1, "turn_id": "live-search", "seq": 1, "event": {"type": "turn.started", "message_id": "user", "parent_message_id": null, "branch_id": "branch", "model": "fake", "thinking": false}}
+{"wire_version": 1, "turn_id": "live-search", "seq": 2, "event": {"type": "tool.started", "call_id": "search", "name": "web_search", "args": {"query": "news"}, "label": "Search", "target": "news", "summary": "Searching the web: news…"}}
+{"wire_version": 1, "turn_id": "live-search", "seq": 3, "event": {"type": "source", "source_id": "1", "call_id": "search", "title": "News", "url": "https://example.com/news"}}
+{"wire_version": 1, "turn_id": "live-search", "seq": 4, "event": {"type": "tool.result", "call_id": "search", "result": "[1] News\nhttps://example.com/news\nFresh fact", "outcome": "success", "label": "Search", "target": "news", "summary": "1 result", "details": [], "details_kind": "text", "omitted_lines": 0}}
+{"wire_version": 1, "turn_id": "live-search", "seq": 5, "event": {"type": "text.delta", "part_id": "0:1:0", "text": "Fresh fact [1]."}}
+{"wire_version": 1, "turn_id": "live-search", "seq": 6, "event": {"type": "turn.terminal", "outcome": "completed", "final_message_id": "answer", "usage": {"input_tokens": 50, "output_tokens": 10, "requests": 2}}}
