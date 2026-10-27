@@ -2660,6 +2660,23 @@ private struct ToolCallChip: View {
             .accessibilityIdentifier("ToolCallChip.Toggle.\(call.id)")
 
             if let approval {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(ChatTextSanitizer.sanitizeForDisplay(approval.title))
+                        .font(.rapid(size: 12, weight: .medium))
+                    Text(ChatTextSanitizer.sanitizeForDisplay(approval.summary))
+                        .font(.rapid(size: 11))
+                        .accessibilityIdentifier("OwnerApproval.Summary.\(approval.opID)")
+                    if !approval.preview.isEmpty {
+                        Text(ChatTextSanitizer.sanitizeForDisplay(approval.preview))
+                            .font(.rapid(size: 11, design: .monospaced))
+                            .lineLimit(12)
+                            .truncationMode(.tail)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
                 HStack(spacing: 8) {
                     if approval.unavailable {
                         Text("Approval expired").font(.rapid(size: 11)).foregroundStyle(.secondary)

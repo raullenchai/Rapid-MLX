@@ -1,6 +1,15 @@
 import Foundation
 import CryptoKit
 
+func ownerProjectionApprovals(_ projection: ChatTurnProjection, unavailable: Set<String>) -> [String: ChatViewModel.OwnerApproval] {
+    Dictionary(uniqueKeysWithValues: projection.parts.compactMap { part -> (String, ChatViewModel.OwnerApproval)? in
+        guard case .tool(let tool) = part, case .string(let opID) = tool.started?.args["op_id"],
+              let request = projection.pendingPermissions.first(where: { $0.opID == opID }) else { return nil }
+        return (tool.callID, .init(opID: opID, title: request.title.isEmpty ? request.tool : request.title,
+                                   summary: request.summary, preview: request.preview, unavailable: unavailable.contains(opID)))
+    })
+}
+
 /// Converts sanitized owner state to transcript rows; reasoning is never copied.
 func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID, createdAt: Date) -> [ChatMessage] {
     func rowID(_ key: String) -> UUID {
@@ -16,7 +25,9 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let calls = tools.map { tool in
-        let data = (try? encoder.encode(tool.started?.args ?? [:])) ?? Data("{}".utf8)
+        var args = tool.started?.args ?? [:]
+        args.removeValue(forKey: "op_id")
+        let data = (try? encoder.encode(args)) ?? Data("{}".utf8)
         return ToolCall(id: tool.callID, name: tool.started?.name ?? "", arguments: String(decoding: data, as: UTF8.self))
     }
     let terminal = projection.terminal

@@ -63,4 +63,19 @@ struct OwnerChatSessionTests {
         #expect(await session.snapshot().unavailablePermissions.contains("op"))
         #expect(!(await client.calls).contains { if case .respond = $0 { true } else { false } })
     }
+    @Test func approvalCopyIsProjected() async throws {
+        let client = try await fake([
+            frame(#"{"type":"tool.started","call_id":"call","name":"write_file","args":{"op_id":"secret-op"}}"#, 1),
+            frame(#"{"type":"permission.request","op_id":"secret-op","revision":1,"tool":"write_file","title":"Update config","summary":"Change the setting","preview":"+enabled = true","risk":"file","reason":"Approval","options":["once","deny"],"expires_at":2000000000}"#, 2)
+        ])
+        let session = try await start(client)
+        try await wait(session) { $0.projection?.pendingPermission != nil }
+        let projection = try #require(await session.snapshot().projection)
+        let approval = try #require(ownerProjectionApprovals(projection, unavailable: [])["call"])
+        #expect(approval.title == "Update config")
+        #expect(approval.summary == "Change the setting")
+        #expect(approval.preview == "+enabled = true")
+        let rows = ownerProjectionMessages(projection, assistantID: UUID(), createdAt: Date())
+        #expect(rows[0].toolCalls?.first?.function.arguments.contains("secret-op") == false)
+    }
 }

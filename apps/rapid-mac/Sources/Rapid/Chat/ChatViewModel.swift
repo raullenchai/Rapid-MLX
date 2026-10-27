@@ -159,7 +159,13 @@ final class ChatViewModel {
     private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
     private var ownerSessions: [UUID: OwnerChatSession] = [:]
-    struct OwnerApproval { let opID: String; let unavailable: Bool }
+    struct OwnerApproval {
+        let opID: String
+        let title: String
+        let summary: String
+        let preview: String
+        let unavailable: Bool
+    }
     private(set) var ownerApprovals: [String: OwnerApproval] = [:]
 
     /// Tool runner. An ``EmptyToolRegistry`` short-circuits the tool-call
@@ -1548,11 +1554,7 @@ final class ChatViewModel {
             for await snapshot in snapshots {
                 guard !Task.isCancelled, epoch == conversationEpoch else { break }
                 guard let projection = snapshot.projection else { continue }
-                ownerApprovals = Dictionary(uniqueKeysWithValues: projection.parts.compactMap { part -> (String, OwnerApproval)? in
-                    guard case .tool(let tool) = part, case .string(let opID) = tool.started?.args["op_id"],
-                          projection.pendingPermissions.contains(where: { $0.opID == opID }) else { return nil }
-                    return (tool.callID, OwnerApproval(opID: opID, unavailable: snapshot.unavailablePermissions.contains(opID)))
-                })
+                ownerApprovals = ownerProjectionApprovals(projection, unavailable: snapshot.unavailablePermissions)
                 var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt)
                 rows[0].parentID = placeholder.parentID
                 for i in rows.indices.dropFirst() { rows[i].parentID = rows[i - 1].id }
