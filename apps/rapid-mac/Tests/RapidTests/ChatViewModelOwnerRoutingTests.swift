@@ -123,6 +123,24 @@ struct ChatViewModelOwnerRoutingTests {
         }
         #expect(await client.calls.contains { if case .cancel = $0 { true } else { false } })
     }
+    @Test func navigationAndDisableCancelOwnerTurn() async throws {
+        for disable in [false, true] {
+            let config = config(); config.chatBackend = .ownerV1
+            let client = try await fake(); await client.setFrames([])
+            let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+            model.send("hello", alias: "model")
+            for _ in 0..<100 {
+                if await client.calls.contains(where: { if case .submit = $0 { true } else { false } }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            if disable { config.chatBackend = .legacy } else { model.newConversation() }
+            for _ in 0..<100 {
+                if await client.calls.contains(where: { if case .cancel = $0 { true } else { false } }) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await client.calls.contains { if case .cancel = $0 { true } else { false } })
+        }
+    }
     @Test func stopDuringConnectionPreparationDoesNotSubmit() async throws {
         let config = config(); config.chatBackend = .ownerV1
         let client = try await fake()

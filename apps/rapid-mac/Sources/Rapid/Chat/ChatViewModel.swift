@@ -634,13 +634,16 @@ final class ChatViewModel {
     ///
     /// Folded into one helper so every navigation and replay path applies the
     /// same turn-scoped cancellation and rail cleanup.
-    private func discardOwnerSessions(stopping activeSession: OwnerChatSession? = nil) {
+    /// Every discarded session's live turn is cancelled first: once its
+    /// transcript and approval controls are gone, the owner must not keep
+    /// running tools on the user's behalf.
+    private func discardOwnerSessions() {
         let sessions = Array(ownerSessions.values)
         ownerSessions.removeAll()
         let connections = Array(ownerConnections.values)
         ownerConnections.removeAll()
         Task {
-            if let activeSession { try? await activeSession.stop() }
+            for session in sessions { try? await session.stop() }
             for session in sessions { await session.close() }
             for connection in connections { await connection.close() }
         }
@@ -1829,8 +1832,7 @@ final class ChatViewModel {
     /// actor. The task's own cleanup remains harmless: it re-persists the same
     /// state if it ever gets to run.
     func stopAndPersist() {
-        let session = ownerSessions[activeConversationID]
-        discardOwnerSessions(stopping: session)
+        discardOwnerSessions()
         saveDrafts()
         cancelInflightWork()
         guard isStreaming else { return }
