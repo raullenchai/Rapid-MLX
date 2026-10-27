@@ -1760,6 +1760,14 @@ def _cached_model_revision(
                 f"cannot verify loaded revision for {model_id}: "
                 f"resolved {resolved}, pinned snapshot {checkpoint} is unavailable or incomplete"
             )
+        if (
+            subfolder
+            and Path(resolved).exists()
+            and Path(resolved).resolve() != checkpoint.resolve()
+        ):
+            # A root load may read files outside the checkpoint subfolder whose
+            # digests are verified below; that identity cannot be proven.
+            return None
         # The snapshot directory name alone does not identify its leaves: an old
         # blob can be linked into a new snapshot. Covered mirrored aliases have
         # packaged digests; verify selected leaves against their contents. Uncovered

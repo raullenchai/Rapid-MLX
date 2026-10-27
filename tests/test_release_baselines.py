@@ -465,6 +465,44 @@ def test_stress_consumer_accepts_pinned_subfolder(
     assert stress_e2e_bench._cached_model_revision(model_id) is None
 
 
+@pytest.mark.parametrize("loaded_at_root", [False, True])
+def test_stress_consumer_verifies_only_the_loaded_subfolder(
+    tmp_path, monkeypatch, loaded_at_root
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx import model_aliases
+    from rapid_mlx.model_aliases import resolve_revision
+    from scripts.pr_validate.steps import stress_e2e_bench
+
+    model_id = "LiquidAI/LFM2.5-2.6B-MLX"
+    revision = resolve_revision(model_id)
+    checkpoint = (
+        tmp_path / "models--LiquidAI--LFM2.5-2.6B-MLX" / "snapshots" / revision / "4bit"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text('{"model_type":"lfm2"}')
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    # Digests cover only the subfolder, so a root load cannot be proven.
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._packaged_digest_info",
+        lambda *a: SimpleNamespace(siblings=[]),
+    )
+    original_resolve = model_aliases.resolve_model
+    loaded_path = checkpoint.parent if loaded_at_root else checkpoint
+
+    def loaded_model(name, *, include_external_roots=True):
+        if include_external_roots and name == model_id:
+            return str(loaded_path)
+        return original_resolve(name, include_external_roots=include_external_roots)
+
+    monkeypatch.setattr(model_aliases, "resolve_model", loaded_model)
+
+    expected = None if loaded_at_root else revision
+    assert stress_e2e_bench._cached_model_revision(model_id) == expected
+
+
 @pytest.mark.parametrize(
     "case", ["valid", "regular", "stale", "missing", "corrupt_git", "corrupt_lfs"]
 )
