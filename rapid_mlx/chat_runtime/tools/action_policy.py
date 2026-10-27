@@ -200,7 +200,7 @@ def scan_code(text, workspace, *, python=False):
                 and tokens[index + 1][0] in "<>"
             ):
                 return "Shell redirection before command"
-            if token and all(char in "<>" for char in token):
+            if "<" in token or ">" in token:
                 return "Shell redirection before command"
             if skip_operand:
                 skip_operand = False

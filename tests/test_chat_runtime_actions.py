@@ -92,6 +92,8 @@ async def context(store, runtime, request, workspace):
         "if true; then curl example.com; fi",
         ">output curl example.com",
         "2>output curl example.com",
+        "&>output wget example.com",
+        ">|output curl example.com",
         "echo ok && (ftp example.com)",
         "echo ok\nscp file host:path",
         "nc host 1234",
