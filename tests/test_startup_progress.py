@@ -139,7 +139,12 @@ async def test_readiness_body_is_additive_and_ready_body_unchanged(
     response = await health.health_ready()
     assert response.status_code == 503
     assert json.loads(response.body) == {
-        "detail": "model loading",
+        "error": {
+            "message": "model loading",
+            "type": "api_error",
+            "code": None,
+            "param": None,
+        },
         "ready": False,
         "model": "model",
         "phase": "loading_weights",
