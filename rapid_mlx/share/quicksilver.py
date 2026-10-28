@@ -821,7 +821,14 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
             f"setup, run `rapid-mlx share --quicksilver` once in a terminal "
             f"so the node cache exists."
         )
-    key = getpass.getpass("QuickSilver provider key (qsppk-…): ").strip()
+    try:
+        key = getpass.getpass("QuickSilver provider key (qsppk-…): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        # Leave the prompt line before the one-line error, not a traceback.
+        print(file=sys.stderr)
+        raise QuickSilverError(
+            "cancelled — no provider key entered; nothing was registered."
+        ) from None
     if not key:
         raise QuickSilverError("empty provider key — nothing to register with.")
     return key

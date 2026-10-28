@@ -2675,6 +2675,12 @@ def test_provider_key_interactive_prompt(monkeypatch):
         pytest.raises(qs.QuickSilverError, match="empty provider key"),
     ):
         qs._resolve_provider_key(_make_args())
+    for interrupt in (KeyboardInterrupt, EOFError):
+        with (
+            patch.object(qs.getpass, "getpass", side_effect=interrupt),
+            pytest.raises(qs.QuickSilverError, match="cancelled"),
+        ):
+            qs._resolve_provider_key(_make_args())
 
 
 def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
