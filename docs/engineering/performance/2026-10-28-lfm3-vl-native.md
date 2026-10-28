@@ -1,6 +1,6 @@
 # LFM3-VL native serving qualification
 
-**Status: numerical gate accepted; final serving qualification pending.** The following describes the earlier Run B2, whose original numerical gate was superseded by the owner’s Run C decision. On a leased Mac Studio M5 Max (36 GB, macOS 27.0.1), Python 3.12 and MLX 0.32.4, a fresh base installation had the transitively installed optional vision package removed. A temporary HOME linked its Hugging Face cache to the machine's normal cache. The pinned 8-bit checkpoint was served on loopback port 18950 with telemetry disabled. The alias launch and probes used a working tree containing the integration changes in this branch; they were not run against a final committed head.
+**Status: numerical gate accepted; serving qualification passed for code commit `3267f9957`.** The following describes the earlier Run B2, whose original numerical gate was superseded by the owner’s Run C decision. On a leased Mac Studio M5 Max (36 GB, macOS 27.0.1), Python 3.12 and MLX 0.32.4, a fresh base installation had the transitively installed optional vision package removed. A temporary HOME linked its Hugging Face cache to the machine's normal cache. The pinned 8-bit checkpoint was served on loopback port 18950 with telemetry disabled. The alias launch and probes used a working tree containing the integration changes in this branch; they were not run against a final committed head.
 
 A 512x256 test image containing a red square, blue circle and the text HELLO received a correct description. Two ordered images were described correctly, as were two concurrently submitted image requests; the hybrid media lane serialized execution. Chinese text chat returned a sensible greeting, and an English text request returned a response. Streaming returned content deltas and `[DONE]`. A tool request returned a `get_weather` call with `city: Paris`. Invalid image data returned HTTP 400. Video initially returned 500; after the route fix the same probe returned HTTP 400 with `Video is not supported by LFM3-VL`.
 
@@ -32,3 +32,9 @@ The owner accepted mean KL ≤ 0.001 and a reference top-two margin ≤ 0.25 at 
 | odd | 142 | 229 | 124900 | 0 |
 | long | 9 | 395 | 22312 | 0 |
 | long | 70 | 229 | 124900 | 0 |
+
+## Run C serving qualification
+
+On the leased M5 Max (36 GB, macOS 27.0.1), Python 3.12 and MLX 0.32.4, a fresh installation of code commit `3267f9957` served the pinned 8-bit alias after removing the transitively installed optional vision runtime. The image with printed HELLO, two ordered images, two concurrent image requests, English and Chinese text, SSE with `[DONE]`, and a Paris weather tool call all returned expected results. Invalid image data and video each returned HTTP 400. Hybrid requests use the serialized media lane.
+
+One warm image stream had 0.123 s request-to-first-content latency and 37 completion tokens over 0.238 s from first content to stream end (approximately 152 subsequent tokens/s). This is a single sample. The shutdown module audit was empty, and a separate module discovery check returned `None` for `mlx_vlm`. The qualifying environment and remote checkout were removed after the run.
