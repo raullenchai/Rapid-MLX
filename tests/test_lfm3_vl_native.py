@@ -207,3 +207,22 @@ def test_native_cache_probes_do_not_import_optional_runtime(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", guarded)
     assert generator._singleton_regular_cache_leaves([ArraysCache(2), KVCache()], True)
     generator._batched_leaf_types()
+
+
+def test_image_prefill_cached_decode_matches_full_forward(model):
+    mx.random.seed(11)
+    tokens = mx.array([[1, 30, 2, 3, 4, 5]])
+    pixels = mx.random.normal((4, 24))
+    grid = [[1, 2, 2]]
+    full = model(tokens, pixel_values=pixels, image_grid_thw=grid)
+    cache = model.make_cache()
+    prefill = model(tokens[:, :3], pixel_values=pixels, image_grid_thw=grid, cache=cache)
+    mx.eval(prefill)
+    chunks = [prefill]
+    for i in range(3, tokens.shape[1]):
+        chunk = model(tokens[:, i : i + 1], cache=cache)
+        mx.eval(chunk)
+        chunks.append(chunk)
+    np.testing.assert_allclose(
+        np.asarray(mx.concatenate(chunks, axis=1)), np.asarray(full), rtol=1e-4, atol=1e-5
+    )
