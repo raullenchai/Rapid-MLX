@@ -6339,7 +6339,11 @@ async def _create_chat_completion_impl(
         # 500. Surface as 400 so Desktop / curl clients see the actionable
         # message ("downscale image / raise --prefill-step-size") instead
         # of a generic server error.
-        if is_media_input_error(e) or is_batch_cap_error(e):
+        if (
+            isinstance(e, ClientRequestError)
+            or is_media_input_error(e)
+            or is_batch_cap_error(e)
+        ):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
     finally:

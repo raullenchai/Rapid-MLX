@@ -496,3 +496,21 @@ def test_chat_route_maps_image_fetch_error_to_http_400_still_works():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_typed_video_rejection_is_client_error_for_both_modes():
+    class VideoRejected(_StubMLLMEngine):
+        async def chat(self, *, messages, **kwargs):
+            raise ClientRequestError("Video is not supported by LFM3-VL")
+
+    client = _make_client(VideoRejected(raise_msg="Video is not supported by LFM3-VL"))
+    payload = {
+        "model": "qwen3-vl-8b-4bit",
+        "messages": [_multipart_user_message("describe")],
+        "max_tokens": 32,
+    }
+    for streaming in (False, True):
+        payload["stream"] = streaming
+        response = client.post("/v1/chat/completions", json=payload)
+        assert response.status_code == 400
+        assert "Video is not supported" in response.text

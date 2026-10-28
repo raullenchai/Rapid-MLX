@@ -1681,7 +1681,7 @@ def resolve_serving_lane_decision(
     from ..models.media_backend import native_media_model_type
 
     if native_media_model_type(model_name):
-        return ServingLaneDecision(True, "native_media_supported")
+        return ServingLaneDecision(True, "vision_supported")
     cache_mode = mllm_backbone_cache_mode(model_name)
     if cache_mode == "arrays":
         if vision_min_memory_gb is None:

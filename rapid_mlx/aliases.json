@@ -3141,5 +3141,17 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": false
+  },
+  "lfm3-vl-2b-8bit": {
+    "hf_path": "LiquidAI/LFM3-VL-2B-MLX-8bit",
+    "revision": "83336d5be3874a2bdd3297bde77b2114dbd3a816",
+    "min_memory_gb": 8,
+    "vision_min_memory_gb": 8,
+    "supports_image_input": true,
+    "tool_call_parser": "nemotron",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": false
   }
 }

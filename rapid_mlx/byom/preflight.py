@@ -66,6 +66,7 @@ RAPID_MODEL_TYPES: frozenset[str] = frozenset(
         "hy_v3",
         "k2_horizon",
         "lfm3",
+        "lfm3_vl",
         "minicpmv4_7",
         "muse_glimmer",
         "nemotron_h_puzzle",

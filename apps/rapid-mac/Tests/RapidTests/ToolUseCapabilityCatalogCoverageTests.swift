@@ -149,6 +149,7 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // row exists and these resolve to .unknown by design. Promote
         // to .known only with first-hand bench evidence.
         "lfm3-1.7b-8bit": .unknown,
+        "lfm3-vl-2b-8bit": .unknown,
         "lfm2.5-1b-4bit": .unknown,
         "lfm2.5-8b-a1b-4bit": .unknown,
         "lfm2-24b-a2b-4bit": .unknown,

@@ -623,14 +623,11 @@ def _singleton_regular_cache_leaves(
     from .models.mlx_vlm_vendored.cache import ArraysCache, KVCache
 
     qualified: tuple[type, ...] = (KVCache, ArraysCache)
-    try:
-        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
-        from mlx_vlm.models.cache import KVCache as VLMKVCache
-
-        qualified += (VLMArraysCache, VLMKVCache)
-    except ImportError:
-        # mlx-vlm is optional; hybrid backbones then cannot occur either.
-        pass
+    # A leaf from this namespace implies its module is already loaded. Do not
+    # import the optional runtime just to recognize native cache objects.
+    vlm_cache = sys.modules.get("mlx_vlm.models.cache")
+    if vlm_cache is not None:
+        qualified += (vlm_cache.ArraysCache, vlm_cache.KVCache)
     # Preserve the lane's existing degraded-import contract: tests and partial
     # installs can still operate on upstream/vendored leaves when the separate
     # mlx-lm cache module is unavailable. When present, BOTH regular leaf types
@@ -664,14 +661,10 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     # class objects; recognize those too until step 3 unifies the types.
     # VENDOR-DEVIATION(dual-namespace): upstream recognition is transitional;
     # one mechanical revert restores byte-verbatim once step 3 unifies types.
-    try:
-        from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
-        from mlx_vlm.models.cache import KVCache as VLMKVCache
-
-        arrays_types += (VLMArraysCache,)
-        kv_types += (VLMKVCache,)
-    except ImportError:
-        pass
+    vlm_cache = sys.modules.get("mlx_vlm.models.cache")
+    if vlm_cache is not None:
+        arrays_types += (vlm_cache.ArraysCache,)
+        kv_types += (vlm_cache.KVCache,)
     try:
         from mlx_lm.models.cache import ArraysCache as LMArraysCache
         from mlx_lm.models.cache import KVCache as LMKVCache
@@ -773,9 +766,14 @@ def _batched_leaf_types() -> tuple[tuple[type, ...], tuple[type, ...]]:
     list_types: tuple[type, ...] = (CacheList,)
     batch_kv_types: tuple[type, ...] = (BatchKVCache,)
     for module_name in ("mlx_vlm.models.cache", "mlx_lm.models.cache"):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
+        if module_name.startswith("mlx_vlm."):
+            module = sys.modules.get(module_name)
+        else:
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError:
+                continue
+        if module is None:
             continue
         list_types += (module.CacheList,)
         batch_kv_types += (module.BatchKVCache,)

@@ -176,3 +176,34 @@ def test_forward_output_shape(model):
     )
     assert logits.shape == (1, 3, 32)
     mx.eval(logits)
+
+
+def test_native_lane_uses_a_registered_reason(tmp_path):
+    from rapid_mlx.api.utils import resolve_serving_lane_decision
+    from rapid_mlx.byom.preflight import RAPID_MODEL_TYPES
+
+    (tmp_path / "config.json").write_text('{"model_type":"lfm3_vl"}')
+    decision = resolve_serving_lane_decision(str(tmp_path))
+    assert decision.is_mllm
+    assert decision.reason == "vision_supported"
+    assert "lfm3_vl" in RAPID_MODEL_TYPES
+
+
+def test_native_cache_probes_do_not_import_optional_runtime(monkeypatch):
+    import sys
+
+    from mlx_lm.models.cache import ArraysCache, KVCache
+
+    from rapid_mlx import mllm_batch_generator as generator
+
+    monkeypatch.delitem(sys.modules, "mlx_vlm.models.cache", raising=False)
+    real_import = builtins.__import__
+
+    def guarded(name, *args, **kwargs):
+        if name == "mlx_vlm" or name.startswith("mlx_vlm."):
+            raise AssertionError("optional vision runtime imported")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    assert generator._singleton_regular_cache_leaves([ArraysCache(2), KVCache()], True)
+    generator._batched_leaf_types()
