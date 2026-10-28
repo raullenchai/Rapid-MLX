@@ -6338,45 +6338,17 @@ def serve_command(args):
     # and repeated probes never refetch. Skipped when a degrade could not
     # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
     from .api.utils import _prefetch_config_for_degrade_probe
+    from .model_aliases import resolve_revision
     from .models.media_backend import native_media_model_type
-    from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     _native_probe_path = (
-        (_serve_profile.hf_path or args.model) if _serve_profile else args.model
+        args.model
+        if resolve_revision(args.model) is not None
+        else ((_serve_profile.hf_path or args.model) if _serve_profile else args.model)
     )
-    if "lfm3-vl" in _native_probe_path.lower():
+    if not getattr(args, "no_mllm", False):
         _prefetch_config_for_degrade_probe(_native_probe_path)
     _native_media = bool(native_media_model_type(_native_probe_path))
-    requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
-    catalog_degrade_candidate = _serve_profile is None or (
-        _serve_profile.modality == "text"
-        and _serve_profile.supports_image_input
-        and not _serve_profile.is_text_only
-    )
-    if (
-        catalog_degrade_candidate
-        and not _native_media
-        and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
-        and not getattr(args, "mllm", False)
-        and not getattr(args, "no_mllm", False)
-        and requested_spec_decode in (None, "none")
-        and not getattr(args, "enable_mtp", False)
-        and not getattr(args, "force_spec_decode", False)
-    ):
-        # A vision-capable catalog alias probes its profile's hf_path; an
-        # unknown direct Hugging Face repo id probes ``args.model`` itself so
-        # config evidence can classify it. Pure-text/non-text catalog entries
-        # never need this VLM-only prefetch. Local paths, warm config caches,
-        # and Hub offline mode are no-ops inside the helper.
-        _prefetch_config_for_degrade_probe(
-            (
-                _serve_profile.hf_path
-                or getattr(args, "_original_alias", None)
-                or args.model
-            )
-            if _serve_profile is not None
-            else args.model
-        )
     if not _native_media:
         _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):

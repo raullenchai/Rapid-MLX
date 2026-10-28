@@ -8,10 +8,18 @@ def native_media_model_type(model_name):
 
     metadata = read_model_metadata(model_name)
     if metadata is None:
-        from ..model_aliases import resolve_hub_model
+        from ..model_aliases import (
+            resolve_hub_model,
+            resolve_revision,
+            resolve_subfolder,
+        )
 
         resolved = resolve_hub_model(model_name)
-        if resolved != model_name:
+        if (
+            resolved != model_name
+            and resolve_revision(model_name) is None
+            and resolve_subfolder(model_name) is None
+        ):
             metadata = read_model_metadata(resolved)
     config = getattr(metadata, "config", None)
     model_type = config.get("model_type") if isinstance(config, dict) else None

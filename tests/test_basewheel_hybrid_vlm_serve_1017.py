@@ -193,10 +193,8 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
 
-    # This catalog profile is not image-capable and the existing hybrid-lane
-    # verdict already owns its fallback, so the standard-VLM degrade prefetch
-    # must not open an unrelated Hub window.
-    assert fetched == []
+    # Checkpoint metadata is resolved before selecting a media backend.
+    assert fetched == ["qwen3.5-4b-4bit"]
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1
@@ -476,14 +474,12 @@ def test_uncached_vlm_named_checkpoint_keeps_safe_vision_default(monkeypatch, ca
     # Guard decision is real (not mocked): safe default → MLLM lane → require.
     assert cli._serve_will_run_on_mllm_lane(_args(fake)) is True
 
-    # End-to-end on a base wheel: fail fast rc=2 with the actionable message.
+    # Missing metadata retains the actionable optional-runtime failure.
     _mock_mllm_absent(monkeypatch)
     _stub_post_guard_sentinel(monkeypatch)
     with pytest.raises(SystemExit) as exc_info:
         cli.serve_command(_args(fake))
     assert exc_info.value.code == 2
-
     err = capsys.readouterr().err
     assert "rapid-mlx==" in err
-    # The safe-default message still surfaces the text-only escape hatch.
     assert "--no-mllm" in err

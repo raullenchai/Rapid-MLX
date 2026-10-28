@@ -1748,7 +1748,7 @@ def resolve_serving_lane_decision(
 _DEGRADE_CONFIG_PREFETCHED: set[str] = set()
 
 
-def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
+def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     """Pull only ``config.json`` (a few KB) for the text-degrade probes.
 
     The lane resolver and its probes are CACHE-ONLY (the
@@ -1768,30 +1768,54 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> None:
     import os
 
     if os.path.exists(model_ref) or model_ref in _DEGRADE_CONFIG_PREFETCHED:
-        return
+        metadata = read_model_metadata(model_ref)
+        return bool(
+            metadata
+            and isinstance(metadata.config, dict)
+            and metadata.config.get("model_type")
+        )
     from .._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
     from ..model_metadata import hub_offline_mode_active
 
-    if hub_offline_mode_active():
-        return
     metadata = read_model_metadata(model_ref)
-    if metadata is not None and isinstance(metadata.config, dict):
+    if (
+        metadata is not None
+        and isinstance(metadata.config, dict)
+        and metadata.config.get("model_type")
+    ):
         # The routing probes are cache-only and already have all of the
         # evidence they can use.  Avoid turning every warm serve into a Hub
         # metadata request merely to re-materialize the same config.
-        return
+        return True
+    if hub_offline_mode_active():
+        return False
     _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
     try:
+        from rapid_mlx.model_aliases import (
+            resolve_hub_model,
+            resolve_revision,
+            resolve_subfolder,
+        )
         from rapid_mlx.model_downloads import hf_hub_download
+
+        revision = resolve_revision(model_ref)
+        subfolder = resolve_subfolder(model_ref)
 
         call_with_deadline(
             hf_hub_download,
             _HF_RESOLVE_TIMEOUT_SECONDS,
-            model_ref,
-            "config.json",
+            resolve_hub_model(model_ref),
+            f"{subfolder}/config.json" if subfolder else "config.json",
+            **({"revision": revision} if revision else {}),
         )
     except Exception:  # noqa: BLE001 - best-effort probe, never fatal
-        return
+        return False
+    metadata = read_model_metadata(model_ref)
+    return bool(
+        metadata
+        and isinstance(metadata.config, dict)
+        and metadata.config.get("model_type")
+    )
 
 
 def _text_lane_loads_model_type(model_type: str) -> bool:

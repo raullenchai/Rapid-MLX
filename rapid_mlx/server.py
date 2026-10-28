@@ -2131,7 +2131,10 @@ def _preflight_vision_runtime(
     model_path = resolve_model(model_name)
     profile = resolve_profile(model_name) or resolve_profile(model_path)
     if force_mllm:
-        preflight_path = model_path
+        from .api.utils import _prefetch_config_for_degrade_probe
+
+        config_available = _prefetch_config_for_degrade_probe(model_name)
+        preflight_path = model_name if config_available else model_path
         has_vision_weights = True
     else:
         preflight_path = _prefetch_routing_metadata(model_name)
