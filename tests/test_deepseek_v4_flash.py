@@ -114,3 +114,35 @@ def test_parallel_streaming_and_literal_arguments():
         {"x": "<\u200bthink>"},
         {"n": [1, True]},
     ]
+
+
+def test_parallel_results_follow_call_order():
+    calls = [
+        {"id": name, "type": "function", "function": {"name": name, "arguments": "{}"}}
+        for name in ("first", "second")
+    ]
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "tool_calls": calls},
+        {"role": "tool", "tool_call_id": "second", "content": "two"},
+        {"role": "tool", "tool_call_id": "first", "content": "one"},
+        {"role": "user", "content": "continue"},
+    ]
+    prompt = encode_messages(messages, thinking_mode="chat")
+    assert (
+        prompt.index("<tool_result>one</tool_result>")
+        < prompt.index("<tool_result>two</tool_result>")
+        < prompt.index("continue")
+    )
+
+
+def test_generation_prompt_can_be_disabled():
+    from rapid_mlx.utils.chat_template import apply_chat_template
+
+    prompt = apply_chat_template(
+        object(),
+        [{"role": "user", "content": "hello"}],
+        model_name="deepseek-v4-flash-2bit",
+        add_generation_prompt=False,
+    )
+    assert prompt == "<｜begin▁of▁sentence｜><｜User｜>hello"
