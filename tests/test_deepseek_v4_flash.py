@@ -179,3 +179,58 @@ def test_generation_prompt_can_be_disabled():
         add_generation_prompt=False,
     )
     assert prompt == "<｜begin▁of▁sentence｜><｜User｜>hello"
+
+
+def test_encoder_additional_reference_features():
+    from rapid_mlx.utils.deepseek_v4_flash import (
+        REASONING_EFFORT_MAX,
+        encode_arguments_to_dsml,
+        render_message,
+        to_json,
+    )
+
+    assert 'string="true">bad json' in encode_arguments_to_dsml(
+        {"arguments": "bad json"}
+    )
+    with pytest.raises(TypeError):
+        to_json(object())
+    system = [{"role": "system", "content": "x", "response_format": {"type": "object"}}]
+    assert REASONING_EFFORT_MAX in encode_messages(
+        system, "thinking", reasoning_effort="max"
+    )
+    assert '"type": "object"' in encode_messages(system, "chat")
+    developer = [
+        {"role": "developer", "content": "x", "response_format": {"type": "object"}}
+    ]
+    assert '"type": "object"' in encode_messages(developer, "chat")
+    blocks = [
+        {
+            "role": "user",
+            "content_blocks": [
+                {
+                    "type": "tool_result",
+                    "content": [{"type": "text", "text": "ok"}, {"type": "image"}],
+                },
+                {"type": "other"},
+            ],
+        }
+    ]
+    rendered = render_message(0, blocks, "chat")
+    assert "<tool_result>ok\n\n[Unsupported image]</tool_result>" in rendered
+    assert "[Unsupported other]" in rendered
+    assert "plain" in render_message(0, [{"role": "user", "content": "plain"}], "chat")
+    with pytest.raises(NotImplementedError):
+        render_message(0, [{"role": "tool"}], "chat")
+    with pytest.raises(NotImplementedError):
+        render_message(0, [{"role": "unknown"}], "chat")
+    assert not encode_messages(
+        [{"role": "assistant", "content": "partial", "wo_eos": True}], "chat"
+    ).endswith("<｜end▁of▁sentence｜>")
+    assert "<｜query｜>" in encode_messages(
+        [{"role": "user", "content": "x", "task": "query"}], "chat"
+    )
+    assert "<｜User｜>next" in encode_messages(
+        [{"role": "user", "content": "next"}],
+        "chat",
+        context=[{"role": "user", "content": "before"}],
+    )
