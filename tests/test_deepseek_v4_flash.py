@@ -208,6 +208,39 @@ def test_v41_models_keep_their_own_template(model, monkeypatch):
     assert prompt.startswith("template:")
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "/models/DeepSeek-V4.1-Flash-custom",
+        "someone/deepseek-v4.1-flash-4bit",
+        "deepseek-v41-flash-local",
+    ],
+)
+def test_v41_identities_keep_previous_parser(model):
+    from rapid_mlx.model_auto_config import detect_model_config
+
+    config = detect_model_config(model)
+    assert config is not None
+    assert config.tool_call_parser == "deepseek"
+    assert config.reasoning_parser == "deepseek_v4"
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+def test_openai_developer_message_is_kept_as_system(thinking):
+    from rapid_mlx.utils.chat_template import apply_chat_template
+
+    prompt = apply_chat_template(
+        object(),
+        [
+            {"role": "developer", "content": "Answer in French."},
+            {"role": "user", "content": "hello"},
+        ],
+        model_name="deepseek-v4-flash-2bit",
+        enable_thinking=thinking,
+    )
+    assert prompt.startswith("<｜begin▁of▁sentence｜>Answer in French.<｜User｜>hello")
+
+
 def test_encoder_additional_reference_features():
     from rapid_mlx.utils.deepseek_v4_flash import (
         REASONING_EFFORT_MAX,

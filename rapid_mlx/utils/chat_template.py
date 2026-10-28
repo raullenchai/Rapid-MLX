@@ -2596,6 +2596,11 @@ def _render_chat_template(
         from .deepseek_v4_flash import encode_messages as encode_original
 
         work = copy.deepcopy(messages)
+        # OpenAI's developer role carries system instructions; the native
+        # encoder's developer role is a different, droppable turn type.
+        for message in work:
+            if message.get("role") == "developer":
+                message["role"] = "system"
         if tools:
             if not work or work[0].get("role") != "system":
                 work.insert(0, {"role": "system", "content": ""})
