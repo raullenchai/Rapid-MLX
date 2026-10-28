@@ -379,6 +379,12 @@ class Model(nn.Module):
                 if biases not in result or target.ndim != 2 or value.dtype != mx.uint32:
                     raise ValueError(f"Invalid quantized weight: {name}")
                 out_dim, in_dim = target.shape
+                if result[scales].dtype not in (
+                    mx.float16,
+                    mx.bfloat16,
+                    mx.float32,
+                ) or result[biases].dtype not in (mx.float16, mx.bfloat16, mx.float32):
+                    raise ValueError(f"Invalid quantization metadata dtype: {name}")
                 if (
                     value.shape != (out_dim, in_dim // 4)
                     or result[scales].shape != (out_dim, in_dim // 64)
