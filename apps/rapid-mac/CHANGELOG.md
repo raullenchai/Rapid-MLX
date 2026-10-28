@@ -17,6 +17,16 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-28
+
+Desktop adds experimental built-in agent harness chats with image attachments and approvals, alongside new models and more reliable file tools.
+
+### Desktop
+
+- **Experimental agent chats**: enable the Built-in Agent Harness in settings to use tools and approvals in new chats, including image attachments. ([#5311](https://github.com/raullenchai/Rapid-MLX/pull/5311), [#5324](https://github.com/raullenchai/Rapid-MLX/pull/5324))
+- **Reliable harness chats**: the bundled file worker can read files and attachments, and Desktop accepts the current chat owner schema. ([#5335](https://github.com/raullenchai/Rapid-MLX/pull/5335), [#5330](https://github.com/raullenchai/Rapid-MLX/pull/5330))
+- **New models**: LFM3 text, LFM3-VL image and Ornith 1.5 join the model catalog. ([#5331](https://github.com/raullenchai/Rapid-MLX/pull/5331), [#5333](https://github.com/raullenchai/Rapid-MLX/pull/5333), [#5328](https://github.com/raullenchai/Rapid-MLX/pull/5328))
+
 ## [0.16.10] — 2026-10-26
 
 Dictation starts capturing immediately, model downloads work better on restricted networks, and three new models are available.
@@ -4525,7 +4535,9 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.17.0...HEAD
+[0.17.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v0.17.0
+[0.16.10]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.9...rapid-mac-v0.16.10
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
 [0.16.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.6...rapid-mac-v0.16.7
