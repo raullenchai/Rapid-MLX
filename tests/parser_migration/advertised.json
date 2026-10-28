@@ -8915,6 +8915,450 @@
   },
   {
     "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      false,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "chat",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "responses",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      false,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
+      "deepseek_v4",
+      "deepseek_v4_flash",
+      "native_registry",
+      true,
+      "enabled",
+      "messages",
+      true,
+      "chars"
+    ],
+    "wire_label": "deepseek_v4_dsml",
+    "expected_calls": [
+      [
+        "read_file",
+        {
+          "path": "/etc/hostname"
+        }
+      ]
+    ],
+    "raw": "<\uff5cDSML\uff5ctool_calls>\n<\uff5cDSML\uff5cinvoke name=\"read_file\">\n<\uff5cDSML\uff5cparameter name=\"path\" string=\"true\">/etc/hostname</\uff5cDSML\uff5cparameter>\n</\uff5cDSML\uff5cinvoke>\n</\uff5cDSML\uff5ctool_calls>",
+    "result": {
+      "content": "",
+      "reasoning": "",
+      "calls": [
+        [
+          "read_file",
+          {
+            "path": "/etc/hostname"
+          }
+        ]
+      ],
+      "first_content_index": null,
+      "content_deltas": 0,
+      "input_chunks": 161
+    }
+  },
+  {
+    "key": [
       "glm4",
       "hermes",
       "native_registry",

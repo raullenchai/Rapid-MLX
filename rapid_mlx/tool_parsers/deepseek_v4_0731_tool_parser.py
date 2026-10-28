@@ -200,6 +200,8 @@ class DeepSeekV40731ToolParser(ToolParser):
 class DeepSeekV4FlashToolParser(DeepSeekV40731ToolParser):  # type: ignore[misc]
     """Original V4 DSML uses literal argument values, without 0731 framing."""
 
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ):

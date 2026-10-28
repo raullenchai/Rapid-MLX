@@ -95,6 +95,12 @@ MATRIX_EXEMPT: dict[str, str] = {
         "Official prompt fixtures, DSML parser tests, streaming parity, and "
         "a local-wheel run on 256 GB Apple Silicon cover it meanwhile."
     ),
+    "deepseek_v4_flash": (
+        "TODO: add DeepSeek-V4-Flash when CI has a 128 GB+ slot; the "
+        "smallest (2-bit) checkpoint is ~97 GB. Official encoder fixtures, "
+        "DSML parser tests, streaming parity, and a local 2-bit run on "
+        "256 GB Apple Silicon cover it meanwhile."
+    ),
     "functionary": "TODO: add Functionary-medium model to golden_models",
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
