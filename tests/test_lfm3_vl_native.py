@@ -362,7 +362,7 @@ def test_native_dispatch_paths(tmp_path, monkeypatch):
         media_backend.load_native_media(tmp_path, {})
 
 
-def test_native_processor_and_batch_integration(tmp_path, monkeypatch, model):
+def test_native_processor_and_batch_serving(tmp_path, monkeypatch, model):
     from rapid_mlx.mllm_batch_generator import (
         ClientRequestError,
         MLLMBatchGenerator,
