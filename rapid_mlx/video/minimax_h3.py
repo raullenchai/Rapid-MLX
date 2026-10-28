@@ -126,7 +126,10 @@ class MiniMaxH3VideoEngine:
             future = self._executor.submit(self._generate, **kwargs)
         except RuntimeError as exc:  # executor shut down by stop()
             raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled") from exc
-        future.result()
+        try:
+            future.result()
+        except concurrent.futures.CancelledError as exc:  # queued job cancelled by stop()
+            raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled") from exc
 
     def _generate(
         self,

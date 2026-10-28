@@ -182,3 +182,55 @@ def test_load_and_generation_share_one_thread(monkeypatch, tmp_path):
     assert len(threads) == 3
     assert len(set(threads)) == 1
     assert threads[0].startswith("mlx-minimax-h3")
+
+
+def test_stop_cancels_queued_job_with_backend_error(monkeypatch, tmp_path):
+    # A job still queued behind a running one when stop() shuts the executor
+    # down must surface as the engine's cancellation error.
+    module = ModuleType("mlx_vlm.generate")
+    module.VideoGenerationRequest = lambda **kwargs: SimpleNamespace(**kwargs)
+    module.load_video_generation_model = lambda *args, **kwargs: SimpleNamespace(
+        workflow="fl2va"
+    )
+    running, release = threading.Event(), threading.Event()
+
+    def generate_video(model, request, output_path):
+        running.set()
+        release.wait(5)
+        output_path.write_bytes(b"mp4")
+
+    module.generate_video = generate_video
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+    engine = MiniMaxH3VideoEngine(str(tmp_path))
+    args = dict(
+        prompt="test",
+        width=768,
+        height=512,
+        num_frames=124,
+        fps=24,
+        seed=7,
+        image=None,
+    )
+    first = threading.Thread(
+        target=lambda: engine.generate(output_path=tmp_path / "a.mp4", **args)
+    )
+    first.start()
+    assert running.wait(5)
+    errors = []
+
+    def queued():
+        try:
+            engine.generate(output_path=tmp_path / "b.mp4", **args)
+        except BaseException as exc:  # noqa: BLE001 - record the exact type
+            errors.append(exc)
+
+    second = threading.Thread(target=queued)
+    second.start()
+    while engine._executor._work_queue.qsize() == 0 and second.is_alive():
+        threading.Event().wait(0.01)
+    engine.stop()
+    release.set()
+    second.join(5)
+    first.join(5)
+    assert len(errors) == 1
+    assert isinstance(errors[0], MiniMaxH3BackendError)

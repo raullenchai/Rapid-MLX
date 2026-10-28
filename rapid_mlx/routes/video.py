@@ -800,7 +800,8 @@ def _video_capabilities(engine) -> dict:
             "type": "range",
             "width": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
             "height": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
-            "also_supported": ["1280x720", "720x1280"],
+            # 720 is not a multiple of 32, so the OpenAI 720p sizes are rejected.
+            "also_supported": [],
         }
         seconds = {"minimum": 5, "maximum": 15, "default": 5}
         frames = {"minimum": 124, "maximum": 345, "step": 17, "offset": 5}
