@@ -294,7 +294,6 @@ struct ChatView: View {
     @State private var loadStatusAttention = false
     @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
-    @State private var toolConnectionPrompt = ToolConnectionPrompt.shared
     /// Keeps the new composer action visibly busy during the fresh residency
     /// check, before ``ServerManager`` enters its own operating state.
     @State private var isUnloadingResidentModels = false
@@ -350,9 +349,6 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if toolConnectionPrompt.shouldPresent(isStreaming: viewModel.isStreaming) {
-                agentTip
-            }
             transcript
             Divider()
             composeBar
@@ -407,57 +403,6 @@ struct ChatView: View {
             photoCapabilityNotice.reconcile(with: availability)
         }
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
-    }
-
-    private var toolAPIBaseURL: String { "http://127.0.0.1:\(server.activePort)/v1" }
-
-    private var agentTip: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            HStack {
-                Text("Use this model in your tools")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                Button { toolConnectionPrompt.dismiss() } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Dismiss tool connection suggestion")
-                .accessibilityIdentifier("Chat.AgentTip.DismissButton")
-            }
-            HStack {
-                Text(verbatim: toolAPIBaseURL)
-                    .font(RapidFont.code)
-                    .textSelection(.enabled)
-                    .accessibilityLabel("API base URL, " + toolAPIBaseURL)
-                Spacer()
-                Button("Copy API base URL") {
-                    NSPasteboard.general.clearContents()
-                    if NSPasteboard.general.setString(
-                        toolAPIBaseURL, forType: .string
-                    ) {
-                        toolConnectionPrompt.complete(.copyURL)
-                    }
-                }
-                .accessibilityIdentifier("Chat.AgentTip.CopyDetailsButton")
-                .disabled(!readiness.sendAllowed)
-                // The card lists only the primary coding agents; every other
-                // editor and SDK stays one click away on the full setup page.
-                Button("All tools") { onOpenAgentSetup() }
-                    .accessibilityIdentifier("Chat.AgentTip.SetupButton")
-            }
-            ConnectToolsView(
-                host: "127.0.0.1", port: server.activePort,
-                bearer: server.activeBearer ?? "", alias: $alias,
-                server: server, downloads: downloads, binaryPath: server.binaryPath,
-                onClose: {}, showsCloseButton: false, readiness: readiness,
-                inlinePrompt: true, onConnectionAction: { toolConnectionPrompt.complete($0) }
-            )
-        }
-        .padding(.horizontal, RapidTheme.Space.xl)
-        .padding(.vertical, RapidTheme.Space.sm)
-        .background(RapidTheme.surfaceCanvas)
-        .onAppear { toolConnectionPrompt.didShow() }
     }
 
     // MARK: - Transcript
