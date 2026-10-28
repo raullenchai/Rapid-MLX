@@ -6344,7 +6344,8 @@ def serve_command(args):
     _native_probe_path = (
         (_serve_profile.hf_path or args.model) if _serve_profile else args.model
     )
-    _prefetch_config_for_degrade_probe(_native_probe_path)
+    if "lfm3-vl" in _native_probe_path.lower():
+        _prefetch_config_for_degrade_probe(_native_probe_path)
     _native_media = bool(native_media_model_type(_native_probe_path))
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     catalog_degrade_candidate = _serve_profile is None or (
