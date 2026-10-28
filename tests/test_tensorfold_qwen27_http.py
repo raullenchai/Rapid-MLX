@@ -132,7 +132,7 @@ def test_http_gate_rejects_unqualified_features_and_maps_sampling() -> None:
 
     request = SimpleNamespace(
         tools=[{"type": "function"}],
-        response_format=None,
+        response_format={"type": "json_object"},
         messages=[SimpleNamespace(content="hi")],
         repetition_penalty=None,
         presence_penalty=None,
@@ -791,22 +791,6 @@ def test_render_prompt_and_server_bootstrap(
             cors_origins=[],
             uvicorn_log_level="info",
         )
-    with pytest.raises(RuntimeError, match="tool parsing"):
-        server.run_tensorfold_qwen27_server(
-            main_model_repo="a",
-            main_model_revision=None,
-            drafter_repo="b",
-            drafter_revision=None,
-            host="h",
-            port=1,
-            port_explicit=True,
-            served_model_name="m",
-            default_max_tokens=1,
-            cors_origins=[],
-            uvicorn_log_level="info",
-            tool_call_parser="qwen",
-        )
-
     closed = []
     captured = {}
     fake_backend = SimpleNamespace(
@@ -843,6 +827,7 @@ def test_render_prompt_and_server_bootstrap(
         cors_origins=[],
         uvicorn_log_level="info",
         max_concurrent_requests=256,
+        tool_call_parser="qwen3_coder_xml",
         **(
             {}
             if enable_prefix_cache is None
@@ -852,6 +837,9 @@ def test_render_prompt_and_server_bootstrap(
     assert captured["load"]["enable_prefix_cache"] is (enable_prefix_cache is not False)
     assert closed == [True]
     assert captured["max_concurrent_requests"] == 1
+    assert captured["tool_call_parser"] == "qwen3_coder_xml"
+    assert "tools" not in captured["speculative_info"].unsupported_features
+    assert captured["runtime_status_extra"]["profile"]["capabilities"]["tools"] is True
     assert captured["enforce_model_window"] is True
     assert captured["validate_request_fn"].keywords["pool_worker"] is pool_worker
     assert (
@@ -1093,7 +1081,7 @@ def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("pool_worker", [False, True])
-def test_http_stream_and_nonstream_use_provider_and_reject_tools(pool_worker) -> None:
+def test_http_stream_and_nonstream_use_provider_and_accept_tools(pool_worker) -> None:
     from fastapi.testclient import TestClient
 
     from rapid_mlx.speculative.dflash.server import _build_app
@@ -1140,6 +1128,7 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools(pool_worker) ->
         validate_request_fn=functools.partial(
             validate_http_request, pool_worker=pool_worker
         ),
+        tool_call_parser="qwen3_coder_xml",
         backend_name="TensorFold Qwen3.8-27B",
         runtime_status_extra={"profile": {"mode": "accelerated"}},
     )
@@ -1165,11 +1154,12 @@ def test_http_stream_and_nonstream_use_provider_and_reject_tools(pool_worker) ->
     assert '"content": "hello"' in wire
     assert "data: [DONE]" in wire
 
-    rejected = client.post(
-        "/v1/chat/completions",
-        json={**body, "tools": [{"type": "function", "function": {"name": "x"}}]},
-    )
-    assert rejected.status_code == (503 if pool_worker else 400)
+    tools_body = {**body, "tools": [{"type": "function", "function": {"name": "x"}}]}
+    for stream in (False, True):
+        response = client.post(
+            "/v1/chat/completions", json={**tools_body, "stream": stream}
+        )
+        assert response.status_code == 200
     multiple = client.post("/v1/chat/completions", json={**body, "n": 2})
     assert multiple.status_code == 400
     invalid = client.post("/v1/chat/completions", json={**body, "messages": []})
@@ -1225,7 +1215,7 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
         render_prompt_fn=render_prompt,
         generation_kwargs_with_request=True,
         validate_request_fn=functools.partial(
-            validate_http_request, supports_reasoning_budget=True
+            validate_http_request, supports_reasoning_budget=True, supports_tools=False
         ),
         backend_name="TensorFold GLM-5.3",
     )
@@ -1322,3 +1312,82 @@ def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() 
     )
     assert rejected_grammar.status_code == 400
     assert "response_format" in rejected_grammar.json()["error"]["message"]
+
+
+def test_tool_conversation_rendering_and_cache_boundaries() -> None:
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.tool_calling import convert_tools_for_template
+    from rapid_mlx.speculative.tensorfold_qwen27_server import _prompt_boundaries
+
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": "qwen27-tf",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "arguments": '{"q": "paris"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        }
+    )
+    validate_http_request(request)
+    expected_tools = convert_tools_for_template(request.tools)
+    seen = []
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            seen.append((messages, kwargs))
+            return "1 2" if not kwargs["add_generation_prompt"] else "1 2 3"
+
+        def encode(self, prompt):
+            return [int(x) for x in prompt.split()]
+
+    import threading
+
+    tokenizer = Tokenizer()
+    assert render_prompt(tokenizer, None, request, enable_thinking=False) == "1 2 3"
+    kwargs = generation_kwargs(max_tokens=8, temperature=0, top_p=1, request=request)
+    assert kwargs["tools"] == expected_tools == seen[0][1]["tools"]
+    # Chat templates iterate ``arguments|items``: the wire JSON string must
+    # reach the template as a mapping, in both renders.
+    rendered_call = seen[0][0][0]["tool_calls"][0]["function"]["arguments"]
+    assert rendered_call == {"q": "paris"}
+    assert kwargs["messages"][0]["tool_calls"][0]["function"]["arguments"] == {
+        "q": "paris"
+    }
+    app = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_lock=threading.Lock(),
+        system_prefix_len=lambda messages, tools, ids, thinking: 0,
+    )
+    assert _prompt_boundaries(
+        app, [1, 2, 3], kwargs["messages"], False, kwargs["tools"]
+    ) == (2, ())
+    assert seen[-1][1]["tools"] == expected_tools
+    assert (
+        _prompt_boundaries(app, [9, 2, 3], kwargs["messages"], False, kwargs["tools"])[
+            0
+        ]
+        == 0
+    )
+
+
+def test_tensorfold_parser_matches_normal_alias() -> None:
+    from rapid_mlx.model_aliases import resolve_profile
+
+    assert (
+        resolve_profile("qwen3.8-27b-tensorfold").tool_call_parser
+        == resolve_profile("qwen3.8-27b-4bit").tool_call_parser
+    )

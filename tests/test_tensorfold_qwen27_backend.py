@@ -496,8 +496,9 @@ class TensorFoldQwen27Tests(unittest.IsolatedAsyncioTestCase):
     def test_text_only_gate_runs_before_submission(self):
         with self.assertRaises(UnsupportedRequest):
             validate_request(images=[object()])
+        validate_request(tools=[{"type": "function"}])
         with self.assertRaises(UnsupportedRequest):
-            validate_request(tools=[{"type": "function"}])
+            validate_request(tools=[{"type": "function"}], supports_tools=False)
         with self.assertRaisesRegex(UnsupportedRequest, "frequency_penalty"):
             validate_request(sampling={"frequency_penalty": 1})
 

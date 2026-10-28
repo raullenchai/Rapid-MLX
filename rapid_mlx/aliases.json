@@ -494,6 +494,7 @@
     "dflash_algorithm": "dflash2"
   },
   "qwen3.8-27b-tensorfold": {
+    "tool_call_parser": "qwen3_coder_xml",
     "hf_path": "Vontra/Qwen3.8-27B-MLX-4bit",
     "revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
     "reasoning_parser": "qwen3",

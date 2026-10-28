@@ -75,7 +75,11 @@ class ProviderResult:
 
 
 def _prompt_boundaries(
-    app: Any, prompt_ids: list[int], messages: Any, enable_thinking: bool
+    app: Any,
+    prompt_ids: list[int],
+    messages: Any,
+    enable_thinking: bool,
+    tools: Any = None,
 ) -> tuple[int, tuple[int, ...]]:
     """Positions where TensorFold may keep resumable state for this prompt.
 
@@ -101,11 +105,12 @@ def _prompt_boundaries(
                         tokenize=False,
                         add_generation_prompt=False,
                         enable_thinking=enable_thinking,
+                        **({"tools": tools} if tools else {}),
                     )
                 )
             ]
         system_len = int(
-            app.system_prefix_len(messages, None, prompt_ids, thinking=enable_thinking)
+            app.system_prefix_len(messages, tools, prompt_ids, thinking=enable_thinking)
         )
     except Exception:  # a template quirk costs reuse, never the request
         logger.debug("TensorFold prompt boundaries unavailable", exc_info=True)
@@ -251,6 +256,7 @@ class TensorFoldRequestProvider:
             prompt_ids,
             kwargs.get("messages"),
             bool(kwargs.get("enable_thinking", False)),
+            kwargs.get("tools"),
         )
         job = ChatJob(
             job_id=request_id,
@@ -442,7 +448,11 @@ class TensorFoldRequestProvider:
 
 
 def validate_http_request(
-    request: Any, *, supports_reasoning_budget: bool = False, pool_worker: bool = False
+    request: Any,
+    *,
+    supports_reasoning_budget: bool = False,
+    pool_worker: bool = False,
+    supports_tools: bool = True,
 ) -> None:
     from fastapi import HTTPException
 
@@ -454,12 +464,19 @@ def validate_http_request(
     try:
         validate_request(
             tools=getattr(request, "tools", None),
+            supports_tools=supports_tools,
             response_format=getattr(request, "response_format", None),
         )
     except ValueError as exc:
         raise HTTPException(status_code=unsupported_status, detail=str(exc)) from exc
     if any(
         not isinstance(getattr(message, "content", None), str)
+        and not (
+            supports_tools
+            and getattr(message, "role", None) == "assistant"
+            and getattr(message, "content", None) is None
+            and getattr(message, "tool_calls", None)
+        )
         for message in request.messages
     ):
         raise HTTPException(
@@ -537,16 +554,27 @@ def generation_kwargs(
         # find where this prompt's reusable history ends.
         "messages": _request_messages(request),
     }
+    if getattr(request, "tools", None):
+        from rapid_mlx.api.tool_calling import convert_tools_for_template
+
+        kwargs["tools"] = convert_tools_for_template(request.tools)
     if (budget := getattr(request, "reasoning_max_tokens", None)) is not None:
         kwargs["thinking_budget"] = budget
     return kwargs
 
 
 def _request_messages(request: Any) -> list[dict[str, Any]]:
-    return [
-        message.model_dump(exclude_none=True)
-        for message in getattr(request, "messages", None) or ()
-    ]
+    messages = []
+    for message in getattr(request, "messages", None) or ():
+        data = message.model_dump(exclude_none=True)
+        if getattr(message, "role", None) == "assistant" and message.content is None:
+            data["content"] = None
+        messages.append(data)
+    # Templates read assistant ``tool_calls`` arguments as a mapping; the
+    # OpenAI wire sends a JSON string. Same normalisation as the main lane.
+    from rapid_mlx.utils.chat_template import _normalize_assistant_tool_call_arguments
+
+    return _normalize_assistant_tool_call_arguments(messages)
 
 
 def _model_sampling_defaults(model_path: str) -> dict[str, float | int]:
@@ -561,6 +589,11 @@ def render_prompt(
     processor: Any, _model: Any, request: Any, *, enable_thinking: bool, **_ignored: Any
 ) -> str:
     messages = _request_messages(request)
+    template_kwargs = {}
+    if getattr(request, "tools", None):
+        from rapid_mlx.api.tool_calling import convert_tools_for_template
+
+        template_kwargs["tools"] = convert_tools_for_template(request.tools)
     return cast(
         str,
         processor.apply_chat_template(
@@ -568,6 +601,7 @@ def render_prompt(
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=enable_thinking,
+            **template_kwargs,
         ),
     )
 
@@ -620,7 +654,8 @@ def run_tensorfold_qwen27_server(
     """
     if main_model_revision is not None or drafter_revision is not None:
         raise RuntimeError("tensorfold backend requires pinned local snapshot paths")
-    if tool_call_parser is not None:
+    supports_tools = profile_id == "qwen3.8-27b-tensorfold"
+    if tool_call_parser is not None and not supports_tools:
         raise RuntimeError("tensorfold backend does not support tool parsing")
     from .tensorfold_concurrency import request_lanes
 
@@ -654,7 +689,8 @@ def run_tensorfold_qwen27_server(
         method=method,
         runtime_state="active",
         backend="tensorfold",
-        unsupported_features=["tools", "media", "grammar"],
+        unsupported_features=([] if supports_tools else ["tools"])
+        + ["media", "grammar"],
     )
     model_info = ModelInfo(
         id=served_model_name,
@@ -688,7 +724,7 @@ def run_tensorfold_qwen27_server(
         max_concurrent_requests=lanes,
         execution_policy=execution_policy,
         cors_policy=cors_policy,
-        tool_call_parser=None,
+        tool_call_parser=tool_call_parser,
         reasoning_parser_name=reasoning_parser_name,
         default_reasoning_effort=default_reasoning_effort,
         stream_generate_fn=provider.stream_generate,
@@ -700,6 +736,7 @@ def run_tensorfold_qwen27_server(
         validate_request_fn=functools.partial(
             validate_http_request,
             supports_reasoning_budget=supports_reasoning_budget,
+            supports_tools=supports_tools,
             pool_worker=os.environ.get("RAPID_MLX_QUICKSILVER_POOL") == "1",
         ),
         backend_name=backend_label,
@@ -742,7 +779,7 @@ def run_tensorfold_qwen27_server(
                 "capabilities": {
                     "text_chat": True,
                     "streaming": True,
-                    "tools": False,
+                    "tools": supports_tools,
                     "media": False,
                     "grammar": False,
                     "max_concurrency": lanes,
