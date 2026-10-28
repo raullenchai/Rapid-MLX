@@ -855,17 +855,18 @@ private struct ConnectToolRow: View {
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
                 .contextMenu {
                     if let sessionSnippet = tool.sessionSnippet {
-                        Button("Copy one-session command") { copyToPasteboard(sessionSnippet) }
+                        Button("Copy one-session command") {
+                            copyToPasteboard(sessionSnippet)
+                        }
                         .disabled(!isReady)
                         .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
                     }
                 }
-                .accessibilityActions {
-                    // The context menu is mouse-first; give keyboard and
-                    // VoiceOver users the same one-session command directly.
-                    if let sessionSnippet = tool.sessionSnippet, isReady {
-                        Button("Copy one-session command") { copyToPasteboard(sessionSnippet) }
-                    }
+                // The context menu is mouse-first; give keyboard and VoiceOver
+                // users the same one-session command as a named action.
+                .accessibilityAction(named: "Copy one-session command") {
+                    guard isReady, let sessionSnippet = tool.sessionSnippet else { return }
+                    copyToPasteboard(sessionSnippet)
                 }
                 Button("Open in Terminal") {
                     do {
