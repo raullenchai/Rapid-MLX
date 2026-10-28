@@ -204,7 +204,7 @@ enum ShareComputePoolSummaryFixture: String, CaseIterable, Sendable {
 
 /// A fixed contributor-ledger state for a visual-review capture.
 ///
-/// A screenshot run must never hold a real `qsprk-` key or call the live
+/// A screenshot run must never hold a real QuickSilver key or call the live
 /// ledger. Three reasons, all of which have teeth:
 ///
 /// 1. The endpoint is authenticated and account-scoped — a capture would need
@@ -220,7 +220,7 @@ enum ShareComputePoolSummaryFixture: String, CaseIterable, Sendable {
 /// set, so a normal launch always goes to the Keychain and the real client.
 enum ShareComputeLedgerFixture: String, CaseIterable, Sendable {
     /// No key saved — the onboarding surface.
-    case noReadKey
+    case noKey
     /// A populated ledger. Deliberately mixes a credited row, a pending row,
     /// a row with an unknown accrued amount, a deleted-model row, and two
     /// nodes, so one capture reviews every row variant at once.
@@ -243,9 +243,9 @@ enum ShareComputeLedgerFixture: String, CaseIterable, Sendable {
     }
 
     /// A non-secret placeholder label. NOT a key — there is no fixture key
-    /// anywhere, because a fixture that carried a `qsprk-` shaped string is one
+    /// anywhere, because a fixture that carried a `qsppk-` shaped string is one
     /// careless copy away from looking like a real credential in a repo.
-    static let keyLabel = "qsprk-…7f24"
+    static let keyLabel = "qsppk-…7f24"
 
     private static func window(
         cursor: Int,
@@ -338,7 +338,7 @@ enum ShareComputeLedgerFixture: String, CaseIterable, Sendable {
     /// The page state this fixture stands for.
     var state: ShareComputeLedgerState {
         switch self {
-        case .noReadKey: return .noReadKey
+        case .noKey: return .noKey
         case .loaded: return .loaded(Self.account)
         case .empty: return .loadedEmpty(Self.emptyAccount)
         case .revoked: return .unauthorized
@@ -349,7 +349,7 @@ enum ShareComputeLedgerFixture: String, CaseIterable, Sendable {
     /// The redacted key label the summary panel should show, if any.
     var savedKeyLabel: String? {
         switch self {
-        case .noReadKey, .revoked: return nil
+        case .noKey, .revoked: return nil
         case .loaded, .empty, .stale: return Self.keyLabel
         }
     }

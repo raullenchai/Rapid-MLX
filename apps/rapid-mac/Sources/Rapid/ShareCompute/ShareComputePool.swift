@@ -246,14 +246,6 @@ enum ShareComputeDestination {
     /// subprocess's stdin.
     static let dashboard = URL(string: "https://quicksilverpro.io/dashboard/#compute")!
 
-    /// Read-key management — where a `qsprk-` ledger key is created and
-    /// revoked. The Share Compute tab of the dashboard.
-    ///
-    /// QuickSilver currently exposes only panel-level hashes. The read-key
-    /// card has no stable section id, so `#compute` is the most precise link
-    /// Rapid can use until QuickSilver publishes a nested deep-link contract.
-    static let readKeyManagement = URL(string: "https://quicksilverpro.io/dashboard/#compute")!
-
     /// QuickSilver account BALANCE and recharge.
     ///
     /// Not a contributor-ledger page — it shows what the account can spend,

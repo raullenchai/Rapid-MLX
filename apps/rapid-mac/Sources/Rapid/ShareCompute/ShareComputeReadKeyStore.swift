@@ -2,11 +2,22 @@ import Foundation
 
 // MARK: - Validation
 
-/// Why a pasted QuickSilver read key was refused.
+/// Why a `qsprk-` value failed format validation.
 ///
-/// Validation happens BEFORE the key reaches the Keychain or a request, so a
-/// mistyped or mis-pasted value fails locally instead of burning one of the
-/// ledger endpoint's 120 requests/hour and coming back as an opaque 401.
+/// ## Legacy — not reachable from the UI
+///
+/// Rapid used to have a second, read-only `qsprk-` key the Credits tab asked
+/// for separately. The owner decision was ONE key: the user-facing credential
+/// is now exclusively the `qsppk-` provider key, entered once in
+/// Settings → Experimental → Share Compute, and nothing in the app prompts
+/// for a `qsprk-` value any more.
+///
+/// This type, ``ShareComputeReadKey``, and ``ShareComputeReadKeyStore`` stay
+/// for ONE reason: an account that already had a `qsprk-` key saved before
+/// this change must keep seeing its ledger without being asked to paste
+/// anything — see ``ShareComputeLedgerCoordinator``'s provider-key-first,
+/// legacy-key-fallback resolution. Nothing writes a NEW `qsprk-` key through
+/// this store any more.
 enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     case empty
     /// Not a `qsprk-` key. Almost always a paste of the wrong credential —
@@ -20,31 +31,14 @@ enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     case containsControlCharacters
     /// The key was valid, but this Mac could not save it.
     case keychainUnavailable
-
-    var message: String {
-        switch self {
-        case .empty:
-            return String(localized: "Paste your QuickSilver read key to continue.")
-        case .wrongPrefix:
-            return String(localized: "That isn’t a read key. Read keys start with qsprk-. Provider keys (qsppk-) belong in Share Compute settings, not the credit ledger.")
-        case .tooShort:
-            return String(localized: "That read key looks incomplete.")
-        case .tooLong:
-            return String(localized: "That read key is longer than QuickSilver issues.")
-        case .containsControlCharacters:
-            return String(localized: "That read key contains a line break or control character. Paste it as a single line.")
-        case .keychainUnavailable:
-            return String(localized: "This Mac couldn't save the read key. Unlock your Keychain and try again.")
-        }
-    }
 }
 
-/// A validated `qsprk-` read key.
+/// A validated legacy `qsprk-` key. See the type-level note above: this is
+/// migration-only machinery, never shown to the user.
 ///
-/// The only type the store and the client will accept, so "did anyone check
-/// this?" has one answer. Deliberately NOT `Codable`, `CustomStringConvertible`
-/// or `Encodable`: the compiler should refuse to help anyone serialise it into
-/// JSON, a log line, or a screenshot fixture.
+/// Deliberately NOT `Codable`, `CustomStringConvertible` or `Encodable`: the
+/// compiler should refuse to help anyone serialise it into JSON, a log line,
+/// or a screenshot fixture.
 struct ShareComputeReadKey: Equatable, Sendable {
     /// The raw secret. Read exactly twice in the app: once to write to the
     /// Keychain, once to build the ledger `Authorization` header.
@@ -100,13 +94,17 @@ enum ShareComputeReadKeyStoreResult: Equatable, Sendable {
     case corrupted
 }
 
-/// Keychain storage for the QuickSilver ledger read key.
+/// Keychain storage for the LEGACY QuickSilver ledger read key.
 ///
 /// ## Why this is its own type
 ///
-/// This account holds only the read-only ledger key. Provider credentials use
-/// a separate Keychain account/store and travel to registration over stdin;
-/// they never enter ledger requests, UserDefaults, argv, or the environment.
+/// Nothing writes a new key through this store any more — see the type-level
+/// note on ``ShareComputeReadKeyRejection``. It is read by
+/// ``ShareComputeLedgerCoordinator`` only as a fallback, for an account that
+/// saved a `qsprk-` key before Rapid moved to one key. Provider credentials
+/// use a separate Keychain account/store and travel to registration over
+/// stdin; they never enter ledger requests, UserDefaults, argv, or the
+/// environment.
 ///
 /// ## Account namespacing
 ///

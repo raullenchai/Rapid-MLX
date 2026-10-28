@@ -38,17 +38,24 @@ enum ShareComputeLedgerLayout {
 ///
 /// ## Account-wide, not this-Mac
 ///
-/// The read key is account-scoped, so these windows span every node on the
-/// account. A user contributing from two machines would otherwise read the
-/// other machine's credit as this one's — hence "across N nodes" in the header
-/// and node ids on every row.
+/// The QuickSilver key is account-scoped, so these windows span every node on
+/// the account. A user contributing from two machines would otherwise read
+/// the other machine's credit as this one's — hence "across N nodes" in the
+/// header and node ids on every row.
+///
+/// ## One key
+///
+/// Rapid has exactly one user-facing QuickSilver credential: the `qsppk-`
+/// provider key, entered once in Settings → Experimental → Share Compute.
+/// This tab reads whichever key ``ShareComputeLedgerCoordinator`` resolved —
+/// normally that provider key — and, when there is none, points at Settings
+/// rather than offering a second place to paste one.
 struct ShareComputeCreditsTab: View {
     let state: ShareComputeLedgerState
     let receipts: [ShareComputeReceipt]
     let localSummary: ShareComputeContributionSummary
-    @Binding var readKeyDraft: String
-    let readKeyRejection: ShareComputeReadKeyRejection?
-    /// `qsprk-…a8c1`. Never the whole key.
+    /// `qsppk-…a8c1` (or, for a migrated account, `qsprk-…a8c1`). Never the
+    /// whole key.
     let savedKeyLabel: String?
     /// Whether Refresh is currently permitted. False while a walk runs, while
     /// rate-limited, and inside the minimum interval — the control is disabled
@@ -59,8 +66,9 @@ struct ShareComputeCreditsTab: View {
     /// reads as a bug.
     let refreshHoldNote: String?
     let isNarrow: Bool
-    let onSaveReadKey: () -> Void
-    let onRemoveReadKey: () -> Void
+    /// Opens Settings → Experimental → Share Compute — the single place a
+    /// QuickSilver key is entered. This tab has no paste field of its own.
+    let onOpenKeySettings: () -> Void
     let onRefresh: () -> Void
     var now: Date = Date()
 
@@ -121,7 +129,7 @@ struct ShareComputeCreditsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: RapidTheme.Space.sm)
-            if !state.needsReadKey { refreshControl }
+            if !state.needsKey { refreshControl }
         }
     }
 
@@ -171,11 +179,11 @@ struct ShareComputeCreditsTab: View {
     @ViewBuilder
     private var ledgerBody: some View {
         switch state {
-        case .noReadKey:
+        case .noKey:
             note(
                 icon: "key",
-                title: String(localized: "No read key yet"),
-                detail: String(localized: "Add a QuickSilver read key to see the accounting windows your nodes earned credit for."),
+                title: String(localized: "No QuickSilver key yet"),
+                detail: String(localized: "Add your QuickSilver key in Settings → Experimental → Share Compute to see the accounting windows your nodes earned credit for."),
                 identifier: "ShareCompute.Credits.NoKey"
             )
         case .loading:
@@ -189,7 +197,7 @@ struct ShareComputeCreditsTab: View {
             note(
                 icon: "exclamationmark.triangle",
                 title: ShareComputeLedgerError.unauthorized.displayMessage,
-                detail: String(localized: "Create a new read key in the QuickSilver dashboard and paste it here."),
+                detail: String(localized: "Update your key in Settings → Experimental → Share Compute."),
                 identifier: "ShareCompute.Credits.Unauthorized"
             )
         case .rateLimited:
@@ -426,8 +434,8 @@ struct ShareComputeCreditsTab: View {
     @ViewBuilder
     private var summaryPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if state.needsReadKey {
-                readKeyOnboarding
+            if state.needsKey {
+                keyOnboarding
             } else {
                 monthSummary
             }
@@ -439,126 +447,57 @@ struct ShareComputeCreditsTab: View {
         .background(RapidTheme.brandPrimary)
     }
 
-    // MARK: Read-key onboarding
+    // MARK: Key onboarding
 
-    /// Compact onboarding. Four things and no more: where the key comes from,
-    /// a field to paste it, what saving does, and where it is kept.
-    private var readKeyOnboarding: some View {
+    /// There is nothing to paste here. Rapid has one QuickSilver key — the
+    /// `qsppk-` provider key — entered once in Settings → Experimental →
+    /// Share Compute, where it already starts sharing. This panel just says
+    /// so and offers one button there; it never duplicates that field.
+    private var keyOnboarding: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 ShareComputeEyebrow(
-                    text: state == .unauthorized ? String(localized: "Read key rejected") : String(localized: "Connect your ledger"),
+                    text: state == .unauthorized ? String(localized: "Key rejected") : String(localized: "Connect your ledger"),
                     tone: RapidTheme.onBrandPrimarySecondary,
                     size: 11
                 )
-                Text(state == .unauthorized ? String(localized: "Replace your read key") : String(localized: "Add a read key"))
+                Text(state == .unauthorized ? String(localized: "Replace your QuickSilver key") : String(localized: "Add your QuickSilver key"))
                     .font(.rapid(size: isNarrow ? 22 : 25, weight: .bold))
                     .foregroundStyle(RapidTheme.onBrandPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(
                     state == .unauthorized
-                        ? String(localized: "QuickSilver rejected the saved key — it may have been revoked or replaced. Create a new one and paste it below.")
-                        : String(localized: "A read key lets Rapid show your account’s credit ledger. It is read-only: it cannot register nodes or spend credit.")
+                        ? String(localized: "QuickSilver rejected the saved key — it may have been revoked or replaced. Save a new one in Settings.")
+                        : String(localized: "The same QuickSilver key that starts sharing also reads your account’s credit ledger here — there is nothing extra to paste.")
                 )
                 .font(.rapid(size: 13))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button {
-                openURL(ShareComputeDestination.readKeyManagement)
-            } label: {
+            Button(action: onOpenKeySettings) {
                 HStack(spacing: 7) {
-                    Text("Open read-only earnings keys")
+                    Text("Open Share Compute settings")
                         .font(.rapid(size: 13, weight: .semibold))
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 11, weight: .bold))
                         .accessibilityHidden(true)
                 }
-                .foregroundStyle(RapidTheme.onBrandPrimary)
+                .foregroundStyle(RapidTheme.bandInk)
                 .frame(maxWidth: .infinity)
-                .frame(height: 38)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(RapidTheme.onBrandPrimary.opacity(0.5), lineWidth: 1)
-                }
+                .frame(height: 42)
+                .background(RapidTheme.surfaceBand, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "Open Read-only earnings keys in the QuickSilver Share Compute tab"))
-            .accessibilityIdentifier("ShareCompute.Credits.GetReadKey")
+            .accessibilityLabel(String(localized: "Open Settings → Experimental → Share Compute"))
+            .accessibilityIdentifier("ShareCompute.Credits.OpenKeySettings")
 
-            VStack(alignment: .leading, spacing: 6) {
-                // SecureField, so the key is never legible on screen and never
-                // lands in a screenshot.
-                SecureField("qsprk-…", text: $readKeyDraft)
-                    .textFieldStyle(.plain)
-                    .font(.rapid(size: 13, design: .monospaced))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .padding(.horizontal, 12)
-                    .frame(height: 38)
-                    .background(RapidTheme.brandPrimarySurface, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(
-                                readKeyRejection == nil
-                                    ? RapidTheme.brandPrimaryHairline
-                                    : RapidTheme.bandDestructive,
-                                lineWidth: 1
-                            )
-                    }
-                    .accessibilityLabel(String(localized: "QuickSilver read key"))
-                    .accessibilityIdentifier("ShareCompute.Credits.ReadKeyField")
-
-                if let readKeyRejection {
-                    Text(readKeyRejection.message)
-                        .font(.rapid(size: 11, weight: .medium))
-                        .foregroundStyle(RapidTheme.onBrandPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("ShareCompute.Credits.ReadKeyError")
-                }
-            }
-
-            Button(action: onSaveReadKey) {
-                Text("Save & load ledger")
-                    .font(.rapid(size: 13, weight: .semibold))
-                    .foregroundStyle(RapidTheme.bandInk)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                    .background(RapidTheme.surfaceBand, in: RoundedRectangle(cornerRadius: 6))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(readKeyDraft.isEmpty)
-            .opacity(readKeyDraft.isEmpty ? RapidTheme.disabledOpacity : 1)
-            .accessibilityIdentifier("ShareCompute.Credits.SaveReadKey")
-
-            Text("Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Provider keys (qsppk-) are managed separately in Share Compute settings.")
+            Text("Paste your QuickSilver key (qsppk-…) there once. Rapid stores it in this Mac’s Keychain and uses it both to start sharing and to read this ledger.")
                 .font(.rapid(size: 11))
                 .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            if savedKeyLabel != nil {
-                removeKeyButton
-            }
         }
-    }
-
-    private var removeKeyButton: some View {
-        Button(action: onRemoveReadKey) {
-            Text("Remove saved key")
-                .font(.rapid(size: 11, weight: .bold))
-                .foregroundStyle(RapidTheme.onBrandPrimary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 32)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(RapidTheme.onBrandPrimary.opacity(0.45), lineWidth: 1)
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("ShareCompute.Credits.RemoveReadKey")
     }
 
     // MARK: Month summary
@@ -691,14 +630,16 @@ struct ShareComputeCreditsTab: View {
                         .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
                         .lineLimit(1)
                     Spacer(minLength: RapidTheme.Space.sm)
-                    Button(action: onRemoveReadKey) {
-                        Text("Replace")
+                    // Key management lives in ONE place — Settings. This tab
+                    // only shows which key it is reading.
+                    Button(action: onOpenKeySettings) {
+                        Text("Manage in Settings")
                             .font(.rapid(size: 11, weight: .bold))
                             .foregroundStyle(RapidTheme.onBrandPrimary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "Replace the saved read key"))
-                    .accessibilityIdentifier("ShareCompute.Credits.ReplaceReadKey")
+                    .accessibilityLabel(String(localized: "Manage your QuickSilver key in Settings → Experimental → Share Compute"))
+                    .accessibilityIdentifier("ShareCompute.Credits.ManageKey")
                 }
             }
         }
