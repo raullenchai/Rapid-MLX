@@ -17,7 +17,9 @@ def test_patch_order_and_temporal_repetition():
     a[:16, 16:] = 20
     a[16:, :16] = 30
     a[16:, 16:] = 40
-    patches, grid = preprocess_images([Image.fromarray(a)], min_pixels=1024, max_pixels=1024)
+    patches, grid = preprocess_images(
+        [Image.fromarray(a)], min_pixels=1024, max_pixels=1024
+    )
     assert grid.tolist() == [[1, 2, 2]]
     assert patches.shape == (4, 1536)
     for patch, value in zip(patches, (10, 20, 30, 40)):
@@ -25,7 +27,9 @@ def test_patch_order_and_temporal_repetition():
 
 
 def test_image_expansion_and_validation():
-    assert expand_image_tokens([1, IMAGE_TOKEN_ID, 2], [(1, 4, 4)]) == [1] + [IMAGE_TOKEN_ID] * 4 + [2]
+    assert expand_image_tokens([1, IMAGE_TOKEN_ID, 2], [(1, 4, 4)]) == [1] + [
+        IMAGE_TOKEN_ID
+    ] * 4 + [2]
     with pytest.raises(ValueError, match="More image markers"):
         expand_image_tokens([IMAGE_TOKEN_ID], [])
     with pytest.raises(ValueError, match="More images"):

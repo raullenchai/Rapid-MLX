@@ -905,7 +905,11 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     monkeypatch.setattr(_download_gate, "call_with_deadline", _recording_deadline)
 
     calls = []
-    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _: _meta(GEMMA4_VLM_CONFIG) if calls else None)
+    monkeypatch.setattr(
+        api_utils,
+        "read_model_metadata",
+        lambda _: _meta(GEMMA4_VLM_CONFIG) if calls else None,
+    )
 
     def _record(repo, filename, **kwargs):
         calls.append((repo, filename))
@@ -1078,7 +1082,8 @@ def test_native_dispatch_retries_failed_config_download(monkeypatch):
     monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
     state = {"calls": 0, "ready": False}
     monkeypatch.setattr(
-        utils, "read_model_metadata",
+        utils,
+        "read_model_metadata",
         lambda _: _meta({"model_type": "lfm3_vl"}) if state["ready"] else None,
     )
 

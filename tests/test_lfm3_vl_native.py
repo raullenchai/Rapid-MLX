@@ -216,7 +216,9 @@ def test_image_prefill_cached_decode_matches_full_forward(model):
     grid = [[1, 2, 2]]
     full = model(tokens, pixel_values=pixels, image_grid_thw=grid)
     cache = model.make_cache()
-    prefill = model(tokens[:, :3], pixel_values=pixels, image_grid_thw=grid, cache=cache)
+    prefill = model(
+        tokens[:, :3], pixel_values=pixels, image_grid_thw=grid, cache=cache
+    )
     mx.eval(prefill)
     chunks = [prefill]
     for i in range(3, tokens.shape[1]):
@@ -224,5 +226,8 @@ def test_image_prefill_cached_decode_matches_full_forward(model):
         mx.eval(chunk)
         chunks.append(chunk)
     np.testing.assert_allclose(
-        np.asarray(mx.concatenate(chunks, axis=1)), np.asarray(full), rtol=1e-4, atol=1e-5
+        np.asarray(mx.concatenate(chunks, axis=1)),
+        np.asarray(full),
+        rtol=1e-4,
+        atol=1e-5,
     )
