@@ -1,14 +1,18 @@
 import builtins
 import json
 
-import mlx.core as mx
 import numpy as np
 import pytest
-from mlx.utils import tree_flatten
 from PIL import Image
 
-from rapid_mlx.models.lfm3_vl import Model, ModelArgs, grid_positions
-from rapid_mlx.models.lfm3_vl_processor import (
+pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx  # noqa: E402
+from mlx.utils import tree_flatten  # noqa: E402
+
+from rapid_mlx.models.lfm3_vl import Model, ModelArgs, grid_positions  # noqa: E402
+from rapid_mlx.models.lfm3_vl_processor import (  # noqa: E402
     IMAGE_TOKEN_ID,
     VIDEO_TOKEN_ID,
     LFM3VLProcessor,
