@@ -521,6 +521,40 @@ def test_mllm_prompt_admission_defers_missing_template_to_processor():
     )
 
 
+def test_mllm_text_preflight_does_not_count_image_data_as_text():
+    import json
+    from types import SimpleNamespace
+
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    def apply_chat_template(messages, **kwargs):  # noqa: ARG001
+        # Like templates that serialize unknown content parts as JSON.
+        return list(json.dumps(messages))
+
+    engine = SimpleNamespace(
+        is_mllm=True,
+        _model=_StubModel(
+            args=_StubArgs(text_config=_StubArgs(max_position_embeddings=1_000))
+        ),
+        tokenizer=SimpleNamespace(apply_chat_template=apply_chat_template),
+    )
+    image = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/jpeg;base64," + "A" * 4_000},
+    }
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "which one?"}] + [image] * 4,
+        }
+    ]
+
+    prompt_tokens = enforce_context_length_for_messages(engine, messages)
+
+    assert prompt_tokens is not None and prompt_tokens < 1_000
+    assert messages[0]["content"][1] is image
+
+
 @pytest.mark.parametrize("prompt_tokens", [99, 100, 101])
 def test_mllm_default_native_window_text_preflight(prompt_tokens):
     from collections import UserDict

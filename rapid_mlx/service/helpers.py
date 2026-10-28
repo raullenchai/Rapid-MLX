@@ -5628,8 +5628,13 @@ def enforce_context_length_for_messages(
             template_kwargs = dict(chat_template_kwargs or {})
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
+            from ..engine.batched import BatchedEngine
+
+            # Render image parts as the processor does. Templates that only
+            # know ``{"type": "image"}`` otherwise serialize each data URL as
+            # text, so a few images read as hundreds of thousands of tokens.
             prompt_ids = apply_template(
-                messages,
+                BatchedEngine._prepare_mllm_messages(messages),
                 tools=tools,
                 tokenize=True,
                 add_generation_prompt=True,
