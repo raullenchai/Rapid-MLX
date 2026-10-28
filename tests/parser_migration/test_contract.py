@@ -126,6 +126,14 @@ def native_cases():
     fixtures = json.loads(Path(__file__).with_name("native.json").read_text())
     fixtures += [
         [
+            "deepseek_v4_flash",
+            "deepseek_v4_dsml",
+            '<｜DSML｜tool_calls><｜DSML｜invoke name="read_file">'
+            '<｜DSML｜parameter name="path" string="true">sample.txt</｜DSML｜parameter>'
+            "</｜DSML｜invoke></｜DSML｜tool_calls>",
+            [["read_file", {"path": "sample.txt"}]],
+        ],
+        [
             "glm47",
             "glm",
             "<tool_call>read_file<arg_key>path</arg_key><arg_value>sample.txt</arg_value></tool_call>",
