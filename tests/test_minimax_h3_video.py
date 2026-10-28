@@ -433,3 +433,10 @@ def test_backend_validation_and_missing_output(monkeypatch, tmp_path):
     engine.stop()
     assert loaded == [True] and cache_calls == [True]
     assert not args["output_path"].exists()
+
+
+def test_clear_cache_without_mlx(monkeypatch):
+    from rapid_mlx.video import minimax_h3
+
+    monkeypatch.setitem(sys.modules, "mlx.core", None)
+    assert minimax_h3._clear_mlx_cache() is None
