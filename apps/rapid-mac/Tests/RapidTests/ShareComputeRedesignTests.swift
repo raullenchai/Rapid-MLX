@@ -1859,10 +1859,11 @@ struct ShareComputeLedgerTests {
     /// ``LocalizationTests/catalogURL()`` does, so both stay in sync if the
     /// test tree ever moves.
     private static func packageRoot() -> URL {
+        // #filePath = apps/rapid-mac/Tests/RapidTests/<this file>.swift
         URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // RapidTests/
-            .deletingLastPathComponent() // Tests/
-            .deletingLastPathComponent() // apps/rapid-mac/
+            .deletingLastPathComponent() // -> apps/rapid-mac/Tests/RapidTests/
+            .deletingLastPathComponent() // -> apps/rapid-mac/Tests/
+            .deletingLastPathComponent() // -> apps/rapid-mac/
     }
 
     private static func localizableCatalogURL() throws -> URL {
