@@ -2,24 +2,46 @@
 import concurrent.futures
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import httpx
 import psutil
 import pytest
 
+from rapid_mlx.chat_runtime import SCHEMA_VERSION
 from rapid_mlx.chat_runtime.owner import (
     CAPABILITIES,
+    FORMAT_VERSION,
+    WIRE_VERSION,
     ClientLeases,
     discover,
     discover_or_start,
     profile_directory,
 )
 from rapid_mlx.headless_service.config import atomic_write
+
+
+def test_desktop_discovery_versions_match_owner():
+    swift = (
+        Path(__file__).parents[1]
+        / "apps/rapid-mac/Sources/Rapid/Chat/ChatOwnerConnection.swift"
+    ).read_text(encoding="utf-8")
+    discovery = swift[swift.index("struct ChatOwnerDiscovery") :]
+    versions = {
+        name: int(re.search(rf"static let {name} = (\d+)", discovery).group(1))
+        for name in ("formatVersion", "wireVersion", "schemaVersion")
+    }
+    assert versions == {
+        "formatVersion": FORMAT_VERSION,
+        "wireVersion": WIRE_VERSION,
+        "schemaVersion": SCHEMA_VERSION,
+    }
 
 
 def stop_owned(owner):

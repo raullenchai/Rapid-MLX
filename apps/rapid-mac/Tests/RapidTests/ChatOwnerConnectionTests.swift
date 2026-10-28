@@ -18,7 +18,7 @@ private final class ChatOwnerStub: URLProtocol, @unchecked Sendable {
         }
         let body: String
         if request.url!.path.hasSuffix("capabilities") {
-            body = "{\"wire_version\":1,\"schema_version\":4,\"owner_epoch\":\"\(Self.epoch)\",\"store_uuid\":\"\(Self.store)\"}"
+            body = "{\"wire_version\":1,\"schema_version\":5,\"owner_epoch\":\"\(Self.epoch)\",\"store_uuid\":\"\(Self.store)\"}"
         } else if request.httpMethod == "POST" {
             var data = request.httpBody ?? Data()
             if data.isEmpty, let stream = request.httpBodyStream {
@@ -56,7 +56,7 @@ private final class LaunchCounter: @unchecked Sendable {
         return (root, run, UUID().uuidString.lowercased(), UUID().uuidString.lowercased())
     }
     private func write(_ run: URL, epoch: String, store: String, token: String, changes: [String: Any] = [:]) throws {
-        var record: [String: Any] = ["format_version": 1, "wire_version": 1, "schema_version": 4, "owner_epoch": epoch, "store_uuid": store, "pid": 123, "process_start_time": 100.0, "endpoint": "http://127.0.0.1:4321", "credential_file": "bearer-\(epoch)"]
+        var record: [String: Any] = ["format_version": 1, "wire_version": 1, "schema_version": 5, "owner_epoch": epoch, "store_uuid": store, "pid": 123, "process_start_time": 100.0, "endpoint": "http://127.0.0.1:4321", "credential_file": "bearer-\(epoch)"]
         record.merge(changes) { _, new in new }
         let file = run.appendingPathComponent("discovery.json")
         try JSONSerialization.data(withJSONObject: record).write(to: file)

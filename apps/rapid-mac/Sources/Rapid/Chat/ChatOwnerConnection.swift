@@ -157,7 +157,7 @@ private final class ChatOwnerProcessBox: @unchecked Sendable {
 struct ChatOwnerDiscovery: Sendable {
     static let formatVersion = 1
     static let wireVersion = 1
-    static let schemaVersion = 4
+    static let schemaVersion = 5
     static let maximumFileBytes = 65_536
 
     let status: ChatOwnerStatus
