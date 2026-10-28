@@ -185,7 +185,7 @@ class TestDetectModelConfig:
     def test_deepseek_v4(self, model_path):
         config = detect_model_config(model_path)
         assert config is not None
-        assert config.tool_call_parser == "deepseek"
+        assert config.tool_call_parser == "deepseek_v4_flash"
         # Match vLLM/SGLang: V4 has a dedicated state machine which absorbs
         # the protocol's bare ``</think>`` even when thinking is disabled.
         assert config.reasoning_parser == "deepseek_v4"
@@ -2196,14 +2196,8 @@ class TestWarnMisboundDeepseekV3Parser:
                 f"auto-detect must still resolve {model_path!r} via the "
                 "DeepSeek regex chain — got None."
             )
-            assert cfg.tool_call_parser == "deepseek", (
-                f"V4 / V5 must route to the legacy 'deepseek' parser "
-                f"today (V4 chat template is tool-less per deepseek-ai "
-                f"discussion #16) — got {cfg.tool_call_parser!r} for "
-                f"{model_path!r}. If this is intentional, BOTH the "
-                f"registry AND the classifier need to be updated "
-                f"together (see #893 codex MED rationale)."
-            )
+            expected = "deepseek_v4_flash" if "v4" in model_path.lower() else "deepseek"
+            assert cfg.tool_call_parser == expected
             assert cfg.tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS
 
     @pytest.mark.parametrize(

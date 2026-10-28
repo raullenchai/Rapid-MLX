@@ -194,3 +194,37 @@ class DeepSeekV40731ToolParser(ToolParser):
                 for i, call in enumerate(result.tool_calls[already:], start=already)
             ]
         }
+
+
+@ToolParserManager.register_module(["deepseek_v4_flash"])
+class DeepSeekV4FlashToolParser(DeepSeekV40731ToolParser):
+    """Original V4 DSML uses literal argument values, without 0731 framing."""
+
+    def extract_tool_calls(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ):
+        start = self._first_start(model_output)
+        if start is None:
+            return ExtractedToolCallInformation(False, [], model_output)
+        calls = []
+        for match in self.INVOKE.finditer(model_output):
+            arguments = {}
+            for param in self.PARAM.finditer(match.group("body")):
+                raw = param.group("value")
+                if param.group("string") == "false":
+                    try:
+                        raw = json.loads(raw)
+                    except json.JSONDecodeError:
+                        pass
+                arguments[param.group("name")] = raw
+            calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "name": match.group("name"),
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                }
+            )
+        content = model_output[: start[0]].strip() or None
+        return ExtractedToolCallInformation(
+            bool(calls), calls, content if calls else model_output
+        )

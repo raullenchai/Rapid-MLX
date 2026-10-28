@@ -689,7 +689,7 @@
   "deepseek-v4-flash-2bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
     "revision": "722bf559b7de93575b2320973cf2002e05bfe6c9",
-    "tool_call_parser": "deepseek",
+    "tool_call_parser": "deepseek_v4_flash",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "supports_spec_decode": true
@@ -697,7 +697,7 @@
   "deepseek-v4-flash-8bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-8bit",
     "revision": "faa13cb32ce28aa82c88041705f08b324fe79f45",
-    "tool_call_parser": "deepseek",
+    "tool_call_parser": "deepseek_v4_flash",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "supports_spec_decode": true
@@ -705,7 +705,7 @@
   "deepseek-v4-flash-4bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
     "revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
-    "tool_call_parser": "deepseek",
+    "tool_call_parser": "deepseek_v4_flash",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "supports_spec_decode": true
@@ -713,6 +713,7 @@
   "deepseek-v4-flash-tensorfold": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
     "revision": "38c0bd20a6fba70f22c5ee2940ec0092b36ab936",
+    "tool_call_parser": "deepseek_v4_flash",
     "reasoning_parser": "deepseek_v4",
     "is_hybrid": false,
     "is_text_only": true,
