@@ -66,7 +66,6 @@ struct ConnectToolsView: View {
     var readiness: ModelReadiness? = nil
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
     @State private var integrationTargets: [IntegrationTarget] = []
-    @State private var showsMoreIntegrations = false
     @State private var showsServerSettings = false
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
@@ -231,39 +230,16 @@ struct ConnectToolsView: View {
                 InlineNotice(message: readinessMessage, tone: .info)
             }
 
-            // The connection contract is the page's primary information.
-            // Users arrive here to learn what another app should connect to;
-            // hiding these values behind "Advanced" made the page read as a
-            // collection of product-specific shell commands instead of a
-            // local server that works with any compatible client.
-            endpointSection
-            claudeDesktopSection
-
             if snippetModel.lowercased().contains("gemma-4-12b-it") {
                 Text("Codex can stall on tool calls with this model. Choose a recommended Qwen model for coding agents.")
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.statusWarning)
                     .accessibilityIdentifier("Launch.AgentModelToolWarning")
             }
-            toolsSection(Array(tools.prefix(9)), title: "Coding agents")
-            let remaining = Array(tools.dropFirst(9))
-            if !remaining.isEmpty {
-                Button {
-                    showsMoreIntegrations.toggle()
-                } label: {
-                    disclosureLabel(
-                        "Editors and more (\(remaining.count))",
-                        systemImage: "ellipsis.circle",
-                        expanded: showsMoreIntegrations
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("ConnectTools.MoreIntegrations")
-                if showsMoreIntegrations {
-                    toolsSection(remaining, title: "Editors and other integrations")
-                        .padding(.top, RapidTheme.Space.sm)
-                }
-            }
+            toolsSection(tools.filter { $0.action == .launch }, title: "Terminal agents", terminal: true)
+            toolsSection(tools.filter { $0.action != .launch }, title: "Editors and apps", terminal: false)
+            endpointSection
+            claudeDesktopSection
 
             Button {
                 showsServerSettings.toggle()
@@ -450,32 +426,54 @@ struct ConnectToolsView: View {
         }
     }
 
-    private func toolsSection(
-        _ displayedTools: [ConnectTool],
-        title: String = "Editors and agents"
-    ) -> some View {
+    private func toolsSection(_ displayedTools: [ConnectTool], title: String, terminal: Bool) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader(title)
-            VStack(spacing: 0) {
-                ForEach(Array(displayedTools.enumerated()), id: \.element.id) { index, tool in
-                    if index > 0 { rowDivider }
-                    // The per-tool Copy/Launch is gated on ``configReady``,
-                    // which delegates to the pure ``configIsReady`` decision
-                    // that ``ConnectToolsConfigGateTests`` pins — so the unit
-                    // test of the gate is the test of this row's enabled state.
-                    // In the #2297 stopped state the model is not serving, so
-                    // ``isReady`` is false and every integration Copy button is
-                    // disabled; a future change that stops threading this gate
-                    // into the rows is a change to the tested decision itself.
-                    ConnectToolRow(
-                        tool: tool,
-                        isReady: configReady,
-                        onPersistentLaunch: { server.preserveAgentConnection() }
-                    )
+            HStack {
+                SectionHeader(title)
+                Spacer()
+                if terminal {
+                    Text("\(displayedTools.count) supported")
+                        .font(RapidFont.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(Array(stride(from: 0, to: displayedTools.count, by: 2)), id: \.self) { row in
+                    GridRow {
+                        toolCell(displayedTools[row], index: row)
+                        if row + 1 < displayedTools.count {
+                            toolCell(displayedTools[row + 1], index: row + 1)
+                        } else {
+                            Color.clear.frame(maxWidth: .infinity, minHeight: 52)
+                                .overlay(alignment: .leading) {
+                                    Rectangle().fill(RapidTheme.hairline).frame(width: 1)
+                                }
+                                .overlay(alignment: .top) {
+                                    if row >= 2 { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+                                }
+                        }
+                    }
                 }
             }
             .groupedCard()
+            if terminal {
+                Text("Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal or Mac? Use the copy button and run the command yourself.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private func toolCell(_ tool: ConnectTool, index: Int) -> some View {
+        ConnectToolRow(tool: tool, isReady: configReady,
+                       onPersistentLaunch: { server.preserveAgentConnection() })
+            .overlay(alignment: .leading) {
+                if index % 2 == 1 { Rectangle().fill(RapidTheme.hairline).frame(width: 1) }
+            }
+            .overlay(alignment: .top) {
+                if index >= 2 { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+            }
     }
 
     private var rowDivider: some View {
@@ -803,167 +801,71 @@ private struct ConnectTool: Identifiable {
     var sessionSnippet: String? = nil
 }
 
-/// One agent row: icon, name, description, a Copy action, and its launch
-/// command — all on a shared alignment grid.
-///
-/// The three changes that flatten this surface:
-///
-///   1. It is a ROW in a shared card, not its own card. No card-inside-
-///      card, and the three tools now read as one scannable list.
-///   2. Copy command steps down from `.borderedProminent` (a filled
-///      steel-blue block, repeated three times, which read as the most
-///      important thing on the page) to a compact outlined secondary
-///      with a steel-blue label — the utility action it actually is.
-///   3. Commands stay collapsed until requested. The direct Copy action is
-///      still one click, while new users can scan the page without first
-///      parsing several screens of shell syntax.
-///
-/// Every tool, value, and action is preserved exactly.
+/// A compact integration row with the existing copy and launch behavior.
 private struct ConnectToolRow: View {
     let tool: ConnectTool
-    /// False until the endpoint, key, and model are all real. Copying a
-    /// half-filled snippet is worse than not offering it.
     var isReady: Bool = true
     var onPersistentLaunch: () -> Bool = { true }
     @State private var copied = false
-    @State private var showsCommand = false
     @State private var launchError: String?
 
-    /// Fixed icon column. Everything textual in the row starts at
-    /// ``iconColumn`` + ``iconGap`` so title, description, and snippet
-    /// share one left edge.
-    private static let iconColumn: CGFloat = 20
-    private static let iconGap: CGFloat = 12
-    private static var textInset: CGFloat { iconColumn + iconGap }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header: icon | title | spacer | fixed-width action.
-            // ``firstTextBaseline`` rather than centre so the glyph sits
-            // on the title's baseline instead of floating between the
-            // title and the description below it.
-            HStack(alignment: .firstTextBaseline, spacing: Self.iconGap) {
-                Image(systemName: tool.symbol)
-                    .font(.system(size: 14, weight: .medium))
-                    // v1.0.2: amber. These are brand/integration marks
-                    // on a page that had drifted entirely neutral;
-                    // steel blue is off this surface altogether.
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                    .frame(width: Self.iconColumn, alignment: .center)
-                    .accessibilityHidden(true)
-
-                Text(tool.name)
-                    .font(RapidFont.bodyEmphasis)
-                    .lineLimit(1)
-
-                Spacer(minLength: RapidTheme.Space.md)
-
+        HStack(spacing: RapidTheme.Space.sm) {
+            Image(systemName: tool.symbol)
+                .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+            Text(tool.name)
+                .font(RapidFont.bodyEmphasis)
+                .lineLimit(1)
+            Spacer(minLength: RapidTheme.Space.sm)
+            if tool.action == .launch {
                 Button(action: copy) {
-                    Label(copied ? "Copied" : actionLabel, systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .frame(minWidth: 108)
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!isReady)
-                .help(copyHelp)
+                .help("Copy command — run it in your own terminal")
+                .accessibilityLabel("Copy \(tool.name) command")
+                .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
+                .contextMenu {
+                    if let sessionSnippet = tool.sessionSnippet {
+                        Button("Copy one-session command") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(sessionSnippet, forType: .string)
+                        }
+                        .disabled(!isReady)
+                        .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
+                    }
+                }
+                Button("Open in Terminal") {
+                    do {
+                        guard !tool.persistent || onPersistentLaunch() else {
+                            throw NSError(domain: "Rapid.AgentLaunch", code: 1,
+                                          userInfo: [NSLocalizedDescriptionKey: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."])
+                        }
+                        try TerminalAgentLauncher.open(command: tool.snippet)
+                    } catch { launchError = error.localizedDescription }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!isReady)
+                .accessibilityIdentifier("Launch.Integration.Run.\(tool.id)")
+            } else {
+                Button(action: copy) {
+                    Label(copied ? "Copied" : actionLabel, systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isReady)
+                .help(tool.blurb)
                 .accessibilityLabel(copied ? "Copied \(tool.name) setup" : accessibilityActionLabel)
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
-
-                if tool.action == .launch {
-                    Button("Launch") {
-                        do {
-                            guard !tool.persistent || onPersistentLaunch() else {
-                                throw NSError(domain: "Rapid.AgentLaunch", code: 1,
-                                              userInfo: [NSLocalizedDescriptionKey: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."])
-                            }
-                            try TerminalAgentLauncher.open(command: tool.snippet)
-                        }
-                        catch { launchError = error.localizedDescription }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!isReady)
-                    .accessibilityIdentifier("Launch.Integration.Run.\(tool.id)")
-                }
-
             }
-
-            // Description and snippet share the title's column.
-            VStack(alignment: .leading, spacing: 0) {
-                Text(tool.blurb)
-                    .font(RapidFont.secondary)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // Capped so a one-line blurb can't stretch to the
-                    // card edge and break after a single trailing word.
-                    .frame(maxWidth: 420, alignment: .leading)
-                    .padding(.top, RapidTheme.Space.sm)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        showsCommand.toggle()
-                    }
-                } label: {
-                    HStack(spacing: RapidTheme.Space.xs) {
-                        Image(systemName: showsCommand ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text(showsCommand ? "Hide command" : "Show command")
-                            .font(RapidFont.secondary)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, RapidTheme.Space.sm)
-                .accessibilityIdentifier("Launch.Integration.Command.\(tool.id)")
-
-                if showsCommand {
-                    // Masked form only — the real key never touches the screen,
-                    // so a screenshot of this page can't leak the bearer. Copy
-                    // still puts the real key (``tool.snippet``) on the clipboard.
-                    Text(tool.displaySnippet)
-                        .font(RapidFont.code)
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, RapidTheme.Space.md)
-                        .padding(.vertical, RapidTheme.Space.md - 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
-                                .fill(RapidTheme.surfaceCode)
-                        )
-                        .padding(.top, RapidTheme.Space.sm)
-                        .accessibilityIdentifier("Launch.Integration.Snippet.\(tool.id)")
-                }
-                if let dayTwoSnippet = tool.dayTwoSnippet {
-                    HStack(spacing: RapidTheme.Space.sm) {
-                        Text("Next time: \(dayTwoSnippet)")
-                            .font(RapidFont.code)
-                            .textSelection(.enabled)
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(dayTwoSnippet, forType: .string)
-                        }
-                        .buttonStyle(.link)
-                        .accessibilityIdentifier("Launch.Integration.DayTwoCopy.\(tool.id)")
-                    }
-                    .padding(.top, RapidTheme.Space.sm)
-                }
-                if let sessionSnippet = tool.sessionSnippet {
-                    Button("Copy one-session command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(sessionSnippet, forType: .string)
-                    }
-                    .buttonStyle(.link)
-                    .disabled(!isReady)
-                    .padding(.top, RapidTheme.Space.sm)
-                    .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
-                }
-            }
-            .padding(.leading, Self.textInset)
         }
-        .padding(.horizontal, RapidTheme.Space.xl - 4)
-        .padding(.vertical, RapidTheme.Space.lg + 1)
+        .padding(.horizontal, RapidTheme.Space.md)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         .alert("Couldn’t open Terminal", isPresented: Binding(
             get: { launchError != nil },
             set: { if !$0 { launchError = nil } }
@@ -975,30 +877,19 @@ private struct ConnectToolRow: View {
         }
     }
 
-    private var copyHelp: String {
-        guard isReady else {
-            return "Start a model to generate a valid key and launch command."
-        }
-        switch tool.action {
-        case .launch:        return "Copy this agent's one-session launch command"
-        case .rewriteConfig: return "Copy the command that configures \(tool.name)"
-        case .guide:         return "Copy the command that prints \(tool.name)'s setup guide"
-        }
-    }
-
     private var actionLabel: String {
         switch tool.action {
-        case .launch:        return "Copy command"
+        case .launch: return "Copy command"
         case .rewriteConfig: return "Copy setup"
-        case .guide:         return "Copy guide"
+        case .guide: return "Copy guide"
         }
     }
 
     private var accessibilityActionLabel: String {
         switch tool.action {
-        case .launch:        return "Copy \(tool.name) launch command"
+        case .launch: return "Copy \(tool.name) command"
         case .rewriteConfig: return "Copy \(tool.name) setup command"
-        case .guide:         return "Copy \(tool.name) setup guide"
+        case .guide: return "Copy \(tool.name) setup guide"
         }
     }
 

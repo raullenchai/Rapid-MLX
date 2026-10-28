@@ -20,6 +20,55 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Start" enabled=true
             AXStaticText value=text enabled=true
+            AXHeading desc="Terminal agents" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.claude-code" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.codex" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.pi" desc="Copy Pi Coding Agent command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.pi" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.opencode" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.hermes" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.goose" desc="Copy Goose command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.goose" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.qwen-code" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.crush" desc="Copy Crush command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.crush" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider command" help="Copy command — run it in your own terminal" enabled=false
+            AXButton id="Launch.Integration.Run.aider" desc="Open in Terminal" enabled=false
+            AXStaticText value=text enabled=true
+            AXHeading desc="Editors and apps" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline setup command" help="Configure this client to use Rapid-MLX. It writes ~/.cline/data/settings/providers.json." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev setup command" help="Configure this client to use Rapid-MLX. It writes ~/.continue/config.yaml." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor setup command" help="Configure this client to use Rapid-MLX. It writes Cursor's VS Code settings. Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.langchain" desc="Copy LangChain setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.openhands" desc="Copy OpenHands setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.kilo-code" desc="Copy Kilo Code setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.pydanticai" desc="Copy PydanticAI setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.smolagents" desc="Copy smolagents setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.deepseek-harness" desc="Copy DeepSeek Harness setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false
             AXHeading desc="Connection details, Paste these values into any app that supports a custom OpenAI or Anthropic provider." enabled=true
             AXStaticText id="ConnectTools.ConnectionStatus" value=text enabled=true
             AXStaticText value=text enabled=true
@@ -46,74 +95,6 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXHeading desc="Coding agents" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.claude-code" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.claude-code" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.claude-code" desc="Copy" enabled=true
-            AXLink id="Launch.Integration.SessionCopy.claude-code" desc="Copy one-session command" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.codex" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.codex" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.codex" desc="Copy" enabled=true
-            AXLink id="Launch.Integration.SessionCopy.codex" desc="Copy one-session command" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.pi" desc="Copy Pi Coding Agent launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.pi" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.pi" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.pi" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.opencode" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.opencode" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.opencode" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.hermes" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.hermes" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.hermes" desc="Copy" enabled=true
-            AXLink id="Launch.Integration.SessionCopy.hermes" desc="Copy one-session command" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.goose" desc="Copy Goose launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.goose" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.goose" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.goose" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.qwen-code" desc="Copy Qwen Code launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.qwen-code" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.qwen-code" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.qwen-code" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.crush" desc="Copy Crush launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.crush" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.crush" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.crush" desc="Copy" enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider launch command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXButton id="Launch.Integration.Run.aider" desc="Launch" enabled=false
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Command.aider" desc="Show command" enabled=true
-            AXStaticText value=text enabled=true
-            AXLink id="Launch.Integration.DayTwoCopy.aider" desc="Copy" enabled=true
-            AXButton id="ConnectTools.MoreIntegrations" desc="Editors and more (9)" enabled=true
             AXButton id="ConnectTools.ServerSettings" desc="Server settings" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true

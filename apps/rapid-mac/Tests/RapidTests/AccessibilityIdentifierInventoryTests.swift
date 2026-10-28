@@ -587,6 +587,20 @@ struct AccessibilityIdentifierInventoryTests {
         )
     }
 
+    @Test("Compact integration rows retain their actions without obsolete disclosures")
+    func compactIntegrationIdentifiers() throws {
+        try assertDeclared(
+            [#""Launch.Integration.Run.\(tool.id)""#, #""Launch.Integration.SessionCopy.\(tool.id)""#],
+            in: "Sources/Rapid/UI/ConnectToolsView.swift",
+            surface: "Launch integration rows"
+        )
+        let source = try strippedSource("Sources/Rapid/UI/ConnectToolsView.swift")
+        for obsolete in ["ConnectTools.MoreIntegrations", "Launch.Integration.Command.",
+                         "Launch.Integration.Snippet.", "Launch.Integration.DayTwoCopy."] {
+            #expect(!source.contains(obsolete))
+        }
+    }
+
     /// The stopped-state inline model picker (#2297) is addressed by its own
     /// menu popup identifier inside ``ModelPickerBar``, not by a composite id
     /// stamped on the whole bar (a composite id would propagate onto both the

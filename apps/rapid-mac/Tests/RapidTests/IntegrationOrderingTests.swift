@@ -105,17 +105,19 @@ struct AgentConnectionInformationArchitectureTests {
         )
     }
 
-    @Test("Connection details lead integrations and server settings stay secondary")
-    func connectionContractLeadsThePage() throws {
+    @Test("Agent sections lead connection details and server settings stay secondary")
+    func agentSectionsLeadThePage() throws {
         let full = try source("ConnectToolsView.swift")
         let marker = try #require(full.range(of: "var cardContent: some View"))
         let page = full[marker.lowerBound...]
         let endpoint = try #require(page.range(of: "endpointSection"))
-        let integrations = try #require(page.range(of: "toolsSection(Array(tools.prefix(9))"))
+        let terminal = try #require(page.range(of: "title: \"Terminal agents\""))
+        let editors = try #require(page.range(of: "title: \"Editors and apps\""))
         let settings = try #require(page.range(of: "\"Server settings\""))
 
-        #expect(endpoint.lowerBound < integrations.lowerBound)
-        #expect(integrations.lowerBound < settings.lowerBound)
+        #expect(terminal.lowerBound < editors.lowerBound)
+        #expect(editors.lowerBound < endpoint.lowerBound)
+        #expect(endpoint.lowerBound < settings.lowerBound)
         #expect(!page.contains("Advanced connection details"))
     }
 

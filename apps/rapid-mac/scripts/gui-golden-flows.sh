@@ -5099,25 +5099,16 @@ flow_launch_integrations() {
     press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
     wait_tree_text "Connect an agent" "$OUT/launch.json" 40
 
-    # ``ConnectToolsView`` renders the three-entry compatibility fallback
-    # first, then replaces it with the sidecar's authoritative integration
-    # registry. The heading appears before that asynchronous load completes,
-    # so capturing immediately makes the baseline race between two valid UI
-    # states. The page now leads with the connection contract and the first
-    # nine registry rows ("Coding agents", #4979), with the rest behind one
-    # disclosure in both stopped and ready states. Wait for that disclosure
-    # before asserting structure.
+    # Wait for the asynchronous integration registry to replace the fallback.
     local i count=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch.json"
-        count="$(jq '[.data.ui_elements[]?
-                      | select(.identifier == "ConnectTools.MoreIntegrations")]
-                     | length' "$OUT/launch.json")"
-        [[ "$count" == 1 ]] && break
+        count="$(jq '[.data.ui_elements[]? | (.identifier // "")
+                      | select(startswith("Launch.Integration.Copy."))] | unique | length' "$OUT/launch.json")"
+        [[ "$count" == 18 ]] && break
         sleep 0.1
     done
-    [[ "$count" == 1 ]] \
-        || die "Cold Agent page did not settle on its integration registry"
+    [[ "$count" == 18 ]] || die "Cold Agent page omitted registry integrations (got $count of 18)"
 
     # The Agent-page baseline owns the connection surface, not the independent
     # first-launch telemetry notice.  A prior journey may already have
@@ -5168,38 +5159,10 @@ flow_launch_integrations() {
     jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu")' "$OUT/launch.json" >/dev/null \
         || die "Cold Launch offered no inline model picker"
 
-    # Expand once while stopped to prove every registry target remains
-    # discoverable but none can copy a placeholder command.
-    press "$OUT/launch.json" ConnectTools.MoreIntegrations "$OUT/launch-cold-more-press.json" \
-        || die "Cold Agent page's More integrations disclosure is not pressable"
-    for ((i=0; i<80; i++)); do
-        see_main "$OUT/launch.json"
-        count="$(jq '[.data.ui_elements[]?
-                      | (.identifier // "")
-                      | select(startswith("Launch.Integration.Copy."))]
-                     | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 18 ]] && break
-        sleep 0.1
-    done
-    [[ "$count" == 18 ]] \
-        || die "Cold Agent page omitted registry integrations (got $count of 18)"
-    enabled_count="$(jq '[.data.ui_elements[]? | select(((.identifier // "") | startswith("Launch.Integration.Copy.")) and .enabled == true)] | length' "$OUT/launch.json")"
-    [[ "$enabled_count" == 0 ]] \
-        || die "Cold Agent page enabled $enabled_count placeholder commands after expansion"
-    press "$OUT/launch.json" ConnectTools.MoreIntegrations "$OUT/launch-cold-more-collapse.json" \
-        || die "Cold Agent page's More integrations disclosure did not collapse"
-    for ((i=0; i<80; i++)); do
-        see_main "$OUT/launch.json"
-        count="$(jq '[.data.ui_elements[]?
-                      | (.identifier // "")
-                      | select(startswith("Launch.Integration.Copy."))]
-                     | unique | length' "$OUT/launch.json")"
-        [[ "$count" == 9 ]] && break
-        sleep 0.1
-    done
-    [[ "$count" == 9 ]] || die "Cold Agent page did not return to 9 primary integrations (got $count)"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.aider")' "$OUT/launch.json" >/dev/null \
-        || die "Agent page hid the ninth coding agent behind the disclosure"
+        || die "Agent page omitted Aider"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch.json" >/dev/null \
+        || die "Agent page omitted Cline"
     if jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.claude-desktop")' "$OUT/launch.json" >/dev/null; then
         die "Agent page duplicated the dedicated Gateway integration"
     fi
@@ -5210,59 +5173,22 @@ flow_launch_integrations() {
     start_model
     see_main "$OUT/launch-model-ready.json"
     press "$OUT/launch-model-ready.json" Sidebar.Launch "$OUT/launch-ready-open.json"
-    # Ready Launch leads with nine coding-agent rows. The registry remains fully
-    # reachable behind one explicit disclosure instead of occupying the page by
-    # default.
-    wait_identifier ConnectTools.MoreIntegrations "$OUT/launch-ready.json"
+    wait_identifier Launch.Integration.Copy.cline "$OUT/launch-ready.json"
     local ready_copies
-    ready_copies="$(jq '[.data.ui_elements[]?
-                         | select(((.identifier // "")
-                                   | startswith("Launch.Integration.Copy."))
-                                  and .enabled == true)] | length' "$OUT/launch-ready.json")"
-    [[ "$ready_copies" == 9 ]] \
-        || die "Ready Launch should lead with 9 primary integrations, got $ready_copies"
-
-    # Compact cards keep shell syntax out of the first scan, while still
-    # letting a user inspect the exact command before copying it.
-    press "$OUT/launch-ready.json" Launch.Integration.Command.claude-code \
-        "$OUT/launch-command-open.json" \
-        || die "Agent page could not expand a launch command"
-    wait_identifier Launch.Integration.Snippet.claude-code \
-        "$OUT/launch-command-expanded.json" 40
-    press "$OUT/launch-command-expanded.json" Launch.Integration.Command.claude-code \
-        "$OUT/launch-command-close.json" \
-        || die "Agent page could not collapse a launch command"
-    local snippet_count=1
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/launch-command-collapsed.json"
-        snippet_count="$(jq '[.data.ui_elements[]?
-                              | select(.identifier == "Launch.Integration.Snippet.claude-code")]
-                             | length' "$OUT/launch-command-collapsed.json")"
-        [[ "$snippet_count" == 0 ]] && break
-        sleep 0.1
-    done
-    [[ "$snippet_count" == 0 ]] \
-        || die "Agent page kept a launch command visible after collapse"
-
-    press "$OUT/launch-ready.json" ConnectTools.MoreIntegrations \
-        "$OUT/launch-more-press.json" \
-        || die "More integrations disclosure is not pressable"
     for ((i=0; i<80; i++)); do
         see_main "$OUT/launch-ready.json"
         ready_copies="$(jq '[.data.ui_elements[]?
-                              | select(((.identifier // "")
-                                        | startswith("Launch.Integration.Copy."))
-                                       and .enabled == true)]
-                             | length' "$OUT/launch-ready.json")"
+                              | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
+                                       and .enabled == true)] | length' "$OUT/launch-ready.json")"
         [[ "$ready_copies" == 18 ]] && break
         sleep 0.1
     done
     [[ "$ready_copies" == 18 ]] \
         || die "Launch enabled $ready_copies of 18 copy commands after the chat model was ready"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.cline")' "$OUT/launch-ready.json" >/dev/null \
-        || die "Expanded Launch omitted config-writing target Cline"
+        || die "Launch omitted config-writing target Cline"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch-ready.json" >/dev/null \
-        || die "Expanded Launch omitted adapter profile smolagents"
+        || die "Launch omitted adapter profile smolagents"
     local first_two
     first_two="$(jq -r '[.data.ui_elements[]?
                          | select((.identifier // "")
