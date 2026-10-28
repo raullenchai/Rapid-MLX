@@ -248,6 +248,14 @@ PARITY_FIXTURES: list = [
         'Checking. [get_current_weather(location="Paris", unit="celsius")]',
         [("get_current_weather", {"location": "Paris", "unit": "celsius"})],
     ),
+    (
+        "deepseek_v4_flash",
+        "deepseek_v4_dsml",
+        '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="read_file">\n'
+        '<｜DSML｜parameter name="path" string="true">sample.txt</｜DSML｜parameter>\n'
+        "</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+        [("read_file", {"path": "sample.txt"})],
+    ),
     # DeepSeek V4 0731 — DSML invoke/parameter wire format.
     (
         "deepseek_v4_0731",
