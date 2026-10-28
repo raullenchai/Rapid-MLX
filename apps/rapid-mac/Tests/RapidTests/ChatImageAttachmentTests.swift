@@ -636,17 +636,16 @@ struct ChatImageAttachmentTests {
         let root = try tempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Count boundary: 6 files, 4-slot budget => 4 accepted, 2 rejected,
-        // and the binding limit is the count, not bytes.
-        let six = try materialize([
-            ("a.png", 100), ("b.png", 100), ("c.png", 100),
-            ("d.png", 100), ("e.png", 100), ("f.png", 100),
-        ], in: root)
+        // Count boundary: two more files than the slot budget => the budget is
+        // accepted, 2 rejected, and the binding limit is the count, not bytes.
+        let six = try materialize((0..<ChatImageAttachment.maxImagesPerMessage + 2).map {
+            ("\($0).png", 100)
+        }, in: root)
         let countSelection = ChatImageAttachment.importCandidates(
             six, existingCount: 0, existingBytes: 0
         )
         #expect(countSelection.accepted == Array(six.prefix(ChatImageAttachment.maxImagesPerMessage)))
-        #expect(countSelection.rejectedCount == 6 - ChatImageAttachment.maxImagesPerMessage)
+        #expect(countSelection.rejectedCount == 2)
         #expect(countSelection.limit == .count)
 
         // Aggregate-byte boundary: an image whose *encoded* form is over the
@@ -680,7 +679,7 @@ struct ChatImageAttachmentTests {
 
         // Existing budget/count are honored: no count slots remain.
         let withExisting = ChatImageAttachment.importCandidates(
-            [thirds[2]], existingCount: 4, existingBytes: 0
+            [thirds[2]], existingCount: ChatImageAttachment.maxImagesPerMessage, existingBytes: 0
         )
         #expect(withExisting.accepted.isEmpty)
         #expect(withExisting.rejectedCount == 1)
@@ -723,8 +722,8 @@ struct ChatImageAttachmentTests {
         // When the big image is not first, it cannot coexist with the two small
         // images that already used some budget; the small ones are kept.
         #expect(ChatImageAttachment.fittedForMessage([small, big, many]) == [small, many])
-        // Count cap: 6 small images fit bytes but not count.
-        let sixSmall = try (0..<6).map {
+        // Count cap: more small images than slots fit bytes but not count.
+        let sixSmall = try (0..<ChatImageAttachment.maxImagesPerMessage + 2).map {
             try ChatImageAttachment(
                 filename: "\($0).png", mimeType: "image/png", data: Data(repeating: 1, count: 10)
             )

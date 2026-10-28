@@ -387,18 +387,18 @@ struct ChatAttachmentDraftTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Six references to one path. Dedup must collapse them to a single
-        // candidate so the 4-slot count budget is charged once, not six times.
+        // More references to one path than the slot budget. Dedup must collapse
+        // them to a single candidate so the count budget is charged once.
         let file = root.appendingPathComponent("photo.png")
         try Data(repeating: 0, count: 100).write(to: file)
-        let batch = Array(repeating: file, count: 6)
+        let batch = Array(repeating: file, count: ChatImageAttachment.maxImagesPerMessage + 2)
 
         // What addAttachmentURLs does first: dedup the batch.
         let (fresh, duplicates) = ChatAttachmentDraft.withoutAlreadyAttached(
             batch, attached: []
         )
         #expect(fresh == [file])
-        #expect(duplicates == 5)
+        #expect(duplicates == batch.count - 1)
 
         // Then the image budget gate sees only the single fresh path and accepts
         // it (and, having been deduped, it is charged once).
@@ -408,7 +408,7 @@ struct ChatAttachmentDraftTests {
         #expect(selection.accepted == [file])
         #expect(selection.rejectedCount == 0)
 
-        // If dedup had NOT run first, the raw six would consume four slots:
+        // If dedup had NOT run first, the raw batch would exhaust every slot:
         // prove the gate alone would have under-promised.
         let withoutDedup = ChatImageAttachment.importCandidates(
             batch, existingCount: 0, existingBytes: 0

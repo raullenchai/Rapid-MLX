@@ -11,7 +11,7 @@ struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable
     /// base64-encoding the whole set into a single request would freeze or
     /// exhaust the Desktop process. `maxImagesPerMessage` bounds the count and
     /// ``maxCombinedEncodedImageBytes`` bounds the aggregate **encoded** bytes.
-    static let maxImagesPerMessage = 4
+    static let maxImagesPerMessage = 8
     /// Combined budget for the images in one message, measured in exact
     /// encoded `data:<mime>;base64,…` byte counts, not raw `Data.count`.
     /// Each image travels over the wire as a base64 data URL, so raw bytes
