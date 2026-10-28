@@ -1,18 +1,21 @@
 # Copyright 2026 The HuggingFace Team. All rights reserved.
 # Adapted for MLX from the LFM3/LFM3-VL checkpoint reference implementations.
-# Licensed under the Apache License, Version 2.0; see LICENSE in ../lfm3.
+# Licensed under the Apache License, Version 2.0; see the repository LICENSE.
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from mlx-vlm commit 230fc308efb577d87446306bfb8a3e9f1a129558.
 
+from dataclasses import dataclass
+
 import mlx.core as mx
 import mlx.nn as nn
-
-from dataclasses import dataclass
-from typing import Optional
-
-from mlx_lm.models.base import BaseModelArgs, create_attention_mask, create_ssm_mask, scaled_dot_product_attention
+from mlx_lm.models.base import (
+    BaseModelArgs,
+    create_attention_mask,
+    create_ssm_mask,
+    scaled_dot_product_attention,
+)
 from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
-from mlx_lm.models.lfm2 import ShortConv, MLP
+from mlx_lm.models.lfm2 import MLP, ShortConv
 
 
 @dataclass
@@ -23,13 +26,13 @@ class ModelArgs(BaseModelArgs):
     num_hidden_layers: int = 24
     num_attention_heads: int = 16
     num_key_value_heads: int = 4
-    head_dim: Optional[int] = None
+    head_dim: int | None = None
     vocab_size: int = 128000
     norm_eps: float = 1e-5
-    conv_L_cache: int = 7
+    conv_L_cache: int = 7  # noqa: N815 - checkpoint configuration key
     conv_bias: bool = False
-    layer_types: Optional[list[str]] = None
-    rope_parameters: Optional[dict] = None
+    layer_types: list[str] | None = None
+    rope_parameters: dict | None = None
     sliding_window: int = 256
     use_sandwich_norm: bool = True
     tie_word_embeddings: bool = True
@@ -48,7 +51,6 @@ class ModelArgs(BaseModelArgs):
                 "full_attention": {"rope_theta": 1e6, "partial_rotary_factor": 0.5},
                 "sliding_attention": {"rope_theta": 1e4},
             }
-
 
 
 class RotaryEmbedding(nn.Module):
@@ -143,7 +145,9 @@ class DecoderLayer(nn.Module):
             self.self_attn = Attention(config, self.layer_type)
         else:
             self.conv = ShortConv(config, index)
-        self.feed_forward = MLP(config.hidden_size, config.intermediate_size, 1, False, None)
+        self.feed_forward = MLP(
+            config.hidden_size, config.intermediate_size, 1, False, None
+        )
         self.operator_norm = nn.RMSNorm(config.hidden_size, eps=config.norm_eps)
         self.ffn_norm = nn.RMSNorm(config.hidden_size, eps=config.norm_eps)
         if self.use_sandwich_norm:
@@ -225,7 +229,7 @@ class Model(nn.Module):
         result = {}
         for name, value in weights.items():
             if name.startswith("language_model."):
-                name = name[len("language_model."):]
+                name = name[len("language_model.") :]
             if self.config.tie_word_embeddings and name == "lm_head.weight":
                 continue
             if name.endswith("conv.conv.weight") and value.shape[1] == 1:
