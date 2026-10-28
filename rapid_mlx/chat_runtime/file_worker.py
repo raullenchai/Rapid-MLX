@@ -16,20 +16,13 @@ R = TypeVar("R")
 
 
 # -I also drops PYTHONPATH, which is how the bundled runtime finds its
-# packages, so the worker gets this process's import path instead, led by
-# the directory this rapid_mlx was imported from.
+# packages, so the worker adds the directory this rapid_mlx was imported from.
 _BOOTSTRAP = (
-    "import json, runpy, sys; "
-    "sys.path[:] = json.loads(sys.argv.pop(1)); "
+    "import runpy, sys; "
+    "sys.path.insert(0, sys.argv.pop(1)); "
     "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)"
 )
-
-
-def _import_path():
-    cwd = os.path.realpath(os.getcwd())
-    return [str(Path(__file__).resolve().parents[2])] + [
-        entry for entry in sys.path if entry and os.path.realpath(entry) != cwd
-    ]
+_PACKAGE_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 async def run_worker(module, payload, *, arguments=(), timeout=10):
@@ -38,7 +31,7 @@ async def run_worker(module, payload, *, arguments=(), timeout=10):
         "-I",  # Never import project code from cwd, PYTHONPATH, or user site.
         "-c",
         _BOOTSTRAP,
-        json.dumps(_import_path()),
+        _PACKAGE_ROOT,
         module,
         *arguments,
         stdin=asyncio.subprocess.PIPE,

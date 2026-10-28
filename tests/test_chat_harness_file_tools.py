@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -440,12 +441,24 @@ async def test_workers_cannot_import_from_untrusted_cwd(tmp_path, monkeypatch):
 async def test_workers_import_from_a_runtime_without_site_packages(
     tmp_path, monkeypatch
 ):
-    # The bundled runtime finds its packages through PYTHONPATH, which -I
-    # drops; -S reproduces an interpreter whose own site lacks them.
+    # The bundled runtime finds rapid_mlx and its dependencies in one
+    # directory through PYTHONPATH, which -I drops; -S reproduces an
+    # interpreter whose own site lacks them.
+    import PIL
+
+    import rapid_mlx
+
+    bundle = tmp_path / "site-packages"
+    bundle.mkdir()
+    for entry in Path(PIL.__file__).parents[1].iterdir():
+        if not entry.name.startswith(("rapid_mlx", "__editable__")):
+            (bundle / entry.name).symlink_to(entry)
+    (bundle / "rapid_mlx").symlink_to(Path(rapid_mlx.__file__).parent)
     runtime = tmp_path / "python"
     runtime.write_text(f'#!/bin/sh\nexec {sys.executable!r} -S "$@"\n')
     runtime.chmod(0o755)
     monkeypatch.setattr(file_worker.sys, "executable", str(runtime))
+    monkeypatch.setattr(file_worker, "_PACKAGE_ROOT", str(bundle))
     write(tmp_path, "fact.txt", "bundled read")
     result = await file_worker.run_worker(
         "rapid_mlx.chat_runtime.file_operations",
@@ -464,18 +477,6 @@ async def test_workers_import_from_a_runtime_without_site_packages(
         arguments=("note.txt",),
     )
     assert result["text"] == "plain attachment"
-
-
-def test_worker_import_path_excludes_the_working_directory(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    link = tmp_path / "link"
-    link.symlink_to(workspace)
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(
-        file_worker.sys, "path", ["", str(workspace), str(link), "/trusted"]
-    )
-    assert file_worker._import_path()[1:] == ["/trusted"]
 
 
 async def test_parallel_reads_share_context_budget(tmp_path):
