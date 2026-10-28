@@ -1,16 +1,20 @@
 import importlib
 import sys
 
-import mlx.core as mx
 import pytest
-from mlx_lm.models.cache import (
+
+pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx  # noqa: E402
+from mlx_lm.models.cache import (  # noqa: E402
     ArraysCache,
     KVCache,
     RotatingKVCache,
     can_trim_prompt_cache,
 )
 
-from rapid_mlx.models.lfm3 import Model, ModelArgs, RotaryEmbedding
+from rapid_mlx.models.lfm3 import Model, ModelArgs, RotaryEmbedding  # noqa: E402
 
 
 def config(**kw):
