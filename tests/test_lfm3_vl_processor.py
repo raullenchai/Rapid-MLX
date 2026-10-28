@@ -43,3 +43,12 @@ def test_resize_and_budget():
     assert smart_resize(512, 1024) == (512, 1024)
     with pytest.raises(ValueError, match="aspect ratio"):
         smart_resize(1, 201)
+
+
+def test_resize_extremes_and_invalid_grid():
+    assert smart_resize(1024, 1024, max_pixels=65536) == (256, 256)
+    assert smart_resize(32, 32, min_pixels=65536) == (256, 256)
+    with pytest.raises(ValueError, match="pixel budget"):
+        preprocess_images([Image.new("RGB", (32, 32))], min_pixels=1, max_pixels=1)
+    with pytest.raises(ValueError, match="Invalid image grid"):
+        expand_image_tokens([IMAGE_TOKEN_ID], [(1, 3, 2)])

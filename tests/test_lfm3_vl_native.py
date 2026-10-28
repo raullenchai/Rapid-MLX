@@ -235,3 +235,178 @@ def test_image_prefill_cached_decode_matches_full_forward(model):
         rtol=1e-4,
         atol=1e-5,
     )
+
+
+def test_invalid_configs_and_embeddings(model, monkeypatch):
+    from rapid_mlx.models.lfm3_vl import VisionConfig
+
+    for kwargs, message in [
+        ({}, "layer types"),
+        ({"layer_types": ["conv"] * 14, "hidden_size": 17}, "dimension"),
+        (
+            {"layer_types": ["conv"] * 14, "rope_parameters": {"rope_type": "other"}},
+            "axial",
+        ),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            VisionConfig(**kwargs)
+    args = tiny_args()
+    with pytest.raises(ValueError, match="projector"):
+        ModelArgs(
+            text_config=args.text_config,
+            vision_config=args.vision_config,
+            downsample_factor=3,
+        )
+    pixels = mx.ones((4, 24))
+    ids = mx.array([[30]])
+    for px, grid, message in [
+        (None, None, "pixels"),
+        (pixels, None, "required"),
+        (pixels, [[1, 2]], "ordered"),
+        (pixels, [[1, 3, 2]], "Invalid image grid"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            model.get_input_embeddings(ids, px, grid)
+    with pytest.raises(ValueError, match="patch count"):
+        model.vision_tower(mx.ones((5, 24)), [[1, 2, 2]])
+    monkeypatch.setattr(model, "encode_images", lambda *a: mx.ones((2, 16)))
+    with pytest.raises(ValueError, match="count"):
+        model.get_input_embeddings(ids, pixels, [[1, 2, 2]])
+    assert model.layers is model.language_model.layers
+
+
+def test_sanitize_quantization_and_dtype(model):
+    weights = dict(tree_flatten(model.parameters()))
+    conv = next(k for k in weights if k.endswith("spatial_conv.weight"))
+    transposed = dict(weights, **{conv: weights[conv].transpose(0, 3, 1, 2)})
+    assert model.sanitize(transposed)[conv].shape == weights[conv].shape
+    key = next(
+        k
+        for k, v in weights.items()
+        if k.startswith("language_model.") and k.endswith(".weight") and v.ndim == 2
+    )
+    prefix = key.removesuffix(".weight")
+
+    def quant(weight, scales, biases=None):
+        w = dict(weights, **{key: weight, prefix + ".scales": scales})
+        if biases is not None:
+            w[prefix + ".biases"] = biases
+        return w
+
+    with pytest.raises(ValueError, match="Incomplete"):
+        model.sanitize(quant(weights[key], mx.ones((1, 1))))
+    with pytest.raises(ValueError, match="Invalid quantized weight"):
+        model.sanitize(quant(weights[key], mx.ones((1, 1)), mx.ones((1, 1))))
+    out, inp = weights[key].shape
+    packed = mx.zeros((out, inp // 4), dtype=mx.uint32)
+    with pytest.raises(ValueError, match="metadata dtype"):
+        model.sanitize(
+            quant(
+                packed,
+                mx.zeros((out, inp // 64), dtype=mx.uint32),
+                mx.ones((out, inp // 64)),
+            )
+        )
+    with pytest.raises(ValueError, match="quantized shape"):
+        model.sanitize(quant(packed, mx.ones((1, 1)), mx.ones((1, 1))))
+    assert (
+        model.sanitize(
+            quant(packed, mx.ones((out, inp // 64)), mx.ones((out, inp // 64)))
+        )[key].dtype
+        == mx.uint32
+    )
+    with pytest.raises(ValueError, match="Invalid dtype"):
+        model.sanitize(
+            dict(weights, **{key: mx.zeros(weights[key].shape, dtype=mx.int32)})
+        )
+
+
+def test_native_dispatch_paths(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx import model_aliases, model_downloads, model_metadata
+    from rapid_mlx.models import media_backend, mllm
+    from rapid_mlx.utils import tokenizer
+
+    monkeypatch.setattr(model_aliases, "resolve_hub_model", lambda name: "owner/model")
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: None)
+    monkeypatch.setattr(model_aliases, "resolve_subfolder", lambda name: None)
+    monkeypatch.setattr(
+        model_metadata,
+        "read_model_metadata",
+        lambda name: (
+            SimpleNamespace(config={"model_type": "lfm3_vl"})
+            if name == "owner/model"
+            else None
+        ),
+    )
+    assert media_backend.native_media_model_type("alias") == "lfm3_vl"
+    mllm._require_mlx_vlm("alias")
+    calls = []
+    monkeypatch.setattr(
+        model_downloads,
+        "snapshot_download",
+        lambda name, **kw: calls.append((name, kw)) or str(tmp_path),
+    )
+    assert media_backend.resolve_native_checkpoint("alias") == tmp_path
+    assert "*.safetensors" in calls[0][1]["allow_patterns"]
+    monkeypatch.setattr(model_aliases, "resolve_subfolder", lambda name: "sub")
+    assert media_backend.resolve_native_checkpoint("alias") == tmp_path / "sub"
+    assert "sub/*.json" in calls[-1][1]["allow_patterns"]
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: "revision")
+    monkeypatch.setattr(
+        tokenizer, "_resolve_subfolder_checkpoint", lambda name: str(tmp_path / "rev")
+    )
+    assert media_backend.resolve_native_checkpoint("alias") == tmp_path / "rev"
+    with pytest.raises(ValueError, match="Unsupported"):
+        media_backend.load_native_media(tmp_path, {})
+
+
+def test_native_processor_and_batch_integration(tmp_path, monkeypatch, model):
+    from rapid_mlx.mllm_batch_generator import (
+        ClientRequestError,
+        MLLMBatchGenerator,
+        MLLMBatchRequest,
+        _supports_dynamic_vision_bounds,
+    )
+    from rapid_mlx.models import mllm
+
+    class Tokenizer:
+        def encode(self, prompt, add_special_tokens=False):
+            return [1, IMAGE_TOKEN_ID, 2]
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "rendered"
+
+    proc = LFM3VLProcessor(Tokenizer())
+    assert proc.apply_chat_template([]) == "rendered"
+    assert _supports_dynamic_vision_bounds(proc)
+    assert (
+        proc.prepare_inputs(
+            "x", [Image.new("RGB", (32, 32))], min_pixels=1024, max_pixels=None
+        )["pixel_values"]
+        is not None
+    )
+    gen = MLLMBatchGenerator(
+        model,
+        proc,
+        enable_prefix_cache=True,
+        enable_vision_cache=True,
+        media_prefix_cache="auto",
+    )
+    request = MLLMBatchRequest(
+        uid=0, request_id="r", prompt="x", images=[], videos=["video"], max_tokens=8
+    )
+    with pytest.raises(ClientRequestError, match="Video"):
+        gen._preprocess_request(request)
+    path = tmp_path / "image.png"
+    Image.new("RGB", (32, 32)).save(path)
+    monkeypatch.setattr(mllm, "process_image_input", lambda img: str(path))
+    request.videos = []
+    request.images = ["image"]
+    gen._preprocess_request(request)
+    assert request.pixel_values is not None
+    assert request.image_grid_thw is not None
+    path.write_bytes(b"not an image")
+    with pytest.raises(ClientRequestError, match="could not be decoded"):
+        gen._preprocess_request(request)
