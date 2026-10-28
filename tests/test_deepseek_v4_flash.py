@@ -98,6 +98,22 @@ def test_template_tool_loop(model, thinking, tokenizer):
         enable_thinking=thinking,
         model_name=model,
     )
+    import copy
+
+    expected_call = copy.deepcopy(call)
+    expected_call["tool_calls"][0]["function"]["arguments"] = json.dumps(
+        {"city": "Paris", "days": 2}, ensure_ascii=False
+    )
+    expected = encode_messages(
+        [
+            {"role": "system", "content": "", "tools": tools},
+            user,
+            expected_call,
+            result,
+        ],
+        thinking_mode="thinking" if thinking else "chat",
+    )
+    assert history == expected
     assert '"name": "weather"' in prompt
     assert prompt.endswith("<｜Assistant｜>" + ("<think>" if thinking else "</think>"))
     assert history.startswith(prompt)
