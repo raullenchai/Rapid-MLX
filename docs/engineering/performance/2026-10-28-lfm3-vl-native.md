@@ -11,3 +11,24 @@ The numerical comparison against the pinned bf16 reference did not meet the visi
 ## Run B3 follow-up
 
 The revised float32 cosine comparison passed its numerical cosine thresholds on a square fixture: tower 0.999994764 and projector 0.999991315. Maximum absolute error divided by maximum absolute reference value was 0.014264 and 0.005748, respectively; its interpretation remains open. The bf16 teacher-forced comparison still failed the 99.5% top-1 requirement on portrait and odd fixtures, each 508/512 (99.21875%), although mean KL passed (0.000163042 and 0.000325303). Square, landscape, two-image, and a 512-token continuation passed. The 8-bit implementation matched the pinned comparison exactly on tower, projector, and logits for all fixtures. Detailed per-layer measurements, fixture values, and saved comparison scripts are recorded in `/private/tmp/rapid-mlx-lfm3vl/correctness.md` and `/private/tmp/rapid-mlx-lfm3vl/verify/`. These are local qualification artifacts and must be retained outside the repository. This run does not qualify a final commit; do not merge on the basis of the earlier serving probes.
+
+## Run C: replacement bf16 gate
+
+The owner accepted mean KL ≤ 0.001 and a reference top-two margin ≤ 0.25 at every top-1 disagreement, including tied maxima. All six fixture KL values reported in the numerical record pass; every disagreement passes the margin gate. Positions are zero-based in the 512-token continuation. Square and long use the same input and are not independent. The reference logits were regenerated with the saved fixture scripts on the leased M5 Max and checked with the saved diagnostics script.
+
+| Fixture | Position | Reference token | Native token | Reference top-2 margin |
+| --- | ---: | ---: | ---: | ---: |
+| square | 9 | 395 | 22312 | 0 |
+| square | 70 | 229 | 124900 | 0 |
+| portrait | 12 | 4145 | 6424 | 0.125 |
+| portrait | 58 | 124900 | 229 | 0.125 |
+| portrait | 82 | 124900 | 229 | 0.125 |
+| portrait | 94 | 229 | 124900 | 0 |
+| landscape | 106 | 229 | 124900 | 0 |
+| landscape | 118 | 229 | 124900 | 0 |
+| odd | 3 | 59061 | 18970 | 0.0625 |
+| odd | 82 | 229 | 124900 | 0 |
+| odd | 94 | 229 | 124900 | 0 |
+| odd | 142 | 229 | 124900 | 0 |
+| long | 9 | 395 | 22312 | 0 |
+| long | 70 | 229 | 124900 | 0 |
