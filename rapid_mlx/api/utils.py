@@ -1406,7 +1406,7 @@ is_vlm_model = is_mllm_model
 # multimodal routing automatically once a dependency bump ships support —
 # no code change needed here (remove the entry when the vendored backbone
 # itself is retired).
-_VENDORED_TEXT_FALLBACK_MODEL_TYPES = ("muse_glimmer", "qwen4_exp")
+_VENDORED_TEXT_FALLBACK_MODEL_TYPES = ("muse_glimmer", "qwen4_exp", "lfm3")
 
 
 def mllm_arch_unsupported_but_text_vendored(model_name: str) -> bool:
@@ -1432,6 +1432,8 @@ def mllm_arch_unsupported_but_text_vendored(model_name: str) -> bool:
         return False
     if config.get("model_type") not in _VENDORED_TEXT_FALLBACK_MODEL_TYPES:
         return False
+    if config["model_type"] == "lfm3":
+        return True
     import importlib.util as _importlib_util
 
     try:

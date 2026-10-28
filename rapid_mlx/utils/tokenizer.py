@@ -679,7 +679,7 @@ _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 # Keep this separate from ``_VENDORED_MODEL_TYPES``: several older adapters
 # still rely on checkpoint-specific loading behavior and must not inherit the
 # stricter "weights/tokenizer only" trust boundary implicitly.
-_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset({"k2_horizon"})
+_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset({"k2_horizon", "lfm3"})
 
 
 def _register_vendored_archs() -> None:
@@ -977,6 +977,18 @@ def _register_vendored_archs() -> None:
                 _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
         else:
             _VENDORED_MODEL_TYPES.add("nemotron_labs_diffusion")
+
+    if "mlx_lm.models.lfm3" not in sys.modules:
+        try:
+            from ..models import lfm3 as _lfm3
+
+            sys.modules.setdefault("mlx_lm.models.lfm3", _lfm3)
+        except Exception as e:
+            logger.warning("lfm3 model registration failed: %s", e)
+        else:
+            _VENDORED_MODEL_TYPES.add("lfm3")
+    else:
+        _VENDORED_MODEL_TYPES.add("lfm3")
 
     if "mlx_lm.models.qwen4_exp" not in sys.modules:
         # Qwen3.8-Flash-Next's qwen4_exp text decoder. Prefer a future native
