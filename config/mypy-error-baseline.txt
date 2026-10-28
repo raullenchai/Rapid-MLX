@@ -104,7 +104,7 @@ rapid_mlx/routes/chat.py 39
 rapid_mlx/routes/completions.py 1
 rapid_mlx/routes/images.py 4
 rapid_mlx/routes/responses.py 10
-rapid_mlx/routes/video.py 9
+rapid_mlx/routes/video.py 2
 rapid_mlx/runtime/diffusion_lane.py 3
 rapid_mlx/runtime/disk_kv_checkpoint.py 1
 rapid_mlx/runtime/radix_index.py 2

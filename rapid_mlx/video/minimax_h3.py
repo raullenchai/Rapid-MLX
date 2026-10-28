@@ -7,6 +7,7 @@ import concurrent.futures
 import logging
 import threading
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 REPO = "MiniMaxAI/MiniMax-H3"
@@ -93,7 +94,7 @@ def is_minimax_h3_model(name: str | None) -> bool:
 class MiniMaxH3VideoEngine:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self._model = None
+        self._model: Any = None
         self._stopping = threading.Event()
         # MLX streams are thread-local and the pipeline keeps arrays created
         # while loading, so every load and generation must run on one thread;

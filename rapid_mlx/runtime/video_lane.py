@@ -487,7 +487,8 @@ class VideoEngine:
         output_width: int | None = None,
         output_height: int | None = None,
     ) -> None:
-        if getattr(self, "_minimax_engine", None) is not None:
+        minimax_engine = getattr(self, "_minimax_engine", None)
+        if minimax_engine is not None:
             from ..video.minimax_h3 import MiniMaxH3BackendError, MiniMaxH3RequestError
 
             if (
@@ -500,7 +501,7 @@ class VideoEngine:
                 )
             try:
                 with self._generation_lock:
-                    self._minimax_engine.generate(
+                    minimax_engine.generate(
                         prompt=prompt,
                         output_path=output_path,
                         width=width,
@@ -794,8 +795,9 @@ class VideoEngine:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""
 
     async def stop(self) -> None:
-        if getattr(self, "_minimax_engine", None) is not None:
-            self._minimax_engine.stop()
+        minimax_engine = getattr(self, "_minimax_engine", None)
+        if minimax_engine is not None:
+            minimax_engine.stop()
         if getattr(self, "_ltx25_engine", None) is not None:
             import asyncio
 

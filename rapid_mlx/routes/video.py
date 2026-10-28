@@ -22,7 +22,7 @@ import weakref
 from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -769,7 +769,7 @@ def _video_capabilities(engine) -> dict:
 
     if family == "cogvideox-fun":
         modes = ["text-to-video"]
-        size = {"type": "fixed", "values": ["672x384"]}
+        size: dict[str, Any] = {"type": "fixed", "values": ["672x384"]}
         seconds = {"minimum": 1, "maximum": 1, "default": 1}
         frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}
     elif family == "wan":
