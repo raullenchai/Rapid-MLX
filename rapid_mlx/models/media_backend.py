@@ -7,6 +7,12 @@ def native_media_model_type(model_name):
     from ..model_metadata import read_model_metadata
 
     metadata = read_model_metadata(model_name)
+    if metadata is None:
+        from ..model_aliases import resolve_hub_model
+
+        resolved = resolve_hub_model(model_name)
+        if resolved != model_name:
+            metadata = read_model_metadata(resolved)
     config = getattr(metadata, "config", None)
     model_type = config.get("model_type") if isinstance(config, dict) else None
     return model_type if model_type in {"lfm3_vl"} else None
