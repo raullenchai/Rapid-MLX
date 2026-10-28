@@ -2180,11 +2180,22 @@ struct ShareComputeLedgerSafetyTests {
     ) -> ShareComputeLedgerCoordinator {
         ShareComputeLedgerCoordinator(
             keychain: keychain,
+            // A fresh, never-reused suite per coordinator — any test here
+            // that resolves a provider key calls `ShareComputeReadKeyStore
+            // .retire()`, which flips a flag in UserDefaults. Without this,
+            // every such test would write that flag into the REAL
+            // `UserDefaults.standard` the app itself reads, and leave it set
+            // for every later test in this process too.
+            defaults: Self.isolatedDefaults(),
             load: load,
             now: now,
             // Explicitly no fixture: these tests exercise the real path.
             fixture: nil
         )
+    }
+
+    private static func isolatedDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "ShareComputeLedgerSafetyTests.\(UUID().uuidString)")!
     }
 
     /// Lets the coordinator's detached work run to completion.
@@ -2434,6 +2445,100 @@ struct ShareComputeLedgerSafetyTests {
         #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
         #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
         #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+    }
+
+    // MARK: Legacy-key retirement
+
+    @Test("Saving a provider key permanently retires the legacy key")
+    func savingProviderKeyRetiresLegacyKey() async throws {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        // No provider key yet: the legacy key is the active credential.
+        coordinator.appear()
+        await Self.settle()
+        #expect(gate.calls.last?.rawValue == Self.keyA.rawValue)
+        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue)
+
+        // Settings → Experimental → Share Compute saves a provider key.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
+        // The legacy key is gone outright, not merely unused — "until a
+        // provider key is saved" means the fallback is retired, not parked.
+        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
+
+        // The provider key is removed afterwards. The (now-deleted) legacy
+        // key must never resurface as a fallback.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.state == .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
+    }
+
+    /// Fails every Keychain deletion while behaving like an ordinary
+    /// in-memory Keychain otherwise — models an ACL mismatch or a locked
+    /// Keychain making ``ShareComputeReadKeyStore``'s own deletion fail.
+    private struct DeleteFailingKeychain: KeychainStoring {
+        let inner: InMemoryKeychain
+        func read(account: String) -> String? { inner.read(account: account) }
+        func readWithoutUserInteraction(account: String) -> KeychainReadResult {
+            inner.readWithoutUserInteraction(account: account)
+        }
+        func write(account: String, secret: String) -> Bool { inner.write(account: account, secret: secret) }
+        func delete(account: String) -> Bool { false }
+    }
+
+    @Test("A legacy key that fails to delete is still permanently retired")
+    func legacyKeyDeletionFailureStillRetiresIt() async throws {
+        let inner = InMemoryKeychain()
+        inner.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        let keychain = DeleteFailingKeychain(inner: inner)
+        let defaults = Self.isolatedDefaults()
+        let gate = Gate()
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            defaults: defaults,
+            load: { key in
+                gate.record(key)
+                return ShareComputeLedgerFixture.account
+            },
+            fixture: nil
+        )
+
+        coordinator.appear()
+        await Self.settle()
+        #expect(gate.calls.last?.rawValue == Self.keyA.rawValue)
+
+        // A provider key is saved. Deleting the legacy key FAILS (see
+        // `DeleteFailingKeychain`), so its secret is still physically present
+        // afterwards.
+        inner.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
+        #expect(inner.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue, "deletion really failed")
+        #expect(defaults.bool(forKey: ShareComputeReadKeyStore.retiredDefaultsKey))
+
+        // The provider key is removed. Despite the legacy secret still
+        // sitting in the Keychain, the retired flag must keep it from ever
+        // being read again.
+        inner.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.state == .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
     }
 
     @Test("Removing a legacy key never collapses a CORRUPTED provider key into noKey")

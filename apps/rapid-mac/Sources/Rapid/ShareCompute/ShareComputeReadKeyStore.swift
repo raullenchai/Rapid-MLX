@@ -116,14 +116,49 @@ struct ShareComputeReadKeyStore: Sendable {
     /// Unique across every Keychain account this app writes.
     static let account = "rapid.quicksilver.ledger-read-key.v1"
 
-    private let keychain: any KeychainStoring
+    /// Set once a provider key has ever been resolved as the active
+    /// credential — see ``retire()``. Deliberately NOT a Keychain account:
+    /// a provider-key-is-now-saved fact carries no secret, so it belongs in
+    /// UserDefaults, which fails independently of whatever is locking the
+    /// Keychain at the moment ``retire()`` tries to delete the legacy item.
+    /// That independence is the whole point — it is the fallback for when
+    /// the Keychain deletion itself fails.
+    static let retiredDefaultsKey = "Rapid.shareCompute.legacyReadKeyRetired"
 
-    /// Uses the system Keychain. Tests inject ``InMemoryKeychain``.
-    init(keychain: any KeychainStoring = SystemKeychain()) {
+    private let keychain: any KeychainStoring
+    private let defaults: UserDefaults
+
+    /// Uses the system Keychain. Tests inject ``InMemoryKeychain`` and a
+    /// scoped `UserDefaults` suite.
+    init(keychain: any KeychainStoring = SystemKeychain(), defaults: UserDefaults = .standard) {
         self.keychain = keychain
+        self.defaults = defaults
+    }
+
+    /// Once true, ``load()`` reports ``ShareComputeReadKeyStoreResult/missing``
+    /// forever, regardless of what `account` still holds.
+    var isRetired: Bool { defaults.bool(forKey: Self.retiredDefaultsKey) }
+
+    /// Permanently retires the legacy key: a provider key is this Mac's ONE
+    /// credential now, and "the legacy key works until a provider key is
+    /// saved" means that moment, forever — not "until the provider key is
+    /// later removed," which would resurrect a credential the owner decision
+    /// already moved past. Called the moment a provider key is resolved as
+    /// the active credential (see ``ShareComputeLedgerCoordinator``).
+    ///
+    /// Deleting the Keychain item is best effort — an ACL mismatch or a
+    /// locked Keychain can make it fail — so the flag is set FIRST and
+    /// independently of that outcome. `load()` consults the flag before ever
+    /// reading `account`, so a failed deletion still never lets the legacy
+    /// key resurface.
+    @discardableResult
+    func retire() -> Bool {
+        defaults.set(true, forKey: Self.retiredDefaultsKey)
+        return keychain.delete(account: Self.account)
     }
 
     func load() -> ShareComputeReadKeyStoreResult {
+        if isRetired { return .missing }
         switch keychain.readWithoutUserInteraction(account: Self.account) {
         case .missing:
             return .missing

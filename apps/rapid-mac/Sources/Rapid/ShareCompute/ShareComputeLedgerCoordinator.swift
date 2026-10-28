@@ -204,13 +204,14 @@ final class ShareComputeLedgerCoordinator {
     /// `InMemoryKeychain` and can seed either account independently.
     init(
         keychain: any KeychainStoring = SystemKeychain(),
+        defaults: UserDefaults = .standard,
         load: (@Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: (@Sendable (TimeInterval) async -> Void)? = nil,
         fixture: ShareComputeLedgerFixture? = ShareComputeLedgerFixture.requested()
     ) {
         self.providerStore = ShareComputeProviderKeyStore(keychain: keychain)
-        self.store = ShareComputeReadKeyStore(keychain: keychain)
+        self.store = ShareComputeReadKeyStore(keychain: keychain, defaults: defaults)
         self.load = load ?? { try await ShareComputeLedgerClient().account(key: $0) }
         self.now = now
         self.sleep = sleep ?? { seconds in
@@ -536,6 +537,13 @@ final class ShareComputeLedgerCoordinator {
     private func resolveProviderKey() -> ShareComputeProviderKeyLookup? {
         switch providerStore.load() {
         case .found(let key):
+            // "Until a provider key is saved" means PERMANENTLY once one
+            // exists — not merely while it stays saved. Retiring here, at
+            // the one moment the provider key is about to be used, is what
+            // stops a later provider-key removal from resurrecting the
+            // legacy key. Idempotent and cheap, so unconditional on every
+            // resolution rather than only on the first one.
+            store.retire()
             return .found(key)
         case .missing:
             return .missing
