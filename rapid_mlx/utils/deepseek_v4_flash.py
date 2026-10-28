@@ -9,7 +9,6 @@ with tool calling, thinking mode, and quick instruction task support.
 
 import copy
 import json
-import re
 from typing import Any
 
 # ============================================================
@@ -121,20 +120,6 @@ def tool_calls_from_openai_format(tool_calls):
     ]
 
 
-def tool_calls_to_openai_format(tool_calls):
-    """Convert internal tool calls to OpenAI format."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool_call["name"],
-                "arguments": tool_call["arguments"],
-            },
-        }
-        for tool_call in tool_calls
-    ]
-
-
 def encode_arguments_to_dsml(tool_call: dict[str, str]) -> str:
     """
     Encode tool call arguments into DSML parameter format.
@@ -163,35 +148,6 @@ def encode_arguments_to_dsml(tool_call: dict[str, str]) -> str:
         P_dsml_strs.append(p_dsml_str)
 
     return "\n".join(P_dsml_strs)
-
-
-def decode_dsml_to_arguments(
-    tool_name: str, tool_args: dict[str, tuple[str, str]]
-) -> dict[str, str]:
-    """
-    Decode DSML parameters back to a tool call dict.
-
-    Args:
-        tool_name: Name of the tool.
-        tool_args: Dict mapping param_name -> (value, is_string_flag).
-
-    Returns:
-        Dict with "name" and "arguments" (JSON string) keys.
-    """
-
-    def _decode_value(key: str, value: str, string: str):
-        if string == "true":
-            value = to_json(value)
-        return f"{to_json(key)}: {value}"
-
-    tool_args_json = (
-        "{"
-        + ", ".join(
-            [_decode_value(k, v, string=is_str) for k, (v, is_str) in tool_args.items()]
-        )
-        + "}"
-    )
-    return dict(name=tool_name, arguments=tool_args_json)
 
 
 def render_tools(tools: list[dict[str, str | dict[str, Any]]]) -> str:
@@ -656,184 +612,3 @@ def _drop_thinking_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
         # developer and other roles before last_user_idx are dropped
 
     return result
-
-
-# ============================================================
-# Parsing (Decoding model output)
-# ============================================================
-
-
-def _read_until_stop(
-    index: int, text: str, stop: list[str]
-) -> tuple[int, str, str | None]:
-    """
-    Read text from index until one of the stop strings is found.
-
-    Returns:
-        Tuple of (new_index, content_before_stop, matched_stop_string_or_None).
-    """
-    min_pos = len(text)
-    matched_stop = None
-
-    for s in stop:
-        pos = text.find(s, index)
-        if pos != -1 and pos < min_pos:
-            min_pos = pos
-            matched_stop = s
-
-    if matched_stop:
-        content = text[index:min_pos]
-        return min_pos + len(matched_stop), content, matched_stop
-    else:
-        content = text[index:]
-        return len(text), content, None
-
-
-def parse_tool_calls(
-    index: int, text: str
-) -> tuple[int, str | None, list[dict[str, str]]]:
-    """
-    Parse DSML tool calls from text starting at the given index.
-
-    Args:
-        index: Starting position in text.
-        text: The full text to parse.
-
-    Returns:
-        Tuple of (new_index, last_stop_token, list_of_tool_call_dicts).
-        Each tool call dict has "name" and "arguments" keys.
-    """
-    tool_calls: list[dict[str, Any]] = []
-    stop_token = None
-    tool_calls_end_token = f"</{dsml_token}{tool_calls_block_name}>"
-
-    while index < len(text):
-        index, _, stop_token = _read_until_stop(
-            index, text, [f"<{dsml_token}invoke", tool_calls_end_token]
-        )
-        if _ != ">\n":
-            raise ValueError(f"Tool call format error: expected '>\\n' but got '{_}'")
-
-        if stop_token == tool_calls_end_token:
-            break
-
-        if stop_token is None:
-            raise ValueError("Missing special token in tool calls")
-
-        index, tool_name_content, stop_token = _read_until_stop(
-            index, text, [f"<{dsml_token}parameter", f"</{dsml_token}invoke"]
-        )
-
-        p_tool_name = re.findall(
-            r'^\s*name="(.*?)">\n$', tool_name_content, flags=re.DOTALL
-        )
-        if len(p_tool_name) != 1:
-            raise ValueError(f"Tool name format error: '{tool_name_content}'")
-        tool_name = p_tool_name[0]
-
-        tool_args: dict[str, tuple[str, str]] = {}
-        while stop_token == f"<{dsml_token}parameter":
-            index, param_content, stop_token = _read_until_stop(
-                index, text, [f"/{dsml_token}parameter"]
-            )
-
-            param_kv = re.findall(
-                r'^ name="(.*?)" string="(true|false)">(.*?)<$',
-                param_content,
-                flags=re.DOTALL,
-            )
-            if len(param_kv) != 1:
-                raise ValueError(f"Parameter format error: '{param_content}'")
-            param_name, string, param_value = param_kv[0]
-
-            if param_name in tool_args:
-                raise ValueError(f"Duplicate parameter name: '{param_name}'")
-            tool_args[param_name] = (param_value, string)
-
-            index, content, stop_token = _read_until_stop(
-                index, text, [f"<{dsml_token}parameter", f"</{dsml_token}invoke"]
-            )
-            if content != ">\n":
-                raise ValueError(
-                    f"Parameter format error: expected '>\\n' but got '{content}'"
-                )
-
-        tool_call = decode_dsml_to_arguments(tool_name=tool_name, tool_args=tool_args)
-        tool_calls.append(tool_call)
-
-    return index, stop_token, tool_calls
-
-
-def parse_message_from_completion_text(text: str, thinking_mode: str) -> dict[str, Any]:
-    """
-    Parse a model completion text into a structured assistant message.
-
-    This function takes the raw text output from the model (a single assistant turn)
-    and extracts:
-    - reasoning_content (thinking block)
-    - content (summary/response)
-    - tool_calls (if any)
-
-    NOTE: This function is designed to parse only correctly formatted strings and
-    will raise ValueError for malformed output.
-
-    Args:
-        text: The raw completion text (including EOS token).
-        thinking_mode: Either "chat" or "thinking".
-
-    Returns:
-        Dict with keys: "role", "content", "reasoning_content", "tool_calls".
-        tool_calls are in OpenAI format.
-    """
-    summary_content, reasoning_content, tool_calls = "", "", []
-    index, stop_token = 0, None
-    tool_calls_start_token = f"\n\n<{dsml_token}{tool_calls_block_name}"
-
-    is_thinking = thinking_mode == "thinking"
-    is_tool_calling = False
-
-    if is_thinking:
-        index, content_delta, stop_token = _read_until_stop(
-            index, text, [thinking_end_token, tool_calls_start_token]
-        )
-        reasoning_content = content_delta
-        assert stop_token == thinking_end_token, (
-            "Invalid thinking format: missing </think>"
-        )
-
-    index, content_delta, stop_token = _read_until_stop(
-        index, text, [eos_token, tool_calls_start_token]
-    )
-    summary_content = content_delta
-    if stop_token == tool_calls_start_token:
-        is_tool_calling = True
-    else:
-        assert stop_token == eos_token, "Invalid format: missing EOS token"
-
-    if is_tool_calling:
-        index, stop_token, tool_calls = parse_tool_calls(index, text)
-
-        index, tool_ends_text, stop_token = _read_until_stop(index, text, [eos_token])
-        assert not tool_ends_text, "Unexpected content after tool calls"
-
-    assert len(text) == index and stop_token in [eos_token, None], (
-        "Unexpected content at end"
-    )
-
-    for sp_token in [
-        bos_token,
-        eos_token,
-        thinking_start_token,
-        thinking_end_token,
-        dsml_token,
-    ]:
-        assert sp_token not in summary_content and sp_token not in reasoning_content, (
-            f"Unexpected special token '{sp_token}' in content"
-        )
-
-    return {
-        "role": "assistant",
-        "content": summary_content,
-        "reasoning_content": reasoning_content,
-        "tool_calls": tool_calls_to_openai_format(tool_calls),
-    }
