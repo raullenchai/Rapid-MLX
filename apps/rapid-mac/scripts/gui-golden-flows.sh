@@ -2260,11 +2260,11 @@ flow_fresh_install() {
         || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
 
     # Default-on activation follows launch policy application without a prompt.
-    # The sink receives session_start, first-chat success, and the tool card shown.
+    # The sink receives session_start and first-chat success; Chat has no tool card.
     start_model
     send_prompt "Say hello in one short sentence." "default-on-activation"
     wait_send_idle "$OUT/default-on-activation-complete.json"
-    assert_share_activation_requests default-on-activation first_chat_reply tool_card_shown
+    assert_share_activation_requests default-on-activation first_chat_reply
     [[ -f "$PERSONA/home/.rapid-mlx/activation_seen_desktop_first_chat_reply" ]] \
         || die "accepted first_chat_reply did not claim its once-per-install marker"
     cleanup_persona
