@@ -1762,8 +1762,8 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     * the fetch runs under :func:`call_with_deadline` with the shared
       ``_HF_RESOLVE_TIMEOUT_SECONDS`` — a deadline is the only thing that
       bounds a huggingface_hub metadata call;
-    * at most one attempt per process per repo — repeated probes never
-      refetch, so a slow or blackholed Hub costs a single bounded window.
+    * successful probes are remembered; failed attempts can be retried on
+      a later request, each bounded by the same deadline.
     """
     import os
 
@@ -1789,7 +1789,6 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
         return True
     if hub_offline_mode_active():
         return False
-    _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
     try:
         from rapid_mlx.model_aliases import (
             resolve_hub_model,
@@ -1811,11 +1810,14 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     except Exception:  # noqa: BLE001 - best-effort probe, never fatal
         return False
     metadata = read_model_metadata(model_ref)
-    return bool(
+    available = bool(
         metadata
         and isinstance(metadata.config, dict)
         and metadata.config.get("model_type")
     )
+    if available:
+        _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
+    return available
 
 
 def _text_lane_loads_model_type(model_type: str) -> bool:

@@ -882,7 +882,7 @@ def test_resolver_never_touches_the_network(monkeypatch):
 
 def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     """The boot guard's prefetch: targets the exact repo's ``config.json``
-    only, under the shared Hub deadline, at most once per process — and Hub
+    only, under the shared Hub deadline; successful results are cached and Hub
     failures are swallowed (best-effort, never fatal)."""
     import huggingface_hub
 
@@ -905,6 +905,7 @@ def test_degrade_probe_prefetch_bounded_once_and_exact_repo(monkeypatch):
     monkeypatch.setattr(_download_gate, "call_with_deadline", _recording_deadline)
 
     calls = []
+    monkeypatch.setattr(api_utils, "read_model_metadata", lambda _: _meta(GEMMA4_VLM_CONFIG) if calls else None)
 
     def _record(repo, filename, **kwargs):
         calls.append((repo, filename))
@@ -1067,3 +1068,27 @@ def test_native_dispatch_prefetch_preserves_revision_and_subfolder(monkeypatch):
     )
     assert not utils._prefetch_config_for_degrade_probe("alias")
     assert calls == [(("org/repo", "variant/config.json"), {"revision": "abc123"})]
+
+
+def test_native_dispatch_retries_failed_config_download(monkeypatch):
+    from rapid_mlx import model_downloads, model_metadata
+    from rapid_mlx.api import utils
+
+    monkeypatch.setattr(utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+    state = {"calls": 0, "ready": False}
+    monkeypatch.setattr(
+        utils, "read_model_metadata",
+        lambda _: _meta({"model_type": "lfm3_vl"}) if state["ready"] else None,
+    )
+
+    def download(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise TimeoutError("temporary failure")
+        state["ready"] = True
+
+    monkeypatch.setattr(model_downloads, "hf_hub_download", download)
+    assert not utils._prefetch_config_for_degrade_probe("org/repo")
+    assert utils._prefetch_config_for_degrade_probe("org/repo")
+    assert state["calls"] == 2
