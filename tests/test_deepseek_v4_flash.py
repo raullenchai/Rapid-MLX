@@ -36,6 +36,20 @@ def test_upstream_dsml_parser():
     }
 
 
+@pytest.fixture
+def tokenizer():
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    alphabet = pre_tokenizers.ByteLevel.alphabet()
+    backend = Tokenizer(
+        models.BPE(vocab={char: i for i, char in enumerate(alphabet)}, merges=[])
+    )
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    backend.decoder = decoders.ByteLevel()
+    return PreTrainedTokenizerFast(tokenizer_object=backend)
+
+
 @pytest.mark.parametrize(
     "model",
     [
@@ -47,7 +61,7 @@ def test_upstream_dsml_parser():
     ],
 )
 @pytest.mark.parametrize("thinking", [False, True])
-def test_template_tool_loop(model, thinking):
+def test_template_tool_loop(model, thinking, tokenizer):
     from rapid_mlx.model_auto_config import detect_model_config
     from rapid_mlx.utils.chat_template import apply_chat_template
 
@@ -75,10 +89,10 @@ def test_template_tool_loop(model, thinking):
     }
     result = {"role": "tool", "tool_call_id": "x", "content": "sunny"}
     prompt = apply_chat_template(
-        object(), [user], tools=tools, enable_thinking=thinking, model_name=model
+        tokenizer, [user], tools=tools, enable_thinking=thinking, model_name=model
     )
     history = apply_chat_template(
-        object(),
+        tokenizer,
         [user, call, result],
         tools=tools,
         enable_thinking=thinking,
@@ -87,6 +101,9 @@ def test_template_tool_loop(model, thinking):
     assert '"name": "weather"' in prompt
     assert prompt.endswith("<｜Assistant｜>" + ("<think>" if thinking else "</think>"))
     assert history.startswith(prompt)
+    tokens = tokenizer.encode(prompt, add_special_tokens=False)
+    assert tokenizer.decode(tokens) == prompt
+    assert tokenizer.encode(history, add_special_tokens=False)[: len(tokens)] == tokens
     assert (
         '<｜DSML｜parameter name="days" string="false">2</｜DSML｜parameter>' in history
     )

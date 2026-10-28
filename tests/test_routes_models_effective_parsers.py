@@ -217,7 +217,8 @@ def test_raw_hf_id_no_parser_bound_stays_null():
 # ---------------------------------------------------------------------------
 
 
-def test_alias_cli_override_beats_alias_default():
+@pytest.mark.parametrize("alias", ["qwen3-0.6b-4bit", "deepseek-v4-flash-2bit"])
+def test_alias_cli_override_beats_alias_default(alias):
     """When an aliased model has a default parser in ``aliases.json``
     and the operator passes ``--tool-call-parser Y`` / ``--reasoning-parser Y``,
     ``/v1/models`` must report Y (the live runtime value), not the
@@ -226,7 +227,6 @@ def test_alias_cli_override_beats_alias_default():
     # Pick a known alias from aliases.json that has a parser default.
     from rapid_mlx.model_aliases import resolve_profile
 
-    alias = "qwen3-0.6b-4bit"
     profile = resolve_profile(alias)
     if profile is None or not (profile.tool_call_parser or profile.reasoning_parser):
         pytest.skip(
