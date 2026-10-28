@@ -437,6 +437,35 @@ async def test_workers_cannot_import_from_untrusted_cwd(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
+async def test_workers_import_from_a_runtime_without_site_packages(
+    tmp_path, monkeypatch
+):
+    # The bundled runtime finds its packages through PYTHONPATH, which -I
+    # drops; -S reproduces an interpreter whose own site lacks them.
+    runtime = tmp_path / "python"
+    runtime.write_text(f'#!/bin/sh\nexec {sys.executable!r} -S "$@"\n')
+    runtime.chmod(0o755)
+    monkeypatch.setattr(file_worker.sys, "executable", str(runtime))
+    write(tmp_path, "fact.txt", "bundled read")
+    result = await file_worker.run_worker(
+        "rapid_mlx.chat_runtime.file_operations",
+        json.dumps(
+            {
+                "operation": "read_file",
+                "workspace": str(tmp_path),
+                "args": {"path": "fact.txt"},
+            }
+        ).encode(),
+    )
+    assert "bundled read" in result["content"]
+    result = await file_worker.run_worker(
+        "rapid_mlx.chat_runtime.file_extraction",
+        b"plain attachment",
+        arguments=("note.txt",),
+    )
+    assert result["text"] == "plain attachment"
+
+
 async def test_parallel_reads_share_context_budget(tmp_path):
     write(tmp_path, "note.txt", "x" * 1800)
     events = []

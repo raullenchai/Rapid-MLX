@@ -8,17 +8,37 @@ import signal
 import sys
 from collections.abc import Awaitable, Callable
 from functools import wraps
+from pathlib import Path
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
 
 
+# -I also drops PYTHONPATH, which is how the bundled runtime finds its
+# packages, so the worker gets this process's import path instead, led by
+# the directory this rapid_mlx was imported from.
+_BOOTSTRAP = (
+    "import json, runpy, sys; "
+    "sys.path[:] = json.loads(sys.argv.pop(1)); "
+    "runpy.run_module(sys.argv.pop(1), run_name='__main__', alter_sys=True)"
+)
+
+
+def _import_path():
+    cwd = os.getcwd()
+    return [str(Path(__file__).resolve().parents[2])] + [
+        entry for entry in sys.path if entry and os.path.abspath(entry) != cwd
+    ]
+
+
 async def run_worker(module, payload, *, arguments=(), timeout=10):
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-I",  # Never import project code from cwd, PYTHONPATH, or user site.
-        "-m",
+        "-c",
+        _BOOTSTRAP,
+        json.dumps(_import_path()),
         module,
         *arguments,
         stdin=asyncio.subprocess.PIPE,
