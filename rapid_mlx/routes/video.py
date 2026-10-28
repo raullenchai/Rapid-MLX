@@ -800,8 +800,7 @@ def _video_capabilities(engine) -> dict:
             "type": "range",
             "width": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
             "height": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
-            # 720 is not a multiple of 32, so the OpenAI 720p sizes are rejected.
-            "also_supported": [],
+            "also_supported": ["1280x720", "720x1280"],
         }
         seconds = {"minimum": 5, "maximum": 15, "default": 5}
         frames = {"minimum": 124, "maximum": 345, "step": 17, "offset": 5}
@@ -1109,7 +1108,9 @@ async def _run_job(
     output = _jobs_root / job.id / "output.mp4"
     generation_gate = _generation_gate_for_current_loop()
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
-    alignment = 32 if getattr(engine, "video_family", "") == "ltx-2.5" else 64
+    alignment = (
+        32 if getattr(engine, "video_family", "") in ("ltx-2.5", "minimax-h3") else 64
+    )
     generation_width = (
         width if is_cogvideox else ((width + alignment - 1) // alignment) * alignment
     )

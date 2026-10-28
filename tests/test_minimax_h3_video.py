@@ -440,3 +440,38 @@ def test_clear_cache_without_mlx(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "mlx.core", None)
     assert minimax_h3._clear_mlx_cache() is None
+
+
+@pytest.mark.asyncio
+async def test_openai_720p_size_renders_on_the_32_aligned_canvas(monkeypatch):
+    import asyncio
+
+    from rapid_mlx.routes import video
+
+    captured = {}
+
+    class FakeEngine:
+        model_name = "MiniMaxAI/MiniMax-H3"
+        video_family = "minimax-h3"
+        native_fps = 24
+
+        def generate(self, *, output_path, **kwargs):
+            captured.update(kwargs)
+            output_path.write_bytes(b"mp4")
+
+    monkeypatch.setattr(video, "_video_engine", lambda: FakeEngine())
+    created = await video.create_video(
+        prompt="landscape",
+        model="minimax-h3",
+        seconds="5",
+        size="1280x720",
+        seed=1,
+        input_reference=None,
+    )
+    for _ in range(200):
+        if (await video.retrieve_video(created["id"]))["status"] == "completed":
+            break
+        await asyncio.sleep(0.01)
+    assert (captured["width"], captured["height"]) == (1280, 736)
+    assert (captured["output_width"], captured["output_height"]) == (1280, 720)
+    await video.delete_video(created["id"])
