@@ -338,7 +338,7 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
             "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>"
             f"function<｜tool▁sep｜>{function_name}\n```json\n"
         )
-    if parser_name in ("deepseek_v4_0731", "deepseek_v4_flash"):
+    if parser_name == "deepseek_v4_0731":
         if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(function_name):
             return None
         # V4-Flash-0731 uses the checkpoint's textual DSML envelope.  Stop
