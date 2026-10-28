@@ -147,7 +147,10 @@ def _normalize_share_path(path: object) -> str | None:
 
     if not isinstance(path, str) or not path.startswith("/"):
         return None
-    split = urllib.parse.urlsplit(path)
+    try:
+        split = urllib.parse.urlsplit(path)
+    except ValueError:
+        return None
     if split.scheme or split.netloc or split.fragment:
         return None
     try:

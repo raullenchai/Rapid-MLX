@@ -128,6 +128,7 @@ def test_rejects_non_serving_and_control_plane_endpoints(
         "/v1/cua\\runs",
         "http://127.0.0.1:8000/v1/cua/runs",
         "//evil.example/v1/cua/runs",
+        "//[",
         "/v1/cua/runs#fragment",
         "/v1/cua/runs?x=1",
     ],
