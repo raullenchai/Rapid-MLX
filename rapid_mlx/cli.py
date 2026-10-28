@@ -5101,7 +5101,10 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     (:func:`_alias_needs_vision_runtime_without_weights`).
     """
     from .api.utils import resolve_serving_lane
+    from .models.media_backend import native_media_model_type
 
+    if native_media_model_type(args.model) and not getattr(args, "no_mllm", False):
+        return True
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     if requested_spec_decode == "none" and getattr(args, "enable_mtp", False):
         requested_spec_decode = "mtp"
@@ -6335,8 +6338,14 @@ def serve_command(args):
     # and repeated probes never refetch. Skipped when a degrade could not
     # be consulted anyway (explicit --mllm / --no-mllm / spec-decode).
     from .api.utils import _prefetch_config_for_degrade_probe
+    from .models.media_backend import native_media_model_type
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
+    _native_probe_path = (
+        (_serve_profile.hf_path or args.model) if _serve_profile else args.model
+    )
+    _prefetch_config_for_degrade_probe(_native_probe_path)
+    _native_media = bool(native_media_model_type(_native_probe_path))
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     catalog_degrade_candidate = _serve_profile is None or (
         _serve_profile.modality == "text"
@@ -6345,6 +6354,7 @@ def serve_command(args):
     )
     if (
         catalog_degrade_candidate
+        and not _native_media
         and vision_runtime_status()[0] is VisionRuntimeStatus.ABSENT
         and not getattr(args, "mllm", False)
         and not getattr(args, "no_mllm", False)
@@ -6366,7 +6376,8 @@ def serve_command(args):
             if _serve_profile is not None
             else args.model
         )
-    _warn_vision_text_only_degrade(_serve_profile, args=args)
+    if not _native_media:
+        _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 

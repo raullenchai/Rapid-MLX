@@ -1337,7 +1337,7 @@ def is_mllm_model(model_name: str) -> bool:
         # Spark 2.5 is a causal text checkpoint whose MLX implementation
         # currently lives only in mlx-vlm. Route it through that loader even
         # though its config has no vision tower or multimodal architecture.
-        if config.get("model_type") == "spark2_5":
+        if config.get("model_type") in {"spark2_5", "lfm3_vl"}:
             return True
         if not _config_indicates_vlm(config):
             return False
@@ -1678,6 +1678,10 @@ def resolve_serving_lane_decision(
             return ServingLaneDecision(True, "vision_lane_forced")
         return ServingLaneDecision(False, "text_checkpoint")
 
+    from ..models.media_backend import native_media_model_type
+
+    if native_media_model_type(model_name):
+        return ServingLaneDecision(True, "native_media_supported")
     cache_mode = mllm_backbone_cache_mode(model_name)
     if cache_mode == "arrays":
         if vision_min_memory_gb is None:

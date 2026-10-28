@@ -83,6 +83,8 @@ def expand_image_tokens(token_ids, grids):
 class LFM3VLProcessor:
     """Tokenizer facade and ordered image preparation for the media lane."""
 
+    native_media_backend = "lfm3_vl"
+
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
 

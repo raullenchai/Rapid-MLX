@@ -473,6 +473,11 @@ def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) ->
     """
     # One authoritative probe; branch on the returned status (a second
     # ``mlx_vlm_available()`` call would re-run the import redundantly).
+    if model_name is not None:
+        from .media_backend import native_media_model_type
+
+        if native_media_model_type(model_name):
+            return
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
@@ -541,6 +546,11 @@ def _require_mlx_vlm(model_name: str | None = None) -> None:
     (Homebrew ``--no-deps`` → no PIL), name the missing module instead
     of the misleading "install mlx-vlm" (which IS installed).
     """
+    if model_name is not None:
+        from .media_backend import native_media_model_type
+
+        if native_media_model_type(model_name):
+            return
     status, detail = vision_runtime_status()
     if status is VisionRuntimeStatus.OK:
         return
@@ -1749,6 +1759,19 @@ class MLXMultimodalLM:
     def load(self) -> None:
         """Load the model and processor."""
         if self._loaded:
+            return
+
+        from .media_backend import load_native_media, native_media_model_type
+
+        if native_media_model_type(self.model_name):
+            model_path = _resolve_checkpoint(self.model_name)
+            from mlx_lm.utils import load_config
+
+            self.config = load_config(Path(model_path))
+            self.model, self.processor = load_native_media(model_path, self.config)
+            self.enable_cache = False
+            self._cache_manager = None
+            self._loaded = True
             return
 
         _require_mlx_vlm()

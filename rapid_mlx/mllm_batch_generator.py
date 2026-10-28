@@ -89,6 +89,8 @@ def _dynamic_vision_size_values(processor: Any) -> dict[str, int] | None:
 
 
 def _supports_dynamic_vision_bounds(processor: Any) -> bool:
+    if getattr(processor, "native_media_backend", None) == "lfm3_vl":
+        return True
     image_processor = getattr(processor, "image_processor", None)
     native_min = getattr(image_processor, "min_pixels", None)
     native_max = getattr(image_processor, "max_pixels", None)
@@ -1302,6 +1304,13 @@ class MLLMBatchGenerator:
                 max sequences, prefill batch, and completion batch are all 1.
                 Media-boundary reuse stays disabled without this proof.
         """
+        native_lfm3 = (
+            getattr(getattr(model, "config", None), "model_type", None) == "lfm3_vl"
+        )
+        if native_lfm3:
+            enable_prefix_cache = False
+            enable_vision_cache = False
+            media_prefix_cache = "off"
         if singleton_fastpath not in ("auto", "off"):
             raise ValueError(
                 f"singleton_fastpath must be 'auto' or 'off', "
@@ -3531,7 +3540,14 @@ class MLLMBatchGenerator:
             return
 
         tic = time.perf_counter()
-        from rapid_mlx.models.mlx_vlm_vendored.inputs import prepare_inputs
+        native_lfm3 = (
+            getattr(getattr(self.model, "config", None), "model_type", None)
+            == "lfm3_vl"
+        )
+        if not native_lfm3:
+            from rapid_mlx.models.mlx_vlm_vendored.inputs import prepare_inputs
+        if native_lfm3 and request.videos:
+            raise ClientRequestError("Video is not supported by LFM3-VL")
 
         if request.images:
             from .models.mllm import FileSizeExceededError, process_image_input
@@ -3744,17 +3760,33 @@ class MLLMBatchGenerator:
         )
         try:
             for _ in range(2):
-                with _temporary_vision_pixel_bounds(
-                    self.processor,
-                    self.vision_min_pixels,
-                    pixel_cap,
-                ):
-                    inputs = prepare_inputs(
+                if native_lfm3:
+                    from contextlib import ExitStack
+
+                    from PIL import Image
+
+                    with ExitStack() as stack:
+                        images = [
+                            stack.enter_context(Image.open(path)) for path in all_images
+                        ]
+                        inputs = self.processor.prepare_inputs(
+                            request.prompt,
+                            images,
+                            min_pixels=self.vision_min_pixels or 65_536,
+                            max_pixels=pixel_cap or None,
+                        )
+                else:
+                    with _temporary_vision_pixel_bounds(
                         self.processor,
-                        images=all_images if all_images else None,
-                        prompts=request.prompt,
-                        image_token_index=image_token_index,
-                    )
+                        self.vision_min_pixels,
+                        pixel_cap,
+                    ):
+                        inputs = prepare_inputs(
+                            self.processor,
+                            images=all_images if all_images else None,
+                            prompts=request.prompt,
+                            image_token_index=image_token_index,
+                        )
                 token_count = getattr(inputs.get("input_ids"), "size", None)
                 if (
                     not pixel_cap
