@@ -6,6 +6,8 @@ Utility functions for text processing and model detection.
 import json
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
@@ -1746,6 +1748,9 @@ def resolve_serving_lane_decision(
 
 
 _DEGRADE_CONFIG_PREFETCHED: set[str] = set()
+_DEGRADE_CONFIG_ATTEMPTS: dict[str, float] = {}
+_DEGRADE_CONFIG_ATTEMPTS_LOCK = threading.Lock()
+_DEGRADE_CONFIG_RETRY_SECONDS = 60.0
 
 
 def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
@@ -1762,8 +1767,8 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     * the fetch runs under :func:`call_with_deadline` with the shared
       ``_HF_RESOLVE_TIMEOUT_SECONDS`` — a deadline is the only thing that
       bounds a huggingface_hub metadata call;
-    * successful probes are remembered; failed attempts can be retried on
-      a later request, each bounded by the same deadline.
+    * failed probes can retry after a bounded interval; concurrent probes
+      for the same repo are coalesced during that interval.
     """
     import os
 
@@ -1789,6 +1794,12 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
         return True
     if hub_offline_mode_active():
         return False
+    with _DEGRADE_CONFIG_ATTEMPTS_LOCK:
+        now = time.monotonic()
+        last = _DEGRADE_CONFIG_ATTEMPTS.get(model_ref)
+        if last is not None and now - last < _DEGRADE_CONFIG_RETRY_SECONDS:
+            return False
+        _DEGRADE_CONFIG_ATTEMPTS[model_ref] = now
     try:
         from rapid_mlx.model_aliases import (
             resolve_hub_model,
@@ -1817,6 +1828,8 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     )
     if available:
         _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
+        with _DEGRADE_CONFIG_ATTEMPTS_LOCK:
+            _DEGRADE_CONFIG_ATTEMPTS.pop(model_ref, None)
     return available
 
 

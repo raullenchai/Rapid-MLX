@@ -6346,11 +6346,18 @@ def serve_command(args):
         if resolve_revision(args.model) is not None
         else ((_serve_profile.hf_path or args.model) if _serve_profile else args.model)
     )
-    if not getattr(args, "no_mllm", False) and (
-        _serve_profile is None
-        or (_serve_profile.supports_image_input and not _serve_profile.is_text_only)
-        or _serve_profile.modality != "text"
-        or getattr(args, "mllm", False)
+    _spec_mode = getattr(args, "spec_decode", "none") or "none"
+    if (
+        not getattr(args, "no_mllm", False)
+        and _spec_mode == "none"
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+        and (
+            _serve_profile is None
+            or (_serve_profile.supports_image_input and not _serve_profile.is_text_only)
+            or _serve_profile.modality != "text"
+            or getattr(args, "mllm", False)
+        )
     ):
         _prefetch_config_for_degrade_probe(_native_probe_path)
     _native_media = bool(native_media_model_type(_native_probe_path))

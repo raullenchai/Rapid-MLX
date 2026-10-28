@@ -1080,6 +1080,9 @@ def test_native_dispatch_retries_failed_config_download(monkeypatch):
 
     monkeypatch.setattr(utils, "_DEGRADE_CONFIG_PREFETCHED", set())
     monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+    monkeypatch.setattr(utils, "_DEGRADE_CONFIG_ATTEMPTS", {})
+    clock = {"now": 100.0}
+    monkeypatch.setattr(utils.time, "monotonic", lambda: clock["now"])
     state = {"calls": 0, "ready": False}
     monkeypatch.setattr(
         utils,
@@ -1095,5 +1098,33 @@ def test_native_dispatch_retries_failed_config_download(monkeypatch):
 
     monkeypatch.setattr(model_downloads, "hf_hub_download", download)
     assert not utils._prefetch_config_for_degrade_probe("org/repo")
+    assert not utils._prefetch_config_for_degrade_probe("org/repo")
+    assert state["calls"] == 1
+    clock["now"] += utils._DEGRADE_CONFIG_RETRY_SECONDS
     assert utils._prefetch_config_for_degrade_probe("org/repo")
     assert state["calls"] == 2
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{"spec_decode": "dflash"}, {"enable_mtp": True}, {"force_spec_decode": True}],
+)
+def test_speculative_direct_repo_skips_boot_prefetch(monkeypatch, flags):
+    from rapid_mlx import _version_check, cli
+
+    fetched = _stub_boot_prefetch(monkeypatch)
+    monkeypatch.setattr(cli, "_normalize_speculative_config_or_exit", lambda args: None)
+    _mock_vision_absent(monkeypatch)
+    _patch_lane_probes(monkeypatch, is_mllm=False, cache_mode=None)
+    monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _name: None)
+
+    def reached_boot():
+        raise _ReachedPastVisionGuardError()
+
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", reached_boot)
+    args = _args("org/unknown-text")
+    for key, value in flags.items():
+        setattr(args, key, value)
+    with pytest.raises(_ReachedPastVisionGuardError):
+        cli.serve_command(args)
+    assert fetched == []
