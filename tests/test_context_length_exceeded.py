@@ -527,8 +527,11 @@ def test_mllm_text_preflight_does_not_count_image_data_as_text():
 
     from rapid_mlx.service.helpers import enforce_context_length_for_messages
 
+    rendered = []
+
     def apply_chat_template(messages, **kwargs):  # noqa: ARG001
         # Like templates that serialize unknown content parts as JSON.
+        rendered.append(messages)
         return list(json.dumps(messages))
 
     engine = SimpleNamespace(
@@ -552,6 +555,10 @@ def test_mllm_text_preflight_does_not_count_image_data_as_text():
     prompt_tokens = enforce_context_length_for_messages(engine, messages)
 
     assert prompt_tokens is not None and prompt_tokens < 1_000
+    assert rendered[0][0]["content"] == [
+        {"type": "text", "text": "which one?"},
+        *[{"type": "image"}] * 4,
+    ]
     assert messages[0]["content"][1] is image
 
 
