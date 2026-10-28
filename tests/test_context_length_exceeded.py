@@ -511,6 +511,31 @@ def test_mllm_preflight_does_not_count_inline_media_bytes_as_text():
     assert messages[1]["content"][0]["image_url"]["url"] == data_url
 
 
+def test_media_placeholders_accept_pydantic_messages_and_parts():
+    from rapid_mlx.api.models import ContentPart, ImageUrl, Message
+    from rapid_mlx.service.helpers import _media_parts_as_placeholders
+
+    message = Message(
+        role="user",
+        content=[
+            ContentPart(
+                type="image_url",
+                image_url=ImageUrl(url="data:image/png;base64," + "A" * 1000),
+            ),
+            ContentPart(type="text", text="Describe it."),
+        ],
+    )
+
+    dict_message = {"role": "user", "content": list(message.content)}
+
+    normalized = _media_parts_as_placeholders([message, dict_message])
+
+    for item in normalized:
+        assert item["role"] == "user"
+        assert item["content"][0] == {"type": "image"}
+        assert item["content"][1]["text"] == "Describe it."
+
+
 def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
     from fastapi import HTTPException
 
