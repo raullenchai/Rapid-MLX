@@ -95,7 +95,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # DeepSeek V4.1 keeps its previous parser; the original V4 DSML parser
     # below is verified only for V4 checkpoints.
     (
-        re.compile(r"deepseek.*v4[._-]?1", re.IGNORECASE),
+        re.compile(r"deepseek.*v4[._-]?1(?!\d)", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="deepseek",
             reasoning_parser="deepseek_v4",

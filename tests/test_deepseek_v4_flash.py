@@ -241,6 +241,40 @@ def test_openai_developer_message_is_kept_as_system(thinking):
     assert prompt.startswith("<｜begin▁of▁sentence｜>Answer in French.<｜User｜>hello")
 
 
+def test_final_developer_turn_still_gets_generation_prefix():
+    from rapid_mlx.utils.chat_template import apply_chat_template
+
+    prompt = apply_chat_template(
+        object(),
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "developer", "content": "Reply briefly."},
+        ],
+        model_name="deepseek-v4-flash-2bit",
+        enable_thinking=False,
+    )
+    assert prompt.endswith("<｜Assistant｜></think>")
+
+
+@pytest.mark.parametrize(
+    "model", ["/models/DeepSeek-V4-128k-Flash", "someone/deepseek-v4-1024ctx-4bit"]
+)
+def test_v4_names_with_numeric_suffix_stay_on_original_v4(model):
+    from rapid_mlx.model_auto_config import detect_model_config
+
+    assert detect_model_config(model).tool_call_parser == "deepseek_v4_flash"
+
+
+@pytest.mark.parametrize("raw", ["null", "[]", "1", '"text"'])
+def test_non_object_arguments_use_the_string_fallback(raw):
+    from rapid_mlx.utils.deepseek_v4_flash import encode_arguments_to_dsml
+
+    rendered = encode_arguments_to_dsml({"name": "f", "arguments": raw})
+    assert rendered == (
+        f'<｜DSML｜parameter name="arguments" string="true">{raw}</｜DSML｜parameter>'
+    )
+
+
 def test_encoder_additional_reference_features():
     from rapid_mlx.utils.deepseek_v4_flash import (
         REASONING_EFFORT_MAX,

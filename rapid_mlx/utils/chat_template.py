@@ -2495,7 +2495,8 @@ def _render_chat_template(
     is_deepseek_v4 = is_deepseek_v4_0731(model_name)
     # Original V4 checkpoints only; V4.1 and 0731 have their own templates.
     is_original_v4 = (
-        re.search(r"deepseek.*v4(?![._-]?1)", model_name, re.IGNORECASE) is not None
+        re.search(r"deepseek.*v4(?![._-]?1(?!\d))", model_name, re.IGNORECASE)
+        is not None
         and not is_deepseek_v4
     )
 
@@ -2597,9 +2598,13 @@ def _render_chat_template(
 
         work = copy.deepcopy(messages)
         # OpenAI's developer role carries system instructions; the native
-        # encoder's developer role is a different, droppable turn type.
-        for message in work:
-            if message.get("role") == "developer":
+        # encoder drops developer turns before the final request turn.
+        final_turn = max(
+            (i for i, m in enumerate(work) if m.get("role") in {"user", "developer"}),
+            default=-1,
+        )
+        for index, message in enumerate(work):
+            if message.get("role") == "developer" and index < final_turn:
                 message["role"] = "system"
         if tools:
             if not work or work[0].get("role") != "system":
