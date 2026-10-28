@@ -16,8 +16,9 @@ import Foundation
 /// for ONE reason: an account that already had a `qsprk-` key saved before
 /// this change must keep seeing its ledger without being asked to paste
 /// anything — see ``ShareComputeLedgerCoordinator``'s provider-key-first,
-/// legacy-key-fallback resolution. Nothing writes a NEW `qsprk-` key through
-/// this store any more.
+/// legacy-key-fallback resolution. There is no write path left at all: the
+/// app cannot save a NEW `qsprk-` key, only read and retire an already-stored
+/// one — see ``ShareComputeReadKeyStore``.
 enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     case empty
     /// Not a `qsprk-` key. Almost always a paste of the wrong credential —
@@ -29,8 +30,6 @@ enum ShareComputeReadKeyRejection: Error, Equatable, Sendable {
     /// Newlines, tabs, or other control characters. A newline is the classic
     /// copy-from-a-terminal artefact and would corrupt the header it lands in.
     case containsControlCharacters
-    /// The key was valid, but this Mac could not save it.
-    case keychainUnavailable
 }
 
 /// A validated legacy `qsprk-` key. See the type-level note above: this is
@@ -98,17 +97,18 @@ enum ShareComputeReadKeyStoreResult: Equatable, Sendable {
 ///
 /// ## Why this is its own type
 ///
-/// Nothing writes a new key through this store any more — see the type-level
-/// note on ``ShareComputeReadKeyRejection``. It is read by
-/// ``ShareComputeLedgerCoordinator`` only as a fallback, for an account that
-/// saved a `qsprk-` key before Rapid moved to one key. Provider credentials
-/// use a separate Keychain account/store and travel to registration over
-/// stdin; they never enter ledger requests, UserDefaults, argv, or the
-/// environment.
+/// This store has NO write path: nothing in the app can save a new `qsprk-`
+/// key any more — see the type-level note on ``ShareComputeReadKeyRejection``.
+/// It only reads a `qsprk-` key an account saved before Rapid moved to one
+/// key, and retires it permanently once a `qsppk-` provider key takes over —
+/// see ``ShareComputeLedgerCoordinator``'s provider-key-first, legacy-key-
+/// fallback resolution. Provider credentials use a separate Keychain
+/// account/store and travel to registration over stdin; they never enter
+/// ledger requests, UserDefaults, argv, or the environment.
 ///
 /// ## Account namespacing
 ///
-/// The account name is deliberately unlike `rapid.web-search.*` and
+/// The account names are deliberately unlike `rapid.web-search.*` and
 /// `embedded-engine.bearer.v1`: a collision would make one feature's key
 /// readable as another's, and the version suffix leaves room to rotate the
 /// format without reading a stale item as a current one.
@@ -116,45 +116,49 @@ struct ShareComputeReadKeyStore: Sendable {
     /// Unique across every Keychain account this app writes.
     static let account = "rapid.quicksilver.ledger-read-key.v1"
 
-    /// Set once a provider key has ever been resolved as the active
-    /// credential — see ``retire()``. Deliberately NOT a Keychain account:
-    /// a provider-key-is-now-saved fact carries no secret, so it belongs in
-    /// UserDefaults, which fails independently of whatever is locking the
-    /// Keychain at the moment ``retire()`` tries to delete the legacy item.
-    /// That independence is the whole point — it is the fallback for when
-    /// the Keychain deletion itself fails.
-    static let retiredDefaultsKey = "Rapid.shareCompute.legacyReadKeyRetired"
+    /// A separate Keychain item, written once a provider key has ever been
+    /// resolved as the active credential — see ``retire()``. Its presence,
+    /// not its content, is the signal, so a one-byte value is enough.
+    ///
+    /// Using the SAME Keychain abstraction as `account` rather than
+    /// UserDefaults keeps this store a plain `Sendable` value type (no
+    /// non-Sendable `UserDefaults` field) and keeps the "retired" fact
+    /// subject to the exact same injectable storage tests already use.
+    static let retiredAccount = "rapid.quicksilver.ledger-read-key.retired.v1"
 
     private let keychain: any KeychainStoring
-    private let defaults: UserDefaults
 
-    /// Uses the system Keychain. Tests inject ``InMemoryKeychain`` and a
-    /// scoped `UserDefaults` suite.
-    init(keychain: any KeychainStoring = SystemKeychain(), defaults: UserDefaults = .standard) {
+    /// Uses the system Keychain. Tests inject ``InMemoryKeychain``.
+    init(keychain: any KeychainStoring = SystemKeychain()) {
         self.keychain = keychain
-        self.defaults = defaults
     }
 
     /// Once true, ``load()`` reports ``ShareComputeReadKeyStoreResult/missing``
     /// forever, regardless of what `account` still holds.
-    var isRetired: Bool { defaults.bool(forKey: Self.retiredDefaultsKey) }
+    var isRetired: Bool {
+        if case .found = keychain.readWithoutUserInteraction(account: Self.retiredAccount) { return true }
+        return false
+    }
 
     /// Permanently retires the legacy key: a provider key is this Mac's ONE
     /// credential now, and "the legacy key works until a provider key is
     /// saved" means that moment, forever — not "until the provider key is
     /// later removed," which would resurrect a credential the owner decision
     /// already moved past. Called the moment a provider key is resolved as
-    /// the active credential (see ``ShareComputeLedgerCoordinator``).
+    /// the active credential (see ``ShareComputeLedgerCoordinator``), but
+    /// only once — the caller checks ``isRetired`` first so an already-
+    /// retired account never repeats these writes on every refresh.
     ///
-    /// Deleting the Keychain item is best effort — an ACL mismatch or a
-    /// locked Keychain can make it fail — so the flag is set FIRST and
-    /// independently of that outcome. `load()` consults the flag before ever
+    /// Deleting `account` is best effort — an ACL mismatch or a locked
+    /// Keychain can make it fail — so `retiredAccount` is written FIRST and
+    /// independently of that outcome. `load()` consults it before ever
     /// reading `account`, so a failed deletion still never lets the legacy
     /// key resurface.
     @discardableResult
     func retire() -> Bool {
-        defaults.set(true, forKey: Self.retiredDefaultsKey)
-        return keychain.delete(account: Self.account)
+        let flagged = keychain.write(account: Self.retiredAccount, secret: "1")
+        let deleted = keychain.delete(account: Self.account)
+        return flagged && deleted
     }
 
     func load() -> ShareComputeReadKeyStoreResult {
@@ -175,19 +179,9 @@ struct ShareComputeReadKeyStore: Sendable {
         }
     }
 
-    /// Writes a validated key, replacing any existing one.
-    ///
-    /// Takes ``ShareComputeReadKey`` rather than `String` so there is no way
-    /// to reach the Keychain with an unvalidated value — including a `qsppk-`
-    /// provider key, which `validate` rejects on its prefix.
-    @discardableResult
-    func save(_ key: ShareComputeReadKey) -> Bool {
-        keychain.write(account: Self.account, secret: key.rawValue)
-    }
-
-    /// Removes the stored key. Used by "Remove key" and by the revoked-key
-    /// recovery path, so a rejected credential does not sit on disk waiting to
-    /// 401 again on the next launch.
+    /// Removes the stored key. Used by the revoked-key recovery path, so a
+    /// rejected credential does not sit on disk waiting to 401 again on the
+    /// next launch — and by ``retire()`` above.
     @discardableResult
     func remove() -> Bool {
         keychain.delete(account: Self.account)
