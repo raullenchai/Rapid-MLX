@@ -437,23 +437,12 @@ struct ConnectToolsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
-                ForEach(Array(stride(from: 0, to: displayedTools.count, by: 2)), id: \.self) { row in
-                    GridRow {
-                        toolCell(displayedTools[row], index: row)
-                        if row + 1 < displayedTools.count {
-                            toolCell(displayedTools[row + 1], index: row + 1)
-                        } else {
-                            Color.clear.frame(maxWidth: .infinity, minHeight: 52)
-                                .overlay(alignment: .leading) {
-                                    Rectangle().fill(RapidTheme.hairline).frame(width: 1)
-                                }
-                                .overlay(alignment: .top) {
-                                    if row >= 2 { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
-                                }
-                        }
-                    }
-                }
+            // Two columns when every row fits at its natural width; a single
+            // column otherwise, so names, captions and buttons never truncate
+            // in a narrow window or at larger text sizes.
+            ViewThatFits(in: .horizontal) {
+                toolGrid(displayedTools, columns: 2)
+                toolGrid(displayedTools, columns: 1)
             }
             .groupedCard()
             if terminal {
@@ -465,14 +454,36 @@ struct ConnectToolsView: View {
         }
     }
 
-    private func toolCell(_ tool: ConnectTool, index: Int) -> some View {
+    private func toolGrid(_ displayedTools: [ConnectTool], columns: Int) -> some View {
+        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(Array(stride(from: 0, to: displayedTools.count, by: columns)), id: \.self) { row in
+                GridRow {
+                    ForEach(row..<(row + columns), id: \.self) { index in
+                        if index < displayedTools.count {
+                            toolCell(displayedTools[index], index: index, columns: columns)
+                        } else {
+                            Color.clear.frame(maxWidth: .infinity, minHeight: 52)
+                                .overlay(alignment: .leading) {
+                                    Rectangle().fill(RapidTheme.hairline).frame(width: 1)
+                                }
+                                .overlay(alignment: .top) {
+                                    if index >= columns { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+                                }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func toolCell(_ tool: ConnectTool, index: Int, columns: Int) -> some View {
         ConnectToolRow(tool: tool, isReady: configReady,
                        onPersistentLaunch: { server.preserveAgentConnection() })
             .overlay(alignment: .leading) {
-                if index % 2 == 1 { Rectangle().fill(RapidTheme.hairline).frame(width: 1) }
+                if index % columns != 0 { Rectangle().fill(RapidTheme.hairline).frame(width: 1) }
             }
             .overlay(alignment: .top) {
-                if index >= 2 { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+                if index >= columns { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
             }
     }
 
@@ -844,12 +855,16 @@ private struct ConnectToolRow: View {
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
                 .contextMenu {
                     if let sessionSnippet = tool.sessionSnippet {
-                        Button("Copy one-session command") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(sessionSnippet, forType: .string)
-                        }
+                        Button("Copy one-session command") { copyToPasteboard(sessionSnippet) }
                         .disabled(!isReady)
                         .accessibilityIdentifier("Launch.Integration.SessionCopy.\(tool.id)")
+                    }
+                }
+                .accessibilityActions {
+                    // The context menu is mouse-first; give keyboard and
+                    // VoiceOver users the same one-session command directly.
+                    if let sessionSnippet = tool.sessionSnippet, isReady {
+                        Button("Copy one-session command") { copyToPasteboard(sessionSnippet) }
                     }
                 }
                 Button("Open in Terminal") {
@@ -904,6 +919,11 @@ private struct ConnectToolRow: View {
         case .rewriteConfig: return "Copy \(tool.name) setup command"
         case .guide: return "Copy \(tool.name) setup guide"
         }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func copy() {
