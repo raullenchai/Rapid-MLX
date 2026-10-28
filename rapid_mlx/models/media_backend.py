@@ -12,6 +12,38 @@ def native_media_model_type(model_name):
     return model_type if model_type in {"lfm3_vl"} else None
 
 
+def resolve_native_checkpoint(model_name):
+    from ..model_aliases import resolve_hub_model, resolve_revision, resolve_subfolder
+
+    local = Path(model_name).expanduser()
+    if local.is_dir():
+        return local
+    revision = resolve_revision(model_name)
+    if revision is not None:
+        from ..utils.tokenizer import _resolve_subfolder_checkpoint
+
+        return Path(_resolve_subfolder_checkpoint(model_name))
+    from huggingface_hub import snapshot_download
+
+    subfolder = resolve_subfolder(model_name)
+    prefix = f"{subfolder}/" if subfolder else ""
+    patterns = [
+        prefix + p
+        for p in (
+            "*.json",
+            "*.jinja",
+            "*.txt",
+            "*.model",
+            "*.tiktoken",
+            "*.safetensors",
+        )
+    ]
+    snapshot = Path(
+        snapshot_download(resolve_hub_model(model_name), allow_patterns=patterns)
+    )
+    return snapshot / subfolder if subfolder else snapshot
+
+
 def load_native_media(model_path, config):
     if config.get("model_type") != "lfm3_vl":
         raise ValueError("Unsupported native media model")

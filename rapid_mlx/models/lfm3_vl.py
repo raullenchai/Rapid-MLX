@@ -366,6 +366,11 @@ class Model(nn.Module):
                     and expected[base].ndim == 2
                 ):
                     extra.remove(name)
+        for name in result:
+            if name.endswith((".scales", ".biases")):
+                prefix = name.rsplit(".", 1)[0]
+                if prefix + ".scales" not in result or prefix + ".biases" not in result:
+                    raise ValueError(f"Incomplete quantization metadata: {prefix}")
         missing = set(expected) - set(result)
         if missing or extra:
             raise ValueError(

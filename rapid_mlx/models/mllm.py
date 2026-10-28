@@ -1761,10 +1761,14 @@ class MLXMultimodalLM:
         if self._loaded:
             return
 
-        from .media_backend import load_native_media, native_media_model_type
+        from .media_backend import (
+            load_native_media,
+            native_media_model_type,
+            resolve_native_checkpoint,
+        )
 
         if native_media_model_type(self.model_name):
-            model_path = _resolve_checkpoint(self.model_name)
+            model_path = resolve_native_checkpoint(self.model_name)
             from mlx_lm.utils import load_config
 
             self.config = load_config(Path(model_path))
