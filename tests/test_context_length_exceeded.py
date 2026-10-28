@@ -445,6 +445,72 @@ def test_explicit_context_length_checks_mllm_text_before_media_expansion():
         reset_config()
 
 
+def test_mllm_preflight_does_not_count_inline_media_bytes_as_text():
+    """A photo sent as a data URL must not be counted as prompt text.
+
+    LFM3-VL's template only recognises ``{"type": "image"}`` and serializes
+    any other part with ``tojson``, so an ``image_url`` part used to reach
+    the tokenizer as ~260k base64 "tokens" and a 300 KB photo was rejected.
+    """
+    import json
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    seen = []
+
+    class _Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):  # noqa: ARG002
+            seen.append(messages)
+            rendered = ""
+            for message in messages:
+                content = message["content"]
+                if isinstance(content, str):
+                    rendered += content
+                    continue
+                for part in content:
+                    if part.get("type") == "image":
+                        rendered += "<|image|>"
+                    elif part.get("type") == "text":
+                        rendered += part["text"]
+                    else:
+                        rendered += json.dumps(part)
+            return list(range(len(rendered)))
+
+    class _MLLMEngine:
+        is_mllm = True
+        tokenizer = _Tokenizer()
+
+    data_url = "data:image/jpeg;base64," + "A" * 400_000
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "input_audio", "input_audio": {"data": "B" * 1000}},
+                {"type": "video_url", "video_url": {"url": "file:///clip.mp4"}},
+                {"type": "text", "text": "What is this?"},
+            ],
+        },
+    ]
+    cfg = reset_config()
+    try:
+        cfg.context_length = 4096
+        prompt_tokens = enforce_context_length_for_messages(
+            _MLLMEngine(), messages, max_tokens=64
+        )
+    finally:
+        reset_config()
+
+    assert prompt_tokens == len("Be brief.<|image|>") + len(
+        json.dumps({"type": "audio"}) + json.dumps({"type": "video"})
+    ) + len("What is this?")
+    assert seen[0][1]["content"][0] == {"type": "image"}
+    # The caller's request messages are left untouched for generation.
+    assert messages[1]["content"][0]["image_url"]["url"] == data_url
+
+
 def test_operational_prompt_cap_counts_batched_mllm_tokenizer_output():
     from fastapi import HTTPException
 

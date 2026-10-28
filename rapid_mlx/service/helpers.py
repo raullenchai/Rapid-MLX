@@ -5448,6 +5448,52 @@ def _requires_exact_prompt_count() -> bool:
     return cfg.max_prompt_tokens is not None or cfg.context_length is not None
 
 
+_MEDIA_PART_PLACEHOLDERS = {
+    "image_url": "image",
+    "input_image": "image",
+    "image": "image",
+    "video_url": "video",
+    "input_video": "video",
+    "video": "video",
+    "audio_url": "audio",
+    "input_audio": "audio",
+    "audio": "audio",
+}
+
+
+def _media_parts_as_placeholders(messages: list) -> list:
+    """Replace media content parts with bare ``{"type": <media>}`` markers.
+
+    The MLLM text preflight renders the raw OpenAI messages through the
+    checkpoint's chat template. Templates that only recognise
+    ``{"type": "image"}`` serialize any other part with ``tojson``, so an
+    ``image_url`` data URL is counted as hundreds of thousands of text
+    tokens and an ordinary photo is rejected as ``context_length_exceeded``.
+    Media token cost belongs to the processor's post-expansion check; the
+    text preflight should only see a placeholder, as the generation path does.
+    """
+    normalized = []
+    for message in messages:
+        if hasattr(message, "model_dump"):
+            message = message.model_dump(exclude_none=True)
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            normalized.append(message)
+            continue
+        parts = []
+        for part in content:
+            if hasattr(part, "model_dump"):
+                part = part.model_dump(exclude_none=True)
+            media = (
+                _MEDIA_PART_PLACEHOLDERS.get(part.get("type"))
+                if isinstance(part, dict)
+                else None
+            )
+            parts.append({"type": media} if media else part)
+        normalized.append({**message, "content": parts})
+    return normalized
+
+
 def _tokenized_prompt_length(tokenized) -> int:
     """Return sequence length from tokenizer list, batch, or tensor output."""
     from collections.abc import Mapping
@@ -5629,7 +5675,7 @@ def enforce_context_length_for_messages(
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
             prompt_ids = apply_template(
-                messages,
+                _media_parts_as_placeholders(messages),
                 tools=tools,
                 tokenize=True,
                 add_generation_prompt=True,

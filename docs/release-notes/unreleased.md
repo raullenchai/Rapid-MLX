@@ -6,3 +6,6 @@
   with thinking, XML tool calls, and hybrid prefix-cache support.
 
 - Add native image support for LFM3-VL and the pinned `lfm3-vl-2b-8bit` alias.
+- Fix vision requests with ordinary-sized photos sent as `image_url` data URLs
+  being rejected as `context_length_exceeded` on models whose chat template
+  serializes unknown content parts as text (for example LFM3-VL).
