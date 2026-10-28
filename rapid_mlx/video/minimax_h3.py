@@ -128,7 +128,8 @@ class MiniMaxH3VideoEngine:
             raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled") from exc
         try:
             future.result()
-        except concurrent.futures.CancelledError as exc:  # queued job cancelled by stop()
+        # A job still queued when stop() shuts the executor down is cancelled.
+        except concurrent.futures.CancelledError as exc:
             raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled") from exc
 
     def _generate(
