@@ -70,6 +70,14 @@ FILES = (
 )
 
 
+def _clear_mlx_cache() -> None:
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return
+    mx.clear_cache()
+
+
 class MiniMaxH3BackendError(RuntimeError):
     """Safe generation failure."""
 
@@ -203,3 +211,7 @@ class MiniMaxH3VideoEngine:
             raise MiniMaxH3BackendError(
                 f"MiniMax-H3 generation failed ({type(exc).__name__}); check server logs"
             ) from exc
+        finally:
+            # A job leaves tens of GB of activations in MLX's buffer cache;
+            # release them so the next job starts from the resident weights.
+            _clear_mlx_cache()
