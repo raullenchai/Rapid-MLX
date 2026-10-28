@@ -1128,3 +1128,38 @@ def test_speculative_direct_repo_skips_boot_prefetch(monkeypatch, flags):
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
     assert fetched == []
+
+
+def test_concurrent_config_probes_share_result(monkeypatch):
+    import concurrent.futures
+    import threading
+
+    from rapid_mlx import model_downloads, model_metadata
+    from rapid_mlx.api import utils
+
+    monkeypatch.setattr(utils, "_DEGRADE_CONFIG_PREFETCHED", set())
+    monkeypatch.setattr(utils, "_DEGRADE_CONFIG_ATTEMPTS", {})
+    monkeypatch.setattr(utils, "_DEGRADE_CONFIG_INFLIGHT", {})
+    monkeypatch.setattr(model_metadata, "hub_offline_mode_active", lambda: False)
+    entered, release = threading.Event(), threading.Event()
+    state = {"ready": False, "calls": 0}
+    monkeypatch.setattr(
+        utils,
+        "read_model_metadata",
+        lambda _: _meta({"model_type": "lfm3_vl"}) if state["ready"] else None,
+    )
+
+    def download(*args, **kwargs):
+        state["calls"] += 1
+        entered.set()
+        assert release.wait(5)
+        state["ready"] = True
+
+    monkeypatch.setattr(model_downloads, "hf_hub_download", download)
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        first = pool.submit(utils._prefetch_config_for_degrade_probe, "org/concurrent")
+        assert entered.wait(5)
+        second = pool.submit(utils._prefetch_config_for_degrade_probe, "org/concurrent")
+        release.set()
+        assert first.result() and second.result()
+    assert state["calls"] == 1

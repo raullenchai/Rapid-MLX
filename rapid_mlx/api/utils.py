@@ -1750,6 +1750,7 @@ def resolve_serving_lane_decision(
 _DEGRADE_CONFIG_PREFETCHED: set[str] = set()
 _DEGRADE_CONFIG_ATTEMPTS: dict[str, float] = {}
 _DEGRADE_CONFIG_ATTEMPTS_LOCK = threading.Lock()
+_DEGRADE_CONFIG_INFLIGHT: dict[str, threading.Event] = {}
 _DEGRADE_CONFIG_RETRY_SECONDS = 60.0
 
 
@@ -1795,11 +1796,26 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
     if hub_offline_mode_active():
         return False
     with _DEGRADE_CONFIG_ATTEMPTS_LOCK:
-        now = time.monotonic()
-        last = _DEGRADE_CONFIG_ATTEMPTS.get(model_ref)
-        if last is not None and now - last < _DEGRADE_CONFIG_RETRY_SECONDS:
-            return False
-        _DEGRADE_CONFIG_ATTEMPTS[model_ref] = now
+        pending = _DEGRADE_CONFIG_INFLIGHT.get(model_ref)
+        if pending is None:
+            now = time.monotonic()
+            last = _DEGRADE_CONFIG_ATTEMPTS.get(model_ref)
+            if last is not None and now - last < _DEGRADE_CONFIG_RETRY_SECONDS:
+                return False
+            _DEGRADE_CONFIG_ATTEMPTS[model_ref] = now
+            pending = threading.Event()
+            _DEGRADE_CONFIG_INFLIGHT[model_ref] = pending
+            leader = True
+        else:
+            leader = False
+    if not leader:
+        pending.wait()
+        metadata = read_model_metadata(model_ref)
+        return bool(
+            metadata
+            and isinstance(metadata.config, dict)
+            and metadata.config.get("model_type")
+        )
     try:
         from rapid_mlx.model_aliases import (
             resolve_hub_model,
@@ -1810,7 +1826,6 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
 
         revision = resolve_revision(model_ref)
         subfolder = resolve_subfolder(model_ref)
-
         call_with_deadline(
             hf_hub_download,
             _HF_RESOLVE_TIMEOUT_SECONDS,
@@ -1818,19 +1833,23 @@ def _prefetch_config_for_degrade_probe(model_ref: str) -> bool:
             f"{subfolder}/config.json" if subfolder else "config.json",
             **({"revision": revision} if revision else {}),
         )
+        metadata = read_model_metadata(model_ref)
+        available = bool(
+            metadata
+            and isinstance(metadata.config, dict)
+            and metadata.config.get("model_type")
+        )
+        if available:
+            _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
+            with _DEGRADE_CONFIG_ATTEMPTS_LOCK:
+                _DEGRADE_CONFIG_ATTEMPTS.pop(model_ref, None)
+        return available
     except Exception:  # noqa: BLE001 - best-effort probe, never fatal
         return False
-    metadata = read_model_metadata(model_ref)
-    available = bool(
-        metadata
-        and isinstance(metadata.config, dict)
-        and metadata.config.get("model_type")
-    )
-    if available:
-        _DEGRADE_CONFIG_PREFETCHED.add(model_ref)
+    finally:
         with _DEGRADE_CONFIG_ATTEMPTS_LOCK:
-            _DEGRADE_CONFIG_ATTEMPTS.pop(model_ref, None)
-    return available
+            _DEGRADE_CONFIG_INFLIGHT.pop(model_ref, None)
+            pending.set()
 
 
 def _text_lane_loads_model_type(model_type: str) -> bool:
