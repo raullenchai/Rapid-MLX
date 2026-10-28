@@ -318,6 +318,14 @@ def scan_code(text, workspace, *, python=False):
             if wrapper == "command" and token in {"-v", "-V"}:
                 command_start = False
                 continue
+            # A glob or brace pattern in command position expands to a name
+            # the checks here never see (c[u]rl, {c,}url).
+            if (
+                token not in {"[", "[["}
+                and not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*\+?=.*", token)
+                and re.search(r"[*?[]|\{.*(?:,|\.\.).*\}", token)
+            ):
+                return "Dynamic shell expansion"
             name = Path(token).name.lower()
             if wrapper and token.startswith(("-S", "--split-string")):
                 return "Indirect command execution"

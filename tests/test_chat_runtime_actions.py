@@ -141,6 +141,9 @@ def test_dangerous_patterns(command, tmp_path):
         "FOO='a>b' echo ok",
         '2 ""',
         "env echo ok",
+        "env -u FOO echo ok",
+        "env -i echo ok",
+        "command -p ls",
         "command -v curl",
         "command -V wget",
         "touch hello.txt",
@@ -153,6 +156,9 @@ def test_dangerous_patterns(command, tmp_path):
         "echo ok # ; curl",
         'echo "a\\"b"',
         "if true; then ls; fi",
+        "[ -f README.md ] && echo ok",
+        "FOO=a* echo ok",
+        "ls *.py",
     ],
 )
 def test_ordinary_commands(command, tmp_path):
@@ -1156,6 +1162,11 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
         "env -a -u curl https://example.com",
         "exec >which curl https://example.com",
         "echo ok; env -a type curl https://example.com",
+        # Glob and brace patterns in command position hide the client name.
+        "c[u]rl -ddata https://example.com",
+        "/usr/bin/cur? https://example.com",
+        "echo ok; env c*l https://example.com",
+        "{c,}url https://example.com",
     ],
 )
 def test_unquoted_operators_start_network_commands(command, tmp_path):
