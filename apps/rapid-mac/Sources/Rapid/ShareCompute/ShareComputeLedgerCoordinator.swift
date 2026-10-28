@@ -24,46 +24,30 @@ import Observation
 ///
 /// 1. Every request captures `generation` at issue. Its result is applied only
 ///    if `generation` is still current. Anything else is dropped silently.
-/// 2. Saving or removing a key bumps `generation` and cancels the in-flight
-///    task, so a late result from the old world can never win.
-/// 3. A 401 removes the stored LEGACY key **only** when the generation still
-///    matches *and* the key currently in the Keychain is byte-identical to the
-///    one that was rejected. Either check alone would be enough in theory;
-///    both are cheap and the failure mode is deleting a credential the user
-///    just pasted. A rejected PROVIDER key is never auto-removed — see
-///    ``apply(error:rejectedKey:source:generation:)``.
-/// 4. Manual refresh, the poll loop, and the post-save load all go through
-///    ``refresh(reason:)``. There is no second path.
+/// 2. A credential change bumps `generation` and cancels the in-flight task,
+///    so a late result from the old world can never win.
+/// 3. A rejected key is never auto-removed — it is this Mac's single
+///    QuickSilver credential, managed from Settings → Experimental → Share
+///    Compute; silently clearing it would also strand node registration, and
+///    the user already has a place to replace it. See ``apply(error:)``.
+/// 4. Manual refresh, the poll loop, and the credential-changed path all go
+///    through ``refresh(reason:)``. There is no second path.
 ///
-/// ## Credential resolution — ONE key, with a read-only migration fallback
+/// ## Credential resolution — ONE key
 ///
 /// Owner decision: the user-facing QuickSilver credential is the `qsppk-`
-/// provider key, entered once in Settings → Experimental → Share Compute.
-/// This coordinator checks ``providerStore`` first and uses that key for the
-/// ledger too — the backend accepts either key format on this endpoint.
+/// provider key, entered once in Settings → Experimental → Share Compute,
+/// and it is the ONLY credential this coordinator ever reads.
 ///
-/// * Provider key found → use it, and retire ``store`` (the LEGACY `qsprk-`
-///   read key) once and for all — see ``ShareComputeReadKeyStore/retire()``.
-///   "Works until a provider key is saved" means that moment, permanently,
-///   not "until the provider key happens to be removed again."
-/// * Provider key missing AND the legacy key is neither present nor already
-///   retired → fall back to it, so an account that saved one before this
-///   change keeps seeing its ledger without pasting anything.
-/// * Provider key corrupted or unavailable → that error, never the legacy
-///   key — silently falling back would hide a broken provider credential
-///   instead of telling the user to fix it.
+/// * Found → use it.
+/// * Missing → the "add your key" onboarding state (``ShareComputeLedgerState/noKey``).
+/// * Corrupted or unavailable → that error.
 ///
-/// There is no write path left anywhere for the legacy key: the app cannot
-/// save a new one, only read and retire an already-stored one — see
-/// ``ShareComputeReadKeyRejection``.
-
-/// The two outcomes of a provider-store load that ``resolveProviderKey()``
-/// hands back to its caller — `.corrupted` and `.unavailable` are resolved
-/// to a terminal state internally and never reach here.
-private enum ShareComputeProviderKeyLookup {
-    case found(ShareComputeProviderKey)
-    case missing
-}
+/// Rapid briefly kept a read-only `qsprk-` key working as a migration
+/// fallback; the owner decision was to drop it outright rather than keep
+/// maintaining its edge cases — see ``ShareComputeLegacyReadKeyCleanup``,
+/// which this coordinator uses once at construction to clear out whatever is
+/// left of it, and never reads again.
 
 @MainActor
 @Observable
@@ -97,8 +81,7 @@ final class ShareComputeLedgerCoordinator {
     // MARK: Published state
 
     private(set) var state: ShareComputeLedgerState = .loading
-    /// `qsppk-…7f24` (or, for a migrated account, `qsprk-…7f24`). Never the
-    /// key.
+    /// `qsppk-…7f24`. Never the key.
     private(set) var savedKeyLabel: String?
     /// When the most recent request was ISSUED. Drives the interval gate.
     private(set) var lastRefreshStartedAt: Date?
@@ -107,11 +90,9 @@ final class ShareComputeLedgerCoordinator {
 
     // MARK: Collaborators
 
-    /// The ONE user-facing key: the `qsppk-` provider key, checked first.
+    /// The ONLY user-facing key: the `qsppk-` provider key.
     private let providerStore: ShareComputeProviderKeyStore
-    /// LEGACY fallback only — see the type-level credential-resolution note.
-    private let store: ShareComputeReadKeyStore
-    private let load: @Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount
+    private let load: @Sendable (ShareComputeProviderKey) async throws -> ShareComputeLedgerAccount
     private let now: @Sendable () -> Date
     /// How the wake task waits. Injected so tests can drive a gate expiry
     /// without sleeping five real minutes.
@@ -130,15 +111,6 @@ final class ShareComputeLedgerCoordinator {
     private var issue = 0
     /// The single in-flight walk, if any.
     private var inFlight: Task<Void, Never>?
-
-    /// Which store a key in use came from. Threaded through each request as
-    /// a captured parameter — never a stored property — for the same reason
-    /// ``generation`` and the key itself are captured per-request: a stored
-    /// value could be overwritten by a NEWER credential change before an
-    /// OLDER request's 401 lands, and would then decide the wrong thing.
-    /// Decides what a 401 may touch — see
-    /// ``apply(error:rejectedKey:source:generation:)``.
-    private enum CredentialSource: Equatable { case provider, legacy }
 
     /// Why Refresh is unavailable, or ``open`` when it is.
     ///
@@ -204,21 +176,17 @@ final class ShareComputeLedgerCoordinator {
 
     private let wake = WakeBox()
 
-    /// `keychain` backs BOTH stores below, matching production: the real app
-    /// has exactly one system Keychain, with the provider key and the legacy
-    /// read key living under their own distinct accounts in it (see
-    /// ``ShareComputeProviderKeyStore/account`` and
-    /// ``ShareComputeReadKeyStore/account``). A test injects one
-    /// `InMemoryKeychain` and can seed either account independently.
+    /// `keychain` backs the provider-key store, matching production: the
+    /// real app has exactly one system Keychain. A test injects an
+    /// `InMemoryKeychain`.
     init(
         keychain: any KeychainStoring = SystemKeychain(),
-        load: (@Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount)? = nil,
+        load: (@Sendable (ShareComputeProviderKey) async throws -> ShareComputeLedgerAccount)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: (@Sendable (TimeInterval) async -> Void)? = nil,
         fixture: ShareComputeLedgerFixture? = ShareComputeLedgerFixture.requested()
     ) {
         self.providerStore = ShareComputeProviderKeyStore(keychain: keychain)
-        self.store = ShareComputeReadKeyStore(keychain: keychain)
         self.load = load ?? { try await ShareComputeLedgerClient().account(key: $0) }
         self.now = now
         self.sleep = sleep ?? { seconds in
@@ -228,6 +196,12 @@ final class ShareComputeLedgerCoordinator {
         if let fixture {
             state = fixture.state
             savedKeyLabel = fixture.savedKeyLabel
+        } else {
+            // One-shot, best-effort: golden mode never touches the Keychain
+            // at all (see the `fixture` branch above and in `refresh`), so
+            // this only runs on the real path. The result is deliberately
+            // ignored — see ``ShareComputeLegacyReadKeyCleanup``.
+            ShareComputeLegacyReadKeyCleanup.run(keychain: keychain)
         }
     }
 
@@ -380,9 +354,8 @@ final class ShareComputeLedgerCoordinator {
 
     /// The ONE entry point the UI calls: the provider key in Settings →
     /// Experimental → Share Compute changed (saved, replaced, or removed).
-    /// Re-resolves the credential — provider key first, legacy key as
-    /// fallback — and loads immediately, the same way a freshly pasted key
-    /// used to.
+    /// Re-resolves the credential and loads immediately, the same way a
+    /// freshly pasted key used to.
     ///
     /// ``ShareComputeManager`` owns the actual Keychain write; this just
     /// tells the ledger its world changed. The generation bump happens before
@@ -391,45 +364,6 @@ final class ShareComputeLedgerCoordinator {
     func providerKeyChanged() {
         invalidate()
         refresh(reason: .keyChanged)
-    }
-
-    /// Removes the stored LEGACY key. Not reachable from the UI — there is no
-    /// write path left for this key at all (see the type-level note on
-    /// ``ShareComputeReadKeyRejection``); this is the direct delete path onto
-    /// ``store`` for anything that still needs to clear an already-stored
-    /// migration fallback explicitly.
-    ///
-    /// The generation bump is what guarantees a request still in flight cannot
-    /// come back and re-render a ledger for a key that was just deleted.
-    func removeKey() {
-        invalidate()
-        // There is no legacy key left to validate, so the owed validation and
-        // the timer that would have run it both go.
-        pendingKeyValidation = false
-        wake.cancel()
-        guard store.remove() else {
-            state = .unavailable(.keychainRemovalFailed)
-            return
-        }
-        savedKeyLabel = nil
-        // A saved provider key simply takes over — the legacy key was only
-        // ever a stand-in for it. Routed through the SAME resolver the main
-        // credential path uses, so a corrupted or locked provider key is
-        // reported honestly here too, instead of collapsing into `.noKey`
-        // and falsely telling the user no credential exists at all.
-        switch resolveProviderKey() {
-        case .found:
-            refresh(reason: .keyChanged)
-            return
-        case nil:
-            // A terminal failure (corrupted or locked) was already applied.
-            return
-        case .missing:
-            break
-        }
-        // The 429 cooldown and the interval SURVIVE: both are properties of
-        // this IP's recent request history, not of the credential.
-        state = .noKey
     }
 
     /// Ends the current world: nothing issued before this point may be applied.
@@ -496,51 +430,6 @@ final class ShareComputeLedgerCoordinator {
         scheduleWake()
     }
 
-    // MARK: - Provider-key resolution
-
-    /// What a provider-store load means for the ledger, interpreted in
-    /// exactly ONE place so the main credential-resolution path in
-    /// ``refresh(reason:)`` and the post-legacy-removal path in
-    /// ``removeKey()`` cannot diverge on it. The two callers agree on
-    /// `.corrupted` and `.unavailable` — both are terminal failures, applied
-    /// here as a side effect (``state`` and ``savedKeyLabel``) — and
-    /// disagree only on what a truly ABSENT provider key (`.missing`) means
-    /// next (fall back to the legacy key, vs. there being nothing left to
-    /// fall back to), so that case is handed back for the caller to decide.
-    ///
-    /// Returns `nil` when a terminal failure was already applied; the caller
-    /// must return immediately without touching `state` again.
-    private func resolveProviderKey() -> ShareComputeProviderKeyLookup? {
-        switch providerStore.load() {
-        case .found(let key):
-            // "Until a provider key is saved" means PERMANENTLY once one
-            // exists — not merely while it stays saved. Retiring here, at
-            // the one moment the provider key is about to be used, is what
-            // stops a later provider-key removal from resurrecting the
-            // legacy key. Checked first and skipped once already retired, so
-            // an account past this point never repeats the Keychain writes
-            // on every single refresh — only the first resolution pays for
-            // them.
-            if !store.isRetired {
-                store.retire()
-            }
-            return .found(key)
-        case .missing:
-            return .missing
-        case .unavailable:
-            state = .unavailable(.keychainUnavailable)
-            return nil
-        case .corrupted:
-            // There IS a saved provider key — it just doesn't decode as one.
-            // Falling back to the legacy key here would silently serve a
-            // ledger under a credential the user never asked this coordinator
-            // to use, while leaving the broken provider key undiagnosed.
-            savedKeyLabel = nil
-            state = .unavailable(.providerKeyCorrupted)
-            return nil
-        }
-    }
-
     // MARK: - The one request path
 
     private func refresh(reason: RefreshReason) {
@@ -576,46 +465,31 @@ final class ShareComputeLedgerCoordinator {
             }
         }
 
-        // Credential resolution: the provider key first — it is the ONE key
-        // the UI ever asks for — falling back to a previously-saved legacy
-        // key only when no provider key is saved. See the type-level note.
-        switch resolveProviderKey() {
-        case .found(let providerKey):
-            savedKeyLabel = providerKey.redactedLabel
-            // The ledger endpoint accepts either key format; this wraps the
-            // provider key's raw value in the shape `load` already accepts.
-            start(key: ShareComputeReadKey(rawValue: providerKey.rawValue), source: .provider)
-            return
-        case .missing:
-            break
-        case nil:
-            // A terminal failure (corrupted or locked) was already applied by
-            // `resolveProviderKey()`. Only a truly ABSENT provider key may
-            // fall through to the legacy read key below.
-            return
-        }
-
-        switch store.load() {
-        case .missing, .corrupted:
-            savedKeyLabel = nil
-            state = .noKey
-            return
-        case .unavailable:
-            state = .unavailable(.keychainUnavailable)
-            return
+        // Credential resolution — ONE key, see the type-level note.
+        switch providerStore.load() {
         case .found(let key):
             savedKeyLabel = key.redactedLabel
-            start(key: key, source: .legacy)
+            start(key: key)
+        case .missing:
+            savedKeyLabel = nil
+            state = .noKey
+        case .unavailable:
+            state = .unavailable(.keychainUnavailable)
+        case .corrupted:
+            // There IS a saved key — it just doesn't decode as one. Claiming
+            // `.noKey` here would mask a broken credential behind the wrong
+            // onboarding message.
+            savedKeyLabel = nil
+            state = .unavailable(.providerKeyCorrupted)
         }
     }
 
-    private func start(key: ShareComputeReadKey, source: CredentialSource) {
-        generationSafeStart(key: key, source: source, generation: generation)
+    private func start(key: ShareComputeProviderKey) {
+        generationSafeStart(key: key, generation: generation)
     }
 
     private func generationSafeStart(
-        key: ShareComputeReadKey,
-        source: CredentialSource,
+        key: ShareComputeProviderKey,
         generation captured: Int
     ) {
         issue &+= 1
@@ -635,7 +509,7 @@ final class ShareComputeLedgerCoordinator {
                 await self.clearInFlight(captuedIssue)
             } catch let error as ShareComputeLedgerError {
                 await self.finish(captured, captuedIssue) { coordinator in
-                    coordinator.apply(error: error, rejectedKey: key, source: source, generation: captured)
+                    coordinator.apply(error: error)
                 }
             } catch {
                 await self.finish(captured, captuedIssue) { coordinator in
@@ -704,12 +578,7 @@ final class ShareComputeLedgerCoordinator {
         updateGate()
     }
 
-    private func apply(
-        error: ShareComputeLedgerError,
-        rejectedKey: ShareComputeReadKey,
-        source: CredentialSource,
-        generation captured: Int
-    ) {
+    private func apply(error: ShareComputeLedgerError) {
         if error == .rateLimited {
             // Hold the Refresh control down for a cooldown, and keep whatever
             // is on screen: a 429 says nothing about the data's validity.
@@ -718,50 +587,14 @@ final class ShareComputeLedgerCoordinator {
             )
         }
         if error == .unauthorized {
-            discardRejectedKey(rejectedKey, source: source, generation: captured)
-            return
-        }
-        state = state.failing(error)
-    }
-
-    /// A 401 surfaces as `.unauthorized` either way. Whether anything gets
-    /// DELETED depends on where the rejected key came from:
-    ///
-    /// * **provider** — never deleted here. It is this Mac's single
-    ///   QuickSilver credential, managed from Settings → Experimental →
-    ///   Share Compute; silently clearing it would also strand node
-    ///   registration, and the user already has a place to replace it.
-    /// * **legacy** — deleted, exactly as before, so a dead migration key
-    ///   does not sit on disk waiting to 401 again on the next launch. Only
-    ///   when the 401 refers to the key that is actually stored right now:
-    ///   the generation check above already rules out a save/remove that
-    ///   happened during the flight, and this second check covers the rest —
-    ///   a key written by another window, or a Keychain that changed under
-    ///   us. Getting this wrong means deleting a freshly pasted, perfectly
-    ///   good credential because a request from ten seconds ago came back
-    ///   angry.
-    private func discardRejectedKey(
-        _ rejected: ShareComputeReadKey,
-        source: CredentialSource,
-        generation captured: Int
-    ) {
-        guard captured == generation else { return }
-        guard source == .legacy else {
+            // Never auto-removed: it is this Mac's single QuickSilver
+            // credential, managed from Settings → Experimental → Share
+            // Compute; silently clearing it would also strand node
+            // registration, and the user already has a place to replace it.
             savedKeyLabel = nil
             state = .unauthorized
             return
         }
-        guard case .found(let current) = store.load(), current == rejected else {
-            // A different key is stored now. The rejection belongs to a
-            // credential that is already gone — leave the current one alone
-            // and let the next refresh judge it on its own merits.
-            return
-        }
-        guard store.remove() else {
-            state = .unavailable(.keychainRemovalFailed)
-            return
-        }
-        savedKeyLabel = nil
-        state = .unauthorized
+        state = state.failing(error)
     }
 }

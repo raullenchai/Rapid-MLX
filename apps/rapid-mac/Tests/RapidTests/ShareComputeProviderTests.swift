@@ -146,10 +146,13 @@ struct ShareComputeProviderTests {
         keychain.values[ShareComputeProviderKeyStore.account] = "corrupted"
         #expect(store.load() == .corrupted)
         keychain.values.removeAll()
-        keychain.values[ShareComputeReadKeyStore.account] = "qsprk-read-fixture-123456789"
+        // A value under a totally unrelated account (the retired legacy
+        // read-key account) must never be picked up by the provider store,
+        // and removing the provider key must never touch it either.
+        keychain.values[ShareComputeLegacyReadKeyCleanup.account] = "qsprk-read-fixture-123456789"
         #expect(store.load() == .missing)
         #expect(store.remove())
-        #expect(keychain.values[ShareComputeReadKeyStore.account] != nil)
+        #expect(keychain.values[ShareComputeLegacyReadKeyCleanup.account] != nil)
     }
 
     @Test("Unavailable credentials fail before unloading a local model; corrupt keys can be removed")
