@@ -254,7 +254,7 @@ struct ChatStreamClient {
                 }
             }
             self.imageMessageID = imageMessageIndex.map { modelMessages[$0].id }
-            self.messages = modelMessages.enumerated().flatMap { index, message -> [Wire.Message] in
+            let wireMessages = modelMessages.enumerated().flatMap { index, message -> [Wire.Message] in
                 var rows: [Wire.Message] = []
                 if let prelude = message.wirePrelude,
                     !prelude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -263,6 +263,12 @@ struct ChatStreamClient {
                 rows.append(Wire.Message(from: message, includeImages: index == imageMessageIndex))
                 return rows
             }
+            let size = ModelSizing.estimate(alias: alias).paramsBillions
+            self.messages = Wire.addingSmallModelToolReminder(
+                to: wireMessages,
+                toolNames: alias == Self.glm53TensorFoldAlias ? [] : (tools ?? []).map(\.function.name),
+                isSmallModel: size.map { $0 <= 4 } ?? false
+            )
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
@@ -910,6 +916,26 @@ enum ChatStreamError: LocalizedError {
 /// the app deals with the public ``ChatMessage`` type and the SSE event
 /// enum, not these Codable details.
 enum Wire {
+    /// Modify only the outgoing copy, leaving the transcript and stored history intact.
+    static func addingSmallModelToolReminder(
+        to messages: [Message], toolNames: [String], isSmallModel: Bool
+    ) -> [Message] {
+        guard isSmallModel, !toolNames.isEmpty,
+              let index = messages.lastIndex(where: { $0.role == "user" }),
+              messages[..<index].contains(where: { $0.role == "assistant" }) else {
+            return messages
+        }
+        let reminder = "(Tools available: \(toolNames.joined(separator: ", ")). Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly.)"
+        var result = messages
+        switch result[index].content {
+        case .text(let text):
+            result[index].content = .text(text + "\n\n" + reminder)
+        case .parts(var parts):
+            parts.append(.init(type: "text", text: "\n\n" + reminder, image_url: nil))
+            result[index].content = .parts(parts)
+        }
+        return result
+    }
     struct ChatCompletionRequest: Encodable {
         let model: String
         let messages: [Message]
@@ -1019,7 +1045,7 @@ enum Wire {
     /// on whether the source message carries image attachments.
     struct Message: Encodable {
         let role: String
-        let content: MessageContent
+        var content: MessageContent
         let tool_calls: [ToolCall]?
         let tool_call_id: String?
 
