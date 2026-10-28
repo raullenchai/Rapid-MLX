@@ -181,6 +181,11 @@ class MiniMaxH3VideoEngine:
                 image=image,
                 last_image=last_image,
                 progress_callback=progress,
+                # Keep the AdaLN weights after caching their projections: the
+                # cache is keyed by the timestep table, which differs between
+                # text- and frame-conditioned runs, so dropped weights would
+                # make the next request in the other mode fail until reload.
+                extra={"drop_adaln_weights": False},
             )
             output_path.unlink(missing_ok=True)
             generate_video(self._model, request, output_path=output_path)

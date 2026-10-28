@@ -72,6 +72,7 @@ def test_generation_loads_once_and_maps_workflows(monkeypatch, tmp_path):
     engine.generate(**args, last_image=tmp_path / "last.png")
     assert [call[0] for call in calls] == ["load", "t2va", "fl2va"]
     assert calls[2][1].last_image == tmp_path / "last.png"
+    assert all(call[1].extra == {"drop_adaln_weights": False} for call in calls[1:])
     engine.stop()
     with pytest.raises(MiniMaxH3BackendError, match="cancelled"):
         engine.generate(**args)
