@@ -95,7 +95,14 @@ def _size_one(repo_id: str) -> tuple[str, int | None]:
     if repo_id == minimax_h3.REPO:
         # The H3 repository duplicates every component under per-workflow
         # trees; only the pinned root payload is ever downloaded.
-        payloads = ((repo_id, minimax_h3.REVISION, minimax_h3.FILES),)
+        payloads = (
+            (repo_id, minimax_h3.REVISION, minimax_h3.FILES),
+            (
+                minimax_h3.TURBO_REPO,
+                minimax_h3.TURBO_REVISION,
+                (minimax_h3.TURBO_FILE,),
+            ),
+        )
     if data_files is not None or payloads is not None:
         # Vendored image runtimes deliberately fetch an audited subset of a
         # repository. Size that exact pinned payload: SDXL's repository also

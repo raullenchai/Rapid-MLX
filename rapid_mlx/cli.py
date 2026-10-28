@@ -11805,7 +11805,12 @@ def pull_command(args):
             local_files_only=True,
         )
         verify_mtp_snapshot(sidecar)
-    for asset_repo, revision, allow_patterns in image_runtime_assets_for(primary_repo):
+    assets = image_runtime_assets_for(primary_repo)
+    if primary_repo == "MiniMaxAI/MiniMax-H3":
+        from rapid_mlx.video.minimax_h3 import TURBO_FILE, TURBO_REPO, TURBO_REVISION
+
+        assets = (*assets, (TURBO_REPO, TURBO_REVISION, (TURBO_FILE,)))
+    for asset_repo, revision, allow_patterns in assets:
         print(f"\n  Runtime assets: {asset_repo}")
         dependency_args = copy.copy(args)
         dependency_args.model = asset_repo

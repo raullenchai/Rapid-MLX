@@ -12,6 +12,7 @@ from rapid_mlx.video.minimax_h3 import (
     MiniMaxH3RequestError,
     MiniMaxH3VideoEngine,
 )
+from rapid_mlx.video.minimax_h3 import _merge_turbo_lora as real_merge_turbo_lora
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +24,17 @@ def fake_mlx_cache(monkeypatch):
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
+    from rapid_mlx import _mirror
+    from rapid_mlx.video import minimax_h3
+
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", lambda *a, **k: "/fake")
+    monkeypatch.setattr(minimax_h3, "_merge_turbo_lora", lambda *a: None)
+
+
+def fake_pipeline():
+    return SimpleNamespace(
+        transformer=object(), scheduler=SimpleNamespace(set_shift=lambda _: None)
+    )
 
 
 def test_alias_and_download_selection():
@@ -57,7 +69,7 @@ def test_generation_loads_once_and_maps_workflows(monkeypatch, tmp_path):
 
     def load(path, workflow):
         calls.append(("load", path, workflow))
-        return SimpleNamespace(workflow=workflow)
+        return SimpleNamespace(workflow=workflow, pipeline=fake_pipeline())
 
     def generate(model, request, *, output_path):
         calls.append((model.workflow, request))
@@ -93,7 +105,7 @@ def test_runtime_failure_is_mapped(monkeypatch, tmp_path):
     module = ModuleType("mlx_vlm.generate")
     module.VideoGenerationRequest = lambda **kwargs: kwargs
     module.load_video_generation_model = lambda *args, **kwargs: SimpleNamespace(
-        workflow="fl2va"
+        workflow="fl2va", pipeline=fake_pipeline()
     )
 
     def fail(*args, **kwargs):
@@ -138,7 +150,22 @@ def test_pinned_component_cache_completeness(monkeypatch, tmp_path):
         path = snapshot / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
+    from rapid_mlx.video.minimax_h3 import TURBO_FILE, TURBO_REPO, TURBO_REVISION
+
+    assert not is_repo_cached(REPO)
+    turbo = (
+        tmp_path
+        / f"models--{TURBO_REPO.replace('/', '--')}"
+        / "snapshots"
+        / TURBO_REVISION
+        / TURBO_FILE
+    )
+    turbo.parent.mkdir(parents=True)
+    turbo.write_bytes(b"x")
     assert is_repo_cached(REPO)
+    turbo.unlink()
+    assert not is_repo_cached(REPO)
+    turbo.write_bytes(b"x")
     (snapshot / FILES[-1]).unlink()
     assert not is_repo_cached(REPO)
 
@@ -155,7 +182,7 @@ def test_load_and_generation_share_one_thread(monkeypatch, tmp_path):
 
     def load(path, workflow):
         threads.append(threading.current_thread().name)
-        return SimpleNamespace(workflow=workflow)
+        return SimpleNamespace(workflow=workflow, pipeline=fake_pipeline())
 
     def generate(model, request, *, output_path):
         threads.append(threading.current_thread().name)
@@ -201,7 +228,7 @@ def test_stop_cancels_queued_job_with_backend_error(monkeypatch, tmp_path):
     module = ModuleType("mlx_vlm.generate")
     module.VideoGenerationRequest = lambda **kwargs: SimpleNamespace(**kwargs)
     module.load_video_generation_model = lambda *args, **kwargs: SimpleNamespace(
-        workflow="fl2va"
+        workflow="fl2va", pipeline=fake_pipeline()
     )
     running, release = threading.Event(), threading.Event()
 
@@ -329,10 +356,17 @@ def test_pull_minimax(monkeypatch):
         "allow_patterns_override": list(FILES),
         "revision_override": REVISION,
     }
+    from rapid_mlx.video.minimax_h3 import TURBO_FILE, TURBO_REPO, TURBO_REVISION
+
+    assert calls[1][0][0].model == TURBO_REPO
+    assert calls[1][1] == {
+        "allow_patterns_override": [TURBO_FILE],
+        "revision_override": TURBO_REVISION,
+    }
     for selector in (dict(bits=4, format=None), dict(bits=None, format="q4")):
         with pytest.raises(ValueError, match="does not support"):
             cli.pull_command(argparse.Namespace(model="minimax-h3", **selector))
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_runtime_issue_probe_failure_and_missing_ffmpeg(monkeypatch):
@@ -402,7 +436,9 @@ def test_backend_validation_and_missing_output(monkeypatch, tmp_path):
 
     module = ModuleType("mlx_vlm.generate")
     module.VideoGenerationRequest = lambda **kwargs: SimpleNamespace(**kwargs)
-    module.load_video_generation_model = lambda *a, **k: SimpleNamespace()
+    module.load_video_generation_model = lambda *a, **k: SimpleNamespace(
+        pipeline=fake_pipeline()
+    )
     module.generate_video = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
     cache_calls = []
@@ -475,3 +511,126 @@ async def test_openai_720p_size_renders_on_the_32_aligned_canvas(monkeypatch):
     assert (captured["width"], captured["height"]) == (1280, 736)
     assert (captured["output_width"], captured["output_height"]) == (1280, 720)
     await video.delete_video(created["id"])
+
+
+def test_turbo_merge_and_metadata(monkeypatch, tmp_path):
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    from rapid_mlx.video import minimax_h3
+
+    path = tmp_path / "lora.safetensors"
+    arrays = {
+        f"{name}.lora_{side}.default.weight": np.full(
+            (128, 1) if side == "A" else (1, 128), value, dtype=np.float32
+        )
+        for name in ("one", "two")
+        for side, value in (("A", 2), ("B", 3))
+    }
+    save_file(arrays, str(path), metadata={"alpha": "8"})
+    import mlx.core as mx
+
+    mx.load = lambda _: arrays
+    mx.float32 = np.float32
+    calls = []
+    mx.eval = lambda value: calls.append("eval")
+    mx.clear_cache = lambda: calls.append("clear")
+    utils = ModuleType("mlx.utils")
+    utils.tree_flatten = lambda p: list(p.items())
+    monkeypatch.setitem(sys.modules, "mlx.utils", utils)
+    weights = {
+        "one.weight": np.array([[1]], dtype=np.float16),
+        "two.weight": np.array([[2]], dtype=np.float16),
+    }
+
+    class Transformer:
+        def parameters(self):
+            return weights
+
+        def load_weights(self, items, strict):
+            assert len(items) == 1 and strict is False
+            key, value = items[0]
+            calls.append(key)
+            weights[key] = value
+
+    real_merge_turbo_lora(Transformer(), path)
+    assert weights["one.weight"].item() == 49
+    assert weights["two.weight"].item() == 50
+    assert calls == ["eval", "one.weight", "clear", "eval", "two.weight", "clear"]
+    for metadata in ({}, {"alpha": "0"}, {"alpha": "bad"}):
+        save_file(arrays, str(path), metadata=metadata)
+        with pytest.raises(minimax_h3.MiniMaxH3BackendError, match="alpha"):
+            real_merge_turbo_lora(Transformer(), path)
+
+
+def test_turbo_load_recipe(monkeypatch, tmp_path):
+    from rapid_mlx import _mirror
+    from rapid_mlx.video import minimax_h3
+
+    calls = []
+    monkeypatch.setattr(
+        _mirror,
+        "pinned_snapshot_download",
+        lambda *a, **k: calls.append((a, k)) or str(tmp_path),
+    )
+    monkeypatch.setattr(
+        minimax_h3, "_merge_turbo_lora", lambda *a: calls.append(("merge", a))
+    )
+    module = ModuleType("mlx_vlm.generate")
+    pipeline = SimpleNamespace(
+        transformer=object(),
+        scheduler=SimpleNamespace(
+            set_shift=lambda value: calls.append(("shift", value))
+        ),
+    )
+    module.load_video_generation_model = lambda *a, **k: SimpleNamespace(
+        pipeline=pipeline
+    )
+    module.VideoGenerationRequest = lambda **kw: SimpleNamespace(**kw)
+    module.generate_video = lambda model, request, output_path: (
+        calls.append(("request", request)),
+        output_path.write_bytes(b"x"),
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+    engine = MiniMaxH3VideoEngine(str(tmp_path))
+    engine.generate(
+        prompt="x",
+        output_path=tmp_path / "out",
+        width=768,
+        height=512,
+        num_frames=124,
+        fps=24,
+        seed=1,
+        image=None,
+    )
+    engine.stop()
+    assert calls[0] == (
+        (minimax_h3.TURBO_REPO, minimax_h3.TURBO_REVISION),
+        {"allow_patterns": [minimax_h3.TURBO_FILE]},
+    )
+    assert calls[1] == (
+        "merge",
+        (pipeline.transformer, tmp_path / minimax_h3.TURBO_FILE),
+    )
+    assert calls[2] == ("shift", 6.0)
+    assert calls[3][1].steps == 9
+
+
+def test_turbo_size_payload(monkeypatch):
+    import huggingface_hub
+
+    from rapid_mlx.video import minimax_h3 as h3
+    from scripts.gen_model_sizes import _size_one
+
+    calls = []
+
+    def info(repo, *, revision, files_metadata, timeout):
+        calls.append((repo, revision))
+        files = h3.FILES if repo == h3.REPO else (h3.TURBO_FILE,)
+        return SimpleNamespace(
+            siblings=[SimpleNamespace(rfilename=f, size=2) for f in files]
+        )
+
+    monkeypatch.setattr(huggingface_hub, "model_info", info)
+    assert _size_one(h3.REPO) == (h3.REPO, 2 * (len(h3.FILES) + 1))
+    assert calls == [(h3.REPO, h3.REVISION), (h3.TURBO_REPO, h3.TURBO_REVISION)]

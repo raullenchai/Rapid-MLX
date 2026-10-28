@@ -12,6 +12,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 REPO = "MiniMaxAI/MiniMax-H3"
 REVISION = "b3c7290e66afdf293bef3b9077b7a266ef421f34"
+TURBO_REPO = "lightx2v/Minimax-h3-Turbo"
+TURBO_REVISION = "30f485ed874aa44c8183348ad361c5eabad318da"
+TURBO_FILE = "minimax_h3_fl2v_turbo_8step_v1.1_768p_bf16.safetensors"
 
 # Exact data files in the pinned FL2VA plan. In particular, never fetch repo code.
 FILES = (
@@ -85,6 +88,42 @@ class MiniMaxH3BackendError(RuntimeError):
 
 class MiniMaxH3RequestError(ValueError):
     """Invalid generation request."""
+
+
+def _merge_turbo_lora(transformer: Any, path: Path) -> None:
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from safetensors import safe_open
+
+    # The scale is the file's metadata alpha over the rank (8/128); the
+    # rank-sized alpha in the upstream example config renders static.
+    with safe_open(str(path), "np") as reader:
+        metadata = reader.metadata() or {}
+    try:
+        alpha = float(metadata["alpha"])
+        if not 0 < alpha < float("inf"):
+            raise ValueError("invalid alpha")
+    except (KeyError, ValueError, TypeError) as exc:
+        raise MiniMaxH3BackendError("MiniMax-H3 Turbo LoRA has invalid alpha") from exc
+    weights = dict(tree_flatten(transformer.parameters()))
+    lora = mx.load(str(path))
+    suffix = ".lora_A.default.weight"
+    for name, a in lora.items():
+        if not name.endswith(suffix):
+            continue
+        prefix = name[: -len(suffix)]
+        key = prefix + ".weight"
+        b = lora[prefix + ".lora_B.default.weight"]
+        weight = weights.pop(key)
+        merged = (
+            weight.astype(mx.float32)
+            + (alpha / a.shape[0]) * (b.astype(mx.float32) @ a.astype(mx.float32))
+        ).astype(weight.dtype)
+        mx.eval(merged)
+        # Swap one tensor at a time so the old copy is freed before the next.
+        transformer.load_weights([(key, merged)], strict=False)
+        del weight, merged
+        mx.clear_cache()
 
 
 def is_minimax_h3_model(name: str | None) -> bool:
@@ -180,7 +219,14 @@ class MiniMaxH3VideoEngine:
                 progress()
                 # Both workflows use the same FL2VA pipeline; the wrapper's
                 # workflow only labels results, so one loaded model serves both.
-                self._model = load_video_generation_model(str(path), workflow="fl2va")
+                turbo = pinned_snapshot_download(
+                    TURBO_REPO, TURBO_REVISION, allow_patterns=[TURBO_FILE]
+                )
+                model = load_video_generation_model(str(path), workflow="fl2va")
+                _merge_turbo_lora(model.pipeline.transformer, Path(turbo) / TURBO_FILE)
+                # The 8-step adapter was distilled with a video shift of 6.
+                model.pipeline.scheduler.set_shift(6.0)
+                self._model = model
                 if on_loaded:
                     on_loaded()
             progress()
@@ -191,6 +237,9 @@ class MiniMaxH3VideoEngine:
                 height=height,
                 num_frames=num_frames,
                 seed=seed,
+                # mlx-vlm spaces `steps` sigmas, so 9 gives the adapter's 8
+                # denoising forwards.
+                steps=9,
                 image=image,
                 last_image=last_image,
                 progress_callback=progress,
