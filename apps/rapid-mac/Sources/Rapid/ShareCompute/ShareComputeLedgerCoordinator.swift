@@ -48,6 +48,15 @@ import Observation
 /// never falls back — that would silently hide a broken credential behind the
 /// legacy one instead of telling the user to fix it. Nothing in the UI writes
 /// a new legacy key; see ``ShareComputeReadKeyRejection``.
+
+/// The two outcomes of a provider-store load that ``resolveProviderKey()``
+/// hands back to its caller — `.corrupted` and `.unavailable` are resolved
+/// to a terminal state internally and never reach here.
+private enum ShareComputeProviderKeyLookup {
+    case found(ShareComputeProviderKey)
+    case missing
+}
+
 @MainActor
 @Observable
 final class ShareComputeLedgerCoordinator {
@@ -427,11 +436,19 @@ final class ShareComputeLedgerCoordinator {
         }
         savedKeyLabel = nil
         // A saved provider key simply takes over — the legacy key was only
-        // ever a stand-in for it. Only fall to the onboarding surface when
-        // there is truly nothing left to read with.
-        if case .found = providerStore.load() {
+        // ever a stand-in for it. Routed through the SAME resolver the main
+        // credential path uses, so a corrupted or locked provider key is
+        // reported honestly here too, instead of collapsing into `.noKey`
+        // and falsely telling the user no credential exists at all.
+        switch resolveProviderKey() {
+        case .found:
             refresh(reason: .keyChanged)
             return
+        case nil:
+            // A terminal failure (corrupted or locked) was already applied.
+            return
+        case .missing:
+            break
         }
         // The 429 cooldown and the interval SURVIVE: both are properties of
         // this IP's recent request history, not of the credential.
@@ -502,6 +519,40 @@ final class ShareComputeLedgerCoordinator {
         scheduleWake()
     }
 
+    // MARK: - Provider-key resolution
+
+    /// What a provider-store load means for the ledger, interpreted in
+    /// exactly ONE place so the main credential-resolution path in
+    /// ``refresh(reason:)`` and the post-legacy-removal path in
+    /// ``removeKey()`` cannot diverge on it. The two callers agree on
+    /// `.corrupted` and `.unavailable` — both are terminal failures, applied
+    /// here as a side effect (``state`` and ``savedKeyLabel``) — and
+    /// disagree only on what a truly ABSENT provider key (`.missing`) means
+    /// next (fall back to the legacy key, vs. there being nothing left to
+    /// fall back to), so that case is handed back for the caller to decide.
+    ///
+    /// Returns `nil` when a terminal failure was already applied; the caller
+    /// must return immediately without touching `state` again.
+    private func resolveProviderKey() -> ShareComputeProviderKeyLookup? {
+        switch providerStore.load() {
+        case .found(let key):
+            return .found(key)
+        case .missing:
+            return .missing
+        case .unavailable:
+            state = .unavailable(.keychainUnavailable)
+            return nil
+        case .corrupted:
+            // There IS a saved provider key — it just doesn't decode as one.
+            // Falling back to the legacy key here would silently serve a
+            // ledger under a credential the user never asked this coordinator
+            // to use, while leaving the broken provider key undiagnosed.
+            savedKeyLabel = nil
+            state = .unavailable(.providerKeyCorrupted)
+            return nil
+        }
+    }
+
     // MARK: - The one request path
 
     private func refresh(reason: RefreshReason) {
@@ -540,29 +591,20 @@ final class ShareComputeLedgerCoordinator {
         // Credential resolution: the provider key first — it is the ONE key
         // the UI ever asks for — falling back to a previously-saved legacy
         // key only when no provider key is saved. See the type-level note.
-        switch providerStore.load() {
+        switch resolveProviderKey() {
         case .found(let providerKey):
             savedKeyLabel = providerKey.redactedLabel
             // The ledger endpoint accepts either key format; this wraps the
             // provider key's raw value in the shape `load` already accepts.
             start(key: ShareComputeReadKey(rawValue: providerKey.rawValue), source: .provider)
             return
-        case .unavailable:
-            state = .unavailable(.keychainUnavailable)
-            return
-        case .corrupted:
-            // There IS a saved provider key — it just doesn't decode as one.
-            // Falling back to the legacy key here would silently serve a
-            // ledger under a credential the user never asked this coordinator
-            // to use, while leaving the broken provider key undiagnosed.
-            // Surface it as its own error instead; only a truly ABSENT
-            // provider key (`.missing`) may fall through to the legacy read
-            // key below.
-            savedKeyLabel = nil
-            state = .unavailable(.providerKeyCorrupted)
-            return
         case .missing:
             break
+        case nil:
+            // A terminal failure (corrupted or locked) was already applied by
+            // `resolveProviderKey()`. Only a truly ABSENT provider key may
+            // fall through to the legacy read key below.
+            return
         }
 
         switch store.load() {

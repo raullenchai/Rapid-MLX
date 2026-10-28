@@ -2041,17 +2041,40 @@ struct ShareComputeLedgerTests {
 }
 
 extension ShareComputeLedgerError {
-    /// Every user-facing message, for the copy-hygiene test.
+    /// Every user-facing message, for the copy-hygiene tests above.
+    ///
+    /// `assertExhaustive` below is what keeps this list honest: its `switch`
+    /// has no `default`, so adding a case to `ShareComputeLedgerError`
+    /// without adding a matching sample instance here fails THIS FILE to
+    /// compile instead of silently leaving a new message unchecked by
+    /// ``ledgerWordingIsAccurate`` or ``noUserFacingReadKeyWording``.
     static var allDisplayMessages: [String] {
-        [
-            ShareComputeLedgerError.noKey,
+        let instances: [ShareComputeLedgerError] = [
+            .noKey,
             .unauthorized,
             .badRequest(code: "bad_cursor"),
             .rateLimited,
             .serviceUnavailable,
             .unreachable("x"),
             .malformedBody,
-        ].map(\.displayMessage)
+            .keychainUnavailable,
+            .keychainRemovalFailed,
+            .providerKeyCorrupted,
+        ]
+        instances.forEach(assertExhaustive)
+        return instances.map(\.displayMessage)
+    }
+
+    /// Exists only to not compile when a case is added to
+    /// `ShareComputeLedgerError` without a corresponding entry in
+    /// `allDisplayMessages` above.
+    private static func assertExhaustive(_ error: ShareComputeLedgerError) {
+        switch error {
+        case .noKey, .unauthorized, .badRequest, .rateLimited, .serviceUnavailable,
+             .unreachable, .malformedBody, .keychainUnavailable, .keychainRemovalFailed,
+             .providerKeyCorrupted:
+            break
+        }
     }
 }
 
@@ -2411,6 +2434,85 @@ struct ShareComputeLedgerSafetyTests {
         #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
         #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
         #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+    }
+
+    @Test("Removing a legacy key never collapses a CORRUPTED provider key into noKey")
+    func removingLegacyKeyNeverCollapsesCorruptedProviderKey() async throws {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        // No provider key yet, so the legacy key is the active credential.
+        coordinator.appear()
+        await Self.settle()
+        #expect(gate.calls.last?.rawValue == Self.keyA.rawValue)
+
+        // The provider-key account picks up something that fails
+        // ``ShareComputeProviderKey/validate(_:)`` — e.g. a Keychain write
+        // from elsewhere that landed malformed — BEFORE the legacy key is
+        // removed.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: "not-a-valid-provider-key")
+
+        coordinator.removeKey()
+        await Self.settle()
+
+        // Removing the legacy key must surface the corrupted provider key
+        // honestly, not claim there is no credential at all.
+        #expect(coordinator.state == .unavailable(.providerKeyCorrupted))
+        #expect(coordinator.state.needsKey)
+        #expect(coordinator.state != .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
+        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == "not-a-valid-provider-key")
+    }
+
+    /// Reports the provider-key account as locked (`.unavailable`) while
+    /// behaving like an ordinary in-memory Keychain for every other account
+    /// — isolates "the provider key's own account is locked" from "the
+    /// legacy account is locked", which a plain `InMemoryKeychain` or
+    /// `FailingKeychain` cannot do.
+    private struct ProviderKeyLockedKeychain: KeychainStoring {
+        let inner: InMemoryKeychain
+
+        func read(account: String) -> String? { inner.read(account: account) }
+        func readWithoutUserInteraction(account: String) -> KeychainReadResult {
+            account == ShareComputeProviderKeyStore.account
+                ? .unavailable
+                : inner.readWithoutUserInteraction(account: account)
+        }
+        func write(account: String, secret: String) -> Bool { inner.write(account: account, secret: secret) }
+        func delete(account: String) -> Bool { inner.delete(account: account) }
+    }
+
+    @Test("Removing a legacy key never collapses an UNAVAILABLE provider key into noKey")
+    func removingLegacyKeyNeverCollapsesUnavailableProviderKey() async throws {
+        let inner = InMemoryKeychain()
+        inner.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        let keychain = ProviderKeyLockedKeychain(inner: inner)
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in ShareComputeLedgerFixture.account },
+            fixture: nil
+        )
+
+        coordinator.appear()
+        await Self.settle()
+        // The locked provider account already takes priority over the
+        // legacy key, per the shared resolver both paths use.
+        #expect(coordinator.state == .unavailable(.keychainUnavailable))
+
+        coordinator.removeKey()
+        await Self.settle()
+
+        // Removing the legacy key must not paper over a locked provider
+        // account by claiming there is no credential at all.
+        #expect(coordinator.state == .unavailable(.keychainUnavailable))
+        #expect(coordinator.state != .noKey)
+        #expect(inner.read(account: ShareComputeReadKeyStore.account) == nil)
     }
 
     // MARK: Race 2 — removal wins over a request in flight
