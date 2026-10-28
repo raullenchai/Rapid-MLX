@@ -108,6 +108,7 @@ def _merge_turbo_lora(transformer: Any, path: Path) -> None:
     weights = dict(tree_flatten(transformer.parameters()))
     lora = mx.load(str(path))
     suffix = ".lora_A.default.weight"
+    merged_count = 0
     for name, a in lora.items():
         if not name.endswith(suffix):
             continue
@@ -124,6 +125,9 @@ def _merge_turbo_lora(transformer: Any, path: Path) -> None:
         transformer.load_weights([(key, merged)], strict=False)
         del weight, merged
         mx.clear_cache()
+        merged_count += 1
+    if not merged_count:
+        raise MiniMaxH3BackendError("MiniMax-H3 Turbo LoRA has no adapter weights")
 
 
 def is_minimax_h3_model(name: str | None) -> bool:

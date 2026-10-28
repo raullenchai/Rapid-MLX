@@ -561,6 +561,11 @@ def test_turbo_merge_and_metadata(monkeypatch, tmp_path):
         save_file(arrays, str(path), metadata=metadata)
         with pytest.raises(minimax_h3.MiniMaxH3BackendError, match="alpha"):
             real_merge_turbo_lora(Transformer(), path)
+    unrelated = {"other.weight": np.zeros((1, 1), dtype=np.float32)}
+    save_file(unrelated, str(path), metadata={"alpha": "8"})
+    mx.load = lambda _: unrelated
+    with pytest.raises(minimax_h3.MiniMaxH3BackendError, match="no adapter"):
+        real_merge_turbo_lora(Transformer(), path)
 
 
 def test_turbo_load_recipe(monkeypatch, tmp_path):
