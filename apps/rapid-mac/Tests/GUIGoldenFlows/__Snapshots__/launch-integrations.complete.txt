@@ -56,6 +56,7 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.continue-dev" desc="Copy Continue.dev setup command" help="Configure this client to use Rapid-MLX. It writes ~/.continue/config.yaml." enabled=false
             AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor setup command" help="Configure this client to use Rapid-MLX. It writes Cursor's VS Code settings. Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend." enabled=false
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.langchain" desc="Copy LangChain setup guide" help="Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." enabled=false

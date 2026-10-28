@@ -575,7 +575,8 @@ struct ConnectToolsView: View {
                     displaySnippet: IntegrationLaunchCommand.configWriter(
                         id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel, cli: cliCommand
                     ),
-                    action: .rewriteConfig
+                    action: .rewriteConfig,
+                    caveat: target.id == "cursor" ? "Needs a public HTTPS endpoint" : nil
                 )
             }
             // Everything else prints setup instructions. The command carries no
@@ -799,6 +800,8 @@ private struct ConnectTool: Identifiable {
     var persistent: Bool = false
     var dayTwoSnippet: String? = nil
     var sessionSnippet: String? = nil
+    /// Short visible requirement shown under the name (e.g. Cursor's HTTPS need).
+    var caveat: String? = nil
 }
 
 /// A compact integration row with the existing copy and launch behavior.
@@ -815,9 +818,19 @@ private struct ConnectToolRow: View {
                 .foregroundStyle(RapidTheme.brandPrimaryDeep)
                 .frame(width: 20)
                 .accessibilityHidden(true)
-            Text(tool.name)
-                .font(RapidFont.bodyEmphasis)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tool.name)
+                    .font(RapidFont.bodyEmphasis)
+                    .lineLimit(1)
+                // A requirement that decides whether the setup can work at all
+                // stays visible instead of hiding in the tooltip.
+                if let caveat = tool.caveat {
+                    Text(caveat)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
             Spacer(minLength: RapidTheme.Space.sm)
             if tool.action == .launch {
                 Button(action: copy) {
