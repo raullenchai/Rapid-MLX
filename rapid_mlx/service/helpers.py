@@ -5484,9 +5484,10 @@ def _media_parts_as_placeholders(messages: list) -> list:
         for part in content:
             if hasattr(part, "model_dump"):
                 part = part.model_dump(exclude_none=True)
+            part_type = part.get("type") if isinstance(part, dict) else None
             media = (
-                _MEDIA_PART_PLACEHOLDERS.get(part.get("type"))
-                if isinstance(part, dict)
+                _MEDIA_PART_PLACEHOLDERS.get(part_type)
+                if isinstance(part_type, str)
                 else None
             )
             parts.append({"type": media} if media else part)
