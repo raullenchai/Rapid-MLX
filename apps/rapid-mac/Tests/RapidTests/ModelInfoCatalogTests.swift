@@ -56,6 +56,20 @@ struct ModelInfoCatalogTests {
         #expect(ModelInfoCatalog.info(for: "ornithology-9b", hfRepo: nil).family == "Unknown")
     }
 
+    @Test("Liquid families and LFM3 context windows")
+    func liquidFamilies() {
+        for alias in ["lfm3-1.7b-8bit", "lfm3-vl-2b-8bit", "lfm2.5-1b-4bit", "lfm2.5-8b-a1b-4bit"] {
+            #expect(ModelBrandStyle.brand(forAlias: alias) == .liquid)
+            #expect(ModelBrandStyle.monogram(forAlias: alias) == "Lf")
+        }
+        #expect(ModelBrandStyle.displayFamily(forAlias: "lfm3-1.7b-8bit") == "LFM3")
+        #expect(ModelBrandStyle.displayFamily(forAlias: "lfm3-vl-2b-8bit") == "LFM3 VL")
+        #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "lfm3-1.7b-8bit") == 262_144)
+        #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "lfm3-vl-2b-8bit") == 128_000)
+        #expect(ModelBrandStyle.modelType(forAlias: "lfm3-vl-2b-8bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "lfm3-1.7b-8bit") == .chat)
+    }
+
     @Test("Unknown alias families return nil context — meter shows '—', not a guess")
     func unknownFamily() {
         let mystery = ModelInfoCatalog.info(for: "totally-made-up-7b", hfRepo: nil)

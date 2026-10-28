@@ -194,6 +194,12 @@ enum ModelInfoCatalog {
         // ``text_config.max_position_embeddings`` in both the 9B dense and
         // 35B-A3B MoE configs. The live server value still wins when present.
         if a.hasPrefix("ornith-1.5-") { return ("Ornith 1.5", 262_144) }
+        // Live server context overrides these family labels when available.
+        if a == "lfm3-vl-2b-8bit" { return ("LFM3 VL", 128_000) }
+        if a.hasPrefix("lfm3-vl-") { return ("LFM3 VL", nil) }
+        if a == "lfm3-1.7b-8bit" { return ("LFM3", 262_144) }
+        if a.hasPrefix("lfm3-") { return ("LFM3", nil) }
+        if a.hasPrefix("lfm2.5-") { return ("LFM2.5", nil) }
         // Bonsai (small / experimental)
         if a.contains("bonsai") { return ("Bonsai", 4_096) }
         return ("Unknown", nil)
