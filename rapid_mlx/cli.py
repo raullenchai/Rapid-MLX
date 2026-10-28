@@ -5103,8 +5103,6 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     from .api.utils import resolve_serving_lane
     from .models.media_backend import native_media_model_type
 
-    if native_media_model_type(args.model) and not getattr(args, "no_mllm", False):
-        return True
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     if requested_spec_decode == "none" and getattr(args, "enable_mtp", False):
         requested_spec_decode = "mtp"
@@ -5115,6 +5113,13 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     from .models.mllm import VisionRuntimeStatus, vision_runtime_status
 
     profile = resolve_profile(args.model)
+    if (
+        not force_text
+        and requested_spec_decode == "none"
+        and _alias_modality(args.model) != "text-diffusion"
+        and native_media_model_type(args.model)
+    ):
+        return True
     if (
         profile is not None
         and getattr(profile, "modality", "text") == "text"
@@ -6360,7 +6365,12 @@ def serve_command(args):
         )
     ):
         _prefetch_config_for_degrade_probe(_native_probe_path)
-    _native_media = bool(native_media_model_type(_native_probe_path))
+    _native_media = (
+        _spec_mode == "none"
+        and not getattr(args, "enable_mtp", False)
+        and not getattr(args, "force_spec_decode", False)
+        and bool(native_media_model_type(_native_probe_path))
+    )
     if not _native_media:
         _warn_vision_text_only_degrade(_serve_profile, args=args)
     if _serve_will_run_on_mllm_lane(args):

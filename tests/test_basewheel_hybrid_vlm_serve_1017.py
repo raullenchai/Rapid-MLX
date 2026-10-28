@@ -193,8 +193,8 @@ def test_serve_guard_hybrid_vlm_boots_without_vision_extra(monkeypatch, capsys):
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(args)
 
-    # Checkpoint metadata is resolved before selecting a media backend.
-    assert fetched == ["qwen3.5-4b-4bit"]
+    # Known text-only catalog entries do not need a metadata fetch.
+    assert fetched == []
 
     err = capsys.readouterr().err
     assert err.count("warning: vision runtime absent") == 1

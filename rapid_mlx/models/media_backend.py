@@ -37,7 +37,7 @@ def resolve_native_checkpoint(model_name):
         from ..utils.tokenizer import _resolve_subfolder_checkpoint
 
         return Path(_resolve_subfolder_checkpoint(model_name))
-    from huggingface_hub import snapshot_download
+    from ..model_downloads import snapshot_download
 
     subfolder = resolve_subfolder(model_name)
     prefix = f"{subfolder}/" if subfolder else ""
@@ -63,11 +63,13 @@ def load_native_media(model_path, config):
         raise ValueError("Unsupported native media model")
     from mlx_lm.utils import load_model, load_tokenizer
 
+    from ..model_load_errors import typed_mlx_load_boundaries
     from .lfm3_vl import Model, ModelArgs
     from .lfm3_vl_processor import LFM3VLProcessor
 
     path = Path(model_path)
-    model, _ = load_model(path, get_model_classes=lambda config: (Model, ModelArgs))
+    with typed_mlx_load_boundaries():
+        model, _ = load_model(path, get_model_classes=lambda config: (Model, ModelArgs))
     tokenizer = load_tokenizer(
         path, tokenizer_config_extra={"trust_remote_code": False}
     )

@@ -25,7 +25,11 @@ class MLP(nn.Module):
         return self.w2(nn.silu(self.w1(x)) * self.w3(x))
 
 
-from mlx_lm.models.base import BaseModelArgs
+from .. import _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.models.base import BaseModelArgs  # noqa: E402
 
 
 @dataclass

@@ -327,6 +327,7 @@ def test_batched_leaf_extraction_degrades_like_upstream(monkeypatch):
     assert _extract_batched_leaf(object(), 0) is None
 
     import importlib
+    import sys
 
     real_import_module = importlib.import_module
 
@@ -336,6 +337,7 @@ def test_batched_leaf_extraction_degrades_like_upstream(monkeypatch):
         return real_import_module(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib, "import_module", missing_optional)
+    monkeypatch.delitem(sys.modules, "mlx_vlm.models.cache", raising=False)
     list_types, batch_kv_types = _batched_leaf_types()
     assert list_types == (CacheList,)
     assert batch_kv_types == (BatchKVCache,)
