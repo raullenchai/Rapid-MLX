@@ -234,3 +234,16 @@ def test_encoder_additional_reference_features():
         "chat",
         context=[{"role": "user", "content": "before"}],
     )
+
+
+def test_parser_preserves_plain_text_and_malformed_json_value():
+    parser = ToolParserManager.get_tool_parser("deepseek_v4_flash")(None)
+    plain = parser.extract_tool_calls("plain response")
+    assert not plain.tools_called and plain.content == "plain response"
+    wire = (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="f">'
+        '<｜DSML｜parameter name="value" string="false">invalid</｜DSML｜parameter>'
+        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+    parsed = parser.extract_tool_calls(wire)
+    assert json.loads(parsed.tool_calls[0]["arguments"]) == {"value": "invalid"}
