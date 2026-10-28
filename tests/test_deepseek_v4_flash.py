@@ -181,6 +181,33 @@ def test_generation_prompt_can_be_disabled():
     assert prompt == "<｜begin▁of▁sentence｜><｜User｜>hello"
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v41-flash-1017",
+        "rapid-mlx/DeepSeek-V4.1-Flash-1017-MLX",
+        "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
+    ],
+)
+def test_v41_models_keep_their_own_template(model, monkeypatch):
+    from rapid_mlx.utils import deepseek_v4_flash
+    from rapid_mlx.utils.chat_template import apply_chat_template
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("V4.1 must not use the original V4 encoder")
+
+    monkeypatch.setattr(deepseek_v4_flash, "encode_messages", unexpected)
+
+    class Tokenizer:
+        def apply_chat_template(self, messages, **_kwargs):
+            return "template:" + messages[-1]["content"]
+
+    prompt = apply_chat_template(
+        Tokenizer(), [{"role": "user", "content": "hello"}], model_name=model
+    )
+    assert prompt.startswith("template:")
+
+
 def test_encoder_additional_reference_features():
     from rapid_mlx.utils.deepseek_v4_flash import (
         REASONING_EFFORT_MAX,

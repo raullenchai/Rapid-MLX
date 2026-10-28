@@ -2493,9 +2493,9 @@ def _render_chat_template(
     from .deepseek_v4_0731 import encode_messages, is_deepseek_v4_0731
 
     is_deepseek_v4 = is_deepseek_v4_0731(model_name)
+    # Original V4 checkpoints only; V4.1 and 0731 have their own templates.
     is_original_v4 = (
-        "deepseek" in model_name.lower()
-        and "v4" in model_name.lower()
+        re.search(r"deepseek.*v4(?![._-]?1)", model_name, re.IGNORECASE) is not None
         and not is_deepseek_v4
     )
 
