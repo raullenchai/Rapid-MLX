@@ -15,7 +15,9 @@ VIDEO_TOKEN_ID = 125029
 DEFAULT_MAX_PIXELS = 1_048_576
 
 
-def smart_resize(height, width, factor=32, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS):
+def smart_resize(
+    height, width, factor=32, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS
+):
     if min(height, width) <= 0 or min_pixels <= 0 or max_pixels < min_pixels:
         raise ValueError("Invalid image dimensions or pixel limits")
     if max(height, width) / min(height, width) > 200:
@@ -36,7 +38,9 @@ def preprocess_images(images, *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXEL
     """Return ordered NumPy patches and THW grids for PIL images."""
     patches, grids = [], []
     for image in images:
-        h, w = smart_resize(image.height, image.width, min_pixels=min_pixels, max_pixels=max_pixels)
+        h, w = smart_resize(
+            image.height, image.width, min_pixels=min_pixels, max_pixels=max_pixels
+        )
         # Reject rounded results exceeding the admission budget, including extreme ratios.
         if h * w > max_pixels:
             raise ValueError("Resized image exceeds the pixel budget")
@@ -48,8 +52,10 @@ def preprocess_images(images, *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXEL
         pixels = np.repeat(pixels[..., None, :, :], 2, axis=5)
         patches.append(pixels.reshape(gh * gw, 1536))
         grids.append((1, gh, gw))
-    return (np.concatenate(patches) if patches else np.empty((0, 1536), dtype=np.float32),
-            np.asarray(grids, dtype=np.int32).reshape(-1, 3))
+    return (
+        np.concatenate(patches) if patches else np.empty((0, 1536), dtype=np.float32),
+        np.asarray(grids, dtype=np.int32).reshape(-1, 3),
+    )
 
 
 def expand_image_tokens(token_ids, grids):
@@ -72,3 +78,33 @@ def expand_image_tokens(token_ids, grids):
     if next(grids, None) is not None:
         raise ValueError("More images than image markers")
     return result
+
+
+class LFM3VLProcessor:
+    """Tokenizer facade and ordered image preparation for the media lane."""
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def apply_chat_template(self, *args, **kwargs):
+        return self.tokenizer.apply_chat_template(*args, **kwargs)
+
+    def prepare_inputs(
+        self, prompt, images=(), *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS
+    ):
+        import mlx.core as mx
+
+        if max_pixels is None:
+            max_pixels = DEFAULT_MAX_PIXELS
+        max_pixels = min(int(max_pixels), DEFAULT_MAX_PIXELS)
+        token_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        patches, grids = preprocess_images(
+            images, min_pixels=min_pixels, max_pixels=max_pixels
+        )
+        expanded = expand_image_tokens(token_ids, grids)
+        return {
+            "input_ids": mx.array([expanded]),
+            "pixel_values": mx.array(patches) if len(grids) else None,
+            "image_grid_thw": mx.array(grids) if len(grids) else None,
+            "attention_mask": mx.ones((1, len(expanded)), dtype=mx.int32),
+        }
