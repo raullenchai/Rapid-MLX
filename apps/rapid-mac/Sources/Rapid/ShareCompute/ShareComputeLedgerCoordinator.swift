@@ -41,10 +41,13 @@ import Observation
 /// provider key, entered once in Settings → Experimental → Share Compute.
 /// This coordinator checks ``providerStore`` first and uses that key for the
 /// ledger too — the backend accepts either key format on this endpoint. Only
-/// when no provider key is saved does it fall back to ``store``, the LEGACY
-/// `qsprk-` read key, so an account that saved one before this change keeps
-/// seeing its ledger without being asked to paste anything. Nothing in the
-/// UI writes a new legacy key; see ``ShareComputeReadKeyRejection``.
+/// when no provider key is saved AT ALL (`.missing`) does it fall back to
+/// ``store``, the LEGACY `qsprk-` read key, so an account that saved one
+/// before this change keeps seeing its ledger without being asked to paste
+/// anything. A provider key that IS present but fails to decode (`.corrupted`)
+/// never falls back — that would silently hide a broken credential behind the
+/// legacy one instead of telling the user to fix it. Nothing in the UI writes
+/// a new legacy key; see ``ShareComputeReadKeyRejection``.
 @MainActor
 @Observable
 final class ShareComputeLedgerCoordinator {
@@ -547,7 +550,18 @@ final class ShareComputeLedgerCoordinator {
         case .unavailable:
             state = .unavailable(.keychainUnavailable)
             return
-        case .missing, .corrupted:
+        case .corrupted:
+            // There IS a saved provider key — it just doesn't decode as one.
+            // Falling back to the legacy key here would silently serve a
+            // ledger under a credential the user never asked this coordinator
+            // to use, while leaving the broken provider key undiagnosed.
+            // Surface it as its own error instead; only a truly ABSENT
+            // provider key (`.missing`) may fall through to the legacy read
+            // key below.
+            savedKeyLabel = nil
+            state = .unavailable(.providerKeyCorrupted)
+            return
+        case .missing:
             break
         }
 

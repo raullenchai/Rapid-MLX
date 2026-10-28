@@ -176,6 +176,42 @@ struct ShareComputeProviderTests {
         #expect(server.servingAlias == "personal-model")
     }
 
+    @Test("providerKeyRevision bumps on a same-redacted-label replacement, not on a mere refresh")
+    func providerKeyRevisionBumpsOnReplacement() throws {
+        let keychain = ShareComputeTestKeychain()
+        let server = ServerManager(testingState: .idle)
+        let manager = ShareComputeManager(server: server, providerStore: ShareComputeProviderKeyStore(keychain: keychain))
+        #expect(manager.providerKeyRevision == 0)
+
+        // Two distinct keys that redact to the SAME label (same last four
+        // characters, different secret) — the case the label alone cannot
+        // detect.
+        let keyA = "qsppk-first-fixture-abcd1234"
+        let keyB = "qsppk-second-fixture-wxyz1234"
+        let labelA = try #require(ShareComputeProviderKey.validate(keyA)).redactedLabel
+        let labelB = try #require(ShareComputeProviderKey.validate(keyB)).redactedLabel
+        #expect(labelA == labelB)
+
+        #expect(manager.saveProviderKey(keyA))
+        #expect(manager.providerKeyRevision == 1)
+        #expect(manager.savedProviderKeyLabel == "qsppk-…1234")
+
+        #expect(manager.saveProviderKey(keyB))
+        #expect(manager.providerKeyRevision == 2)
+        #expect(manager.savedProviderKeyLabel == "qsppk-…1234")
+
+        // Saving the identical key again is a no-op, not a new write.
+        #expect(manager.saveProviderKey(keyB))
+        #expect(manager.providerKeyRevision == 2)
+
+        // A mere refresh (no write) must not bump it either.
+        manager.refreshProviderKey()
+        #expect(manager.providerKeyRevision == 2)
+
+        #expect(manager.removeProviderKey())
+        #expect(manager.providerKeyRevision == 3)
+    }
+
     @Test("This release admits only the qualified Qwen27 sharing model")
     func onlyQualifiedModelCanJoin() async {
         let server = ServerManager(testingState: .ready(alias: "personal-model"), binaryPath: URL(fileURLWithPath: "/usr/bin/false"))

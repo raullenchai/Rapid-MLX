@@ -2065,9 +2065,19 @@ extension ShareComputeLedgerError {
 struct ShareComputeLedgerSafetyTests {
 
     private struct FailingKeychain: KeychainStoring {
+        /// Seeds ONLY the legacy read-key account — a real Keychain never
+        /// conflates two distinct accounts the way a single untargeted
+        /// `secret` field would. Without this, these tests' `secret` (a
+        /// `qsprk-` legacy key) would also be "found" when the coordinator
+        /// reads the provider-key account, where it fails
+        /// ``ShareComputeProviderKey/validate(_:)`` and reads as `.corrupted`
+        /// — accidentally exercising the corrupted-provider-key path these
+        /// tests are not about.
         let secret: String?
 
-        func read(account: String) -> String? { secret }
+        func read(account: String) -> String? {
+            account == ShareComputeReadKeyStore.account ? secret : nil
+        }
         func write(account: String, secret: String) -> Bool { false }
         func delete(account: String) -> Bool { false }
     }
@@ -2259,6 +2269,35 @@ struct ShareComputeLedgerSafetyTests {
         #expect(coordinator.savedKeyLabel == Self.keyA.redactedLabel)
     }
 
+    @Test("A corrupted provider key surfaces its own error — never a silent fall back to the legacy key")
+    func corruptedProviderKeyNeverFallsBackToLegacy() async throws {
+        let keychain = InMemoryKeychain()
+        // A provider key IS saved — it just doesn't decode as one — and a
+        // perfectly good legacy key is ALSO sitting there from before the
+        // provider key was ever pasted.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: "not-a-valid-provider-key")
+        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+
+        // No request went out at all — reading the legacy key behind a broken
+        // provider key would hide the real problem instead of surfacing it.
+        #expect(gate.callCount == 0)
+        #expect(coordinator.state == .unavailable(.providerKeyCorrupted))
+        #expect(coordinator.state.needsKey)
+        #expect(coordinator.savedKeyLabel == nil)
+        // The legacy key is left exactly as it was: this is not a removal,
+        // just a refusal to use it as a silent stand-in.
+        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue)
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == "not-a-valid-provider-key")
+    }
+
     @Test("A rejected provider key is surfaced but never auto-removed")
     func rejectedProviderKeyIsNeverDeleted() async throws {
         let keychain = InMemoryKeychain()
@@ -2300,6 +2339,48 @@ struct ShareComputeLedgerSafetyTests {
 
         #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
         #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+    }
+
+    /// Ends with the same four characters as ``providerKeyA`` — a different
+    /// secret that redacts to an IDENTICAL label. This is the replacement a
+    /// view watching only the label text would miss; the manager's
+    /// `providerKeyRevision` counter is what catches it instead (see
+    /// ``ShareComputeManager``), and the view forwards that into
+    /// `providerKeyChanged()`. This test exercises the coordinator's half of
+    /// that fix directly: given the call, does it actually reload under the
+    /// new credential rather than keep serving the old one.
+    nonisolated static let providerKeyASameLabel = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "y", count: 26) + "xxxx")!
+
+    @Test("providerKeyChanged reloads under a replacement key even when the redacted label is unchanged")
+    func providerKeyChangedReloadsDespiteIdenticalLabel() async throws {
+        #expect(Self.providerKeyA.redactedLabel == Self.providerKeyASameLabel.redactedLabel)
+        #expect(Self.providerKeyA != Self.providerKeyASameLabel)
+
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+        #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+
+        // Settings → Experimental → Share Compute replaces the provider key
+        // with a different secret that happens to redact to the same label.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyASameLabel.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        // The reload must use the NEW secret, not keep serving the old one
+        // just because the on-screen label text did not change.
+        #expect(gate.callCount == 2)
+        #expect(gate.calls.last?.rawValue == Self.providerKeyASameLabel.rawValue)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyASameLabel.redactedLabel)
     }
 
     @Test("Removing a leftover legacy key falls back to a saved provider key, not noKey")

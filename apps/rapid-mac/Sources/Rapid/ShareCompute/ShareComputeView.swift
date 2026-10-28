@@ -195,8 +195,11 @@ struct ShareComputeView: View {
         // ``ShareComputeLedgerCoordinator``'s provider-first resolution).
         // Settings → Experimental → Share Compute is a SEPARATE window, so
         // this is the only way Credits learns the key changed there while
-        // it is on screen.
-        .onChange(of: manager.savedProviderKeyLabel) { _, _ in
+        // it is on screen. Watching the REVISION, not ``savedProviderKeyLabel``:
+        // a replacement key that redacts to the same label (same last four
+        // characters, different secret) leaves the label unchanged, and this
+        // view would otherwise never notice the ledger's world moved.
+        .onChange(of: manager.providerKeyRevision) { _, _ in
             ledger.providerKeyChanged()
         }
         .onChange(of: catalogLoaded) { _, _ in

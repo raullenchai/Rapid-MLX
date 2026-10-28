@@ -366,6 +366,14 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
     case malformedBody
     case keychainUnavailable
     case keychainRemovalFailed
+    /// The provider key in the Keychain decoded to something that fails
+    /// ``ShareComputeProviderKey/validate(_:)`` — not absent, not locked,
+    /// just unreadable as a key. Distinct from ``noKey`` on purpose: there IS
+    /// a saved credential, so silently reading the legacy key instead would
+    /// mask a broken provider key behind what looks like a working ledger.
+    /// The fix is the same action as every other key problem: re-save it in
+    /// Settings → Experimental → Share Compute.
+    case providerKeyCorrupted
 
     var displayMessage: String {
         switch self {
@@ -387,6 +395,12 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
             return String(localized: "This Mac's Keychain is unavailable. Unlock it and try again.")
         case .keychainRemovalFailed:
             return String(localized: "Rapid couldn't fully remove the saved key. Revoke it in QuickSilver and try removing it again.")
+        case .providerKeyCorrupted:
+            // Reuses the exact string ``ShareComputeManager`` already shows
+            // for the same Keychain state, so there is one translated string
+            // for "your saved provider key is broken, re-save it" rather than
+            // two near-duplicates in Localizable.xcstrings.
+            return String(localized: "Replace the saved provider key in Settings → Experimental → Share Compute.")
         }
     }
 
@@ -670,7 +684,9 @@ enum ShareComputeLedgerState: Equatable, Sendable {
     var needsKey: Bool {
         if self == .noKey || self == .unauthorized { return true }
         if case .unavailable(let error) = self {
-            return error == .keychainUnavailable || error == .keychainRemovalFailed
+            return error == .keychainUnavailable
+                || error == .keychainRemovalFailed
+                || error == .providerKeyCorrupted
         }
         return false
     }
