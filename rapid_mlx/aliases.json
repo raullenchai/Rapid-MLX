@@ -3153,5 +3153,22 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": false
+  },
+  "minimax-h3": {
+    "hf_path": "MiniMaxAI/MiniMax-H3",
+    "revision": "b3c7290e66afdf293bef3b9077b7a266ef421f34",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "min_memory_gb": 160,
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
   }
 }

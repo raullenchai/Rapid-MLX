@@ -295,6 +295,11 @@
       "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX",
       "reason": "R2 catalog entry absent for MTP runtime asset; Hugging Face fallback until mirrored",
       "since": "2026-10-26"
+    },
+    {
+      "hf_path": "MiniMaxAI/MiniMax-H3",
+      "reason": "license: MiniMax H3 Community License restricts redistribution by territory; serve from the upstream Hub only",
+      "since": "2026-10-27"
     }
   ]
 }

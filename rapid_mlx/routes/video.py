@@ -37,6 +37,7 @@ _MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 _VIDEO_REQUEST_BYTES = _MAX_REFERENCE_BYTES + 1024 * 1024
 _MAX_JOBS = 100
 _MAX_PIXEL_FRAMES = 768 * 512 * 97
+_H3_MAX_PIXEL_FRAMES = 768 * 512 * 345
 _MAX_EXTEND_PIXEL_FRAMES = 24_000_000
 _MAX_EXTEND_OUTPUT_FRAMES = 97
 _MAX_REFERENCE_PIXELS = 16_777_216
@@ -793,6 +794,16 @@ def _video_capabilities(engine) -> dict:
         }
         seconds = {"minimum": 1, "maximum": 20, "default": 4}
         frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}
+    elif family == "minimax-h3":
+        modes = ["text-to-video", "image-to-video"]
+        size = {
+            "type": "range",
+            "width": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
+            "height": {"minimum": 256, "maximum": 1920, "multiple_of": 32},
+            "also_supported": ["1280x720", "720x1280"],
+        }
+        seconds = {"minimum": 5, "maximum": 15, "default": 5}
+        frames = {"minimum": 124, "maximum": 345, "step": 17, "offset": 5}
     elif family == "ltx-2.5":
         modes = ["text-to-video", "image-to-video"]
         size = {
@@ -824,19 +835,25 @@ def _video_capabilities(engine) -> dict:
             "size": size,
             "seconds": seconds,
             "fps": {
-                "minimum": native_fps if family == "wan" else 1,
-                "maximum": native_fps if family == "wan" else 60,
+                "minimum": native_fps if family in ("wan", "minimax-h3") else 1,
+                "maximum": native_fps if family in ("wan", "minimax-h3") else 60,
                 "default": native_fps,
-                "fixed": family == "wan",
+                "fixed": family in ("wan", "minimax-h3"),
             },
             "frames": frames,
             "workload": {
                 "metric": "pixel_frames",
-                "maximum": _MAX_PIXEL_FRAMES,
+                "maximum": _H3_MAX_PIXEL_FRAMES
+                if family == "minimax-h3"
+                else _MAX_PIXEL_FRAMES,
                 "dimension_rounding": (
                     "none"
                     if family == "cogvideox-fun"
-                    else ("ceil_to_32" if family == "ltx-2.5" else "ceil_to_64")
+                    else (
+                        "ceil_to_32"
+                        if family in ("ltx-2.5", "minimax-h3")
+                        else "ceil_to_64"
+                    )
                 ),
             },
             "input_reference": {
@@ -1236,7 +1253,7 @@ async def _run_job(
 async def create_video(
     prompt: str = Form(..., min_length=1, max_length=4096),
     model: str = Form("ltx-2.3-mlx-q4"),
-    seconds: str = Form("4"),
+    seconds: str | None = Form(None),
     size: str = Form("768x512"),
     seed: int = Form(42),
     fps: Annotated[int | None, Form()] = None,
@@ -1253,6 +1270,9 @@ async def create_video(
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
     is_wan = getattr(engine, "video_family", "") == "wan"
     is_ltx25 = getattr(engine, "video_family", "") == "ltx-2.5"
+    is_h3 = getattr(engine, "video_family", "") == "minimax-h3"
+    if seconds is None:
+        seconds = "5" if is_h3 else "4"
     with _jobs_lock:
         if not _accepting_jobs:
             raise HTTPException(status_code=503, detail="video server is shutting down")
@@ -1263,7 +1283,7 @@ async def create_video(
     profile = resolve_profile(model)
     if profile is not None and profile.hf_path == engine.model_name:
         allowed_models.add(model)
-    if not (is_cogvideox or is_wan or is_ltx25):
+    if not (is_cogvideox or is_wan or is_ltx25 or is_h3):
         allowed_models.add("ltx-2.3-mlx-q4")
     if model not in allowed_models:
         raise HTTPException(
@@ -1300,13 +1320,21 @@ async def create_video(
     else:
         width, height = _parse_size(
             size,
-            multiple=32 if is_ltx25 else 64,
+            multiple=32 if (is_ltx25 or is_h3) else 64,
             also_supported={_WAN_STANDARD_OUTPUT_SIZE} if is_wan else None,
         )
     native_fps = 5 if is_cogvideox else getattr(engine, "native_fps", 24)
     request_fps = native_fps if fps is None else fps
     if not 1 <= request_fps <= 60:
         raise HTTPException(status_code=400, detail="fps must be between 1 and 60")
+    if is_h3 and request_fps != 24:
+        raise HTTPException(
+            status_code=400, detail="MiniMax-H3 output fps is fixed at 24"
+        )
+    if is_h3 and frames is None and not 5 <= seconds_int <= 15:
+        raise HTTPException(
+            status_code=400, detail="MiniMax-H3 seconds must be between 5 and 15"
+        )
     if is_wan and request_fps != native_fps:
         raise HTTPException(
             status_code=400,
@@ -1327,7 +1355,7 @@ async def create_video(
                 status_code=400,
                 detail="conditioning_strength must be between 0 and 1",
             )
-        if is_cogvideox or is_wan:
+        if is_cogvideox or is_wan or is_h3:
             raise HTTPException(
                 status_code=400,
                 detail="conditioning_strength is currently supported by LTX only",
@@ -1339,6 +1367,11 @@ async def create_video(
             )
     if negative_prompt is not None:
         negative_prompt = negative_prompt.strip() or None
+    if is_h3 and (negative_prompt or guidance_scale is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="MiniMax-H3 does not support negative_prompt or guidance_scale",
+        )
     if is_ltx25 and (negative_prompt or guidance_scale is not None):
         from rapid_mlx.telemetry.inference import emit_capability_rejected
 
@@ -1354,13 +1387,15 @@ async def create_video(
                 "or guidance_scale"
             ),
         )
-    alignment = 32 if is_ltx25 else 64
+    alignment = 32 if (is_ltx25 or is_h3) else 64
     generation_width = ((width + alignment - 1) // alignment) * alignment
     generation_height = ((height + alignment - 1) // alignment) * alignment
     if frames is not None:
         request_frames = frames
     elif is_cogvideox:
         request_frames = 5
+    elif is_h3:
+        request_frames = min(345, max(124, round((seconds_int * 24 - 5) / 17) * 17 + 5))
     else:
         # Normalize seconds × fps to the temporal shape the diffusion
         # backends require. Only an explicitly supplied frame count should
@@ -1382,7 +1417,12 @@ async def create_video(
             status_code=400,
             detail="Wan frames must be 4n+1 and at least 5 (for example 5, 9, 13)",
         )
-    if not (is_cogvideox or is_wan):
+    if is_h3 and (not 120 <= request_frames <= 360 or (request_frames - 5) % 17):
+        raise HTTPException(
+            status_code=400,
+            detail="MiniMax-H3 frames must be 17n+5 and between 120 and 360",
+        )
+    if not (is_cogvideox or is_wan or is_h3):
         if request_frames < 9 or request_frames % 8 != 1:
             raise HTTPException(
                 status_code=400,
@@ -1390,7 +1430,9 @@ async def create_video(
             )
     workload_width = width if is_cogvideox else generation_width
     workload_height = height if is_cogvideox else generation_height
-    if workload_width * workload_height * request_frames > _MAX_PIXEL_FRAMES:
+    if workload_width * workload_height * request_frames > (
+        _H3_MAX_PIXEL_FRAMES if is_h3 else _MAX_PIXEL_FRAMES
+    ):
         family = (
             "CogVideoX-Fun"
             if is_cogvideox
@@ -1458,7 +1500,9 @@ async def create_video(
 
         job = _VideoJob(
             id=job_id,
-            model=model if (is_cogvideox or is_wan or is_ltx25) else "ltx-2.3-mlx-q4",
+            model=model
+            if (is_cogvideox or is_wan or is_ltx25 or is_h3)
+            else "ltx-2.3-mlx-q4",
             prompt=prompt,
             seconds=str(seconds_int),
             size=f"{width}x{height}",

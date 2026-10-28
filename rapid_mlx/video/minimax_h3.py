@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: Apache-2.0
+"""MiniMax-H3 video and synchronized audio adapter."""
+
+from __future__ import annotations
+
+import logging
+import threading
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+REPO = "MiniMaxAI/MiniMax-H3"
+REVISION = "b3c7290e66afdf293bef3b9077b7a266ef421f34"
+
+# Exact data files in the pinned FL2VA plan. In particular, never fetch repo code.
+FILES = (
+    "LICENSE",
+    "README.md",
+    "model_index.json",
+    "modular_model_index.json",
+    "audio_scheduler/scheduler_config.json",
+    "scheduler/scheduler_config.json",
+    "audio_vae/config.json",
+    "audio_vae/diffusion_pytorch_model.safetensors",
+    *(
+        f"processor/{name}"
+        for name in (
+            "chat_template.json",
+            "merges.txt",
+            "preprocessor_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "video_preprocessor_config.json",
+            "vocab.json",
+        )
+    ),
+    *(
+        f"tokenizer/{name}"
+        for name in (
+            "merges.txt",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json",
+        )
+    ),
+    *(
+        f"text_encoder/{name}"
+        for name in (
+            "chat_template.json",
+            "config.json",
+            "merges.txt",
+            "model.safetensors.index.json",
+            "preprocessor_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "video_preprocessor_config.json",
+            "vocab.json",
+        )
+    ),
+    *(f"text_encoder/model-{i:05d}-of-00014.safetensors" for i in range(1, 15)),
+    "transformer/config.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    *(
+        f"transformer/diffusion_pytorch_model-{i:05d}-of-00014.safetensors"
+        for i in range(1, 15)
+    ),
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors.index.json",
+    *(f"vae/diffusion_pytorch_model-{i:05d}-of-00003.safetensors" for i in range(1, 4)),
+)
+
+
+class MiniMaxH3BackendError(RuntimeError):
+    """Safe generation failure."""
+
+
+class MiniMaxH3RequestError(ValueError):
+    """Invalid generation request."""
+
+
+def is_minimax_h3_model(name: str | None) -> bool:
+    return bool(name and name.rstrip("/").rsplit("/", 1)[-1].casefold() == "minimax-h3")
+
+
+class MiniMaxH3VideoEngine:
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+        self._model = None
+        self._stopping = threading.Event()
+
+    @staticmethod
+    def validate_request(
+        *, width: int, height: int, num_frames: int, image: Path | None
+    ) -> None:
+        if width <= 0 or height <= 0 or width % 32 or height % 32:
+            raise MiniMaxH3RequestError(
+                "MiniMax-H3 dimensions must be positive multiples of 32"
+            )
+        if not 120 <= num_frames <= 360 or (num_frames - 5) % 17:
+            raise MiniMaxH3RequestError(
+                "MiniMax-H3 frames must be 17n+5 and between 120 and 360"
+            )
+
+    def stop(self) -> None:
+        self._stopping.set()
+
+    def generate(
+        self,
+        *,
+        prompt: str,
+        output_path: Path,
+        width: int,
+        height: int,
+        num_frames: int,
+        fps: int,
+        seed: int,
+        image: Path | None,
+        last_image: Path | None = None,
+        on_loaded=None,
+    ) -> None:
+        self.validate_request(
+            width=width, height=height, num_frames=num_frames, image=image
+        )
+        if fps != 24:
+            raise MiniMaxH3RequestError("MiniMax-H3 output is fixed at 24 fps")
+        if last_image is not None and image is None:
+            raise MiniMaxH3RequestError("last image requires a first image")
+
+        def progress(*_args):
+            if self._stopping.is_set():
+                raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled")
+
+        progress()
+        try:
+            from mlx_vlm.generate import (
+                VideoGenerationRequest,
+                generate_video,
+                load_video_generation_model,
+            )
+
+            if self._model is None:
+                from .._mirror import pinned_snapshot_download
+
+                local = Path(self.model_name).expanduser()
+                path = (
+                    str(local)
+                    if local.is_dir()
+                    else pinned_snapshot_download(
+                        REPO, REVISION, allow_patterns=list(FILES)
+                    )
+                )
+                progress()
+                # Both workflows use the same FL2VA pipeline; the wrapper's
+                # workflow only labels results, so one loaded model serves both.
+                self._model = load_video_generation_model(str(path), workflow="fl2va")
+                if on_loaded:
+                    on_loaded()
+            progress()
+            self._model.workflow = "fl2va" if image is not None else "t2va"
+            request = VideoGenerationRequest(
+                prompt=prompt,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                seed=seed,
+                image=image,
+                last_image=last_image,
+                progress_callback=progress,
+            )
+            output_path.unlink(missing_ok=True)
+            generate_video(self._model, request, output_path=output_path)
+            progress()
+            if not output_path.is_file() or not output_path.stat().st_size:
+                raise MiniMaxH3BackendError(
+                    "MiniMax-H3 generation completed without an MP4 output"
+                )
+        except MiniMaxH3BackendError:
+            output_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            output_path.unlink(missing_ok=True)
+            logger.exception("MiniMax-H3 generation failed")
+            raise MiniMaxH3BackendError(
+                f"MiniMax-H3 generation failed ({type(exc).__name__}); check server logs"
+            ) from exc

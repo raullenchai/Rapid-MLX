@@ -1235,6 +1235,15 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
         # otherwise a fully cached 4-bit checkpoint reads as uncached and
         # the gate re-prompts on every single serve.
         snap_dir = _descend_to_checkpoint(snap_dir, repo_id)
+        from .video.minimax_h3 import FILES, REPO
+
+        if repo_id == REPO:
+            return all(
+                _is_nonempty_snapshot_manifest_file(
+                    os.path.join(snap_dir, name), snap_dir
+                )
+                for name in FILES
+            )
         return _snapshot_is_complete(snap_dir)
     except ExternalCacheProbeError:
         raise

@@ -131,6 +131,7 @@ def test_video_entries_expose_pre_serve_modes_and_memory_floor() -> None:
         "wan2.2-t2v-a14b-bf16": ["text-to-video"],
         "ltx-2.3-mlx-q4": ["text-to-video", "image-to-video"],
         "ltx-2.5-mlx-q8": ["text-to-video", "image-to-video"],
+        "minimax-h3": ["text-to-video", "image-to-video"],
     }
     by_alias = {entry["alias"]: entry for entry in payload["video"]}
 

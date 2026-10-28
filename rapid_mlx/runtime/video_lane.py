@@ -80,6 +80,11 @@ def validate_video_request(
     image: Path | None,
 ) -> None:
     """Run family-specific validation before a video job is queued."""
+    h3_engine = getattr(engine, "_minimax_engine", None)
+    if h3_engine is not None:
+        h3_engine.validate_request(
+            width=width, height=height, num_frames=num_frames, image=image
+        )
     wan_engine = getattr(engine, "_wan_engine", None)
     if wan_engine is not None:
         wan_engine.validate_request(
@@ -100,6 +105,12 @@ def _is_wan_name(model_name: str | None) -> bool:
     from ..video.wan import is_wan_model
 
     return is_wan_model(model_name)
+
+
+def _is_minimax_name(model_name: str | None) -> bool:
+    from ..video.minimax_h3 import is_minimax_h3_model
+
+    return is_minimax_h3_model(model_name)
 
 
 def _is_ltx25_name(model_name: str | None) -> bool:
@@ -268,6 +279,31 @@ def video_runtime_issue(
 
     if _is_ltx25_name(model_name):
         return _ltx25_runtime_issue(provision=provision)
+    if _is_minimax_name(model_name):
+        try:
+            root = importlib.util.find_spec("mlx_vlm")
+            models = (
+                PathFinder.find_spec("mlx_vlm.models", root.submodule_search_locations)
+                if root and root.submodule_search_locations
+                else None
+            )
+            available = bool(
+                models
+                and models.submodule_search_locations
+                and PathFinder.find_spec(
+                    "mlx_vlm.models.minimax_h3", models.submodule_search_locations
+                )
+            )
+        except (ImportError, ValueError, AttributeError):
+            available = False
+        if available and _resolve_ffmpeg() is not None:
+            return None
+        return VideoRuntimeIssue(
+            detail="\n  Error: MiniMax-H3 requires mlx-vlm 0.7.2 and ffmpeg.\n",
+            install_hint=optional_extra_install_hint("video", status="broken"),
+            status="broken",
+            marker_reason="runtime_dependency_missing",
+        )
 
     if sys.version_info < (3, 11):
         return VideoRuntimeIssue(
@@ -370,12 +406,17 @@ class VideoEngine:
             else (
                 "wan"
                 if _is_wan_name(model_name)
-                else ("ltx-2.5" if _is_ltx25_name(model_name) else "ltx-2.3")
+                else (
+                    "minimax-h3"
+                    if _is_minimax_name(model_name)
+                    else ("ltx-2.5" if _is_ltx25_name(model_name) else "ltx-2.3")
+                )
             )
         )
         self._cog_engine = None
         self._wan_engine = None
         self._ltx25_engine = None
+        self._minimax_engine = None
         if self.video_family == "cogvideox-fun":
             from ..video.engine import VideoGenerationEngine
 
@@ -384,6 +425,10 @@ class VideoEngine:
             from ..video.wan import WanVideoEngine
 
             self._wan_engine = WanVideoEngine(model_name)
+        elif self.video_family == "minimax-h3":
+            from ..video.minimax_h3 import MiniMaxH3VideoEngine
+
+            self._minimax_engine = MiniMaxH3VideoEngine(model_name)
         elif self.video_family == "ltx-2.5":
             from ..video.ltx25 import LTX25VideoEngine
 
@@ -442,6 +487,41 @@ class VideoEngine:
         output_width: int | None = None,
         output_height: int | None = None,
     ) -> None:
+        if getattr(self, "_minimax_engine", None) is not None:
+            from ..video.minimax_h3 import MiniMaxH3BackendError, MiniMaxH3RequestError
+
+            if (
+                negative_prompt is not None
+                or guidance_scale is not None
+                or conditioning_strength is not None
+            ):
+                raise VideoRuntimeError(
+                    "MiniMax-H3 does not support these conditioning controls"
+                )
+            try:
+                with self._generation_lock:
+                    self._minimax_engine.generate(
+                        prompt=prompt,
+                        output_path=output_path,
+                        width=width,
+                        height=height,
+                        num_frames=num_frames,
+                        fps=fps,
+                        seed=seed,
+                        image=image,
+                        on_loaded=self._emit_model_served,
+                    )
+            except (MiniMaxH3BackendError, MiniMaxH3RequestError) as exc:
+                raise VideoRuntimeError(str(exc)) from exc
+            self._crop_generated_output(
+                output_path=output_path,
+                width=width,
+                height=height,
+                output_width=output_width,
+                output_height=output_height,
+                family="MiniMax-H3",
+            )
+            return
         if getattr(self, "_ltx25_engine", None) is not None:
             from ..video.ltx25 import LTX25BackendError
 
@@ -714,6 +794,8 @@ class VideoEngine:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""
 
     async def stop(self) -> None:
+        if getattr(self, "_minimax_engine", None) is not None:
+            self._minimax_engine.stop()
         if getattr(self, "_ltx25_engine", None) is not None:
             import asyncio
 

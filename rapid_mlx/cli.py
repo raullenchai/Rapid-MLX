@@ -1681,11 +1681,11 @@ def _check_disk_space(
                 else model_info(model_name, files_metadata=True)
             )
         revision = getattr(info, "sha", None)
-        if allow_patterns is not None:
+        if selection is not None:
             from fnmatch import fnmatchcase
 
             def _selected(filename: str) -> bool:
-                return any(fnmatchcase(filename, pattern) for pattern in allow_patterns)
+                return any(fnmatchcase(filename, pattern) for pattern in selection)
         else:
 
             def _selected(filename: str) -> bool:
@@ -2993,7 +2993,6 @@ def _ensure_model_downloaded(
         # ONLY this alias's folder. Without the filter a 1.6 GB 4-bit pull
         # reports and downloads the repo's whole ~20 GB quant matrix.
         allow_patterns = subfolder_allow_patterns(model_name)
-        _prefix = allow_patterns[0][:-1] if allow_patterns else None
 
         # This bounded call resolves the revision ahead of the download.
         # ``snapshot_download`` otherwise resolves it through httpx with
@@ -3026,11 +3025,18 @@ def _ensure_model_downloaded(
             resolved_sha = getattr(info, "sha", None)
             if not resolved_sha:
                 raise RuntimeError("HuggingFace metadata did not include a revision")
+            from fnmatch import fnmatchcase
+
             size_bytes = sum(
                 (s.size or 0)
                 for s in (getattr(info, "siblings", None) or [])
                 if hasattr(s, "size")
-                and (_prefix is None or s.rfilename.startswith(_prefix))
+                and (
+                    allow_patterns is None
+                    or any(
+                        fnmatchcase(s.rfilename, pattern) for pattern in allow_patterns
+                    )
+                )
             )
             size_gb = size_bytes / (1024**3)
         except TimeoutError as exc:
@@ -11748,6 +11754,18 @@ def pull_command(args):
             primary_args,
             allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
             revision_override=IMAGE_MODEL_REVISIONS[primary_repo],
+        )
+    elif primary_repo == "MiniMaxAI/MiniMax-H3":
+        from rapid_mlx.video.minimax_h3 import FILES, REVISION
+
+        if getattr(primary_args, "bits", None) or getattr(primary_args, "format", None):
+            raise ValueError(
+                "MiniMax-H3 does not support quantization or format variants"
+            )
+        _pull_repository(
+            primary_args,
+            allow_patterns_override=list(FILES),
+            revision_override=REVISION,
         )
     elif (pinned_revision := _pinned_checkpoint_revision(primary_repo)) is not None:
         # Image and video checkpoints are served from their pinned commit, so
