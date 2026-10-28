@@ -1,5 +1,6 @@
 import fnmatch
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -128,3 +129,55 @@ def test_pinned_component_cache_completeness(monkeypatch, tmp_path):
     assert is_repo_cached(REPO)
     (snapshot / FILES[-1]).unlink()
     assert not is_repo_cached(REPO)
+
+
+def test_load_and_generation_share_one_thread(monkeypatch, tmp_path):
+    # MLX streams are thread-local: requests arriving on different threads
+    # must still load and generate on the thread that owns the pipeline.
+    module = ModuleType("mlx_vlm.generate")
+    threads = []
+
+    class Request:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def load(path, workflow):
+        threads.append(threading.current_thread().name)
+        return SimpleNamespace(workflow=workflow)
+
+    def generate(model, request, *, output_path):
+        threads.append(threading.current_thread().name)
+        output_path.write_bytes(b"mp4")
+
+    module.VideoGenerationRequest = Request
+    module.generate_video = generate
+    module.load_video_generation_model = load
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+    engine = MiniMaxH3VideoEngine(str(tmp_path))
+    args = dict(
+        prompt="test",
+        output_path=tmp_path / "out.mp4",
+        width=768,
+        height=512,
+        num_frames=124,
+        fps=24,
+        seed=7,
+        image=None,
+    )
+    errors = []
+
+    def call():
+        try:
+            engine.generate(**args)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    for _ in range(2):
+        caller = threading.Thread(target=call)
+        caller.start()
+        caller.join()
+    engine.stop()
+    assert not errors
+    assert len(threads) == 3
+    assert len(set(threads)) == 1
+    assert threads[0].startswith("mlx-minimax-h3")

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import threading
 from pathlib import Path
@@ -86,6 +87,13 @@ class MiniMaxH3VideoEngine:
         self.model_name = model_name
         self._model = None
         self._stopping = threading.Event()
+        # MLX streams are thread-local and the pipeline keeps arrays created
+        # while loading, so every load and generation must run on one thread;
+        # a request served from another thread fails with "There is no
+        # Stream(cpu, N) in current thread".
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mlx-minimax-h3"
+        )
 
     @staticmethod
     def validate_request(
@@ -102,8 +110,16 @@ class MiniMaxH3VideoEngine:
 
     def stop(self) -> None:
         self._stopping.set()
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def generate(
+    def generate(self, **kwargs) -> None:
+        try:
+            future = self._executor.submit(self._generate, **kwargs)
+        except RuntimeError as exc:  # executor shut down by stop()
+            raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled") from exc
+        future.result()
+
+    def _generate(
         self,
         *,
         prompt: str,
