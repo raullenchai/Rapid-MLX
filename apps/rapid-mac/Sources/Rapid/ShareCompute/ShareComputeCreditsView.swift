@@ -47,15 +47,14 @@ enum ShareComputeLedgerLayout {
 ///
 /// Rapid has exactly one user-facing QuickSilver credential: the `qsppk-`
 /// provider key, entered once in Settings → Experimental → Share Compute.
-/// This tab reads whichever key ``ShareComputeLedgerCoordinator`` resolved —
-/// normally that provider key — and, when there is none, points at Settings
-/// rather than offering a second place to paste one.
+/// This tab reads the one `qsppk-` provider key ``ShareComputeLedgerCoordinator``
+/// resolved, and, when there is none, points at Settings rather than
+/// offering a second place to paste one.
 struct ShareComputeCreditsTab: View {
     let state: ShareComputeLedgerState
     let receipts: [ShareComputeReceipt]
     let localSummary: ShareComputeContributionSummary
-    /// `qsppk-…a8c1` (or, for a migrated account, `qsprk-…a8c1`). Never the
-    /// whole key.
+    /// `qsppk-…a8c1`. Never the whole key.
     let savedKeyLabel: String?
     /// Whether Refresh is currently permitted. False while a walk runs, while
     /// rate-limited, and inside the minimum interval — the control is disabled

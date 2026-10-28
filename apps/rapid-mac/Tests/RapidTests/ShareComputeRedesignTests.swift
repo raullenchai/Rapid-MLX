@@ -2662,6 +2662,11 @@ struct ShareComputeLedgerGatingTests {
 
     nonisolated static let providerKeyA = ShareComputeProviderKey
         .validate("qsppk-" + String(repeating: "x", count: 30))!
+    /// A DISTINCT, independently valid key — used where a test must prove a
+    /// replacement actually loads under the NEW credential, not merely
+    /// re-save the same one.
+    nonisolated static let providerKeyB = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "z", count: 30))!
 
     /// A wake-timer sleep the test releases by hand, so a five-minute gate can
     /// be crossed without waiting five minutes.
@@ -2747,8 +2752,8 @@ struct ShareComputeLedgerGatingTests {
 
     // MARK: 429 outranks every reason
 
-    @Test("An active 429 cooldown blocks appear, manual, poll, and keyChanged")
-    func cooldownOutranksEveryReason() async {
+    @Test("An active 429 cooldown blocks appear, manual, and poll — but not a credential change")
+    func cooldownBlocksEveryReasonExceptKeyChanged() async {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
@@ -2768,25 +2773,67 @@ struct ShareComputeLedgerGatingTests {
         #expect(calls.count == 1)
         #expect(coordinator.isRateLimited)
 
-        // Every reason, repeatedly. The limit is per IP, so none of them may
-        // spend a request.
+        // appear/manual/poll, repeatedly. The limit is per IP, so none of
+        // them may spend a request.
         coordinator.appear()
         coordinator.manualRefresh()
         coordinator.appear()
         await Self.settle()
         #expect(calls.count == 1)
 
-        // Even a brand-new credential. Saving a different key cannot buy a
-        // request from an IP-level limiter.
-        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        // A brand-new, DISTINCT credential is a different story: the user is
+        // waiting to learn whether it works, and a replacement is a new fact
+        // regardless of an unrelated IP-level cooldown — see
+        // `RefreshReason.bypassesGates`. This spends a request and loads
+        // under the new key.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
         coordinator.providerKeyChanged()
         await Self.settle()
-        #expect(calls.count == 1)
-        #expect(!coordinator.allowsManualRefresh)
+        #expect(calls.count == 2)
+        #expect(calls.keys.last == Self.providerKeyB)
     }
 
-    @Test("Saving during a cooldown stores the key but does not clear the cooldown")
-    func saveDuringCooldownKeepsCooldown() async {
+    @Test("A replacement key during a cooldown reloads immediately with the new key")
+    func replacementDuringCooldownReloadsImmediately() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        nonisolated(unsafe) var shouldFail = true
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in
+                calls.record(key)
+                if shouldFail { throw ShareComputeLedgerError.rateLimited }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.rateLimitedUntil != nil)
+        #expect(calls.count == 1)
+
+        // Still well inside the cooldown when the key is replaced.
+        shouldFail = false
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        // The new key loads right away — no waiting out a cooldown that
+        // belongs to the OLD credential's rejected request.
+        #expect(calls.count == 2)
+        #expect(calls.keys.last == Self.providerKeyB)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+        #expect(coordinator.state.account != nil)
+    }
+
+    @Test("A credential removal during a cooldown publishes noKey immediately")
+    func removalDuringCooldownIsImmediate() async {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
@@ -2802,64 +2849,20 @@ struct ShareComputeLedgerGatingTests {
         )
         coordinator.appear()
         await Self.settle()
-        let cooldownDeadline = coordinator.rateLimitedUntil
-        #expect(cooldownDeadline != nil)
-
-        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
-        coordinator.providerKeyChanged()
-        await Self.settle()
-
-        // The key IS safely stored in the Keychain — that part is immediate.
-        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyA.rawValue)
-        // …but the cooldown gate returns before any resolution runs (see
-        // GATE 1 in `refresh(reason:)`), so the label does not move onto the
-        // new key yet either — there is nothing resolved to show until the
-        // owed validation actually runs.
-        #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
-        // No request went out and the cooldown is untouched.
         #expect(calls.count == 1)
-        #expect(coordinator.rateLimitedUntil == cooldownDeadline)
         #expect(coordinator.isRateLimited)
-    }
 
-    @Test("When the cooldown lifts, the key saved during it validates itself")
-    func pendingKeyValidatesAfterCooldown() async {
-        let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
-        let calls = Calls()
-        let gate = SleepGate()
-        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
-        nonisolated(unsafe) var limited = true
-
-        let coordinator = ShareComputeLedgerCoordinator(
-            keychain: keychain,
-            load: { key in
-                calls.record(key)
-                if limited { throw ShareComputeLedgerError.rateLimited }
-                return ShareComputeLedgerFixture.account
-            },
-            now: { clock },
-            sleep: { await gate.sleep($0) },
-            fixture: nil
-        )
-
-        coordinator.appear()
-        await Self.settle()
-        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        // The provider key is removed while still rate-limited. Unlike a
+        // replacement, a removal needs no request at all to answer — it
+        // resolves straight to `.noKey`, synchronously, dropping whatever
+        // ledger and label were on screen.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
         coordinator.providerKeyChanged()
-        await Self.settle()
+
+        #expect(coordinator.state == .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
+        // No request went out for a credential already known to be gone.
         #expect(calls.count == 1)
-
-        // The cooldown expires.
-        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
-        limited = false
-        gate.fire()
-        await Self.settle()
-
-        // The owed validation ran on its own — the user did not paste again.
-        #expect(calls.count == 2)
-        #expect(calls.keys.last?.rawValue == Self.providerKeyA.rawValue)
-        #expect(coordinator.state.account != nil)
     }
 
     // MARK: First attempt
@@ -3043,45 +3046,5 @@ struct ShareComputeLedgerGatingTests {
         coordinator.cancelInFlight()
         #expect(!coordinator.hasScheduledWake)
         #expect(coordinator.liveWakeTaskCount == 0)
-    }
-
-    @Test("A credential change while rate-limited still validates once the cooldown lifts, even for a now-removed key")
-    func removalIsValidatedAfterCooldownLifts() async {
-        let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
-        let calls = Calls()
-        let gate = SleepGate()
-        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
-
-        let coordinator = ShareComputeLedgerCoordinator(
-            keychain: keychain,
-            load: { key in calls.record(key); throw ShareComputeLedgerError.rateLimited },
-            now: { clock },
-            sleep: { await gate.sleep($0) },
-            fixture: nil
-        )
-        coordinator.appear()
-        await Self.settle()
-        #expect(calls.count == 1)
-
-        // The provider key is removed while still rate-limited. There is no
-        // `removeKey()` short-circuit any more — `providerKeyChanged()` is
-        // the one entry point for every credential change, so this only
-        // arms the owed validation; it issues no request yet.
-        keychain.delete(account: ShareComputeProviderKeyStore.account)
-        coordinator.providerKeyChanged()
-        await Self.settle()
-        #expect(calls.count == 1)
-        #expect(coordinator.liveWakeTaskCount <= 1)
-
-        // Once the cooldown lifts, the owed validation runs on its own and
-        // correctly discovers the key is gone — it does not replay the OLD
-        // (now-removed) credential.
-        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
-        gate.fire()
-        await Self.settle()
-
-        #expect(calls.count == 1)
-        #expect(coordinator.state == .noKey)
     }
 }

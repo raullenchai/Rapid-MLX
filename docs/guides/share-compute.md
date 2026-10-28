@@ -44,9 +44,10 @@ ledger shows settled accounting windows across all nodes on your provider
 account, while **Local activity** records only sessions on this Mac. A
 request can succeed before its credit appears: settlement closes a window
 later. Calls paid for by the node owner's own account do not earn contributor
-credit. (An account that saved a separate `qsprk-` read-only key before this
-changed keeps using it automatically until a provider key is saved — Rapid
-no longer asks for one.)
+credit. Rapid only ever uses the `qsppk-` provider key for this — a
+separate read-only key some accounts saved before this change is no longer
+used; its Keychain entry is removed automatically, and paste your provider
+key once in Settings to keep seeing your ledger.
 
 ## Terminal
 

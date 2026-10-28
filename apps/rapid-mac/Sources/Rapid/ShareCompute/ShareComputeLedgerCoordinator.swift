@@ -53,8 +53,8 @@ import Observation
 @Observable
 final class ShareComputeLedgerCoordinator {
 
-    /// Why a refresh was asked for. Decides only whether the minimum-interval
-    /// gate applies — never what gets requested.
+    /// Why a refresh was asked for. Decides only whether the gates below
+    /// apply — never what gets requested.
     enum RefreshReason: Equatable, Sendable {
         /// Credits became visible.
         case appear
@@ -67,15 +67,14 @@ final class ShareComputeLedgerCoordinator {
         /// validation.
         case keyChanged
 
-        /// Credential changes skip the five-minute INTERVAL: the user is
-        /// waiting to find out whether the key they just entered works, and
-        /// making them wait for that answer would be absurd.
-        ///
-        /// This does NOT extend to the 429 cooldown. QuickSilver rate-limits
-        /// by IP, not by credential, so pasting a different key buys nothing —
-        /// it would just spend another rejected request and re-arm the limit.
+        /// Credential changes skip BOTH gates — the five-minute interval AND
+        /// the 429 cooldown. The user is waiting to find out whether the
+        /// change they just made worked, and making them wait for that
+        /// answer would be absurd — a removal in particular needs no
+        /// request at all to answer (see ``refresh(reason:)``), so there is
+        /// nothing to gain by making it wait out an unrelated cooldown.
         /// See ``ShareComputeLedgerCoordinator/refresh(reason:)``.
-        var bypassesInterval: Bool { self == .keyChanged }
+        var bypassesGates: Bool { self == .keyChanged }
     }
 
     // MARK: Published state
@@ -132,11 +131,6 @@ final class ShareComputeLedgerCoordinator {
     }
 
     private(set) var refreshGate: RefreshGate = .open
-
-    /// A key was saved while the 429 cooldown was still running, so its first
-    /// validation is owed once the cooldown expires. The user must not have to
-    /// paste it again.
-    private var pendingKeyValidation = false
 
     /// Cancellable holder for the single wake task.
     ///
@@ -354,13 +348,17 @@ final class ShareComputeLedgerCoordinator {
 
     /// The ONE entry point the UI calls: the provider key in Settings →
     /// Experimental → Share Compute changed (saved, replaced, or removed).
-    /// Re-resolves the credential and loads immediately, the same way a
-    /// freshly pasted key used to.
+    /// Bypasses EVERY gate below it — the 429 cooldown and the five-minute
+    /// interval alike — and re-resolves the credential immediately: the
+    /// user is waiting to learn whether their change worked, and a removal
+    /// in particular needs no request at all to answer that (it resolves
+    /// straight to ``ShareComputeLedgerState/noKey``, dropping whatever
+    /// ledger and label were on screen).
     ///
     /// ``ShareComputeManager`` owns the actual Keychain write; this just
-    /// tells the ledger its world changed. The generation bump happens before
-    /// anything else, so a 401 already travelling from the old credential can
-    /// no longer undo the change this triggers.
+    /// tells the ledger its world changed. The generation bump happens
+    /// before anything else, so a result still travelling from the OLD
+    /// credential — in flight, or a late 401 — can never land after this.
     func providerKeyChanged() {
         invalidate()
         refresh(reason: .keyChanged)
@@ -408,25 +406,15 @@ final class ShareComputeLedgerCoordinator {
         })
     }
 
-    /// A time gate expired.
-    ///
-    /// Publishes an observable change so the Refresh button re-enables itself,
-    /// then performs the validation that was owed to a key saved during a
-    /// cooldown. No user action, no tab switch, no other page's state involved.
+    /// A time gate expired. Publishes an observable change so the Refresh
+    /// button re-enables itself. Another gate may still be holding (e.g.
+    /// the cooldown lifted but the interval has not) — re-arm for that one.
     private func gateLifted() {
         // `release`, not `cancel`: this runs INSIDE the wake task, and
-        // cancelling it here would poison the refresh it is about to start.
+        // cancelling it here would poison a refresh it might start next.
         wake.release()
         // The observable write. This is the whole reason the timer exists.
         updateGate()
-
-        if pendingKeyValidation, !isRateLimited {
-            pendingKeyValidation = false
-            refresh(reason: .keyChanged)
-            return
-        }
-        // Another gate may still be holding (e.g. the cooldown lifted but the
-        // interval has not). Re-arm for that one.
         scheduleWake()
     }
 
@@ -444,21 +432,20 @@ final class ShareComputeLedgerCoordinator {
         // second walk.
         guard inFlight == nil else { return }
 
-        // GATE 1 — the 429 cooldown, which outranks every reason including
-        // `keyChanged`. QuickSilver limits by IP, so a freshly pasted key
-        // cannot buy a request; trying would spend another rejection and
-        // re-arm the limiter. A key saved during the cooldown is remembered
-        // and validated automatically when it lifts.
-        if isRateLimited {
-            if reason == .keyChanged { pendingKeyValidation = true }
+        // GATE 1 — the 429 cooldown. `keyChanged` bypasses it too: a removal
+        // needs no request at all to answer (see the credential-resolution
+        // switch below), and a replacement is a new fact the user is
+        // actively waiting on, not a retry of the request that got
+        // rate-limited.
+        if !reason.bypassesGates, isRateLimited {
             scheduleWake()
             return
         }
 
-        // GATE 2 — the minimum interval. `keyChanged` bypasses it, and so does
-        // the genuine first attempt (nothing has ever been requested, so a
-        // blank tab must not sit for five minutes).
-        if !reason.bypassesInterval && !isFirstAttempt {
+        // GATE 2 — the minimum interval. `keyChanged` bypasses it too, and so
+        // does the genuine first attempt (nothing has ever been requested, so
+        // a blank tab must not sit for five minutes).
+        if !reason.bypassesGates && !isFirstAttempt {
             guard intervalElapsed else {
                 scheduleWake()
                 return
