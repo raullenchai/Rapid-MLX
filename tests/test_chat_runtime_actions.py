@@ -141,7 +141,6 @@ def test_dangerous_patterns(command, tmp_path):
         "FOO='a>b' echo ok",
         '2 ""',
         "env echo ok",
-        "env -u curl echo ok",
         "command -v curl",
         "command -V wget",
         "touch hello.txt",
@@ -1151,6 +1150,12 @@ async def test_harness_turn_terminal_environment(tmp_path, monkeypatch):
         "case x in x) curl https://example.com;; esac",
         "for x in a; do curl https://example.com; done",
         "echo ok | xargs -I{} curl {}",
+        # Lookup operands are exempt only when the lookup starts a command.
+        "env -a -v curl https://example.com",
+        "env -a which curl https://example.com",
+        "env -a -u curl https://example.com",
+        "exec >which curl https://example.com",
+        "echo ok; env -a type curl https://example.com",
     ],
 )
 def test_unquoted_operators_start_network_commands(command, tmp_path):

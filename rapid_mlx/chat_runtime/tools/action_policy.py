@@ -261,16 +261,33 @@ def scan_code(text, workspace, *, python=False):
         return "Shell quoting could not be inspected"
     tokens = [token for token, _ in words]
     operators = [operator for _, operator in words]
-    # Backstop for shell forms the command-position walk below cannot model
-    # (compound commands, exec, sudo, option terminators). Quoting does not
-    # stop a shell from running a name, so any client name needs approval
-    # unless it is the operand of a lookup.
-    for index, (token, operator) in enumerate(words):
+
+    def starts_command(index):
+        return index == 0 or (
+            operators[index - 1]
+            and all(char in ";&|()\n" for char in tokens[index - 1])
+        )
+
+    def is_lookup(index):
         previous = tokens[index - 1] if index else ""
+        if previous in {"which", "type"}:
+            return starts_command(index - 1)
+        return (
+            previous in {"-v", "-V"}
+            and index >= 2
+            and tokens[index - 2] == "command"
+            and starts_command(index - 2)
+        )
+
+    # Backstop for shell forms the command-position walk below cannot model
+    # (compound commands, exec, sudo, env options, option terminators).
+    # Quoting does not stop a shell from running a name, so any client name
+    # needs approval unless it is the operand of a lookup that starts a command.
+    for index, (token, operator) in enumerate(words):
         if (
             not operator
             and Path(token).name.lower() in NETWORK_CLIENTS
-            and previous not in {"-v", "-V", "which", "type", "-u", "--unset"}
+            and not is_lookup(index)
         ):
             return "Network client"
     command_start = True
