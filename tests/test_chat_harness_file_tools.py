@@ -466,6 +466,18 @@ async def test_workers_import_from_a_runtime_without_site_packages(
     assert result["text"] == "plain attachment"
 
 
+def test_worker_import_path_excludes_the_working_directory(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(workspace)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(
+        file_worker.sys, "path", ["", str(workspace), str(link), "/trusted"]
+    )
+    assert file_worker._import_path()[1:] == ["/trusted"]
+
+
 async def test_parallel_reads_share_context_budget(tmp_path):
     write(tmp_path, "note.txt", "x" * 1800)
     events = []

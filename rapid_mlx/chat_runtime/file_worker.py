@@ -26,9 +26,9 @@ _BOOTSTRAP = (
 
 
 def _import_path():
-    cwd = os.getcwd()
+    cwd = os.path.realpath(os.getcwd())
     return [str(Path(__file__).resolve().parents[2])] + [
-        entry for entry in sys.path if entry and os.path.abspath(entry) != cwd
+        entry for entry in sys.path if entry and os.path.realpath(entry) != cwd
     ]
 
 
