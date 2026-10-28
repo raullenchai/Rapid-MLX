@@ -952,6 +952,11 @@ CANONICAL_WIRES = {
         '<｜DSML｜parameter name="text" string="true">hello'
         "</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"
     ),
+    "deepseek_v4_flash": (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="lookup">'
+        '<｜DSML｜parameter name="text" string="true">hello'
+        "</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"
+    ),
     "functionary": "<function=lookup>" + _ARGS + "</function>",
     "gemma4": '<|tool_call>call:lookup{text:<|"|>hello<|"|>}<tool_call|>',
     "glm47": (

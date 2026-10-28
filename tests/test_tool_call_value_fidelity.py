@@ -182,6 +182,7 @@ _FIDELITY_EXEMPT: dict[str, str] = {
     "deepseek_v3": "alias of deepseek",
     "deepseek_v31": "deepseek_v31_native, renderer TODO",
     "deepseek_v4_0731": "deepseek_v4_dsml, renderer TODO",
+    "deepseek_v4_flash": "deepseek_v4_dsml, renderer TODO",
     "minimax": "minimax_native, renderer TODO",
     "minimax_m2": "alias of minimax",
     "functionary": "functionary_native, renderer TODO",
