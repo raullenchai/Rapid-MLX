@@ -169,3 +169,35 @@ def test_real_prefix_cache_reuse():
         assert not can_trim_prompt_cache(cached)
     finally:
         mx.set_default_device(mx.gpu)
+
+
+def test_lfm3_text_lane_even_when_vision_has_arch(monkeypatch):
+    from types import SimpleNamespace
+
+    from rapid_mlx.api import utils
+
+    monkeypatch.setattr(
+        utils,
+        "read_model_metadata",
+        lambda _: SimpleNamespace(config={"model_type": "lfm3"}),
+    )
+    assert utils.mllm_arch_unsupported_but_text_vendored("checkpoint")
+
+
+def test_registration_failure_is_nonfatal(monkeypatch, caplog):
+    import builtins
+
+    from rapid_mlx.utils import tokenizer
+
+    original = builtins.__import__
+
+    def failing_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "models" and level == 2 and "lfm3" in fromlist:
+            raise ImportError("simulated LFM3 import failure")
+        return original(name, globals, locals, fromlist, level)
+
+    monkeypatch.delitem(sys.modules, "mlx_lm.models.lfm3", raising=False)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    tokenizer._register_vendored_archs()
+    assert "lfm3 model registration failed" in caplog.text
+    assert "mlx_lm.models.lfm3" not in sys.modules
