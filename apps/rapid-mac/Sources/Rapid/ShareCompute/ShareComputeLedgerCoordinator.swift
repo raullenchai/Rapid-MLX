@@ -67,14 +67,16 @@ final class ShareComputeLedgerCoordinator {
         /// validation.
         case keyChanged
 
-        /// Credential changes skip BOTH gates — the five-minute interval AND
-        /// the 429 cooldown. The user is waiting to find out whether the
-        /// change they just made worked, and making them wait for that
-        /// answer would be absurd — a removal in particular needs no
-        /// request at all to answer (see ``refresh(reason:)``), so there is
-        /// nothing to gain by making it wait out an unrelated cooldown.
-        /// See ``ShareComputeLedgerCoordinator/refresh(reason:)``.
-        var bypassesGates: Bool { self == .keyChanged }
+        /// Credential changes skip the five-minute INTERVAL: the user is
+        /// waiting to find out whether the key they just entered works, and
+        /// making them wait for that answer would be absurd.
+        ///
+        /// This does NOT skip the 429 cooldown for a REPLACEMENT — QuickSilver
+        /// rate-limits by IP, not by credential, so a freshly pasted key still
+        /// cannot buy a request; see ``refresh(reason:)``. A REMOVAL is the
+        /// one case that bypasses everything, because it needs no request at
+        /// all to answer.
+        var bypassesInterval: Bool { self == .keyChanged }
     }
 
     // MARK: Published state
@@ -131,6 +133,13 @@ final class ShareComputeLedgerCoordinator {
     }
 
     private(set) var refreshGate: RefreshGate = .open
+
+    /// A REPLACEMENT provider key was resolved while the 429 cooldown was
+    /// still running, so loading it is owed once the cooldown lifts. Never
+    /// set for a removal — `.missing` needs no request to show `.noKey`, so
+    /// there is nothing to defer and this is explicitly cleared instead; see
+    /// ``refresh(reason:)``.
+    private var pendingKeyValidation = false
 
     /// Cancellable holder for the single wake task.
     ///
@@ -348,12 +357,16 @@ final class ShareComputeLedgerCoordinator {
 
     /// The ONE entry point the UI calls: the provider key in Settings →
     /// Experimental → Share Compute changed (saved, replaced, or removed).
-    /// Bypasses EVERY gate below it — the 429 cooldown and the five-minute
-    /// interval alike — and re-resolves the credential immediately: the
-    /// user is waiting to learn whether their change worked, and a removal
-    /// in particular needs no request at all to answer that (it resolves
-    /// straight to ``ShareComputeLedgerState/noKey``, dropping whatever
-    /// ledger and label were on screen).
+    /// Re-resolves the credential immediately, bypassing the five-minute
+    /// interval — the user is waiting to learn whether their change worked.
+    ///
+    /// * REMOVAL (`.missing`) bypasses the 429 cooldown too: it needs no
+    ///   request at all, so it resolves straight to
+    ///   ``ShareComputeLedgerState/noKey``, dropping whatever ledger and
+    ///   label were on screen, and cancels any cooldown wake that was armed.
+    /// * REPLACEMENT (`.found`) still respects an active 429 cooldown —
+    ///   QuickSilver rate-limits by IP, not by credential — and is deferred
+    ///   until it lifts; see ``refresh(reason:)`` and ``gateLifted()``.
     ///
     /// ``ShareComputeManager`` owns the actual Keychain write; this just
     /// tells the ledger its world changed. The generation bump happens
@@ -407,14 +420,22 @@ final class ShareComputeLedgerCoordinator {
     }
 
     /// A time gate expired. Publishes an observable change so the Refresh
-    /// button re-enables itself. Another gate may still be holding (e.g.
-    /// the cooldown lifted but the interval has not) — re-arm for that one.
+    /// button re-enables itself, then performs a REPLACEMENT load that was
+    /// owed to a key resolved during the cooldown — see ``refresh(reason:)``.
+    /// Another gate may still be holding (e.g. the cooldown lifted but the
+    /// interval has not) — re-arm for that one.
     private func gateLifted() {
         // `release`, not `cancel`: this runs INSIDE the wake task, and
         // cancelling it here would poison a refresh it might start next.
         wake.release()
         // The observable write. This is the whole reason the timer exists.
         updateGate()
+
+        if pendingKeyValidation, !isRateLimited {
+            pendingKeyValidation = false
+            refresh(reason: .keyChanged)
+            return
+        }
         scheduleWake()
     }
 
@@ -432,20 +453,20 @@ final class ShareComputeLedgerCoordinator {
         // second walk.
         guard inFlight == nil else { return }
 
-        // GATE 1 — the 429 cooldown. `keyChanged` bypasses it too: a removal
-        // needs no request at all to answer (see the credential-resolution
-        // switch below), and a replacement is a new fact the user is
-        // actively waiting on, not a retry of the request that got
-        // rate-limited.
-        if !reason.bypassesGates, isRateLimited {
+        // GATE 1 — the 429 cooldown. Blocks appear/manual/poll outright.
+        // `keyChanged` is let through here regardless: a REMOVAL needs no
+        // request at all to answer (see `.missing` below), and whether a
+        // REPLACEMENT must wait for the cooldown is decided in the `.found`
+        // case below it, once the credential is actually known.
+        if reason != .keyChanged, isRateLimited {
             scheduleWake()
             return
         }
 
-        // GATE 2 — the minimum interval. `keyChanged` bypasses it too, and so
-        // does the genuine first attempt (nothing has ever been requested, so
-        // a blank tab must not sit for five minutes).
-        if !reason.bypassesGates && !isFirstAttempt {
+        // GATE 2 — the minimum interval. `keyChanged` bypasses it, and so
+        // does the genuine first attempt (nothing has ever been requested,
+        // so a blank tab must not sit for five minutes).
+        if !reason.bypassesInterval && !isFirstAttempt {
             guard intervalElapsed else {
                 scheduleWake()
                 return
@@ -456,18 +477,39 @@ final class ShareComputeLedgerCoordinator {
         switch providerStore.load() {
         case .found(let key):
             savedKeyLabel = key.redactedLabel
+            if reason == .keyChanged, isRateLimited {
+                // A replacement resolved while the 429 cooldown is still
+                // running: QuickSilver rate-limits by IP, not by credential,
+                // so spending another request right now buys nothing. Leave
+                // `state` exactly as the cooldown already left it — loading
+                // or cooling — and let `gateLifted()` load this key once the
+                // cooldown actually lifts.
+                pendingKeyValidation = true
+                scheduleWake()
+                return
+            }
+            // Either not rate-limited, or this call IS the owed validation
+            // itself — either way nothing is left pending.
+            pendingKeyValidation = false
             start(key: key)
         case .missing:
             savedKeyLabel = nil
             state = .noKey
+            // Nothing is owed to a credential that is gone — drop any
+            // cooldown wake a pending REPLACEMENT (or an ordinary 429) had
+            // armed, so it never fires for a key that no longer exists.
+            pendingKeyValidation = false
+            wake.cancel()
         case .unavailable:
             state = .unavailable(.keychainUnavailable)
+            pendingKeyValidation = false
         case .corrupted:
             // There IS a saved key — it just doesn't decode as one. Claiming
             // `.noKey` here would mask a broken credential behind the wrong
             // onboarding message.
             savedKeyLabel = nil
             state = .unavailable(.providerKeyCorrupted)
+            pendingKeyValidation = false
         }
     }
 

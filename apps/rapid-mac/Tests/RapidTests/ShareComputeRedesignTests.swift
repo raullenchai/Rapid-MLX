@@ -1844,15 +1844,80 @@ struct ShareComputeLedgerTests {
         #expect(ShareComputeLedgerFixture.account.unit == "usd_api_credit")
     }
 
-    @Test("No user-facing ledger message mentions a read key")
-    func noUserFacingReadKeyWording() {
-        // Owner decision: ONE key, the qsppk- provider key. The legacy
-        // `qsprk-` read key is gone entirely — see
-        // ``ShareComputeLegacyReadKeyCleanup`` — and nothing the user ever
-        // read mentioned it either.
+    /// Terms that must never reach a user: the legacy `qsprk-` read key is
+    /// gone entirely — see ``ShareComputeLegacyReadKeyCleanup`` — and this
+    /// pins that nothing shown to a user, in any language, says otherwise.
+    static let bannedReadKeyTerms = ["read key", "read-only key", "qsprk", "只读"]
+
+    /// `nil` when `string` is clean; the first banned term found otherwise.
+    private static func bannedTerm(in string: String) -> String? {
+        let lower = string.lowercased()
+        return bannedReadKeyTerms.first { lower.contains($0.lowercased()) }
+    }
+
+    /// `apps/rapid-mac`, derived from this test file's own path the same way
+    /// ``LocalizationTests/catalogURL()`` does, so both stay in sync if the
+    /// test tree ever moves.
+    private static func packageRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // RapidTests/
+            .deletingLastPathComponent() // Tests/
+            .deletingLastPathComponent() // apps/rapid-mac/
+    }
+
+    private static func localizableCatalogURL() throws -> URL {
+        let candidates: [URL] = [
+            Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings"),
+            packageRoot().appendingPathComponent("Sources/Rapid/Resources/Localizable.xcstrings")
+        ].compactMap { $0 }
+        return try #require(
+            candidates.first { FileManager.default.fileExists(atPath: $0.path) },
+            "Localizable.xcstrings not found on any candidate path"
+        )
+    }
+
+    @Test("No read-key wording survives in user-facing strings, translations, or ShareCompute UI source")
+    func noReadKeyWordingReachesTheUser() throws {
+        // 1. Every classified ledger error message.
         for string in ShareComputeLedgerError.allDisplayMessages {
-            #expect(!string.localizedCaseInsensitiveContains("read key"), "\"\(string)\" mentions a read key")
-            #expect(!string.contains("qsprk"), "\"\(string)\" names the legacy key format")
+            #expect(Self.bannedTerm(in: string) == nil, "\"\(string)\" mentions a banned read-key term")
+        }
+
+        // 2. The WHOLE catalog — every source key and every language's
+        // translation, not only the strings ShareCompute's own code paths
+        // happen to produce today. A stray leftover elsewhere would be just
+        // as user-facing.
+        let data = try Data(contentsOf: Self.localizableCatalogURL())
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let strings = try #require(json["strings"] as? [String: Any])
+        for (key, rawEntry) in strings {
+            if let term = Self.bannedTerm(in: key) {
+                Issue.record("Catalog key \"\(key)\" mentions \"\(term)\"")
+            }
+            guard let entry = rawEntry as? [String: Any],
+                  let localizations = entry["localizations"] as? [String: Any] else { continue }
+            for (language, rawLocalization) in localizations {
+                guard let localization = rawLocalization as? [String: Any],
+                      let unit = localization["stringUnit"] as? [String: Any],
+                      let translated = unit["value"] as? String,
+                      let term = Self.bannedTerm(in: translated)
+                else { continue }
+                Issue.record("\(language) translation of \"\(key)\" mentions \"\(term)\": \"\(translated)\"")
+            }
+        }
+
+        // 3. The Credits and Settings view SOURCE — where a user-facing
+        // string would actually be written. The legacy-cleanup helper's own
+        // file is deliberately excluded: it is INTERNALLY about the old
+        // qsprk- key by design (account names, historical doc comments) and
+        // is never shown to a user — see its type-level note.
+        let shareComputeRoot = Self.packageRoot().appendingPathComponent("Sources/Rapid/ShareCompute")
+        for file in ["ShareComputeCreditsView.swift", "ShareComputeProviderSettings.swift"] {
+            let url = shareComputeRoot.appendingPathComponent(file)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            if let term = Self.bannedTerm(in: contents) {
+                Issue.record("\(file) mentions \"\(term)\"")
+            }
         }
     }
 
@@ -2752,8 +2817,8 @@ struct ShareComputeLedgerGatingTests {
 
     // MARK: 429 outranks every reason
 
-    @Test("An active 429 cooldown blocks appear, manual, and poll — but not a credential change")
-    func cooldownBlocksEveryReasonExceptKeyChanged() async {
+    @Test("An active 429 cooldown blocks appear, manual, poll, and a key replacement alike")
+    func cooldownBlocksEveryReasonExceptRemoval() async {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
@@ -2781,20 +2846,19 @@ struct ShareComputeLedgerGatingTests {
         await Self.settle()
         #expect(calls.count == 1)
 
-        // A brand-new, DISTINCT credential is a different story: the user is
-        // waiting to learn whether it works, and a replacement is a new fact
-        // regardless of an unrelated IP-level cooldown — see
-        // `RefreshReason.bypassesGates`. This spends a request and loads
-        // under the new key.
+        // A brand-new, DISTINCT credential is still subject to the SAME
+        // IP-level cooldown — QuickSilver rate-limits by IP, not by
+        // credential, so this does not spend a request either. See
+        // `replacementDuringCooldownDefersUntilItLifts` for what happens
+        // once the cooldown actually lifts.
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
         coordinator.providerKeyChanged()
         await Self.settle()
-        #expect(calls.count == 2)
-        #expect(calls.keys.last == Self.providerKeyB)
+        #expect(calls.count == 1)
     }
 
-    @Test("A replacement key during a cooldown reloads immediately with the new key")
-    func replacementDuringCooldownReloadsImmediately() async {
+    @Test("A replacement key during a cooldown is deferred and loads once the cooldown lifts")
+    func replacementDuringCooldownDefersUntilItLifts() async {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
@@ -2817,6 +2881,7 @@ struct ShareComputeLedgerGatingTests {
         await Self.settle()
         #expect(coordinator.rateLimitedUntil != nil)
         #expect(calls.count == 1)
+        let stateBeforeReplacement = coordinator.state
 
         // Still well inside the cooldown when the key is replaced.
         shouldFail = false
@@ -2824,11 +2889,24 @@ struct ShareComputeLedgerGatingTests {
         coordinator.providerKeyChanged()
         await Self.settle()
 
-        // The new key loads right away — no waiting out a cooldown that
-        // belongs to the OLD credential's rejected request.
+        // No request yet — the cooldown is a property of this IP's recent
+        // history, not of the credential, so a fresh key does not buy one.
+        // `state` is untouched: whatever the cooldown already left on
+        // screen keeps showing.
+        #expect(calls.count == 1)
+        #expect(coordinator.state == stateBeforeReplacement)
+        // …but the NEW label is already shown, so the user sees their
+        // change was received even while it waits.
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+
+        // Once the cooldown lifts, the owed load runs on its own, under the
+        // NEW key — the user never had to paste it again.
+        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
+        gate.fire()
+        await Self.settle()
+
         #expect(calls.count == 2)
         #expect(calls.keys.last == Self.providerKeyB)
-        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
         #expect(coordinator.state.account != nil)
     }
 
@@ -3046,5 +3124,50 @@ struct ShareComputeLedgerGatingTests {
         coordinator.cancelInFlight()
         #expect(!coordinator.hasScheduledWake)
         #expect(coordinator.liveWakeTaskCount == 0)
+    }
+
+    @Test("Removing the key cancels any pending cooldown wake task")
+    func removingKeyCancelsWakeTask() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in throw ShareComputeLedgerError.rateLimited },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+
+        // A cooldown wake is armed from the first (rejected) request.
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.hasScheduledWake)
+        #expect(coordinator.isRateLimited)
+
+        // A replacement during the SAME cooldown would additionally mark a
+        // load as owed — removal must drop that too, not just the timer.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+        #expect(coordinator.hasScheduledWake)
+
+        // Removing the key entirely: nothing is owed to a credential that
+        // no longer exists, so the wake must not survive either.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
+
+        #expect(!coordinator.hasScheduledWake)
+        #expect(coordinator.liveWakeTaskCount == 0)
+        #expect(coordinator.state == .noKey)
+
+        // If the wake had survived, firing it now would wrongly try to
+        // validate a key that is gone.
+        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
+        gate.fire()
+        await Self.settle()
+        #expect(coordinator.state == .noKey)
     }
 }
