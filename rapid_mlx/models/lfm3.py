@@ -8,14 +8,19 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.base import (
+
+from .. import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.models.base import (  # noqa: E402
     BaseModelArgs,
     create_attention_mask,
     create_ssm_mask,
     scaled_dot_product_attention,
 )
-from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache
-from mlx_lm.models.lfm2 import MLP, ShortConv
+from mlx_lm.models.cache import ArraysCache, KVCache, RotatingKVCache  # noqa: E402
+from mlx_lm.models.lfm2 import MLP, ShortConv  # noqa: E402
 
 
 @dataclass
