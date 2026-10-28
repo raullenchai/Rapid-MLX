@@ -196,8 +196,8 @@ class DeepSeekV40731ToolParser(ToolParser):
         }
 
 
-@ToolParserManager.register_module(["deepseek_v4_flash"])
-class DeepSeekV4FlashToolParser(DeepSeekV40731ToolParser):
+@ToolParserManager.register_module(["deepseek_v4_flash"])  # type: ignore[arg-type]
+class DeepSeekV4FlashToolParser(DeepSeekV40731ToolParser):  # type: ignore[misc]
     """Original V4 DSML uses literal argument values, without 0731 framing."""
 
     def extract_tool_calls(
