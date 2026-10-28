@@ -354,7 +354,7 @@ def test_base_install_direct_repo_unlisted_arch_keeps_guard(monkeypatch, capsys)
     assert "warning: vision runtime absent" not in err
 
 
-def test_catalog_text_model_prefetches_for_backend_dispatch(monkeypatch):
+def test_catalog_text_model_skips_backend_prefetch(monkeypatch):
     """A known text-only catalog lane is not a VLM degrade candidate.
 
     In particular, a base-wheel text serve must reach the normal version /
@@ -377,7 +377,7 @@ def test_catalog_text_model_prefetches_for_backend_dispatch(monkeypatch):
     with pytest.raises(_ReachedPastVisionGuardError):
         cli.serve_command(_args("qwen3.5-4b-4bit"))
 
-    assert fetched == ["qwen3.5-4b-4bit"]
+    assert fetched == []
 
 
 def test_audio_fork_never_prefetches_for_vision_degrade(monkeypatch):
