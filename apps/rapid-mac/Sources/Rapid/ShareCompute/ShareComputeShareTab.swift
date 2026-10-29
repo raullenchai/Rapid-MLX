@@ -212,6 +212,7 @@ struct ShareComputeShareTab: View {
                             Menu {
                                 ForEach(candidates) { model in
                                     Button("\(model.title) · \(size(model.estimatedDownloadBytes))") { candidateID = model.id }
+                                        .accessibilityIdentifier("ShareCompute.Setup.DownloadCandidate.\(model.id)")
                                 }
                             } label: { Text("\(candidate.title) · \(size(candidate.estimatedDownloadBytes))").lineLimit(1) }
                             .frame(maxWidth: 260)

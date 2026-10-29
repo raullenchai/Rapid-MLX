@@ -435,6 +435,7 @@ private struct ShareSessionCard<Content: View>: View {
                 .accessibilityIdentifier("ShareCompute.ViewReward")
         } else {
             Link("Open QuickSilver ↗", destination: ShareComputeDestination.rewards)
+                .accessibilityIdentifier("ShareCompute.ViewRewardLink")
         }
     }.font(.rapid(size: 12)).foregroundStyle(.secondary)
 }
