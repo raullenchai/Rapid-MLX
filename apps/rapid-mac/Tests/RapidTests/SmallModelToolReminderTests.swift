@@ -24,7 +24,7 @@ struct SmallModelToolReminderTests {
         let request = ChatStreamClient.Request(alias: "lfm3-vl-2b", messages: original, tools: tools)
         let wire = try rows(request)
         #expect(wire[0]["content"] as? String == "Hello")
-        #expect(wire[2]["content"] as? String == "Latest question\n\n(Tools available: web_search, fetch_url. Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly.)")
+        #expect(wire[2]["content"] as? String == "Latest question\n\n(Tools available: web_search, fetch_url. Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly unless the user asks you to use a tool.)")
         #expect(original == snapshot)
         #expect(original[2].content == "Latest question")
     }

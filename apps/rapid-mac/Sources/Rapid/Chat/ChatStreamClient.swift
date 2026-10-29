@@ -925,7 +925,7 @@ enum Wire {
               messages[..<index].contains(where: { $0.role == "assistant" }) else {
             return messages
         }
-        let reminder = "(Tools available: \(toolNames.joined(separator: ", ")). Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly.)"
+        let reminder = "(Tools available: \(toolNames.joined(separator: ", ")). Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly unless the user asks you to use a tool.)"
         var result = messages
         switch result[index].content {
         case .text(let text):
