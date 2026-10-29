@@ -2,6 +2,106 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%@ credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 积分"
+          }
+        }
+      }
+    },
+    "%@, node %@, %lld requests, %lld input and %lld output tokens, credit %@, accrued %@, status %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@，节点 %2$@，%3$lld 次请求，输入 %4$lld 个 token，输出 %5$lld 个 token，积分 %6$@，累计 %7$@，状态 %8$@"
+          }
+        }
+      }
+    },
+    "%lld accounting windows" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个结算窗口"
+          }
+        }
+      }
+    },
+    "%lld connection periods · %@ online · %lld models served" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld 个连接时段 · 在线 %2$@ · 服务了 %3$lld 个模型"
+          }
+        }
+      }
+    },
+    "%lld requests · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld 次请求 · %2$@"
+          }
+        }
+      }
+    },
+    "-<0.01 credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "-<0.01 积分"
+          }
+        }
+      }
+    },
+    "1 accounting window" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 个结算窗口"
+          }
+        }
+      }
+    },
+    "1 credit = $1 of QuickSilver API usage." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 积分等于 1 美元的 QuickSilver API 用量。"
+          }
+        }
+      }
+    },
+    "1 credit = $1 of QuickSilver API usage. Pending windows finalise after the month closes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 积分等于 1 美元的 QuickSilver API 用量。待处理的结算窗口将在月底结束后完成结算。"
+          }
+        }
+      }
+    },
+    "<0.01 credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "<0.01 积分"
+          }
+        }
+      }
+    },
     "About QuickSilver API credits ↗" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12,12 +112,52 @@
         }
       }
     },
+    "Account-wide · %lld nodes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整个账户 · %lld 个节点"
+          }
+        }
+      }
+    },
+    "Account-wide · 1 node" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整个账户 · 1 个节点"
+          }
+        }
+      }
+    },
     "Add key" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加密钥"
+          }
+        }
+      }
+    },
+    "Add your key in Settings to see your credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设置中添加密钥以查看积分。"
+          }
+        }
+      }
+    },
+    "Caps: %@ per node · %@ per pool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上限：每个节点 %1$@ · 每个池 %2$@"
           }
         }
       }
@@ -48,6 +188,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在连接…"
+          }
+        }
+      }
+    },
+    "Credits earned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获得的积分"
           }
         }
       }
@@ -132,6 +282,16 @@
         }
       }
     },
+    "QuickSilver limits ledger checks per hour." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 限制每小时查询账本的次数。"
+          }
+        }
+      }
+    },
     "Recent activity" : {
       "localizations" : {
         "zh-Hans" : {
@@ -142,12 +302,32 @@
         }
       }
     },
+    "Requests served" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "处理的请求数"
+          }
+        }
+      }
+    },
     "Sharing stopped" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "已停止共享"
+          }
+        }
+      }
+    },
+    "Showing %lld of %lld windows · totals use all of them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示 %1$lld / %2$lld 个结算窗口 · 总计包含全部窗口"
           }
         }
       }
@@ -192,12 +372,62 @@
         }
       }
     },
+    "Tokens (in / out)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "token（输入 / 输出）"
+          }
+        }
+      }
+    },
+    "Update your key in Settings to see your credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在设置中更新密钥以查看积分。"
+          }
+        }
+      }
+    },
     "Usage and credits appear in the Credits tab and in QuickSilver." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "用量和积分会显示在“积分”标签页和 QuickSilver 中。"
+          }
+        }
+      }
+    },
+    "Windows appear when your node serves metered requests." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "节点处理计量请求时会显示结算窗口。"
+          }
+        }
+      }
+    },
+    "Your credit activity will appear here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "积分活动将显示在这里。"
+          }
+        }
+      }
+    },
+    "Your local activity below is unaffected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下方的本地活动不受影响。"
           }
         }
       }
@@ -11655,7 +11885,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在此 Mac 上快速记录连接时间。不是QuickSilver结算记录，与上面的窗口不匹配。"
+            "value" : "Rapid 在这台 Mac 上记录的连接时段。这不是 QuickSilver 结算记录，也不与上方的结算窗口对应。"
           }
         }
       }
@@ -13175,7 +13405,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚未记录连接时间。"
+            "value" : "尚未记录连接时段。"
           }
         }
       }
@@ -13355,7 +13585,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "还没有窗户"
+            "value" : "还没有结算窗口"
           }
         }
       }
@@ -14445,7 +14675,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "阅读你的账本…"
+            "value" : "正在读取账本…"
           }
         }
       }
@@ -14715,7 +14945,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "要求"
+            "value" : "请求数"
           }
         }
       }
