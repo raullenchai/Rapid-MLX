@@ -31,6 +31,11 @@ TESTS_DIR = Path(__file__).resolve().parent
         ("class C:\n    import pydantic_ai", True),
         ("if TYPE_CHECKING:\n    import pydantic_ai", False),
         ("try:\n    import pydantic_ai\nexcept ImportError:\n    pass", False),
+        ("try:\n    import pydantic_ai\nexcept ImportError:\n    raise", True),
+        (
+            'try:\n    import pydantic_ai\nexcept ImportError:\n    raise RuntimeError("x") from None',
+            True,
+        ),
         ("if cond:\n    import pydantic_ai", True),
         ("from rapid_mlx.chat_runtime.model_client import inference_url", True),
         ("from rapid_mlx.chat_runtime.progress import tool_progress", False),

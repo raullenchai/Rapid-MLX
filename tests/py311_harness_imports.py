@@ -75,6 +75,8 @@ def _package_of(path: Path) -> str | None:
 
 
 def _handler_guards_import(handler: ast.ExceptHandler) -> bool:
+    if any(isinstance(statement, ast.Raise) for statement in handler.body):
+        return False
     if handler.type is None:
         return True
     types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
