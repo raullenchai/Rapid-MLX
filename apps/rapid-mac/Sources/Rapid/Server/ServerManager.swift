@@ -3520,7 +3520,8 @@ final class ServerManager {
         if busy { observedIdleActivity = now }
         let modelIdle = residency.models.map(\.idleSeconds)
         let audioIdle = audio.compactMap(\.idleSeconds)
-        let serverIdle = (modelIdle + audioIdle).min() ?? 0
+        // Prefer the server-wide clock; per-workload counters are the fallback.
+        let serverIdle = residency.activity?.idleSeconds ?? (modelIdle + audioIdle).min() ?? 0
         let lastActivity = max(observedIdleActivity, now.addingTimeInterval(-max(0, serverIdle)))
         let operating = isOperating || !residentLoadsInFlight.isEmpty || runtimeProbeOperation != nil || communityBenchmarkReserved
         guard IdleModelReleasePreference.shouldUnload(setting: setting, lastActivity: lastActivity, inFlight: busy, now: now, loaded: !residency.models.isEmpty || !audio.isEmpty, operating: operating, activity: residency.activity), !Task.isCancelled else { return }
@@ -3541,6 +3542,9 @@ final class ServerManager {
     func unloadResidentModelsIfIdle(idleSetting: Int? = nil) async -> ResidentUnloadResult {
         guard await refreshResidency() else { return .unavailable }
         if let idleSetting {
+            // The refresh suspended; an app operation may have started since.
+            guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
+                  !communityBenchmarkReserved else { return .busy }
             let threshold = Double(idleSetting)
             if let activity = residency.activity {
                 if activity.inFlight > 0 || activity.idleSeconds < threshold { return .busy }

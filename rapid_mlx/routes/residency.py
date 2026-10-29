@@ -128,7 +128,17 @@ async def model_residency():
     from ..middleware.activity import activity_tracker
 
     snapshot["audio_lanes"] = audio_worker.snapshot()
-    snapshot["activity"] = activity_tracker.snapshot()
+    from .video import active_video_jobs
+
+    activity = activity_tracker.snapshot()
+    # Video jobs keep generating after their POST returns.
+    background = active_video_jobs()
+    if background:
+        activity = {
+            "in_flight": activity["in_flight"] + background,
+            "idle_seconds": 0.0,
+        }
+    snapshot["activity"] = activity
     return snapshot
 
 

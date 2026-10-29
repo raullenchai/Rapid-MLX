@@ -3573,6 +3573,14 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         assert status.json()["activity"]["in_flight"] == 0
         assert status.json()["activity"]["idle_seconds"] >= 0
 
+        import rapid_mlx.routes.video as video_routes
+
+        original_jobs = video_routes.active_video_jobs
+        monkeypatch.setattr(video_routes, "active_video_jobs", lambda: 1)
+        busy = client.get("/v1/models/residency").json()["activity"]
+        assert busy == {"in_flight": 1, "idle_seconds": 0.0}
+        monkeypatch.setattr(video_routes, "active_video_jobs", original_jobs)
+
         pinned = client.put("/v1/models/image/pin", json={"pinned": True})
         assert pinned.status_code == 200
         assert pinned.json()["pinned"] is True

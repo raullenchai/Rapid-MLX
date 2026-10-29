@@ -96,6 +96,12 @@ def _active_video_admissions_locked() -> int:
     )
 
 
+def active_video_jobs() -> int:
+    """Running or queued video work, which outlives its creating request."""
+    with _jobs_lock:
+        return _active_video_admissions_locked()
+
+
 _tasks: dict[str, asyncio.Task] = {}
 _cleanup_tasks: set[asyncio.Task] = set()
 _generation_threads: set[threading.Thread] = set()
