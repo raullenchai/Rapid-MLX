@@ -2951,6 +2951,36 @@ struct ShareComputeLedgerGatingTests {
         #expect(coordinator.state == .rateLimited)
     }
 
+    @Test("A replacement key whose first load fails never shows the previous key's credits")
+    func replacementLoadFailureDropsPreviousAccount() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = SleepGate()
+        nonisolated(unsafe) var shouldFail = false
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in
+                if shouldFail { throw ShareComputeLedgerError.serviceUnavailable }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.state.account != nil)
+
+        shouldFail = true
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+        #expect(coordinator.state.account == nil)
+    }
+
     @Test("A credential removal during a cooldown publishes noKey immediately")
     func removalDuringCooldownIsImmediate() async {
         let keychain = InMemoryKeychain()

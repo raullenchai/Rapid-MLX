@@ -492,6 +492,9 @@ final class ShareComputeLedgerCoordinator {
             // Either not rate-limited, or this call IS the owed validation
             // itself — either way nothing is left pending.
             pendingKeyValidation = false
+            // A new credential starts from a blank ledger: the previous key's
+            // rows must never sit under this key's label, even if it fails.
+            if reason == .keyChanged { state = .loading }
             start(key: key)
         case .missing:
             savedKeyLabel = nil
