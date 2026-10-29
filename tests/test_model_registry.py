@@ -11,6 +11,8 @@ import gc
 import json
 import os
 import socket
+import threading
+import weakref
 from dataclasses import asdict
 
 from rapid_mlx import (
@@ -21,6 +23,7 @@ from rapid_mlx import (
     SchedulerConfig,
     get_registry,
 )
+from rapid_mlx.model_registry import ModelRegistry
 
 pytestmark = pytest.mark.requires_mlx
 
@@ -160,6 +163,104 @@ class TestModelRegistry:
                 )
         finally:
             engine1.close()
+
+
+class TestFinalizerRelease:
+    @pytest.fixture
+    def isolated_registry(self, monkeypatch):
+        # A regression must fail this test, not hang the rest of the session.
+        registry = object.__new__(ModelRegistry)
+        registry._init()
+        monkeypatch.setattr("rapid_mlx.engine_core.get_registry", lambda: registry)
+        yield registry
+
+    def test_gc_finalizer_during_acquire_does_not_deadlock(self, isolated_registry):
+        class Stub:
+            pass
+
+        registry = isolated_registry
+        model, model2 = Stub(), Stub()
+        dying = EngineCore.__new__(EngineCore)
+        dying.model = model
+        dying._engine_id = "gc-dying"
+        dying._owns_model = True
+        dying._closed = False
+        registry.acquire(model, dying, "gc-dying")
+        dying_ref = weakref.ref(dying)
+        holder = [dying]
+        del dying
+
+        class Scheduler:
+            def deep_reset(self):
+                holder.clear()
+                gc.collect()
+
+        owner, new_engine = Stub(), Stub()
+        owner.scheduler = Scheduler()
+        registry.acquire(model2, owner, "gc-owner")
+        errors = []
+
+        def acquire():
+            try:
+                registry.acquire(model2, new_engine, "gc-new", force=True)
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=acquire, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "Registry acquire deadlocked during finalization"
+        assert not errors
+        assert dying_ref() is None
+        assert id(model) not in registry._owners
+        assert registry.is_owned(model2) == (True, "gc-new")
+        assert registry.is_owned(model) == (False, None)
+        registry.release(model2, "gc-new")
+
+    def test_pending_release_does_not_remove_live_reused_engine_id(
+        self, isolated_registry
+    ):
+        class Stub:
+            pass
+
+        registry = isolated_registry
+        model, engine, other_engine = Stub(), Stub(), Stub()
+        registry.acquire(model, engine, "reused")
+        with registry._registry_lock:
+            registry.release_from_finalizer(model, "reused", engine=other_engine)
+        assert registry.is_owned(model) == (True, "reused")
+        registry.release(model, "reused")
+
+    def test_release_from_finalizer_releases_immediately_when_unlocked(
+        self, isolated_registry
+    ):
+        class Stub:
+            pass
+
+        registry = isolated_registry
+        model = Stub()
+        engine = EngineCore.__new__(EngineCore)
+        engine.model = model
+        engine._engine_id = "finalized"
+        engine._owns_model = True
+        engine._closed = False
+        registry.acquire(model, engine, "finalized")
+        del engine
+        assert id(model) not in registry._owners
+        assert not registry._pending_releases
+
+    def test_release_from_finalizer_removes_matching_live_engine(
+        self, isolated_registry
+    ):
+        class Stub:
+            pass
+
+        registry = isolated_registry
+        model, engine = Stub(), Stub()
+        registry.acquire(model, engine, "matching")
+        registry.release_from_finalizer(model, "matching", engine=engine)
+        assert id(model) not in registry._owners
+        assert not registry._pending_releases
 
 
 class TestMultiEngine:
