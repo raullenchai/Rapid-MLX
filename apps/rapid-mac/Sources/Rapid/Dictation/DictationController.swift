@@ -997,7 +997,7 @@ final class DictationController {
               modelAlias == requestedAlias
         else { return }
         guard modelOnDisk else {
-            lastError = "\(requestedAlias) isn't on disk anymore. Open Rapid → Audio to download it."
+            lastError = DictationEnablePolicy.modelNoLongerOnDiskMessage(alias: requestedAlias)
             hud.update(.failed(message: "Model not downloaded"))
             Task {
                 try? await Task.sleep(nanoseconds: 1_600_000_000)

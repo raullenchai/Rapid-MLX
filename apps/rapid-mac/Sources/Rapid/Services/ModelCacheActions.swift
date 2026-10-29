@@ -303,6 +303,26 @@ enum ModelCacheActions {
         }
     }
 
+    struct CrossTabMatch: Equatable {
+        let kind: ModelKind
+        let count: Int
+    }
+
+    static func crossTabMatches(
+        in catalog: [ModelEntry],
+        kinds: [ModelKind],
+        excluding current: ModelKind,
+        filterMode: FilterMode,
+        query: String
+    ) -> [CrossTabMatch] {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        return kinds.compactMap { kind in
+            guard kind != current else { return nil }
+            let count = filter(catalog.filter { $0.supports(kind) }, by: filterMode, query: query).count
+            return count > 0 ? CrossTabMatch(kind: kind, count: count) : nil
+        }
+    }
+
     /// The heading above the models table: what the table is showing,
     /// and how many rows that actually is.
     struct ListHeading: Equatable, Sendable {

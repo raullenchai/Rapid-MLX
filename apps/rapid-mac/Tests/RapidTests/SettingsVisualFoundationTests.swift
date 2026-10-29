@@ -381,6 +381,12 @@ struct SettingsVisualFoundationTests {
         #expect(panel.contains("RapidSegmentedControl("))
     }
 
+    @Test("Idle release picker uses the shared settings row")
+    func idleReleasePickerUsesSettingsRow() throws {
+        let panel = try strippedSource("Sources/Rapid/UI/SettingsModelManagementPanel.swift")
+        #expect(panel.contains(#"SettingsRow(title:String(localized:"Releasemodelwhenidle"),description:String(localized:"Freesmemoryafterthislongwithoutanyrequests.Thenextmessagereloadsthemodel,whichtakesafewseconds.")){Picker("Releasemodelwhenidle",selection:$idleReleaseSeconds)"#))
+    }
+
     @Test("The regular button tiers share one height")
     func regularButtonTiersShareAHeight() {
         // A Cancel/Save pair in a sheet must not step. Emphasis is the

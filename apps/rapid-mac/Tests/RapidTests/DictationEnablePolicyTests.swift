@@ -37,6 +37,26 @@ struct DictationEnablePolicyTests {
         #expect(disableIntent == disablesIntent)
     }
 
+    @Test("missing model errors are hidden only while the download row is visible")
+    func errorBannerPolicy() {
+        let alias = "whisper-small"
+        let messages = [DictationEnablePolicy.modelNotDownloadedMessage(alias: alias),
+                        DictationEnablePolicy.modelNoLongerOnDiskMessage(alias: alias)]
+        for message in messages {
+            #expect(!DictationEnablePolicy.showsErrorBanner(lastError: message, modelAlias: alias, modelDownloadRowVisible: true))
+            #expect(DictationEnablePolicy.showsErrorBanner(lastError: message, modelAlias: alias, modelDownloadRowVisible: false))
+        }
+        for message in ["Microphone access denied", "Accessibility access denied"] {
+            #expect(DictationEnablePolicy.showsErrorBanner(lastError: message, modelAlias: alias, modelDownloadRowVisible: true))
+        }
+        #expect(!DictationEnablePolicy.showsErrorBanner(lastError: nil, modelAlias: alias, modelDownloadRowVisible: true))
+        #expect(!DictationEnablePolicy.showsErrorBanner(lastError: "", modelAlias: alias, modelDownloadRowVisible: false))
+        #expect(DictationEnablePolicy.evaluate(.init(microphone: true, accessibility: true, modelSelected: true,
+            modelOnDisk: false, modelAlias: alias)) == .reject(
+                message: "whisper-small isn't downloaded yet. Download it in the Model row, then turn dictation on.",
+                disableIntent: true))
+    }
+
     @Test("complete prerequisites advance to model preparation")
     func completePrerequisitesPrepare() {
         #expect(DictationEnablePolicy.evaluate(.init(
