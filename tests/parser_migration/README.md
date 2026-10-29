@@ -50,11 +50,13 @@ The fenced-echo expectation is provisional; arbitrary code examples must remain
 literal. The prompt fixture file records current-turn initial-channel contracts,
 including historical markers, exact empty prefill and assistant continuation.
 
-Run `python -m tests.parser_migration.benchmark` for 1K/4K/16K/64K argument bodies.
+Run `python -m tests.parser_migration.benchmark` for 1K/4K/16K argument bodies.
 It measures process CPU time for complete postprocessing and EOF, excluding
-fixture construction and initialization. CI stops at the first >2x per-chunk
-increase while the known quadratic implementation remains; a passing run must
-reach 64K. Live GPU timing and launch journeys are separate behavior-change gates.
+fixture construction and initialization. The default unit run asserts no timing;
+CI counts characters passed to the tool-call scanner over 5-byte chunks and
+finalization, stopping at the first >2x per-chunk increase for a 4x larger body.
+A passing run must reach 16K. Live GPU timing and launch journeys are separate
+behavior-change gates.
 
 `advertised.json` preserves observations for all 30 catalog reasoning/tool pairs
 in all six modes and both thinking settings; a catalog completeness test prevents
