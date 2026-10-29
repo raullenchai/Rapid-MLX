@@ -13,10 +13,7 @@ Rules:
 * Only imports executed while the module is imported count: the module body,
   including ``if``/``try``/``with``/``for`` blocks and class bodies. Imports in
   function bodies and lambdas are deferred and ignored.
-* ``if TYPE_CHECKING:`` blocks are ignored, and so are imports inside a ``try``
-  whose handlers catch ``ImportError``/``ModuleNotFoundError`` (or a broader
-  ``Exception``/bare ``except``): such a module already copes with the
-  dependency being absent.
+* ``if TYPE_CHECKING:`` blocks are ignored.
 * Imports of modules inside this repository (``rapid_mlx``, ``tests``, ...) are
   followed transitively, including the parent packages' ``__init__`` files, so
   importing a harness submodule that pulls in ``pydantic_ai`` counts, while a
@@ -41,8 +38,6 @@ PY311_ONLY_MODULES: tuple[str, ...] = ("pydantic_ai",)
 RUNTIME_ONLY_TEST_FILES: frozenset[str] = frozenset(
     {"test_chat_harness_client.py", "test_chat_runtime_owner.py"}
 )
-
-_GUARD_EXCEPTIONS = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
 
 
 def _is_py311_only(name: str) -> bool:
@@ -74,21 +69,6 @@ def _package_of(path: Path) -> str | None:
     return ".".join(parts) if parts else None
 
 
-def _handler_guards_import(handler: ast.ExceptHandler) -> bool:
-    if any(isinstance(statement, ast.Raise) for statement in handler.body):
-        return False
-    if handler.type is None:
-        return True
-    types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-    for node in types:
-        name = (
-            node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", None)
-        )
-        if name in _GUARD_EXCEPTIONS:
-            return True
-    return False
-
-
 def _is_type_checking(test: ast.expr) -> bool:
     if isinstance(test, ast.Name):
         return test.id == "TYPE_CHECKING"
@@ -114,16 +94,11 @@ def _executed_imports(tree: ast.AST, package: str | None) -> list[str]:
 
     def visit(node: ast.AST) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # Decorators, defaults, and annotations are expressions, so they cannot
+            # contain import statements. Dynamic imports are outside this detector.
             return
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             for child in node.orelse:
-                visit(child)
-            return
-        if isinstance(node, ast.Try) and any(
-            _handler_guards_import(h) for h in node.handlers
-        ):
-            # Imports in a guarded try body tolerate the module being missing.
-            for child in [*node.handlers, *node.orelse, *node.finalbody]:
                 visit(child)
             return
         if isinstance(node, ast.Import):
