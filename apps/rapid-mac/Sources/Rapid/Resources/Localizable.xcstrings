@@ -172,12 +172,12 @@
         }
       }
     },
-    "This month" : {
+    "Monthly credits" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "本月"
+            "value" : "每月积分"
           }
         }
       }

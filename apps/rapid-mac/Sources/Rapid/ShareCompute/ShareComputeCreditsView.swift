@@ -54,7 +54,7 @@ struct ShareComputeCreditsTab: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("This month").font(.rapid(size: 16, weight: .semibold))
+                    Text("Monthly credits").font(.rapid(size: 16, weight: .semibold))
                     if account != nil { Text(monthTitle).font(.rapid(size: 12)).foregroundStyle(.secondary) }
                 }
                 Spacer()
@@ -173,7 +173,7 @@ struct ShareComputeCreditsTab: View {
                     Text("Time").frame(width: 100, alignment: .leading)
                     Text("Model").frame(maxWidth: .infinity, alignment: .leading)
                     Text("Requests").frame(width: 65, alignment: .leading)
-                    Text("Credits").frame(width: 85, alignment: .leading)
+                    Text("Credits").frame(width: 115, alignment: .leading)
                     Text("Status").frame(width: 80, alignment: .leading)
                 }.font(.rapid(size: 11)).foregroundStyle(.secondary).padding(.bottom, 8).accessibilityHidden(true)
             }
@@ -243,7 +243,7 @@ struct ShareComputeLedgerRowView: View {
                         Text(window.nodeID).font(.rapid(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     Text("\(window.requestCount)").monospacedDigit().frame(width: 65, alignment: .leading)
-                    Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).frame(width: 85, alignment: .leading)
+                    Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).fixedSize().frame(width: 115, alignment: .leading)
                     statusTag.frame(width: 80, alignment: .leading)
                 }
             }
