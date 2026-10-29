@@ -19,6 +19,20 @@ struct DictationEnablePolicy {
         case reject(message: String, disableIntent: Bool)
     }
 
+    static func modelNotDownloadedMessage(alias: String) -> String {
+        "\(alias) isn't downloaded yet. Download it in the Model row, then turn dictation on."
+    }
+
+    static func modelNoLongerOnDiskMessage(alias: String) -> String {
+        "\(alias) isn't on disk anymore. Open Rapid → Audio to download it."
+    }
+
+    static func showsErrorBanner(lastError: String?, modelAlias: String, modelDownloadRowVisible: Bool) -> Bool {
+        guard let lastError, !lastError.isEmpty else { return false }
+        return !modelDownloadRowVisible || (lastError != modelNotDownloadedMessage(alias: modelAlias)
+            && lastError != modelNoLongerOnDiskMessage(alias: modelAlias))
+    }
+
     static func evaluate(_ input: Prerequisites) -> Decision {
         guard input.microphone else {
             return .reject(
@@ -34,7 +48,7 @@ struct DictationEnablePolicy {
         }
         guard input.modelOnDisk else {
             return .reject(
-                message: "\(input.modelAlias) isn't downloaded yet. Download it in the Model row, then turn dictation on.",
+                message: modelNotDownloadedMessage(alias: input.modelAlias),
                 disableIntent: true
             )
         }

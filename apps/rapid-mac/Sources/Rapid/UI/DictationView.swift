@@ -16,6 +16,7 @@ struct DictationView: View {
     @State private var newTerm = ""
     @State private var fixTarget: DictationHistory.Entry?
     @State private var showModelPicker = false
+    @State private var handledCompletedDownloads: Set<String> = []
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -51,17 +52,36 @@ struct DictationView: View {
                 await controller.vocabulary.scanForSuggestions()
             }
         }
-        // Runs when the selected alias's pull changes state; on completion,
-        // re-read the catalog so the row flips to "Ready on disk" and the
-        // model warms without another visit to the pane.
         .task(id: modelDownloadStatusKey) {
-            let completedAlias = controller.modelAlias
-            guard case .completed = downloads.job(for: completedAlias)?.status else { return }
-            await controller.modelDownloadDidFinish(alias: completedAlias)
-            await viewModel.refreshCatalog()
+            let aliases = viewModel.transcriptionModels.map(\.alias)
+            let completed = aliases.filter {
+                if case .completed = downloads.job(for: $0)?.status { return true }
+                return false
+            }
+            handledCompletedDownloads.formIntersection(completed)
+            let pending = completed.filter { !handledCompletedDownloads.contains($0) }
+            let selected = controller.modelAlias
+            let selectedCompleted: Bool
+            if case .completed = downloads.job(for: selected)?.status {
+                selectedCompleted = true
+            } else {
+                selectedCompleted = false
+            }
+            guard !pending.isEmpty || selectedCompleted else { return }
+            if !pending.isEmpty {
+                await viewModel.refreshCatalog()
+            }
             guard !Task.isCancelled else { return }
-            if viewModel.audioModels.first(where: { $0.alias == completedAlias })?.cached != true {
-                downloads.dismissJob(alias: completedAlias)
+            // Selecting an already-handled model must still update the active session.
+            if selectedCompleted {
+                await controller.modelDownloadDidFinish(alias: selected)
+            }
+            for alias in pending {
+                guard !Task.isCancelled else { return }
+                if viewModel.audioModels.first(where: { $0.alias == alias })?.cached != true {
+                    downloads.dismissJob(alias: alias)
+                }
+                handledCompletedDownloads.insert(alias)
             }
         }
         // TCC grants happen outside the app and emit no notification, so the
@@ -382,7 +402,11 @@ struct DictationView: View {
                             alias: entry.alias,
                             family: entry.audioFamily
                         ),
-                        isSelected: isSelectedModel(entry)
+                        isSelected: isSelectedModel(entry),
+                        downloadState: .resolve(cached: entry.cached, jobStatus: downloads.job(for: entry.alias)?.status,
+                                                fraction: downloads.job(for: entry.alias)?.progress.progressFraction),
+                        onDownload: { startModelDownload(alias: entry.alias) },
+                        onCancel: { downloads.cancelDownload(alias: entry.alias) }
                     ) {
                         controller.modelAlias = entry.alias
                         showModelPicker = false
@@ -402,15 +426,18 @@ struct DictationView: View {
     /// Alias + job status folded into one value so `.task(id:)` re-fires on
     /// any transition (same pattern as Quickstart's download watcher).
     private var modelDownloadStatusKey: String {
-        let status: String
-        switch downloads.job(for: controller.modelAlias)?.status {
-        case .running: status = "running"
-        case .completed: status = "completed"
-        case .failed: status = "failed"
-        case .cancelled: status = "cancelled"
-        case nil: status = "none"
+        let statuses = viewModel.transcriptionModels.map(\.alias).sorted().map { alias in
+            let status: String
+            switch downloads.job(for: alias)?.status {
+            case .running: status = "running"
+            case .completed: status = "completed"
+            case .failed: status = "failed"
+            case .cancelled: status = "cancelled"
+            case nil: status = "none"
+            }
+            return "\(alias)#\(status)"
         }
-        return "\(controller.modelAlias)#\(status)"
+        return ([controller.modelAlias] + statuses).joined(separator: "|")
     }
 
     /// Download state for the selected model, resolved through the same
@@ -427,19 +454,22 @@ struct DictationView: View {
     private func handleModelReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .download(let alias), .retry(let alias):
-            guard let entry = viewModel.audioModels.first(where: { $0.alias == alias }),
-                  !downloads.isDownloading(alias) else { return }
-            if case .failed = downloads.job(for: alias)?.status {
-                downloads.dismissJob(alias: alias)
-            }
-            _ = downloads.startDownload(
-                alias: alias,
-                hfPath: entry.hfRepo,
-                totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
-            )
+            startModelDownload(alias: alias)
         case .chooseModel, .start, .restart, .openStartupLog, .openModelManagement:
             break
         }
+    }
+
+    private func startModelDownload(alias: String) {
+        guard let entry = viewModel.audioModels.first(where: { $0.alias == alias }),
+              !downloads.isDownloading(alias) else { return }
+        if case .failed = downloads.job(for: alias)?.status {
+            downloads.dismissJob(alias: alias)
+        }
+        _ = downloads.startDownload(
+            alias: alias, hfPath: entry.hfRepo,
+            totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+        )
     }
 
     private var modelDetail: String {
@@ -491,7 +521,9 @@ struct DictationView: View {
 
     @ViewBuilder
     private var errorRow: some View {
-        if let error = controller.lastError {
+        if let error = controller.lastError,
+           DictationEnablePolicy.showsErrorBanner(lastError: error, modelAlias: controller.modelAlias,
+                                                  modelDownloadRowVisible: modelReadiness != nil) {
             HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -758,67 +790,120 @@ struct DictationView: View {
     }
 }
 
+enum TranscriptionDownloadControlState: Equatable {
+    case none, download, downloading(fraction: Double?), retry
+
+    static func resolve(cached: Bool, jobStatus: DownloadManager.Job.Status?, fraction: Double?) -> Self {
+        if cached { return .none }
+        switch jobStatus {
+        case .running: return .downloading(fraction: fraction)
+        case .failed: return .retry
+        case .completed: return .none
+        case .cancelled, nil: return .download
+        }
+    }
+}
+
 private struct TranscriptionModelOptionRow: View {
     let entry: ModelEntry
     let details: AudioViewModel.TranscriptionModelDetails
     let isSelected: Bool
+    let downloadState: TranscriptionDownloadControlState
+    let onDownload: () -> Void
+    let onCancel: () -> Void
     let select: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
-        Button(action: select) {
-            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .opacity(isSelected ? 1 : 0)
-                    .frame(width: 14, height: 18)
+        HStack(alignment: .center, spacing: RapidTheme.Space.xs) {
+            Button(action: select) {
+                HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .opacity(isSelected ? 1 : 0)
+                        .frame(width: 14, height: 18)
 
-                VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                    HStack(spacing: RapidTheme.Space.xs) {
-                        Text(details.displayName)
-                            .font(RapidFont.body)
-                            .lineLimit(1)
-                        pickerBadge("offline")
-                        pickerBadge(details.badge)
-                        if details.isRecommended {
-                            pickerBadge("recommended", emphasized: true)
-                        }
-                        Spacer(minLength: RapidTheme.Space.xs)
-                        if let size = entry.sizeOnDisk {
-                            Text(size)
-                                .font(RapidFont.caption)
-                                .foregroundStyle(.tertiary)
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                        HStack(spacing: RapidTheme.Space.xs) {
+                            Text(details.displayName)
+                                .font(RapidFont.body)
                                 .lineLimit(1)
+                            pickerBadge("offline")
+                            pickerBadge(details.badge)
+                            if details.isRecommended {
+                                pickerBadge("recommended", emphasized: true)
+                            }
+                            Spacer(minLength: RapidTheme.Space.xs)
+                            if let size = entry.sizeOnDisk {
+                                Text(size)
+                                    .font(RapidFont.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                            if entry.cached {
+                                Image(systemName: ModelPickerBar.cacheGlyph(cached: true))
+                                    .font(.caption)
+                                    .foregroundStyle(RapidTheme.green)
+                                    .accessibilityHidden(true)
+                            }
                         }
-                        Image(systemName: ModelPickerBar.cacheGlyph(cached: entry.cached))
-                            .font(.caption)
-                            .foregroundStyle(entry.cached ? RapidTheme.green : .secondary)
-                            .accessibilityHidden(true)
+                        Text(details.summary)
+                            .font(RapidFont.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
                     }
-                    Text(details.summary)
-                        .font(RapidFont.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
                 }
+                .padding(.horizontal, RapidTheme.Space.sm)
+                .padding(.vertical, RapidTheme.Space.xs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, RapidTheme.Space.sm)
-            .padding(.vertical, RapidTheme.Space.xs)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .fill(isSelected || hovering ? RapidTheme.hoverFill : .clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous))
+            .onHover { hovering = $0 }
+            .rapidAnimation(RapidMotion.quick, value: hovering)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityIdentifier("Dictation.Model.Option.\(entry.alias)")
+            downloadControl
         }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
-                .fill(isSelected || hovering ? RapidTheme.hoverFill : .clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous))
-        .onHover { hovering = $0 }
-        .rapidAnimation(RapidMotion.quick, value: hovering)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityIdentifier("Dictation.Model.Option.\(entry.alias)")
+    }
+
+    @ViewBuilder
+    private var downloadControl: some View {
+        switch downloadState {
+        case .none:
+            EmptyView()
+        case .download:
+            Button(action: onDownload) { Image(systemName: "arrow.down.circle") }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Download \(details.displayName)"))
+                .help(String(localized: "Download"))
+                .accessibilityIdentifier("Dictation.Model.Download.\(entry.alias)")
+        case .retry:
+            Button("Retry", action: onDownload)
+                .accessibilityIdentifier("Dictation.Model.Retry.\(entry.alias)")
+        case .downloading(let fraction):
+            HStack(spacing: RapidTheme.Space.xs) {
+                if let fraction {
+                    ProgressView(value: fraction).frame(width: 42)
+                    Text(verbatim: "\(Int((fraction * 100).rounded()))%")
+                        .font(RapidFont.caption)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Button(action: onCancel) { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(String(localized: "Cancel"))
+                    .accessibilityIdentifier("Dictation.Model.Cancel.\(entry.alias)")
+            }
+        }
     }
 
     private func pickerBadge(_ text: String, emphasized: Bool = false) -> some View {
@@ -836,7 +921,15 @@ private struct TranscriptionModelOptionRow: View {
     private var accessibilityLabel: String {
         var parts = [details.displayName, details.badge]
         if details.isRecommended { parts.append("Recommended") }
-        parts.append(entry.cached ? "Downloaded" : "Not downloaded")
+        if case .downloading(let fraction) = downloadState {
+            if let fraction {
+                parts.append(String(localized: "Downloading, \(Int((fraction * 100).rounded())) percent"))
+            } else {
+                parts.append(String(localized: "Downloading"))
+            }
+        } else {
+            parts.append(entry.cached ? "Downloaded" : "Not downloaded")
+        }
         if let size = entry.sizeOnDisk { parts.append(size) }
         parts.append(details.summary)
         return parts.joined(separator: ", ")

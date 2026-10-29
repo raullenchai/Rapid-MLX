@@ -179,7 +179,9 @@ struct LocalizationTests {
             else {
                 continue
             }
-            let unit = try #require(zh["stringUnit"] as? [String: Any], "Missing stringUnit for \(key)")
+            let plural = (zh["variations"] as? [String: Any])?["plural"] as? [String: Any]
+            let other = plural?["other"] as? [String: Any]
+            let unit = try #require((other ?? zh)["stringUnit"] as? [String: Any], "Missing stringUnit for \(key)")
             let value = unit["value"] as? String ?? ""
             #expect(!value.isEmpty, "Empty zh-Hans value for key: \(key)")
             #expect(
@@ -455,6 +457,11 @@ struct LocalizationTests {
         #expect(String(localized: "Private AI, right on your Mac.", bundle: zhBundle) == "私密的 AI，就在你的 Mac 上。")
         #expect(String(localized: "Archived (\(count))", bundle: zhBundle) == "已归档 (3)")
         #expect(String(localized: "\(count) models", bundle: zhBundle) == "3 个模型")
+        let tab = "Audio models"
+        let one = 1
+        #expect(String(localized: "\(one) matches in \(tab) →", bundle: enBundle) == "1 match in Audio models →")
+        #expect(String(localized: "\(count) matches in \(tab) →", bundle: enBundle) == "3 matches in Audio models →")
+        #expect(String(localized: "\(count) matches in \(tab) →", bundle: zhBundle) == "Audio models中有 3 个匹配项 →")
         #expect(String(localized: "Finding video models…", bundle: zhBundle) == "寻找视频模型…")
         #expect(String(localized: "Balanced capacity and memory use", bundle: zhBundle) == "平衡容量和内存使用")
         #expect(String(localized: "Cancel queued video?", bundle: zhBundle) == "取消排队的视频？")

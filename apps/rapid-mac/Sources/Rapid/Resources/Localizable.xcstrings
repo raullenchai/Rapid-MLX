@@ -3330,6 +3330,40 @@
         }
       }
     },
+    "%lld matches in %@ →" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld match in %@ →"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld matches in %@ →"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "variations" : {
+            "plural" : {
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%2$@中有 %1$lld 个匹配项 →"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld models" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4970,6 +5004,12 @@
         }
       }
     },
+    "Downloading, %lld percent" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Downloading, %lld percent" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下载中，百分之 %lld" } }
+      }
+    },
     "Downloading %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6396,6 +6436,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有可用的图像生成模型"
+          }
+        }
+      }
+    },
+    "No %@ match \"%@\"." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No %@ match \"%@\"."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@中没有与\"%@\"匹配的模型。"
           }
         }
       }

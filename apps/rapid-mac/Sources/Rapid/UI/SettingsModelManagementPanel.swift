@@ -385,18 +385,20 @@ struct SettingsModelManagementPanel: View {
 
                 SettingsRowDivider()
 
-                Picker(selection: $idleReleaseSeconds) {
-                    Text("Never").tag(0)
-                    Text("After 15 minutes").tag(900)
-                    Text("After 30 minutes").tag(1800)
-                    Text("After 1 hour").tag(3600)
-                } label: {
-                    SettingsRowLabel(
-                        title: String(localized: "Release model when idle"),
-                        description: String(localized: "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds.")
-                    )
+                SettingsRow(
+                    title: String(localized: "Release model when idle"),
+                    description: String(localized: "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds.")
+                ) {
+                    Picker("Release model when idle", selection: $idleReleaseSeconds) {
+                        Text("Never").tag(0)
+                        Text("After 15 minutes").tag(900)
+                        Text("After 30 minutes").tag(1800)
+                        Text("After 1 hour").tag(3600)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("Settings.Models.IdleModelReleasePicker")
                 }
-                .accessibilityIdentifier("Settings.Models.IdleModelReleasePicker")
                 .onChange(of: idleReleaseSeconds) { _, value in
                     server.configureIdleModelRelease(value)
                 }
@@ -1154,11 +1156,28 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private func listSection(_ entries: [ModelEntry]) -> some View {
         if entries.isEmpty {
-            Text(noMatchesCopy)
-                .font(RapidFont.body)
-                .foregroundStyle(RapidTheme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.vertical, RapidTheme.Space.md)
+            let matches = ModelCacheActions.crossTabMatches(
+                in: catalog, kinds: availableKinds, excluding: capability,
+                filterMode: filterMode, query: query
+            )
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                if matches.isEmpty {
+                    Text(noMatchesCopy)
+                } else {
+                    Text(String(localized: "No \(capability.tabLabel) match \"\(query)\"."))
+                    ForEach(matches, id: \.kind) { match in
+                        Button(String(localized: "\(match.count) matches in \(match.kind.tabLabel) →")) {
+                            capability = match.kind
+                        }
+                        .buttonStyle(.rapidTertiary)
+                        .accessibilityIdentifier("Settings.ModelManagement.CrossTabMatch.\(match.kind.rawValue)")
+                    }
+                }
+            }
+            .font(RapidFont.body)
+            .foregroundStyle(RapidTheme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, RapidTheme.Space.md)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.alias) { idx, entry in
