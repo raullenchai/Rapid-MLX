@@ -44,27 +44,6 @@ struct ShareComputeTextLayoutTests {
         }
     }
 
-    @Test("Pool counter labels fit in narrow rows", arguments: [1.0, 1.5])
-    func poolColumns(scale: Double) throws {
-        let name = "PoolTextLayoutTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        let fonts = UIFontSettings(defaults: defaults)
-        fonts.setScale(scale)
-        for state in ["DISABLED", "DOWNLOAD", "SELECTED", "READY"] {
-            let width = NSAttributedString(string: state, attributes: [
-                .font: NSFont.systemFont(ofSize: fonts.pointSize(10), weight: .bold), .kern: 0.4,
-            ]).size().width
-            #expect(width <= fonts.scaled(92))
-        }
-        for label in ["CONNECTED", "READY", "BUSY", "SLOTS"] {
-            let width = NSAttributedString(string: label, attributes: [
-                .font: NSFont.systemFont(ofSize: fonts.pointSize(10)), .kern: 0.4,
-            ]).size().width
-            #expect(width <= ShareComputePoolRowView.metricWidth(fonts: fonts))
-        }
-    }
-
     @Test("Every step state uses the same scaled circle", arguments: [1.0, 1.5])
     func stepCircles(scale: Double) {
         let fonts = UIFontSettings.shared

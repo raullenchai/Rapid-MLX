@@ -23,6 +23,7 @@ struct ShareComputeView: View {
 
     @State private var tab: ShareComputeTab = ShareComputeTab.harnessRequested() ?? .share
     @State private var isPickerOpen = false
+    @State private var freeBytes: Int64?
     @State private var showingConnectionReview = false
     @State private var providerKey = ""
     @State private var containerSize = CGSize(width: 1_240, height: 820)
@@ -45,27 +46,6 @@ struct ShareComputeView: View {
     /// gate and the 401 key-deletion rule all live there — see
     /// ``ShareComputeLedgerCoordinator`` for why none of it can live here.
     @State private var ledger = ShareComputeLedgerCoordinator()
-
-    // MARK: Live Pool
-
-    @State private var poolSelectionID: String?
-    @State private var freeBytes: Int64?
-    /// What `GET /v1/pool/summary` last told us. Starts in ``loading`` and is
-    /// driven only by ``refreshPoolSummary``.
-    @State private var poolState: ShareComputePoolSummaryState = .loading
-    /// Injectable so tests drive this view without a network.
-    ///
-    /// The default resolves a golden-mode fixture when one is requested and
-    /// otherwise returns the real client. A screenshot run must never read the
-    /// production pool — see ``ShareComputePoolSummaryFixture`` — and the gate
-    /// is the same two-key one the lifecycle stages use, so a normal launch
-    /// always gets the live endpoint.
-    var poolSummaryLoader: @Sendable () async throws -> ShareComputePoolSummary = {
-        if let fixture = ShareComputePoolSummaryFixture.requested() {
-            return try fixture.load()
-        }
-        return try await ShareComputePoolSummaryClient().summary()
-    }
 
     // MARK: Session tracking
 
@@ -105,7 +85,8 @@ struct ShareComputeView: View {
     }
 
     private var selectedModel: ShareComputeLocalModel? {
-        shareableModels.first { $0.id == selectedID } ?? shareableModels.first
+        guard !selectedID.isEmpty else { return nil }
+        return shareableModels.first { $0.id == selectedID } ?? shareableModels.first
     }
 
     private var screen: ShareComputeScreen {
@@ -116,20 +97,11 @@ struct ShareComputeView: View {
     }
 
     private var requiresProviderKey: Bool {
+        _ = manager.providerKeyRevision
         guard let selectedModel else { return true }
         return manager.requiresProviderKey(for: selectedModel.model, worker: worker)
     }
 
-    private var poolRows: [ShareComputePoolRow] {
-        ShareComputePoolRow.make(
-            locals: allPoolModels,
-            summary: poolState.summary,
-            freeBytes: freeBytes
-        )
-    }
-
-    /// What the relay bar on Share reports. Derived from the session state, not
-    /// from the pool summary — this is about THIS Mac's connection.
     private var relayStatus: ShareComputeRelayStatusBar.Status {
         switch screen {
         case .ready: return selectedModel == nil ? .failed : .readyToConnect
@@ -177,9 +149,9 @@ struct ShareComputeView: View {
             .onChange(of: proxy.size) { _, value in containerSize = value }
         }
         .task {
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
             receipts = store.load()
             selectedReceiptID = receipts.first?.id
-            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
             applyReviewPresentation()
         }
         .onChange(of: manager.state) { previous, current in
@@ -202,6 +174,11 @@ struct ShareComputeView: View {
         .onChange(of: manager.providerKeyRevision) { _, _ in
             ledger.providerKeyChanged(isVisible: tab == .credits)
         }
+        // A download finishing makes a model ready; select it so step 2
+        // completes without another click.
+        .onChange(of: shareableModels.map(\.id)) { _, _ in
+            reconcileSelection()
+        }
         .onChange(of: catalogLoaded) { _, _ in
             reconcileSelection()
             // The catalog arrives after first paint, so a review stage that
@@ -209,14 +186,12 @@ struct ShareComputeView: View {
             // re-applied once there is one to select.
             applyReviewPresentation()
         }
-        .onChange(of: tab) { _, currentTab in
+        .onChange(of: tab) { _, _ in
             isPickerOpen = false
-            if currentTab == .livePool {
-                // Storage can change while Rapid is open. Re-probe on every
-                // visit so cleanup or an external-drive mount updates the
-                // decision without requiring an app relaunch.
-                freeBytes = DiskSpaceProbe.freeBytesForHFCache()
-            }
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
+        }
+        .onChange(of: downloads.cacheGeneration) { _, _ in
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
         }
         .sheet(isPresented: $showingConnectionReview) {
             ShareComputeConnectionReview(
@@ -262,7 +237,6 @@ struct ShareComputeView: View {
         switch tab {
         case .share: shareTab
         case .credits: contributionTab
-        case .livePool: poolTab
         }
     }
 
@@ -317,6 +291,14 @@ struct ShareComputeView: View {
                 onViewReward: {},
                 onShareAgain: {}
             )
+        case .download:
+            ShareComputeShareTab(
+                models: [], candidates: [ShareComputeLocalModel(model: ShareComputeModel.supported[0], entry: nil)],
+                selected: nil, relayStatus: .failed, catalogLoaded: true, isNarrow: isNarrow,
+                requiresConnection: true, hasSavedKey: false, isPickerOpen: $isPickerOpen,
+                freeBytes: Int64.max, downloads: downloads, onSelect: { _ in }, onStart: {},
+                onOpenQuickSilver: {}, onAddKey: {}, onGetKey: {}
+            )
         case .connectionReview, .modelPicker:
             // Presented OVER the ready workbench; see `reviewPresentation`.
             readyWorkbench
@@ -368,15 +350,22 @@ struct ShareComputeView: View {
     private var readyWorkbench: some View {
         ShareComputeShareTab(
             models: shareableModels,
+            candidates: allPoolModels.filter { !$0.isReady },
             selected: selectedModel,
             relayStatus: relayStatus,
             catalogLoaded: catalogLoaded,
             isNarrow: isNarrow,
             requiresConnection: requiresProviderKey,
+            hasSavedKey: manager.providerKeyIsStored,
+            savedKeyLabel: manager.savedProviderKeyLabel,
             isPickerOpen: $isPickerOpen,
+            freeBytes: freeBytes,
+            downloads: downloads,
             onSelect: select,
             onStart: presentConnectionReview,
-            onOpenPool: { tab = .livePool }
+            onOpenQuickSilver: { openURL(ShareComputeDestination.provider) },
+            onAddKey: openShareComputeKeySettings,
+            onGetKey: { openURL(ShareComputeDestination.dashboard) }
         )
     }
 
@@ -428,82 +417,6 @@ struct ShareComputeView: View {
         }
     }
 
-    // MARK: - Live Pool
-
-    private var poolTab: some View {
-        ShareComputePoolTab(
-            rows: poolRows,
-            state: poolState,
-            selectedID: poolSelectionID ?? selectedID,
-            isNarrow: isNarrow,
-            onSelect: { row in
-                // Selecting in Live Pool only retargets the contribution. It
-                // does not download and it does not start a session.
-                poolSelectionID = row.id
-                if row.local.isReady { selectedID = row.id }
-            },
-            onContribute: {
-                guard let row = poolRows.first(where: { $0.id == (poolSelectionID ?? selectedID) }),
-                      row.canConnect else { return }
-                selectedID = row.id
-                tab = .share
-                presentConnectionReview()
-            },
-            onDownload: { row in
-                _ = downloads.startDownload(
-                    alias: row.local.model.alias,
-                    hfPath: row.local.entry?.hfRepo,
-                    totalBytes: row.local.estimatedDownloadBytes
-                )
-            }
-        )
-        // Loads on entry and refreshes only while the tab is on screen; the
-        // task is cancelled the moment the user leaves, so a backgrounded tab
-        // never keeps polling. `id:` is the tab so switching away and back
-        // re-runs it (and therefore re-loads immediately).
-        .task(id: tab) {
-            guard tab == .livePool else { return }
-            await pollPoolSummary()
-        }
-    }
-
-    /// Load now, then re-read on the published interval until cancelled.
-    ///
-    /// Paced by ``ShareComputePoolRefresh``: the service caches ~15s and
-    /// rate-limits by IP, so a faster loop buys identical bytes and spends the
-    /// user's budget. `Task.sleep` throws on cancellation, which ends the loop.
-    private func pollPoolSummary() async {
-        while !Task.isCancelled {
-            await refreshPoolSummary()
-            do {
-                try await Task.sleep(
-                    for: .seconds(ShareComputePoolRefresh.recommendedInterval)
-                )
-            } catch {
-                return
-            }
-        }
-    }
-
-    private func refreshPoolSummary() async {
-        // Keep whatever is on screen while the request is in flight, so a
-        // refresh cannot make the page blink empty.
-        poolState = poolState.beginningLoad()
-        do {
-            let summary = try await poolSummaryLoader()
-            guard !Task.isCancelled else { return }
-            poolState = .loaded(summary)
-        } catch let error as ShareComputePoolSummaryError {
-            guard !Task.isCancelled else { return }
-            // Failure preserves previous values and their real `updated_at`;
-            // it never overwrites them with zeros.
-            poolState = poolState.failing(error)
-        } catch {
-            guard !Task.isCancelled else { return }
-            poolState = poolState.failing(.unreachable(error.localizedDescription))
-        }
-    }
-
     // MARK: - Review presentation
 
     /// Opens whichever transient surface a review stage asked for.
@@ -520,7 +433,7 @@ struct ShareComputeView: View {
             if selectedModel != nil { showingConnectionReview = true }
         case .modelPicker:
             isPickerOpen = true
-        case .preparing, .online, .sessionComplete:
+        case .preparing, .online, .sessionComplete, .download:
             break
         }
     }
@@ -584,7 +497,8 @@ struct ShareComputeView: View {
         guard manager.canEditProviderKey else { return }
         completedReceipt = nil
         guard shareableModels.contains(where: { $0.id == catalogID }) else {
-            tab = .livePool
+            selectedID = ""
+            tab = .share
             return
         }
         selectedID = catalogID

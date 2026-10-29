@@ -4,8 +4,7 @@ import Foundation
 
 /// `GET https://pay.quicksilverpro.io/v1/pool/ledger`, verbatim.
 ///
-/// Separate from the domain model below for the same reason
-/// ``ShareComputePoolSummaryDTO`` is: the wire shape is QuickSilver's to
+/// Separate from the domain model below: the wire shape is QuickSilver's to
 /// change, and a status value Rapid has never heard of must not be able to
 /// fail a decode.
 struct ShareComputeLedgerPageDTO: Decodable, Sendable {
@@ -413,6 +412,14 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
 /// outbound request other than the share subprocess. Everything about that is
 /// deliberately narrow: one endpoint, one header, one call site.
 struct ShareComputeLedgerClient: Sendable {
+    static func parseISO8601(_ raw: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: raw) { return date }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: raw)
+    }
+
     static let endpoint = URL(string: "https://pay.quicksilverpro.io/v1/pool/ledger")!
     static let timeout: TimeInterval = 10
 
@@ -493,7 +500,7 @@ struct ShareComputeLedgerClient: Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let raw = try decoder.singleValueContainer().decode(String.self)
-            guard let date = ShareComputePoolSummaryClient.parseISO8601(raw) else {
+            guard let date = ShareComputeLedgerClient.parseISO8601(raw) else {
                 throw DecodingError.dataCorruptedError(
                     in: try decoder.singleValueContainer(),
                     debugDescription: "not an ISO-8601 timestamp"
@@ -638,10 +645,7 @@ struct ShareComputeLedgerClient: Sendable {
 
 /// What Credits knows about the ledger right now.
 ///
-/// Distinct from ``ShareComputePoolSummaryState`` because the failure modes are
-/// different in kind: a pool summary can only be absent or stale, whereas a
-/// ledger can additionally have no credential, a rejected credential, or a
-/// spent rate-limit budget — and each of those has a different fix.
+/// Credential and rate-limit failures each need a different recovery action.
 enum ShareComputeLedgerState: Equatable, Sendable {
     /// No key saved. The onboarding surface, not an error.
     case noKey
@@ -734,7 +738,7 @@ enum ShareComputeLedgerState: Equatable, Sendable {
 /// How often Credits may re-read the ledger.
 ///
 /// The endpoint allows 120 requests/hour/IP and one account walk costs a
-/// request PER PAGE, so Live Pool's 30-second cadence would exhaust the budget
+/// request PER PAGE, so a 30-second cadence would exhaust the budget
 /// within minutes and leave the user rate-limited. Five minutes is the floor;
 /// the tab also stops entirely when it is no longer visible.
 enum ShareComputeLedgerRefresh {

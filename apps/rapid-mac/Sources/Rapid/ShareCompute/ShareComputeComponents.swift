@@ -2,23 +2,18 @@ import SwiftUI
 
 // MARK: - Tabs
 
-/// The three top-level surfaces, each answering a different user question.
+/// The two top-level surfaces, each answering a different user question.
 enum ShareComputeTab: String, CaseIterable, Identifiable, Hashable {
     case share
     /// Was `myContribution`. Renamed with the API-aligned redesign: the tab
     /// answers "what do I earn?", and what QuickSilver pays is API credits.
     case credits
-    /// Was `pool`. "Live" is load-bearing — the tab shows what is online right
-    /// now, not a catalog of what the pool contains.
-    case livePool
-
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .share: return String(localized: "Share")
         case .credits: return String(localized: "Credits")
-        case .livePool: return String(localized: "Live Pool")
         }
     }
 
@@ -28,9 +23,6 @@ enum ShareComputeTab: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .share: return String(localized: "What can I serve right now?")
         case .credits: return String(localized: "What have I earned?")
-        // NOT "what does the pool need" — the summary endpoint publishes
-        // availability, never demand. See ``ShareComputePoolSummary``.
-        case .livePool: return String(localized: "What is online right now?")
         }
     }
 
@@ -52,19 +44,19 @@ enum ShareComputeTab: String, CaseIterable, Identifiable, Hashable {
 /// The underlined tab strip.
 ///
 /// Deliberately NOT ``.pickerStyle(.segmented)``, which is what Community
-/// Benchmark uses: Paper draws a 36pt row of three equal-width labels over a
+/// Benchmark uses: Paper draws a 36pt row of two equal-width labels over a
 /// single hairline, with a 2pt amber rule under the selected one. A segmented
 /// control's filled track reads as a heavier control than the page needs and
 /// changes width with its longest label, which would let the strip shift
 /// between tabs — the handoff forbids exactly that.
 ///
 /// The fixed 360pt width is Paper's, and it is what keeps the strip identical
-/// on all three surfaces.
+/// on both surfaces.
 struct ShareComputeTabBar: View {
     @Binding var selection: ShareComputeTab
 
     /// Paper's width. Below it the bar fills whatever it is given so the
-    /// narrow layout keeps all three tabs rather than truncating one.
+    /// narrow layout keeps both tabs rather than truncating one.
     static let preferredWidth: CGFloat = 360
     private static let height: CGFloat = 36
 

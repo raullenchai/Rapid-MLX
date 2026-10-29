@@ -20,6 +20,7 @@ can actually understand.
 ### Desktop
 
 - **One QuickSilver key for Share Compute**: Credits now reads your credit ledger with the same provider key (`qsppk-…`) you save in Settings → Experimental → Share Compute — there is no separate read-only key to paste. A read-only key saved before this change is no longer used; paste your provider key once in Settings to keep seeing your ledger.
+- **Simpler Share Compute**: the Share tab is now a three-step checklist — add your QuickSilver key, pick (or download) a model, start sharing — and shows a clear status card while your Mac is online. Credits leads with what you earned this month, in credits, followed by recent activity. The Live Pool tab is gone; network-wide availability remains on QuickSilver.
 
 ## [0.16.10] — 2026-10-26
 

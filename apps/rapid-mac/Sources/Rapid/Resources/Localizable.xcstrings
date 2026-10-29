@@ -2,6 +2,236 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "About QuickSilver API credits ↗" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关于 QuickSilver API 积分 ↗"
+          }
+        }
+      }
+    },
+    "Add key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加密钥"
+          }
+        }
+      }
+    },
+    "Change…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更换…"
+          }
+        }
+      }
+    },
+    "Checking downloaded models…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查已下载的模型…"
+          }
+        }
+      }
+    },
+    "Connecting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接…"
+          }
+        }
+      }
+    },
+    "Don't have one? Get a key ↗" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有？获取密钥 ↗"
+          }
+        }
+      }
+    },
+    "Manage key…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "管理密钥…"
+          }
+        }
+      }
+    },
+    "No models can be shared from this Mac right now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 目前没有可共享的模型。"
+          }
+        }
+      }
+    },
+    "On this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上"
+          }
+        }
+      }
+    },
+    "One key from your QuickSilver dashboard lets this Mac share and shows your credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用 QuickSilver 控制台里的一个密钥，即可让这台 Mac 共享算力并查看你的积分。"
+          }
+        }
+      }
+    },
+    "One model is shared at a time." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每次共享一个模型。"
+          }
+        }
+      }
+    },
+    "Open QuickSilver ↗" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开 QuickSilver ↗"
+          }
+        }
+      }
+    },
+    "QuickSilver balance ↗" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 余额 ↗"
+          }
+        }
+      }
+    },
+    "Recent activity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近活动"
+          }
+        }
+      }
+    },
+    "Sharing stopped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停止共享"
+          }
+        }
+      }
+    },
+    "Step %1$d of 3, %2$@, %3$@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %1$d 步（共 3 步），%2$@，%3$@"
+          }
+        }
+      }
+    },
+    "Stop sharing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止共享"
+          }
+        }
+      }
+    },
+    "Monthly credits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每月积分"
+          }
+        }
+      }
+    },
+    "Time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "时间"
+          }
+        }
+      }
+    },
+    "Usage and credits appear in the Credits tab and in QuickSilver." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用量和积分会显示在“积分”标签页和 QuickSilver 中。"
+          }
+        }
+      }
+    },
+    "done" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已完成"
+          }
+        }
+      }
+    },
+    "next" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一步"
+          }
+        }
+      }
+    },
+    "not done" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未完成"
+          }
+        }
+      }
+    },
     "Resumes the download using available cached data." : {
       "localizations" : {
         "zh-Hans" : {
@@ -12366,36 +12596,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最后贡献 %1$@"
-          }
-        }
-      }
-    },
-    "Live Pool" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "现场台球"
-          }
-        }
-      }
-    },
-    "Live Pool shows every supported model, what is online, and what each one would download." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实时算力池会显示所有支持的模型、在线状态，以及每个模型需要下载的内容。"
-          }
-        }
-      }
-    },
-    "Live pool capacity" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实时算力池容量"
           }
         }
       }

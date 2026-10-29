@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Preparing, Online, Session Complete and Connection Review are reachable in
 /// the shipping app only by actually joining the pool, which needs a
-/// QuickSilver provider key and a live pool to join. Neither is available to a
+/// QuickSilver provider key and a network to join. Neither is available to a
 /// screenshot run, so those four surfaces shipped unreviewed — the thing this
 /// type exists to fix.
 ///
@@ -37,6 +37,7 @@ enum ShareComputeReviewStage: String, CaseIterable, Sendable {
     case connectionReview
     /// The ready workbench with the model picker open.
     case modelPicker
+    case download
 
     static func requested(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -53,7 +54,7 @@ enum ShareComputeReviewStage: String, CaseIterable, Sendable {
     /// normally and the stage only opens the sheet or the popover.
     var replacesShareTab: Bool {
         switch self {
-        case .preparing, .online, .sessionComplete: return true
+        case .preparing, .online, .sessionComplete, .download: return true
         case .connectionReview, .modelPicker: return false
         }
     }
@@ -114,89 +115,6 @@ enum ShareComputeReviewFixture {
             rewardStatus: .available,
             restoreStatus: .unloaded
         )
-    }
-}
-
-// MARK: - Pool summary fixtures
-
-/// A fixed `GET /v1/pool/summary` reading for a visual-review capture.
-///
-/// A screenshot run must NEVER read the production pool. Two reasons, and both
-/// have bitten:
-///
-/// 1. The live pool is currently all zeros, so every capture would show an
-///    empty pool and the populated layout — long model names beside four
-///    metric columns, the case most likely to overlap — would go unreviewed.
-/// 2. Numbers that change between two runs make two screenshots of the same
-///    code look like a regression.
-///
-/// Gated exactly like ``ShareComputeReviewStage``: both
-/// ``RAPID_GUI_GOLDEN_MODE`` and ``RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY`` must
-/// be set, so a normal launch always goes to the real client.
-enum ShareComputePoolSummaryFixture: String, CaseIterable, Sendable {
-    /// A busy pool with all four catalog models, GLM included. The GLM row is
-    /// `enabled: false`, so the disabled state is on screen in every capture.
-    case populated
-    /// A real, healthy all-zero pool — the calm empty state, not an error.
-    case empty
-    /// The endpoint is down and there is no previous reading.
-    case unavailable
-
-    static func requested(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> ShareComputePoolSummaryFixture? {
-        guard environment["RAPID_GUI_GOLDEN_MODE"] == "1",
-              let name = environment["RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY"] else {
-            return nil
-        }
-        return ShareComputePoolSummaryFixture(rawValue: name)
-    }
-
-    /// Two minutes before the capture.
-    ///
-    /// RELATIVE, not a fixed epoch: a pinned instant drifts further from "now"
-    /// every day, and a pool whose freshness badge reads "Updated 2d ago" is
-    /// not reviewing the live surface. The rendered STRING is still stable
-    /// across runs because ``ShareComputePoolClock`` buckets by whole minutes.
-    static var updatedAt: Date { Date().addingTimeInterval(-120) }
-
-    func load() throws -> ShareComputePoolSummary {
-        switch self {
-        case .populated:
-            return ShareComputePoolSummary(
-                updatedAt: Self.updatedAt,
-                // Deliberately NOT the sum of the rows below (which is 32): the
-                // totals are the server's own, and a capture whose numbers
-                // happened to add up would hide a UI that secretly re-derived
-                // them. The extra two nodes stand for the real case —
-                // machines (of any hardware) serving a catalog model this build
-                // does not support yet.
-                totals: .init(connectedNodes: 34, readyNodes: 25, availableSlots: 15),
-                models: [
-                    .init(modelID: "qwen3.8-27b", isEnabled: true, connectedNodes: 18, readyNodes: 14, busyNodes: 4, availableSlots: 9),
-                    .init(modelID: "qwen3.6-35b", isEnabled: true, connectedNodes: 9, readyNodes: 7, busyNodes: 2, availableSlots: 4),
-                    .init(modelID: "nemotron-3.5-lightning", isEnabled: true, connectedNodes: 5, readyNodes: 4, busyNodes: 1, availableSlots: 2),
-                    .init(modelID: "glm-5.3-flash", isEnabled: false, connectedNodes: 0, readyNodes: 0, busyNodes: 0, availableSlots: 0),
-                ]
-            )
-        case .empty:
-            return ShareComputePoolSummary(
-                updatedAt: Self.updatedAt,
-                totals: .init(connectedNodes: 0, readyNodes: 0, availableSlots: 0),
-                models: ShareComputeModel.supported.map {
-                    .init(
-                        modelID: $0.catalogID,
-                        isEnabled: true,
-                        connectedNodes: 0,
-                        readyNodes: 0,
-                        busyNodes: 0,
-                        availableSlots: 0
-                    )
-                }
-            )
-        case .unavailable:
-            throw ShareComputePoolSummaryError.httpStatus(503)
-        }
     }
 }
 
