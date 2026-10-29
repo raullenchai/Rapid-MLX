@@ -121,6 +121,11 @@ except ImportError as _guided_import_error:
 # instead of one sequence-wide forward pass that OOMs on long contexts.
 _PREFILL_STEP_SIZE = 2048
 
+_JSON_WHITESPACE_OVERRIDES = {
+    "whitespace_flexible": True,
+    "whitespace_pattern": r"[\x20\x0A\x0D\x09]{0,32}",
+}
+
 
 def is_guided_available() -> bool:
     """Check if guided generation with llguidance is available."""
@@ -544,8 +549,9 @@ class GuidedGenerator:
         ``LLMatcher.grammar_from_json_schema``, which natively understands
         ``$defs``, ``$ref``, ``anyOf``, ``enum``, numeric bounds,
         ``additionalProperties: false``, and nested objects. We compile
-        with ``overrides={"whitespace_flexible": True}`` (llguidance's
-        default) so structural whitespace is OPTIONAL, not forbidden.
+        with optional structural whitespace, capped at 32 characters per run.
+        This forces closure when a model repeats newlines or tabs, avoiding
+        token-budget exhaustion and blocking the shared MLX worker (#5306).
 
         Whitespace flexibility is a correctness requirement, not cosmetic.
         With ``whitespace_flexible: False`` the grammar forbids the space
@@ -587,7 +593,7 @@ class GuidedGenerator:
             schema_str = _json.dumps(json_schema)
             grammar = LLMatcher.grammar_from_json_schema(
                 schema_str,
-                overrides={"whitespace_flexible": True},
+                overrides=_JSON_WHITESPACE_OVERRIDES.copy(),
             )
             decode_kwargs: dict[str, Any] = {
                 "grammar": grammar,
@@ -643,12 +649,12 @@ class GuidedGenerator:
             JSON string, or None on failure
         """
         try:
-            # ``whitespace_flexible: True`` (default) — see ``generate_json``
-            # for why forbidding structural whitespace derails greedy
-            # decoding on real models into fluent-but-wrong content.
+            # Allow optional structural whitespace, capped at 32 characters
+            # per run to force closure instead of exhausting the token budget
+            # and blocking the shared MLX worker (#5306).
             grammar = LLMatcher.grammar_from_json_schema(
                 _JSON_OBJECT_SCHEMA,
-                overrides={"whitespace_flexible": True},
+                overrides=_JSON_WHITESPACE_OVERRIDES.copy(),
             )
             decode_kwargs: dict[str, Any] = {
                 "grammar": grammar,
@@ -688,7 +694,7 @@ def build_json_schema_logits_processor(tokenizer, json_schema: dict):
             return None
         grammar = LLMatcher.grammar_from_json_schema(
             json.dumps(json_schema),
-            overrides={"whitespace_flexible": True},
+            overrides=_JSON_WHITESPACE_OVERRIDES.copy(),
         )
         processor = GrammarLogitsProcessor(
             lltokenizer,

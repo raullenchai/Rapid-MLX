@@ -721,6 +721,24 @@ class TestConstrainedDecodeWithRealLLGuidance:
             "context-dependent fake model emitted the wrong planned tokens"
         )
 
+    def test_repeated_whitespace_is_bounded(self, wrapped_tokenizer):
+        """Repeated structural whitespace must not exhaust the token budget."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 36}
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+        inner = wrapped_tokenizer._tokenizer
+        plan = inner.encode('{"title": "x"') + inner.encode("\n")
+        gen, _ = self._make_generator(wrapped_tokenizer, plan)
+        result = gen.generate_json("prompt", schema, max_tokens=400, temperature=0)
+        assert isinstance(result, str)
+        assert json.loads(result) == {"title": "x"}
+        assert len(result) < 100
+
     def test_cancellation_is_observed_between_prefill_chunks(
         self, wrapped_tokenizer, monkeypatch
     ):
@@ -1700,13 +1718,11 @@ class TestGuidedJsonSchemaPassthrough:
         # The captured schema string must round-trip to the EXACT raw
         # schema — no pydantic reduction, all $defs/$ref/enum preserved.
         assert json.loads(captured["schema_str"]) == schema
-        # And the whitespace override must be present. It is
-        # ``whitespace_flexible: True`` (the default): forbidding structural
-        # whitespace masks a chat model's natural space-prefixed string
-        # opener and derails greedy decoding on unbounded string fields into
-        # fluent-but-wrong content (proved on a real model), so the grammar
-        # must permit optional whitespace.
-        assert captured["overrides"] == {"whitespace_flexible": True}
+        # Structural whitespace remains optional, with bounded runs.
+        assert captured["overrides"] == {
+            "whitespace_flexible": True,
+            "whitespace_pattern": r"[\x20\x0A\x0D\x09]{0,32}",
+        }
 
     def test_converter_not_called_from_generate_json(self, monkeypatch):
         """Negative control: ``json_schema_to_pydantic`` must NOT be invoked
