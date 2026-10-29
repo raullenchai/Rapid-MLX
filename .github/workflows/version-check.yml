@@ -258,23 +258,27 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
-          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           TITLE: ${{ github.event.pull_request.title }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          PR_BODY=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.body // ""')
 
           # The title that will become the release commit subject is strict at
           # PR time. The post-merge detector remains suffix-tolerant as defense
           # in depth, but the bump PR itself must stay canonical.
-          RUN_ID=$(
+          if ! RUN_ID=$(
             python3 scripts/validate_release_subject.py \
               --subject "$TITLE" \
               --pr-body "$PR_BODY" \
               --repository "$REPO" \
               --print-preflight-run-id
-          )
+          ); then
+            echo "::error::The PR body is read live: if the Release-Preflight line is invalid, correct the PR body, then re-run this job." >&2
+            exit 1
+          fi
 
           # Authoritative commit count comes from the PR itself (GitHub's
           # ``pull_request.commits``), not a local rev-list that can vary with
@@ -303,7 +307,7 @@ jobs:
              [ "$RUN_SHA" != "$HEAD_SHA" ] || \
              [ "$RUN_STATUS" != "completed" ] || \
              [ "$RUN_CONCLUSION" != "success" ]; then
-            echo "::error::Release-Preflight run $RUN_ID is not a successful release-preflight.yml workflow_dispatch on exact PR head $HEAD_SHA (event=$RUN_EVENT path=$RUN_PATH sha=$RUN_SHA status=$RUN_STATUS conclusion=$RUN_CONCLUSION). Dispatch the pre-flight on this exact head, wait for green, and replace the Release-Preflight URL in the PR body." >&2
+            echo "::error::Release-Preflight run $RUN_ID is not a successful release-preflight.yml workflow_dispatch on exact PR head $HEAD_SHA (event=$RUN_EVENT path=$RUN_PATH sha=$RUN_SHA status=$RUN_STATUS conclusion=$RUN_CONCLUSION). Dispatch the pre-flight on this exact head and wait for green. The PR body is read live: correct the Release-Preflight URL in the PR body, then re-run this job." >&2
             exit 1
           fi
 

@@ -34,6 +34,12 @@ contains "$BIND" 'scripts/release_version.py subject "$TITLE"' \
   "dispatch rejects a noncanonical bump title before privileged jobs"
 
 GUARD=$(sed -n '/Validate the complete bump PR contract/,/Pass — no stray version change/p' "$VERSION_GUARD")
+absent "$GUARD" 'github.event.pull_request.body' \
+  "required guard does not use the stale event PR body"
+contains "$GUARD" 'PR_NUMBER: ${{ github.event.pull_request.number }}' \
+  "required guard identifies the PR from the event"
+contains "$GUARD" 'PR_BODY=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '\''.body // ""'\'')' \
+  "required guard fetches the live PR body"
 # The guard reads the authoritative commit count from the PR payload (GitHub's
 # `pull_request.commits`), NOT a local `git rev-list` that can vary with how the
 # source branch was fetched or whether base advanced — so no stale-count drift.
