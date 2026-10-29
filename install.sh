@@ -348,8 +348,15 @@ esac
 
 ARCH=$(uname -m)
 if [ "$ARCH" != "arm64" ]; then
-    err "Rapid-MLX requires Apple Silicon (M1/M2/M3/M4)."
-    dim "Detected: $ARCH"
+    # A translated (Rosetta) shell on Apple Silicon also reports x86_64; tell
+    # that user how to fix it instead of saying their Mac is unsupported.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        err "This terminal is running under Rosetta (x86_64), but your Mac has Apple Silicon."
+        dim "Open Terminal without Rosetta (Finder → Applications → Utilities → Terminal → Get Info → uncheck \"Open using Rosetta\") and run the installer again."
+    else
+        err "This Mac has an Intel processor. Rapid-MLX needs a Mac with Apple Silicon (M1 or later)."
+        dim "MLX, the framework Rapid-MLX runs on, only supports Apple Silicon. Memory size doesn't change this."
+    fi
     exit 1
 fi
 
