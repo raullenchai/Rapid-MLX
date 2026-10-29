@@ -1958,7 +1958,14 @@ class EngineCore:
     def __del__(self):
         """Cleanup on destruction."""
         try:
-            self._release_model()
+            # Finalizers can run while the registry lock is held.
+            if getattr(self, "_owns_model", False) and not getattr(
+                self, "_closed", False
+            ):
+                get_registry().release_from_finalizer(
+                    self.model, self._engine_id, engine=self
+                )
+                self._owns_model = False
         except Exception:
             # Ignore errors during garbage collection
             pass

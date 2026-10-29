@@ -13,6 +13,7 @@ Solution: Track model ownership and ensure only one engine's BatchGenerator
 is active for each model at a time.
 """
 
+import collections
 import logging
 import threading
 import weakref
@@ -51,6 +52,7 @@ class ModelRegistry:
         # model_id -> (weak_ref_to_engine, engine_id)
         self._owners: dict[int, tuple[weakref.ref, str]] = {}
         self._registry_lock = threading.Lock()
+        self._pending_releases = collections.deque()
 
     def acquire(
         self, model: Any, engine: Any, engine_id: str, force: bool = False
@@ -73,6 +75,7 @@ class ModelRegistry:
         model_id = id(model)
 
         with self._registry_lock:
+            self._drain_pending_releases_locked()
             if model_id in self._owners:
                 weak_ref, owner_id = self._owners[model_id]
                 owner = weak_ref()
@@ -94,7 +97,43 @@ class ModelRegistry:
             # Register new owner
             self._owners[model_id] = (weakref.ref(engine), engine_id)
             logger.debug(f"Engine {engine_id} acquired model {model_id}")
+            self._drain_pending_releases_locked()
             return True
+
+    def release_from_finalizer(
+        self, model: Any, engine_id: str, engine: Any = None
+    ) -> None:
+        """Queue a release without blocking: finalizers can run at any allocation
+        point, including inside acquire's registry critical section.
+        """
+        self._pending_releases.append(
+            (id(model), engine_id, id(engine) if engine is not None else None)
+        )
+        if self._registry_lock.acquire(blocking=False):
+            try:
+                self._drain_pending_releases_locked()
+            finally:
+                self._registry_lock.release()
+
+    def _drain_pending_releases_locked(self) -> None:
+        """Process finalizer releases while holding the registry lock."""
+        while True:
+            try:
+                model_id, engine_id, engine_obj_id = self._pending_releases.popleft()
+            except IndexError:
+                break
+            entry = self._owners.get(model_id)
+            if entry is not None:
+                weak_ref, owner_id = entry
+                target = weak_ref()
+                # Weakrefs survive __del__ on refcount deallocation, but are cleared
+                # during cyclic GC; equal live object IDs identify the same object.
+                if owner_id == engine_id and (
+                    target is None
+                    or (engine_obj_id is not None and id(target) == engine_obj_id)
+                ):
+                    del self._owners[model_id]
+                    logger.debug(f"Engine {engine_id} released model {model_id}")
 
     def release(self, model: Any, engine_id: str) -> bool:
         """
@@ -110,6 +149,7 @@ class ModelRegistry:
         model_id = id(model)
 
         with self._registry_lock:
+            self._drain_pending_releases_locked()
             if model_id in self._owners:
                 _, owner_id = self._owners[model_id]
                 if owner_id == engine_id:
@@ -128,6 +168,7 @@ class ModelRegistry:
         model_id = id(model)
 
         with self._registry_lock:
+            self._drain_pending_releases_locked()
             if model_id in self._owners:
                 weak_ref, owner_id = self._owners[model_id]
                 if weak_ref() is not None:
@@ -154,6 +195,7 @@ class ModelRegistry:
         """
         cleaned = 0
         with self._registry_lock:
+            self._drain_pending_releases_locked()
             stale = [
                 model_id
                 for model_id, (weak_ref, _) in self._owners.items()
@@ -169,6 +211,7 @@ class ModelRegistry:
     def get_stats(self) -> dict[str, Any]:
         """Get registry statistics."""
         with self._registry_lock:
+            self._drain_pending_releases_locked()
             active = sum(1 for _, (ref, _) in self._owners.items() if ref() is not None)
             return {
                 "total_entries": len(self._owners),
