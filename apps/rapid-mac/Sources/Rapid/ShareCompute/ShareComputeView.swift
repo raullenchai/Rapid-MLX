@@ -200,7 +200,7 @@ struct ShareComputeView: View {
         // characters, different secret) leaves the label unchanged, and this
         // view would otherwise never notice the ledger's world moved.
         .onChange(of: manager.providerKeyRevision) { _, _ in
-            ledger.providerKeyChanged()
+            ledger.providerKeyChanged(isVisible: tab == .credits)
         }
         .onChange(of: catalogLoaded) { _, _ in
             reconcileSelection()

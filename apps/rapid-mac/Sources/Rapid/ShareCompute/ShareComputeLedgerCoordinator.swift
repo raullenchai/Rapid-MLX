@@ -140,6 +140,9 @@ final class ShareComputeLedgerCoordinator {
     /// there is nothing to defer and this is explicitly cleared instead; see
     /// ``refresh(reason:)``.
     private var pendingKeyValidation = false
+    /// The key changed while Credits was hidden: the next ``appear`` must
+    /// re-resolve the credential instead of honouring the refresh interval.
+    private var keyChangedWhileHidden = false
 
     /// Cancellable holder for the single wake task.
     ///
@@ -318,6 +321,11 @@ final class ShareComputeLedgerCoordinator {
     /// the interval like any other refresh, so tab-flipping cannot be used to
     /// bypass it.
     func appear() {
+        if keyChangedWhileHidden {
+            keyChangedWhileHidden = false
+            refresh(reason: .keyChanged)
+            return
+        }
         refresh(reason: .appear)
     }
 
@@ -372,8 +380,17 @@ final class ShareComputeLedgerCoordinator {
     /// tells the ledger its world changed. The generation bump happens
     /// before anything else, so a result still travelling from the OLD
     /// credential — in flight, or a late 401 — can never land after this.
-    func providerKeyChanged() {
+    ///
+    /// When Credits is not on screen (`isVisible == false`) nothing is
+    /// requested: the old world is still invalidated, and the next
+    /// ``appear`` performs the key-change load instead.
+    func providerKeyChanged(isVisible: Bool = true) {
         invalidate()
+        guard isVisible else {
+            keyChangedWhileHidden = true
+            return
+        }
+        keyChangedWhileHidden = false
         refresh(reason: .keyChanged)
     }
 

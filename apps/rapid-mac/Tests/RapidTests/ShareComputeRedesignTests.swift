@@ -2981,6 +2981,38 @@ struct ShareComputeLedgerGatingTests {
         #expect(coordinator.state.account == nil)
     }
 
+    @Test("A key change while Credits is hidden makes no request until Credits appears")
+    func hiddenKeyChangeDefersLoadUntilAppear() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in calls.record(key); return ShareComputeLedgerFixture.account },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(calls.count == 1)
+        coordinator.cancelInFlight()
+
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged(isVisible: false)
+        await Self.settle()
+        #expect(calls.count == 1)
+
+        // Within the refresh interval, yet the owed key-change load still runs.
+        coordinator.appear()
+        await Self.settle()
+        #expect(calls.count == 2)
+        #expect(calls.keys.last == Self.providerKeyB)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+    }
+
     @Test("A credential removal during a cooldown publishes noKey immediately")
     func removalDuringCooldownIsImmediate() async {
         let keychain = InMemoryKeychain()
