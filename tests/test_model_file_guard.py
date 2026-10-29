@@ -519,3 +519,101 @@ def test_vlm_standard_loader_uses_progress_without_mlx(monkeypatch):
         model.load()
     assert calls == [("fixture", {"trust_remote_code": False})]
     assert state.snapshot() == {"phase": "initializing", "model": "fixture"}
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "config.json",
+        "tokenizer_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+    ],
+)
+@pytest.mark.parametrize("field", ["auto_map", "model_file"])
+def test_processor_metadata_requires_consent(tmp_path, monkeypatch, filename, field):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / filename).write_text(json.dumps({field: "custom.py"}))
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        validate_processor_code(tmp_path)
+
+
+@pytest.mark.parametrize("setting", ["1", "0"])
+def test_processor_metadata_respects_process_consent(tmp_path, monkeypatch, setting):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    (tmp_path / "config.json").write_text('{"model_file":"custom.py"}')
+    (tmp_path / "custom.py").write_text("# reviewed")
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"auto_map":{"AutoTokenizer":["custom.Tokenizer",null]}}'
+    )
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", setting)
+    if setting == "1":
+        validate_processor_code(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="explicitly opt in"):
+            validate_processor_code(tmp_path)
+
+
+@pytest.mark.parametrize("content", ["[]", "null", "{broken"])
+def test_processor_metadata_invalid_fails_closed(tmp_path, monkeypatch, content):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "tokenizer_config.json").write_text(content)
+    with pytest.raises(ValueError):
+        validate_processor_code(tmp_path)
+
+
+def test_processor_metadata_reads_only_small_metadata(tmp_path, monkeypatch):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    (tmp_path / "config.json").write_text('{"model_type":"whisper"}')
+    (tmp_path / "tokenizer_config.json").write_text('{"auto_map":null}')
+    calls = []
+    original = Path.open
+
+    def opened(path, *args, **kwargs):
+        calls.append(path.name)
+        assert path.suffix == ".json", "weight reads must never enter the consent check"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+    validate_processor_code(tmp_path)
+    assert set(calls) == {
+        "config.json",
+        "tokenizer_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+    }
+
+
+@pytest.mark.parametrize("loader", [None, lambda: None])
+def test_checked_stt_loader_rejects_unknown_boundary(loader):
+    from rapid_mlx.utils.model_file_guard import checked_stt_loader
+
+    with pytest.raises(RuntimeError, match="missing local dispatch"):
+        checked_stt_loader(loader)
+
+
+def test_checked_stt_loader_isolated_namespace_and_resolved_path(tmp_path):
+    from rapid_mlx.utils.model_file_guard import checked_stt_loader
+
+    calls = []
+    native = lambda **kwargs: calls.append(kwargs) or "loaded"
+    namespace = {"base_load_model": native}
+    exec(
+        "def load_model(model_path, *, lazy=False):\n return base_load_model(model_path=model_path, lazy=lazy)",
+        namespace,
+    )
+    original = namespace["load_model"]
+    adapted = checked_stt_loader(original)
+    assert original.__globals__["base_load_model"] is native
+    with pytest.raises(ValueError, match="resolved local checkpoint"):
+        adapted("example/repo")
+    assert calls == []
+    assert adapted(tmp_path) == "loaded"
+    assert calls == [{"model_path": tmp_path, "lazy": False}]
+    assert original.__globals__["base_load_model"] is native

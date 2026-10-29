@@ -162,3 +162,11 @@ def test_whisper_processor_failure_preserves_policy(monkeypatch, error, disabled
     assert loader.call_count == (
         2 if isinstance(error, OSError) and not disabled else 1
     )
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

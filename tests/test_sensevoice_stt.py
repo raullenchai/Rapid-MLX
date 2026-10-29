@@ -129,3 +129,11 @@ def test_translations_reject_sensevoice_before_inference(model: str) -> None:
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["error"]["code"] == "invalid_model_for_translation"
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

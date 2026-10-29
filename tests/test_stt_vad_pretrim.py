@@ -1042,3 +1042,11 @@ def test_vad_installed_native_dispatch_preserves_custom_cache_hint(
     model = stt._get_vad_model()
     assert isinstance(model, TinyNativeModel)
     assert configs[0]["model_path"] == str(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

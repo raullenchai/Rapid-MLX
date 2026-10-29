@@ -405,3 +405,11 @@ class TestSubtitleTimestampRollover:
                 _h, m, s, _ms = m_vtt.groups()
                 assert int(m) < 60, f"VTT minutes >= 60 at {t}: {vtt!r}"
                 assert int(s) < 60, f"VTT seconds >= 60 at {t}: {vtt!r}"
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )

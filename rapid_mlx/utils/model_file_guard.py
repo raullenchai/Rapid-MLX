@@ -122,6 +122,71 @@ def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) 
         )
 
 
+def validate_processor_code(model_path: str | Path) -> None:
+    """Inspect local metadata before loaders that force repository-code trust.
+
+    Run once at model load, never from generation or transcription. Inspect the
+    same snapshot handed to the loader; catalog pins are not code consent.
+    """
+    root = Path(model_path)
+    for name in (
+        "config.json",
+        "tokenizer_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+    ):
+        try:
+            with (root / name).open(encoding="utf-8") as handle:
+                config = json.load(handle)
+        except FileNotFoundError:
+            continue
+        if not isinstance(config, dict):
+            raise ValueError(f"{name} must contain an object")
+        validate_model_code(config)
+        if config.get("auto_map") and not remote_code_enabled():
+            raise ValueError(
+                "Model processor declares auto_map (executable Python). "
+                "Review the repository code, then explicitly opt in with "
+                "RAPID_MLX_TRUST_REMOTE_CODE=1."
+            )
+    validate_local_model_file(root)
+
+
+def checked_stt_loader(loader):
+    """Bind consent to native dispatch after snapshot/archive resolution.
+
+    Use an isolated function namespace, never process-wide monkeypatches. The
+    native resolver retains its source hints, cache policy and transport; only
+    the final local checkpoint boundary gains a metadata check.
+    """
+    from functools import update_wrapper
+    from types import FunctionType
+
+    if (
+        not isinstance(loader, FunctionType)
+        or "base_load_model" not in loader.__code__.co_names
+        or not callable(loader.__globals__.get("base_load_model"))
+    ):
+        raise RuntimeError("Unsupported STT loader: missing local dispatch boundary")
+    native = loader.__globals__["base_load_model"]
+
+    def checked_base(*, model_path, **kwargs):
+        if not isinstance(model_path, Path):
+            raise ValueError("STT dispatch must use a resolved local checkpoint")
+        validate_processor_code(model_path)
+        return native(model_path=model_path, **kwargs)
+
+    adapted = FunctionType(
+        loader.__code__,
+        {**loader.__globals__, "base_load_model": checked_base},
+        loader.__name__,
+        loader.__defaults__,
+        loader.__closure__,
+    )
+    adapted.__kwdefaults__ = loader.__kwdefaults__
+    return update_wrapper(adapted, loader)
+
+
 def resolve_vlm_checkpoint(
     model_name: str | Path, *, revision: str | None = None
 ) -> Path:

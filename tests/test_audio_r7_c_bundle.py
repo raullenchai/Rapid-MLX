@@ -629,3 +629,11 @@ class TestTTSAliasResolver:
 
         hf_path = "mlx-community/Kokoro-82M-bf16"
         assert _resolve_tts_model(hf_path) == hf_path
+
+
+@pytest.fixture(autouse=True)
+def _mock_stt_dispatch_policy(monkeypatch):
+    """These tests replace the native loader; consent has its own real-loader suite."""
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.checked_stt_loader", lambda loader: loader
+    )
