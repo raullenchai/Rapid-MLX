@@ -218,7 +218,7 @@ struct ShareComputeCreditsTab: View {
 }
 
 private func credit(_ value: Decimal) -> String {
-    if value != 0 && abs(value) < Decimal(string: "0.01")! { return "<0.01 credits" }
+    if value != 0 && abs(value) < Decimal(string: "0.01")! { return value < 0 ? "-<0.01 credits" : "<0.01 credits" }
     let formatter = NumberFormatter(); formatter.numberStyle = .decimal
     formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 2
     return "\(formatter.string(from: NSDecimalNumber(decimal: value)) ?? "0.00") credits"

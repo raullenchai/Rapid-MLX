@@ -237,10 +237,10 @@ struct ShareComputeShareTab: View {
                 } action: {
                     if canStart {
                         Button("Start sharing", action: onStart).buttonStyle(.borderedProminent)
-                            .accessibilityIdentifier("ShareCompute.Setup.Start")
+                            .accessibilityIdentifier("ShareCompute.Start")
                     } else {
                         Button("Start sharing", action: onStart).buttonStyle(.bordered).disabled(true)
-                            .accessibilityIdentifier("ShareCompute.Setup.Start")
+                            .accessibilityIdentifier("ShareCompute.Start")
                     }
                 }
             }.shareGroupedCard()
