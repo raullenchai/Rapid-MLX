@@ -1020,21 +1020,15 @@ class _UnsupportedHarnessModule(pytest.Module):
 
 
 def pytest_pycollect_makemodule(module_path, parent):
-    # Skip before importing the Python 3.11-only agent dependency, including
-    # files explicitly selected by pr_validate. Missing deps on 3.11+ fail.
-    if sys.version_info < (3, 11) and module_path.name.startswith(
-        (
-            "test_chat_runtime",
-            "test_chat_harness",
-            "test_chat_context",
-            "test_chat_cov_b",
-            "test_chat_cov_c",
-            "test_chat_cov_d",
-            "test_chat_image_attachments",
-            "test_chat_image_turns",
-        )
-    ):
-        return _UnsupportedHarnessModule.from_parent(parent, path=module_path)
+    # Skip before importing a module that (transitively) imports the Python
+    # 3.11-only agent dependency, including files explicitly selected by
+    # pr_validate. Detection reads imports, with a minimal runtime-only escape hatch.
+    # Missing deps on 3.11+ still fail.
+    if sys.version_info < (3, 11):
+        from tests.py311_harness_imports import skip_on_python310
+
+        if skip_on_python310(module_path):
+            return _UnsupportedHarnessModule.from_parent(parent, path=module_path)
 
 
 def pytest_collection_modifyitems(config, items):
