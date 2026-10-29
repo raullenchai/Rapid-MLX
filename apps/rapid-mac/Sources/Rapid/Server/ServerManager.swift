@@ -3486,9 +3486,9 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
-    /// Poll only while enabled. The server owns per-model idle counters; the
-    /// primary engine lacks a request-completion timestamp, so observed busy
-    /// intervals also reset the local clock.
+    /// Poll only while enabled. The server's activity clock decides idleness;
+    /// observed busy intervals also reset the local clock. Servers without the
+    /// activity clock never auto-release.
     func configureIdleModelRelease(_ setting: Int) {
         idleReleaseTask?.cancel()
         idleReleaseTask = nil
@@ -3516,15 +3516,11 @@ final class ServerManager {
         let now = Date()
         let audio = residency.audioLanes.filter { $0.state == "resident" }
         let busy = residency.models.contains { $0.activeRequests > 0 || $0.state != "resident" }
-            || audio.contains {
-                $0.activeRequests == nil || $0.activeRequests! > 0
-                    || (residency.activity == nil && $0.idleSeconds == nil)
-            }
+            || audio.contains { $0.activeRequests == nil || $0.activeRequests! > 0 }
         if busy { observedIdleActivity = now }
-        let modelIdle = residency.models.map(\.idleSeconds)
-        let audioIdle = audio.compactMap(\.idleSeconds)
-        // Prefer the server-wide clock; per-workload counters are the fallback.
-        let serverIdle = residency.activity?.idleSeconds ?? (modelIdle + audioIdle).min() ?? 0
+        // Automatic release needs the server-wide activity clock; servers
+        // without it never auto-release (see `shouldUnload`).
+        let serverIdle = residency.activity?.idleSeconds ?? 0
         let lastActivity = max(observedIdleActivity, now.addingTimeInterval(-max(0, serverIdle)))
         let operating = isOperating || !residentLoadsInFlight.isEmpty || runtimeProbeOperation != nil || communityBenchmarkReserved
         guard IdleModelReleasePreference.shouldUnload(setting: setting, lastActivity: lastActivity, inFlight: busy, now: now, loaded: !residency.models.isEmpty || !audio.isEmpty, operating: operating, activity: residency.activity), !Task.isCancelled else { return }
@@ -3550,15 +3546,11 @@ final class ServerManager {
             guard !Task.isCancelled, IdleModelReleasePreference.value() == idleSetting,
                   !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
                   !communityBenchmarkReserved else { return .busy }
-            let threshold = Double(idleSetting)
-            if let activity = residency.activity {
-                if activity.inFlight > 0 || activity.idleSeconds < threshold { return .busy }
-            } else {
-                // Older servers report no activity; re-check per-workload idle time.
-                let audio = residency.audioLanes.filter { $0.state == "resident" }
-                if residency.models.contains(where: { $0.idleSeconds < threshold })
-                    || audio.contains(where: { ($0.idleSeconds ?? 0) < threshold }) { return .busy }
-            }
+            // Re-check everything on the refreshed snapshot: a request, a
+            // model load, or an audio job may have started during the refresh.
+            guard let activity = residency.activity, activity.inFlight == 0,
+                  activity.idleSeconds >= Double(idleSetting),
+                  !residency.models.contains(where: { $0.state != "resident" }) else { return .busy }
         }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy

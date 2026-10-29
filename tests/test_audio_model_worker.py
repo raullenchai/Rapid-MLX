@@ -736,7 +736,10 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
         lambda: [{"lane": "stt", "model": "whisper-small"}],
     )
 
-    assert await residency.model_residency() == {
+    snapshot = await residency.model_residency()
+    assert "activity" in snapshot
+    snapshot.pop("activity")
+    assert snapshot == {
         "models": [{"id": "chat-model"}],
         "audio_lanes": [{"lane": "stt", "model": "whisper-small"}],
     }
