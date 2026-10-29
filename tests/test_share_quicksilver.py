@@ -27,6 +27,7 @@ import threading
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -3555,7 +3556,15 @@ def test_install_service_starts_stable_launcher():
     ]
 
 
-def test_install_service_uses_running_install_when_path_is_older(tmp_path, monkeypatch):
+@pytest.fixture
+def launcher_distribution(monkeypatch):
+    dist = SimpleNamespace(entry_points=[SimpleNamespace(name="rapid-mlx")])
+    monkeypatch.setattr("rapid_mlx._version_check.distribution", lambda _: dist)
+
+
+def test_install_service_uses_running_install_when_path_is_older(
+    tmp_path, monkeypatch, launcher_distribution
+):
     bin_dir = tmp_path / "current" / "bin"
     bin_dir.mkdir(parents=True)
     python = bin_dir / "python"
@@ -3576,7 +3585,9 @@ def test_install_service_uses_running_install_when_path_is_older(tmp_path, monke
     assert plistlib.loads(path.read_bytes())["ProgramArguments"][0] == str(launcher)
 
 
-def test_service_launcher_preserves_matching_path_symlink(tmp_path, monkeypatch):
+def test_service_launcher_preserves_matching_path_symlink(
+    tmp_path, monkeypatch, launcher_distribution
+):
     python = tmp_path / "python"
     launcher = tmp_path / "launcher"
     launcher.write_text(f"#!{python}\n")
@@ -3590,7 +3601,9 @@ def test_service_launcher_preserves_matching_path_symlink(tmp_path, monkeypatch)
     assert qs._service_launcher() == str(link)
 
 
-def test_service_launcher_reports_different_path_install(tmp_path, monkeypatch):
+def test_service_launcher_reports_different_path_install(
+    tmp_path, monkeypatch, launcher_distribution
+):
     python = tmp_path / "current" / "python"
     older = tmp_path / "older-rapid-mlx"
     older.write_text(f"#!{tmp_path}/older/python\n")
