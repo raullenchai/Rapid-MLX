@@ -480,10 +480,11 @@ final class ShareComputeLedgerCoordinator {
             if reason == .keyChanged, isRateLimited {
                 // A replacement resolved while the 429 cooldown is still
                 // running: QuickSilver rate-limits by IP, not by credential,
-                // so spending another request right now buys nothing. Leave
-                // `state` exactly as the cooldown already left it — loading
-                // or cooling — and let `gateLifted()` load this key once the
-                // cooldown actually lifts.
+                // so spending another request right now buys nothing. Drop the
+                // previous key's account so its credits never sit under the
+                // new key's label, show the cooldown, and let `gateLifted()`
+                // load this key once the cooldown actually lifts.
+                state = .rateLimited
                 pendingKeyValidation = true
                 scheduleWake()
                 return

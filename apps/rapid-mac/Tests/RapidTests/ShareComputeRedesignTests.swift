@@ -2911,6 +2911,46 @@ struct ShareComputeLedgerGatingTests {
         #expect(coordinator.state.account != nil)
     }
 
+    @Test("A replacement key during a cooldown never shows the previous key's credits")
+    func replacementDuringCooldownDropsPreviousAccount() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        nonisolated(unsafe) var shouldFail = false
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in
+                calls.record(key)
+                if shouldFail { throw ShareComputeLedgerError.rateLimited }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.state.account != nil)
+
+        // Key A's later refresh hits a 429 while its rows stay on screen.
+        shouldFail = true
+        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.minimumInterval + 1)
+        coordinator.manualRefresh()
+        await Self.settle()
+        #expect(coordinator.rateLimitedUntil != nil)
+
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+        #expect(coordinator.state.account == nil)
+        #expect(coordinator.state == .rateLimited)
+    }
+
     @Test("A credential removal during a cooldown publishes noKey immediately")
     func removalDuringCooldownIsImmediate() async {
         let keychain = InMemoryKeychain()
