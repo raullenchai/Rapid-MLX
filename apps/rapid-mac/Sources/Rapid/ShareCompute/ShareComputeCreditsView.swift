@@ -1,5 +1,18 @@
 import SwiftUI
 
+enum ShareComputeCreditsCopy {
+    static func credits(_ formatted: String, bundle: Bundle = .main) -> String { String(localized: "\(formatted) credits", bundle: bundle) }
+    static func smallCredit(negative: Bool, bundle: Bundle = .main) -> String { negative ? String(localized: "-<0.01 credits", bundle: bundle) : String(localized: "<0.01 credits", bundle: bundle) }
+    static func caps(node: String, pool: String, bundle: Bundle = .main) -> String { String(localized: "Caps: \(node) per node · \(pool) per pool", bundle: bundle) }
+    static func scope(_ count: Int, bundle: Bundle = .main) -> String { count == 1 ? String(localized: "Account-wide · 1 node", bundle: bundle) : String(localized: "Account-wide · \(count) nodes", bundle: bundle) }
+    static func truncation(bundle: Bundle = .main) -> String { String(localized: "Showing the most recent windows only.", bundle: bundle) }
+    static func shown(_ shown: Int, total: Int, bundle: Bundle = .main) -> String { String(localized: "Showing \(shown) of \(total) windows · totals use all of them", bundle: bundle) }
+    static func windows(_ count: Int, bundle: Bundle = .main) -> String { count == 1 ? String(localized: "1 accounting window", bundle: bundle) : String(localized: "\(count) accounting windows", bundle: bundle) }
+    static func summary(sessions: Int, duration: String, models: Int, bundle: Bundle = .main) -> String { String(localized: "\(sessions) connection periods · \(duration) online · \(models) models served", bundle: bundle) }
+    static func row(requests: Int, credit: String, bundle: Bundle = .main) -> String { String(localized: "\(requests) requests · \(credit)", bundle: bundle) }
+    static func accessibility(model: String, node: String, requests: Int, input: Int, output: Int, credit: String, accrued: String, status: String, bundle: Bundle = .main) -> String { String(localized: "\(model), node \(node), \(requests) requests, \(input) input and \(output) output tokens, credit \(credit), accrued \(accrued), status \(status)", bundle: bundle) }
+}
+
 // Retained for text-layout compatibility with existing callers.
 enum ShareComputeLedgerLayout {
     enum Column: CaseIterable {
@@ -69,18 +82,18 @@ struct ShareComputeCreditsTab: View {
                         .accessibilityIdentifier("ShareCompute.Credits.RefreshHold")
                 }
                 HStack(alignment: .top, spacing: 12) {
-                    metric("Credits earned", totals.map { credit($0.finalCredit) } ?? "—")
+                    metric(String(localized: "Credits earned"), totals.map { credit($0.finalCredit) } ?? "—")
                         .accessibilityIdentifier("ShareCompute.Credits.MonthTotal")
-                    metric("Requests served", totals.map { ShareComputeCreditFormatter.count($0.requestCount) } ?? "—")
-                    metric("Tokens (in / out)", totals.map { "\(ShareComputeCreditFormatter.count($0.inputTokens)) / \(ShareComputeCreditFormatter.count($0.outputTokens))" } ?? "—")
+                    metric(String(localized: "Requests served"), totals.map { ShareComputeCreditFormatter.count($0.requestCount) } ?? "—")
+                    metric(String(localized: "Tokens (in / out)"), totals.map { "\(ShareComputeCreditFormatter.count($0.inputTokens)) / \(ShareComputeCreditFormatter.count($0.outputTokens))" } ?? "—")
                 }
                 Text(totals?.hasPendingWindows == true
-                     ? "1 credit = $1 of QuickSilver API usage. Pending windows finalise after the month closes."
-                     : "1 credit = $1 of QuickSilver API usage.")
+                     ? String(localized: "1 credit = $1 of QuickSilver API usage. Pending windows finalise after the month closes.")
+                     : String(localized: "1 credit = $1 of QuickSilver API usage."))
                     .font(.rapid(size: 11)).foregroundStyle(.secondary)
                 let caps = account.caps
                 if caps.nodeMonthlyUSD > 0 || caps.poolMonthlyUSD > 0 {
-                    Text("Caps: \(credit(caps.nodeMonthlyUSD)) per node · \(credit(caps.poolMonthlyUSD)) per pool")
+                    Text(ShareComputeCreditsCopy.caps(node: credit(caps.nodeMonthlyUSD), pool: credit(caps.poolMonthlyUSD)))
                         .font(.rapid(size: 11)).foregroundStyle(.secondary)
                 }
                 Text(scope(account)).font(.rapid(size: 11)).foregroundStyle(.secondary)
@@ -97,8 +110,8 @@ struct ShareComputeCreditsTab: View {
 
     private func scope(_ account: ShareComputeLedgerAccount) -> String {
         let nodes = account.nodeIDs.count
-        let base = nodes == 1 ? "Account-wide · 1 node" : "Account-wide · \(nodes) nodes"
-        return account.isTruncated ? base + " · Showing the most recent windows only." : base
+        let base = ShareComputeCreditsCopy.scope(nodes)
+        return account.isTruncated ? base + " · " + ShareComputeCreditsCopy.truncation() : base
     }
     private func metric(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -140,11 +153,11 @@ struct ShareComputeCreditsTab: View {
     }
     @ViewBuilder private var stateNote: some View {
         switch state {
-        case .noKey: note("key", "No QuickSilver key yet", "Add your key in Settings to see your credits.", "ShareCompute.Credits.NoKey", action: true)
-        case .unauthorized: note("exclamationmark.triangle", ShareComputeLedgerError.unauthorized.displayMessage, "Update your key in Settings to see your credits.", "ShareCompute.Credits.Unauthorized", action: true)
-        case .loading: note("clock", "Reading your ledger…", "Your credit activity will appear here.", "ShareCompute.Credits.Loading")
-        case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, "QuickSilver limits ledger checks per hour.", "ShareCompute.Credits.RateLimited")
-        case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, "Your local activity below is unaffected.", "ShareCompute.Credits.Unavailable")
+        case .noKey: note("key", String(localized: "No QuickSilver key yet"), String(localized: "Add your key in Settings to see your credits."), "ShareCompute.Credits.NoKey", action: true)
+        case .unauthorized: note("exclamationmark.triangle", ShareComputeLedgerError.unauthorized.displayMessage, String(localized: "Update your key in Settings to see your credits."), "ShareCompute.Credits.Unauthorized", action: true)
+        case .loading: note("clock", String(localized: "Reading your ledger…"), String(localized: "Your credit activity will appear here."), "ShareCompute.Credits.Loading")
+        case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, String(localized: "QuickSilver limits ledger checks per hour."), "ShareCompute.Credits.RateLimited")
+        case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, String(localized: "Your local activity below is unaffected."), "ShareCompute.Credits.Unavailable")
         case .loadedEmpty: emptyNote
         case .refreshFailed:
             if let note = state.staleNote {
@@ -156,7 +169,7 @@ struct ShareComputeCreditsTab: View {
         }
     }
     private var emptyNote: some View {
-        note("tray", "No accounting windows yet", "Windows appear when your node serves metered requests.", "ShareCompute.Credits.Empty")
+        note("tray", String(localized: "No accounting windows yet"), String(localized: "Windows appear when your node serves metered requests."), "ShareCompute.Credits.Empty")
     }
     private func note(_ icon: String, _ title: String, _ detail: String, _ id: String, action: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -190,8 +203,8 @@ struct ShareComputeCreditsTab: View {
                 ShareComputeLedgerRowView(window: window, isNarrow: isNarrow)
             }
             Text(account.windows.count > Self.visibleRowLimit
-                 ? "Showing \(Self.visibleRowLimit) of \(account.windows.count) windows · totals use all of them"
-                 : "\(account.windows.count) accounting windows")
+                 ? ShareComputeCreditsCopy.shown(Self.visibleRowLimit, total: account.windows.count)
+                 : ShareComputeCreditsCopy.windows(account.windows.count))
                 .font(.rapid(size: 11)).foregroundStyle(.secondary).padding(.top, 10)
         }.padding(20).frame(maxWidth: .infinity, alignment: .leading).creditsGroupedCard()
     }
@@ -201,7 +214,7 @@ struct ShareComputeCreditsTab: View {
             if receipts.isEmpty {
                 Text("No connection periods recorded yet.").accessibilityIdentifier("ShareCompute.EmptyHistory")
             } else {
-                Text("\(localSummary.sessionCount) connection periods · \(ShareComputeDuration.total(localSummary.totalShared)) online · \(localSummary.modelCount) models served")
+                Text(ShareComputeCreditsCopy.summary(sessions: localSummary.sessionCount, duration: ShareComputeDuration.total(localSummary.totalShared), models: localSummary.modelCount))
             }
             Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
                 .font(.rapid(size: 11)).foregroundStyle(.tertiary)
@@ -218,10 +231,10 @@ struct ShareComputeCreditsTab: View {
 }
 
 private func credit(_ value: Decimal) -> String {
-    if value != 0 && abs(value) < Decimal(string: "0.01")! { return value < 0 ? "-<0.01 credits" : "<0.01 credits" }
+    if value != 0 && abs(value) < Decimal(string: "0.01")! { return ShareComputeCreditsCopy.smallCredit(negative: value < 0) }
     let formatter = NumberFormatter(); formatter.numberStyle = .decimal
     formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 2
-    return "\(formatter.string(from: NSDecimalNumber(decimal: value)) ?? "0.00") credits"
+    return ShareComputeCreditsCopy.credits(formatter.string(from: NSDecimalNumber(decimal: value)) ?? "0.00")
 }
 
 private extension View {
@@ -240,8 +253,8 @@ struct ShareComputeLedgerRowView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack { Text(periodLabel); Spacer(); statusTag }
                     HStack(spacing: 5) {
-                        Text("\(modelLabel) · \(window.nodeID)").lineLimit(1).truncationMode(.middle)
-                        Text("· \(window.requestCount) requests · \(credit(window.finalCredit))").fixedSize()
+                        Text(verbatim: "\(modelLabel) · \(window.nodeID)").lineLimit(1).truncationMode(.middle)
+                        Text("· " + ShareComputeCreditsCopy.row(requests: window.requestCount, credit: credit(window.finalCredit))).fixedSize()
                     }.foregroundStyle(.secondary)
                 }
             } else {
@@ -251,7 +264,7 @@ struct ShareComputeLedgerRowView: View {
                         Text(modelLabel).lineLimit(1)
                         Text(window.nodeID).font(.rapid(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    Text("\(window.requestCount)").monospacedDigit().frame(width: 65, alignment: .leading)
+                    Text(verbatim: "\(window.requestCount)").monospacedDigit().frame(width: 65, alignment: .leading)
                     Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).fixedSize().frame(width: 115, alignment: .leading)
                     statusTag.frame(width: 80, alignment: .leading)
                 }
@@ -280,6 +293,6 @@ struct ShareComputeLedgerRowView: View {
     }
     private var accessibilityLabel: String {
         let accrued = window.accruedCredit.map(credit) ?? String(localized: "accrued amount unknown")
-        return "\(modelLabel), node \(window.nodeID), \(window.requestCount) requests, \(window.inputTokens) input and \(window.outputTokens) output tokens, credit \(credit(window.finalCredit)), accrued \(accrued), status \(window.status.title)"
+        return ShareComputeCreditsCopy.accessibility(model: modelLabel, node: window.nodeID, requests: window.requestCount, input: window.inputTokens, output: window.outputTokens, credit: credit(window.finalCredit), accrued: accrued, status: window.status.title)
     }
 }

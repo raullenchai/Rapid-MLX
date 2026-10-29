@@ -475,6 +475,41 @@ struct LocalizationTests {
         #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least 48 GB unified memory; this Mac has 32 GB.")
     }
 
+    @Test("Share Compute Credits captions resolve against the compiled zh-Hans table")
+    func compiledShareComputeCreditsCopy() async throws {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["xcstringstool", "compile", try catalogURL().path, "--output-directory", output.path, "--serialization-format", "binary"])
+        #expect(compiler.terminationStatus == 0, "xcstringstool failed: \(String(decoding: compiler.standardError, as: UTF8.self))")
+        let zhBundle = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        let enBundle = try #require(Bundle(url: output.appendingPathComponent("en.lproj", isDirectory: true)))
+        #expect(String(localized: "Credits earned", bundle: zhBundle) == "获得的积分")
+        #expect(String(localized: "Requests served", bundle: zhBundle) == "处理的请求数")
+        #expect(String(localized: "Tokens (in / out)", bundle: zhBundle) == "token（输入 / 输出）")
+        #expect(String(localized: "No QuickSilver key yet", bundle: zhBundle) == "还没有 QuickSilver 密钥")
+        #expect(String(localized: "Reading your ledger…", bundle: zhBundle) == "正在读取账本…")
+        #expect(ShareComputeCreditsCopy.credits("2.00", bundle: zhBundle) == "2.00 积分")
+        #expect(ShareComputeCreditsCopy.smallCredit(negative: false, bundle: zhBundle) == "<0.01 积分")
+        #expect(ShareComputeCreditsCopy.smallCredit(negative: true, bundle: zhBundle) == "-<0.01 积分")
+        #expect(ShareComputeCreditsCopy.caps(node: "A", pool: "B", bundle: zhBundle) == "上限：每个节点 A · 每个池 B")
+        #expect(ShareComputeCreditsCopy.scope(1, bundle: zhBundle) == "整个账户 · 1 个节点")
+        #expect(ShareComputeCreditsCopy.scope(2, bundle: zhBundle) == "整个账户 · 2 个节点")
+        #expect(ShareComputeCreditsCopy.truncation(bundle: zhBundle) == "仅显示最近的窗口。")
+        #expect(ShareComputeCreditsCopy.shown(6, total: 9, bundle: zhBundle) == "显示 6 / 9 个结算窗口 · 总计包含全部窗口")
+        #expect(ShareComputeCreditsCopy.windows(1, bundle: zhBundle) == "1 个结算窗口")
+        #expect(ShareComputeCreditsCopy.windows(3, bundle: zhBundle) == "3 个结算窗口")
+        #expect(ShareComputeCreditsCopy.summary(sessions: 2, duration: "1h", models: 3, bundle: zhBundle) == "2 个连接时段 · 在线 1h · 服务了 3 个模型")
+        #expect(ShareComputeCreditsCopy.row(requests: 4, credit: "2 积分", bundle: zhBundle) == "4 次请求 · 2 积分")
+        #expect(ShareComputeCreditsCopy.accessibility(model: "M", node: "N", requests: 2, input: 3, output: 4, credit: "C", accrued: "A", status: "S", bundle: zhBundle) == "M，节点 N，2 次请求，输入 3 个 token，输出 4 个 token，积分 C，累计 A，状态 S")
+        #expect(ShareComputeCreditsCopy.scope(2, bundle: enBundle) == "Account-wide · 2 nodes")
+        #expect(ShareComputeCreditsCopy.windows(1, bundle: enBundle) == "1 accounting window")
+        let source = try String(contentsOf: rapidSource("ShareCompute/ShareComputeCreditsView.swift"), encoding: .utf8)
+        #expect(source.range(of: #"Text\("[^"\n]*\\\("#, options: .regularExpression) == nil)
+        #expect(!source.contains("metric(\""))
+        #expect(source.range(of: #"note\("[^"\n]*",\s*""#, options: .regularExpression) == nil)
+    }
+
     @Test("Compiled zh-Hans catalog resolves through the production photo-hint path")
     func compiledCatalogLocalizesPhotoHints() async throws {
         let output = FileManager.default.temporaryDirectory
