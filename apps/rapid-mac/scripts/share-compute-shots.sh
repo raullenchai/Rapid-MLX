@@ -261,7 +261,7 @@ POOL_SUMMARY=unavailable capture_surface "1440x900-light" 1440 900 light livePoo
 
 # Contributor-ledger states. `loaded` is already covered by run_variant above
 # (it is the default), so these are the other four, at both sizes and themes.
-for ledger in noReadKey empty revoked stale; do
+for ledger in noKey empty revoked stale; do
     slug="$(echo "$ledger" | tr '[:upper:]' '[:lower:]')"
     for v in "1440x900-light 1440 900 light" "1440x900-dark 1440 900 dark" \
              "720x900-light 720 900 light" "720x900-dark 720 900 dark"; do

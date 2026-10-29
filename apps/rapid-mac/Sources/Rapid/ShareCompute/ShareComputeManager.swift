@@ -53,6 +53,14 @@ final class ShareComputeManager {
     private(set) var savedProviderKeyLabel: String?
     private(set) var providerKeyIsStored = false
     private(set) var providerKeyMessage: String?
+    /// Bumped on every provider-key WRITE or REMOVAL — never on a mere
+    /// refresh. ``savedProviderKeyLabel`` alone cannot carry this: a key
+    /// replaced with another key that redacts to the same label (same last
+    /// four characters, different secret) leaves the label unchanged, so a
+    /// view observing only the label never learns the credential moved and
+    /// the ledger coordinator keeps reading a now-stale world. Observers
+    /// that need to react to "the credential changed" watch this instead.
+    private(set) var providerKeyRevision = 0
     private var shuttingDown = false
     private var shutdownSignalledAt: Date?
     private var currentStatusURL: URL?
@@ -117,6 +125,7 @@ final class ShareComputeManager {
             providerKeyMessage = String(localized: "This Mac couldn't save the provider key. Check that you have an unlocked login Keychain and try again.")
             return false
         }
+        providerKeyRevision += 1
         refreshProviderKey()
         return true
     }
@@ -129,6 +138,7 @@ final class ShareComputeManager {
             providerKeyMessage = String(localized: "This Mac couldn't remove the provider key. Unlock your Keychain and try again.")
             return false
         }
+        providerKeyRevision += 1
         refreshProviderKey()
         return true
     }

@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Desktop
+
+- **One QuickSilver key for Share Compute**: Credits now reads your credit ledger with the same provider key (`qsppk-…`) you save in Settings → Experimental → Share Compute — there is no separate read-only key to paste. A read-only key saved before this change is no longer used; paste your provider key once in Settings to keep seeing your ledger.
+
 ## [0.16.10] — 2026-10-26
 
 Dictation starts capturing immediately, model downloads work better on restricted networks, and three new models are available.

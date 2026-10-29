@@ -1272,7 +1272,7 @@ struct ShareComputeAPIAlignedSurfaceTests {
 @Suite("Share Compute · Contributor ledger")
 struct ShareComputeLedgerTests {
 
-    static let key = ShareComputeReadKey(rawValue: "qsprk-" + String(repeating: "a", count: 32))
+    static let key = ShareComputeProviderKey.validate("qsppk-" + String(repeating: "a", count: 32))!
 
     /// The documented sample response, verbatim.
     static let sampleJSON = """
@@ -1343,10 +1343,9 @@ struct ShareComputeLedgerTests {
         // …and nowhere else: not the URL, not the body, not another header.
         let url = request?.url?.absoluteString ?? ""
         #expect(!url.contains(Self.key.rawValue))
-        #expect(!url.contains("qsprk"))
         #expect(request?.httpBody == nil)
         for (name, value) in headers where name != "Authorization" {
-            #expect(!value.contains("qsprk"), "\(name) leaked the key")
+            #expect(!value.contains(Self.key.rawValue), "\(name) leaked the key")
         }
         #expect(request?.httpMethod == "GET")
         #expect(request?.url?.scheme == "https")
@@ -1387,116 +1386,6 @@ struct ShareComputeLedgerTests {
         #expect(secondItems.first { $0.name == "limit" }?.value == "1")
         // No cursor or node filter means no stray empty parameters.
         #expect(secondItems.count == 1)
-    }
-
-    // MARK: Read-key validation
-
-    @Test("Read-key validation accepts qsprk and refuses everything else")
-    func readKeyValidation() {
-        let good = "qsprk-" + String(repeating: "b", count: 30)
-        #expect(try! ShareComputeReadKey.validate(good).get().rawValue == good)
-        // Surrounding whitespace is trimmed; the key itself is unchanged.
-        #expect(try! ShareComputeReadKey.validate("  \(good)\n").get().rawValue == good)
-
-        func rejection(_ raw: String) -> ShareComputeReadKeyRejection? {
-            if case .failure(let r) = ShareComputeReadKey.validate(raw) { return r }
-            return nil
-        }
-        #expect(rejection("") == .empty)
-        #expect(rejection("   ") == .empty)
-        // The dangerous one: a provider key must never be storable.
-        #expect(rejection("qsppk-" + String(repeating: "p", count: 32)) == .wrongPrefix)
-        #expect(rejection("sk-live-abcdefghijklmnop") == .wrongPrefix)
-        #expect(rejection("qsprk-short") == .tooShort)
-        #expect(rejection("qsprk-" + String(repeating: "c", count: 400)) == .tooLong)
-        // Interior control characters are rejected, not silently stripped.
-        #expect(rejection("qsprk-aaaaaaaaaaaa\nbbbb") == .containsControlCharacters)
-        #expect(rejection("qsprk-aaaaaaaaaaaa\tbbbb") == .containsControlCharacters)
-
-        // Every rejection explains itself, and the prefix message names the
-        // provider-key mistake it exists to catch.
-        for value in [ShareComputeReadKeyRejection.empty, .wrongPrefix, .tooShort, .tooLong, .containsControlCharacters] {
-            #expect(!value.message.isEmpty)
-        }
-        #expect(ShareComputeReadKeyRejection.wrongPrefix.message.contains("qsppk-"))
-    }
-
-    @Test("The redacted label never contains the whole key")
-    func redactedLabel() {
-        let label = Self.key.redactedLabel
-        #expect(!label.contains(Self.key.rawValue))
-        #expect(label.hasPrefix("qsprk-"))
-        #expect(label.contains("…"))
-        #expect(label.count < 20)
-    }
-
-    // MARK: Keychain store
-
-    @Test("Read key saves, reads, replaces, and deletes through the Keychain")
-    func keychainRoundTrip() {
-        let keychain = InMemoryKeychain()
-        let store = ShareComputeReadKeyStore(keychain: keychain)
-
-        #expect(store.load() == .missing)
-
-        let first = try! ShareComputeReadKey.validate("qsprk-" + String(repeating: "1", count: 30)).get()
-        #expect(store.save(first))
-        #expect(store.load() == .found(first))
-        // Stored under the dedicated account and nowhere else.
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == first.rawValue)
-
-        // Replace.
-        let second = try! ShareComputeReadKey.validate("qsprk-" + String(repeating: "2", count: 30)).get()
-        #expect(store.save(second))
-        #expect(store.load() == .found(second))
-
-        // Remove.
-        #expect(store.remove())
-        #expect(store.load() == .missing)
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
-    }
-
-    @Test("The account name cannot collide with other Rapid credentials")
-    func accountNamespacing() {
-        let account = ShareComputeReadKeyStore.account
-        #expect(account == "rapid.quicksilver.ledger-read-key.v1")
-        // Web-search providers use `rapid.web-search.*`; the embedded engine
-        // uses `embedded-engine.bearer.v1`. A collision would make one
-        // feature's key readable as another's.
-        #expect(!account.hasPrefix("rapid.web-search."))
-        #expect(account != "embedded-engine.bearer.v1")
-    }
-
-    @Test("A tombstoned or unreadable item is not mistaken for a key")
-    func degradedKeychainStates() {
-        let keychain = InMemoryKeychain()
-        let store = ShareComputeReadKeyStore(keychain: keychain)
-        // `SystemKeychain.delete` masks an unremovable item with an empty
-        // string; that must read as missing, not as a corrupt key.
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: "")
-        #expect(store.load() == .missing)
-        // A value that no longer validates is corrupted, which is distinct
-        // from missing so the UI can say which happened.
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: "not-a-key")
-        #expect(store.load() == .corrupted)
-    }
-
-    @Test("No provider-key persistence regression")
-    func providerKeyIsNeverPersisted() {
-        let keychain = InMemoryKeychain()
-        let store = ShareComputeReadKeyStore(keychain: keychain)
-        // `save` takes a validated ShareComputeReadKey, and validation refuses
-        // the qsppk- prefix — so there is no call that can put a provider key
-        // in the Keychain.
-        let provider = "qsppk-" + String(repeating: "p", count: 32)
-        if case .success = ShareComputeReadKey.validate(provider) {
-            Issue.record("a provider key must never validate as a read key")
-        }
-        #expect(store.load() == .missing)
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
-        // And the connection sheet still carries the provider key in view
-        // state only — it has no Keychain account of its own.
-        #expect(ShareComputeReadKeyStore.account.contains("ledger-read-key"))
     }
 
     // MARK: Decoding
@@ -1813,7 +1702,7 @@ struct ShareComputeLedgerTests {
         // Refreshing preserves too.
         #expect(ShareComputeLedgerState.loaded(account).beginningLoad() == .refreshing(account))
         // The first load has nothing to preserve.
-        #expect(ShareComputeLedgerState.noReadKey.beginningLoad() == .loading)
+        #expect(ShareComputeLedgerState.noKey.beginningLoad() == .loading)
     }
 
     @Test("A rejected key clears the table rather than implying live rows")
@@ -1823,7 +1712,7 @@ struct ShareComputeLedgerTests {
         // Stale rows under a dead credential would read as still updating.
         #expect(state == .unauthorized)
         #expect(state.account == nil)
-        #expect(state.needsReadKey)
+        #expect(state.needsKey)
         #expect(state.blockingError == .unauthorized)
     }
 
@@ -1832,13 +1721,13 @@ struct ShareComputeLedgerTests {
         let account = ShareComputeLedgerFixture.account
         let empty = ShareComputeLedgerFixture.emptyAccount
         let states: [ShareComputeLedgerState] = [
-            .noReadKey, .loading, .loaded(account), .loadedEmpty(empty),
+            .noKey, .loading, .loaded(account), .loadedEmpty(empty),
             .refreshing(account), .refreshFailed(account, .serviceUnavailable),
             .unauthorized, .rateLimited, .unavailable(.serviceUnavailable),
         ]
         #expect(Set(states.map { "\($0)" }).count == states.count)
         // Only the two credential states send the user to onboarding.
-        #expect(states.filter(\.needsReadKey).count == 2)
+        #expect(states.filter(\.needsKey).count == 2)
         // Only the three no-data failures take over the surface.
         #expect(states.compactMap(\.blockingError).count == 3)
         // Rate limiting is its own state, not a generic outage.
@@ -1955,10 +1844,88 @@ struct ShareComputeLedgerTests {
         #expect(ShareComputeLedgerFixture.account.unit == "usd_api_credit")
     }
 
+    /// Terms that must never reach a user: the legacy `qsprk-` read key is
+    /// gone entirely — see ``ShareComputeLegacyReadKeyCleanup`` — and this
+    /// pins that nothing shown to a user, in any language, says otherwise.
+    static let bannedReadKeyTerms = ["read key", "read-only key", "qsprk", "只读"]
+
+    /// `nil` when `string` is clean; the first banned term found otherwise.
+    private static func bannedTerm(in string: String) -> String? {
+        let lower = string.lowercased()
+        return bannedReadKeyTerms.first { lower.contains($0.lowercased()) }
+    }
+
+    /// `apps/rapid-mac`, derived from this test file's own path the same way
+    /// ``LocalizationTests/catalogURL()`` does, so both stay in sync if the
+    /// test tree ever moves.
+    private static func packageRoot() -> URL {
+        // #filePath = apps/rapid-mac/Tests/RapidTests/<this file>.swift
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // -> apps/rapid-mac/Tests/RapidTests/
+            .deletingLastPathComponent() // -> apps/rapid-mac/Tests/
+            .deletingLastPathComponent() // -> apps/rapid-mac/
+    }
+
+    private static func localizableCatalogURL() throws -> URL {
+        let candidates: [URL] = [
+            Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings"),
+            packageRoot().appendingPathComponent("Sources/Rapid/Resources/Localizable.xcstrings")
+        ].compactMap { $0 }
+        return try #require(
+            candidates.first { FileManager.default.fileExists(atPath: $0.path) },
+            "Localizable.xcstrings not found on any candidate path"
+        )
+    }
+
+    @Test("No read-key wording survives in user-facing strings, translations, or ShareCompute UI source")
+    func noReadKeyWordingReachesTheUser() throws {
+        // 1. Every classified ledger error message.
+        for string in ShareComputeLedgerError.allDisplayMessages {
+            #expect(Self.bannedTerm(in: string) == nil, "\"\(string)\" mentions a banned read-key term")
+        }
+
+        // 2. The WHOLE catalog — every source key and every language's
+        // translation, not only the strings ShareCompute's own code paths
+        // happen to produce today. A stray leftover elsewhere would be just
+        // as user-facing.
+        let data = try Data(contentsOf: Self.localizableCatalogURL())
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let strings = try #require(json["strings"] as? [String: Any])
+        for (key, rawEntry) in strings {
+            if let term = Self.bannedTerm(in: key) {
+                Issue.record("Catalog key \"\(key)\" mentions \"\(term)\"")
+            }
+            guard let entry = rawEntry as? [String: Any],
+                  let localizations = entry["localizations"] as? [String: Any] else { continue }
+            for (language, rawLocalization) in localizations {
+                guard let localization = rawLocalization as? [String: Any],
+                      let unit = localization["stringUnit"] as? [String: Any],
+                      let translated = unit["value"] as? String,
+                      let term = Self.bannedTerm(in: translated)
+                else { continue }
+                Issue.record("\(language) translation of \"\(key)\" mentions \"\(term)\": \"\(translated)\"")
+            }
+        }
+
+        // 3. The Credits and Settings view SOURCE — where a user-facing
+        // string would actually be written. The legacy-cleanup helper's own
+        // file is deliberately excluded: it is INTERNALLY about the old
+        // qsprk- key by design (account names, historical doc comments) and
+        // is never shown to a user — see its type-level note.
+        let shareComputeRoot = Self.packageRoot().appendingPathComponent("Sources/Rapid/ShareCompute")
+        for file in ["ShareComputeCreditsView.swift", "ShareComputeProviderSettings.swift"] {
+            let url = shareComputeRoot.appendingPathComponent(file)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            if let term = Self.bannedTerm(in: contents) {
+                Issue.record("\(file) mentions \"\(term)\"")
+            }
+        }
+    }
+
     @Test("Dashboard deep links point at the documented hashes")
     func dashboardDeepLinks() {
         #expect(
-            ShareComputeDestination.readKeyManagement.absoluteString
+            ShareComputeDestination.dashboard.absoluteString
                 == "https://quicksilverpro.io/dashboard/#compute"
         )
         #expect(
@@ -1966,14 +1933,15 @@ struct ShareComputeLedgerTests {
                 == "https://quicksilverpro.io/dashboard#credits"
         )
         // Both HTTPS, both QuickSilver.
-        for url in [ShareComputeDestination.readKeyManagement, ShareComputeDestination.credits] {
+        for url in [ShareComputeDestination.dashboard, ShareComputeDestination.credits] {
             #expect(url.scheme == "https")
             #expect(url.host == "quicksilverpro.io")
         }
-        // They are different pages: #compute manages read keys, #credits is
-        // account balance. Rapid renders the ledger itself, so #credits must
-        // never be labelled "ledger details".
-        #expect(ShareComputeDestination.readKeyManagement != ShareComputeDestination.credits)
+        // They are different pages: #compute is the Share Compute tab where
+        // the one provider key is created, #credits is account balance.
+        // Rapid renders the ledger itself, so #credits must never be
+        // labelled "ledger details".
+        #expect(ShareComputeDestination.dashboard != ShareComputeDestination.credits)
     }
 
     // MARK: Fixtures
@@ -2017,29 +1985,50 @@ struct ShareComputeLedgerTests {
         // More than one node, so the account-wide wording is exercised.
         #expect(ShareComputeLedgerFixture.account.nodeIDs.count >= 2)
         // Each state maps to the surface it names.
-        #expect(ShareComputeLedgerFixture.noReadKey.state == .noReadKey)
+        #expect(ShareComputeLedgerFixture.noKey.state == .noKey)
         #expect(ShareComputeLedgerFixture.revoked.state == .unauthorized)
         #expect(ShareComputeLedgerFixture.empty.state.account?.isEmpty == true)
         #expect(ShareComputeLedgerFixture.stale.state.staleNote != nil)
         // Onboarding states show no saved-key label.
-        #expect(ShareComputeLedgerFixture.noReadKey.savedKeyLabel == nil)
+        #expect(ShareComputeLedgerFixture.noKey.savedKeyLabel == nil)
         #expect(ShareComputeLedgerFixture.revoked.savedKeyLabel == nil)
         #expect(ShareComputeLedgerFixture.loaded.savedKeyLabel != nil)
     }
 }
 
 extension ShareComputeLedgerError {
-    /// Every user-facing message, for the copy-hygiene test.
+    /// Every user-facing message, for the copy-hygiene tests above.
+    ///
+    /// `assertExhaustive` below is what keeps this list honest: its `switch`
+    /// has no `default`, so adding a case to `ShareComputeLedgerError`
+    /// without adding a matching sample instance here fails THIS FILE to
+    /// compile instead of silently leaving a new message unchecked by
+    /// ``ledgerWordingIsAccurate`` or ``noUserFacingReadKeyWording``.
     static var allDisplayMessages: [String] {
-        [
-            ShareComputeLedgerError.noReadKey,
+        let instances: [ShareComputeLedgerError] = [
+            .noKey,
             .unauthorized,
             .badRequest(code: "bad_cursor"),
             .rateLimited,
             .serviceUnavailable,
             .unreachable("x"),
             .malformedBody,
-        ].map(\.displayMessage)
+            .keychainUnavailable,
+            .providerKeyCorrupted,
+        ]
+        instances.forEach(assertExhaustive)
+        return instances.map(\.displayMessage)
+    }
+
+    /// Exists only to not compile when a case is added to
+    /// `ShareComputeLedgerError` without a corresponding entry in
+    /// `allDisplayMessages` above.
+    private static func assertExhaustive(_ error: ShareComputeLedgerError) {
+        switch error {
+        case .noKey, .unauthorized, .badRequest, .rateLimited, .serviceUnavailable,
+             .unreachable, .malformedBody, .keychainUnavailable, .providerKeyCorrupted:
+            break
+        }
     }
 }
 
@@ -2052,55 +2041,11 @@ extension ShareComputeLedgerError {
 @MainActor
 struct ShareComputeLedgerSafetyTests {
 
-    private struct FailingKeychain: KeychainStoring {
-        let secret: String?
-
-        func read(account: String) -> String? { secret }
-        func write(account: String, secret: String) -> Bool { false }
-        func delete(account: String) -> Bool { false }
-    }
-
-    // `nonisolated` so the closures the async tests hand to background work
-    // can read them without hopping to the main actor.
-    nonisolated static let keyA = try! ShareComputeReadKey
-        .validate("qsprk-" + String(repeating: "a", count: 30)).get()
-    nonisolated static let keyB = try! ShareComputeReadKey
-        .validate("qsprk-" + String(repeating: "b", count: 30)).get()
-
-    @Test("A failed Keychain save keeps the draft and an actionable entry state")
-    func failedKeychainSave() {
-        let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: FailingKeychain(secret: nil)),
-            fixture: nil
-        )
-        #expect(coordinator.save(draft: Self.keyA.rawValue) == .keychainUnavailable)
-        #expect(coordinator.state == .unavailable(.keychainUnavailable))
-        #expect(coordinator.state.needsReadKey)
-        #expect(coordinator.savedKeyLabel == nil)
-    }
-
-    @Test("A failed Keychain removal does not claim the key is gone")
-    func failedKeychainRemoval() async {
-        let keychain = FailingKeychain(secret: Self.keyA.rawValue)
-        let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
-            load: { _ in ShareComputeLedgerFixture.account },
-            fixture: nil
-        )
-        coordinator.appear()
-        await Self.settle()
-        coordinator.removeKey()
-        #expect(coordinator.state == .unavailable(.keychainRemovalFailed))
-        #expect(coordinator.state.needsReadKey)
-        #expect(coordinator.savedKeyLabel == Self.keyA.redactedLabel)
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue)
-    }
-
     /// A loader whose completion the test controls.
     final class Gate: @unchecked Sendable {
         private var continuations: [CheckedContinuation<Void, Never>] = []
         private let lock = NSLock()
-        private(set) var calls: [ShareComputeReadKey] = []
+        private(set) var calls: [ShareComputeProviderKey] = []
 
         func wait() async {
             await withCheckedContinuation { continuation in
@@ -2118,7 +2063,7 @@ struct ShareComputeLedgerSafetyTests {
             pending.forEach { $0.resume() }
         }
 
-        func record(_ key: ShareComputeReadKey) {
+        func record(_ key: ShareComputeProviderKey) {
             lock.lock(); calls.append(key); lock.unlock()
         }
 
@@ -2131,10 +2076,10 @@ struct ShareComputeLedgerSafetyTests {
     private static func coordinator(
         keychain: InMemoryKeychain,
         now: @escaping @Sendable () -> Date = { Date() },
-        load: @escaping @Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount
+        load: @escaping @Sendable (ShareComputeProviderKey) async throws -> ShareComputeLedgerAccount
     ) -> ShareComputeLedgerCoordinator {
         ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: load,
             now: now,
             // Explicitly no fixture: these tests exercise the real path.
@@ -2153,19 +2098,57 @@ struct ShareComputeLedgerSafetyTests {
         try? await Task.sleep(for: .milliseconds(40))
     }
 
-    // MARK: Race 1 — a stale 401 must not delete a newly saved key
+    // MARK: Legacy read-key cleanup
 
-    @Test("A late 401 from the OLD key never deletes the key saved after it")
-    func staleUnauthorizedDoesNotDeleteNewKey() async throws {
+    @Test("A leftover legacy read key and its retirement marker are deleted once, at construction")
+    func legacyReadKeyCleanupRunsAtConstruction() {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(
+            account: ShareComputeLegacyReadKeyCleanup.account,
+            secret: "qsprk-" + String(repeating: "a", count: 30)
+        )
+        keychain.write(account: ShareComputeLegacyReadKeyCleanup.retiredAccount, secret: "1")
+
+        _ = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in ShareComputeLedgerFixture.account },
+            fixture: nil
+        )
+
+        #expect(keychain.read(account: ShareComputeLegacyReadKeyCleanup.account) == nil)
+        #expect(keychain.read(account: ShareComputeLegacyReadKeyCleanup.retiredAccount) == nil)
+    }
+
+    @Test("Golden-mode construction never touches the Keychain, so the legacy cleanup is skipped")
+    func legacyCleanupSkippedInGoldenMode() {
+        let keychain = InMemoryKeychain()
+        keychain.write(
+            account: ShareComputeLegacyReadKeyCleanup.account,
+            secret: "qsprk-" + String(repeating: "a", count: 30)
+        )
+
+        _ = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in ShareComputeLedgerFixture.account },
+            fixture: .revoked
+        )
+
+        #expect(keychain.read(account: ShareComputeLegacyReadKeyCleanup.account) != nil)
+    }
+
+    // MARK: Race 1 — a stale 401 must not clobber a newly saved key's state
+
+    @Test("A late 401 from the OLD key never overwrites the state of the key saved after it")
+    func staleUnauthorizedDoesNotClobberNewKey() async throws {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
 
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
             await gate.wait()
             // Only the old key is rejected; the new one would have succeeded.
-            if key == Self.keyA { throw ShareComputeLedgerError.unauthorized }
+            if key == Self.providerKeyA { throw ShareComputeLedgerError.unauthorized }
             return ShareComputeLedgerFixture.account
         }
 
@@ -2173,44 +2156,183 @@ struct ShareComputeLedgerSafetyTests {
         await Self.settle()
         #expect(gate.callCount == 1)
 
-        // The user pastes a new key while the old request is still in flight.
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyB.rawValue)
+        // The user saves a replacement key while the old request is still
+        // in flight.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyASameLabel.rawValue)
+        coordinator.providerKeyChanged()
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyASameLabel.rawValue)
 
         // Now the OLD request's 401 lands.
         gate.releaseAll()
         await Self.settle()
 
-        // The new key survives — this is the bug that would otherwise delete a
-        // credential the user pasted seconds earlier.
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyB.rawValue)
+        // The new key's state survives — a slow rejection from the OLD
+        // world must never flip the coordinator to `.unauthorized` for a
+        // credential that was never actually rejected.
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyASameLabel.rawValue)
         #expect(coordinator.state != .unauthorized)
-        #expect(coordinator.savedKeyLabel == Self.keyB.redactedLabel)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyASameLabel.redactedLabel)
     }
 
-    @Test("A 401 for the key that IS stored does delete it")
-    func currentUnauthorizedDeletesKey() async throws {
+    // MARK: Credential resolution — ONE key
+
+    nonisolated static let providerKeyA = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "x", count: 30))!
+
+    /// Ends with the same four characters as ``providerKeyA`` — a different
+    /// secret that redacts to an IDENTICAL label. This is the replacement a
+    /// view watching only the label text would miss; the manager's
+    /// `providerKeyRevision` counter is what catches it instead (see
+    /// ``ShareComputeManager``), and the view forwards that into
+    /// `providerKeyChanged()`. This test exercises the coordinator's half of
+    /// that fix directly: given the call, does it actually reload under the
+    /// new credential rather than keep serving the old one.
+    nonisolated static let providerKeyASameLabel = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "y", count: 26) + "xxxx")!
+
+    @Test("A found provider key is used")
+    func providerKeyFoundIsUsed() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+
+        #expect(gate.calls.last == Self.providerKeyA)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+    }
+
+    @Test("A corrupted provider key surfaces its own error, never noKey")
+    func corruptedProviderKeySurfacesItsOwnError() async throws {
+        let keychain = InMemoryKeychain()
+        // A provider key IS saved — it just doesn't decode as one.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: "not-a-valid-provider-key")
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+
+        // No request went out at all — claiming `.noKey` would hide the
+        // real problem instead of surfacing it.
+        #expect(gate.callCount == 0)
+        #expect(coordinator.state == .unavailable(.providerKeyCorrupted))
+        #expect(coordinator.state.needsKey)
+        #expect(coordinator.state != .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
+        // This is not a removal, just a refusal to use it silently.
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == "not-a-valid-provider-key")
+    }
+
+    @Test("An unavailable provider-key Keychain surfaces as keychainUnavailable, never noKey")
+    func unavailableProviderKeychainSurfacesError() async throws {
+        struct LockedKeychain: KeychainStoring {
+            func read(account: String) -> String? { nil }
+            func readWithoutUserInteraction(account: String) -> KeychainReadResult { .unavailable }
+            func write(account: String, secret: String) -> Bool { false }
+            func delete(account: String) -> Bool { false }
+        }
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: LockedKeychain(),
+            load: { _ in ShareComputeLedgerFixture.account },
+            fixture: nil
+        )
+
+        coordinator.appear()
+        await Self.settle()
+
+        #expect(coordinator.state == .unavailable(.keychainUnavailable))
+        #expect(coordinator.state.needsKey)
+        #expect(coordinator.state != .noKey)
+    }
+
+    @Test("A rejected provider key is surfaced but never auto-removed")
+    func rejectedProviderKeyIsNeverDeleted() async throws {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let coordinator = Self.coordinator(keychain: keychain) { _ in
             throw ShareComputeLedgerError.unauthorized
         }
         coordinator.appear()
         await Self.settle()
 
-        // Generation matches and the stored key is the rejected one, so the
-        // dead credential is cleared rather than left to 401 again next launch.
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
         #expect(coordinator.state == .unauthorized)
         #expect(coordinator.savedKeyLabel == nil)
+        // The provider key itself is untouched: it is this Mac's single
+        // QuickSilver credential, managed from Settings, and deleting it here
+        // would silently strand node registration too.
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyA.rawValue)
+    }
+
+    @Test("providerKeyChanged reloads immediately with the new provider key")
+    func providerKeyChangedReloadsImmediately() async throws {
+        let keychain = InMemoryKeychain()
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.state == .noKey)
+
+        // Settings → Experimental → Share Compute saves the provider key
+        // directly into the Keychain — a separate window, a separate store.
+        // `providerKeyChanged()` is how Credits learns about it.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(gate.calls.last == Self.providerKeyA)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+    }
+
+    @Test("providerKeyChanged reloads under a replacement key even when the redacted label is unchanged")
+    func providerKeyChangedReloadsDespiteIdenticalLabel() async throws {
+        #expect(Self.providerKeyA.redactedLabel == Self.providerKeyASameLabel.redactedLabel)
+        #expect(Self.providerKeyA != Self.providerKeyASameLabel)
+
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = Gate()
+        let coordinator = Self.coordinator(keychain: keychain) { key in
+            gate.record(key)
+            return ShareComputeLedgerFixture.account
+        }
+
+        coordinator.appear()
+        await Self.settle()
+        #expect(gate.calls.last == Self.providerKeyA)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyA.redactedLabel)
+
+        // Settings → Experimental → Share Compute replaces the provider key
+        // with a different secret that happens to redact to the same label.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyASameLabel.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        // The reload must use the NEW secret, not keep serving the old one
+        // just because the on-screen label text did not change.
+        #expect(gate.callCount == 2)
+        #expect(gate.calls.last == Self.providerKeyASameLabel)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyASameLabel.redactedLabel)
     }
 
     // MARK: Race 2 — removal wins over a request in flight
 
-    @Test("Removing the key while a request is in flight ends in noReadKey")
+    @Test("Removing the key while a request is in flight ends in noKey")
     func removalBeatsInFlightRequest() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
@@ -2222,17 +2344,20 @@ struct ShareComputeLedgerSafetyTests {
         await Self.settle()
         #expect(gate.callCount == 1)
 
-        coordinator.removeKey()
-        #expect(coordinator.state == .noReadKey)
+        // The provider key is removed — there is no `removeKey()` any more,
+        // only `providerKeyChanged()` re-resolving against the Keychain.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
+        #expect(coordinator.state == .noKey)
 
         // The in-flight walk now succeeds — and must be discarded.
         gate.releaseAll()
         await Self.settle()
 
-        #expect(coordinator.state == .noReadKey)
+        #expect(coordinator.state == .noKey)
         #expect(coordinator.state.account == nil)
         #expect(coordinator.savedKeyLabel == nil)
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == nil)
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == nil)
     }
 
     // MARK: Race 3 — out-of-order completion
@@ -2240,15 +2365,16 @@ struct ShareComputeLedgerSafetyTests {
     @Test("An older result never overwrites a newer one")
     func outOfOrderResultsAreDropped() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
 
-        // Key A returns a populated ledger; key B returns an empty one. If the
-        // stale A result won, the page would show rows for a key that is gone.
+        // The old key returns a populated ledger; the replacement returns an
+        // empty one. If the stale result won, the page would show rows for a
+        // key that is gone.
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
             await gate.wait()
-            return key == Self.keyA
+            return key == Self.providerKeyA
                 ? ShareComputeLedgerFixture.account
                 : ShareComputeLedgerFixture.emptyAccount
         }
@@ -2256,8 +2382,9 @@ struct ShareComputeLedgerSafetyTests {
         coordinator.appear()
         await Self.settle()
 
-        // Replacing the key issues a newer request…
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
+        // Saving a replacement key issues a newer request…
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyASameLabel.rawValue)
+        coordinator.providerKeyChanged()
         await Self.settle()
         #expect(gate.callCount == 2)
 
@@ -2265,7 +2392,7 @@ struct ShareComputeLedgerSafetyTests {
         gate.releaseAll()
         await Self.settle()
 
-        // The newer (key B, empty) result stands.
+        // The newer (replacement, empty) result stands.
         #expect(coordinator.state.account?.isEmpty == true)
         #expect(coordinator.state == .loadedEmpty(ShareComputeLedgerFixture.emptyAccount))
     }
@@ -2275,7 +2402,7 @@ struct ShareComputeLedgerSafetyTests {
     @Test("Leaving the tab cancels the walk in flight")
     func leavingTabCancels() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
@@ -2300,7 +2427,7 @@ struct ShareComputeLedgerSafetyTests {
     @Test("The poll loop cancels its walk when the enclosing task is cancelled")
     func pollCancellationCancelsWalk() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
@@ -2326,7 +2453,7 @@ struct ShareComputeLedgerSafetyTests {
     @Test("Hammering Refresh does not start a second account walk")
     func manualRefreshIsSingleFlight() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
         let coordinator = Self.coordinator(keychain: keychain) { key in
             gate.record(key)
@@ -2359,7 +2486,7 @@ struct ShareComputeLedgerSafetyTests {
     @Test("Manual refresh obeys the five-minute floor, and key changes bypass it")
     func manualRefreshInterval() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = Gate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
         let coordinator = Self.coordinator(keychain: keychain, now: { clock }) { key in
@@ -2392,12 +2519,14 @@ struct ShareComputeLedgerSafetyTests {
         await Self.settle()
         #expect(gate.callCount == 2)
 
-        // Saving a key validates immediately regardless of the interval: the
-        // user is waiting to learn whether the key they pasted works.
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
+        // Saving a provider key validates immediately regardless of the
+        // interval: the user is waiting to learn whether the key they
+        // pasted works.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        coordinator.providerKeyChanged()
         await Self.settle()
         #expect(gate.callCount == 3)
-        #expect(gate.calls.last == Self.keyB)
+        #expect(gate.calls.last?.rawValue == Self.providerKeyA.rawValue)
     }
 
     // MARK: Rate limiting
@@ -2405,7 +2534,7 @@ struct ShareComputeLedgerSafetyTests {
     @Test("A 429 keeps prior data, holds Refresh down, and says why")
     func rateLimitBehaviour() async throws {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
         nonisolated(unsafe) var shouldFail = false
         let coordinator = Self.coordinator(keychain: keychain, now: { clock }) { _ in
@@ -2462,7 +2591,7 @@ struct ShareComputeLedgerSafetyTests {
             """
             return (Data(json.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
-        let account = try await client.account(key: Self.keyA)
+        let account = try await client.account(key: Self.providerKeyA)
         #expect(await pages.count == 3)
         #expect(!account.isTruncated)
     }
@@ -2475,7 +2604,7 @@ struct ShareComputeLedgerSafetyTests {
         // The redirect URLSession would send, already carrying our header —
         // this is exactly the request that must never go out.
         var proposed = URLRequest(url: URL(string: "https://evil.example/v1/pool/ledger")!)
-        proposed.setValue("Bearer \(Self.keyA.rawValue)", forHTTPHeaderField: "Authorization")
+        proposed.setValue("Bearer \(Self.providerKeyA.rawValue)", forHTTPHeaderField: "Authorization")
 
         let forwarded: URLRequest? = await withCheckedContinuation { continuation in
             delegate.urlSession(
@@ -2527,7 +2656,7 @@ struct ShareComputeLedgerSafetyTests {
                 HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             )
         }
-        let page = try await client.page(key: Self.keyA)
+        let page = try await client.page(key: Self.providerKeyA)
         #expect(page.windows.count == 1)
     }
 
@@ -2536,10 +2665,10 @@ struct ShareComputeLedgerSafetyTests {
     @Test("A golden fixture never reads the Keychain or issues a request")
     func fixtureShortCircuits() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         nonisolated(unsafe) var called = false
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { _ in called = true; return ShareComputeLedgerFixture.account },
             now: { Date() },
             fixture: .revoked
@@ -2549,7 +2678,7 @@ struct ShareComputeLedgerSafetyTests {
         #expect(!called)
         #expect(coordinator.state == .unauthorized)
         // …and the stored key is untouched: a capture must not mutate storage.
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyA.rawValue)
+        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyA.rawValue)
     }
 }
 
@@ -2597,10 +2726,13 @@ extension ShareComputeLedgerSafetyTests {
 @MainActor
 struct ShareComputeLedgerGatingTests {
 
-    nonisolated static let keyA = try! ShareComputeReadKey
-        .validate("qsprk-" + String(repeating: "a", count: 30)).get()
-    nonisolated static let keyB = try! ShareComputeReadKey
-        .validate("qsprk-" + String(repeating: "b", count: 30)).get()
+    nonisolated static let providerKeyA = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "x", count: 30))!
+    /// A DISTINCT, independently valid key — used where a test must prove a
+    /// replacement actually loads under the NEW credential, not merely
+    /// re-save the same one.
+    nonisolated static let providerKeyB = ShareComputeProviderKey
+        .validate("qsppk-" + String(repeating: "z", count: 30))!
 
     /// A wake-timer sleep the test releases by hand, so a five-minute gate can
     /// be crossed without waiting five minutes.
@@ -2671,8 +2803,8 @@ struct ShareComputeLedgerGatingTests {
 
     final class Calls: @unchecked Sendable {
         private let lock = NSLock()
-        private(set) var keys: [ShareComputeReadKey] = []
-        func record(_ key: ShareComputeReadKey) {
+        private(set) var keys: [ShareComputeProviderKey] = []
+        func record(_ key: ShareComputeProviderKey) {
             lock.lock(); keys.append(key); lock.unlock()
         }
         var count: Int { lock.lock(); defer { lock.unlock() }; return keys.count }
@@ -2686,16 +2818,16 @@ struct ShareComputeLedgerGatingTests {
 
     // MARK: 429 outranks every reason
 
-    @Test("An active 429 cooldown blocks appear, manual, poll, and keyChanged")
-    func cooldownOutranksEveryReason() async {
+    @Test("An active 429 cooldown blocks appear, manual, poll, and a key replacement alike")
+    func cooldownBlocksEveryReasonExceptRemoval() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { key in calls.record(key); throw ShareComputeLedgerError.rateLimited },
             now: { clock },
             sleep: { await gate.sleep($0) },
@@ -2707,32 +2839,190 @@ struct ShareComputeLedgerGatingTests {
         #expect(calls.count == 1)
         #expect(coordinator.isRateLimited)
 
-        // Every reason, repeatedly. The limit is per IP, so none of them may
-        // spend a request.
+        // appear/manual/poll, repeatedly. The limit is per IP, so none of
+        // them may spend a request.
         coordinator.appear()
         coordinator.manualRefresh()
         coordinator.appear()
         await Self.settle()
         #expect(calls.count == 1)
 
-        // Even a brand-new credential. Pasting a different key cannot buy a
-        // request from an IP-level limiter.
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
+        // A brand-new, DISTINCT credential is still subject to the SAME
+        // IP-level cooldown — QuickSilver rate-limits by IP, not by
+        // credential, so this does not spend a request either. See
+        // `replacementDuringCooldownDefersUntilItLifts` for what happens
+        // once the cooldown actually lifts.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
         await Self.settle()
         #expect(calls.count == 1)
-        #expect(!coordinator.allowsManualRefresh)
     }
 
-    @Test("Saving during a cooldown stores the key but does not clear the cooldown")
-    func saveDuringCooldownKeepsCooldown() async {
+    @Test("A replacement key during a cooldown is deferred and loads once the cooldown lifts")
+    func replacementDuringCooldownDefersUntilItLifts() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        nonisolated(unsafe) var shouldFail = true
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in
+                calls.record(key)
+                if shouldFail { throw ShareComputeLedgerError.rateLimited }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.rateLimitedUntil != nil)
+        #expect(calls.count == 1)
+        let stateBeforeReplacement = coordinator.state
+
+        // Still well inside the cooldown when the key is replaced.
+        shouldFail = false
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        // No request yet — the cooldown is a property of this IP's recent
+        // history, not of the credential, so a fresh key does not buy one.
+        // `state` is untouched: whatever the cooldown already left on
+        // screen keeps showing.
+        #expect(calls.count == 1)
+        #expect(coordinator.state == stateBeforeReplacement)
+        // …but the NEW label is already shown, so the user sees their
+        // change was received even while it waits.
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+
+        // Once the cooldown lifts, the owed load runs on its own, under the
+        // NEW key — the user never had to paste it again.
+        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
+        gate.fire()
+        await Self.settle()
+
+        #expect(calls.count == 2)
+        #expect(calls.keys.last == Self.providerKeyB)
+        #expect(coordinator.state.account != nil)
+    }
+
+    @Test("A replacement key during a cooldown never shows the previous key's credits")
+    func replacementDuringCooldownDropsPreviousAccount() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+        nonisolated(unsafe) var shouldFail = false
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in
+                calls.record(key)
+                if shouldFail { throw ShareComputeLedgerError.rateLimited }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.state.account != nil)
+
+        // Key A's later refresh hits a 429 while its rows stay on screen.
+        shouldFail = true
+        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.minimumInterval + 1)
+        coordinator.manualRefresh()
+        await Self.settle()
+        #expect(coordinator.rateLimitedUntil != nil)
+
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+        #expect(coordinator.state.account == nil)
+        #expect(coordinator.state == .rateLimited)
+    }
+
+    @Test("A replacement key whose first load fails never shows the previous key's credits")
+    func replacementLoadFailureDropsPreviousAccount() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = SleepGate()
+        nonisolated(unsafe) var shouldFail = false
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in
+                if shouldFail { throw ShareComputeLedgerError.serviceUnavailable }
+                return ShareComputeLedgerFixture.account
+            },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.state.account != nil)
+
+        shouldFail = true
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+        #expect(coordinator.state.account == nil)
+    }
+
+    @Test("A key change while Credits is hidden makes no request until Credits appears")
+    func hiddenKeyChangeDefersLoadUntilAppear() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let calls = Calls()
+        let gate = SleepGate()
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { key in calls.record(key); return ShareComputeLedgerFixture.account },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+        coordinator.appear()
+        await Self.settle()
+        #expect(calls.count == 1)
+        coordinator.cancelInFlight()
+
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged(isVisible: false)
+        await Self.settle()
+        #expect(calls.count == 1)
+
+        // Within the refresh interval, yet the owed key-change load still runs.
+        coordinator.appear()
+        await Self.settle()
+        #expect(calls.count == 2)
+        #expect(calls.keys.last == Self.providerKeyB)
+        #expect(coordinator.savedKeyLabel == Self.providerKeyB.redactedLabel)
+    }
+
+    @Test("A credential removal during a cooldown publishes noKey immediately")
+    func removalDuringCooldownIsImmediate() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { key in calls.record(key); throw ShareComputeLedgerError.rateLimited },
             now: { clock },
             sleep: { await gate.sleep($0) },
@@ -2740,58 +3030,20 @@ struct ShareComputeLedgerGatingTests {
         )
         coordinator.appear()
         await Self.settle()
-        let cooldownDeadline = coordinator.rateLimitedUntil
-        #expect(cooldownDeadline != nil)
-
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
-        await Self.settle()
-
-        // The key IS safely stored — that part is immediate.
-        #expect(keychain.read(account: ShareComputeReadKeyStore.account) == Self.keyB.rawValue)
-        #expect(coordinator.savedKeyLabel == Self.keyB.redactedLabel)
-        // …but no request went out and the cooldown is untouched.
         #expect(calls.count == 1)
-        #expect(coordinator.rateLimitedUntil == cooldownDeadline)
         #expect(coordinator.isRateLimited)
-    }
 
-    @Test("When the cooldown lifts, the key saved during it validates itself")
-    func pendingKeyValidatesAfterCooldown() async {
-        let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
-        let calls = Calls()
-        let gate = SleepGate()
-        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
-        nonisolated(unsafe) var limited = true
+        // The provider key is removed while still rate-limited. Unlike a
+        // replacement, a removal needs no request at all to answer — it
+        // resolves straight to `.noKey`, synchronously, dropping whatever
+        // ledger and label were on screen.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
 
-        let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
-            load: { key in
-                calls.record(key)
-                if limited { throw ShareComputeLedgerError.rateLimited }
-                return ShareComputeLedgerFixture.account
-            },
-            now: { clock },
-            sleep: { await gate.sleep($0) },
-            fixture: nil
-        )
-
-        coordinator.appear()
-        await Self.settle()
-        #expect(coordinator.save(draft: Self.keyB.rawValue) == nil)
-        await Self.settle()
+        #expect(coordinator.state == .noKey)
+        #expect(coordinator.savedKeyLabel == nil)
+        // No request went out for a credential already known to be gone.
         #expect(calls.count == 1)
-
-        // The cooldown expires.
-        clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
-        limited = false
-        gate.fire()
-        await Self.settle()
-
-        // The owed validation ran on its own — the user did not paste again.
-        #expect(calls.count == 2)
-        #expect(calls.keys.last == Self.keyB)
-        #expect(coordinator.state.account != nil)
     }
 
     // MARK: First attempt
@@ -2804,13 +3056,13 @@ struct ShareComputeLedgerGatingTests {
             .malformedBody,
         ] {
             let keychain = InMemoryKeychain()
-            keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+            keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
             let calls = Calls()
             let gate = SleepGate()
             nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
             let coordinator = ShareComputeLedgerCoordinator(
-                store: ShareComputeReadKeyStore(keychain: keychain),
+                keychain: keychain,
                 load: { key in calls.record(key); throw failure },
                 now: { clock },
                 sleep: { await gate.sleep($0) },
@@ -2838,13 +3090,13 @@ struct ShareComputeLedgerGatingTests {
     @Test("A cancelled first attempt also counts as an attempt")
     func cancelledFirstAttemptCountsAsAnAttempt() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let calls = Calls()
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { key in
                 calls.record(key)
                 try await Task.sleep(for: .seconds(60))
@@ -2873,12 +3125,12 @@ struct ShareComputeLedgerGatingTests {
     @Test("A time gate expiring publishes an observable change")
     func gateExpiryIsObservable() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { _ in ShareComputeLedgerFixture.account },
             now: { clock },
             sleep: { await gate.sleep($0) },
@@ -2925,12 +3177,12 @@ struct ShareComputeLedgerGatingTests {
     @Test("Repeated tab switches and saves never leave more than one wake task")
     func singleWakeTask() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
+            keychain: keychain,
             load: { _ in throw ShareComputeLedgerError.rateLimited },
             now: { clock },
             sleep: { await gate.sleep($0) },
@@ -2945,7 +3197,8 @@ struct ShareComputeLedgerGatingTests {
             coordinator.appear()
             coordinator.manualRefresh()
             if index % 3 == 0 {
-                _ = coordinator.save(draft: Self.keyB.rawValue)
+                keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+                coordinator.providerKeyChanged()
             }
             await Self.settle()
             #expect(coordinator.liveWakeTaskCount <= 1, "iteration \(index)")
@@ -2953,75 +3206,71 @@ struct ShareComputeLedgerGatingTests {
         }
     }
 
-    @Test("Leaving Credits and removing the key both cancel the wake task")
+    @Test("Leaving Credits cancels the wake task")
     func wakeTaskIsCancelled() async {
         let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
-        let gate = SleepGate()
-        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
-
-        func makeCoordinator() -> ShareComputeLedgerCoordinator {
-            ShareComputeLedgerCoordinator(
-                store: ShareComputeReadKeyStore(keychain: keychain),
-                load: { _ in throw ShareComputeLedgerError.rateLimited },
-                now: { clock },
-                sleep: { await gate.sleep($0) },
-                fixture: nil
-            )
-        }
-
-        // Leaving Credits.
-        let leaving = makeCoordinator()
-        leaving.appear()
-        await Self.settle()
-        #expect(leaving.hasScheduledWake)
-        leaving.cancelInFlight()
-        #expect(!leaving.hasScheduledWake)
-        #expect(leaving.liveWakeTaskCount == 0)
-
-        // Removing the key.
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
-        let removing = makeCoordinator()
-        removing.appear()
-        await Self.settle()
-        #expect(removing.hasScheduledWake)
-        removing.removeKey()
-        #expect(!removing.hasScheduledWake)
-        #expect(removing.liveWakeTaskCount == 0)
-        #expect(removing.state == .noReadKey)
-        // The cooldown is a property of this IP's request history, so it
-        // outlives the credential that triggered it.
-        #expect(removing.isRateLimited)
-    }
-
-    @Test("Removing the key drops the owed validation")
-    func removalDropsPendingValidation() async {
-        let keychain = InMemoryKeychain()
-        keychain.write(account: ShareComputeReadKeyStore.account, secret: Self.keyA.rawValue)
-        let calls = Calls()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = SleepGate()
         nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
         let coordinator = ShareComputeLedgerCoordinator(
-            store: ShareComputeReadKeyStore(keychain: keychain),
-            load: { key in calls.record(key); throw ShareComputeLedgerError.rateLimited },
+            keychain: keychain,
+            load: { _ in throw ShareComputeLedgerError.rateLimited },
             now: { clock },
             sleep: { await gate.sleep($0) },
             fixture: nil
         )
+
         coordinator.appear()
         await Self.settle()
-        _ = coordinator.save(draft: Self.keyB.rawValue)
-        await Self.settle()
-        #expect(calls.count == 1)
+        #expect(coordinator.hasScheduledWake)
+        coordinator.cancelInFlight()
+        #expect(!coordinator.hasScheduledWake)
+        #expect(coordinator.liveWakeTaskCount == 0)
+    }
 
-        coordinator.removeKey()
+    @Test("Removing the key cancels any pending cooldown wake task")
+    func removingKeyCancelsWakeTask() async {
+        let keychain = InMemoryKeychain()
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
+        let gate = SleepGate()
+        nonisolated(unsafe) var clock = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let coordinator = ShareComputeLedgerCoordinator(
+            keychain: keychain,
+            load: { _ in throw ShareComputeLedgerError.rateLimited },
+            now: { clock },
+            sleep: { await gate.sleep($0) },
+            fixture: nil
+        )
+
+        // A cooldown wake is armed from the first (rejected) request.
+        coordinator.appear()
+        await Self.settle()
+        #expect(coordinator.hasScheduledWake)
+        #expect(coordinator.isRateLimited)
+
+        // A replacement during the SAME cooldown would additionally mark a
+        // load as owed — removal must drop that too, not just the timer.
+        keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyB.rawValue)
+        coordinator.providerKeyChanged()
+        await Self.settle()
+        #expect(coordinator.hasScheduledWake)
+
+        // Removing the key entirely: nothing is owed to a credential that
+        // no longer exists, so the wake must not survive either.
+        keychain.delete(account: ShareComputeProviderKeyStore.account)
+        coordinator.providerKeyChanged()
+
+        #expect(!coordinator.hasScheduledWake)
+        #expect(coordinator.liveWakeTaskCount == 0)
+        #expect(coordinator.state == .noKey)
+
+        // If the wake had survived, firing it now would wrongly try to
+        // validate a key that is gone.
         clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.rateLimitCooldown + 1)
         gate.fire()
         await Self.settle()
-
-        // Nothing to validate — the key is gone.
-        #expect(calls.count == 1)
-        #expect(coordinator.state == .noReadKey)
+        #expect(coordinator.state == .noKey)
     }
 }

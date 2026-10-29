@@ -24,20 +24,37 @@ import Observation
 ///
 /// 1. Every request captures `generation` at issue. Its result is applied only
 ///    if `generation` is still current. Anything else is dropped silently.
-/// 2. Saving or removing a key bumps `generation` and cancels the in-flight
-///    task, so a late result from the old world can never win.
-/// 3. A 401 removes the stored key **only** when the generation still matches
-///    *and* the key currently in the Keychain is byte-identical to the one that
-///    was rejected. Either check alone would be enough in theory; both are
-///    cheap and the failure mode is deleting a credential the user just pasted.
-/// 4. Manual refresh, the poll loop, and the post-save load all go through
-///    ``refresh(reason:)``. There is no second path.
+/// 2. A credential change bumps `generation` and cancels the in-flight task,
+///    so a late result from the old world can never win.
+/// 3. A rejected key is never auto-removed — it is this Mac's single
+///    QuickSilver credential, managed from Settings → Experimental → Share
+///    Compute; silently clearing it would also strand node registration, and
+///    the user already has a place to replace it. See ``apply(error:)``.
+/// 4. Manual refresh, the poll loop, and the credential-changed path all go
+///    through ``refresh(reason:)``. There is no second path.
+///
+/// ## Credential resolution — ONE key
+///
+/// Owner decision: the user-facing QuickSilver credential is the `qsppk-`
+/// provider key, entered once in Settings → Experimental → Share Compute,
+/// and it is the ONLY credential this coordinator ever reads.
+///
+/// * Found → use it.
+/// * Missing → the "add your key" onboarding state (``ShareComputeLedgerState/noKey``).
+/// * Corrupted or unavailable → that error.
+///
+/// Rapid briefly kept a read-only `qsprk-` key working as a migration
+/// fallback; the owner decision was to drop it outright rather than keep
+/// maintaining its edge cases — see ``ShareComputeLegacyReadKeyCleanup``,
+/// which this coordinator uses once at construction to clear out whatever is
+/// left of it, and never reads again.
+
 @MainActor
 @Observable
 final class ShareComputeLedgerCoordinator {
 
-    /// Why a refresh was asked for. Decides only whether the minimum-interval
-    /// gate applies — never what gets requested.
+    /// Why a refresh was asked for. Decides only whether the gates below
+    /// apply — never what gets requested.
     enum RefreshReason: Equatable, Sendable {
         /// Credits became visible.
         case appear
@@ -45,24 +62,27 @@ final class ShareComputeLedgerCoordinator {
         case manual
         /// The slow background loop.
         case poll
-        /// A key was just saved or replaced; this is its first validation.
+        /// The provider key was just saved, replaced, or removed in
+        /// Settings → Experimental → Share Compute; this is its first
+        /// validation.
         case keyChanged
 
         /// Credential changes skip the five-minute INTERVAL: the user is
-        /// waiting to find out whether the key they just pasted works, and
+        /// waiting to find out whether the key they just entered works, and
         /// making them wait for that answer would be absurd.
         ///
-        /// This does NOT extend to the 429 cooldown. QuickSilver rate-limits
-        /// by IP, not by credential, so pasting a different key buys nothing —
-        /// it would just spend another rejected request and re-arm the limit.
-        /// See ``ShareComputeLedgerCoordinator/refresh(reason:)``.
+        /// This does NOT skip the 429 cooldown for a REPLACEMENT — QuickSilver
+        /// rate-limits by IP, not by credential, so a freshly pasted key still
+        /// cannot buy a request; see ``refresh(reason:)``. A REMOVAL is the
+        /// one case that bypasses everything, because it needs no request at
+        /// all to answer.
         var bypassesInterval: Bool { self == .keyChanged }
     }
 
     // MARK: Published state
 
     private(set) var state: ShareComputeLedgerState = .loading
-    /// `qsprk-…7f24`. Never the key.
+    /// `qsppk-…7f24`. Never the key.
     private(set) var savedKeyLabel: String?
     /// When the most recent request was ISSUED. Drives the interval gate.
     private(set) var lastRefreshStartedAt: Date?
@@ -71,8 +91,9 @@ final class ShareComputeLedgerCoordinator {
 
     // MARK: Collaborators
 
-    private let store: ShareComputeReadKeyStore
-    private let load: @Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount
+    /// The ONLY user-facing key: the `qsppk-` provider key.
+    private let providerStore: ShareComputeProviderKeyStore
+    private let load: @Sendable (ShareComputeProviderKey) async throws -> ShareComputeLedgerAccount
     private let now: @Sendable () -> Date
     /// How the wake task waits. Injected so tests can drive a gate expiry
     /// without sleeping five real minutes.
@@ -113,10 +134,15 @@ final class ShareComputeLedgerCoordinator {
 
     private(set) var refreshGate: RefreshGate = .open
 
-    /// A key was saved while the 429 cooldown was still running, so its first
-    /// validation is owed once the cooldown expires. The user must not have to
-    /// paste it again.
+    /// A REPLACEMENT provider key was resolved while the 429 cooldown was
+    /// still running, so loading it is owed once the cooldown lifts. Never
+    /// set for a removal — `.missing` needs no request to show `.noKey`, so
+    /// there is nothing to defer and this is explicitly cleared instead; see
+    /// ``refresh(reason:)``.
     private var pendingKeyValidation = false
+    /// The key changed while Credits was hidden: the next ``appear`` must
+    /// re-resolve the credential instead of honouring the refresh interval.
+    private var keyChangedWhileHidden = false
 
     /// Cancellable holder for the single wake task.
     ///
@@ -156,14 +182,17 @@ final class ShareComputeLedgerCoordinator {
 
     private let wake = WakeBox()
 
+    /// `keychain` backs the provider-key store, matching production: the
+    /// real app has exactly one system Keychain. A test injects an
+    /// `InMemoryKeychain`.
     init(
-        store: ShareComputeReadKeyStore = ShareComputeReadKeyStore(),
-        load: (@Sendable (ShareComputeReadKey) async throws -> ShareComputeLedgerAccount)? = nil,
+        keychain: any KeychainStoring = SystemKeychain(),
+        load: (@Sendable (ShareComputeProviderKey) async throws -> ShareComputeLedgerAccount)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: (@Sendable (TimeInterval) async -> Void)? = nil,
         fixture: ShareComputeLedgerFixture? = ShareComputeLedgerFixture.requested()
     ) {
-        self.store = store
+        self.providerStore = ShareComputeProviderKeyStore(keychain: keychain)
         self.load = load ?? { try await ShareComputeLedgerClient().account(key: $0) }
         self.now = now
         self.sleep = sleep ?? { seconds in
@@ -173,6 +202,12 @@ final class ShareComputeLedgerCoordinator {
         if let fixture {
             state = fixture.state
             savedKeyLabel = fixture.savedKeyLabel
+        } else {
+            // One-shot, best-effort: golden mode never touches the Keychain
+            // at all (see the `fixture` branch above and in `refresh`), so
+            // this only runs on the real path. The result is deliberately
+            // ignored — see ``ShareComputeLegacyReadKeyCleanup``.
+            ShareComputeLegacyReadKeyCleanup.run(keychain: keychain)
         }
     }
 
@@ -286,6 +321,11 @@ final class ShareComputeLedgerCoordinator {
     /// the interval like any other refresh, so tab-flipping cannot be used to
     /// bypass it.
     func appear() {
+        if keyChangedWhileHidden {
+            keyChangedWhileHidden = false
+            refresh(reason: .keyChanged)
+            return
+        }
         refresh(reason: .appear)
     }
 
@@ -323,53 +363,35 @@ final class ShareComputeLedgerCoordinator {
 
     // MARK: - Credential changes
 
-    /// Validates and stores a pasted key, then loads immediately.
+    /// The ONE entry point the UI calls: the provider key in Settings →
+    /// Experimental → Share Compute changed (saved, replaced, or removed).
+    /// Re-resolves the credential immediately, bypassing the five-minute
+    /// interval — the user is waiting to learn whether their change worked.
     ///
-    /// Returns a rejection to display, or `nil` on success. The generation bump
-    /// happens BEFORE the store write, so a 401 already travelling from the old
-    /// key can no longer delete the new one.
-    @discardableResult
-    func save(draft: String) -> ShareComputeReadKeyRejection? {
-        switch ShareComputeReadKey.validate(draft) {
-        case .failure(let rejection):
-            return rejection
-        case .success(let key):
-            invalidate()
-            guard store.save(key) else {
-                state = .unavailable(.keychainUnavailable)
-                return .keychainUnavailable
-            }
-            savedKeyLabel = key.redactedLabel
-            // NEITHER gate is cleared here. The key is safely in the Keychain
-            // — that part is immediate — but the 429 cooldown is an IP-level
-            // limit that a new credential does not reset, and wiping
-            // `lastRefreshStartedAt` would fake a "first attempt" and hand the
-            // user a free request. `refresh` decides; if it has to wait, it
-            // records `pendingKeyValidation` and the wake task validates the
-            // key automatically, with no second paste.
-            refresh(reason: .keyChanged)
-            return nil
-        }
-    }
-
-    /// Removes the stored key.
+    /// * REMOVAL (`.missing`) bypasses the 429 cooldown too: it needs no
+    ///   request at all, so it resolves straight to
+    ///   ``ShareComputeLedgerState/noKey``, dropping whatever ledger and
+    ///   label were on screen, and cancels any cooldown wake that was armed.
+    /// * REPLACEMENT (`.found`) still respects an active 429 cooldown —
+    ///   QuickSilver rate-limits by IP, not by credential — and is deferred
+    ///   until it lifts; see ``refresh(reason:)`` and ``gateLifted()``.
     ///
-    /// The generation bump is what guarantees a request still in flight cannot
-    /// come back and re-render a ledger for a key the user just deleted.
-    func removeKey() {
+    /// ``ShareComputeManager`` owns the actual Keychain write; this just
+    /// tells the ledger its world changed. The generation bump happens
+    /// before anything else, so a result still travelling from the OLD
+    /// credential — in flight, or a late 401 — can never land after this.
+    ///
+    /// When Credits is not on screen (`isVisible == false`) nothing is
+    /// requested: the old world is still invalidated, and the next
+    /// ``appear`` performs the key-change load instead.
+    func providerKeyChanged(isVisible: Bool = true) {
         invalidate()
-        // There is no key left to validate, so the owed validation and the
-        // timer that would have run it both go.
-        pendingKeyValidation = false
-        wake.cancel()
-        guard store.remove() else {
-            state = .unavailable(.keychainRemovalFailed)
+        guard isVisible else {
+            keyChangedWhileHidden = true
             return
         }
-        savedKeyLabel = nil
-        // The 429 cooldown and the interval SURVIVE: both are properties of
-        // this IP's recent request history, not of the credential.
-        state = .noReadKey
+        keyChangedWhileHidden = false
+        refresh(reason: .keyChanged)
     }
 
     /// Ends the current world: nothing issued before this point may be applied.
@@ -414,14 +436,14 @@ final class ShareComputeLedgerCoordinator {
         })
     }
 
-    /// A time gate expired.
-    ///
-    /// Publishes an observable change so the Refresh button re-enables itself,
-    /// then performs the validation that was owed to a key saved during a
-    /// cooldown. No user action, no tab switch, no other page's state involved.
+    /// A time gate expired. Publishes an observable change so the Refresh
+    /// button re-enables itself, then performs a REPLACEMENT load that was
+    /// owed to a key resolved during the cooldown — see ``refresh(reason:)``.
+    /// Another gate may still be holding (e.g. the cooldown lifted but the
+    /// interval has not) — re-arm for that one.
     private func gateLifted() {
         // `release`, not `cancel`: this runs INSIDE the wake task, and
-        // cancelling it here would poison the refresh it is about to start.
+        // cancelling it here would poison a refresh it might start next.
         wake.release()
         // The observable write. This is the whole reason the timer exists.
         updateGate()
@@ -431,8 +453,6 @@ final class ShareComputeLedgerCoordinator {
             refresh(reason: .keyChanged)
             return
         }
-        // Another gate may still be holding (e.g. the cooldown lifted but the
-        // interval has not). Re-arm for that one.
         scheduleWake()
     }
 
@@ -450,20 +470,19 @@ final class ShareComputeLedgerCoordinator {
         // second walk.
         guard inFlight == nil else { return }
 
-        // GATE 1 — the 429 cooldown, which outranks every reason including
-        // `keyChanged`. QuickSilver limits by IP, so a freshly pasted key
-        // cannot buy a request; trying would spend another rejection and
-        // re-arm the limiter. A key saved during the cooldown is remembered
-        // and validated automatically when it lifts.
-        if isRateLimited {
-            if reason == .keyChanged { pendingKeyValidation = true }
+        // GATE 1 — the 429 cooldown. Blocks appear/manual/poll outright.
+        // `keyChanged` is let through here regardless: a REMOVAL needs no
+        // request at all to answer (see `.missing` below), and whether a
+        // REPLACEMENT must wait for the cooldown is decided in the `.found`
+        // case below it, once the credential is actually known.
+        if reason != .keyChanged, isRateLimited {
             scheduleWake()
             return
         }
 
-        // GATE 2 — the minimum interval. `keyChanged` bypasses it, and so does
-        // the genuine first attempt (nothing has ever been requested, so a
-        // blank tab must not sit for five minutes).
+        // GATE 2 — the minimum interval. `keyChanged` bypasses it, and so
+        // does the genuine first attempt (nothing has ever been requested,
+        // so a blank tab must not sit for five minutes).
         if !reason.bypassesInterval && !isFirstAttempt {
             guard intervalElapsed else {
                 scheduleWake()
@@ -471,25 +490,58 @@ final class ShareComputeLedgerCoordinator {
             }
         }
 
-        switch store.load() {
-        case .missing, .corrupted:
-            savedKeyLabel = nil
-            state = .noReadKey
-            return
-        case .unavailable:
-            state = .unavailable(.keychainUnavailable)
-            return
+        // Credential resolution — ONE key, see the type-level note.
+        switch providerStore.load() {
         case .found(let key):
             savedKeyLabel = key.redactedLabel
+            if reason == .keyChanged, isRateLimited {
+                // A replacement resolved while the 429 cooldown is still
+                // running: QuickSilver rate-limits by IP, not by credential,
+                // so spending another request right now buys nothing. Drop the
+                // previous key's account so its credits never sit under the
+                // new key's label, show the cooldown, and let `gateLifted()`
+                // load this key once the cooldown actually lifts.
+                state = .rateLimited
+                pendingKeyValidation = true
+                scheduleWake()
+                return
+            }
+            // Either not rate-limited, or this call IS the owed validation
+            // itself — either way nothing is left pending.
+            pendingKeyValidation = false
+            // A new credential starts from a blank ledger: the previous key's
+            // rows must never sit under this key's label, even if it fails.
+            if reason == .keyChanged { state = .loading }
             start(key: key)
+        case .missing:
+            savedKeyLabel = nil
+            state = .noKey
+            // Nothing is owed to a credential that is gone — drop any
+            // cooldown wake a pending REPLACEMENT (or an ordinary 429) had
+            // armed, so it never fires for a key that no longer exists.
+            pendingKeyValidation = false
+            wake.cancel()
+        case .unavailable:
+            state = .unavailable(.keychainUnavailable)
+            pendingKeyValidation = false
+        case .corrupted:
+            // There IS a saved key — it just doesn't decode as one. Claiming
+            // `.noKey` here would mask a broken credential behind the wrong
+            // onboarding message.
+            savedKeyLabel = nil
+            state = .unavailable(.providerKeyCorrupted)
+            pendingKeyValidation = false
         }
     }
 
-    private func start(key: ShareComputeReadKey) {
+    private func start(key: ShareComputeProviderKey) {
         generationSafeStart(key: key, generation: generation)
     }
 
-    private func generationSafeStart(key: ShareComputeReadKey, generation captured: Int) {
+    private func generationSafeStart(
+        key: ShareComputeProviderKey,
+        generation captured: Int
+    ) {
         issue &+= 1
         let captuedIssue = issue
         lastRefreshStartedAt = now()
@@ -507,7 +559,7 @@ final class ShareComputeLedgerCoordinator {
                 await self.clearInFlight(captuedIssue)
             } catch let error as ShareComputeLedgerError {
                 await self.finish(captured, captuedIssue) { coordinator in
-                    coordinator.apply(error: error, rejectedKey: key, generation: captured)
+                    coordinator.apply(error: error)
                 }
             } catch {
                 await self.finish(captured, captuedIssue) { coordinator in
@@ -576,11 +628,7 @@ final class ShareComputeLedgerCoordinator {
         updateGate()
     }
 
-    private func apply(
-        error: ShareComputeLedgerError,
-        rejectedKey: ShareComputeReadKey,
-        generation captured: Int
-    ) {
+    private func apply(error: ShareComputeLedgerError) {
         if error == .rateLimited {
             // Hold the Refresh control down for a cooldown, and keep whatever
             // is on screen: a 429 says nothing about the data's validity.
@@ -589,34 +637,14 @@ final class ShareComputeLedgerCoordinator {
             )
         }
         if error == .unauthorized {
-            discardRejectedKey(rejectedKey, generation: captured)
+            // Never auto-removed: it is this Mac's single QuickSilver
+            // credential, managed from Settings → Experimental → Share
+            // Compute; silently clearing it would also strand node
+            // registration, and the user already has a place to replace it.
+            savedKeyLabel = nil
+            state = .unauthorized
             return
         }
         state = state.failing(error)
-    }
-
-    /// Deletes the stored key ONLY when the 401 refers to the key that is
-    /// actually stored right now.
-    ///
-    /// The generation check above already rules out a save/remove that
-    /// happened during the flight. This second check covers the rest: a key
-    /// written by another window, a Keychain that changed under us, or any
-    /// future path that mutates storage without bumping the counter. Getting
-    /// this wrong means deleting a freshly pasted, perfectly good credential
-    /// because a request from ten seconds ago came back angry.
-    private func discardRejectedKey(_ rejected: ShareComputeReadKey, generation captured: Int) {
-        guard captured == generation else { return }
-        guard case .found(let current) = store.load(), current == rejected else {
-            // A different key is stored now. The rejection belongs to a
-            // credential that is already gone — leave the current one alone
-            // and let the next refresh judge it on its own merits.
-            return
-        }
-        guard store.remove() else {
-            state = .unavailable(.keychainRemovalFailed)
-            return
-        }
-        savedKeyLabel = nil
-        state = .unauthorized
     }
 }

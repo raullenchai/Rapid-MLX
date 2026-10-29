@@ -35,7 +35,7 @@ struct ShareComputeProviderSettings: View {
                 .disabled(!manager.canEditProviderKey)
                 .accessibilityLabel("QuickSilver provider key")
                 .accessibilityIdentifier("Settings.ShareCompute.ProviderKey")
-            Text("Saved securely in this Mac’s Keychain. You can stop sharing and come back without pasting it again.")
+            Text("Saved securely in this Mac’s Keychain. You can stop sharing and come back without pasting it again. The same key also powers the Credits tab — Rapid’s one QuickSilver credential, nothing extra to paste there.")
                 .font(RapidFont.caption)
                 .foregroundStyle(RapidTheme.textSecondary)
 

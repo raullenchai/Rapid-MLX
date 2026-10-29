@@ -11,10 +11,12 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
 2. Open **Share Compute → Live Pool** to see supported models and choose one
    that is available on your Mac. Download it if the app asks you to.
 3. In **Settings → Experimental → Share Compute**, give this Mac a worker
-   name and save your `qsppk-` provider key. Use a different name on each Mac.
-   The key is stored in this Mac's Keychain, separately from the ledger key;
-   app preferences contain no secret. You can also paste and save the key in
-   the first connection sheet. Saving settings does not start sharing.
+   name and save your `qsppk-` provider key — this is the only QuickSilver
+   key Rapid ever asks for, and it also reads the credit ledger on Credits.
+   Use a different name on each Mac. The key is stored in this Mac's
+   Keychain; app preferences contain no secret. You can also paste and save
+   the key in the first connection sheet. Saving settings does not start
+   sharing.
 4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). Choose the supported model shown in Live Pool.
    Rapid unloads the current local model and runs an exclusive pool process:
    the sharing model is unavailable to local chat. Chat explains that sharing
@@ -36,12 +38,16 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
    dashboard for revocation. Local node credentials are retained, but the GUI
    requires a provider key again after its registration proof is invalidated.
 
-For earnings, open **Credits** and save a separate QuickSilver read-only key
-(`qsprk-`). Rapid stores it in this Mac's Keychain. The credit ledger shows
-settled accounting windows across all nodes on your provider account, while
-**Local activity** records only sessions on this Mac. A request can succeed
-before its credit appears: settlement closes a window later. Calls paid for
-by the node owner's own account do not earn contributor credit.
+For earnings, open **Credits**. There is nothing extra to paste there: Rapid
+reads the ledger with the same `qsppk-` key saved in Settings. The credit
+ledger shows settled accounting windows across all nodes on your provider
+account, while **Local activity** records only sessions on this Mac. A
+request can succeed before its credit appears: settlement closes a window
+later. Calls paid for by the node owner's own account do not earn contributor
+credit. Rapid only ever uses the `qsppk-` provider key for this — a
+separate read-only key some accounts saved before this change is no longer
+used; its Keychain entry is removed automatically, and paste your provider
+key once in Settings to keep seeing your ledger.
 
 ## Terminal
 

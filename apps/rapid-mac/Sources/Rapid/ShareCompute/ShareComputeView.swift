@@ -45,10 +45,6 @@ struct ShareComputeView: View {
     /// gate and the 401 key-deletion rule all live there — see
     /// ``ShareComputeLedgerCoordinator`` for why none of it can live here.
     @State private var ledger = ShareComputeLedgerCoordinator()
-    /// The pasted key, in flight. Cleared the moment it is saved or rejected,
-    /// so it never outlives the field it was typed into.
-    @State private var readKeyDraft = ""
-    @State private var readKeyRejection: ShareComputeReadKeyRejection?
 
     // MARK: Live Pool
 
@@ -85,6 +81,12 @@ struct ShareComputeView: View {
     @State private var completedReceipt: ShareComputeReceipt?
 
     @Environment(\.openURL) private var openURL
+    /// Routes Credits' "no key yet" button to Settings → Experimental →
+    /// Share Compute — the single place a QuickSilver key is entered.
+    /// Optional: a preview or a host that has not injected the router still
+    /// renders; the button just falls back to opening Settings untargeted.
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
+    @Environment(\.openWindow) private var openWindow
 
     // MARK: - Derived
 
@@ -188,6 +190,17 @@ struct ShareComputeView: View {
         // state alone would miss it and leave the receipt without a node.
         .onChange(of: manager.snapshot?.nodeID) { _, nodeID in
             if let nodeID, !nodeID.isEmpty { sessionNodeID = nodeID }
+        }
+        // The provider key is the ledger's credential too (see
+        // ``ShareComputeLedgerCoordinator``'s provider-first resolution).
+        // Settings → Experimental → Share Compute is a SEPARATE window, so
+        // this is the only way Credits learns the key changed there while
+        // it is on screen. Watching the REVISION, not ``savedProviderKeyLabel``:
+        // a replacement key that redacts to the same label (same last four
+        // characters, different secret) leaves the label unchanged, and this
+        // view would otherwise never notice the ledger's world moved.
+        .onChange(of: manager.providerKeyRevision) { _, _ in
+            ledger.providerKeyChanged(isVisible: tab == .credits)
         }
         .onChange(of: catalogLoaded) { _, _ in
             reconcileSelection()
@@ -383,15 +396,12 @@ struct ShareComputeView: View {
             state: ledger.state,
             receipts: receipts,
             localSummary: summary,
-            readKeyDraft: $readKeyDraft,
-            readKeyRejection: readKeyRejection,
             savedKeyLabel: ledger.savedKeyLabel,
             canRefresh: ledger.allowsManualRefresh,
             isRefreshing: ledger.isBusy,
             refreshHoldNote: ledger.refreshHoldNote,
             isNarrow: isNarrow,
-            onSaveReadKey: saveReadKey,
-            onRemoveReadKey: removeReadKey,
+            onOpenKeySettings: openShareComputeKeySettings,
             onRefresh: { ledger.manualRefresh() }
         )
         // Loads when Credits becomes visible and STOPS when it does not: the
@@ -406,18 +416,16 @@ struct ShareComputeView: View {
 
     // MARK: - Ledger
 
-    private func saveReadKey() {
-        readKeyRejection = ledger.save(draft: readKeyDraft)
-        if readKeyRejection == nil {
-            // The secret must not outlive the save. The Keychain owns it now.
-            readKeyDraft = ""
+    /// Deep-links to the ONE place a QuickSilver key is entered. Matches the
+    /// `openWindow` + `SettingsRouter` pattern every other Settings deep link
+    /// in the app uses — `@Environment(\.openSettings)` is a no-op here (see
+    /// ``SettingsRouter``).
+    private func openShareComputeKeySettings() {
+        if let settingsRouter {
+            settingsRouter.route(to: .experimentalFeatures) { openWindow(id: "settings") }
+        } else {
+            openWindow(id: "settings")
         }
-    }
-
-    private func removeReadKey() {
-        ledger.removeKey()
-        readKeyDraft = ""
-        readKeyRejection = nil
     }
 
     // MARK: - Live Pool

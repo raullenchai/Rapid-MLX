@@ -264,10 +264,10 @@ struct ShareComputeLedgerPage: Equatable, Sendable {
 
 /// Everything the Credits tab knows after following the cursor to the end.
 ///
-/// ACCOUNT-WIDE: the read key is account-scoped, so these windows span every
-/// node on the account, not just this Mac. The UI copy has to say so — a user
-/// with two contributing machines would otherwise read another machine's
-/// credit as this one's.
+/// ACCOUNT-WIDE: the QuickSilver key is account-scoped, so these windows span
+/// every node on the account, not just this Mac. The UI copy has to say so —
+/// a user with two contributing machines would otherwise read another
+/// machine's credit as this one's.
 struct ShareComputeLedgerAccount: Equatable, Sendable {
     let unit: String
     let note: String?
@@ -344,12 +344,16 @@ struct ShareComputeLedgerMonthTotals: Equatable, Sendable {
 ///
 /// No case carries a response body, a credential, or a rendered request. The
 /// endpoint is authenticated, so an error string that echoed the request would
-/// be one refactor away from putting `Authorization: Bearer qsprk-…` in a log.
+/// be one refactor away from putting `Authorization: Bearer qsppk-…` in a log.
 enum ShareComputeLedgerError: Error, Equatable, Sendable {
-    /// No read key saved. Not a failure — the onboarding state.
-    case noReadKey
+    /// No key saved. Not a failure — the onboarding state. Rapid has one
+    /// QuickSilver key (the `qsppk-` provider key); it is entered once in
+    /// Settings → Experimental → Share Compute and used for both starting a
+    /// share and reading this ledger.
+    case noKey
     /// 401 `missing_key` / `invalid_key`. The saved key is rejected; the UI
-    /// offers replacement and never re-displays the rejected value.
+    /// points at Settings to replace it and never re-displays the rejected
+    /// value.
     case unauthorized
     /// 400 `bad_cursor` / `bad_limit`. A client bug, surfaced distinctly so it
     /// is not mistaken for an outage.
@@ -361,14 +365,21 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
     case unreachable(String)
     case malformedBody
     case keychainUnavailable
-    case keychainRemovalFailed
+    /// The provider key in the Keychain decoded to something that fails
+    /// ``ShareComputeProviderKey/validate(_:)`` — not absent, not locked,
+    /// just unreadable as a key. Distinct from ``noKey`` on purpose: there IS
+    /// a saved credential, so claiming no key exists would mask a broken one
+    /// behind the wrong onboarding message. The fix is the same action as
+    /// every other key problem: re-save it in Settings → Experimental →
+    /// Share Compute.
+    case providerKeyCorrupted
 
     var displayMessage: String {
         switch self {
-        case .noReadKey:
-            return String(localized: "Add a QuickSilver read key to see your credit ledger.")
+        case .noKey:
+            return String(localized: "Add your QuickSilver key to see your credit ledger.")
         case .unauthorized:
-            return String(localized: "This read key was rejected. It may have been revoked or replaced.")
+            return String(localized: "That key was rejected. It may have been revoked or replaced.")
         case .badRequest:
             return String(localized: "QuickSilver couldn’t read that request.")
         case .rateLimited:
@@ -381,8 +392,12 @@ enum ShareComputeLedgerError: Error, Equatable, Sendable {
             return String(localized: "QuickSilver returned a ledger Rapid couldn’t read.")
         case .keychainUnavailable:
             return String(localized: "This Mac's Keychain is unavailable. Unlock it and try again.")
-        case .keychainRemovalFailed:
-            return String(localized: "Rapid couldn't fully remove the saved read key. Revoke it in QuickSilver and try removing it again.")
+        case .providerKeyCorrupted:
+            // Reuses the exact string ``ShareComputeManager`` already shows
+            // for the same Keychain state, so there is one translated string
+            // for "your saved provider key is broken, re-save it" rather than
+            // two near-duplicates in Localizable.xcstrings.
+            return String(localized: "Replace the saved provider key in Settings → Experimental → Share Compute.")
         }
     }
 
@@ -429,7 +444,7 @@ struct ShareComputeLedgerClient: Sendable {
     /// Refuses every 3xx.
     ///
     /// `URLSession`'s default behaviour is to follow a redirect and re-send the
-    /// original headers — which would ship `Authorization: Bearer qsprk-…` to
+    /// original headers — which would ship `Authorization: Bearer qsppk-…` to
     /// whatever host the response named. Returning `nil` from this delegate
     /// callback means the redirect is never followed and the 3xx surfaces as
     /// the response instead, so the credential cannot leave the pinned origin.
@@ -495,7 +510,7 @@ struct ShareComputeLedgerClient: Sendable {
     /// an out-of-range value earns a 400 `bad_limit`, which spends a request
     /// from the hourly budget to learn something checkable locally.
     func page(
-        key: ShareComputeReadKey,
+        key: ShareComputeProviderKey,
         limit: Int = defaultLimit,
         cursor: Int? = nil,
         nodeID: String? = nil
@@ -554,7 +569,7 @@ struct ShareComputeLedgerClient: Sendable {
     /// forever), and cooperative cancellation between pages so leaving the tab
     /// stops the walk mid-flight.
     func account(
-        key: ShareComputeReadKey,
+        key: ShareComputeProviderKey,
         nodeID: String? = nil
     ) async throws -> ShareComputeLedgerAccount {
         var windows: [ShareComputeLedgerWindow] = []
@@ -629,7 +644,7 @@ struct ShareComputeLedgerClient: Sendable {
 /// spent rate-limit budget — and each of those has a different fix.
 enum ShareComputeLedgerState: Equatable, Sendable {
     /// No key saved. The onboarding surface, not an error.
-    case noReadKey
+    case noKey
     case loading
     case loaded(ShareComputeLedgerAccount)
     /// Authenticated fine, account has no windows yet. A successful 200.
@@ -645,7 +660,7 @@ enum ShareComputeLedgerState: Equatable, Sendable {
         switch self {
         case .loaded(let a), .loadedEmpty(let a), .refreshing(let a), .refreshFailed(let a, _):
             return a
-        case .noReadKey, .loading, .unauthorized, .rateLimited, .unavailable:
+        case .noKey, .loading, .unauthorized, .rateLimited, .unavailable:
             return nil
         }
     }
@@ -663,10 +678,10 @@ enum ShareComputeLedgerState: Equatable, Sendable {
     var isBusy: Bool { isLoading || isRefreshing }
 
     /// True only for the onboarding surface.
-    var needsReadKey: Bool {
-        if self == .noReadKey || self == .unauthorized { return true }
+    var needsKey: Bool {
+        if self == .noKey || self == .unauthorized { return true }
         if case .unavailable(let error) = self {
-            return error == .keychainUnavailable || error == .keychainRemovalFailed
+            return error == .keychainUnavailable || error == .providerKeyCorrupted
         }
         return false
     }
@@ -703,7 +718,7 @@ enum ShareComputeLedgerState: Equatable, Sendable {
         if error == .unauthorized { return .unauthorized }
         if let account { return .refreshFailed(account, error) }
         switch error {
-        case .noReadKey: return .noReadKey
+        case .noKey: return .noKey
         case .rateLimited: return .rateLimited
         default: return .unavailable(error)
         }

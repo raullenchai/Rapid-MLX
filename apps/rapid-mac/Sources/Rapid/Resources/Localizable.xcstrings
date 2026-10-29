@@ -282,16 +282,6 @@
         }
       }
     },
-    "Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Provider keys (qsppk-) are managed separately in Share Compute settings.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rapid 将只读密钥保存在这台 Mac 的钥匙串中。它只能读取你的账户账本，无法注册节点或消费额度。提供者密钥（qsppk-）在算力分享设置中单独管理。"
-          }
-        }
-      }
-    },
     "Requires an Apple Silicon Mac with 48 GB+ memory. Starting sharing unloads your local model. Stop takes this Mac offline and releases the sharing model; local models stay unloaded.": {
       "localizations": {
         "zh-Hans": {
@@ -318,16 +308,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "保存在这台 Mac 的钥匙串中，供以后使用。仅在需要注册时发送给提供者进程。"
-          }
-        }
-      }
-    },
-    "Saved securely in this Mac’s Keychain. You can stop sharing and come back without pasting it again.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安全保存在这台 Mac 的钥匙串中。停止分享后再次上线，无需重新粘贴。"
           }
         }
       }
@@ -428,16 +408,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "停止后，这台 Mac 将离线并卸载分享模型，之前使用的模型保持卸载状态。"
-          }
-        }
-      }
-    },
-    "That isn’t a read key. Read keys start with qsprk-. Provider keys (qsppk-) belong in Share Compute settings, not the credit ledger.": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这不是只读密钥。只读密钥以 qsprk- 开头。请在算力分享设置中填写提供者密钥（qsppk-），而非收益账本。"
           }
         }
       }
@@ -10590,16 +10560,6 @@
         }
       }
     },
-    "A read key lets Rapid show your account’s credit ledger. It is read-only: it cannot register nodes or spend credit." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "读取密钥可让 Rapid 显示您帐户的积分账本。它是只读的：它不能注册节点或使用积分。"
-          }
-        }
-      }
-    },
     "A short prompt" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10750,42 +10710,12 @@
         }
       }
     },
-    "Add a QuickSilver read key to see the accounting windows your nodes earned credit for." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加 QuickSilver 读取密钥以查看您的节点获得积分的记账窗口。"
-          }
-        }
-      }
-    },
-    "Add a QuickSilver read key to see your credit ledger." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加 QuickSilver 读取密钥以查看您的积分账本。"
-          }
-        }
-      }
-    },
     "Add a model to continue" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加模型以继续"
-          }
-        }
-      }
-    },
-    "Add a read key" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加读取密钥"
           }
         }
       }
@@ -11596,16 +11526,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法覆盖"
-          }
-        }
-      }
-    },
-    "Create a new read key in the QuickSilver dashboard and paste it here." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在 QuickSilver 仪表板中创建一个新的读取密钥并将其粘贴到此处。"
           }
         }
       }
@@ -13140,16 +13060,6 @@
         }
       }
     },
-    "No read key yet" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "还没有读取密钥"
-          }
-        }
-      }
-    },
     "No result" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13500,16 +13410,6 @@
         }
       }
     },
-    "Open Read-only earnings keys in the QuickSilver Share Compute tab" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在 QuickSilver 共享计算选项卡中打开只读收入密钥"
-          }
-        }
-      }
-    },
     "Open Request Slots" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13526,16 +13426,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开rapidmlx.com"
-          }
-        }
-      }
-    },
-    "Open read-only earnings keys" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "打开只读收入密钥"
           }
         }
       }
@@ -13586,16 +13476,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "第 %1$d 页（共 %2$d）"
-          }
-        }
-      }
-    },
-    "Paste your QuickSilver read key to continue." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "粘贴您的 QuickSilver 读取密钥以继续。"
           }
         }
       }
@@ -14100,16 +13980,6 @@
         }
       }
     },
-    "QuickSilver read key" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "QuickSilver 读取密钥"
-          }
-        }
-      }
-    },
     "QuickSilver rejected the saved key — it may have been revoked or replaced. Create a new one and paste it below." : {
       "localizations" : {
         "zh-Hans" : {
@@ -14250,16 +14120,6 @@
         }
       }
     },
-    "Rapid couldn't fully remove the saved read key. Revoke it in QuickSilver and try removing it again." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rapid 无法完全删除已保存的读取密钥。在 QuickSilver 中撤销它并尝试再次删除它。"
-          }
-        }
-      }
-    },
     "Rapid couldn’t read the pool summary. Your own readiness below is measured on this Mac and is unaffected." : {
       "localizations" : {
         "zh-Hans" : {
@@ -14330,16 +14190,6 @@
         }
       }
     },
-    "Rapid stores the read key in this Mac’s Keychain. It can only read your account’s ledger — it cannot register nodes or spend credit. Your provider key (qsppk-) is never saved." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rapid 将读取的密钥存储在此 Mac 的钥匙串中。它只能读取您帐户的分类帐 - 它无法注册节点或使用积分。您的提供商密钥 (qsppk-) 永远不会保存。"
-          }
-        }
-      }
-    },
     "Rapid · Local activity on this Mac" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14376,16 +14226,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "原始 JSON 和目的地"
-          }
-        }
-      }
-    },
-    "Read key rejected" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "读取密钥被拒绝"
           }
         }
       }
@@ -14666,26 +14506,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "代替"
-          }
-        }
-      }
-    },
-    "Replace the saved read key" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "替换保存的读取密钥"
-          }
-        }
-      }
-    },
-    "Replace your read key" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "更换您的读取密钥"
           }
         }
       }
@@ -15600,46 +15420,6 @@
         }
       }
     },
-    "That isn’t a read key. Read keys start with qsprk-. A provider key (qsppk-) registers nodes and is never saved by Rapid." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "那不是读取密钥。读取以 qsprk- 开头的密钥。提供者密钥 (qsppk-) 注册节点并且永远不会被 Rapid 保存。"
-          }
-        }
-      }
-    },
-    "That read key contains a line break or control character. Paste it as a single line." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "该读取键包含换行符或控制字符。将其粘贴为单行。"
-          }
-        }
-      }
-    },
-    "That read key is longer than QuickSilver issues." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "该读取密钥比 QuickSilver 问题长。"
-          }
-        }
-      }
-    },
-    "That read key looks incomplete." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "该读取密钥看起来不完整。"
-          }
-        }
-      }
-    },
     "The benchmark runs entirely on this Mac. It uses fixed prompts and settings every time, so a result from one Mac can be compared with a result from another." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15840,16 +15620,6 @@
         }
       }
     },
-    "This Mac couldn't save the read key. Unlock your Keychain and try again." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此 Mac 无法保存读取密钥。解锁您的钥匙串并重试。"
-          }
-        }
-      }
-    },
     "This Mac's Keychain is unavailable. Unlock it and try again." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15956,16 +15726,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "这可以防止两个大型模型竞争统一内存。"
-          }
-        }
-      }
-    },
-    "This read key was rejected. It may have been revoked or replaced." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此读取密钥被拒绝。它可能已被撤销或替换。"
           }
         }
       }
@@ -16850,16 +16610,6 @@
         }
       }
     },
-    "qsprk-…" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "qsprk-…"
-          }
-        }
-      }
-    },
     "result" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17279,6 +17029,176 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "私密的 AI，就在你的 Mac 上。"
+          }
+        }
+      }
+    },
+    "Add your QuickSilver key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加你的 QuickSilver 密钥"
+          }
+        }
+      }
+    },
+    "Add your QuickSilver key in Settings → Experimental → Share Compute to see the accounting windows your nodes earned credit for.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在“设置 → 实验性功能 → 算力分享”中添加你的 QuickSilver 密钥，即可查看节点赚取额度的计费窗口。"
+          }
+        }
+      }
+    },
+    "Add your QuickSilver key to see your credit ledger.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加你的 QuickSilver 密钥以查看你的积分账本。"
+          }
+        }
+      }
+    },
+    "Key rejected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "密钥被拒绝"
+          }
+        }
+      }
+    },
+    "Manage in Settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在设置中管理"
+          }
+        }
+      }
+    },
+    "Manage your QuickSilver key in Settings → Experimental → Share Compute": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在“设置 → 实验性功能 → 算力分享”中管理你的 QuickSilver 密钥"
+          }
+        }
+      }
+    },
+    "No QuickSilver key yet": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还没有 QuickSilver 密钥"
+          }
+        }
+      }
+    },
+    "Open Settings → Experimental → Share Compute": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开“设置 → 实验性功能 → 算力分享”"
+          }
+        }
+      }
+    },
+    "Open Share Compute settings": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开算力分享设置"
+          }
+        }
+      }
+    },
+    "Paste your QuickSilver key (qsppk-…) there once. Rapid stores it in this Mac’s Keychain and uses it both to start sharing and to read this ledger.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在那里粘贴一次你的 QuickSilver 密钥（qsppk-…）。Rapid 会将它保存在这台 Mac 的钥匙串中，既用于开始分享，也用于读取这份账本。"
+          }
+        }
+      }
+    },
+    "QuickSilver rejected the saved key — it may have been revoked or replaced. Save a new one in Settings.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QuickSilver 拒绝了已保存的密钥——它可能已被撤销或替换。请在设置中保存一个新的密钥。"
+          }
+        }
+      }
+    },
+    "Rapid couldn't fully remove the saved key. Revoke it in QuickSilver and try removing it again.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rapid 无法完全删除已保存的密钥。在 QuickSilver 中撤销它并尝试再次删除它。"
+          }
+        }
+      }
+    },
+    "Replace your QuickSilver key": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更换你的 QuickSilver 密钥"
+          }
+        }
+      }
+    },
+    "That key was rejected. It may have been revoked or replaced.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该密钥被拒绝。它可能已被撤销或替换。"
+          }
+        }
+      }
+    },
+    "The same QuickSilver key that starts sharing also reads your account’s credit ledger here — there is nothing extra to paste.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始分享所用的同一个 QuickSilver 密钥，在这里也用于读取你账户的积分账本——不需要额外粘贴任何内容。"
+          }
+        }
+      }
+    },
+    "Update your key in Settings → Experimental → Share Compute.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在“设置 → 实验性功能 → 算力分享”中更新你的密钥。"
+          }
+        }
+      }
+    },
+    "Saved securely in this Mac’s Keychain. You can stop sharing and come back without pasting it again. The same key also powers the Credits tab — Rapid’s one QuickSilver credential, nothing extra to paste there.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全保存在这台 Mac 的钥匙串中。停止分享后再次上线，无需重新粘贴。同一个密钥也用于“积分”页——这是 Rapid 唯一的 QuickSilver 凭证，那里无需额外粘贴任何内容。"
           }
         }
       }

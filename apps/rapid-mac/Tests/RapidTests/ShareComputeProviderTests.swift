@@ -146,10 +146,13 @@ struct ShareComputeProviderTests {
         keychain.values[ShareComputeProviderKeyStore.account] = "corrupted"
         #expect(store.load() == .corrupted)
         keychain.values.removeAll()
-        keychain.values[ShareComputeReadKeyStore.account] = "qsprk-read-fixture-123456789"
+        // A value under a totally unrelated account (the retired legacy
+        // read-key account) must never be picked up by the provider store,
+        // and removing the provider key must never touch it either.
+        keychain.values[ShareComputeLegacyReadKeyCleanup.account] = "qsprk-read-fixture-123456789"
         #expect(store.load() == .missing)
         #expect(store.remove())
-        #expect(keychain.values[ShareComputeReadKeyStore.account] != nil)
+        #expect(keychain.values[ShareComputeLegacyReadKeyCleanup.account] != nil)
     }
 
     @Test("Unavailable credentials fail before unloading a local model; corrupt keys can be removed")
@@ -174,6 +177,42 @@ struct ShareComputeProviderTests {
         #expect(manager.removeProviderKey())
         #expect(!manager.providerKeyIsStored)
         #expect(server.servingAlias == "personal-model")
+    }
+
+    @Test("providerKeyRevision bumps on a same-redacted-label replacement, not on a mere refresh")
+    func providerKeyRevisionBumpsOnReplacement() throws {
+        let keychain = ShareComputeTestKeychain()
+        let server = ServerManager(testingState: .idle)
+        let manager = ShareComputeManager(server: server, providerStore: ShareComputeProviderKeyStore(keychain: keychain))
+        #expect(manager.providerKeyRevision == 0)
+
+        // Two distinct keys that redact to the SAME label (same last four
+        // characters, different secret) — the case the label alone cannot
+        // detect.
+        let keyA = "qsppk-first-fixture-abcd1234"
+        let keyB = "qsppk-second-fixture-wxyz1234"
+        let labelA = try #require(ShareComputeProviderKey.validate(keyA)).redactedLabel
+        let labelB = try #require(ShareComputeProviderKey.validate(keyB)).redactedLabel
+        #expect(labelA == labelB)
+
+        #expect(manager.saveProviderKey(keyA))
+        #expect(manager.providerKeyRevision == 1)
+        #expect(manager.savedProviderKeyLabel == "qsppk-…1234")
+
+        #expect(manager.saveProviderKey(keyB))
+        #expect(manager.providerKeyRevision == 2)
+        #expect(manager.savedProviderKeyLabel == "qsppk-…1234")
+
+        // Saving the identical key again is a no-op, not a new write.
+        #expect(manager.saveProviderKey(keyB))
+        #expect(manager.providerKeyRevision == 2)
+
+        // A mere refresh (no write) must not bump it either.
+        manager.refreshProviderKey()
+        #expect(manager.providerKeyRevision == 2)
+
+        #expect(manager.removeProviderKey())
+        #expect(manager.providerKeyRevision == 3)
     }
 
     @Test("This release admits only the qualified Qwen27 sharing model")
