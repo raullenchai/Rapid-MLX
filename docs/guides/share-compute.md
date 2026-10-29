@@ -123,7 +123,9 @@ After registering once, install and start a per-user macOS background service:
 rapid-mlx share qwen3.8-27b --quicksilver --worker "$(hostname -s)" --install-service
 ```
 
-The job uses the installed `rapid-mlx` launcher, reuses the private node
-registration, and starts automatically. Reinstalling replaces and restarts the
-job. A failed `launchctl bootstrap` is reported as an error; the written plist
-remains available for diagnosis. The command prints how to stop the job.
+The job uses the `rapid-mlx` launcher from the install that runs the command;
+an older copy earlier on PATH is not used, and the command fails if no launcher
+from that install can be found. It reuses the private node registration and
+starts in the background. The command prints the log paths and how to stop the
+job. Reinstalling replaces and restarts the job. A failed `launchctl bootstrap`
+is reported as an error; the written plist remains available for diagnosis.
