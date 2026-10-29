@@ -41,6 +41,17 @@ struct ServerActivityIdleTests {
         #expect(decision(ServerActivity(inFlight: 0, idleSeconds: 900)))
     }
 
+    @Test func activityAndLocalClockMustBothBeIdle() {
+        let now = Date()
+        let idleServer = ServerActivity(inFlight: 0, idleSeconds: 5000)
+        func decision(age: TimeInterval, busy: Bool) -> Bool {
+            IdleModelReleasePreference.shouldUnload(setting: 900, lastActivity: now.addingTimeInterval(-age), inFlight: busy, now: now, loaded: true, operating: false, activity: idleServer)
+        }
+        #expect(!decision(age: 10, busy: false))
+        #expect(!decision(age: 1000, busy: true))
+        #expect(decision(age: 1000, busy: false))
+    }
+
     @Test func decodeActivityAndLegacySnapshot() throws {
         let base = "\"memory_limit_bytes\":0,\"memory_used_bytes\":0,\"idle_ttl_seconds\":0,\"loads_total\":0,\"evictions_total\":0,\"models\":[]"
         let decoder = JSONDecoder()

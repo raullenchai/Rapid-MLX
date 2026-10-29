@@ -3540,8 +3540,17 @@ final class ServerManager {
     /// user stop, exactly like the existing model-switch confirmation path.
     func unloadResidentModelsIfIdle(idleSetting: Int? = nil) async -> ResidentUnloadResult {
         guard await refreshResidency() else { return .unavailable }
-        if let idleSetting, let activity = residency.activity,
-           (activity.inFlight > 0 || activity.idleSeconds < Double(idleSetting)) { return .busy }
+        if let idleSetting {
+            let threshold = Double(idleSetting)
+            if let activity = residency.activity {
+                if activity.inFlight > 0 || activity.idleSeconds < threshold { return .busy }
+            } else {
+                // Older servers report no activity; re-check per-workload idle time.
+                let audio = residency.audioLanes.filter { $0.state == "resident" }
+                if residency.models.contains(where: { $0.idleSeconds < threshold })
+                    || audio.contains(where: { ($0.idleSeconds ?? 0) < threshold }) { return .busy }
+            }
+        }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy
         }
