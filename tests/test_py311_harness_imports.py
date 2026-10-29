@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import py311_harness_imports
 from tests.py311_harness_imports import (
     PY311_ONLY_MODULES,
     RUNTIME_ONLY_TEST_FILES,
@@ -31,6 +32,10 @@ TESTS_DIR = Path(__file__).resolve().parent
         ("@decorator\ndef f(x=default):\n    import pydantic_ai", False),
         ("class C:\n    import pydantic_ai", True),
         ("if TYPE_CHECKING:\n    import pydantic_ai", False),
+        ("if TYPE_CHECKING:\n    pass\nelse:\n    import pydantic_ai", True),
+        ("if not TYPE_CHECKING:\n    import pydantic_ai", True),
+        ("import typing\nif typing.TYPE_CHECKING:\n    import pydantic_ai", False),
+        ("def f(:\n", True),
         ("try:\n    import pydantic_ai\nexcept ImportError:\n    pass", True),
         (
             "try:\n    import json\n    import pydantic_ai\nexcept ImportError:\n    pass",
@@ -49,6 +54,21 @@ TESTS_DIR = Path(__file__).resolve().parent
 )
 def test_requires_python311(source, expected):
     assert requires_python311(source) is expected
+
+
+def test_unparseable_followed_module_requires_python311(tmp_path, monkeypatch):
+    module = tmp_path / "broken.py"
+    module.write_text("def f(:\n", encoding="utf-8")
+    monkeypatch.setattr(
+        py311_harness_imports,
+        "_module_file",
+        lambda name: module if name == "broken" else None,
+    )
+    py311_harness_imports._module_imports.cache_clear()
+    try:
+        assert requires_python311("import broken")
+    finally:
+        py311_harness_imports._module_imports.cache_clear()
 
 
 def test_direct_imports_are_skipped_and_runtime_exceptions_exist():

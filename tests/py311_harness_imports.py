@@ -13,7 +13,10 @@ Rules:
 * Only imports executed while the module is imported count: the module body,
   including ``if``/``try``/``with``/``for`` blocks and class bodies. Imports in
   function bodies and lambdas are deferred and ignored.
-* ``if TYPE_CHECKING:`` blocks are ignored.
+* Only the positive body of ``if TYPE_CHECKING:`` or
+  ``if typing.TYPE_CHECKING:`` is ignored; else branches and negated tests count.
+* Unreadable or unparseable test files and followed in-repo modules are treated
+  as requiring Python 3.11.
 * Imports of modules inside this repository (``rapid_mlx``, ``tests``, ...) are
   followed transitively, including the parent packages' ``__init__`` files, so
   importing a harness submodule that pulls in ``pydantic_ai`` counts, while a
@@ -31,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Top-level third-party modules whose distributions are installed only on
 # Python >= 3.11 and that project/test code imports at module scope.
 PY311_ONLY_MODULES: tuple[str, ...] = ("pydantic_ai",)
+_UNREADABLE_MODULE = "<unreadable-or-unparseable-module>"
 
 # These files import only 3.10-safe modules at import time but exercise the
 # harness at runtime: lazy model_client imports or owner subprocesses need
@@ -41,7 +45,7 @@ RUNTIME_ONLY_TEST_FILES: frozenset[str] = frozenset(
 
 
 def _is_py311_only(name: str) -> bool:
-    return any(
+    return name == _UNREADABLE_MODULE or any(
         name == root or name.startswith(root + ".") for root in PY311_ONLY_MODULES
     )
 
@@ -139,7 +143,7 @@ def _module_imports(name: str) -> frozenset[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, ValueError):
-        return frozenset()
+        return frozenset({_UNREADABLE_MODULE})
     return frozenset(_with_parents(_executed_imports(tree, _package_of(path))))
 
 
@@ -149,7 +153,11 @@ def requires_python311(source: str, path: Path | None = None) -> bool:
     ``path`` (the file ``source`` came from) is used to resolve relative imports.
     """
     package = _package_of(path) if path is not None else None
-    pending = list(_with_parents(_executed_imports(ast.parse(source), package)))
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True
+    pending = list(_with_parents(_executed_imports(tree, package)))
     seen: set[str] = set()
     while pending:
         name = pending.pop()
@@ -164,6 +172,10 @@ def requires_python311(source: str, path: Path | None = None) -> bool:
 
 def skip_on_python310(path: Path) -> bool:
     """Return whether this test file must be skipped on Python 3.10."""
-    return path.name in RUNTIME_ONLY_TEST_FILES or requires_python311(
-        path.read_text(encoding="utf-8"), path
-    )
+    if path.name in RUNTIME_ONLY_TEST_FILES:
+        return True
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return True
+    return requires_python311(source, path)
