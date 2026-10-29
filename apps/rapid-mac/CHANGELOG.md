@@ -17,10 +17,20 @@ can actually understand.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-10-29
+
+Desktop adds experimental built-in agent harness chats, a simpler Share Compute, more images per message and new models.
+
 ### Desktop
 
-- **One QuickSilver key for Share Compute**: Credits now reads your credit ledger with the same provider key (`qsppk-…`) you save in Settings → Experimental → Share Compute — there is no separate read-only key to paste. A read-only key saved before this change is no longer used; paste your provider key once in Settings to keep seeing your ledger.
-- **Simpler Share Compute**: the Share tab is now a three-step checklist — add your QuickSilver key, pick (or download) a model, start sharing — and shows a clear status card while your Mac is online. Credits leads with what you earned this month, in credits, followed by recent activity. The Live Pool tab is gone; network-wide availability remains on QuickSilver.
+- **Experimental agent chats**: enable the Built-in Agent Harness in settings to use tools and approvals in new chats, including image attachments. ([#5311](https://github.com/raullenchai/Rapid-MLX/pull/5311), [#5324](https://github.com/raullenchai/Rapid-MLX/pull/5324))
+- **Reliable harness chats**: the bundled file worker can read files and attachments, and Desktop accepts the current chat owner schema. ([#5335](https://github.com/raullenchai/Rapid-MLX/pull/5335), [#5330](https://github.com/raullenchai/Rapid-MLX/pull/5330))
+- **Simpler Share Compute** (experimental): a three-step setup checklist — add your QuickSilver key, pick or download a model, start sharing. Credits shows requests served and credits earned this month. The Live Pool tab is gone; network-wide stats remain on QuickSilver. ([#5357](https://github.com/raullenchai/Rapid-MLX/pull/5357))
+- **One QuickSilver key for Share Compute**: Credits reads your credit ledger with the same provider key (`qsppk-…`) you save in Settings → Experimental → Share Compute — there is no separate read-only key to paste. A read-only key saved before this change is no longer used; paste your provider key once in Settings to keep seeing your ledger. ([#5349](https://github.com/raullenchai/Rapid-MLX/pull/5349))
+- **Chat**: up to 8 images per message; small models are reminded of their tools in long chats; the tool connection card no longer appears inside chats. ([#5350](https://github.com/raullenchai/Rapid-MLX/pull/5350), [#5352](https://github.com/raullenchai/Rapid-MLX/pull/5352), [#5346](https://github.com/raullenchai/Rapid-MLX/pull/5346))
+- **Connect an agent**: a more compact page that switches to one column in narrow windows. ([#5348](https://github.com/raullenchai/Rapid-MLX/pull/5348), [#5351](https://github.com/raullenchai/Rapid-MLX/pull/5351))
+- **Release idle models** (optional): a setting frees memory by unloading models after a chosen idle time. ([#5356](https://github.com/raullenchai/Rapid-MLX/pull/5356))
+- **New models**: LFM3 text, LFM3-VL image and Ornith 1.5 join the model catalog. ([#5331](https://github.com/raullenchai/Rapid-MLX/pull/5331), [#5333](https://github.com/raullenchai/Rapid-MLX/pull/5333), [#5328](https://github.com/raullenchai/Rapid-MLX/pull/5328), [#5341](https://github.com/raullenchai/Rapid-MLX/pull/5341))
 
 ## [0.16.10] — 2026-10-26
 
@@ -4530,7 +4540,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...HEAD
+[1.0.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v1.0.0
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
 [0.16.7]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.6...rapid-mac-v0.16.7
