@@ -1035,7 +1035,10 @@ def test_capacity_rejection_via_http_preserves_secondary(monkeypatch):
         )
         assert rejected.status_code == 507
         assert "cannot free enough memory" in rejected.json()["detail"]
-        assert client.get("/v1/models/residency").json() == before
+        after = client.get("/v1/models/residency").json()
+        assert after.pop("activity")["in_flight"] == 0
+        assert before.pop("activity")["in_flight"] == 0
+        assert after == before
         assert registry.get_engine("secondary") is loaded["secondary"]
         assert not loaded["secondary"].stopped
 
@@ -3567,6 +3570,8 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         assert status.json()["memory_limit_bytes"] == 12 * GIB
         assert {item["id"] for item in status.json()["models"]} == {"chat", "image"}
         assert isinstance(status.json()["audio_lanes"], list)
+        assert status.json()["activity"]["in_flight"] == 0
+        assert status.json()["activity"]["idle_seconds"] >= 0
 
         pinned = client.put("/v1/models/image/pin", json={"pinned": True})
         assert pinned.status_code == 200

@@ -91,6 +91,9 @@ struct SettingsModelManagementPanel: View {
     @AppStorage(ModelSwitchConfirmationPreference.storageKey)
     private var confirmActiveRequestSwitch = ModelSwitchConfirmationPreference.defaultValue
 
+    @AppStorage(IdleModelReleasePreference.storageKey)
+    private var idleReleaseSeconds = IdleModelReleasePreference.defaultValue
+
     /// codex r1 P2 (#210): without this we'd ride the stale catalog
     /// snapshot after a background download finishes — the row
     /// flips from ``Downloading…`` straight back to ``Not cached``
@@ -379,6 +382,24 @@ struct SettingsModelManagementPanel: View {
                 .accessibilityHint("When off, opening Rapid-MLX will not load a model until you start one manually from the picker.")
                 // Stable AX hook kept as `Settings.Models.*` across the move.
                 .accessibilityIdentifier("Settings.Models.AutoStartOnLaunchToggle")
+
+                SettingsRowDivider()
+
+                Picker(selection: $idleReleaseSeconds) {
+                    Text("Never").tag(0)
+                    Text("After 15 minutes").tag(900)
+                    Text("After 30 minutes").tag(1800)
+                    Text("After 1 hour").tag(3600)
+                } label: {
+                    SettingsRowLabel(
+                        title: String(localized: "Release model when idle"),
+                        description: String(localized: "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds.")
+                    )
+                }
+                .accessibilityIdentifier("Settings.Models.IdleModelReleasePicker")
+                .onChange(of: idleReleaseSeconds) { _, value in
+                    server.configureIdleModelRelease(value)
+                }
 
                 SettingsRowDivider()
 

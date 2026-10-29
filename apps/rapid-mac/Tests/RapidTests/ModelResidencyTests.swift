@@ -113,13 +113,15 @@ struct ModelResidencyTests {
                 lane: "stt",
                 model: "mlx-community/whisper-small-mlx",
                 state: "resident",
-                activeRequests: 0
+                activeRequests: 0,
+                idleSeconds: 4
             ),
             ResidentAudioLaneStatus(
                 lane: "tts",
                 model: nil,
                 state: "registered",
-                activeRequests: 0
+                activeRequests: 0,
+                idleSeconds: 0
             )
         ])
         #expect(snapshot.containsResidentAudioLane(

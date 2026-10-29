@@ -125,7 +125,10 @@ async def model_residency():
     from ..runtime.audio_worker import audio_worker
 
     snapshot = _manager().snapshot()
+    from ..middleware.activity import activity_tracker
+
     snapshot["audio_lanes"] = audio_worker.snapshot()
+    snapshot["activity"] = activity_tracker.snapshot()
     return snapshot
 
 
