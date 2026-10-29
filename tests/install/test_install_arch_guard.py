@@ -33,7 +33,9 @@ def _run(tmp_path: Path, has_arm64: str) -> subprocess.CompletedProcess:
         ("1", "running under Rosetta", "Intel processor"),
     ],
 )
-def test_non_arm64_shell_gets_a_specific_reason(tmp_path, has_arm64, expected, unexpected):
+def test_non_arm64_shell_gets_a_specific_reason(
+    tmp_path, has_arm64, expected, unexpected
+):
     result = _run(tmp_path, has_arm64)
     output = result.stdout + result.stderr
     assert result.returncode == 1
