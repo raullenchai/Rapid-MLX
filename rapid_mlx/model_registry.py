@@ -52,7 +52,9 @@ class ModelRegistry:
         # model_id -> (weak_ref_to_engine, engine_id)
         self._owners: dict[int, tuple[weakref.ref, str]] = {}
         self._registry_lock = threading.Lock()
-        self._pending_releases = collections.deque()
+        self._pending_releases: collections.deque[tuple[int, str, int | None]] = (
+            collections.deque()
+        )
 
     def acquire(
         self, model: Any, engine: Any, engine_id: str, force: bool = False
