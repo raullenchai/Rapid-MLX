@@ -422,7 +422,7 @@ private struct ShareSessionCard<Content: View>: View {
 @MainActor private func sessionMetric(_ label: String, _ value: String) -> some View {
     VStack(alignment: .leading, spacing: 4) {
         Text(label).font(.rapid(size: 12)).foregroundStyle(.secondary)
-        Text(value).font(.rapid(size: 20, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        Text(value).font(.rapid(size: 20, weight: .medium)).monospacedDigit().lineLimit(1)
     }.frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
 }

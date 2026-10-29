@@ -104,7 +104,7 @@ struct ShareComputeCreditsTab: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.rapid(size: 12)).foregroundStyle(.secondary)
             Text(value).font(.rapid(size: 18, weight: .semibold)).monospacedDigit()
-                .lineLimit(1).minimumScaleFactor(0.7)
+                .lineLimit(1)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
     }
@@ -243,7 +243,7 @@ struct ShareComputeLedgerRowView: View {
                         Text(window.nodeID).font(.rapid(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     Text("\(window.requestCount)").monospacedDigit().frame(width: 65, alignment: .leading)
-                    Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75).frame(width: 85, alignment: .leading)
+                    Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).frame(width: 85, alignment: .leading)
                     statusTag.frame(width: 80, alignment: .leading)
                 }
             }
