@@ -42,6 +42,7 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 - [Local folder search](guides/local-search.md)
 - [Reasoning Models](guides/reasoning.md)
 - [Tool Calling](guides/tool-calling.md)
+- [Long agent tasks: context and tool calls](guides/long-tasks-and-context.md)
 - [MCP & Tool Calling](guides/mcp-tools.md)
 - [Rapid Agent Runtime](guides/agent-runtime.md)
 - [Continuous Batching](guides/continuous-batching.md)
@@ -65,6 +66,7 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 
 ### Benchmarks
 - [Measure on your Mac](benchmarks/README.md)
+- [Speed by chip](benchmarks/speed-by-chip.md)
 - [Text generation](benchmarks/llm.md)
 
 ### Development

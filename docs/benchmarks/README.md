@@ -4,6 +4,7 @@ Performance benchmarks for rapid-mlx on Apple Silicon.
 
 ## Benchmark Types
 
+- [Speed by chip](speed-by-chip.md) - Community results and memory bandwidth
 - [LLM Benchmarks](llm.md) - Text generation performance
 - [Measured model recommendations](model-recommendations.md) - RAM-tier gates,
   methodology, measurements, and caveats behind Desktop defaults
