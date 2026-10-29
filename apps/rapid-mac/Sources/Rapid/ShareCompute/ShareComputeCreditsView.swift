@@ -145,9 +145,18 @@ struct ShareComputeCreditsTab: View {
         case .loading: note("clock", "Reading your ledger…", "Your credit activity will appear here.", "ShareCompute.Credits.Loading")
         case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, "QuickSilver limits ledger checks per hour.", "ShareCompute.Credits.RateLimited")
         case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, "Your local activity below is unaffected.", "ShareCompute.Credits.Unavailable")
-        case .loadedEmpty: note("tray", "No accounting windows yet", "Windows appear when your node serves metered requests.", "ShareCompute.Credits.Empty")
-        case .loaded, .refreshing, .refreshFailed: EmptyView()
+        case .loadedEmpty: emptyNote
+        case .refreshFailed:
+            if let note = state.staleNote {
+                Text(note).font(.rapid(size: 12)).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("ShareCompute.Credits.Stale")
+            }
+            emptyNote
+        case .loaded, .refreshing: emptyNote
         }
+    }
+    private var emptyNote: some View {
+        note("tray", "No accounting windows yet", "Windows appear when your node serves metered requests.", "ShareCompute.Credits.Empty")
     }
     private func note(_ icon: String, _ title: String, _ detail: String, _ id: String, action: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 10) {

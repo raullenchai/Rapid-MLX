@@ -142,17 +142,18 @@ struct ShareComputeShareTab: View {
     let onGetKey: () -> Void
     @State private var selectorWidth: CGFloat = 0
     @State private var candidateID: String?
-    private var candidate: ShareComputeLocalModel? { candidates.first { $0.id == candidateID } ?? candidates.first }
+    private var activeCandidate: ShareComputeLocalModel? { candidates.first { downloads.isDownloading($0.model.alias) } }
+    private var candidate: ShareComputeLocalModel? { activeCandidate ?? candidates.first { $0.id == candidateID } ?? candidates.first }
     private var storage: ShareComputeStorageEligibility { .evaluate(downloadBytes: candidate?.estimatedDownloadBytes, freeBytes: freeBytes) }
     private var downloadState: ShareComputeModelSetupState {
         let job = candidate.flatMap { downloads.job(for: $0.model.alias) }
         var failure: String?
         if case .failed(let message) = job?.status { failure = message }
-        return .decide(hasReady: selected != nil, hasCandidate: candidate != nil, storage: storage, downloading: candidate.map { downloads.isDownloading($0.model.alias) } ?? false, failure: failure)
+        return .decide(hasReady: selected?.isReady == true, hasCandidate: candidate != nil, storage: storage, downloading: candidate.map { downloads.isDownloading($0.model.alias) } ?? false, failure: failure)
     }
     private func size(_ bytes: Int64?) -> String { bytes.map { "~" + ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "" }
     private var keyDone: Bool { hasSavedKey || !requiresConnection }
-    private var modelDone: Bool { selected != nil }
+    private var modelDone: Bool { selected?.isReady == true }
     private var current: ShareComputeSetupStep { .current(keyDone: keyDone, modelDone: modelDone) }
     private var canStart: Bool { ShareComputeSetupStep.canStart(keyDone: keyDone, modelDone: modelDone) }
 
@@ -216,6 +217,7 @@ struct ShareComputeShareTab: View {
                                 }
                             } label: { Text("\(candidate.title) · \(size(candidate.estimatedDownloadBytes))").lineLimit(1) }
                             .frame(maxWidth: 260)
+                            .disabled(activeCandidate != nil)
                             .accessibilityIdentifier("ShareCompute.Setup.DownloadPicker")
                             if downloadState == .downloading {
                                 ProgressView(value: downloads.job(for: candidate.model.alias)?.progress.progressFraction).controlSize(.small).frame(width: 24)
