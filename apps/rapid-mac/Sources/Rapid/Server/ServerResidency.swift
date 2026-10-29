@@ -552,8 +552,9 @@ enum IdleModelReleasePreference {
     static func shouldUnload(setting: Int, lastActivity: Date, inFlight: Bool, now: Date, loaded: Bool, operating: Bool, activity: ServerActivity? = nil) -> Bool {
         guard choices.contains(setting), setting > 0, loaded, !operating, !inFlight,
               now.timeIntervalSince(lastActivity) >= Double(setting) else { return false }
-        // Server activity, when reported, must agree with the local clock.
-        guard let activity else { return true }
+        // Older servers cannot report completed-request times reliably, so
+        // automatic release needs the server-wide activity clock.
+        guard let activity else { return false }
         return activity.inFlight == 0 && activity.idleSeconds >= Double(setting)
     }
 }

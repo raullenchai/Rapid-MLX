@@ -3574,7 +3574,6 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         assert status.json()["activity"]["idle_seconds"] >= 0
 
         import rapid_mlx.routes.video as video_routes
-
         from rapid_mlx.middleware.activity import activity_tracker
 
         # The last HTTP request was long ago; only the video job is running.

@@ -7,7 +7,7 @@ struct IdleModelReleaseTests {
     @Test func decision() {
         let now = Date(timeIntervalSince1970: 10_000)
         func decide(_ setting: Int = 900, _ age: TimeInterval = 901, _ busy: Bool = false, _ loaded: Bool = true, _ operating: Bool = false) -> Bool {
-            IdleModelReleasePreference.shouldUnload(setting: setting, lastActivity: now.addingTimeInterval(-age), inFlight: busy, now: now, loaded: loaded, operating: operating)
+            IdleModelReleasePreference.shouldUnload(setting: setting, lastActivity: now.addingTimeInterval(-age), inFlight: busy, now: now, loaded: loaded, operating: operating, activity: ServerActivity(inFlight: 0, idleSeconds: 5000))
         }
         #expect(!decide(0))
         #expect(!decide(900, 899))
@@ -35,7 +35,7 @@ struct ServerActivityIdleTests {
         func decision(_ activity: ServerActivity?) -> Bool {
             IdleModelReleasePreference.shouldUnload(setting: 900, lastActivity: now.addingTimeInterval(-1000), inFlight: false, now: now, loaded: true, operating: false, activity: activity)
         }
-        #expect(decision(nil))
+        #expect(!decision(nil))  // no server activity clock: never auto-release
         #expect(!decision(ServerActivity(inFlight: 1, idleSeconds: 1000)))
         #expect(!decision(ServerActivity(inFlight: 0, idleSeconds: 899)))
         #expect(decision(ServerActivity(inFlight: 0, idleSeconds: 900)))
