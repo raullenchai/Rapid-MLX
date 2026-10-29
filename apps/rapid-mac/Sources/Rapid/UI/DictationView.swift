@@ -60,13 +60,23 @@ struct DictationView: View {
             }
             handledCompletedDownloads.formIntersection(completed)
             let pending = completed.filter { !handledCompletedDownloads.contains($0) }
-            guard !pending.isEmpty else { return }
-            await viewModel.refreshCatalog()
+            let selected = controller.modelAlias
+            let selectedCompleted: Bool
+            if case .completed = downloads.job(for: selected)?.status {
+                selectedCompleted = true
+            } else {
+                selectedCompleted = false
+            }
+            guard !pending.isEmpty || selectedCompleted else { return }
+            if !pending.isEmpty {
+                await viewModel.refreshCatalog()
+            }
             guard !Task.isCancelled else { return }
+            // Selecting an already-handled model must still update the active session.
+            if selectedCompleted {
+                await controller.modelDownloadDidFinish(alias: selected)
+            }
             for alias in pending {
-                if alias == controller.modelAlias {
-                    await controller.modelDownloadDidFinish(alias: alias)
-                }
                 guard !Task.isCancelled else { return }
                 if viewModel.audioModels.first(where: { $0.alias == alias })?.cached != true {
                     downloads.dismissJob(alias: alias)
