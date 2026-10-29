@@ -247,6 +247,8 @@ for ledger in noKey empty revoked stale; do
     done
 done
 
+run_stage "1440x900-light" 1440 900 light download "1440x900-light-share-download"
+run_stage "720x900-light" 720 900 light download "720x900-light-share-download"
 run_stage "1440x900-light" 1440 900 light modelPicker      "1440x900-light-model-picker-open"
 run_stage "720x900-light"   720 900 light modelPicker      "720x900-light-model-picker-open"
 run_stage "1440x900-light" 1440 900 light connectionReview "1440x900-light-connection-review"

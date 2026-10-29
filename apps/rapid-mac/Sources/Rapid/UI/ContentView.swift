@@ -1431,6 +1431,7 @@ struct ContentView: View {
             if shareComputeEnabled {
                 ShareComputeView(
                     manager: shareCompute,
+                    downloads: downloads,
                     catalog: catalogEntries,
                     catalogLoaded: catalogLoaded
                 )

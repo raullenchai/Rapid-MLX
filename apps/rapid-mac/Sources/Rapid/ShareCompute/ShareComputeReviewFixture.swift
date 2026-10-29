@@ -37,6 +37,7 @@ enum ShareComputeReviewStage: String, CaseIterable, Sendable {
     case connectionReview
     /// The ready workbench with the model picker open.
     case modelPicker
+    case download
 
     static func requested(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -53,7 +54,7 @@ enum ShareComputeReviewStage: String, CaseIterable, Sendable {
     /// normally and the stage only opens the sheet or the popover.
     var replacesShareTab: Bool {
         switch self {
-        case .preparing, .online, .sessionComplete: return true
+        case .preparing, .online, .sessionComplete, .download: return true
         case .connectionReview, .modelPicker: return false
         }
     }

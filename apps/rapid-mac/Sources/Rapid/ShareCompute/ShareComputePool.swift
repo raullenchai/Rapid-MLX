@@ -31,6 +31,13 @@ struct ShareComputeLocalModel: Identifiable, Hashable, Sendable {
         return raw
     }
 
+    var estimatedDownloadBytes: Int64? {
+        guard !isReady else { return nil }
+        let footprint = ModelSizing.estimate(alias: model.alias)
+        guard footprint.weightsGB > 0 else { return nil }
+        return Int64(footprint.weightsGB * Double(1 << 30))
+    }
+
     /// Joins the pool catalog to the local catalog.
     ///
     /// Alias comparison is case-insensitive because `rapid-mlx ls` and the
@@ -55,6 +62,61 @@ struct ShareComputeLocalModel: Identifiable, Hashable, Sendable {
     /// quietly widen the list.
     static func readyForSharing(_ all: [ShareComputeLocalModel]) -> [ShareComputeLocalModel] {
         all.filter(\.isReady)
+    }
+}
+
+// MARK: - Storage eligibility
+
+/// Whether this Mac can land a model download.
+///
+/// Wraps ``DiskSpaceProbe`` rather than reimplementing it so Share Compute and
+/// Quickstart apply the same threshold, and so the "probe failed" case keeps
+/// the app's established fail-open behaviour: an unreadable volume reports
+/// ``unknown``, never a false "not enough space".
+enum ShareComputeStorageEligibility: Equatable, Sendable {
+    case enoughSpace(freeBytes: Int64)
+    case notEnoughSpace(freeBytes: Int64, requiredBytes: Int64)
+    /// Free space could not be read, so no claim is made either way.
+    case unknown
+
+    static func evaluate(downloadBytes: Int64?, freeBytes: Int64?) -> Self {
+        guard let downloadBytes, downloadBytes > 0 else { return .unknown }
+        guard let freeBytes else { return .unknown }
+        let required = DiskSpaceProbe.requiredBytes(downloadBytes: downloadBytes)
+        switch DiskSpaceProbe.decide(freeBytes: freeBytes, requiredBytes: required) {
+        case .ok:
+            return .enoughSpace(freeBytes: freeBytes)
+        case .warn(let free, let requiredBytes):
+            return .notEnoughSpace(freeBytes: free, requiredBytes: requiredBytes)
+        }
+    }
+
+    /// `84 GB free · Enough space` — the exact shape Paper uses, built from
+    /// measured bytes.
+    var label: String? {
+        let formatter: (Int64) -> String = {
+            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+        }
+        switch self {
+        case .enoughSpace(let free):
+            return String(
+                format: String(localized: "%1$@ free · Enough space"),
+                formatter(free)
+            )
+        case .notEnoughSpace(let free, let required):
+            return String(
+                format: String(localized: "%1$@ free · Needs %2$@"),
+                formatter(free),
+                formatter(required)
+            )
+        case .unknown:
+            return nil
+        }
+    }
+
+    var isSufficient: Bool {
+        if case .enoughSpace = self { return true }
+        return false
     }
 }
 

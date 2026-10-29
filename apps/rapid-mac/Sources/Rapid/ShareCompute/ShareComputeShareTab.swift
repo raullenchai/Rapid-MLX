@@ -110,8 +110,21 @@ enum ShareComputeSetupStep: Equatable {
     static func canStart(keyDone: Bool, modelDone: Bool) -> Bool { keyDone && modelDone }
 }
 
+enum ShareComputeModelSetupState: Equatable {
+    case ready, candidate, insufficient, downloading, failed(String), none
+    static func decide(hasReady: Bool, hasCandidate: Bool, storage: ShareComputeStorageEligibility, downloading: Bool, failure: String?) -> Self {
+        if hasReady { return .ready }
+        guard hasCandidate else { return .none }
+        if downloading { return .downloading }
+        if case .notEnoughSpace = storage { return .insufficient }
+        if let failure { return .failed(failure) }
+        return .candidate
+    }
+}
+
 struct ShareComputeShareTab: View {
     let models: [ShareComputeLocalModel]
+    let candidates: [ShareComputeLocalModel]
     let selected: ShareComputeLocalModel?
     let relayStatus: ShareComputeRelayStatusBar.Status
     let catalogLoaded: Bool
@@ -120,12 +133,24 @@ struct ShareComputeShareTab: View {
     let hasSavedKey: Bool
     var savedKeyLabel: String? = nil
     @Binding var isPickerOpen: Bool
+    let freeBytes: Int64?
+    @Bindable var downloads: DownloadManager
     let onSelect: (ShareComputeLocalModel) -> Void
     let onStart: () -> Void
     let onOpenQuickSilver: () -> Void
     let onAddKey: () -> Void
     let onGetKey: () -> Void
     @State private var selectorWidth: CGFloat = 0
+    @State private var candidateID: String?
+    private var candidate: ShareComputeLocalModel? { candidates.first { $0.id == candidateID } ?? candidates.first }
+    private var storage: ShareComputeStorageEligibility { .evaluate(downloadBytes: candidate?.estimatedDownloadBytes, freeBytes: freeBytes) }
+    private var downloadState: ShareComputeModelSetupState {
+        let job = candidate.flatMap { downloads.job(for: $0.model.alias) }
+        var failure: String?
+        if case .failed(let message) = job?.status { failure = message }
+        return .decide(hasReady: selected != nil, hasCandidate: candidate != nil, storage: storage, downloading: candidate.map { downloads.isDownloading($0.model.alias) } ?? false, failure: failure)
+    }
+    private func size(_ bytes: Int64?) -> String { bytes.map { "~" + ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "" }
     private var keyDone: Bool { hasSavedKey || !requiresConnection }
     private var modelDone: Bool { selected != nil }
     private var current: ShareComputeSetupStep { .current(keyDone: keyDone, modelDone: modelDone) }
@@ -163,7 +188,15 @@ struct ShareComputeShareTab: View {
                 divider
                 setupRow(number: 2, title: "Model to share", done: modelDone, step: .model) {
                     if !catalogLoaded { Text("Checking downloaded models…") }
-                    else if models.isEmpty { Text("No models can be shared from this Mac right now.") }
+                    else if models.isEmpty {
+                        switch downloadState {
+                        case .none: Text("No models can be shared from this Mac right now.")
+                        case .insufficient:
+                            if case .notEnoughSpace(_, let required) = storage { Text("Not enough free space (\(size(required)) needed).") }
+                        case .failed(let message): Text(message)
+                        default: Text("Download a model to share. \(size(candidate?.estimatedDownloadBytes))")
+                        }
+                    }
                     else if let selected {
                         HStack(spacing: 5) {
                             if !selected.isReady { Circle().fill(.orange).frame(width: 6, height: 6) }
@@ -171,9 +204,28 @@ struct ShareComputeShareTab: View {
                         }
                     } else { Text("One model is shared at a time.") }
                 } action: {
-                    if catalogLoaded && models.isEmpty {
+                    if catalogLoaded && models.isEmpty && candidate == nil {
                         Button("Open QuickSilver", action: onOpenQuickSilver).buttonStyle(.bordered)
                             .accessibilityIdentifier("ShareCompute.Setup.BrowsePool")
+                    } else if catalogLoaded && models.isEmpty, let candidate {
+                        HStack(spacing: 8) {
+                            Menu {
+                                ForEach(candidates) { model in
+                                    Button("\(model.title) · \(size(model.estimatedDownloadBytes))") { candidateID = model.id }
+                                }
+                            } label: { Text("\(candidate.title) · \(size(candidate.estimatedDownloadBytes))").lineLimit(1) }
+                            .frame(maxWidth: 260)
+                            .accessibilityIdentifier("ShareCompute.Setup.DownloadPicker")
+                            if downloadState == .downloading {
+                                ProgressView(value: downloads.job(for: candidate.model.alias)?.progress.progressFraction).controlSize(.small).frame(width: 24)
+                                Text("Downloading…").font(.rapid(size: 12))
+                            } else {
+                                Button({ if case .failed = downloadState { return "Retry" }; return "Download" }()) {
+                                    _ = downloads.startDownload(alias: candidate.model.alias, hfPath: candidate.entry?.hfRepo, totalBytes: candidate.estimatedDownloadBytes)
+                                }.buttonStyle(.borderedProminent).disabled(downloadState == .insufficient)
+                                    .accessibilityIdentifier("ShareCompute.Setup.Download")
+                            }
+                        }
                     } else if catalogLoaded { selector }
                 }
                 divider

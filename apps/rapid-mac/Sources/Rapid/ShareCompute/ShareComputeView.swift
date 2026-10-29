@@ -9,6 +9,7 @@ import SwiftUI
 /// ``ShareComputeScreen`` and renders.
 struct ShareComputeView: View {
     @Bindable var manager: ShareComputeManager
+    @Bindable var downloads: DownloadManager
     let catalog: [ModelEntry]
     let catalogLoaded: Bool
 
@@ -22,6 +23,7 @@ struct ShareComputeView: View {
 
     @State private var tab: ShareComputeTab = ShareComputeTab.harnessRequested() ?? .share
     @State private var isPickerOpen = false
+    @State private var freeBytes: Int64?
     @State private var showingConnectionReview = false
     @State private var providerKey = ""
     @State private var containerSize = CGSize(width: 1_240, height: 820)
@@ -147,6 +149,7 @@ struct ShareComputeView: View {
             .onChange(of: proxy.size) { _, value in containerSize = value }
         }
         .task {
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
             receipts = store.load()
             selectedReceiptID = receipts.first?.id
             applyReviewPresentation()
@@ -171,6 +174,11 @@ struct ShareComputeView: View {
         .onChange(of: manager.providerKeyRevision) { _, _ in
             ledger.providerKeyChanged(isVisible: tab == .credits)
         }
+        // A download finishing makes a model ready; select it so step 2
+        // completes without another click.
+        .onChange(of: shareableModels.map(\.id)) { _, _ in
+            reconcileSelection()
+        }
         .onChange(of: catalogLoaded) { _, _ in
             reconcileSelection()
             // The catalog arrives after first paint, so a review stage that
@@ -180,6 +188,10 @@ struct ShareComputeView: View {
         }
         .onChange(of: tab) { _, _ in
             isPickerOpen = false
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
+        }
+        .onChange(of: downloads.cacheGeneration) { _, _ in
+            freeBytes = DiskSpaceProbe.freeBytesForHFCache()
         }
         .sheet(isPresented: $showingConnectionReview) {
             ShareComputeConnectionReview(
@@ -279,6 +291,14 @@ struct ShareComputeView: View {
                 onViewReward: {},
                 onShareAgain: {}
             )
+        case .download:
+            ShareComputeShareTab(
+                models: [], candidates: [ShareComputeLocalModel(model: ShareComputeModel.supported[0], entry: nil)],
+                selected: nil, relayStatus: .failed, catalogLoaded: true, isNarrow: isNarrow,
+                requiresConnection: true, hasSavedKey: false, isPickerOpen: $isPickerOpen,
+                freeBytes: Int64.max, downloads: downloads, onSelect: { _ in }, onStart: {},
+                onOpenQuickSilver: {}, onAddKey: {}, onGetKey: {}
+            )
         case .connectionReview, .modelPicker:
             // Presented OVER the ready workbench; see `reviewPresentation`.
             readyWorkbench
@@ -330,6 +350,7 @@ struct ShareComputeView: View {
     private var readyWorkbench: some View {
         ShareComputeShareTab(
             models: shareableModels,
+            candidates: allPoolModels.filter { !$0.isReady },
             selected: selectedModel,
             relayStatus: relayStatus,
             catalogLoaded: catalogLoaded,
@@ -338,6 +359,8 @@ struct ShareComputeView: View {
             hasSavedKey: manager.providerKeyIsStored,
             savedKeyLabel: manager.savedProviderKeyLabel,
             isPickerOpen: $isPickerOpen,
+            freeBytes: freeBytes,
+            downloads: downloads,
             onSelect: select,
             onStart: presentConnectionReview,
             onOpenQuickSilver: { openURL(ShareComputeDestination.provider) },
@@ -410,7 +433,7 @@ struct ShareComputeView: View {
             if selectedModel != nil { showingConnectionReview = true }
         case .modelPicker:
             isPickerOpen = true
-        case .preparing, .online, .sessionComplete:
+        case .preparing, .online, .sessionComplete, .download:
             break
         }
     }

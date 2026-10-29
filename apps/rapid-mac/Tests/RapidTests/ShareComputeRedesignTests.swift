@@ -69,6 +69,7 @@ struct ShareComputeRedesignTests {
         #expect(shareable[0].onDiskSize == "16.8 GB")
         // A ready model never advertises a download size — there is nothing
         // to download.
+        #expect(shareable[0].estimatedDownloadBytes == nil)
     }
 
     @Test("Alias matching ignores case so a catalog spelling change can't hide a model")
@@ -76,6 +77,65 @@ struct ShareComputeRedesignTests {
         let catalog = [Self.entry(alias: Self.pool[0].alias.uppercased(), cached: true, size: "16.8 GB")]
         let all = ShareComputeLocalModel.make(catalog: catalog)
         #expect(ShareComputeLocalModel.readyForSharing(all).count == 1)
+    }
+
+    @Test("A model that is not on this Mac reports a download size, never an on-disk size")
+    func downloadRequiredState() throws {
+        let catalog = [Self.entry(alias: Self.pool[1].alias, cached: false)]
+        let local = ShareComputeLocalModel.make(catalog: catalog)
+            .first { $0.id == Self.pool[1].catalogID }
+        let model = try #require(local)
+        #expect(!model.isReady)
+        #expect(model.onDiskSize == nil)
+        // ModelSizing derives a figure from the alias; the exact number is its
+        // business, but a 35B model must produce SOMETHING to warn the user with.
+        #expect((model.estimatedDownloadBytes ?? 0) > 0)
+    }
+
+    // MARK: - Storage eligibility
+
+    @Test("Storage eligibility is measured, and an unreadable volume makes no claim")
+    func storageEligibility() {
+        let twentyGB = Int64(20) * Int64(1 << 30)
+
+        let plenty = ShareComputeStorageEligibility.evaluate(
+            downloadBytes: twentyGB,
+            freeBytes: Int64(400) * Int64(1 << 30)
+        )
+        #expect(plenty.isSufficient)
+        #expect(plenty.label?.contains("Enough space") == true)
+
+        let tight = ShareComputeStorageEligibility.evaluate(
+            downloadBytes: twentyGB,
+            freeBytes: Int64(2) * Int64(1 << 30)
+        )
+        #expect(!tight.isSufficient)
+        #expect(tight.label?.contains("Needs") == true)
+
+        // Fail-open: a probe that returned nothing must not render as "not
+        // enough space", which would block a user who has plenty.
+        let unknown = ShareComputeStorageEligibility.evaluate(
+            downloadBytes: twentyGB,
+            freeBytes: nil
+        )
+        #expect(unknown == .unknown)
+        #expect(unknown.label == nil)
+        #expect(!unknown.isSufficient)
+    }
+
+    @Test("Setup chooses the appropriate model action")
+    func modelSetupState() {
+        let enough = ShareComputeStorageEligibility.enoughSpace(freeBytes: 100)
+        let tight = ShareComputeStorageEligibility.notEnoughSpace(freeBytes: 1, requiredBytes: 100)
+        func state(_ ready: Bool, _ candidate: Bool, _ storage: ShareComputeStorageEligibility, _ downloading: Bool = false, _ failure: String? = nil) -> ShareComputeModelSetupState {
+            .decide(hasReady: ready, hasCandidate: candidate, storage: storage, downloading: downloading, failure: failure)
+        }
+        #expect(state(true, true, enough) == .ready)
+        #expect(state(false, true, enough) == .candidate)
+        #expect(state(false, true, tight) == .insufficient)
+        #expect(state(false, true, tight, true) == .downloading)
+        #expect(state(false, false, enough) == .none)
+        #expect(state(false, true, enough, false, "Failed") == .failed("Failed"))
     }
 
     // MARK: - Screen projection

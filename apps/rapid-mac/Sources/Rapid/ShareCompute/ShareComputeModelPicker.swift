@@ -48,7 +48,7 @@ extension View {
 ///
 /// Every row is downloaded and ready — Share never renders a Download Required
 /// state, because a model that is not on this Mac cannot be shared from it and
-/// downloads belong in Pool. The filter that guarantees this lives in
+/// downloads are offered in setup. The filter that guarantees this lives in
 /// ``ShareComputeLocalModel/readyForSharing(_:)``; this view renders whatever
 /// it is handed, so there is exactly one place the rule can be broken and one
 /// place to test it.
