@@ -22,15 +22,18 @@ import os
 import plistlib
 import stat
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from starlette.requests import Request
 
+from rapid_mlx._version_check import _launcher_belongs_to_running_install
 from rapid_mlx.share import cli as share_cli
 from rapid_mlx.share import quicksilver as qs
 from rapid_mlx.share import ws_tunnel
@@ -59,6 +62,7 @@ def _isolate(tmp_path, monkeypatch):
 
     with (
         patch.object(qs.shutil, "which", return_value="/usr/local/bin/rapid-mlx"),
+        patch.object(qs, "_launcher_belongs_to_running_install", return_value=True),
         patch.object(qs.subprocess, "run", side_effect=isolated_run),
     ):
         yield tmp_path
@@ -2338,7 +2342,12 @@ def test_install_service_writes_keyless_plist(capsys, tmp_path):
     assert b"--quicksilver" in data
     assert SHARE_KEY.encode() not in data and b"--provider-key" not in data
     out = capsys.readouterr().out
-    assert "Started com.quicksilver.node" in out
+    assert "Loaded com.quicksilver.node" in out
+    assert "starting in the background" in out
+    plist = plistlib.loads(data)
+    assert plist["StandardOutPath"] in out
+    assert plist["StandardErrorPath"] in out
+    assert "Stop with: launchctl bootout" in out
 
 
 def test_install_service_plist_keeps_registration_origin(capsys):
@@ -3547,6 +3556,68 @@ def test_install_service_starts_stable_launcher():
     ]
 
 
+@pytest.fixture
+def launcher_distribution(monkeypatch):
+    dist = SimpleNamespace(entry_points=[SimpleNamespace(name="rapid-mlx")])
+    monkeypatch.setattr("rapid_mlx._version_check.distribution", lambda _: dist)
+
+
+def test_install_service_uses_running_install_when_path_is_older(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    bin_dir = tmp_path / "current" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    launcher = bin_dir / "rapid-mlx"
+    launcher.write_text(f"#!{python}\n")
+    launcher.chmod(0o755)
+    older = tmp_path / "older-rapid-mlx"
+    older.write_text(f"#!{tmp_path}/older/bin/python\n")
+    older.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setattr(qs.shutil, "which", lambda _: str(older))
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    assert plistlib.loads(path.read_bytes())["ProgramArguments"][0] == str(launcher)
+
+
+def test_service_launcher_preserves_matching_path_symlink(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    python = tmp_path / "python"
+    launcher = tmp_path / "launcher"
+    launcher.write_text(f"#!{python}\n")
+    link = tmp_path / "rapid-mlx"
+    link.symlink_to(launcher)
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setattr(qs.shutil, "which", lambda _: str(link))
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    assert qs._service_launcher() == str(link)
+
+
+def test_service_launcher_reports_different_path_install(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    python = tmp_path / "current" / "python"
+    older = tmp_path / "older-rapid-mlx"
+    older.write_text(f"#!{tmp_path}/older/python\n")
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setattr(qs.shutil, "which", lambda _: str(older))
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    with pytest.raises(qs.QuickSilverError) as exc:
+        qs._service_launcher()
+    assert str(older) in str(exc.value)
+    assert "different Rapid-MLX install" in str(exc.value)
+
+
 def test_install_service_reports_bootstrap_failure():
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
     with (
@@ -3674,7 +3745,11 @@ def test_install_service_requires_stable_launcher():
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
     with (
         patch.object(qs.shutil, "which", return_value=None),
-        pytest.raises(qs.QuickSilverError, match="installed rapid-mlx command on PATH"),
+        patch.object(qs.os, "access", return_value=False),
+        pytest.raises(
+            qs.QuickSilverError,
+            match="running install.s rapid-mlx launcher could not be found",
+        ),
     ):
         qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
 

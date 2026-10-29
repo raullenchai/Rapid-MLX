@@ -57,6 +57,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx._version_check import _launcher_belongs_to_running_install
+
 from . import tls, ws_tunnel
 
 log = logging.getLogger(__name__)
@@ -1604,6 +1606,31 @@ def _warmup(port: int, api_key: str, model: str) -> None:
 # ───────────────────────────── service install (§5.6) ─────────────────────────────
 
 
+def _service_launcher() -> str:
+    # Keep a verified package manager's stable entry point (including its
+    # symlink), rather than baking a versioned path into launchd.
+    path_launcher = shutil.which("rapid-mlx")
+    if path_launcher is not None and _launcher_belongs_to_running_install(
+        path_launcher
+    ):
+        return os.path.abspath(path_launcher)
+    interpreter_launcher = os.path.join(os.path.dirname(sys.executable), "rapid-mlx")
+    if os.access(
+        interpreter_launcher, os.X_OK
+    ) and _launcher_belongs_to_running_install(interpreter_launcher):
+        return os.path.abspath(interpreter_launcher)
+    detail = (
+        f" {path_launcher} on PATH belongs to a different Rapid-MLX install."
+        if path_launcher is not None
+        else ""
+    )
+    raise QuickSilverError(
+        "The running install's rapid-mlx launcher could not be found."
+        f"{detail} Run --install-service from the install you want the service "
+        "to use, or put it first on PATH."
+    )
+
+
 def install_service(
     args: argparse.Namespace, catalog_id: str, serve_alias: str
 ) -> None:
@@ -1644,16 +1671,8 @@ def install_service(
     log_dir = _state_dir()
     home = Path.home()
 
-    # Keep the package manager's stable entry point (including its symlink),
-    # rather than baking a versioned Cellar/uv interpreter into launchd.
-    launcher = shutil.which("rapid-mlx")
-    if launcher is None:
-        raise QuickSilverError(
-            "--install-service needs the installed rapid-mlx command on PATH. "
-            "Install Rapid-MLX with a persistent package manager, then retry."
-        )
     argv = [
-        os.path.abspath(launcher),
+        _service_launcher(),
         "share",
         serve_alias,
         "--quicksilver",
@@ -1787,7 +1806,12 @@ def install_service(
         raise QuickSilverError(
             f"launchctl bootstrap failed: {_redact(str(exc))}{recovery}"
         ) from None
-    print(f"Started {label}. Stop with: launchctl bootout {domain}/{label}")
+    print(
+        f"Loaded {label}; the service is starting in the background. "
+        f"Logs: {plist['StandardOutPath']} (stdout), "
+        f"{plist['StandardErrorPath']} (stderr). "
+        f"Stop with: launchctl bootout {domain}/{label}"
+    )
 
 
 # ───────────────────────── supervisor (§5.3, §5.5) ─────────────────────────
