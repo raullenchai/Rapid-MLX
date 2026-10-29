@@ -1030,6 +1030,8 @@ def pytest_pycollect_makemodule(module_path, parent):
             "test_chat_cov_b",
             "test_chat_cov_c",
             "test_chat_cov_d",
+            "test_chat_image_attachments",
+            "test_chat_image_turns",
         )
     ):
         return _UnsupportedHarnessModule.from_parent(parent, path=module_path)
