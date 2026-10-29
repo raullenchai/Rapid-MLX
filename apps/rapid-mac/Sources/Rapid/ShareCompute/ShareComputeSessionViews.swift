@@ -146,101 +146,27 @@ struct ShareComputePreparingView: View {
     let onStop: () -> Void
 
     var body: some View {
-        ShareComputeWorkbenchFrame {
-            VStack(spacing: 0) {
-                ShareComputeRewardSessionStrip(active: .preparingCompute, isNarrow: isNarrow)
-                if isNarrow {
-                    VStack(spacing: 0) {
-                        band
-                        rewardPanel
-                    }
-                } else {
-                    HStack(spacing: 0) {
-                        band
-                        rewardPanel.frame(width: 318)
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    private var band: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
+        ShareSessionCard {
+            HStack(alignment: .center) {
+                ProgressView().controlSize(.small)
                 VStack(alignment: .leading, spacing: 4) {
-                    ShareComputeEyebrow(text: String(localized: "Preparing this Mac"), size: 11)
-                    Text("Starting the shared model")
-                        .font(.rapid(size: isNarrow ? 21 : 25, weight: .bold))
-                        .foregroundStyle(RapidTheme.bandInk)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(modelTitle)
-                        .font(.rapid(size: 12))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
+                    Text("Connecting…").font(.rapid(size: 15, weight: .semibold))
+                    Text(modelTitle).font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 0)
-                ShareComputeStopButton(isEnabled: canStop, action: onStop)
+                Spacer()
+                sessionStopButton(enabled: canStop, action: onStop)
             }
-
-            ShareComputeStepRail(rows: rows, isNarrow: isNarrow)
-
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 11))
-                    .foregroundStyle(RapidTheme.bandReady)
-                    .accessibilityHidden(true)
-                Text("Stop takes this Mac offline and unloads the sharing model. Your local model stays unloaded.")
-                    .font(.rapid(size: 12))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            ForEach(rows) { row in
+                HStack {
+                    Text(row.step.title)
+                    Spacer()
+                    Text(row.status.title).foregroundStyle(.secondary)
+                }.font(.rapid(size: 12))
             }
-            .padding(.top, 14)
-            .overlay(alignment: .top) {
-                Rectangle().fill(RapidTheme.bandHairline).frame(height: 1)
-            }
-            .accessibilityElement(children: .combine)
+            sessionFootnote()
         }
-        .padding(.horizontal, isNarrow ? 20 : 30)
-        .padding(.vertical, 27)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.surfaceBand)
     }
 
-    private var rewardPanel: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
-            VStack(alignment: .leading, spacing: 8) {
-                ShareComputeEyebrow(
-                    text: String(localized: "Reward status"),
-                    tone: RapidTheme.onBrandPrimarySecondary,
-                    size: 11
-                )
-                Text(tracking.headline)
-                    .font(.rapid(size: isNarrow ? 22 : 27, weight: .bold))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: RapidTheme.Space.lg)
-            VStack(alignment: .leading, spacing: 8) {
-                if tracking.showsNoRewardCountedYet {
-                    Text("No reward is counted yet")
-                        .font(.rapid(size: 12, weight: .bold))
-                        .foregroundStyle(RapidTheme.onBrandPrimary)
-                }
-                Text(tracking.detail)
-                    .font(.rapid(size: 11))
-                    .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, 14)
-            .overlay(alignment: .top) {
-                Rectangle().fill(RapidTheme.brandPrimaryHairline).frame(height: 1)
-            }
-        }
-        .padding(27)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.brandPrimary)
-        .accessibilityElement(children: .contain)
-    }
 }
 
 /// The five numbered circles, their connector line, and their labels.
@@ -394,233 +320,30 @@ struct ShareComputeOnlineView: View {
     let onStop: () -> Void
 
     var body: some View {
-        ShareComputeWorkbenchFrame {
-            VStack(spacing: 0) {
-                ShareComputeRewardSessionStrip(
-                    active: .providerTracks,
-                    completedThrough: .preparingCompute,
-                    isNarrow: isNarrow
-                )
-                if isNarrow {
-                    VStack(spacing: 0) {
-                        band
-                        rewardPanel
-                    }
-                } else {
-                    HStack(spacing: 0) {
-                        band
-                        rewardPanel.frame(width: 438)
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
+        ShareSessionCard {
+            HStack(alignment: .center) {
+                Circle().fill(isReconnecting ? Color.orange : Color.green).frame(width: 9, height: 9).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isReconnecting ? "Reconnecting…" : "Sharing").font(.rapid(size: 15, weight: .semibold))
+                    Text(isReconnecting ? "Reconnecting to the relay." : "Your Mac is online and serving requests.")
+                        .font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
+                sessionStopButton(enabled: canStop, action: onStop)
             }
-        }
-    }
-
-    private var band: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
-                VStack(alignment: .leading, spacing: 5) {
-                    ShareComputeEyebrow(
-                        text: isReconnecting ? String(localized: "Reconnecting") : String(localized: "Compute connected"),
-                        tone: isReconnecting ? RapidTheme.brandPrimary : RapidTheme.bandReady,
-                        size: 11
-                    )
-                    Text(
-                        isReconnecting
-                            ? String(localized: "Reconnecting to the pool")
-                            : String(localized: "Your Mac is contributing")
-                    )
-                    .font(.rapid(size: isNarrow ? 21 : 25, weight: .bold))
-                    .foregroundStyle(RapidTheme.bandInk)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 12) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    sessionMetric("Time shared", poolJoinedAt.map { ShareComputeDuration.clock(context.date.timeIntervalSince($0)) } ?? "—")
                 }
-                Spacer(minLength: 0)
-                ShareComputeStopButton(isEnabled: canStop, action: onStop)
+                sessionMetric("Requests now", inflight.map(String.init) ?? "—")
+                sessionMetric("Provider status", isReconnecting ? "Reconnecting" : "Connected")
             }
-
-            metrics
-
-            // The lock statement sits with the model name because that is the
-            // question it answers: the user is looking at the model and
-            // wondering whether they can change it.
-            // Quiet mono, with the node id — and only the node id — carrying
-            // the link tone. Paper draws this whole line in a neutral grey;
-            // colouring the sentence steel spent the band's one identity
-            // colour on a caption and left the id with nothing to stand out
-            // against, which is the opposite of what the tone is for.
-            Text(lockLine)
-                .font(.rapid(size: 11, design: .monospaced))
-                .foregroundStyle(RapidTheme.bandInkTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-                .accessibilityLabel(
-                    String(
-                        format: String(localized: "Sharing %1$@. Locked while sharing — stop to change."),
-                        modelTitle
-                    )
-                )
-        }
-        .padding(.horizontal, isNarrow ? 20 : 30)
-        .padding(.vertical, 28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.surfaceBand)
-    }
-
-    private var lockLine: AttributedString {
-        var line = AttributedString(
-            [
-                modelTitle,
-                String(localized: "Locked while sharing — Stop to change"),
-                worker,
-            ]
-            .joined(separator: "  ·  ")
-        )
-        guard let nodeID, !nodeID.isEmpty else { return line }
-        line.append(AttributedString("  ·  "))
-        var identifier = AttributedString(nodeID)
-        identifier.foregroundColor = RapidTheme.bandLink
-        line.append(identifier)
-        return line
-    }
-
-    private var metrics: some View {
-        AdaptiveMetricRow(isNarrow: isNarrow) {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                metric(
-                    label: String(localized: "Time shared"),
-                    value: poolJoinedAt.map {
-                        ShareComputeDuration.clock(context.date.timeIntervalSince($0))
-                    } ?? "—",
-                    tint: RapidTheme.bandInk,
-                    isMonospaced: true
-                )
-            }
-            metric(
-                label: String(localized: "Requests now"),
-                // `nil` renders an em dash, never a zero: "0 requests" is a
-                // measurement, and an absent heartbeat is not one.
-                value: inflight.map(String.init) ?? "—",
-                tint: RapidTheme.brandPrimary,
-                isMonospaced: true
-            )
-            metric(
-                label: String(localized: "Provider"),
-                value: isReconnecting
-                    ? String(localized: "Reconnecting")
-                    : String(localized: "Connected"),
-                tint: isReconnecting ? RapidTheme.brandPrimary : RapidTheme.bandReady,
-                isMonospaced: false
-            )
-        }
-        .padding(.vertical, 18)
-        .overlay(alignment: .top) {
-            Rectangle().fill(RapidTheme.bandHairline).frame(height: 1)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(RapidTheme.bandHairline).frame(height: 1)
+            Text(([modelTitle, worker] + (nodeID.map { [$0] } ?? [])).joined(separator: " · "))
+                .font(.rapid(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            sessionFootnote()
         }
     }
 
-    private func metric(
-        label: String,
-        value: String,
-        tint: Color,
-        isMonospaced: Bool
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label.uppercased())
-                .font(.rapid(size: 11))
-                .tracking(0.5)
-                .foregroundStyle(RapidTheme.bandInkSecondary)
-            Text(value)
-                .font(
-                    isMonospaced
-                        ? .rapid(size: 28, weight: .bold, design: .monospaced)
-                        : .rapid(size: 15, weight: .bold)
-                )
-                .monospacedDigit()
-                .foregroundStyle(tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
-    }
-
-    private var rewardPanel: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 9) {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(RapidTheme.onBrandPrimary)
-                        .accessibilityHidden(true)
-                    ShareComputeEyebrow(
-                        text: String(localized: "QuickSilver tracking"),
-                        tone: RapidTheme.onBrandPrimarySecondary,
-                        size: 11
-                    )
-                }
-                Text("Reward activity is managed in QuickSilver.")
-                    .font(.rapid(size: isNarrow ? 22 : 29, weight: .bold))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: RapidTheme.Space.md)
-            payoutCallout
-            Text(
-                String(
-                    format: String(localized: "Sharing %1$@ · %2$@"),
-                    modelTitle,
-                    payoutAccountConnected
-                        ? String(localized: "Provider account connected")
-                        : String(localized: "Provider account not reported")
-                )
-            )
-            .font(.rapid(size: 11))
-            .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.brandPrimary)
-    }
-
-    /// Only claims a connected payout account when the provider actually
-    /// published one. Without that field the callout says so rather than
-    /// implying money is already routed somewhere.
-    private var payoutCallout: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: payoutAccountConnected ? "dollarsign.circle.fill" : "questionmark.circle")
-                .font(.system(size: 20))
-                .foregroundStyle(RapidTheme.onBrandPrimary)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(
-                    payoutAccountConnected
-                        ? String(localized: "Payout account connected")
-                        : String(localized: "Payout account not reported")
-                )
-                .font(.rapid(size: 13, weight: .bold))
-                .foregroundStyle(RapidTheme.onBrandPrimary)
-                Text("Final usage and rewards appear in QuickSilver.")
-                    .font(.rapid(size: 12))
-                    .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(
-            RapidTheme.brandPrimaryRaised,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(RapidTheme.brandPrimaryHairline, lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-    }
 }
 
 /// Three metrics side by side, wrapping to a column at narrow width so none of
@@ -652,179 +375,23 @@ struct ShareComputeSessionCompleteView: View {
     let onShareAgain: () -> Void
 
     var body: some View {
-        ShareComputeWorkbenchFrame {
-            VStack(spacing: 0) {
-                ShareComputeRewardSessionStrip(
-                    active: .rewardsInQuickSilver,
-                    completedThrough: .providerTracks,
-                    isNarrow: isNarrow
-                )
-                if isNarrow {
-                    VStack(spacing: 0) {
-                        receiptPanel
-                        rewardPanel
-                    }
-                } else {
-                    HStack(spacing: 0) {
-                        receiptPanel
-                        rewardPanel.frame(width: 438)
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-                }
+        ShareSessionCard {
+            HStack {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("Sharing stopped").font(.rapid(size: 15, weight: .semibold))
+                Spacer()
+                Button("Share again", action: onShareAgain).buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("ShareCompute.ShareAgain")
             }
-        }
-    }
-
-    private var receiptPanel: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: RapidTheme.Space.md) {
-                VStack(alignment: .leading, spacing: 4) {
-                    ShareComputeEyebrow(
-                        text: String(localized: "Completion receipt"),
-                        // This eyebrow sits on the amber panel, so it needs
-                        // the amber-panel green, not the app-surface one.
-                        tone: RapidTheme.onBrandPrimaryReady,
-                        size: 11
-                    )
-                    Text("Your contribution session is complete")
-                        .font(.rapid(size: isNarrow ? 20 : 24, weight: .bold))
-                        .foregroundStyle(RapidTheme.onBrandPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Text(Self.timestamp(receipt.endedAt))
-                    .font(.rapid(size: 11, design: .monospaced))
-                    .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
+            HStack(alignment: .top, spacing: 12) {
+                sessionMetric("Time shared", ShareComputeDuration.clock(receipt.duration))
+                sessionMetric("Worker", receipt.worker)
+                sessionMetric("Model after sharing", receipt.restoreStatus.title)
             }
-
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text("Complete")
-                    .font(.rapid(size: isNarrow ? 40 : 60, weight: .heavy))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .lineLimit(1)
-                Text("reward activity continues in QuickSilver")
-                    .font(.rapid(size: 13))
-                    .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            facts
+            Text(([receipt.modelTitle, receipt.worker] + (receipt.nodeID.map { [$0] } ?? [])).joined(separator: " · "))
+                .font(.rapid(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            sessionFootnote(action: onViewReward)
         }
-        .padding(.horizontal, isNarrow ? 20 : 30)
-        .padding(.vertical, 28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.brandPrimary)
-    }
-
-    private var facts: some View {
-        AdaptiveMetricRow(isNarrow: isNarrow) {
-            fact(
-                String(localized: "Time shared"),
-                ShareComputeDuration.clock(receipt.duration),
-                isMonospaced: true
-            )
-            fact(String(localized: "Worker"), receipt.worker, isMonospaced: false)
-            fact(
-                // Named explicitly rather than "Previous model": the user is
-                // being told what Rapid attempted for them.
-                String(localized: "Model after sharing"),
-                receipt.restoreStatus.title,
-                isMonospaced: false
-            )
-        }
-        .padding(.top, 16)
-        .overlay(alignment: .top) {
-            Rectangle().fill(RapidTheme.brandPrimaryHairline).frame(height: 1)
-        }
-    }
-
-    private func fact(_ label: String, _ value: String, isMonospaced: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label.uppercased())
-                .font(.rapid(size: 11))
-                .tracking(0.5)
-                .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-            Text(value)
-                .font(
-                    isMonospaced
-                        ? .rapid(size: 16, weight: .bold, design: .monospaced)
-                        : .rapid(size: 14, weight: .bold)
-                )
-                .foregroundStyle(RapidTheme.onBrandPrimary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
-    }
-
-    private var rewardPanel: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 9) {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(RapidTheme.textPrimary)
-                        .accessibilityHidden(true)
-                    ShareComputeEyebrow(
-                        text: String(localized: "Reward activity"),
-                        tone: RapidTheme.textSecondary,
-                        size: 11
-                    )
-                }
-                Text("QuickSilver payout account")
-                    .font(.rapid(size: isNarrow ? 20 : 25, weight: .bold))
-                    .foregroundStyle(RapidTheme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(receipt.rewardStatus.detailTitle)
-                    .font(.rapid(size: 13, weight: .semibold))
-                    .foregroundStyle(RapidTheme.textPrimary)
-                Text("Payment timing and destination remain managed by the provider.")
-                    .font(.rapid(size: 13))
-                    .foregroundStyle(RapidTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: RapidTheme.Space.lg)
-            VStack(spacing: 10) {
-                Button(action: onViewReward) {
-                    HStack(spacing: 6) {
-                        Text("View reward in QuickSilver")
-                            .font(.rapid(size: 13, weight: .bold))
-                            .foregroundStyle(RapidTheme.surfaceRaised)
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(RapidTheme.brandPrimary)
-                            .accessibilityHidden(true)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 40)
-                    .background(
-                        RapidTheme.textPrimary,
-                        in: RoundedRectangle(cornerRadius: 6)
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("ShareCompute.ViewReward")
-
-                Button(action: onShareAgain) {
-                    Text("Share again")
-                        .font(.rapid(size: 13, weight: .semibold))
-                        .foregroundStyle(RapidTheme.linkLabel)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 34)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("ShareCompute.ShareAgain")
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.surfaceRaised)
     }
 
     static func timestamp(_ date: Date) -> String {
@@ -836,4 +403,38 @@ struct ShareComputeSessionCompleteView: View {
             ? String(format: String(localized: "TODAY · %1$@"), time)
             : time
     }
+}
+
+private struct ShareSessionCard<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) { content }
+            .padding(RapidTheme.Space.lg).shareGroupedCard()
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+@MainActor private func sessionStopButton(enabled: Bool, action: @escaping () -> Void) -> some View {
+    Button("Stop sharing", action: action).buttonStyle(.bordered).tint(.red).disabled(!enabled)
+        .accessibilityLabel(String(localized: "Stop sharing this Mac"))
+        .accessibilityIdentifier("ShareCompute.Stop")
+}
+@MainActor private func sessionMetric(_ label: String, _ value: String) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+        Text(label).font(.rapid(size: 12)).foregroundStyle(.secondary)
+        Text(value).font(.rapid(size: 20, weight: .medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+    }.frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+}
+@MainActor private func sessionFootnote(action: (() -> Void)? = nil) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Image(systemName: "info.circle").accessibilityHidden(true)
+        Text("Usage and credits appear in the Credits tab and in QuickSilver.")
+        if let action {
+            Button("Open QuickSilver ↗", action: action).buttonStyle(.plain)
+                .accessibilityIdentifier("ShareCompute.ViewReward")
+        } else {
+            Link("Open QuickSilver ↗", destination: ShareComputeDestination.rewards)
+        }
+    }.font(.rapid(size: 12)).foregroundStyle(.secondary)
 }

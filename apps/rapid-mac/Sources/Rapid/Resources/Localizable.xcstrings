@@ -12370,36 +12370,6 @@
         }
       }
     },
-    "Live Pool" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "现场台球"
-          }
-        }
-      }
-    },
-    "Live Pool shows every supported model, what is online, and what each one would download." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实时算力池会显示所有支持的模型、在线状态，以及每个模型需要下载的内容。"
-          }
-        }
-      }
-    },
-    "Live pool capacity" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "实时算力池容量"
-          }
-        }
-      }
-    },
     "Live relay availability · no demand queue" : {
       "localizations" : {
         "zh-Hans" : {

@@ -69,7 +69,6 @@ struct ShareComputeRedesignTests {
         #expect(shareable[0].onDiskSize == "16.8 GB")
         // A ready model never advertises a download size — there is nothing
         // to download.
-        #expect(shareable[0].estimatedDownloadBytes == nil)
     }
 
     @Test("Alias matching ignores case so a catalog spelling change can't hide a model")
@@ -77,168 +76,6 @@ struct ShareComputeRedesignTests {
         let catalog = [Self.entry(alias: Self.pool[0].alias.uppercased(), cached: true, size: "16.8 GB")]
         let all = ShareComputeLocalModel.make(catalog: catalog)
         #expect(ShareComputeLocalModel.readyForSharing(all).count == 1)
-    }
-
-    @Test("A model that is not on this Mac reports a download size, never an on-disk size")
-    func downloadRequiredState() throws {
-        let catalog = [Self.entry(alias: Self.pool[1].alias, cached: false)]
-        let local = ShareComputeLocalModel.make(catalog: catalog)
-            .first { $0.id == Self.pool[1].catalogID }
-        let model = try #require(local)
-        #expect(!model.isReady)
-        #expect(model.onDiskSize == nil)
-        // ModelSizing derives a figure from the alias; the exact number is its
-        // business, but a 35B model must produce SOMETHING to warn the user with.
-        #expect((model.estimatedDownloadBytes ?? 0) > 0)
-    }
-
-    // MARK: - Storage eligibility
-
-    @Test("Storage eligibility is measured, and an unreadable volume makes no claim")
-    func storageEligibility() {
-        let twentyGB = Int64(20) * Int64(1 << 30)
-
-        let plenty = ShareComputeStorageEligibility.evaluate(
-            downloadBytes: twentyGB,
-            freeBytes: Int64(400) * Int64(1 << 30)
-        )
-        #expect(plenty.isSufficient)
-        #expect(plenty.label?.contains("Enough space") == true)
-
-        let tight = ShareComputeStorageEligibility.evaluate(
-            downloadBytes: twentyGB,
-            freeBytes: Int64(2) * Int64(1 << 30)
-        )
-        #expect(!tight.isSufficient)
-        #expect(tight.label?.contains("Needs") == true)
-
-        // Fail-open: a probe that returned nothing must not render as "not
-        // enough space", which would block a user who has plenty.
-        let unknown = ShareComputeStorageEligibility.evaluate(
-            downloadBytes: twentyGB,
-            freeBytes: nil
-        )
-        #expect(unknown == .unknown)
-        #expect(unknown.label == nil)
-        #expect(!unknown.isSufficient)
-    }
-
-    // MARK: - Live Pool rows
-
-    @Test("Row order is the catalog's own and never a ranking")
-    func poolRowOrderIsStable() {
-        let catalog = [
-            Self.entry(alias: Self.pool[0].alias, cached: false),
-            Self.entry(alias: Self.pool[1].alias, cached: true, size: "20.4 GB"),
-            Self.entry(alias: Self.pool[2].alias, cached: true, size: "18.9 GB"),
-        ]
-        let rows = ShareComputePoolRow.make(
-            locals: ShareComputeLocalModel.make(catalog: catalog),
-            summary: nil,
-            freeBytes: Int64(400) * Int64(1 << 30)
-        )
-        // Every supported model, in catalog order — readiness does NOT reorder
-        // them. The summary's own `models` order is not a ranking either, and
-        // resorting on every 30s refresh would make the list jump.
-        #expect(rows.map(\.id) == ShareComputeModel.supported.map(\.catalogID))
-    }
-
-    @Test("A model the summary never mentions shows dashes, not zeros")
-    func unreportedModelIsNotZero() {
-        let catalog = ShareComputeModel.supported.map {
-            Self.entry(alias: $0.alias, cached: true, size: "1 GB")
-        }
-        let summary = ShareComputePoolSummary(
-            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            totals: .init(connectedNodes: 4, readyNodes: 3, availableSlots: 2),
-            models: [
-                .init(
-                    modelID: "qwen3.8-27b",
-                    isEnabled: true,
-                    connectedNodes: 4,
-                    readyNodes: 3,
-                    busyNodes: 1,
-                    availableSlots: 2
-                )
-            ]
-        )
-        let rows = ShareComputePoolRow.make(
-            locals: ShareComputeLocalModel.make(catalog: catalog),
-            summary: summary,
-            freeBytes: nil
-        )
-        // A short summary must not shorten the UI.
-        #expect(rows.count == ShareComputeModel.supported.count)
-
-        let reported = rows.first { $0.id == "qwen3.8-27b" }!
-        #expect(reported.availability.stats?.connectedNodes == 4)
-        #expect(reported.availability.acceptsConnections)
-
-        for row in rows where row.id != "qwen3.8-27b" {
-            // UNKNOWN, not zero: the pool said nothing about these.
-            #expect(row.availability == .unreported)
-            #expect(row.availability.stats == nil)
-            #expect(!row.availability.acceptsConnections)
-        }
-    }
-
-    @Test("enabled:false is a distinct disabled state that refuses connection")
-    func disabledModelCannotBeConnected() {
-        let catalog = [Self.entry(alias: Self.pool[0].alias, cached: true, size: "16.8 GB")]
-        let stats = ShareComputePoolModelStats(
-            modelID: Self.pool[0].catalogID,
-            isEnabled: false,
-            connectedNodes: 0,
-            readyNodes: 0,
-            busyNodes: 0,
-            availableSlots: 0
-        )
-        let rows = ShareComputePoolRow.make(
-            locals: ShareComputeLocalModel.make(catalog: catalog),
-            summary: ShareComputePoolSummary(
-                updatedAt: Date(),
-                totals: .init(connectedNodes: 0, readyNodes: 0, availableSlots: 0),
-                models: [stats]
-            ),
-            freeBytes: nil
-        )
-        let row = rows.first { $0.id == Self.pool[0].catalogID }!
-        #expect(row.isDisabledUpstream)
-        #expect(row.availability == .disabled(stats))
-        // Downloaded locally, but the pool is not routing to it — so no.
-        #expect(row.local.isReady)
-        #expect(!row.canConnect)
-        // Its counters are still real and still rendered.
-        #expect(row.availability.stats?.connectedNodes == 0)
-    }
-
-    @Test("A model_id Rapid has never heard of is ignored, not rendered")
-    func unknownModelIDIsSafe() {
-        let catalog = [Self.entry(alias: Self.pool[0].alias, cached: true, size: "16.8 GB")]
-        let summary = ShareComputePoolSummary(
-            updatedAt: Date(),
-            totals: .init(connectedNodes: 9, readyNodes: 9, availableSlots: 9),
-            models: [
-                .init(
-                    modelID: "some-future-model",
-                    isEnabled: true,
-                    connectedNodes: 9,
-                    readyNodes: 9,
-                    busyNodes: 0,
-                    availableSlots: 9
-                )
-            ]
-        )
-        let rows = ShareComputePoolRow.make(
-            locals: ShareComputeLocalModel.make(catalog: catalog),
-            summary: summary,
-            freeBytes: nil
-        )
-        // No row for a model this Mac cannot serve…
-        #expect(!rows.contains { $0.id == "some-future-model" })
-        // …but the summary still carries it, and the totals still count it.
-        #expect(summary.stats(for: "some-future-model")?.connectedNodes == 9)
-        #expect(summary.totals.connectedNodes == 9)
     }
 
     // MARK: - Screen projection
@@ -500,17 +337,16 @@ struct ShareComputeRedesignTests {
 
     // MARK: - Tabs
 
-    @Test("The value path has shorter wording for the narrow layout")
-    func narrowValuePathCopy() {
-        for step in ShareComputeValueStep.path {
-            // Narrow copy exists, is genuinely shorter, and never empties out.
-            #expect(!step.narrowTitle.isEmpty)
-            #expect(!step.narrowDetail.isEmpty)
-            #expect(step.narrowTitle.count <= step.title.count)
-            #expect(step.narrowDetail.count < step.detail.count)
-            #expect(step.title(isNarrow: true) == step.narrowTitle)
-            #expect(step.title(isNarrow: false) == step.title)
-            #expect(step.detail(isNarrow: true) == step.narrowDetail)
+    @Test("Setup advances to the first unfinished step and gates start")
+    func setupSteps() {
+        #expect(ShareComputeSetupStep.current(keyDone: false, modelDone: false) == .key)
+        #expect(ShareComputeSetupStep.current(keyDone: false, modelDone: true) == .key)
+        #expect(ShareComputeSetupStep.current(keyDone: true, modelDone: false) == .model)
+        #expect(ShareComputeSetupStep.current(keyDone: true, modelDone: true) == .start)
+        for key in [false, true] {
+            for model in [false, true] {
+                #expect(ShareComputeSetupStep.canStart(keyDone: key, modelDone: model) == (key && model))
+            }
         }
     }
 
@@ -548,25 +384,6 @@ struct ShareComputeRedesignTests {
             "RAPID_GUI_GOLDEN_MODE": "1",
             "RAPID_GUI_SHARE_COMPUTE_TAB": "nope",
         ]) == nil)
-    }
-
-    @Test("Narrow step copy is Paper's, not an ad-hoc abbreviation")
-    func narrowValuePathMatchesPaper() {
-        // Transcribed from the API-Aligned narrow artboards. These are a spec,
-        // and an earlier pass had quietly shortened them further to buy room
-        // the collapsed rail now provides. The wording also has to stay free of
-        // "accepted work" / "rewards": the pool forwards live requests and pays
-        // API credits, and neither phrase describes that.
-        let expected = [
-            ("Connect securely", "Register and open the relay"),
-            ("Serve live requests", "Answers stream back"),
-            ("Receive credits", "From metered tokens"),
-        ]
-        #expect(ShareComputeValueStep.path.count == expected.count)
-        for (step, want) in zip(ShareComputeValueStep.path, expected) {
-            #expect(step.narrowTitle == want.0)
-            #expect(step.narrowDetail == want.1)
-        }
     }
 
     // MARK: - Review harness
@@ -677,333 +494,13 @@ struct ShareComputeRedesignTests {
 
     @Test("Each tab states the question it answers")
     func tabsHaveDistinctJobs() {
-        #expect(ShareComputeTab.allCases.count == 3)
+        #expect(ShareComputeTab.allCases.count == 2)
         let hints = ShareComputeTab.allCases.map(\.accessibilityHint)
-        #expect(Set(hints).count == 3)
+        #expect(Set(hints).count == 2)
         #expect(ShareComputeTab.share.title == "Share")
         #expect(ShareComputeTab.credits.title == "Credits")
-        #expect(ShareComputeTab.livePool.title == "Live Pool")
-        // Paper's reading order: what to do, what it earns, what is online.
-        #expect(ShareComputeTab.allCases.map(\.rawValue) == ["share", "credits", "livePool"])
-    }
-}
-
-// MARK: - Pool summary data layer
-
-/// `GET /v1/pool/summary` — decoding, HTTP handling, and the five page states.
-///
-/// Nothing here touches the network: every test drives the client through its
-/// injected transport. A test that reached production would be flaky, would
-/// spend the endpoint's per-IP rate limit, and would assert on numbers that
-/// change under it.
-@Suite("Share Compute · Pool summary")
-struct ShareComputePoolSummaryTests {
-
-    /// The documented example payload, verbatim, including the all-zero pool
-    /// the production service currently reports.
-    static let exampleJSON = """
-    {
-      "updated_at": "2026-09-23T15:24:18Z",
-      "totals": {
-        "connected_nodes": 0,
-        "ready_nodes": 0,
-        "available_slots": 0
-      },
-      "models": [
-        {
-          "model_id": "glm-5.3-flash",
-          "enabled": true,
-          "connected_nodes": 0,
-          "ready_nodes": 0,
-          "busy_nodes": 0,
-          "available_slots": 0
-        }
-      ]
-    }
-    """
-
-    static let populatedJSON = """
-    {
-      "updated_at": "2026-09-23T15:24:18Z",
-      "totals": { "connected_nodes": 32, "ready_nodes": 25, "available_slots": 15 },
-      "models": [
-        { "model_id": "qwen3.8-27b", "enabled": true,  "connected_nodes": 18, "ready_nodes": 14, "busy_nodes": 4, "available_slots": 9 },
-        { "model_id": "qwen3.6-35b", "enabled": true,  "connected_nodes": 9,  "ready_nodes": 7,  "busy_nodes": 2, "available_slots": 4 },
-        { "model_id": "nemotron-3.5-lightning", "enabled": true, "connected_nodes": 5, "ready_nodes": 4, "busy_nodes": 1, "available_slots": 2 },
-        { "model_id": "glm-5.3-flash", "enabled": false, "connected_nodes": 0, "ready_nodes": 0, "busy_nodes": 0, "available_slots": 0 }
-      ]
-    }
-    """
-
-    private static func client(
-        _ body: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
-    ) -> ShareComputePoolSummaryClient {
-        ShareComputePoolSummaryClient(transport: body)
-    }
-
-    private static func ok(_ json: String) -> @Sendable (URLRequest) async throws -> (Data, URLResponse) {
-        { request in
-            (
-                Data(json.utf8),
-                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            )
-        }
-    }
-
-    // MARK: Decoding
-
-    @Test("The documented example payload decodes")
-    func decodesExample() async throws {
-        let summary = try await Self.client(Self.ok(Self.exampleJSON)).summary()
-        // `updated_at` is the SERVER's timestamp, parsed as ISO-8601 — not the
-        // moment Rapid fetched it.
-        #expect(
-            summary.updatedAt
-                == ShareComputePoolSummaryClient.parseISO8601("2026-09-23T15:24:18Z")
-        )
-        #expect(summary.models.count == 1)
-        #expect(summary.models[0].modelID == "glm-5.3-flash")
-        #expect(summary.models[0].isEnabled)
-    }
-
-    @Test("Fractional-second timestamps parse too")
-    func decodesFractionalSeconds() {
-        // The service emits these under load; rejecting them would turn a good
-        // response into a malformedBody exactly when the pool is busiest.
-        #expect(ShareComputePoolSummaryClient.parseISO8601("2026-09-23T15:24:18.317Z") != nil)
-        #expect(ShareComputePoolSummaryClient.parseISO8601("not a date") == nil)
-    }
-
-    @Test("A genuinely all-zero pool is SUCCESS, not an error")
-    func allZeroIsSuccess() async throws {
-        let summary = try await Self.client(Self.ok(Self.exampleJSON)).summary()
-        let state = ShareComputePoolSummaryState.loaded(summary)
-
-        #expect(summary.isPoolEmpty)
-        #expect(summary.totals.connectedNodes == 0)
-        // The state carries data, shows no error, and offers no stale note.
-        #expect(state.summary != nil)
-        #expect(state.blockingError == nil)
-        #expect(state.staleNote == nil)
-    }
-
-    @Test("All four known model ids decode and keep their own counters")
-    func decodesAllFourModels() async throws {
-        let summary = try await Self.client(Self.ok(Self.populatedJSON)).summary()
-        #expect(
-            summary.models.map(\.modelID) == [
-                "qwen3.8-27b",
-                "qwen3.6-35b",
-                "nemotron-3.5-lightning",
-                "glm-5.3-flash",
-            ]
-        )
-        #expect(summary.stats(for: "qwen3.8-27b")?.busyNodes == 4)
-        #expect(summary.stats(for: "nemotron-3.5-lightning")?.availableSlots == 2)
-        // enabled:false is preserved, not filtered away.
-        #expect(summary.stats(for: "glm-5.3-flash")?.isEnabled == false)
-        #expect(summary.enabledModelIDs == ["qwen3.8-27b", "qwen3.6-35b", "nemotron-3.5-lightning"])
-    }
-
-    @Test("Every published model id has a Rapid catalog entry")
-    func knownModelIDsAreAllSupported() async throws {
-        let summary = try await Self.client(Self.ok(Self.populatedJSON)).summary()
-        let supported = Set(ShareComputeModel.supported.map(\.catalogID))
-        for stats in summary.models {
-            #expect(supported.contains(stats.modelID), "unsupported id: \(stats.modelID)")
-        }
-        // …and GLM specifically, with its local alias and title.
-        let glm = ShareComputeModel.supported.first { $0.catalogID == "glm-5.3-flash" }
-        #expect(glm?.alias == "glm5.3-flash-4bit")
-        #expect(glm?.title == "GLM 5.3 Flash · 4-bit")
-        #expect(glm?.shortTitle == "GLM 5.3 Flash")
-    }
-
-    @Test("Totals are used as published, never re-derived from the model rows")
-    func totalsAreNotRecomputed() async throws {
-        // The server counts 32 connected while the models array enumerates
-        // 18+9+5+0 = 32 — but also a deliberately mismatched ready count, to
-        // prove the UI reads `totals` rather than summing.
-        let json = """
-        {
-          "updated_at": "2026-09-23T15:24:18Z",
-          "totals": { "connected_nodes": 40, "ready_nodes": 31, "available_slots": 17 },
-          "models": [
-            { "model_id": "qwen3.8-27b", "enabled": true, "connected_nodes": 1, "ready_nodes": 1, "busy_nodes": 0, "available_slots": 1 }
-          ]
-        }
-        """
-        let summary = try await Self.client(Self.ok(json)).summary()
-        #expect(summary.totals.connectedNodes == 40)
-        #expect(summary.totals.readyNodes == 31)
-        #expect(summary.totals.availableSlots == 17)
-        // A summed re-derivation would have produced 1/1/1.
-        let summed = summary.models.reduce(0) { $0 + $1.connectedNodes }
-        #expect(summed == 1)
-        #expect(summary.totals.connectedNodes != summed)
-    }
-
-    // MARK: HTTP + transport
-
-    @Test("A 503 with no previous data is the only case that shows an error")
-    func serviceUnavailableWithoutPreviousData() async {
-        let client = Self.client { request in
-            (
-                Data(),
-                HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
-            )
-        }
-        do {
-            _ = try await client.summary()
-            Issue.record("503 must not decode as success")
-        } catch let error as ShareComputePoolSummaryError {
-            #expect(error == .httpStatus(503))
-            let state = ShareComputePoolSummaryState.loading.failing(error)
-            #expect(state == .unavailable(.httpStatus(503)))
-            #expect(state.summary == nil)
-            #expect(state.blockingError?.displayMessage == "Pool data unavailable")
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test("A 503 with previous data keeps every previous value and timestamp")
-    func serviceUnavailableKeepsPreviousData() async throws {
-        let previous = try await Self.client(Self.ok(Self.populatedJSON)).summary()
-        let state = ShareComputePoolSummaryState
-            .loaded(previous)
-            .beginningLoad()
-            .failing(.httpStatus(503))
-
-        #expect(state == .refreshFailed(previous, .httpStatus(503)))
-        // The numbers on screen are the LAST GOOD ones — not zeros, and not an
-        // error page.
-        #expect(state.summary?.totals.connectedNodes == 32)
-        #expect(state.summary?.updatedAt == previous.updatedAt)
-        #expect(state.blockingError == nil)
-        #expect(state.staleNote != nil)
-    }
-
-    @Test("A refresh in flight keeps the previous data on screen")
-    func refreshingPreservesPreviousData() async throws {
-        let previous = try await Self.client(Self.ok(Self.populatedJSON)).summary()
-        let refreshing = ShareComputePoolSummaryState.loaded(previous).beginningLoad()
-        #expect(refreshing == .refreshing(previous))
-        #expect(refreshing.isRefreshing)
-        #expect(refreshing.summary?.totals.connectedNodes == 32)
-        // The very first load has nothing to preserve.
-        #expect(ShareComputePoolSummaryState.loading.beginningLoad() == .loading)
-    }
-
-    @Test("Malformed JSON is an error, and the body never reaches the message")
-    func malformedBody() async {
-        let junk = #"{"totals": "not an object", "secret": "qspsk-abc123"}"#
-        let client = Self.client { request in
-            (
-                Data(junk.utf8),
-                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            )
-        }
-        do {
-            _ = try await client.summary()
-            Issue.record("malformed body must not decode")
-        } catch let error as ShareComputePoolSummaryError {
-            guard case .malformedBody(let detail) = error else {
-                Issue.record("expected malformedBody, got \(error)")
-                return
-            }
-            // Bodies are how credentials and PII end up in logs. The error
-            // carries a fixed string, never the response.
-            #expect(!detail.contains("qspsk-"))
-            #expect(!detail.contains("not an object"))
-            #expect(error.displayMessage == "Pool data unavailable")
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    @Test("A transport failure surfaces as unreachable")
-    func transportFailure() async {
-        struct Boom: Error {}
-        let client = Self.client { _ in throw Boom() }
-        do {
-            _ = try await client.summary()
-            Issue.record("transport failure must propagate")
-        } catch let error as ShareComputePoolSummaryError {
-            guard case .unreachable = error else {
-                Issue.record("expected unreachable, got \(error)")
-                return
-            }
-        } catch {
-            Issue.record("unexpected error: \(error)")
-        }
-    }
-
-    // MARK: Request shape
-
-    @Test("The request is a fixed HTTPS GET carrying no credential")
-    func requestCarriesNoCredential() async throws {
-        actor Captured {
-            var request: URLRequest?
-            func set(_ value: URLRequest) { request = value }
-        }
-        let captured = Captured()
-        let client = Self.client { request in
-            await captured.set(request)
-            return (
-                Data(Self.exampleJSON.utf8),
-                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            )
-        }
-        _ = try await client.summary()
-        let request = await captured.request
-
-        #expect(request?.url == ShareComputePoolSummaryClient.endpoint)
-        #expect(request?.url?.scheme == "https")
-        #expect(request?.url?.host == "pay.quicksilverpro.io")
-        #expect(request?.httpMethod == "GET")
-        #expect(request?.httpBody == nil)
-        // The summary is public. No provider, share, or inference key may ride
-        // this request — there is not even a parameter to pass one.
-        let headers = request?.allHTTPHeaderFields ?? [:]
-        #expect(headers["Authorization"] == nil)
-        #expect(headers["X-API-Key"] == nil)
-        #expect(!headers.values.contains { $0.contains("qspsk-") || $0.contains("qsppk-") })
-        // A product UA is required — Cloudflare 403s library defaults.
-        #expect(headers["User-Agent"]?.hasPrefix("Rapid/") == true)
-        // A bounded timeout, so a hung socket cannot outlast one refresh cycle.
-        #expect((request?.timeoutInterval ?? .infinity) <= 15)
-    }
-
-    // MARK: Pacing
-
-    @Test("Refresh never runs faster than the server's cache")
-    func refreshPacing() {
-        // The service caches ~15s and rate-limits by IP; anything quicker buys
-        // identical bytes and spends the user's budget.
-        #expect(ShareComputePoolRefresh.minimumInterval == 15)
-        #expect(ShareComputePoolRefresh.recommendedInterval >= ShareComputePoolRefresh.minimumInterval)
-        #expect(ShareComputePoolRefresh.interval(2) == 15)
-        #expect(ShareComputePoolRefresh.interval(60) == 60)
-    }
-
-    @Test("Updated-ago always describes the server timestamp")
-    func updatedLabel() {
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
-        #expect(ShareComputePoolClock.updatedLabel(base, now: base) == "Updated just now")
-        #expect(
-            ShareComputePoolClock.updatedLabel(base, now: base.addingTimeInterval(120))
-                == "Updated 2m ago"
-        )
-        #expect(
-            ShareComputePoolClock.updatedLabel(base, now: base.addingTimeInterval(7_200))
-                == "Updated 2h ago"
-        )
-        // A clock skew that puts the server ahead must not render "-3s ago".
-        #expect(
-            ShareComputePoolClock.updatedLabel(base, now: base.addingTimeInterval(-3))
-                == "Updated just now"
-        )
+        // Reading order: what to do, then what it earns.
+        #expect(ShareComputeTab.allCases.map(\.rawValue) == ["share", "credits"])
     }
 }
 
@@ -1017,92 +514,6 @@ struct ShareComputePoolSummaryTests {
 /// promise creeping back into a string.
 @Suite("Share Compute · API-aligned surfaces")
 struct ShareComputeAPIAlignedSurfaceTests {
-
-    private static func entry(alias: String, cached: Bool, size: String? = nil) -> ModelEntry {
-        ModelEntry(alias: alias, hfRepo: "org/\(alias)", sizeOnDisk: size, cached: cached)
-    }
-
-    /// Two cached, two not — the fixture the review screenshots use.
-    private static func rows(summary: ShareComputePoolSummary?) -> [ShareComputePoolRow] {
-        let cached: Set<String> = ["qwen3.8-27b-tensorfold", "qwen3.6-35b"]
-        let catalog = ShareComputeModel.supported.map {
-            entry(alias: $0.alias, cached: cached.contains($0.alias), size: "16.8 GB")
-        }
-        return ShareComputePoolRow.make(
-            locals: ShareComputeLocalModel.make(catalog: catalog),
-            summary: summary,
-            freeBytes: Int64(400) * Int64(1 << 30)
-        )
-    }
-
-    // MARK: Selection drives the detail and the CTA
-
-    @Test("Selecting a model changes the action, its enablement, and what it does")
-    func selectionUpdatesTheAction() throws {
-        let summary = try ShareComputePoolSummaryFixture.populated.load()
-        let rows = Self.rows(summary: summary)
-
-        // Ready + enabled → connect, naming the model.
-        let ready = rows.first { $0.id == "qwen3.8-27b" }!
-        let connect = ShareComputePoolAction.make(for: ready)
-        #expect(connect == .connect(modelTitle: "Qwen3.8 27B"))
-        #expect(connect.title == "Continue with Qwen3.8 27B")
-        #expect(connect.isEnabled)
-        #expect(!connect.startsDownload)
-
-        // Selecting a different, un-downloaded model changes the verb.
-        let notDownloaded = rows.first { $0.id == "nemotron-3.5-lightning" }!
-        let download = ShareComputePoolAction.make(for: notDownloaded)
-        #expect(download == .download(modelTitle: notDownloaded.local.title))
-        #expect(download.title == "Download to serve")
-        #expect(download.isEnabled)
-        #expect(download.startsDownload)
-
-        // A measured low-space volume must not start a download that cannot
-        // land. The selected-model card carries the exact free/needed figures.
-        let constrainedRows = ShareComputePoolRow.make(
-            locals: rows.map(\.local),
-            summary: summary,
-            freeBytes: Int64(2) * Int64(1 << 30)
-        )
-        let constrained = constrainedRows.first { $0.id == "nemotron-3.5-lightning" }!
-        let insufficient = ShareComputePoolAction.make(for: constrained)
-        #expect(insufficient == .insufficientStorage)
-        #expect(insufficient.title == "Not enough storage")
-        #expect(!insufficient.isEnabled)
-        #expect(!insufficient.startsDownload)
-
-        // GLM is disabled upstream in this fixture: neither verb applies, and
-        // the button must not be pressable.
-        let disabled = rows.first { $0.id == "glm-5.3-flash" }!
-        let unavailable = ShareComputePoolAction.make(for: disabled)
-        #expect(unavailable == .unavailable)
-        #expect(!unavailable.isEnabled)
-        #expect(!unavailable.startsDownload)
-
-        // A missing summary cannot authorize a connect or a download.
-        let unreported = Self.rows(summary: nil).first!
-        #expect(ShareComputePoolAction.make(for: unreported) == .unavailable)
-        #expect(!ShareComputePoolAction.make(for: unreported).isEnabled)
-
-        // …and the three actions are genuinely distinct, which is the whole
-        // point of the picker being a control rather than a legend.
-        #expect(Set([connect.title, download.title, unavailable.title]).count == 3)
-        #expect(ShareComputePoolAction.make(for: nil) == ShareComputePoolAction.none)
-        #expect(!ShareComputePoolAction.none.isEnabled)
-    }
-
-    @Test("Share lists only models ready on this Mac")
-    func shareListsOnlyReadyModels() {
-        let rows = Self.rows(summary: nil)
-        let shareable = ShareComputeLocalModel.readyForSharing(rows.map(\.local))
-        #expect(shareable.map(\.id) == ["qwen3.8-27b", "qwen3.6-35b"])
-        // GLM is ~180 GB and not downloaded, so Share must never offer it…
-        #expect(!shareable.contains { $0.id == "glm-5.3-flash" })
-        // …while Live Pool still lists it, because Live Pool is where a
-        // download starts.
-        #expect(rows.contains { $0.id == "glm-5.3-flash" })
-    }
 
     // MARK: Copy hygiene
 
@@ -1131,13 +542,11 @@ struct ShareComputeAPIAlignedSurfaceTests {
             [$0.title, $0.detail, $0.narrowTitle, $0.narrowDetail]
         }
         strings += ShareComputeRewardStatus.allCases.flatMap { [$0.tagTitle, $0.detailTitle] }
-        strings.append(ShareComputePoolAction.make(for: Self.rows(summary: nil).first).title)
         strings += [
             ShareComputeRelayStatusBar.Status.readyToConnect.title,
             ShareComputeRelayStatusBar.Status.online.title,
             ShareComputeRelayStatusBar.Status.reconnecting.title,
         ]
-        strings.append(ShareComputePoolSummaryError.httpStatus(503).displayMessage)
 
         for string in strings {
             for banned in Self.bannedPhrases {
@@ -1147,34 +556,6 @@ struct ShareComputeAPIAlignedSurfaceTests {
                 )
             }
         }
-    }
-
-    // MARK: Hardware neutrality
-
-    @Test("Aggregate pool labels are hardware-neutral")
-    func aggregateLabelsAreHardwareNeutral() {
-        // `totals` counts every node on the pool, and the protocol makes no
-        // hardware assumption — the public reference client is a generic
-        // OpenAI-compatible adapter, so a Linux box with an NVIDIA GPU serving
-        // through vLLM is counted here exactly like a Mac. A pool-wide label
-        // saying "Macs" is therefore not a style choice, it is wrong.
-        // Word-boundary match, not `contains("Mac")` — "Machines" legitimately
-        // contains those three letters, so a substring check flags the very
-        // wording this test exists to require.
-        let macWord = try! NSRegularExpression(pattern: "\\bMacs?\\b")
-        for label in ShareComputePoolLabels.allAggregateStrings {
-            let range = NSRange(label.startIndex..., in: label)
-            #expect(
-                macWord.firstMatch(in: label, range: range) == nil,
-                "aggregate label says Mac: \(label)"
-            )
-        }
-        #expect(ShareComputePoolLabels.connectedTotal == "Connected Machines")
-        #expect(ShareComputePoolLabels.machinesOnline(1) == "1 Machine online")
-        #expect(ShareComputePoolLabels.machinesOnline(34) == "34 Machines online")
-        // Zero is a real reading and still gets the plural form.
-        #expect(ShareComputePoolLabels.machinesOnline(0) == "0 Machines online")
-        #expect(ShareComputePoolLabels.noneConnected == "No machines are connected right now.")
     }
 
     @Test("Local wording still says this Mac")
@@ -1203,62 +584,6 @@ struct ShareComputeAPIAlignedSurfaceTests {
         #expect(ShareComputeDestination.credits.host?.hasSuffix("quicksilverpro.io") == true)
     }
 
-    // MARK: Golden fixtures
-
-    @Test("The review fixture carries four models including a disabled GLM")
-    func populatedFixtureShape() throws {
-        let summary = try ShareComputePoolSummaryFixture.populated.load()
-        #expect(summary.models.count == 4)
-        #expect(summary.models.contains { $0.modelID == "glm-5.3-flash" })
-        #expect(summary.stats(for: "glm-5.3-flash")?.isEnabled == false)
-        // Totals are NOT the sum of the rows, so a capture would expose a UI
-        // that secretly re-derived them.
-        let summed = summary.models.reduce(0) { $0 + $1.connectedNodes }
-        #expect(summary.totals.connectedNodes != summed)
-        #expect(!summary.isPoolEmpty)
-    }
-
-    @Test("A separate fixture covers the honest all-zero pool")
-    func emptyFixtureShape() throws {
-        let summary = try ShareComputePoolSummaryFixture.empty.load()
-        #expect(summary.isPoolEmpty)
-        // Every supported model is present and enabled — the pool is on, just
-        // unattended. This is success, not an error.
-        #expect(summary.models.count == ShareComputeModel.supported.count)
-        #expect(summary.enabledModelIDs.count == ShareComputeModel.supported.count)
-        let state = ShareComputePoolSummaryState.loaded(summary)
-        #expect(state.blockingError == nil)
-        // Its rows render real zeros, not dashes.
-        let rows = Self.rows(summary: summary)
-        for row in rows {
-            #expect(row.availability.stats?.connectedNodes == 0)
-            #expect(row.availability != .unreported)
-        }
-    }
-
-    @Test("Fixtures are inert without golden mode")
-    func fixturesAreGated() {
-        #expect(ShareComputePoolSummaryFixture.requested(environment: [:]) == nil)
-        // The name alone is not enough — golden mode must be on too.
-        #expect(
-            ShareComputePoolSummaryFixture.requested(environment: [
-                "RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY": "populated"
-            ]) == nil
-        )
-        #expect(
-            ShareComputePoolSummaryFixture.requested(environment: [
-                "RAPID_GUI_GOLDEN_MODE": "1",
-                "RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY": "populated",
-            ]) == .populated
-        )
-        // An unknown name falls through to the real client rather than trapping.
-        #expect(
-            ShareComputePoolSummaryFixture.requested(environment: [
-                "RAPID_GUI_GOLDEN_MODE": "1",
-                "RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY": "nope",
-            ]) == nil
-        )
-    }
 }
 
 // MARK: - Contributor ledger
@@ -1488,8 +813,8 @@ struct ShareComputeLedgerTests {
         )
         let page = try await Self.client(Self.ok(json)).page(key: Self.key)
         #expect(page.windows[0].periodStart != nil)
-        #expect(ShareComputePoolSummaryClient.parseISO8601("2026-09-24T04:00:00+00:00") != nil)
-        #expect(ShareComputePoolSummaryClient.parseISO8601("2026-09-24T04:00:00.482Z") != nil)
+        #expect(ShareComputeLedgerClient.parseISO8601("2026-09-24T04:00:00+00:00") != nil)
+        #expect(ShareComputeLedgerClient.parseISO8601("2026-09-24T04:00:00.482Z") != nil)
     }
 
     @Test("An empty ledger is a successful 200, not an error")
@@ -1734,14 +1059,12 @@ struct ShareComputeLedgerTests {
         #expect(ShareComputeLedgerState.rateLimited.blockingError == .rateLimited)
     }
 
-    @Test("Ledger refresh is far slower than Live Pool's")
+    @Test("Ledger refresh respects the request budget")
     func refreshPacing() {
         // 120 requests/hour/IP, and one account walk costs a request per page.
         #expect(ShareComputeLedgerRefresh.minimumInterval == 300)
         #expect(ShareComputeLedgerRefresh.recommendedInterval >= 300)
         #expect(ShareComputeLedgerRefresh.interval(30) == 300)
-        // Emphatically not Live Pool's cadence.
-        #expect(ShareComputeLedgerRefresh.minimumInterval > ShareComputePoolRefresh.recommendedInterval * 5)
     }
 
     // MARK: Aggregation

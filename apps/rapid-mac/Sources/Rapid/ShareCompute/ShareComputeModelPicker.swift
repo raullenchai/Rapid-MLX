@@ -84,7 +84,7 @@ struct ShareComputeModelPicker: View {
         }
         .padding(6)
         .frame(width: max(Self.minimumWidth, width))
-        .background(RapidTheme.bandControl)
+        .background(RapidTheme.surfaceRaised)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "Local models available to share"))
         .accessibilityIdentifier("ShareCompute.ModelPicker")
@@ -106,22 +106,22 @@ struct ShareComputeModelOption: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.title)
                         .font(.rapid(size: 14, weight: .bold))
-                        .foregroundStyle(RapidTheme.bandInk)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text(model.detail)
                         .font(.rapid(size: 11))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: RapidTheme.Space.md)
                 if let size = model.onDiskSize {
                     Text(size)
                         .font(.rapid(size: 12))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
+                        .foregroundStyle(.secondary)
                 }
                 Text("Ready on this Mac")
                     .font(.rapid(size: 11, weight: .bold))
-                    .foregroundStyle(RapidTheme.bandReady)
+                    .foregroundStyle(Color.green)
                 // Fixed trailing slot so the tick's presence on one row cannot
                 // shift the readiness label on the rows around it.
                 Image(systemName: "checkmark")
@@ -138,10 +138,10 @@ struct ShareComputeModelOption: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(RapidTheme.bandSelectionFill)
+                        .fill(RapidTheme.brandPrimaryRaised)
                         .overlay {
                             RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(RapidTheme.bandSelectionStroke, lineWidth: 1)
+                                .strokeBorder(RapidTheme.brandPrimaryHairline, lineWidth: 1)
                         }
                 } else if isHovering {
                     RoundedRectangle(cornerRadius: 5).fill(RapidTheme.hoverWash)
@@ -154,7 +154,7 @@ struct ShareComputeModelOption: View {
         .overlay(alignment: .bottom) {
             if showsDivider && !isSelected {
                 Rectangle()
-                    .fill(RapidTheme.bandHairline)
+                    .fill(RapidTheme.hairline)
                     .frame(height: 1)
                     .padding(.horizontal, 12)
             }

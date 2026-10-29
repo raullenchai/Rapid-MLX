@@ -28,21 +28,7 @@
 # matters here more than usual, because this script SEEDS receipts and would
 # otherwise write fixture sessions into somebody's real history.
 #
-# The model catalog comes from the bundled fake sidecar with
-# FAKE_SHARE_COMPUTE_POOL=1: two of the four pool models cached, the other two
-# (Nemotron and GLM) left un-downloaded, so Share (ready models only), the
-# picker, and Live Pool's download + storage rows all have something real to
-# render.
-#
-# POOL SUMMARY
-# ------------
-# RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY (same golden-mode gate) injects a FIXED
-# summary instead of calling pay.quicksilverpro.io. A capture must not read the
-# production pool: it is currently all zeros, so the populated layout — the one
-# where a long model name sits beside four metric columns — would never be
-# reviewed, and live numbers would make two runs of identical code look like a
-# regression. `populated` carries all four catalog models with GLM disabled;
-# `empty` is the honest all-zero pool.
+# The fake model catalog supplies downloaded models for Share and its picker.
 #
 # CLEAN ARTIFACTS
 # ---------------
@@ -56,7 +42,7 @@
 # LIFECYCLE SURFACES
 # ------------------
 # Preparing, Online, Session Complete, Connection Review and the open model
-# picker cannot be reached without a provider key and a live pool.
+# picker cannot be reached without a provider key and a network connection.
 # RAPID_GUI_SHARE_COMPUTE_STAGE (same golden-mode gate) renders them from
 # ShareComputeReviewFixture — real view models, fixture inputs, no mocked API.
 #
@@ -151,7 +137,7 @@ PY
 # One launch → one screenshot. `$WINDOW_RECT` is known up front because the
 # window frame is pinned by preference, so the capture needs no CGWindowID
 # lookup (which would need PyObjC).
-# `$stage` is optional: empty for the three ordinary tabs, or one of the
+# `$stage` is optional: empty for the two ordinary tabs, or one of the
 # ShareComputeReviewStage raw values for a lifecycle surface.
 capture_surface() {
     local name="$1" width="$2" height="$3" appearance="$4" tab="$5" out="$6" stage="${7:-}"
@@ -201,7 +187,6 @@ capture_surface() {
         RAPID_GUI_INITIAL_SECTION=shareCompute \
         RAPID_GUI_SHARE_COMPUTE_TAB="$tab" \
         RAPID_GUI_SHARE_COMPUTE_STAGE="$stage" \
-        RAPID_GUI_SHARE_COMPUTE_POOL_SUMMARY="${POOL_SUMMARY:-populated}" \
         RAPID_GUI_SHARE_COMPUTE_LEDGER="${LEDGER:-loaded}" \
         /usr/bin/python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         "$PERSONA/launch.sh" > "$OUT_ROOT/$name-$tab-app.log" 2>&1 &
@@ -231,8 +216,6 @@ run_variant() {
         "$OUT_ROOT/$name-share.png" || true
     capture_surface "$name" "$width" "$height" "$appearance" credits \
         "$OUT_ROOT/$name-credits.png" || true
-    capture_surface "$name" "$width" "$height" "$appearance" livePool \
-        "$OUT_ROOT/$name-live-pool.png" || true
 }
 
 # The lifecycle surfaces and the open picker. Captured light + narrow-light
@@ -251,13 +234,6 @@ run_variant "1440x900-light" 1440 900 light
 run_variant "1440x900-dark"  1440 900 dark
 run_variant "720x900-light"   720 900 light
 run_variant "720x900-dark"    720 900 dark
-
-# The calm all-zero pool, which is what production currently reports. It must
-# read as a normal state — real zeros, a quiet empty line, no error.
-POOL_SUMMARY=empty capture_surface "1440x900-light" 1440 900 light livePool \
-    "$OUT_ROOT/1440x900-light-live-pool-empty.png" || true
-POOL_SUMMARY=unavailable capture_surface "1440x900-light" 1440 900 light livePool \
-    "$OUT_ROOT/1440x900-light-live-pool-unavailable.png" || true
 
 # Contributor-ledger states. `loaded` is already covered by run_variant above
 # (it is the default), so these are the other four, at both sizes and themes.

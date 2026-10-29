@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Shared text lanes keep headers and values aligned at every text size.
+// Retained for text-layout compatibility with existing callers.
 enum ShareComputeLedgerLayout {
     enum Column: CaseIterable {
         case window, model, requests, tokens, credit, status
-
         func width(fonts: UIFontSettings = .shared) -> CGFloat {
             let base: CGFloat = switch self {
             case .window: 140
@@ -19,841 +18,259 @@ enum ShareComputeLedgerLayout {
     }
 }
 
-/// "What have I earned?" — now backed by QuickSilver's contributor ledger.
-///
-/// ## The ownership split, made literal
-///
-/// The dark panel holds the LEDGER: accounting windows QuickSilver metered and
-/// settled. The amber panel holds the MONTH summary derived from them. Rapid's
-/// own connection receipts survive as a clearly fenced local-activity strip at
-/// the bottom of the dark panel — never interleaved with ledger rows, never
-/// correlated to one.
-///
-/// That last rule is not stylistic. A local receipt and a ledger window share
-/// no identifier: a receipt is "this Mac was connected from 14:02 to 15:44",
-/// a window is "node X served 7 requests for model Y between 04:00 and 04:30".
-/// Joining them would require guessing, and a guess presented next to a dollar
-/// figure is the worst kind of wrong. So the two sit in separate sections with
-/// separate headings, and the local one never shows a credit amount.
-///
-/// ## Account-wide, not this-Mac
-///
-/// The QuickSilver key is account-scoped, so these windows span every node on
-/// the account. A user contributing from two machines would otherwise read
-/// the other machine's credit as this one's — hence "across N nodes" in the
-/// header and node ids on every row.
-///
-/// ## One key
-///
-/// Rapid has exactly one user-facing QuickSilver credential: the `qsppk-`
-/// provider key, entered once in Settings → Experimental → Share Compute.
-/// This tab reads the one `qsppk-` provider key ``ShareComputeLedgerCoordinator``
-/// resolved, and, when there is none, points at Settings rather than
-/// offering a second place to paste one.
 struct ShareComputeCreditsTab: View {
     let state: ShareComputeLedgerState
     let receipts: [ShareComputeReceipt]
     let localSummary: ShareComputeContributionSummary
-    /// `qsppk-…a8c1`. Never the whole key.
     let savedKeyLabel: String?
-    /// Whether Refresh is currently permitted. False while a walk runs, while
-    /// rate-limited, and inside the minimum interval — the control is disabled
-    /// rather than silently ignoring the click.
     let canRefresh: Bool
     let isRefreshing: Bool
-    /// Why Refresh is held, when it is. A disabled button with no explanation
-    /// reads as a bug.
     let refreshHoldNote: String?
     let isNarrow: Bool
-    /// Opens Settings → Experimental → Share Compute — the single place a
-    /// QuickSilver key is entered. This tab has no paste field of its own.
     let onOpenKeySettings: () -> Void
     let onRefresh: () -> Void
     var now: Date = Date()
-
     @Environment(\.openURL) private var openURL
 
     private var account: ShareComputeLedgerAccount? { state.account }
-
-    private var month: String? {
-        account?.latestAllowanceMonth
-    }
-
+    private var month: String? { account?.latestAllowanceMonth }
     private var totals: ShareComputeLedgerMonthTotals? {
         guard let account, let month else { return nil }
-        // Summed over EVERY fetched row for the bucket, not the first page.
         return account.totals(forAllowanceMonth: month)
     }
+    static let visibleRowLimit = 6
 
     var body: some View {
-        ShareComputeWorkbenchFrame {
-            if isNarrow {
-                VStack(spacing: 0) {
-                    ledgerPanel
-                    summaryPanel
-                }
-            } else {
-                HStack(alignment: .top, spacing: 0) {
-                    ledgerPanel
-                    summaryPanel.frame(width: 400)
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: - Ledger (left, dark)
-
-    private var ledgerPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            ledgerBody
+        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+            summaryCard
+            if let account, !account.isEmpty { activityCard(account) }
             localActivity
         }
-        .padding(isNarrow ? 20 : 26)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.surfaceBand)
+        .frame(maxWidth: 720, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
-            VStack(alignment: .leading, spacing: 4) {
-                ShareComputeEyebrow(text: String(localized: "QuickSilver · Contributor ledger"), size: 11)
-                Text("Credit ledger")
-                    .font(.rapid(size: isNarrow ? 21 : 25, weight: .semibold))
-                    .foregroundStyle(RapidTheme.bandInk)
-                Text(subtitle)
-                    .font(.rapid(size: 12))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    private var summaryCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("This month").font(.rapid(size: 16, weight: .semibold))
+                    if account != nil { Text(monthTitle).font(.rapid(size: 12)).foregroundStyle(.secondary) }
+                }
+                Spacer()
+                if !state.needsKey { refreshControl }
             }
-            Spacer(minLength: RapidTheme.Space.sm)
-            if !state.needsKey { refreshControl }
+            if let account, !account.isEmpty {
+                if let note = state.staleNote {
+                    Text(note).font(.rapid(size: 12)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("ShareCompute.Credits.Stale")
+                } else if let hold = refreshHoldNote {
+                    Text(hold).font(.rapid(size: 12)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("ShareCompute.Credits.RefreshHold")
+                }
+                HStack(alignment: .top, spacing: 12) {
+                    metric("Credits earned", totals.map { credit($0.finalCredit) } ?? "—")
+                        .accessibilityIdentifier("ShareCompute.Credits.MonthTotal")
+                    metric("Requests served", totals.map { ShareComputeCreditFormatter.count($0.requestCount) } ?? "—")
+                    metric("Tokens (in / out)", totals.map { "\(ShareComputeCreditFormatter.count($0.inputTokens)) / \(ShareComputeCreditFormatter.count($0.outputTokens))" } ?? "—")
+                }
+                Text(totals?.hasPendingWindows == true
+                     ? "1 credit = $1 of QuickSilver API usage. Pending windows finalise after the month closes."
+                     : "1 credit = $1 of QuickSilver API usage.")
+                    .font(.rapid(size: 11)).foregroundStyle(.secondary)
+                let caps = account.caps
+                if caps.nodeMonthlyUSD > 0 || caps.poolMonthlyUSD > 0 {
+                    Text("Caps: \(credit(caps.nodeMonthlyUSD)) per node · \(credit(caps.poolMonthlyUSD)) per pool")
+                        .font(.rapid(size: 11)).foregroundStyle(.secondary)
+                }
+                Text(scope(account)).font(.rapid(size: 11)).foregroundStyle(.secondary)
+                cardFooter
+            } else {
+                stateNote
+                if !state.needsKey { cardFooter }
+            }
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .creditsGroupedCard()
     }
 
-    /// Says WHOSE ledger this is. Account-wide is the surprising part, so it
-    /// leads.
-    private var subtitle: String {
-        guard let account, !account.isEmpty else {
-            return String(localized: "Accounting windows metered by QuickSilver across every node on your account.")
-        }
+    private func scope(_ account: ShareComputeLedgerAccount) -> String {
         let nodes = account.nodeIDs.count
-        let base = nodes == 1
-            ? String(localized: "Accounting windows metered by QuickSilver for 1 node on your account.")
-            : String(
-                format: String(localized: "Accounting windows metered by QuickSilver across %d nodes on your account."),
-                nodes
-            )
-        guard account.isTruncated else { return base }
-        return base + " " + String(localized: "Showing the most recent windows only.")
+        let base = nodes == 1 ? "Account-wide · 1 node" : "Account-wide · \(nodes) nodes"
+        return account.isTruncated ? base + " · Showing the most recent windows only." : base
     }
-
+    private func metric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.rapid(size: 12)).foregroundStyle(.secondary)
+            Text(value).font(.rapid(size: 18, weight: .semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.7)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+    }
     private var refreshControl: some View {
         Button(action: onRefresh) {
-            HStack(spacing: 6) {
-                if isRefreshing {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
-                }
+            HStack(spacing: 5) {
+                if isRefreshing { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.clockwise") }
                 Text("Refresh")
-                    .font(.rapid(size: 11, weight: .medium))
             }
-            .foregroundStyle(RapidTheme.bandInkSecondary)
-            .padding(.horizontal, 10)
-            .frame(height: 26)
-            .background(RapidTheme.bandControl, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!canRefresh)
-        .opacity(canRefresh ? 1 : RapidTheme.disabledOpacity)
+        .controlSize(.small).disabled(!canRefresh)
         .help(refreshHoldNote ?? "")
         .accessibilityLabel(String(localized: "Refresh the credit ledger"))
         .accessibilityHint(refreshHoldNote ?? "")
         .accessibilityIdentifier("ShareCompute.Credits.Refresh")
     }
-
-    @ViewBuilder
-    private var ledgerBody: some View {
-        switch state {
-        case .noKey:
-            note(
-                icon: "key",
-                title: String(localized: "No QuickSilver key yet"),
-                detail: String(localized: "Add your QuickSilver key in Settings → Experimental → Share Compute to see the accounting windows your nodes earned credit for."),
-                identifier: "ShareCompute.Credits.NoKey"
-            )
-        case .loading:
-            note(
-                icon: "clock",
-                title: String(localized: "Reading your ledger…"),
-                detail: nil,
-                identifier: "ShareCompute.Credits.Loading"
-            )
-        case .unauthorized:
-            note(
-                icon: "exclamationmark.triangle",
-                title: ShareComputeLedgerError.unauthorized.displayMessage,
-                detail: String(localized: "Update your key in Settings → Experimental → Share Compute."),
-                identifier: "ShareCompute.Credits.Unauthorized"
-            )
-        case .rateLimited:
-            note(
-                icon: "hourglass",
-                title: ShareComputeLedgerError.rateLimited.displayMessage,
-                detail: String(localized: "QuickSilver allows a limited number of ledger checks per hour."),
-                identifier: "ShareCompute.Credits.RateLimited"
-            )
-        case .unavailable(let error):
-            note(
-                icon: "antenna.radiowaves.left.and.right.slash",
-                title: error.displayMessage,
-                detail: String(localized: "Your local activity below is measured on this Mac and is unaffected."),
-                identifier: "ShareCompute.Credits.Unavailable"
-            )
-        case .loadedEmpty:
-            note(
-                icon: "tray",
-                title: String(localized: "No accounting windows yet"),
-                detail: String(localized: "QuickSilver opens a window once your node serves metered requests. An empty ledger is a normal reading, not an error."),
-                identifier: "ShareCompute.Credits.Empty"
-            )
-        case .loaded(let account), .refreshing(let account), .refreshFailed(let account, _):
-            VStack(alignment: .leading, spacing: 0) {
-                if let hold = refreshHoldNote, state.staleNote == nil {
-                    Text(hold)
-                        .font(.rapid(size: 11))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.bottom, 10)
-                        .accessibilityIdentifier("ShareCompute.Credits.RefreshHold")
-                }
-                if let staleNote = state.staleNote {
-                    Text(staleNote)
-                        .font(.rapid(size: 11))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.bottom, 10)
-                        .accessibilityIdentifier("ShareCompute.Credits.Stale")
-                }
-                // Keep the columns at their readable widths even when the
-                // enlarged table is wider than the ledger panel.
-                ScrollView(.horizontal) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        columnHeaders
-                        ForEach(account.windows.prefix(Self.visibleRowLimit)) { window in
-                            ShareComputeLedgerRowView(window: window, isNarrow: isNarrow)
-                        }
-                    }
-                    .fixedSize(horizontal: !isNarrow, vertical: false)
-                    .containerRelativeFrame(.horizontal, alignment: .leading) { width, _ in
-                        isNarrow ? width : max(width, ShareComputeLedgerLayout.Column.allCases
-                            .reduce(CGFloat(20)) { $0 + $1.width() })
-                    }
-                }
-                footer(account)
-            }
-        }
-    }
-
-    /// Rows shown before the list stops growing the page. The account walk
-    /// fetches everything (totals depend on it); the TABLE only needs enough
-    /// to be useful without turning the tab into an unbounded scroll.
-    static let visibleRowLimit = 6
-
-    private var columnHeaders: some View {
-        Group {
-            if !isNarrow {
-                HStack(spacing: 0) {
-                    headerLabel(String(localized: "Window"), width: ShareComputeLedgerLayout.Column.window.width())
-                    headerLabel(String(localized: "Node · Model"), width: ShareComputeLedgerLayout.Column.model.width())
-                    headerLabel(String(localized: "Requests"), width: ShareComputeLedgerLayout.Column.requests.width())
-                    headerLabel(String(localized: "Tokens in/out"), width: ShareComputeLedgerLayout.Column.tokens.width())
-                    headerLabel(String(localized: "Credit"), width: ShareComputeLedgerLayout.Column.credit.width())
-                    headerLabel(String(localized: "Status"), width: ShareComputeLedgerLayout.Column.status.width())
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 4)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(RapidTheme.bandHairline).frame(height: 1)
-                }
-            }
-        }
-    }
-
-    private func headerLabel(_ text: String, width: CGFloat) -> some View {
-        Text(text.uppercased())
-            .font(.rapid(size: 8, weight: .bold))
-            .tracking(0.5)
-            .foregroundStyle(RapidTheme.bandInkTertiary)
-            .lineLimit(1)
-            .frame(width: width, alignment: .leading)
-            .accessibilityHidden(true)
-    }
-
-    private func footer(_ account: ShareComputeLedgerAccount) -> some View {
-        HStack(spacing: RapidTheme.Space.sm) {
-            Text(
-                account.windows.count > Self.visibleRowLimit
-                    ? String(
-                        format: String(localized: "Showing %1$d of %2$d windows · totals below use all of them"),
-                        Self.visibleRowLimit,
-                        account.windows.count
-                    )
-                    : String(
-                        format: String(localized: "%d accounting windows"),
-                        account.windows.count
-                    )
-            )
-            .font(.rapid(size: 10))
-            .foregroundStyle(RapidTheme.bandInkSecondary)
-            Spacer(minLength: RapidTheme.Space.sm)
-        }
-        .padding(.top, 8)
-    }
-
-    // MARK: Local activity (fenced, separate)
-
-    /// Rapid's own record, kept visibly apart from the ledger above it.
-    ///
-    /// No credit column, no settlement status, no receipt id presented as a
-    /// QuickSilver reference. It answers a different question — "was this Mac
-    /// connected?" — and saying so in the heading is what stops a reader
-    /// treating an "Ended" receipt as a settled payment.
-    private var localActivity: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                ShareComputeEyebrow(
-                    text: String(localized: "Rapid · Local activity on this Mac"),
-                    tone: RapidTheme.bandInkSecondary,
-                    size: 10
-                )
-                Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
-                    .font(.rapid(size: 11))
-                    .foregroundStyle(RapidTheme.bandInkTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if receipts.isEmpty {
-                Text("No connection periods recorded yet.")
-                    .font(.rapid(size: 12))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                    .accessibilityIdentifier("ShareCompute.EmptyHistory")
-            } else {
-                HStack(spacing: 0) {
-                    localMetric(
-                        "\(localSummary.sessionCount)",
-                        String(localized: "Connection periods")
-                    )
-                    localDivider
-                    localMetric(
-                        ShareComputeDuration.total(localSummary.totalShared),
-                        String(localized: "Online")
-                    )
-                    localDivider
-                    localMetric(
-                        localSummary.modelCount == 1
-                            ? String(localized: "1 Model")
-                            : String(format: String(localized: "%1$d Models"), localSummary.modelCount),
-                        String(localized: "Models served")
-                    )
-                }
-            }
-        }
-        .padding(.top, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .top) {
-            Rectangle().fill(RapidTheme.bandHairlineStrong).frame(height: 1)
-        }
-        .accessibilityIdentifier("ShareCompute.Credits.LocalActivity")
-    }
-
-    private var localDivider: some View {
-        Rectangle()
-            .fill(RapidTheme.bandHairline)
-            .frame(width: 1, height: 28)
-            .padding(.horizontal, isNarrow ? 12 : 20)
-            .accessibilityHidden(true)
-    }
-
-    private func localMetric(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.rapid(size: isNarrow ? 17 : 19, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(RapidTheme.bandInk)
-                .lineLimit(1)
-            Text(label.uppercased())
-                .font(.rapid(size: 9, weight: .semibold))
-                .tracking(0.4)
-                .foregroundStyle(RapidTheme.bandInkSecondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
-    }
-
-    private func note(
-        icon: String,
-        title: String,
-        detail: String?,
-        identifier: String
-    ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(RapidTheme.bandInkTertiary)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.rapid(size: 13, weight: .medium))
-                    .foregroundStyle(RapidTheme.bandInk)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let detail {
-                    Text(detail)
-                        .font(.rapid(size: 12))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+    private var cardFooter: some View {
+        HStack(spacing: 12) {
+            if let savedKeyLabel {
+                Text(savedKeyLabel).font(.rapid(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
-        }
-        .padding(RapidTheme.Space.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RapidTheme.bandControl, in: RoundedRectangle(cornerRadius: RapidTheme.Radius.card))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(identifier)
-    }
-
-    // MARK: - Summary (right, amber)
-
-    @ViewBuilder
-    private var summaryPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if state.needsKey {
-                keyOnboarding
-            } else {
-                monthSummary
-            }
-        }
-        .padding(.horizontal, isNarrow ? 20 : 28)
-        .padding(.top, 26)
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RapidTheme.brandPrimary)
-    }
-
-    // MARK: Key onboarding
-
-    /// There is nothing to paste here. Rapid has one QuickSilver key — the
-    /// `qsppk-` provider key — entered once in Settings → Experimental →
-    /// Share Compute, where it already starts sharing. This panel just says
-    /// so and offers one button there; it never duplicates that field.
-    private var keyOnboarding: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                ShareComputeEyebrow(
-                    text: state == .unauthorized ? String(localized: "Key rejected") : String(localized: "Connect your ledger"),
-                    tone: RapidTheme.onBrandPrimarySecondary,
-                    size: 11
-                )
-                Text(state == .unauthorized ? String(localized: "Replace your QuickSilver key") : String(localized: "Add your QuickSilver key"))
-                    .font(.rapid(size: isNarrow ? 22 : 25, weight: .bold))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(
-                    state == .unauthorized
-                        ? String(localized: "QuickSilver rejected the saved key — it may have been revoked or replaced. Save a new one in Settings.")
-                        : String(localized: "The same QuickSilver key that starts sharing also reads your account’s credit ledger here — there is nothing extra to paste.")
-                )
-                .font(.rapid(size: 13))
-                .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button(action: onOpenKeySettings) {
-                HStack(spacing: 7) {
-                    Text("Open Share Compute settings")
-                        .font(.rapid(size: 13, weight: .semibold))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .bold))
-                        .accessibilityHidden(true)
-                }
-                .foregroundStyle(RapidTheme.bandInk)
-                .frame(maxWidth: .infinity)
-                .frame(height: 42)
-                .background(RapidTheme.surfaceBand, in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "Open Settings → Experimental → Share Compute"))
-            .accessibilityIdentifier("ShareCompute.Credits.OpenKeySettings")
-
-            Text("Paste your QuickSilver key (qsppk-…) there once. Rapid stores it in this Mac’s Keychain and uses it both to start sharing and to read this ledger.")
-                .font(.rapid(size: 11))
-                .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // MARK: Month summary
-
-    private var monthSummary: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            VStack(alignment: .leading, spacing: 5) {
-                ShareComputeEyebrow(
-                    text: String(localized: "Monthly credit summary"),
-                    tone: RapidTheme.onBrandPrimarySecondary,
-                    size: 11
-                )
-                Text(monthTitle)
-                    .font(.rapid(size: isNarrow ? 23 : 27, weight: .bold))
-                    .foregroundStyle(RapidTheme.onBrandPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(monthScope)
-                    .font(.rapid(size: 12, weight: .medium))
-                    .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // Server figures, summed across every fetched row for the bucket.
-            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
-                amberField(String(localized: "Requests"), totals.map { ShareComputeCreditFormatter.count($0.requestCount) } ?? "—")
-                amberField(String(localized: "Tokens in"), totals.map { ShareComputeCreditFormatter.count($0.inputTokens) } ?? "—")
-                amberField(String(localized: "Tokens out"), totals.map { ShareComputeCreditFormatter.count($0.outputTokens) } ?? "—")
-            }
-            .padding(.vertical, 12)
-            .overlay(alignment: .top) {
-                Rectangle().fill(RapidTheme.brandPrimaryHairline).frame(height: 1)
-            }
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(RapidTheme.brandPrimaryHairline).frame(height: 1)
-            }
-
-            // The headline number. Always the server's `final_credit`, summed —
-            // never recomputed from accrued minus a cap.
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.sm) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("FINAL API CREDIT")
-                            .font(.rapid(size: 9, weight: .bold))
-                            .tracking(0.4)
-                            .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                        Text(totals.map { ShareComputeCreditFormatter.credit($0.finalCredit) } ?? "—")
-                            .font(.rapid(size: 22, weight: .bold))
-                            .monospacedDigit()
-                            .foregroundStyle(RapidTheme.onBrandPrimary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: RapidTheme.Space.sm)
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("ACCRUED")
-                            .font(.rapid(size: 9, weight: .bold))
-                            .tracking(0.4)
-                            .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                        // `nil` renders `—`, not `$0.00`: a bucket containing a
-                        // window with an unknown pre-cap amount has no honest
-                        // accrued total.
-                        Text(totals.flatMap(\.accruedCredit).map(ShareComputeCreditFormatter.credit) ?? "—")
-                            .font(.rapid(size: 14, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                    }
-                }
-                if totals?.hasPendingWindows == true {
-                    Text("Some windows are still pending; QuickSilver finalises them after the month closes.")
-                        .font(.rapid(size: 11))
-                        .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RapidTheme.brandPrimaryRaised, in: RoundedRectangle(cornerRadius: 6))
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(RapidTheme.brandPrimaryHairline, lineWidth: 1)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("ShareCompute.Credits.MonthTotal")
-
-            if let caps = account?.caps {
-                HStack(spacing: RapidTheme.Space.sm) {
-                    amberField(
-                        String(localized: "Node cap"),
-                        ShareComputeCreditFormatter.credit(caps.nodeMonthlyUSD)
-                    )
-                    amberField(
-                        String(localized: "Pool cap"),
-                        ShareComputeCreditFormatter.credit(caps.poolMonthlyUSD)
-                    )
-                }
-            }
-
-            // The unit claim, stated plainly. `usd_api_credit` is spendable
-            // platform balance; calling it a payout or cash would be false.
-            Text(unitExplanation)
-                .font(.rapid(size: 11))
-                .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button {
-                openURL(ShareComputeDestination.credits)
-            } label: {
-                HStack(spacing: 7) {
-                    Text("QuickSilver balance")
-                        .font(.rapid(size: 13, weight: .semibold))
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 11, weight: .bold))
-                        .accessibilityHidden(true)
-                }
-                .foregroundStyle(RapidTheme.bandInk)
-                .frame(maxWidth: .infinity)
-                .frame(height: 42)
-                .background(RapidTheme.surfaceBand, in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            // Balance, not ledger: the ledger is on THIS screen. The hash goes
-            // to the account's spendable balance and recharge page.
-            .accessibilityLabel(String(localized: "Open your QuickSilver account balance"))
-            .accessibilityIdentifier("ShareCompute.Credits.Balance")
-
-            if let savedKeyLabel {
-                HStack(spacing: RapidTheme.Space.sm) {
-                    Text(savedKeyLabel)
-                        .font(.rapid(size: 11, design: .monospaced))
-                        .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                        .lineLimit(1)
-                    Spacer(minLength: RapidTheme.Space.sm)
-                    // Key management lives in ONE place — Settings. This tab
-                    // only shows which key it is reading.
-                    Button(action: onOpenKeySettings) {
-                        Text("Manage in Settings")
-                            .font(.rapid(size: 11, weight: .bold))
-                            .foregroundStyle(RapidTheme.onBrandPrimary)
-                    }
-                    .buttonStyle(.plain)
+            if savedKeyLabel != nil {
+                Button("Manage key…", action: onOpenKeySettings).buttonStyle(.plain)
                     .accessibilityLabel(String(localized: "Manage your QuickSilver key in Settings → Experimental → Share Compute"))
                     .accessibilityIdentifier("ShareCompute.Credits.ManageKey")
+            }
+            Button("QuickSilver balance ↗") { openURL(ShareComputeDestination.credits) }.buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Open your QuickSilver account balance"))
+                .accessibilityIdentifier("ShareCompute.Credits.Balance")
+        }.font(.rapid(size: 11)).padding(.top, 4)
+    }
+    @ViewBuilder private var stateNote: some View {
+        switch state {
+        case .noKey: note("key", "No QuickSilver key yet", "Add your key in Settings to see your credits.", "ShareCompute.Credits.NoKey", action: true)
+        case .unauthorized: note("exclamationmark.triangle", ShareComputeLedgerError.unauthorized.displayMessage, "Update your key in Settings to see your credits.", "ShareCompute.Credits.Unauthorized", action: true)
+        case .loading: note("clock", "Reading your ledger…", "Your credit activity will appear here.", "ShareCompute.Credits.Loading")
+        case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, "QuickSilver limits ledger checks per hour.", "ShareCompute.Credits.RateLimited")
+        case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, "Your local activity below is unaffected.", "ShareCompute.Credits.Unavailable")
+        case .loadedEmpty: note("tray", "No accounting windows yet", "Windows appear when your node serves metered requests.", "ShareCompute.Credits.Empty")
+        case .loaded, .refreshing, .refreshFailed: EmptyView()
+        }
+    }
+    private func note(_ icon: String, _ title: String, _ detail: String, _ id: String, action: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon).foregroundStyle(.secondary).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.rapid(size: 14, weight: .semibold))
+                    Text(detail).font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }
+            }.accessibilityElement(children: .combine).accessibilityIdentifier(id)
+            if action {
+                Button("Open Share Compute settings", action: onOpenKeySettings)
+                    .accessibilityLabel(String(localized: "Open Settings → Experimental → Share Compute"))
+                    .accessibilityIdentifier("ShareCompute.Credits.OpenKeySettings")
             }
         }
     }
-
+    private func activityCard(_ account: ShareComputeLedgerAccount) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Recent activity").font(.rapid(size: 16, weight: .semibold)).padding(.bottom, 14)
+            if !isNarrow {
+                HStack(spacing: 10) {
+                    Text("Time").frame(width: 100, alignment: .leading)
+                    Text("Model").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Requests").frame(width: 65, alignment: .leading)
+                    Text("Credits").frame(width: 85, alignment: .leading)
+                    Text("Status").frame(width: 80, alignment: .leading)
+                }.font(.rapid(size: 11)).foregroundStyle(.secondary).padding(.bottom, 8).accessibilityHidden(true)
+            }
+            ForEach(account.windows.prefix(Self.visibleRowLimit)) { window in
+                ShareComputeLedgerRowView(window: window, isNarrow: isNarrow)
+            }
+            Text(account.windows.count > Self.visibleRowLimit
+                 ? "Showing \(Self.visibleRowLimit) of \(account.windows.count) windows · totals use all of them"
+                 : "\(account.windows.count) accounting windows")
+                .font(.rapid(size: 11)).foregroundStyle(.secondary).padding(.top, 10)
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading).creditsGroupedCard()
+    }
+    private var localActivity: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("On this Mac").font(.rapid(size: 14, weight: .semibold))
+            if receipts.isEmpty {
+                Text("No connection periods recorded yet.").accessibilityIdentifier("ShareCompute.EmptyHistory")
+            } else {
+                Text("\(localSummary.sessionCount) connection periods · \(ShareComputeDuration.total(localSummary.totalShared)) online · \(localSummary.modelCount) models served")
+            }
+            Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
+                .font(.rapid(size: 11)).foregroundStyle(.tertiary)
+        }.font(.rapid(size: 12)).foregroundStyle(.secondary)
+            .accessibilityIdentifier("ShareCompute.Credits.LocalActivity")
+    }
     private var monthTitle: String {
         guard let month else { return String(localized: "No windows yet") }
-        // `2026-09-01` → `September 2026`.
-        let parser = DateFormatter()
-        parser.dateFormat = "yyyy-MM-dd"
-        parser.timeZone = TimeZone(identifier: "UTC")
+        let parser = DateFormatter(); parser.dateFormat = "yyyy-MM-dd"; parser.timeZone = TimeZone(identifier: "UTC")
         guard let date = parser.date(from: month) else { return month }
-        let display = DateFormatter()
-        display.setLocalizedDateFormatFromTemplate("MMMMy")
-        // Same zone it was parsed in. Formatting a UTC midnight in a local
-        // zone west of Greenwich lands on the previous day, which rendered
-        // "2026-09-01" as "August 2026".
-        display.timeZone = TimeZone(identifier: "UTC")
+        let display = DateFormatter(); display.setLocalizedDateFormatFromTemplate("MMMMy"); display.timeZone = TimeZone(identifier: "UTC")
         return display.string(from: date)
-    }
-
-    private var monthScope: String {
-        guard let totals else {
-            return String(localized: "Account-wide, across every node.")
-        }
-        let nodes = totals.nodeIDs.count
-        return nodes == 1
-            ? String(
-                format: String(localized: "%1$d windows · 1 node"),
-                totals.windowCount
-            )
-            : String(
-                format: String(localized: "%1$d windows · %2$d nodes"),
-                totals.windowCount,
-                nodes
-            )
-    }
-
-    private var unitExplanation: String {
-        // Prefer QuickSilver's own note when it sends one; it is the
-        // authoritative phrasing of what the unit means.
-        if let note = account?.note, !note.isEmpty { return note }
-        return String(localized: "Amounts are QuickSilver API credit — spendable balance for API usage, not a cash payout. 1.00 equals $1 of API usage.")
-    }
-
-    private func amberField(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
-                .font(.rapid(size: 9, weight: .bold))
-                .tracking(0.4)
-                .foregroundStyle(RapidTheme.onBrandPrimarySecondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.rapid(size: 14, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(RapidTheme.onBrandPrimary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
     }
 }
 
-// MARK: - One ledger row
+private func credit(_ value: Decimal) -> String {
+    if value != 0 && abs(value) < Decimal(string: "0.01")! { return "<0.01 credits" }
+    let formatter = NumberFormatter(); formatter.numberStyle = .decimal
+    formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 2
+    return "\(formatter.string(from: NSDecimalNumber(decimal: value)) ?? "0.00") credits"
+}
 
-/// One accounting window.
-///
-/// Fixed-width lanes so `Window`, `Node · Model`, the counts and the credit
-/// form columns down the table regardless of how long any node id is.
+private extension View {
+    func creditsGroupedCard() -> some View {
+        background(RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous).fill(RapidTheme.surfaceRaised))
+            .overlay(RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous).strokeBorder(RapidTheme.hairline, lineWidth: 1))
+    }
+}
+
 struct ShareComputeLedgerRowView: View {
     let window: ShareComputeLedgerWindow
     var isNarrow = false
-
     var body: some View {
         Group {
-            if isNarrow { narrow } else { wide }
-        }
-        .padding(.horizontal, 10)
-        .frame(minHeight: isNarrow ? 58 : 46)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(RapidTheme.bandHairline).frame(height: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityIdentifier("ShareCompute.Credits.Window.\(window.cursor)")
-    }
-
-    private var wide: some View {
-        HStack(spacing: 0) {
-            Text(periodLabel)
-                .font(.rapid(size: 11))
-                .foregroundStyle(RapidTheme.bandInk)
-                .lineLimit(1)
-                .frame(width: ShareComputeLedgerLayout.Column.window.width(), alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(modelLabel)
-                    .font(.rapid(size: 12, weight: .medium))
-                    .foregroundStyle(modelTint)
-                    .lineLimit(1)
-                Text(window.nodeID)
-                    .font(.rapid(size: 9, design: .monospaced))
-                    .foregroundStyle(RapidTheme.bandLink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            if isNarrow {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack { Text(periodLabel); Spacer(); statusTag }
+                    HStack(spacing: 5) {
+                        Text("\(modelLabel) · \(window.nodeID)").lineLimit(1).truncationMode(.middle)
+                        Text("· \(window.requestCount) requests · \(credit(window.finalCredit))").fixedSize()
+                    }.foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Text(periodLabel).frame(width: 100, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(modelLabel).lineLimit(1)
+                        Text(window.nodeID).font(.rapid(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(window.requestCount)").monospacedDigit().frame(width: 65, alignment: .leading)
+                    Text(credit(window.finalCredit)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75).frame(width: 85, alignment: .leading)
+                    statusTag.frame(width: 80, alignment: .leading)
+                }
             }
-            .frame(width: ShareComputeLedgerLayout.Column.model.width(), alignment: .leading)
-
-            Text("\(window.requestCount)")
-                .font(.rapid(size: 12))
-                .monospacedDigit()
-                .foregroundStyle(RapidTheme.bandInk)
-                .frame(width: ShareComputeLedgerLayout.Column.requests.width(), alignment: .leading)
-
-            Text("\(ShareComputeCreditFormatter.count(window.inputTokens)) / \(ShareComputeCreditFormatter.count(window.outputTokens))")
-                .font(.rapid(size: 11))
-                .monospacedDigit()
-                .foregroundStyle(RapidTheme.bandInkSecondary)
-                .lineLimit(1)
-                .frame(width: ShareComputeLedgerLayout.Column.tokens.width(), alignment: .leading)
-
-            Text(ShareComputeCreditFormatter.credit(window.finalCredit))
-                .font(.rapid(size: 12, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(RapidTheme.bandInk)
-                .frame(width: ShareComputeLedgerLayout.Column.credit.width(), alignment: .leading)
-
-            statusTag.frame(width: ShareComputeLedgerLayout.Column.status.width(), alignment: .leading)
-        }
+        }.font(.rapid(size: 11)).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+            .accessibilityElement(children: .combine).accessibilityLabel(accessibilityLabel)
+            .accessibilityIdentifier("ShareCompute.Credits.Window.\(window.cursor)")
     }
-
-    private var narrow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: RapidTheme.Space.sm) {
-                Text(modelLabel)
-                    .font(.rapid(size: 12, weight: .medium))
-                    .foregroundStyle(modelTint)
-                    .lineLimit(1)
-                Spacer(minLength: RapidTheme.Space.sm)
-                Text(ShareComputeCreditFormatter.credit(window.finalCredit))
-                    .font(.rapid(size: 12, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(RapidTheme.bandInk)
-                statusTag
-            }
-            HStack(spacing: 8) {
-                Text(periodLabel)
-                    .font(.rapid(size: 10))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                Text("·").foregroundStyle(RapidTheme.bandInkTertiary).font(.system(size: 10))
-                Text(String(format: String(localized: "%d req"), window.requestCount))
-                    .font(.rapid(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                Spacer(minLength: 0)
-                Text(window.nodeID)
-                    .font(.rapid(size: 9, design: .monospaced))
-                    .foregroundStyle(RapidTheme.bandLink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    /// A deleted node/model record renders neutrally. Never a guess, and never
-    /// blank — a blank cell reads as a rendering fault.
-    private var modelLabel: String {
-        window.modelID ?? String(localized: "Model unavailable")
-    }
-
-    private var modelTint: Color {
-        window.modelID == nil ? RapidTheme.bandInkTertiary : RapidTheme.bandInk
-    }
-
+    private var modelLabel: String { window.modelID ?? String(localized: "Model unavailable") }
     private var periodLabel: String {
-        let day = DateFormatter()
-        day.setLocalizedDateFormatFromTemplate("MMMd")
-        let time = DateFormatter()
-        time.timeStyle = .short
+        let day = DateFormatter(); day.setLocalizedDateFormatFromTemplate("MMMd")
+        let time = DateFormatter(); time.timeStyle = .short
         return "\(day.string(from: window.periodStart)) · \(time.string(from: window.periodStart))"
     }
-
     private var statusTag: some View {
-        ShareComputeStatusTag(title: window.status.title, tone: statusTone)
-    }
-
-    private var statusTone: ShareComputeTagTone {
-        switch window.status {
-        case .credited: return .ready
-        case .pending: return .selected
-        case .zero, .unknown: return .neutral
+        let color: Color = switch window.status {
+        case .credited: .green
+        case .pending: .orange
+        case .zero, .unknown: .secondary
         }
+        return Text(window.status.title.capitalized).font(.rapid(size: 11, weight: .medium))
+            .foregroundStyle(color).padding(.horizontal, 8).padding(.vertical, 4)
+            .background(color.opacity(0.13), in: Capsule()).fixedSize()
     }
-
     private var accessibilityLabel: String {
-        let credit = ShareComputeCreditFormatter.credit(window.finalCredit)
-        let accrued = window.accruedCredit == nil
-            ? String(localized: "accrued amount unknown")
-            : String(
-                format: String(localized: "accrued %@"),
-                ShareComputeCreditFormatter.credit(window.accruedCredit)
-            )
-        return String(
-            format: String(localized: "%1$@, node %2$@, %3$d requests, %4$d input and %5$d output tokens, credit %6$@, %7$@, status %8$@"),
-            modelLabel,
-            window.nodeID,
-            window.requestCount,
-            window.inputTokens,
-            window.outputTokens,
-            credit,
-            accrued,
-            window.status.title
-        )
+        let accrued = window.accruedCredit.map(credit) ?? String(localized: "accrued amount unknown")
+        return "\(modelLabel), node \(window.nodeID), \(window.requestCount) requests, \(window.inputTokens) input and \(window.outputTokens) output tokens, credit \(credit(window.finalCredit)), accrued \(accrued), status \(window.status.title)"
     }
 }

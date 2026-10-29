@@ -668,13 +668,7 @@ enum RapidTheme {
     /// sit UNDER ``brandPrimaryRaised`` without either reading as the panel
     /// itself.
     ///
-    /// Appearance-INDEPENDENT, like every other token on this panel, and that
-    /// is the whole reason it exists. The Live Pool model picker reached for
-    /// ``brandPrimaryTint`` instead, which is appearance-DEPENDENT and resolves
-    /// to a near-black amber in Dark — so the unselected rows rendered dark ink
-    /// on a dark fill sitting on a bright amber panel, and the picker was
-    /// unreadable in exactly one appearance. The amber panel's ground does not
-    /// flip, so nothing on it may.
+    /// Appearance-independent to maintain contrast on the amber panel.
     static let brandPrimarySurface = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
         NSColor(deviceRed: 0xFF/255.0, green: 0xF7/255.0, blue: 0xE8/255.0, alpha: 1.0)
     }))

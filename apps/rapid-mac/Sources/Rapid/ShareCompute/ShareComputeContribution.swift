@@ -5,8 +5,7 @@ import Foundation
 /// What Rapid can honestly say about the reward for one finished session.
 ///
 /// Rapid never stores, derives, or displays a reward AMOUNT — QuickSilver owns
-/// that, and there is no local API that returns it (see
-/// ``ShareComputePoolDemand`` for the same boundary on demand data). What Rapid
+/// that, and there is no local API that returns it. What Rapid
 /// *does* know is how far the session got before it ended, and that is the only
 /// input to this value:
 ///

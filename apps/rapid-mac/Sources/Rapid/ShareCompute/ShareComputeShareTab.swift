@@ -100,18 +100,16 @@ struct ShareComputeRelayStatusBar: View {
 
 // MARK: - Share tab
 
-/// "What can I serve right now?"
-///
-/// One continuous workbench: the relay status bar, the headline and its
-/// description, the three connected steps, the model selector, the primary
-/// action, and the standing facts — in that reading order, inside a single
-/// frame.
-///
-/// The description sits directly under the headline rather than in a right-hand
-/// column. That is not a styling preference: the headline makes a promise
-/// ("earn API credits") whose qualification ("live forwarding, no queue") has to
-/// be read immediately after it, and a parallel column is read second or not at
-/// all.
+enum ShareComputeSetupStep: Equatable {
+    case key, model, start
+    static func current(keyDone: Bool, modelDone: Bool) -> Self {
+        if !keyDone { return .key }
+        if !modelDone { return .model }
+        return .start
+    }
+    static func canStart(keyDone: Bool, modelDone: Bool) -> Bool { keyDone && modelDone }
+}
+
 struct ShareComputeShareTab: View {
     let models: [ShareComputeLocalModel]
     let selected: ShareComputeLocalModel?
@@ -119,282 +117,132 @@ struct ShareComputeShareTab: View {
     let catalogLoaded: Bool
     let isNarrow: Bool
     let requiresConnection: Bool
+    let hasSavedKey: Bool
+    var savedKeyLabel: String? = nil
     @Binding var isPickerOpen: Bool
     let onSelect: (ShareComputeLocalModel) -> Void
     let onStart: () -> Void
-    let onOpenPool: () -> Void
-
-    /// Measured width of the selector row, so the picker menu can match it.
+    let onOpenQuickSilver: () -> Void
+    let onAddKey: () -> Void
+    let onGetKey: () -> Void
     @State private var selectorWidth: CGFloat = 0
-
-    private var readyCount: Int { models.count }
+    private var keyDone: Bool { hasSavedKey || !requiresConnection }
+    private var modelDone: Bool { selected != nil }
+    private var current: ShareComputeSetupStep { .current(keyDone: keyDone, modelDone: modelDone) }
+    private var canStart: Bool { ShareComputeSetupStep.canStart(keyDone: keyDone, modelDone: modelDone) }
 
     var body: some View {
-        ShareComputeWorkbenchFrame {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             VStack(spacing: 0) {
-                ShareComputeRelayStatusBar(status: relayStatus, isNarrow: isNarrow)
-                band
-            }
-        }
-    }
-
-    private var band: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            headline
-            Divider().overlay(RapidTheme.bandHairline)
-            ShareComputeValuePath(isNarrow: isNarrow)
-            Divider().overlay(RapidTheme.bandHairline)
-            selector
-            assurances
-        }
-        .padding(.horizontal, isNarrow ? 20 : 32)
-        .padding(.top, 28)
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RapidTheme.surfaceBand)
-    }
-
-    // MARK: Headline
-
-    private var headline: some View {
-        HStack(alignment: .top, spacing: RapidTheme.Space.lg) {
-            VStack(alignment: .leading, spacing: 8) {
-                // Paper sets the promise on ONE line, split by colour: the
-                // instruction in band ink, the payoff in amber. Two Texts
-                // rather than one attributed string so the split survives the
-                // wrap to two lines at narrow width.
-                headlineText
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(
-                        String(localized: "Serve live requests. Earn API credits.")
-                    )
-
-                // Directly under the headline. Says, in one sentence, both what
-                // happens (forwarding while online) and what does NOT exist (a
-                // queue, a claim step).
-                Text("QuickSilver forwards requests to this Mac while it is online. No task queue or manual acceptance.")
-                    .font(.rapid(size: isNarrow ? 13 : 14))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-            // The mascot keeps its full rendered box (the plate is ~50%
-            // transparent margin) so nothing clips its tail or motion trail,
-            // and it sits opposite the headline rather than over any status
-            // text.
-            if !isNarrow {
-                CommunityMascot(
-                    context: .readyInvitation,
-                    isAnimating: true,
-                    visibleSize: 43
-                )
-                .frame(width: 92, alignment: .trailing)
-            }
-        }
-    }
-
-    /// Headline, laid out so the colour split never costs a line break.
-    ///
-    /// Desktop keeps both halves on one line; narrow stacks them. Concatenating
-    /// with `+` on desktop lets the two colours share a single line box, which
-    /// `HStack` would not guarantee once tracking is applied.
-    @ViewBuilder
-    private var headlineText: some View {
-        let size: CGFloat = isNarrow ? 23 : 29
-        let tracking: CGFloat = isNarrow ? -0.4 : -0.58
-        if isNarrow {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Serve live requests.")
-                    .font(.rapid(size: size, weight: .bold))
-                    .tracking(tracking)
-                    .foregroundStyle(RapidTheme.bandInk)
-                Text("Earn API credits.")
-                    .font(.rapid(size: size, weight: .bold))
-                    .tracking(tracking)
-                    .foregroundStyle(RapidTheme.brandPrimary)
-            }
-        } else {
-            (
-                Text("Serve live requests. ")
-                    .font(.rapid(size: size, weight: .bold))
-                    .foregroundColor(RapidTheme.bandInk)
-                + Text("Earn API credits.")
-                    .font(.rapid(size: size, weight: .bold))
-                    .foregroundColor(RapidTheme.brandPrimary)
-            )
-            .tracking(tracking)
-        }
-    }
-
-    // MARK: Selector + action
-
-    private var selector: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                // Paper: 11pt on the desktop board, 10pt narrow.
-                ShareComputeEyebrow(
-                    text: String(localized: "Model to serve"),
-                    tone: RapidTheme.bandInkSecondary,
-                    size: isNarrow ? 10 : 11
-                )
-                if catalogLoaded {
-                    ShareComputeEyebrow(
-                        text: readyCount == 1
-                            ? String(localized: "· 1 local model ready")
-                            : String(
-                                format: String(localized: "· %1$d local models ready"),
-                                readyCount
-                            ),
-                        tone: RapidTheme.bandReady,
-                        size: isNarrow ? 10 : 11
-                    )
-                }
-            }
-
-            // Narrow stacks the selector above the action; desktop puts them
-            // side by side so the action stays visually attached to the model
-            // it will share.
-            if isNarrow {
-                VStack(spacing: 10) {
-                    selectorRow
-                    primaryAction
-                }
-            } else {
-                HStack(spacing: 10) {
-                    selectorRow
-                    primaryAction.frame(width: 300)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var selectorRow: some View {
-        if let selected {
-            ShareComputeModelSelectorRow(
-                model: selected,
-                isOpen: isPickerOpen,
-                isNarrow: isNarrow,
-                action: { isPickerOpen.toggle() }
-            )
-            // The menu is drawn edge-to-edge with this row, so the row has to
-            // report how wide it ended up being.
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { selectorWidth = proxy.size.width }
-                        .onChange(of: proxy.size.width) { _, width in
-                            selectorWidth = width
+                HStack {
+                    Text("Set up sharing").font(.rapid(size: 15, weight: .semibold))
+                    Spacer()
+                    Text("\((keyDone ? 1 : 0) + (modelDone ? 1 : 0)) of 3 done")
+                        .font(.rapid(size: 12)).foregroundStyle(.secondary)
+                }.padding(RapidTheme.Space.lg)
+                divider
+                setupRow(number: 1, title: "QuickSilver provider key", done: keyDone, step: .key) {
+                    if keyDone {
+                        Text(savedKeyLabel ?? "Key saved")
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("One key from your QuickSilver dashboard lets this Mac share and shows your credits.")
+                            Button("Don't have one? Get a key ↗", action: onGetKey)
+                                .buttonStyle(.link).fixedSize().accessibilityIdentifier("ShareCompute.Setup.GetKey")
                         }
-                }
-                .accessibilityHidden(true)
-            }
-            .shareComputePicker(
-                isPresented: $isPickerOpen,
-                models: models,
-                selectedID: selected.id,
-                width: selectorWidth,
-                onSelect: onSelect
-            )
-        } else {
-            ShareComputeNoLocalModelsRow(
-                catalogLoaded: catalogLoaded,
-                onOpenPool: onOpenPool
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var primaryAction: some View {
-        if selected == nil {
-            ShareComputePrimaryBandButton(
-                // NOT "see what the pool needs" — the pool publishes what is
-                // online, never what it wants.
-                title: String(localized: "See what is online"),
-                height: isNarrow ? 48 : 72,
-                action: onOpenPool
-            )
-            .accessibilityIdentifier("ShareCompute.OpenPool")
-        } else {
-            ShareComputePrimaryBandButton(
-                // First setup collects a key. Once configured, a direct start
-                // reuses the saved account or node without another review sheet.
-                title: requiresConnection
-                    ? String(localized: "Set up sharing")
-                    : String(localized: "Start sharing"),
-                height: isNarrow ? 48 : 72,
-                action: onStart
-            )
-            .accessibilityIdentifier("ShareCompute.Start")
-        }
-    }
-
-    // MARK: Assurances
-
-    private var assurances: some View {
-        AdaptiveAssuranceRow(isNarrow: isNarrow) {
-            HStack(spacing: 22) {
-                assurance(String(localized: "One model serves at a time"))
-                assurance(String(localized: "Stop takes this Mac offline and unloads the model"))
-            }
-        } trailing: {
-            HStack(spacing: 10) {
-                // What is earned, and on what basis. No throughput estimate and
-                // no cap figure: the summary endpoint publishes neither, and a
-                // number invented here would read as a commitment.
-                assurance(String(localized: "Credits are calculated monthly from metered tokens"))
-                Link(destination: ShareComputeDestination.credits) {
-                    HStack(spacing: 4) {
-                        Text("QuickSilver API credits")
-                            .font(.rapid(size: isNarrow ? 11 : 12, weight: .bold))
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: isNarrow ? 9 : 10, weight: .bold))
-                            .accessibilityHidden(true)
                     }
-                    .foregroundStyle(RapidTheme.brandPrimary)
+                } action: {
+                    if keyDone {
+                        Button("Change…", action: onAddKey).buttonStyle(.plain)
+                            .accessibilityIdentifier("ShareCompute.Setup.AddKey")
+                    } else {
+                        Button("Add key", action: onAddKey).buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("ShareCompute.Setup.AddKey")
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    String(localized: "Credits are QuickSilver API credits, not cash. Open the QuickSilver dashboard.")
-                )
-                .accessibilityIdentifier("ShareCompute.CreditsLink")
+                divider
+                setupRow(number: 2, title: "Model to share", done: modelDone, step: .model) {
+                    if !catalogLoaded { Text("Checking downloaded models…") }
+                    else if models.isEmpty { Text("No models can be shared from this Mac right now.") }
+                    else if let selected {
+                        HStack(spacing: 5) {
+                            if !selected.isReady { Circle().fill(.orange).frame(width: 6, height: 6) }
+                            Text(selected.isReady ? "Ready on this Mac" : "Download needed")
+                        }
+                    } else { Text("One model is shared at a time.") }
+                } action: {
+                    if catalogLoaded && models.isEmpty {
+                        Button("Open QuickSilver", action: onOpenQuickSilver).buttonStyle(.bordered)
+                            .accessibilityIdentifier("ShareCompute.Setup.BrowsePool")
+                    } else if catalogLoaded { selector }
+                }
+                divider
+                setupRow(number: 3, title: "Start sharing", done: false, step: .start) {
+                    Text(canStart ? "This Mac goes online and earns API credits for served tokens." : "Complete the steps above to go online.")
+                } action: {
+                    if canStart {
+                        Button("Start sharing", action: onStart).buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("ShareCompute.Setup.Start")
+                    } else {
+                        Button("Start sharing", action: onStart).buttonStyle(.bordered).disabled(true)
+                            .accessibilityIdentifier("ShareCompute.Setup.Start")
+                    }
+                }
+            }.shareGroupedCard()
+            Link("About QuickSilver API credits ↗", destination: ShareComputeDestination.credits)
+                .font(.rapid(size: 12)).accessibilityIdentifier("ShareCompute.CreditsLink")
+        }.frame(maxWidth: 720, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var divider: some View {
+        Rectangle().fill(RapidTheme.hairline).frame(height: 1).padding(.leading, 54)
+    }
+    private func setupRow<Content: View, Action: View>(number: Int, title: String, done: Bool, step: ShareComputeSetupStep, @ViewBuilder content: () -> Content, @ViewBuilder action: () -> Action) -> some View {
+        HStack(alignment: .top, spacing: RapidTheme.Space.md) {
+            ZStack {
+                Circle().fill(done ? Color.green : (current == step ? Color.accentColor : Color.clear))
+                Circle().strokeBorder(done || current == step ? Color.clear : RapidTheme.hairline, lineWidth: 1)
+                if done { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white) }
+                else { Text("\(number)").font(.rapid(size: 12, weight: .semibold)).foregroundStyle(current == step ? Color.white : Color.secondary) }
+            }.frame(width: 22, height: 22).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                if isNarrow {
+                    Text(title).font(.rapid(size: 14, weight: .semibold)).frame(minHeight: 22, alignment: .leading)
+                    content().font(.rapid(size: 12)).foregroundStyle(.secondary)
+                    action().padding(.top, 4)
+                } else {
+                    HStack(alignment: .center, spacing: RapidTheme.Space.md) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title).font(.rapid(size: 14, weight: .semibold)).frame(minHeight: 22, alignment: .leading)
+                            content().font(.rapid(size: 12)).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        action()
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(RapidTheme.Space.lg).frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(format: String(localized: "Step %1$d of 3, %2$@, %3$@"), number, title, done ? String(localized: "done") : (current == step ? String(localized: "next") : String(localized: "not done"))))
+    }
+    @ViewBuilder private var selector: some View {
+        if let selected {
+            Button { isPickerOpen.toggle() } label: {
+                HStack {
+                    Text([selected.title, selected.onDiskSize].compactMap { $0 }.joined(separator: " · ")).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.up.chevron.down")
+                }.font(.rapid(size: 13)).frame(maxWidth: .infinity)
             }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("ShareCompute.SelectedModel")
+            .background { GeometryReader { proxy in
+                Color.clear.onAppear { selectorWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, width in selectorWidth = width }
+            }.accessibilityHidden(true) }
+            .shareComputePicker(isPresented: $isPickerOpen, models: models, selectedID: selected.id, width: selectorWidth, onSelect: onSelect)
+            .frame(maxWidth: isNarrow ? .infinity : 260)
         }
     }
 
-    private func assurance(_ text: String) -> some View {
-        Text(text)
-            // Paper: 12pt desktop, 11pt narrow, regular weight in both.
-            .font(.rapid(size: isNarrow ? 11 : 12, weight: .regular))
-            .foregroundStyle(RapidTheme.bandInkSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// Splits the assurance row onto two lines at narrow width instead of letting
-/// either half truncate. The handoff forbids hiding ownership or restoration
-/// information to save space, so the row grows downward rather than clipping.
-private struct AdaptiveAssuranceRow<Leading: View, Trailing: View>: View {
-    let isNarrow: Bool
-    @ViewBuilder var leading: Leading
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        if isNarrow {
-            VStack(alignment: .leading, spacing: 8) {
-                leading
-                trailing
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            HStack(alignment: .center, spacing: RapidTheme.Space.md) {
-                leading
-                Spacer(minLength: RapidTheme.Space.md)
-                trailing
-            }
-        }
-    }
 }
 
 // MARK: - Selector rows
@@ -422,17 +270,17 @@ struct ShareComputeModelSelectorRow: View {
                     if isNarrow {
                         Text(model.title)
                             .font(.rapid(size: 17, weight: .bold))
-                            .foregroundStyle(RapidTheme.bandInk)
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
                         HStack(spacing: 10) {
                             if let size = model.onDiskSize {
                                 Text(size)
                                     .font(.rapid(size: 12))
-                                    .foregroundStyle(RapidTheme.bandInkSecondary)
+                                    .foregroundStyle(.secondary)
                             }
                             Text("Ready on this Mac")
                                 .font(.rapid(size: 11, weight: .bold))
-                                .foregroundStyle(RapidTheme.bandReady)
+                                .foregroundStyle(Color.green)
                         }
                     } else {
                         // Name and size on the first line; readiness moves to
@@ -441,12 +289,12 @@ struct ShareComputeModelSelectorRow: View {
                         HStack(alignment: .firstTextBaseline, spacing: 14) {
                             Text(model.title)
                                 .font(.rapid(size: 20, weight: .semibold))
-                                .foregroundStyle(RapidTheme.bandInk)
+                                .foregroundStyle(.primary)
                                 .lineLimit(1)
                             if let size = model.onDiskSize {
                                 Text(size)
                                     .font(.rapid(size: 13))
-                                    .foregroundStyle(RapidTheme.bandInkSecondary)
+                                    .foregroundStyle(.secondary)
                                     .fixedSize()
                             }
                         }
@@ -466,12 +314,12 @@ struct ShareComputeModelSelectorRow: View {
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
             .background(
-                RapidTheme.bandControl,
+                RapidTheme.surfaceRaised,
                 in: RoundedRectangle(cornerRadius: RapidTheme.Radius.button)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.button)
-                    .strokeBorder(RapidTheme.bandControlStroke, lineWidth: 1)
+                    .strokeBorder(RapidTheme.hairline, lineWidth: 1)
             }
             .contentShape(Rectangle())
         }
@@ -494,68 +342,23 @@ struct ShareComputeModelSelectorRow: View {
         HStack(spacing: 7) {
             Text("Ready on this Mac")
                 .font(.rapid(size: 12, weight: .medium))
-                .foregroundStyle(RapidTheme.bandReady)
+                .foregroundStyle(Color.green)
             Text("·")
                 .font(.system(size: 12))
-                .foregroundStyle(RapidTheme.bandInkTertiary)
+                .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             Text(model.detail)
                 .font(.rapid(size: 12))
-                .foregroundStyle(RapidTheme.bandInkSecondary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
     }
 }
 
-/// What the selector shows when no pool model is downloaded yet.
-///
-/// Share never offers a download — that is Pool's job — so this row explains
-/// the gap and routes there rather than growing a Download Required state the
-/// handoff explicitly rules out of this tab.
-struct ShareComputeNoLocalModelsRow: View {
-    let catalogLoaded: Bool
-    let onOpenPool: () -> Void
 
-    var body: some View {
-        HStack(spacing: RapidTheme.Space.md) {
-            if !catalogLoaded {
-                ProgressView().controlSize(.small).accessibilityHidden(true)
-            } else {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 15))
-                    .foregroundStyle(RapidTheme.bandInkSecondary)
-                    .accessibilityHidden(true)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(
-                    catalogLoaded
-                        ? String(localized: "No pool model is downloaded yet")
-                        : String(localized: "Checking this Mac…")
-                )
-                .font(.rapid(size: 15, weight: .bold))
-                .foregroundStyle(RapidTheme.bandInk)
-                if catalogLoaded {
-                    Text("Live Pool shows every supported model, what is online, and what each one would download.")
-                        .font(.rapid(size: 12))
-                        .foregroundStyle(RapidTheme.bandInkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-        .background(
-            RapidTheme.bandControl,
-            in: RoundedRectangle(cornerRadius: RapidTheme.Radius.button)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: RapidTheme.Radius.button)
-                .strokeBorder(RapidTheme.bandControlStroke, lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("ShareCompute.NoLocalModels")
-        .onTapGesture(perform: onOpenPool)
+extension View {
+    func shareGroupedCard() -> some View {
+        background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous).strokeBorder(RapidTheme.hairline, lineWidth: 1))
     }
 }

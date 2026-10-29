@@ -8,8 +8,7 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
 ## Desktop
 
 1. In **Settings → Experimental**, enable **Share Compute**.
-2. Open **Share Compute → Live Pool** to see supported models and choose one
-   that is available on your Mac. Download it if the app asks you to.
+2. Download a supported model to your Mac using the model manager.
 3. In **Settings → Experimental → Share Compute**, give this Mac a worker
    name and save your `qsppk-` provider key — this is the only QuickSilver
    key Rapid ever asks for, and it also reads the credit ledger on Credits.
@@ -17,7 +16,7 @@ provider key (`qsppk-`). The model weights are downloaded once if needed.
    Keychain; app preferences contain no secret. You can also paste and save
    the key in the first connection sheet. Saving settings does not start
    sharing.
-4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). Choose the supported model shown in Live Pool.
+4. On **Share**, click **Start sharing** (or **Set up sharing** for first setup). Choose a downloaded model in step 2.
    Rapid unloads the current local model and runs an exclusive pool process:
    the sharing model is unavailable to local chat. Chat explains that sharing
    must stop before a local model can start; it does not offer a blocked Start.
@@ -101,7 +100,7 @@ An existing registration bound to the old ordinary 27B alias needs one fresh
 registration for TensorFold (CLI: add `--reregister`; Desktop: reconnect using
 the saved provider key, or save one in Settings if this is the first setup). Node credentials remain bound to the selected alias.
 Only models enabled in QuickSilver's current pool can receive requests; the
-Desktop **Live Pool** view shows the current availability.
+Open QuickSilver to see current availability.
 
 Pool mode always disables optional disk caches. Before starting the local
 server, it removes the selected model's old automatic prompt snapshots,
