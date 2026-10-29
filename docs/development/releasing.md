@@ -50,7 +50,10 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    git push origin chore/bump-X.Y.Z
    gh pr create --repo raullenchai/Rapid-MLX --base main \
      --title "chore: bump version to X.Y.Z" --body "Release X.Y.Z."
-   # after CI (incl. release-preflight.yml) is green, merge with the exact canonical
+   # Dispatch release-preflight.yml for this PR and its exact head, and wait for green.
+   # Put its run URL in the PR body as: Release-Preflight: <url>
+   # Run or re-run the version-bump guard; it reads the current PR body live.
+   # After CI is green, merge with the exact canonical
    # subject. PF-1 requires the bump-PR title to be exactly "chore: bump version to
    # X.Y.Z" (no suffix); passing --subject keeps the merged commit subject equally
    # clean. The post-merge detect step also accepts GitHub's default "(#NN)"
