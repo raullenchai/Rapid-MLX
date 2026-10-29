@@ -92,6 +92,7 @@ def validate_request(
     response_format: Any = None,
     tools: Any = None,
     sampling: dict[str, Any] | None = None,
+    supports_tools: bool = True,
 ) -> None:
     unsupported = [
         name
@@ -100,7 +101,7 @@ def validate_request(
             ("videos", videos),
             ("grammar", grammar),
             ("response_format", response_format),
-            ("tools", tools),
+            ("tools", tools if not supports_tools else None),
         )
         if value not in (None, [], {})
     ]
