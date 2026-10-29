@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -126,14 +127,97 @@ def test_present_but_unreadable_file_fails_closed(
         _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
         / "config.json"
     )
-    original_probe = _MODULE.file_is_readable
+    original_probe = _MODULE.probe_file
     monkeypatch.setattr(
         _MODULE,
-        "file_is_readable",
-        lambda path: False if path == blocked else original_probe(path),
+        "probe_file",
+        lambda path: _MODULE.UNREADABLE if path == blocked else original_probe(path),
     )
     missing = _MODULE.missing_pins(pins, tmp_path)
     assert missing == [(pins["qwen"][0], pins["qwen"][1], ("config.json",))]
+
+
+_PERMISSION_HINT = "exist but could not be read (permission denied or read timed out)"
+
+
+def test_missing_file_reports_missing_not_permission(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    snapshot = _MODULE.snapshot_path(tmp_path, pins["gemma"][0], pins["gemma"][1])
+    (snapshot / "config.json").unlink()
+    assert (
+        _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
+    )
+    error = capsys.readouterr().err
+    assert "1 immutable snapshot(s) missing or unreadable" in error
+    assert "unavailable: config.json" in error
+    assert _PERMISSION_HINT not in error
+    assert "Full Disk Access" not in error
+
+
+def test_permission_denied_existing_file_reports_access_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    real_is_file = Path.is_file
+
+    def deny(self: Path) -> bool:
+        if self.name == "config.json":
+            raise PermissionError(1, "Operation not permitted", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", deny)
+    assert (
+        _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
+    )
+    error = capsys.readouterr().err
+    assert "3 file(s) " + _PERMISSION_HINT in error
+    assert "Full Disk Access" in error
+    assert "immutable snapshot(s) missing" not in error
+    assert "snapshot_download" not in error
+    assert f"{pins['qwen'][0]}@{pins['qwen'][1]}: blocked: config.json" in error
+
+
+def test_read_timeout_on_existing_file_reports_access_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    calls: list[object] = []
+
+    def timeout(*args: object, **kwargs: object):
+        calls.append(args)
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=5)
+
+    monkeypatch.setattr(_MODULE.subprocess, "run", timeout)
+    assert (
+        _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
+    )
+    error = capsys.readouterr().err
+    assert "3 file(s) " + _PERMISSION_HINT in error
+    assert "immutable snapshot(s) missing" not in error
+    # One bounded probe per snapshot, not one timeout per shard.
+    assert len(calls) == 3
+
+
+def test_probe_classifies_real_permission_error(tmp_path: Path) -> None:
+    candidate = tmp_path / "config.json"
+    candidate.write_text("stub")
+    assert _MODULE.probe_file(candidate) == _MODULE.READABLE
+    assert _MODULE.probe_file(tmp_path) == _MODULE.UNREADABLE  # IsADirectoryError
+    candidate.chmod(0)
+    try:
+        if os.access(candidate, os.R_OK):
+            pytest.skip("running with privileges that bypass file modes")
+        assert _MODULE.probe_file(candidate) == _MODULE.BLOCKED
+    finally:
+        candidate.chmod(0o600)
 
 
 def test_readability_probe_times_out_instead_of_hanging(

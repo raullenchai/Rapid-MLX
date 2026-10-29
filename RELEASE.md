@@ -330,6 +330,25 @@ CLIs aren't installed. So the gate runs on a **self-hosted Apple-Silicon runner
 - Manual / on-demand run of the gate (no release):
   `gh workflow run agent-gate.yml -R raullenchai/Rapid-MLX`.
 
+### Sidecar cache preflight: files exist but could not be read
+
+- **Symptom:** After a host reboot, the release job's sidecar cache preflight
+  (`apps/rapid-mac/scripts/check-sidecar-smoke-cache.py`) reports `N file(s) exist
+  but could not be read (permission denied or read timed out)`. Older versions
+  reported `immutable snapshot(s) missing or unreadable`. The snapshots are
+  present; do not re-download them.
+- **Cause:** The runner runs as a launchd service without Full Disk Access from
+  macOS privacy controls (TCC) to the external volume holding the Hugging Face
+  cache. Opening cached files is denied or hangs.
+- **Fix:** In System Settings > Privacy & Security > Full Disk Access, add
+  `~/actions-runner/bin/Runner.Listener`, `~/actions-runner/bin/Runner.Worker`,
+  and `~/actions-runner/externals/node24/bin/node`. Restart the launchd runner
+  service with `launchctl kickstart -k` on its service label, or run
+  `./svc.sh stop && ./svc.sh start` from `~/actions-runner`, then re-run the job.
+- **Temporary workaround:** Stop the service and run `./run.sh` from
+  `~/actions-runner` in a terminal app that already has Full Disk Access.
+  Restore the service afterwards.
+
 ## When the gate fails (a Tier-1 agent regressed)
 
 The `release` job is skipped; the version stays committed-but-unpublished. In

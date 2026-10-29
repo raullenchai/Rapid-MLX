@@ -92,59 +92,93 @@ def snapshot_path(cache_root: Path, repository: str, revision: str) -> Path:
     )
 
 
-def file_is_readable(path: Path) -> bool:
+# Per-file probe outcomes.  ``BLOCKED`` means the path exists but opening it
+# was denied or timed out, which on a macOS runner usually indicates a missing
+# privacy (Full Disk Access) grant rather than an absent download.
+READABLE = "readable"
+MISSING = "missing"
+BLOCKED = "blocked"
+UNREADABLE = "unreadable"
+
+_PERMISSION_EXIT = 13
+_PROBE = (
+    "import sys\n"
+    "try:\n"
+    "    open(sys.argv[1], 'rb').read(1)\n"
+    "except PermissionError:\n"
+    f"    sys.exit({_PERMISSION_EXIT})\n"
+)
+
+
+def probe_file(path: Path) -> str:
     """Probe one byte out-of-process so a macOS TCC denial cannot hang CI."""
     try:
         result = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import sys; open(sys.argv[1], 'rb').read(1)",
-                str(path),
-            ],
+            [sys.executable, "-I", "-c", _PROBE, str(path)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=_READ_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        return BLOCKED
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+        return UNREADABLE
+    if result.returncode == 0:
+        return READABLE
+    if result.returncode == _PERMISSION_EXIT:
+        return BLOCKED
+    return UNREADABLE
 
 
-def missing_pins(
+def file_is_readable(path: Path) -> bool:
+    return probe_file(path) == READABLE
+
+
+def unavailable_pins(
     pins: dict[str, tuple[str, str, tuple[str, ...]]], cache_root: Path
-) -> list[tuple[str, str, tuple[str, ...]]]:
-    missing: list[tuple[str, str, tuple[str, ...]]] = []
+) -> list[tuple[str, str, tuple[tuple[str, str], ...]]]:
+    """Return ``(repository, revision, ((file, outcome), ...))`` per bad pin."""
+    unavailable: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
     for repository, revision, files in pins.values():
         snapshot = snapshot_path(cache_root, repository, revision)
-        missing_files: list[str] = []
+        bad_files: list[tuple[str, str]] = []
         for file in files:
             candidate = snapshot / file
-            path_exists = False
             try:
                 # Reading one byte catches macOS privacy/TCC denials on a
                 # warm-tier symlink. ``is_file`` alone can succeed while the
                 # release runner later blocks forever opening the same blob.
                 # The probe is an isolated, bounded subprocess for that reason.
-                path_exists = snapshot.is_dir() and candidate.is_file()
-                present = path_exists
-                if present:
-                    present = file_is_readable(candidate)
+                if snapshot.is_dir() and candidate.is_file():
+                    outcome = probe_file(candidate)
+                else:
+                    outcome = MISSING
+            except PermissionError:
+                outcome = BLOCKED
             except OSError:
-                present = False
-            if not present:
-                missing_files.append(file)
-                # A path that exists but cannot be opened normally indicates a
-                # snapshot-wide host access boundary. Stop after the first
-                # proof rather than multiplying the timeout by every shard.
-                if path_exists:
-                    break
-        if missing_files:
-            missing.append((repository, revision, tuple(missing_files)))
-    return missing
+                outcome = UNREADABLE
+            if outcome == READABLE:
+                continue
+            bad_files.append((file, outcome))
+            # A path that exists but cannot be opened normally indicates a
+            # snapshot-wide host access boundary. Stop after the first
+            # proof rather than multiplying the timeout by every shard.
+            if outcome != MISSING:
+                break
+        if bad_files:
+            unavailable.append((repository, revision, tuple(bad_files)))
+    return unavailable
+
+
+def missing_pins(
+    pins: dict[str, tuple[str, str, tuple[str, ...]]], cache_root: Path
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    return [
+        (repository, revision, tuple(file for file, _ in bad_files))
+        for repository, revision, bad_files in unavailable_pins(pins, cache_root)
+    ]
 
 
 def write_outputs(
@@ -171,23 +205,48 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cache_root = (args.cache_root or default_cache_root()).expanduser()
-    missing = missing_pins(pins, cache_root)
-    if missing:
-        print(
-            f"sidecar cache preflight: FAIL: {len(missing)} immutable snapshot(s) "
-            f"missing or unreadable in {cache_root}",
-            file=sys.stderr,
-        )
-        for repository, revision, missing_files in missing:
-            print(f"  - {repository}@{revision}", file=sys.stderr)
-            for file in missing_files:
-                print(f"      unavailable: {file}", file=sys.stderr)
+    unavailable = unavailable_pins(pins, cache_root)
+    if unavailable:
+        absent = [
+            entry
+            for entry in unavailable
+            if any(outcome != BLOCKED for _, outcome in entry[2])
+        ]
+        blocked = [
+            (repository, revision, file)
+            for repository, revision, bad_files in unavailable
+            for file, outcome in bad_files
+            if outcome == BLOCKED
+        ]
+        if absent:
             print(
-                '    repair cache access, or restore: python3 -c "from huggingface_hub import '
-                f"snapshot_download; snapshot_download('{repository}', "
-                f"revision='{revision}')\"",
+                f"sidecar cache preflight: FAIL: {len(absent)} immutable snapshot(s) "
+                f"missing or unreadable in {cache_root}",
                 file=sys.stderr,
             )
+            for repository, revision, bad_files in absent:
+                print(f"  - {repository}@{revision}", file=sys.stderr)
+                for file, outcome in bad_files:
+                    if outcome != BLOCKED:
+                        print(f"      unavailable: {file}", file=sys.stderr)
+                print(
+                    '    repair cache access, or restore: python3 -c "from huggingface_hub import '
+                    f"snapshot_download; snapshot_download('{repository}', "
+                    f"revision='{revision}')\"",
+                    file=sys.stderr,
+                )
+        if blocked:
+            print(
+                f"sidecar cache preflight: FAIL: {len(blocked)} file(s) exist but "
+                f"could not be read (permission denied or read timed out) in "
+                f"{cache_root}. On a macOS self-hosted runner this usually means "
+                "the runner service lacks Full Disk Access to the volume holding "
+                "the cache; grant it to the runner binaries and restart the "
+                "service. Do not re-download.",
+                file=sys.stderr,
+            )
+            for repository, revision, file in blocked:
+                print(f"  - {repository}@{revision}: blocked: {file}", file=sys.stderr)
         print(
             "No download was attempted; release gate remains offline.", file=sys.stderr
         )
