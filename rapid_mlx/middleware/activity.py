@@ -20,6 +20,10 @@ class ActivityTracker:
             self._in_flight -= 1
             self._last_activity = time.monotonic()
 
+    def touch(self):
+        with self._lock:
+            self._last_activity = time.monotonic()
+
     def snapshot(self):
         with self._lock:
             return {

@@ -3575,11 +3575,19 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
 
         import rapid_mlx.routes.video as video_routes
 
+        from rapid_mlx.middleware.activity import activity_tracker
+
+        # The last HTTP request was long ago; only the video job is running.
+        activity_tracker._last_activity -= 1000
         original_jobs = video_routes.active_video_jobs
         monkeypatch.setattr(video_routes, "active_video_jobs", lambda: 1)
         busy = client.get("/v1/models/residency").json()["activity"]
         assert busy == {"in_flight": 1, "idle_seconds": 0.0}
         monkeypatch.setattr(video_routes, "active_video_jobs", original_jobs)
+        # The idle clock restarts from the last poll that saw the job running.
+        after = client.get("/v1/models/residency").json()["activity"]
+        assert after["in_flight"] == 0
+        assert after["idle_seconds"] < 5
 
         pinned = client.put("/v1/models/image/pin", json={"pinned": True})
         assert pinned.status_code == 200

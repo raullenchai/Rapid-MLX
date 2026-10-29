@@ -3516,7 +3516,10 @@ final class ServerManager {
         let now = Date()
         let audio = residency.audioLanes.filter { $0.state == "resident" }
         let busy = residency.models.contains { $0.activeRequests > 0 || $0.state != "resident" }
-            || audio.contains { $0.activeRequests == nil || $0.activeRequests! > 0 || $0.idleSeconds == nil }
+            || audio.contains {
+                $0.activeRequests == nil || $0.activeRequests! > 0
+                    || (residency.activity == nil && $0.idleSeconds == nil)
+            }
         if busy { observedIdleActivity = now }
         let modelIdle = residency.models.map(\.idleSeconds)
         let audioIdle = audio.compactMap(\.idleSeconds)
@@ -3542,8 +3545,10 @@ final class ServerManager {
     func unloadResidentModelsIfIdle(idleSetting: Int? = nil) async -> ResidentUnloadResult {
         guard await refreshResidency() else { return .unavailable }
         if let idleSetting {
-            // The refresh suspended; an app operation may have started since.
-            guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
+            // The refresh suspended; the setting may have changed or an app
+            // operation may have started since.
+            guard !Task.isCancelled, IdleModelReleasePreference.value() == idleSetting,
+                  !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
                   !communityBenchmarkReserved else { return .busy }
             let threshold = Double(idleSetting)
             if let activity = residency.activity {
