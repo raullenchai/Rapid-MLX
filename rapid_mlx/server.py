@@ -1275,6 +1275,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from .middleware.activity import ActivityMiddleware  # noqa: E402
+
+app.add_middleware(ActivityMiddleware)
+
 # SECURITY: bound the request body of /v1/audio/transcriptions at the
 # ASGI layer so honest-Content-Length DoS attempts are rejected before
 # Starlette's multipart parser drains the receive channel and spools

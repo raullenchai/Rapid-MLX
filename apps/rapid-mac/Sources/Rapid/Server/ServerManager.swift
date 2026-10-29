@@ -294,6 +294,9 @@ final class ServerManager {
     /// memory against its configured ceiling.
     private(set) var residency: ModelResidencySnapshot = .empty
 
+    @ObservationIgnored private var idleReleaseTask: Task<Void, Never>?
+    @ObservationIgnored private var observedIdleActivity = Date()
+
     /// Alias replacements wait here only when the latest residency snapshot
     /// reports in-flight requests for the current model. This is presentation
     /// state for the existing lifecycle choke point, not another lifecycle
@@ -1286,6 +1289,7 @@ final class ServerManager {
                 : SystemKeychain()
         )
         self.embeddedBearerLifetime = Self.loadBearerLifetime(from: .standard)
+        configureIdleModelRelease(IdleModelReleasePreference.value())
     }
 
     /// GUI golden-flow personas run under an isolated `CFFIXED_USER_HOME`
@@ -3482,6 +3486,47 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
+    /// Poll only while enabled. The server's activity clock decides idleness;
+    /// observed busy intervals also reset the local clock. Servers without the
+    /// activity clock never auto-release.
+    func configureIdleModelRelease(_ setting: Int) {
+        idleReleaseTask?.cancel()
+        idleReleaseTask = nil
+        observedIdleActivity = Date()
+        guard IdleModelReleasePreference.choices.contains(setting), setting > 0 else { return }
+        idleReleaseTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, let self else { return }
+                await self.checkIdleModelRelease(setting: setting)
+            }
+        }
+    }
+
+    private func checkIdleModelRelease(setting: Int) async {
+        guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
+              !communityBenchmarkReserved, case .ready = state else {
+            observedIdleActivity = Date()
+            return
+        }
+        guard await refreshResidency(), !Task.isCancelled else {
+            observedIdleActivity = Date()
+            return
+        }
+        let now = Date()
+        let audio = residency.audioLanes.filter { $0.state == "resident" }
+        let busy = residency.models.contains { $0.activeRequests > 0 || $0.state != "resident" }
+            || audio.contains { $0.activeRequests == nil || $0.activeRequests! > 0 }
+        if busy { observedIdleActivity = now }
+        // Automatic release needs the server-wide activity clock; servers
+        // without it never auto-release (see `shouldUnload`).
+        let serverIdle = residency.activity?.idleSeconds ?? 0
+        let lastActivity = max(observedIdleActivity, now.addingTimeInterval(-max(0, serverIdle)))
+        let operating = isOperating || !residentLoadsInFlight.isEmpty || runtimeProbeOperation != nil || communityBenchmarkReserved
+        guard IdleModelReleasePreference.shouldUnload(setting: setting, lastActivity: lastActivity, inFlight: busy, now: now, loaded: !residency.models.isEmpty || !audio.isEmpty, operating: operating, activity: residency.activity), !Task.isCancelled else { return }
+        _ = await unloadResidentModelsIfIdle(idleSetting: setting)
+    }
+
     enum ResidentUnloadResult: Equatable, Sendable {
         case stopped
         case busy
@@ -3493,8 +3538,20 @@ final class ServerManager {
     /// operation, so this is deliberately an advisory last-moment guard: a
     /// request that arrives after the response is still subject to an explicit
     /// user stop, exactly like the existing model-switch confirmation path.
-    func unloadResidentModelsIfIdle() async -> ResidentUnloadResult {
+    func unloadResidentModelsIfIdle(idleSetting: Int? = nil) async -> ResidentUnloadResult {
         guard await refreshResidency() else { return .unavailable }
+        if let idleSetting {
+            // The refresh suspended; the setting may have changed or an app
+            // operation may have started since.
+            guard !Task.isCancelled, IdleModelReleasePreference.value() == idleSetting,
+                  !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
+                  !communityBenchmarkReserved else { return .busy }
+            // Re-check everything on the refreshed snapshot: a request, a
+            // model load, or an audio job may have started during the refresh.
+            guard let activity = residency.activity, activity.inFlight == 0,
+                  activity.idleSeconds >= Double(idleSetting),
+                  !residency.models.contains(where: { $0.state != "resident" }) else { return .busy }
+        }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy
         }

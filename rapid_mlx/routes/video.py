@@ -96,6 +96,19 @@ def _active_video_admissions_locked() -> int:
     )
 
 
+def _touch_activity() -> None:
+    """Restart the server idle clock when background video work starts or ends."""
+    from ..middleware.activity import activity_tracker
+
+    activity_tracker.touch()
+
+
+def active_video_jobs() -> int:
+    """Running or queued video work, which outlives its creating request."""
+    with _jobs_lock:
+        return _active_video_admissions_locked()
+
+
 _tasks: dict[str, asyncio.Task] = {}
 _cleanup_tasks: set[asyncio.Task] = set()
 _generation_threads: set[threading.Thread] = set()
@@ -531,6 +544,7 @@ async def shutdown_video_jobs(timeout: float = 30.0) -> None:
                     "message": "Video generation was cancelled during server shutdown.",
                 }
                 job.generation_finished = True
+                _touch_activity()
                 cancelled_job_ids.append(job_id)
                 task.cancel()
 
@@ -1218,6 +1232,7 @@ async def _run_job(
                 await runner
             with _jobs_lock:
                 job.generation_finished = True
+                _touch_activity()
             await asyncio.to_thread(
                 shutil.rmtree, _jobs_root / job.id, ignore_errors=True
             )
@@ -1249,6 +1264,7 @@ async def _run_job(
                 job.status = "failed"
                 job.error = {"code": "video_generation_failed", "message": message}
                 job.generation_finished = True
+                _touch_activity()
 
 
 @router.post("/v1/videos", dependencies=[Depends(verify_api_key)])

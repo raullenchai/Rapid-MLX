@@ -149,23 +149,36 @@ struct ResidentAudioLaneStatus: Codable, Sendable, Equatable {
     let model: String?
     let state: String
     let activeRequests: Int?
+    var idleSeconds: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case lane
         case model
         case state
         case activeRequests = "active_requests"
+        case idleSeconds = "idle_seconds"
     }
 
-    init(lane: String, model: String?, state: String, activeRequests: Int? = nil) {
+    init(lane: String, model: String?, state: String, activeRequests: Int? = nil, idleSeconds: Double? = nil) {
         self.lane = lane
         self.model = model
         self.state = state
         self.activeRequests = activeRequests
+        self.idleSeconds = idleSeconds
     }
 
     func matches(modelPath: String) -> Bool {
         model == modelPath && state == "resident"
+    }
+}
+
+struct ServerActivity: Codable, Sendable, Equatable {
+    let inFlight: Int
+    let idleSeconds: Double
+
+    enum CodingKeys: String, CodingKey {
+        case inFlight = "in_flight"
+        case idleSeconds = "idle_seconds"
     }
 }
 
@@ -178,6 +191,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     let evictionsTotal: Int
     let models: [ResidentModelStatus]
     let audioLanes: [ResidentAudioLaneStatus]
+    let activity: ServerActivity?
 
     enum CodingKeys: String, CodingKey {
         case memoryLimitBytes = "memory_limit_bytes"
@@ -187,6 +201,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         case loadsTotal = "loads_total"
         case evictionsTotal = "evictions_total"
         case models
+        case activity
         case audioLanes = "audio_lanes"
     }
 
@@ -198,7 +213,8 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         loadsTotal: Int,
         evictionsTotal: Int,
         models: [ResidentModelStatus],
-        audioLanes: [ResidentAudioLaneStatus] = []
+        audioLanes: [ResidentAudioLaneStatus] = [],
+        activity: ServerActivity? = nil
     ) {
         self.memoryLimitBytes = memoryLimitBytes
         self.memoryUsedBytes = memoryUsedBytes
@@ -208,6 +224,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         self.evictionsTotal = evictionsTotal
         self.models = models
         self.audioLanes = audioLanes
+        self.activity = activity
     }
 
     init(from decoder: Decoder) throws {
@@ -219,6 +236,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         loadsTotal = try values.decode(Int.self, forKey: .loadsTotal)
         evictionsTotal = try values.decode(Int.self, forKey: .evictionsTotal)
         models = try values.decode([ResidentModelStatus].self, forKey: .models)
+        activity = try values.decodeIfPresent(ServerActivity.self, forKey: .activity)
         audioLanes = try values.decodeIfPresent(
             [ResidentAudioLaneStatus].self,
             forKey: .audioLanes
@@ -517,5 +535,26 @@ struct ServerResidencyClient {
         } catch {
             return .rejected("The model server could not load another resident model.")
         }
+    }
+}
+
+/// Persisted timeout in seconds; unknown values fail safely to Never.
+enum IdleModelReleasePreference {
+    static let storageKey = "rapid.server.idle_model_release.v1"
+    static let defaultValue = 0
+    static let choices = [0, 900, 1800, 3600]
+
+    static func value(in defaults: UserDefaults = .standard) -> Int {
+        let value = defaults.object(forKey: storageKey) as? Int ?? defaultValue
+        return choices.contains(value) ? value : defaultValue
+    }
+
+    static func shouldUnload(setting: Int, lastActivity: Date, inFlight: Bool, now: Date, loaded: Bool, operating: Bool, activity: ServerActivity? = nil) -> Bool {
+        guard choices.contains(setting), setting > 0, loaded, !operating, !inFlight,
+              now.timeIntervalSince(lastActivity) >= Double(setting) else { return false }
+        // Older servers cannot report completed-request times reliably, so
+        // automatic release needs the server-wide activity clock.
+        guard let activity else { return false }
+        return activity.inFlight == 0 && activity.idleSeconds >= Double(setting)
     }
 }
