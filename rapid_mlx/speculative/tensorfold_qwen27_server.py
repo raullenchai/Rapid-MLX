@@ -15,6 +15,7 @@ import threading
 import uuid
 import weakref
 from collections.abc import Generator
+from contextlib import suppress
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
@@ -224,8 +225,13 @@ class TensorFoldRequestProvider:
         if app is None:
             raise RuntimeError("TensorFold backend is closed")
         tokenizer = app.tokenizer
-        with app.tokenizer_lock:
-            prompt_ids = [int(x) for x in tokenizer.encode(prompt)]
+        supplied_ids = kwargs.get("prompt_token_ids")
+        if supplied_ids is None:
+            with app.tokenizer_lock:
+                prompt_ids = [int(x) for x in tokenizer.encode(prompt)]
+        else:
+            prompt_ids = supplied_ids
+        ignore_eos = bool(kwargs.get("ignore_eos", False))
         fields = {
             key: kwargs[key]
             for key in ("top_p", "top_k", "min_p", "seed", "stop")
@@ -254,7 +260,7 @@ class TensorFoldRequestProvider:
         history_len, shared_prefix_lens = _prompt_boundaries(
             app,
             prompt_ids,
-            kwargs.get("messages"),
+            None if supplied_ids is not None else kwargs.get("messages"),
             bool(kwargs.get("enable_thinking", False)),
             kwargs.get("tools"),
         )
@@ -267,7 +273,7 @@ class TensorFoldRequestProvider:
             temperature=temperature,
             sampling=app._resolve_sampling(sampling_fields, temperature, prompt_ids),
             drafts=True,
-            ignore_eos=stops.ignore_eos,
+            ignore_eos=ignore_eos or stops.ignore_eos,
             stop_check=stops if stops.strings else None,
             cancellation=cancellation,
             proposer=SuffixLookupProposer(min_match=app.min_match),
@@ -317,7 +323,7 @@ class TensorFoldRequestProvider:
                 chunk_tokens = [int(token) for token in chunk]
                 fresh: list[int] = []
                 for token in chunk_tokens:
-                    if token in stops.eos_ids:
+                    if not ignore_eos and token in stops.eos_ids:
                         break
                     fresh.append(token)
                 current = stops.visible(incremental.extend(fresh), partial=True)
@@ -351,7 +357,7 @@ class TensorFoldRequestProvider:
             # tokenizer violates the contextual decoder contract.
             incremental.finalize()
             content_ids = list(collected)
-            while content_ids and content_ids[-1] in stops.eos_ids:
+            while not ignore_eos and content_ids and content_ids[-1] in stops.eos_ids:
                 content_ids.pop()
             with app.tokenizer_lock:
                 final_text = stops.visible(tokenizer.decode(content_ids))
@@ -606,6 +612,44 @@ def render_prompt(
     )
 
 
+def load_tensorfold_backend(
+    *,
+    main_model_repo,
+    drafter_repo,
+    served_model_name,
+    default_max_tokens,
+    enable_prefix_cache=True,
+    tensorfold_lanes=None,
+    backend_class=TensorFoldQwen27Backend,
+    profile_id="qwen3.8-27b-tensorfold",
+    **_ignored,
+):
+    from .tensorfold_concurrency import request_lanes
+
+    lanes = request_lanes(profile_id, tensorfold_lanes)
+    backend = backend_class.load(
+        main_model_repo,
+        drafter_repo,
+        served_name=served_model_name,
+        max_tokens=default_max_tokens,
+        enable_prefix_cache=enable_prefix_cache,
+        **({"lanes": lanes} if lanes > 1 else {}),
+    )
+    # Qualification-only token evidence. Unset by default so production
+    # requests never persist generated token IDs.
+    try:
+        provider = TensorFoldRequestProvider(
+            backend,
+            audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
+            sampling_defaults=_model_sampling_defaults(main_model_repo),
+        )
+    except BaseException:
+        with suppress(BaseException):
+            backend.close()
+        raise
+    return backend, provider
+
+
 def run_tensorfold_qwen27_server(
     *,
     main_model_repo: str,
@@ -657,24 +701,19 @@ def run_tensorfold_qwen27_server(
     supports_tools = profile_id == "qwen3.8-27b-tensorfold"
     if tool_call_parser is not None and not supports_tools:
         raise RuntimeError("tensorfold backend does not support tool parsing")
+    backend, provider = load_tensorfold_backend(
+        main_model_repo=main_model_repo,
+        drafter_repo=drafter_repo,
+        served_model_name=served_model_name,
+        default_max_tokens=default_max_tokens,
+        enable_prefix_cache=enable_prefix_cache,
+        tensorfold_lanes=tensorfold_lanes,
+        backend_class=backend_class,
+        profile_id=profile_id,
+    )
     from .tensorfold_concurrency import request_lanes
 
     lanes = request_lanes(profile_id, tensorfold_lanes)
-    backend = backend_class.load(
-        main_model_repo,
-        drafter_repo,
-        served_name=served_model_name,
-        max_tokens=default_max_tokens,
-        enable_prefix_cache=enable_prefix_cache,
-        **({"lanes": lanes} if lanes > 1 else {}),
-    )
-    # Qualification-only token evidence. Unset by default so production
-    # requests never persist generated token IDs.
-    provider = TensorFoldRequestProvider(
-        backend,
-        audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
-        sampling_defaults=_model_sampling_defaults(main_model_repo),
-    )
     from rapid_mlx.api.models import ModelInfo, SpeculativeDecodingInfo
     from rapid_mlx.speculative.dflash.server import _build_app
 

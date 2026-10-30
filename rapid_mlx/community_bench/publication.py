@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """What leaves this Mac, as distinct from what the local archive keeps.
 
+A service without language runtime support rejects runs that include it.
+
 A benchmark record and a benchmark *submission* are not the same document, and
 conflating them is what made normal runs unpublishable.
 
@@ -201,7 +203,11 @@ def project_run_for_publication(
     task = execution.get("task") if isinstance(execution, dict) else None
     language = task.get("language") if isinstance(task, dict) else None
     if isinstance(execution, dict) and isinstance(language, dict):
-        if language.get("prefill_chunk_size") == _LEGACY_PROTOCOL_PREFILL_CHUNK_SIZE:
+        if (
+            "runtime" not in language
+            and language.get("prefill_chunk_size")
+            == _LEGACY_PROTOCOL_PREFILL_CHUNK_SIZE
+        ):
             withheld.append(
                 WithheldFact(
                     "execution.task.language.prefill_chunk_size",

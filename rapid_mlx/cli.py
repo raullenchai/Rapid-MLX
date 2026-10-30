@@ -27,7 +27,10 @@ import threading
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
+
+if TYPE_CHECKING:
+    from rapid_mlx.speculative.serial_benchmark import SerialRuntimeHandle
 
 from rapid_mlx._env import env_truthy
 from rapid_mlx.cli_parser import (  # noqa: F401 - re-exported CLI API
@@ -4116,6 +4119,26 @@ def _preflight_native_mtp_or_exit(args):
     return pair
 
 
+def _prepare_native_mtp_checks(args, pair=None):
+    if pair is None:
+        pair = getattr(args, "_native_mtp_pair", None) or _preflight_native_mtp_or_exit(
+            args
+        )
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    _check_disk_space(pair.target_repo, force=getattr(args, "force_disk_check", False))
+    _check_disk_space(pair.drafter_repo, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(pair.target_repo, alias=alias_name)
+    return pair
+
+
+def _native_mtp_prefill(args, alias_name):
+    return _resolve_prefill_step_size(
+        model_name=alias_name,
+        configured=args.prefill_step_size,
+        user_set_explicit=bool(getattr(args, "_prefill_step_size_explicit", False)),
+    )
+
+
 def _serve_native_mtp_if_requested(
     args,
     *,
@@ -4135,19 +4158,10 @@ def _serve_native_mtp_if_requested(
 
     from .speculative.native_mtp.server import run_native_mtp_server
 
+    pair = _prepare_native_mtp_checks(args, pair=pair)
     alias_name = getattr(args, "_original_alias", None) or args.model
-    _check_disk_space(pair.target_repo, force=getattr(args, "force_disk_check", False))
-    _check_disk_space(pair.drafter_repo, force=getattr(args, "force_disk_check", False))
-    _check_memory_capacity(pair.target_repo, alias=alias_name)
     server_module._sync_config()
-    prefill_user_set_explicit = bool(
-        getattr(args, "_prefill_step_size_explicit", False)
-    )
-    prefill_step_size = _resolve_prefill_step_size(
-        model_name=alias_name,
-        configured=args.prefill_step_size,
-        user_set_explicit=prefill_user_set_explicit,
-    )
+    prefill_step_size = _native_mtp_prefill(args, alias_name)
     run_native_mtp_server(
         pair=pair,
         host=args.host,
@@ -4306,6 +4320,109 @@ def _preflight_companion_dspark_or_exit(args):
     return pair
 
 
+def _download_tensorfold_artifacts(args):
+    if (
+        getattr(args, "dflash_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_product_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
+        from .speculative.tensorfold_qwen27 import download_qualified_pair
+
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_target_revision,
+            )
+            _check_disk_space(
+                _tf_profile.dflash_draft_model,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.dflash_draft_revision,
+            )
+            _tf_artifacts = (
+                download_qualified_artifacts(_tf_family)
+                if _tf_family is not None
+                else download_qualified_pair()
+            )
+        args.model = _tf_artifacts.target_path
+        args._dflash_drafter_repo = _tf_artifacts.drafter_path
+        return True
+    elif (
+        getattr(args, "mtp_backend", None) == "tensorfold"
+        and (
+            _tf_profile := _tensorfold_mtp_profile(
+                getattr(args, "_original_alias", None) or args.model
+            )
+        )
+        is not None
+    ):
+        from rapid_mlx.telemetry.server_start import failure_stage
+
+        from .speculative.tensorfold_families import (
+            download_qualified_artifacts,
+            profile_for,
+        )
+        from .speculative.tensorfold_glm53 import download_qualified_target
+
+        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
+        with failure_stage("download"):
+            _check_disk_space(
+                _tf_profile.hf_path,
+                force=getattr(args, "force_disk_check", False),
+                revision_override=_tf_profile.tensorfold_target_revision,
+            )
+            if _tf_family is None:
+                args.model = download_qualified_target()
+            else:
+                # A pinned head is checked after the target lands, so the check
+                # sees the space the target took.
+                _tf_artifacts = download_qualified_artifacts(
+                    _tf_family,
+                    before_drafter=functools.partial(
+                        _check_disk_space,
+                        _tf_family.drafter,
+                        force=getattr(args, "force_disk_check", False),
+                        revision_override=_tf_family.drafter_revision,
+                    ),
+                )
+                args.model = _tf_artifacts.target_path
+                # A draft head the profile pins rides along with its target.
+                args._tensorfold_head_path = _tf_artifacts.drafter_path
+        return True
+    return False
+
+
+def _download_companion_dspark_artifacts(args, pair):
+    from rapid_mlx.telemetry.server_start import failure_stage
+
+    from .spec_decode.dspark.artifacts import download_companion_artifacts
+
+    with failure_stage("download"):
+        _check_disk_space(
+            pair.target_repo,
+            force=getattr(args, "force_disk_check", False),
+            revision_override=pair.target_revision,
+        )
+        _check_disk_space(
+            pair.drafter_repo,
+            force=getattr(args, "force_disk_check", False),
+            revision_override=pair.drafter_revision,
+        )
+        args._companion_dspark_artifacts = download_companion_artifacts(pair)
+    return args._companion_dspark_artifacts
+
+
 def _serve_companion_dspark_if_requested(
     args,
     *,
@@ -4346,6 +4463,42 @@ def _serve_companion_dspark_if_requested(
         reasoning_parser_name=args.reasoning_parser,
     )
     return True
+
+
+def _resolve_dflash_launch_or_exit(args):
+    from .model_aliases import resolve_profile
+    from .model_profile import ModelProfile
+    from .speculative.dflash import DFlashUnavailable, check
+    from .speculative.dflash.eligibility import report as dflash_report
+
+    # ``have_runtime()`` validated at the top-of-function boot-guard
+    # tier — see the 0.9.2 dogfood comment near the audio probe.
+    _alias_name = getattr(args, "_original_alias", None) or args.model
+    _profile = resolve_profile(_alias_name)
+    if _profile is None:
+        _profile = ModelProfile(hf_path=args.model)
+    _drafter = _resolve_dflash_drafter_repo(args, _profile)
+    try:
+        _assessment = dflash_report(
+            _profile,
+            alias=_alias_name,
+            explicit=True,
+            drafter_model=_drafter,
+        )
+        check(
+            _profile,
+            alias=_alias_name,
+            explicit=True,
+            drafter_model=_drafter,
+        )
+    except DFlashUnavailable as e:
+        print(f"\n  Error: {e}\n")
+        sys.exit(1)
+    for _warning in _assessment.warnings:
+        print(f"\n  ⚠ Experimental DFlash: {_warning}.\n")
+    args._dflash_profile = _profile
+    args._dflash_drafter_repo = _drafter
+    args._dflash_experimental = _assessment.recommendation != "verified"
 
 
 def _resolve_dflash_drafter_repo(args, profile) -> str | None:
@@ -5913,6 +6066,190 @@ def _validate_local_search_exposure_or_exit(args) -> None:
         raise SystemExit(2) from None
 
 
+@dataclass(frozen=True)
+class DedicatedRuntimeLaunch:
+    lane: str
+    load: Callable[[], "SerialRuntimeHandle"] | None
+    refusal: str | None
+
+
+def _dflash_load_kwargs(args):
+    from .model_aliases import resolve_profile
+
+    alias = getattr(args, "_original_alias", None) or args.model
+    profile = getattr(args, "_dflash_profile", None) or resolve_profile(alias)
+    drafter = getattr(
+        args, "_dflash_drafter_repo", None
+    ) or _resolve_dflash_drafter_repo(args, profile)
+    tensorfold = getattr(args, "dflash_backend", None) == "tensorfold"
+    target_rev, draft_rev = (
+        (None, None) if tensorfold else _resolve_dflash_revisions(profile, drafter)
+    )
+    return dict(
+        main_model_repo=args.model if tensorfold or not profile else profile.hf_path,
+        main_model_revision=target_rev,
+        drafter_repo=drafter,
+        drafter_revision=draft_rev,
+        experimental_opt_in=getattr(args, "_dflash_experimental", False),
+        expected_algorithm=_resolve_dflash_expected_algorithm(profile, drafter),
+    )
+
+
+def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
+    lane = serve_runtime_lane(args)
+    if lane == "engine":
+        raise ValueError("engine is not a dedicated runtime")
+    if lane == "ddtree":
+        return DedicatedRuntimeLaunch(
+            lane,
+            None,
+            "serve runs DDTree as a non-streaming runtime, so time to first token cannot be measured; re-run with --baseline or --no-spec-decode.",
+        )
+    alias = getattr(args, "_original_alias", None) or args.model
+    if lane.startswith("tensorfold_"):
+        from .speculative.tensorfold_concurrency import request_lanes
+        from .speculative.tensorfold_families import (
+            profile_for,
+            tensorfold_family_server_kwargs,
+        )
+        from .speculative.tensorfold_glm53 import tensorfold_glm53_server_kwargs
+
+        family = profile_for(alias)
+        profile_id = (
+            family.profile_id
+            if family
+            else "glm5.3-flash-tensorfold"
+            if lane == "tensorfold_mtp"
+            else "qwen3.8-27b-tensorfold"
+        )
+        try:
+            lanes = request_lanes(profile_id, getattr(args, "tensorfold_lanes", None))
+        except ValueError as exc:
+            from .community_bench.acceleration import AccelerationConfigError
+
+            raise AccelerationConfigError(str(exc)) from exc
+        _preflight_tensorfold_qwen27_or_exit(args)
+        _download_tensorfold_artifacts(args)
+        _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+        _check_memory_capacity(args.model, alias=alias)
+        options = (
+            tensorfold_family_server_kwargs(family)
+            if family
+            else tensorfold_glm53_server_kwargs()
+            if lane == "tensorfold_mtp"
+            else {}
+        )
+        draft_path = (
+            getattr(args, "_dflash_drafter_repo", "")
+            if lane == "tensorfold_dflash"
+            else getattr(args, "_tensorfold_head_path", "")
+        )
+
+        def load():
+            from .speculative.serial_benchmark import (
+                tensorfold_live_max_draft,
+                tensorfold_runtime_handle,
+            )
+            from .speculative.tensorfold_qwen27_server import load_tensorfold_backend
+
+            backend, provider = load_tensorfold_backend(
+                main_model_repo=args.model,
+                drafter_repo=draft_path,
+                served_model_name=getattr(args, "served_model_name", None) or alias,
+                default_max_tokens=getattr(args, "max_tokens", None) or 2048,
+                enable_prefix_cache=False,
+                tensorfold_lanes=lanes,
+                **options,
+            )
+            try:
+                k = tensorfold_live_max_draft(backend)
+            except RuntimeError as exc:
+                from .community_bench.acceleration import AccelerationConfigError
+
+                backend.close()
+                raise AccelerationConfigError(str(exc)) from exc
+            return tensorfold_runtime_handle(
+                backend,
+                provider,
+                lane=lane,
+                method=options.get("method", "dflash"),
+                algorithm=options.get("algorithm", "dflash2"),
+                draft_repo=options.get("paired_repository") if draft_path else None,
+                draft_revision=options.get("paired_revision"),
+                draft_path=draft_path,
+                target_path=args.model,
+                max_draft_tokens=k,
+                lanes=lanes,
+            )
+
+        return DedicatedRuntimeLaunch(lane, load, None)
+    if lane == "dflash":
+        _resolve_dflash_launch_or_exit(args)
+        _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+        _check_memory_capacity(args.model, alias=alias)
+        kwargs = _dflash_load_kwargs(args)
+
+        def load():
+            from .speculative.dflash.server import load_dflash_runtime
+            from .speculative.serial_benchmark import (
+                cached_snapshot_path,
+                dflash_runtime_handle,
+            )
+
+            model, processor, runtime = load_dflash_runtime(**kwargs)
+            return dflash_runtime_handle(
+                model,
+                processor,
+                runtime,
+                drafter_repo=kwargs["drafter_repo"],
+                drafter_revision=kwargs["drafter_revision"],
+                target_path=cached_snapshot_path(
+                    kwargs["main_model_repo"], kwargs["main_model_revision"]
+                ),
+            )
+    elif lane == "native_mtp":
+        pair = _prepare_native_mtp_checks(args)
+        prefill = _native_mtp_prefill(args, alias)
+
+        def load():
+            from .speculative.native_mtp.server import load_native_mtp_runtime
+            from .speculative.serial_benchmark import (
+                cached_snapshot_path,
+                native_mtp_runtime_handle,
+            )
+
+            model, processor, runtime, generation = load_native_mtp_runtime(
+                pair, prefill_step_size=prefill
+            )
+            return native_mtp_runtime_handle(
+                model,
+                processor,
+                runtime,
+                generation,
+                pair=pair,
+                target_path=cached_snapshot_path(
+                    pair.target_repo, pair.target_revision
+                ),
+            )
+    else:
+        pair = args._companion_dspark_pair
+        artifacts = _download_companion_dspark_artifacts(args, pair)
+        _check_memory_capacity(args.model, alias=alias)
+
+        def load():
+            from .spec_decode.dspark.server import load_companion_dspark_runtime
+            from .speculative.serial_benchmark import companion_dspark_runtime_handle
+
+            model, processor, runtime, generation = load_companion_dspark_runtime(
+                pair, artifacts
+            )
+            return companion_dspark_runtime_handle(
+                model, processor, runtime, generation, pair=pair, artifacts=artifacts
+            )
+
+    return DedicatedRuntimeLaunch(lane, load, None)
+
+
 def serve_runtime_lane(args) -> str:
     if getattr(args, "_companion_dspark_pair", None) is not None:
         return "companion_dspark"
@@ -6907,24 +7244,7 @@ def serve_command(args):
             )
             download_mtp_snapshot()
     elif _companion_dspark_pair is not None:
-        from rapid_mlx.telemetry.server_start import failure_stage
-
-        from .spec_decode.dspark.artifacts import download_companion_artifacts
-
-        with failure_stage("download"):
-            _check_disk_space(
-                _companion_dspark_pair.target_repo,
-                force=getattr(args, "force_disk_check", False),
-                revision_override=_companion_dspark_pair.target_revision,
-            )
-            _check_disk_space(
-                _companion_dspark_pair.drafter_repo,
-                force=getattr(args, "force_disk_check", False),
-                revision_override=_companion_dspark_pair.drafter_revision,
-            )
-            args._companion_dspark_artifacts = download_companion_artifacts(
-                _companion_dspark_pair
-            )
+        _download_companion_dspark_artifacts(args, _companion_dspark_pair)
     elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
@@ -6936,83 +7256,8 @@ def serve_command(args):
             _check_disk_space(
                 args.model, force=getattr(args, "force_disk_check", False)
             )
-    elif (
-        getattr(args, "dflash_backend", None) == "tensorfold"
-        and (
-            _tf_profile := _tensorfold_product_profile(
-                getattr(args, "_original_alias", None) or args.model
-            )
-        )
-        is not None
-    ):
-        from rapid_mlx.telemetry.server_start import failure_stage
-
-        from .speculative.tensorfold_families import (
-            download_qualified_artifacts,
-            profile_for,
-        )
-        from .speculative.tensorfold_qwen27 import download_qualified_pair
-
-        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
-        with failure_stage("download"):
-            _check_disk_space(
-                _tf_profile.hf_path,
-                force=getattr(args, "force_disk_check", False),
-                revision_override=_tf_profile.dflash_target_revision,
-            )
-            _check_disk_space(
-                _tf_profile.dflash_draft_model,
-                force=getattr(args, "force_disk_check", False),
-                revision_override=_tf_profile.dflash_draft_revision,
-            )
-            _tf_artifacts = (
-                download_qualified_artifacts(_tf_family)
-                if _tf_family is not None
-                else download_qualified_pair()
-            )
-        args.model = _tf_artifacts.target_path
-        args._dflash_drafter_repo = _tf_artifacts.drafter_path
-    elif (
-        getattr(args, "mtp_backend", None) == "tensorfold"
-        and (
-            _tf_profile := _tensorfold_mtp_profile(
-                getattr(args, "_original_alias", None) or args.model
-            )
-        )
-        is not None
-    ):
-        from rapid_mlx.telemetry.server_start import failure_stage
-
-        from .speculative.tensorfold_families import (
-            download_qualified_artifacts,
-            profile_for,
-        )
-        from .speculative.tensorfold_glm53 import download_qualified_target
-
-        _tf_family = profile_for(getattr(args, "_original_alias", None) or args.model)
-        with failure_stage("download"):
-            _check_disk_space(
-                _tf_profile.hf_path,
-                force=getattr(args, "force_disk_check", False),
-                revision_override=_tf_profile.tensorfold_target_revision,
-            )
-            if _tf_family is None:
-                args.model = download_qualified_target()
-            else:
-                # A pinned head is checked after the target lands, so the check
-                # sees the space the target took.
-                _tf_artifacts = download_qualified_artifacts(
-                    _tf_family,
-                    before_drafter=functools.partial(
-                        _check_disk_space,
-                        _tf_family.drafter,
-                        force=getattr(args, "force_disk_check", False),
-                        revision_override=_tf_family.drafter_revision,
-                    ),
-                )
-                args.model = _tf_artifacts.target_path
-                # A draft head the profile pins rides along with its target.
-                args._tensorfold_head_path = _tf_artifacts.drafter_path
+    elif _download_tensorfold_artifacts(args):
+        pass
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
@@ -7510,39 +7755,7 @@ def serve_command(args):
     # enabled" feature line followed by an exit. Cheap (just reads
     # aliases.json + checks the module spec); no model load yet.
     if args.enable_dflash and not _wants_tensorfold:
-        from .model_aliases import resolve_profile
-        from .model_profile import ModelProfile
-        from .speculative.dflash import DFlashUnavailable, check
-        from .speculative.dflash.eligibility import report as dflash_report
-
-        # ``have_runtime()`` validated at the top-of-function boot-guard
-        # tier — see the 0.9.2 dogfood comment near the audio probe.
-        _alias_name = getattr(args, "_original_alias", None) or args.model
-        _profile = resolve_profile(_alias_name)
-        if _profile is None:
-            _profile = ModelProfile(hf_path=args.model)
-        _drafter = _resolve_dflash_drafter_repo(args, _profile)
-        try:
-            _assessment = dflash_report(
-                _profile,
-                alias=_alias_name,
-                explicit=True,
-                drafter_model=_drafter,
-            )
-            check(
-                _profile,
-                alias=_alias_name,
-                explicit=True,
-                drafter_model=_drafter,
-            )
-        except DFlashUnavailable as e:
-            print(f"\n  Error: {e}\n")
-            sys.exit(1)
-        for _warning in _assessment.warnings:
-            print(f"\n  ⚠ Experimental DFlash: {_warning}.\n")
-        args._dflash_profile = _profile
-        args._dflash_drafter_repo = _drafter
-        args._dflash_experimental = _assessment.recommendation != "verified"
+        _resolve_dflash_launch_or_exit(args)
         # ``have_runtime()`` is already validated by the boot-guard tier
         # at the top of ``serve_command`` — see the 0.9.2 dogfood comment
         # there. We keep the import + the deeper DFlashUnavailable / alias
@@ -7769,15 +7982,10 @@ def serve_command(args):
         _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
         _check_memory_capacity(args.model, alias=_alias_name)
         server._sync_config()
-        _drafter_repo = getattr(args, "_dflash_drafter_repo", None) or (
-            _resolve_dflash_drafter_repo(args, _profile)
-        )
-        if _dflash_backend == "tensorfold":
-            _target_revision, _drafter_revision = None, None
-        else:
-            _target_revision, _drafter_revision = _resolve_dflash_revisions(
-                _profile, _drafter_repo
-            )
+        _load_kwargs = _dflash_load_kwargs(args)
+        _drafter_repo = _load_kwargs["drafter_repo"]
+        _target_revision = _load_kwargs["main_model_revision"]
+        _drafter_revision = _load_kwargs["drafter_revision"]
         _dflash_kwargs = dict(
             main_model_repo=(
                 args.model
@@ -7829,10 +8037,7 @@ def serve_command(args):
                 )
             return
         run_dflash_server(
-            main_model_repo=_profile.hf_path if _profile else args.model,
-            main_model_revision=_target_revision,
-            drafter_repo=_drafter_repo,
-            drafter_revision=_drafter_revision,
+            **_load_kwargs,
             host=args.host,
             port=_resolved_serve_port(args),
             port_explicit=port_explicit_for(args),
@@ -7853,10 +8058,6 @@ def serve_command(args):
             ),
             reasoning_parser_name=args.reasoning_parser,
             default_reasoning_effort=getattr(args, "default_reasoning_effort", None),
-            experimental_opt_in=getattr(args, "_dflash_experimental", False),
-            expected_algorithm=(
-                _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
-            ),
         )
         return
 

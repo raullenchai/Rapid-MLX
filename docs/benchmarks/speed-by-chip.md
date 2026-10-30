@@ -66,9 +66,13 @@ flags have the same names and meanings as for `serve`: `--speculative-config`,
 `--no-spec-decode`, `--mtp-max-k`, `--kv-cache-quantization*`,
 `--kv-cache-dtype`, `--prefill-step-size`, `--pflash`,
 `--pflash-threshold`, and `--pflash-keep-ratio`. Quantized KV is recorded only
-when the engine actually ran with it. Models that serve on a dedicated runtime are refused unless
-`--baseline` is used. Prefix cache and suffix decoding remain off because the
-workload repeats one prompt. The result records the effective configuration.
+when the engine actually ran with it. Dedicated DFlash, native MTP and companion DSpark runtimes are measured too;
+TensorFold profiles use the same serial runtime as serve. Select a DFlash drafter with
+`--speculative-config '{"method":"dflash","model":"<drafter>"}'`, or disable
+speculation with `--no-spec-decode` or all accelerations with `--baseline`.
+DDTree is refused because its non-streaming runtime cannot measure time to first
+token. Suffix decoding is refused because the workload repeats one prompt.
+Prefix cache remains off. The result records the effective configuration.
 
 With `--json`, stdout contains exactly one JSON document; progress goes to stderr.
 Results are stored under `$RAPID_MLX_HOME/benchmarks` when `RAPID_MLX_HOME` is

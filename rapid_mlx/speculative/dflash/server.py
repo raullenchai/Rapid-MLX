@@ -1307,12 +1307,8 @@ def _build_app(
             top_p = request.top_p if request.top_p is not None else 1.0
 
             if generation_kwargs_fn is None:
-                gen_kwargs = dict(
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    draft_model=runtime.drafter,
-                    draft_kind=runtime.kind,
+                gen_kwargs = dflash_generation_kwargs(
+                    runtime, max_tokens=max_tokens, temperature=temperature, top_p=top_p
                 )
             else:
                 _generation_inputs: dict[str, Any] = dict(
@@ -2567,53 +2563,27 @@ async def _non_stream_completion(
     )
 
 
-def run_dflash_server(
+def dflash_generation_kwargs(
+    runtime, *, max_tokens: int, temperature: float, top_p: float
+) -> dict:
+    return dict(
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        draft_model=runtime.drafter,
+        draft_kind=runtime.kind,
+    )
+
+
+def load_dflash_runtime(
     *,
     main_model_repo: str,
-    main_model_revision: str | None = None,
+    main_model_revision: str | None,
     drafter_repo: str,
-    drafter_revision: str | None = None,
-    host: str,
-    port: int,
-    port_explicit: bool | None = None,
-    served_model_name: str,
-    default_max_tokens: int,
-    cors_origins: list[str],
-    uvicorn_log_level: str,
-    no_thinking: bool = False,
-    api_key: str | None = None,
-    rate_limit: int = 0,
-    max_request_bytes: int = 8 * 1024 * 1024,
-    body_receive_timeout_seconds: float = 15.0,
-    default_timeout: float = 1800.0,
-    max_concurrent_requests: int = 256,
-    cors_policy: Any | None = None,
-    tool_call_parser: str | None = "hermes",
-    reasoning_parser_name: str | None = "qwen3",
-    default_reasoning_effort: str | None = None,
-    experimental_opt_in: bool = False,
-    expected_algorithm: str | None = None,
-) -> None:
-    """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
-
-    The mlx-vlm load path is mandatory: the DFlash hooks
-    (``capture_layer_ids``, ``_dflash_rounds``) live on the mlx-vlm
-    model classes, not mlx-lm's. Loading via ``mlx_lm.load`` would give
-    us a model without the hooks and DFlash would silently fall back to
-    AR — exactly the kind of "silent regression" the eligibility gate
-    is meant to prevent. We surface a clear error if mlx-vlm is missing
-    or too old.
-
-    Eligibility re-check: even though the CLI's ``serve_command`` gates
-    on the alias before calling here, a *programmatic* caller (e.g. a
-    notebook or test harness) can bypass the CLI entirely. We re-run
-    the path-detectable gates (4-bit quant via repo-name heuristic;
-    non-empty drafter). MoE detection requires the AliasProfile (an
-    ``is_moe`` flag aliases.json maintains by hand) and is therefore
-    only enforced via the CLI entrypoint — callers serving an
-    arbitrary ``main_model_repo`` programmatically are responsible for
-    not pointing it at a MoE model. Documented in CALLERS.md.
-    """
+    drafter_revision: str | None,
+    experimental_opt_in: bool,
+    expected_algorithm: str | None,
+):
     if not have_runtime():
         from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
@@ -2684,6 +2654,65 @@ def run_dflash_server(
     # Both target weights and the drafter runtime materialize at this boundary.
     with failure_stage("prepare"):
         model, processor, runtime = _dflash_executor.submit(_load_all).result()
+
+    return model, processor, runtime
+
+
+def run_dflash_server(
+    *,
+    main_model_repo: str,
+    main_model_revision: str | None = None,
+    drafter_repo: str,
+    drafter_revision: str | None = None,
+    host: str,
+    port: int,
+    port_explicit: bool | None = None,
+    served_model_name: str,
+    default_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+    no_thinking: bool = False,
+    api_key: str | None = None,
+    rate_limit: int = 0,
+    max_request_bytes: int = 8 * 1024 * 1024,
+    body_receive_timeout_seconds: float = 15.0,
+    default_timeout: float = 1800.0,
+    max_concurrent_requests: int = 256,
+    cors_policy: Any | None = None,
+    tool_call_parser: str | None = "hermes",
+    reasoning_parser_name: str | None = "qwen3",
+    default_reasoning_effort: str | None = None,
+    experimental_opt_in: bool = False,
+    expected_algorithm: str | None = None,
+) -> None:
+    """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
+
+    The mlx-vlm load path is mandatory: the DFlash hooks
+    (``capture_layer_ids``, ``_dflash_rounds``) live on the mlx-vlm
+    model classes, not mlx-lm's. Loading via ``mlx_lm.load`` would give
+    us a model without the hooks and DFlash would silently fall back to
+    AR — exactly the kind of "silent regression" the eligibility gate
+    is meant to prevent. We surface a clear error if mlx-vlm is missing
+    or too old.
+
+    Eligibility re-check: even though the CLI's ``serve_command`` gates
+    on the alias before calling here, a *programmatic* caller (e.g. a
+    notebook or test harness) can bypass the CLI entirely. We re-run
+    the path-detectable gates (4-bit quant via repo-name heuristic;
+    non-empty drafter). MoE detection requires the AliasProfile (an
+    ``is_moe`` flag aliases.json maintains by hand) and is therefore
+    only enforced via the CLI entrypoint — callers serving an
+    arbitrary ``main_model_repo`` programmatically are responsible for
+    not pointing it at a MoE model. Documented in CALLERS.md.
+    """
+    model, processor, runtime = load_dflash_runtime(
+        main_model_repo=main_model_repo,
+        main_model_revision=main_model_revision,
+        drafter_repo=drafter_repo,
+        drafter_revision=drafter_revision,
+        experimental_opt_in=experimental_opt_in,
+        expected_algorithm=expected_algorithm,
+    )
 
     app = _build_app(
         model=model,

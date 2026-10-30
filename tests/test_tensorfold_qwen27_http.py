@@ -10,6 +10,7 @@ import pytest
 
 from rapid_mlx.request import RequestOutput
 from rapid_mlx.spec_decode.config import parse_speculative_config
+from rapid_mlx.speculative import tensorfold_qwen27_server as tensorfold_server
 from rapid_mlx.speculative.tensorfold_qwen27_server import (
     TensorFoldRequestProvider,
     _StableIncrementalText,
@@ -17,6 +18,45 @@ from rapid_mlx.speculative.tensorfold_qwen27_server import (
     render_prompt,
     validate_http_request,
 )
+
+
+@pytest.mark.parametrize("failure_point", ["defaults", "provider"])
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_load_backend_closes_on_provider_setup_failure(
+    monkeypatch, failure_point, close_fails
+):
+    original = RuntimeError("setup failed")
+    closed = []
+
+    class Backend:
+        @classmethod
+        def load(cls, *args, **kwargs):
+            return cls()
+
+        def close(self):
+            closed.append(self)
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    def fail(*args, **kwargs):
+        raise original
+
+    monkeypatch.setattr(
+        tensorfold_server,
+        "_model_sampling_defaults",
+        fail if failure_point == "defaults" else lambda _: {},
+    )
+    monkeypatch.setattr(tensorfold_server, "TensorFoldRequestProvider", fail)
+    with pytest.raises(RuntimeError) as exc:
+        tensorfold_server.load_tensorfold_backend(
+            main_model_repo="main",
+            drafter_repo="draft",
+            served_model_name="model",
+            default_max_tokens=10,
+            backend_class=Backend,
+        )
+    assert exc.value is original
+    assert len(closed) == 1
 
 
 def _fake_backend(app):
@@ -407,6 +447,16 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     record = json.loads(audit.read_text())
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
+
+    outputs = list(
+        provider._outputs(
+            "ignored", prompt_token_ids=[7, 8], ignore_eos=True, max_tokens=2
+        )
+    )
+    assert scheduler.job.prompt_ids == [7, 8]
+    assert scheduler.job.ignore_eos is True
+    assert [token for output in outputs for token in output.new_token_ids] == [21, 22]
+    assert outputs[-1].output_text == "AB"
 
     # No seed: sampled requests draw a fresh one each time, greedy ones none.
     drawn = iter((11, 12, 13))

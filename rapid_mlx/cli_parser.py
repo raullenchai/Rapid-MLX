@@ -2280,7 +2280,9 @@ def _add_benchmark_parser(
         help="Print machine-readable JSON instead of the text summary",
     )
     community_run = community_subparsers.add_parser(
-        "run", help="Run the registered protocol and save the result locally"
+        "run",
+        help="Run the registered protocol and save the result locally",
+        description='Runs serve runtime selection, including DFlash, native MTP and companion DSpark. TensorFold profiles are supported. Choose DFlash with --speculative-config \'{"method":"dflash","model":"<drafter>"}\'; disable speculation with --no-spec-decode or accelerations with --baseline. DDTree cannot measure time to first token; suffix decoding is refused because prompts repeat.',
     )
     community_run.add_argument(
         "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"

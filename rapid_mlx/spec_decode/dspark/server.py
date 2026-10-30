@@ -264,6 +264,47 @@ def _prepare_multimodal_prompt(
     return PreparedPrompt(prompt=prompt, generation_kwargs=generation_kwargs)
 
 
+def load_companion_dspark_runtime(
+    pair: CompanionDSparkPair, artifacts: CompanionDSparkArtifacts | None
+):
+    from rapid_mlx.speculative.dflash.server import _dflash_executor
+    from rapid_mlx.telemetry.server_start import failure_stage
+
+    def _load_all():
+        started = time.perf_counter()
+        resolved = artifacts or download_companion_artifacts(pair)
+        loaded = load_runtime(pair, resolved)
+        logger.info(
+            "LFM companion DSpark target and drafter loaded in %.1fs",
+            time.perf_counter() - started,
+        )
+        return loaded
+
+    # Any download, compatibility, attach, or model-load failure escapes this
+    # boundary before uvicorn binds. There is deliberately no baseline fallback.
+    with failure_stage("prepare"):
+        model, processor, runtime = _dflash_executor.submit(_load_all).result()
+
+    def _generation_kwargs(
+        runtime, *, max_tokens: int, temperature: float, top_p: float
+    ):
+        # Request validation guarantees these sampling values. Assert again at
+        # the final call boundary so a programmatic app caller cannot attach the
+        # drafter to an unqualified sampling request.
+        if temperature not in (0, 0.0) or top_p not in (1, 1.0):
+            raise RuntimeError("companion DSpark generation must remain greedy")
+        return {
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "draft_model": runtime.drafter,
+            "draft_kind": runtime.kind,
+            "draft_block_size": runtime.draft_block_size,
+        }
+
+    return model, processor, runtime, _generation_kwargs
+
+
 def run_companion_dspark_server(
     *,
     pair: CompanionDSparkPair,
@@ -288,39 +329,12 @@ def run_companion_dspark_server(
     """Load the immutable pair before binding and run the serial API."""
 
     from rapid_mlx._uvicorn import run_uvicorn
-    from rapid_mlx.speculative.dflash.server import _build_app, _dflash_executor
+    from rapid_mlx.speculative.dflash.server import _build_app
     from rapid_mlx.telemetry.model_id import telemetry_model_id
-    from rapid_mlx.telemetry.server_start import failure_stage
 
-    def _load_all():
-        started = time.perf_counter()
-        resolved = artifacts or download_companion_artifacts(pair)
-        loaded = load_runtime(pair, resolved)
-        logger.info(
-            "LFM companion DSpark target and drafter loaded in %.1fs",
-            time.perf_counter() - started,
-        )
-        return loaded
-
-    # Any download, compatibility, attach, or model-load failure escapes this
-    # boundary before uvicorn binds. There is deliberately no baseline fallback.
-    with failure_stage("prepare"):
-        model, processor, runtime = _dflash_executor.submit(_load_all).result()
-
-    def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
-        # Request validation guarantees these sampling values. Assert again at
-        # the final call boundary so a programmatic app caller cannot attach the
-        # drafter to an unqualified sampling request.
-        if temperature not in (0, 0.0) or top_p not in (1, 1.0):
-            raise RuntimeError("companion DSpark generation must remain greedy")
-        return {
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "draft_model": runtime.drafter,
-            "draft_kind": runtime.kind,
-            "draft_block_size": runtime.draft_block_size,
-        }
+    model, processor, runtime, _generation_kwargs = load_companion_dspark_runtime(
+        pair, artifacts
+    )
 
     model_info = _build_companion_model_info(
         pair=pair,
@@ -344,7 +358,7 @@ def run_companion_dspark_server(
         tool_call_parser=None,
         reasoning_parser_name=reasoning_parser_name,
         render_prompt_fn=_prepare_multimodal_prompt,
-        generation_kwargs_fn=_generation_kwargs,
+        generation_kwargs_fn=lambda **kw: _generation_kwargs(runtime, **kw),
         validate_request_fn=lambda request, **telemetry_context: (
             _validate_companion_request(
                 request,

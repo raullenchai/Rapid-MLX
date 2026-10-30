@@ -373,8 +373,11 @@ def run_tensorfold_family_server(
 
     from .tensorfold_qwen27_server import run_tensorfold_qwen27_server
 
-    run_tensorfold_qwen27_server(
-        **kwargs,
+    run_tensorfold_qwen27_server(**kwargs, **tensorfold_family_server_kwargs(profile))
+
+
+def tensorfold_family_server_kwargs(profile: TensorFoldFamilyProfile) -> dict:
+    return dict(
         backend_class=backend_class_for(profile),
         profile_id=profile.profile_id,
         backend_label=profile.label,
