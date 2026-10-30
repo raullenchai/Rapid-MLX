@@ -12,6 +12,13 @@ from scripts.pr_validate import runner
 from scripts.pr_validate.base import Step, StepResult
 from scripts.pr_validate.context import Context
 
+_REAL_TERMINATE = runner._terminate_child_processes
+
+
+@pytest.fixture(autouse=True)
+def prevent_child_process_termination(monkeypatch):
+    monkeypatch.setattr(runner, "_terminate_child_processes", lambda: None)
+
 
 @pytest.fixture
 def repo_root_cwd(monkeypatch, tmp_path):
@@ -52,8 +59,7 @@ def test_lanes_overlap(repo_root_cwd):
     )
 
 
-def test_failing_lane_records_remaining_steps_as_cancelled(repo_root_cwd, monkeypatch):
-    monkeypatch.setattr(runner, "_terminate_child_processes", lambda: None)
+def test_failing_lane_records_remaining_steps_as_cancelled(repo_root_cwd):
     ran = []
 
     def action(name):
@@ -168,7 +174,7 @@ def test_terminate_children_terminates_then_kills_survivors(monkeypatch):
     monkeypatch.setattr(runner.psutil, "Process", lambda: process)
     wait = Mock(return_value=([child], [survivor]))
     monkeypatch.setattr(runner.psutil, "wait_procs", wait)
-    runner._terminate_child_processes(grace_seconds=0.25)
+    _REAL_TERMINATE(grace_seconds=0.25)
     process.children.assert_called_once_with(recursive=True)
     child.terminate.assert_called_once()
     survivor.terminate.assert_called_once()
