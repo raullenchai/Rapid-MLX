@@ -105,44 +105,71 @@ venv_is_complete() {
 
 # Rebuilds move only venv entries aside, preserving shared state. The new venv
 # must be created at its final path because venv scripts contain absolute paths.
+# A completion marker distinguishes a full stash; recover backups before planning.
 reset_venv_dir() {
     local dir="$1"
     rm -rf "$dir/bin" "$dir/lib" "$dir/lib64" "$dir/include" "$dir/share" "$dir/pyvenv.cfg"
 }
 
 stash_venv_entries() {
-    local dir="$1" backup="$2" entry saved
-    mkdir "$backup"
+    local dir="$1" backup="$2" entry
+    mkdir "$backup" || return 1
     for entry in bin lib lib64 include share pyvenv.cfg; do
         if [ -e "$dir/$entry" ] || [ -L "$dir/$entry" ]; then
             if ! mv "$dir/$entry" "$backup/"; then
-                for saved in "$backup"/*; do
-                    [ -e "$saved" ] || [ -L "$saved" ] || continue
-                    mv "$saved" "$dir/"
-                done
-                rmdir "$backup"
+                restore_venv_entries "$dir" "$backup" || true
                 return 1
             fi
         fi
     done
+    : > "$backup/.stash-complete"
 }
 
 restore_venv_entries() {
     local dir="$1" backup="$2" entry
-    reset_venv_dir "$dir"
-    for entry in "$backup"/*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        mv "$entry" "$dir/"
+    if [ -e "$backup/.stash-complete" ]; then
+        reset_venv_dir "$dir" || return 1
+        # Once the replacement is gone, a retry must retain entries already restored.
+        rm -f "$backup/.stash-complete" || return 1
+    fi
+    for entry in bin lib lib64 include share pyvenv.cfg; do
+        [ -e "$backup/$entry" ] || [ -L "$backup/$entry" ] || continue
+        rm -rf "${dir:?}/$entry" || return 1
+        mv "$backup/$entry" "$dir/" || return 1
     done
-    rmdir "$backup"
+    rmdir "$backup" || return 1
+}
+
+recover_interrupted_rebuild() {
+    local backup newest=""
+    [ -d "$INSTALL_DIR" ] || return 0
+    for backup in "$INSTALL_DIR"/.venv-previous.*; do
+        [ -d "$backup" ] || continue
+        if [ -z "$newest" ] || [ "$backup" -nt "$newest" ]; then
+            newest="$backup"
+        fi
+    done
+    [ -n "$newest" ] || return 0
+    if ! restore_venv_entries "$INSTALL_DIR" "$newest"; then
+        err "Could not restore the previous environment; it is preserved at $newest"
+        exit 1
+    fi
+    warn "Recovered the previous Rapid-MLX environment from an interrupted install."
+    for backup in "$INSTALL_DIR"/.venv-previous.*; do
+        [ -d "$backup" ] || continue
+        rm -rf "$backup"
+    done
 }
 
 rollback_rebuild() {
     if [ -n "$VENV_BACKUP" ] && [ -d "$VENV_BACKUP" ]; then
-        restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
+        if restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"; then
+            warn "Rebuild failed — restored the previous Rapid-MLX environment unchanged."
+            dim "Install Python 3.12 or 3.13 / check the network and re-run."
+        else
+            err "Rebuild failed and the previous environment could not be restored automatically; it is preserved at $VENV_BACKUP (the next install run restores it)."
+        fi
         VENV_BACKUP=""
-        warn "Rebuild failed — restored the previous Rapid-MLX environment unchanged."
-        dim "Install Python 3.12 or 3.13 / check the network and re-run."
     fi
 }
 
@@ -202,23 +229,11 @@ dispatch_venv() {
         rebuild)
             warn "Existing $INSTALL_DIR has no usable virtual environment — rebuilding it."
             dim "(shared state is preserved; the previous environment is kept until the new one works)"
-            local backup newest=""
-            if [ ! -d "$INSTALL_DIR/bin" ]; then
-                for backup in "$INSTALL_DIR"/.venv-previous.*; do
-                    [ -d "$backup" ] || continue
-                    if [ -z "$newest" ] || [ "$backup" -nt "$newest" ]; then
-                        newest="$backup"
-                    fi
-                done
-                if [ -n "$newest" ]; then
-                    restore_venv_entries "$INSTALL_DIR" "$newest"
-                fi
-            fi
             VENV_BACKUP="$INSTALL_DIR/.venv-previous.$$"
-            stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
             trap 'rollback_rebuild' EXIT
             trap 'exit 130' INT
             trap 'exit 143' TERM
+            stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
             info "Installing Rapid-MLX..."
             dim "(this takes about a minute)"
             create_venv
@@ -543,6 +558,7 @@ fi
 # ── 5. Create or update venv + install ───────────────────────────────────────
 
 echo ""
+recover_interrupted_rebuild
 # The directory doubles as shared state, so create-vs-upgrade turns on whether a
 # COMPATIBLE venv exists (plan_venv_action), not on whether the dir exists.
 dispatch_venv "$(plan_venv_action "$INSTALL_DIR")"

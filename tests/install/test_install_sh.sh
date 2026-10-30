@@ -286,6 +286,7 @@ for scenario in success interrupted; do
         INSTALL_DIR="$FIXTURE"
         create_venv() { make_new_install; }
         install_package() { :; }
+        recover_interrupted_rebuild
         dispatch_venv rebuild
         install_package
         finish_rebuild
@@ -298,6 +299,81 @@ for scenario in success interrupted; do
     for backup in "$FIXTURE"/.venv-previous.*; do [ ! -e "$backup" ] || result=no; done
     check "$scenario rebuild commits new venv and preserves shared state" "$result" yes
 done
+
+# Recovery covers both a completed stash and an interruption partway through it.
+(
+    INSTALL_DIR="$WORK/recover-created"; make_old_install "$INSTALL_DIR"
+    stash_venv_entries "$INSTALL_DIR" "$INSTALL_DIR/.venv-previous.111"
+    make_new_install
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "recovery replaces a newly created venv with the old one"
+    [ "$FAIL" -eq 0 ]
+) || bad "completed stash recovery"
+
+(
+    INSTALL_DIR="$WORK/recover-partial"; make_old_install "$INSTALL_DIR"
+    mkdir "$INSTALL_DIR/.venv-previous.222"
+    mv "$INSTALL_DIR/bin" "$INSTALL_DIR/.venv-previous.222/"
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "partial stash recovery preserves unmoved entries"
+    [ "$FAIL" -eq 0 ]
+) || bad "partial stash recovery"
+
+(
+    INSTALL_DIR="$WORK/recover-multiple"; make_old_install "$INSTALL_DIR"
+    mkdir "$INSTALL_DIR/.venv-previous.111"
+    touch -t 202001010000 "$INSTALL_DIR/.venv-previous.111"
+    stash_venv_entries "$INSTALL_DIR" "$INSTALL_DIR/.venv-previous.222"
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "recovery selects newest backup and removes older backups"
+    [ "$FAIL" -eq 0 ]
+) || bad "multiple backup recovery"
+
+(
+    INSTALL_DIR="$WORK/restore-failure"; make_old_install "$INSTALL_DIR"
+    VENV_BACKUP="$INSTALL_DIR/.venv-previous.333"
+    stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
+    mv() { case "$1" in */lib) return 1 ;; esac; command mv "$@"; }
+    if restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"; then exit 1; fi
+    [ -d "$VENV_BACKUP/lib" ] || exit 1
+    output=$(rollback_rebuild 2>&1)
+    case "$output" in *"preserved at $VENV_BACKUP"*) : ;; *) exit 1 ;; esac
+    unset -f mv
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "failed restore preserves backup and can be retried"
+    [ "$FAIL" -eq 0 ]
+) || bad "restore failure reports the preserved backup"
+
+FIXTURE="$WORK/stash-failure"; make_old_install "$FIXTURE"
+set +e
+(
+    set -e
+    INSTALL_DIR="$FIXTURE"
+    mv() { case "$1" in "$INSTALL_DIR/lib") return 1 ;; esac; command mv "$@"; }
+    create_venv() { :; }; install_package() { :; }; run_install_command() { :; }
+    dispatch_venv rebuild
+) >/dev/null 2>&1
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+    bad "mid-stash failure exits nonzero"
+else
+    ok "mid-stash failure exits nonzero"
+fi
+check_old_install "$FIXTURE" "mid-stash failure restores the entire old environment"
+
+FIXTURE="$WORK/stash-exit"; make_old_install "$FIXTURE"
+set +e
+(
+    set -e
+    INSTALL_DIR="$FIXTURE"
+    mv() { case "$1" in "$INSTALL_DIR/lib") exit 143 ;; esac; command mv "$@"; }
+    dispatch_venv rebuild
+) >/dev/null 2>&1
+status=$?
+set -e
+check "exit during stash retains its exit status" "$status" 143
+check_old_install "$FIXTURE" "exit during stash invokes rollback trap"
 
 # ── 13. first-chat starter mirrors Desktop Quickstart (#2385) ────────────────
 check "15 GB fresh install uses the safe 1.2B starter" \
