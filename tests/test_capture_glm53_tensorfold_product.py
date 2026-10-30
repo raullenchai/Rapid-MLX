@@ -737,6 +737,8 @@ def _write_shutdown_server(path: Path) -> None:
                 signal.signal(signal.SIGTERM, lambda *_: sys.exit(7))
             else:
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            # A leaked fixture must not outlive the test (#5387).
+            signal.alarm(120)
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self, *_args):
                     pass
