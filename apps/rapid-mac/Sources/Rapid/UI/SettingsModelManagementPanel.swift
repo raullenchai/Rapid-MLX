@@ -917,27 +917,25 @@ struct SettingsModelManagementPanel: View {
         return "\(ctx)"
     }
 
-    /// ESTIMATED download size for a model that is not on disk, derived
-    /// from the alias string by ``ModelSizing`` — not a measurement of
-    /// anything. The caller renders it with a leading "~" so it can't be
-    /// mistaken for the measured on-disk figure cached rows in the same
-    /// column now show; #1550 has a case where this estimate lands ~12%
-    /// under the real download.
-    nonisolated static func downloadSizeLabel(_ alias: String) -> String? {
-        let fp = ModelSizing.estimate(alias: alias)
+    /// Catalog byte counts from the manifest or cache inventory are formatted once
+    /// at display with DownloadProgress.formatBytes; legacy CLI strings are shown
+    /// verbatim and never parsed. The row adds a leading "~". The alias heuristic
+    /// is only a fallback because it underestimates some repos (Qwen3 ASR 0.6B
+    /// 5-bit: ~0.3 GB versus 787,276,896 bytes).
+    nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
+        if let size = entry.size?.displayText { return size }
+        let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
-        return String(format: "%.1f GB", fp.weightsGB)
+        return DownloadProgress.formatBytes(Int64(fp.weightsGB * 1024 * 1024 * 1024))
     }
 
-    /// MEASURED size of a cached model, exactly as ``rapid-mlx ls``
-    /// reported it (and as Settings → Models quotes it, so the two
-    /// surfaces can't print different numbers for the same model).
-    /// Never an estimate: if the measurement is missing, the row shows no
-    /// size rather than substituting ``ModelSizing``'s guess.
+    /// Catalog byte counts from the manifest or cache inventory are formatted once
+    /// at display with DownloadProgress.formatBytes; legacy CLI strings are shown
+    /// verbatim and never parsed. No alias estimate substitutes for a missing size:
+    /// the heuristic can underestimate (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus
+    /// 787,276,896 bytes), and is only a download-size fallback.
     nonisolated static func onDiskSizeLabel(_ entry: ModelEntry) -> String? {
-        guard let raw = entry.sizeOnDisk?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return nil }
-        return raw
+        entry.size?.displayText
     }
 
     @ViewBuilder
@@ -1090,7 +1088,7 @@ struct SettingsModelManagementPanel: View {
             }
         case .notCached:
             HStack(spacing: 8) {
-                if let gb = Self.downloadSizeLabel(entry.alias) {
+                if let gb = Self.downloadSizeLabel(entry) {
                     Text("~\(gb)")
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)

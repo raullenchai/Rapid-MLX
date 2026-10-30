@@ -128,6 +128,8 @@ struct AtomicModelCatalogTests {
         let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(Self.payload))
         #expect(entries.map(\.alias) == ["chat", "image", "video", "tts", "stt"])
         #expect(entries.first { $0.alias == "chat" }?.kind == .chat)
+        #expect(entries.first { $0.alias == "chat" }?.sizeBytes == 1_073_741_824)
+        #expect(entries.first { $0.alias == "chat" }?.sizeOnDisk == "1.0 GB")
         #expect(entries.first { $0.alias == "image" }?.kind == .image)
         #expect(entries.first { $0.alias == "video" }?.kind == .video)
         #expect(entries.first { $0.alias == "tts" }?.kind == .audio)

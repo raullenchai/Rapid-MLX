@@ -262,6 +262,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Drives a green dot in the picker so the user can tell at a glance
     /// which models start in seconds vs. which trigger a 5-80 GB pull.
     let cached: Bool
+    /// Raw bytes from a machine-readable source; sizeOnDisk retains display or legacy text.
+    var sizeBytes: Int64? = nil
+
+    var size: ModelSize? { sizeBytes.map(ModelSize.bytes) ?? ModelSize.legacy(sizeOnDisk) }
     /// True for a model another MLX runtime downloaded, found outside the
     /// hub cache (#1718).
     ///
@@ -364,7 +368,7 @@ typealias CachedModelInventoryEntry = (
     alias: String,
     hfRepo: String?,
     subfolder: String?,
-    size: String?,
+    size: ModelSize?,
     discovery: CachedChatDiscovery?,
     launchPath: String?
 )
@@ -596,11 +600,11 @@ enum ModelCatalog {
         _ entries: [ModelEntry],
         resolvedRepos: [String: String]
     ) -> [ModelEntry] {
-        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
+        var cachedByArtifact: [String: (repo: String, size: ModelSize?)] = [:]
         for entry in entries where entry.cached {
             if let key = artifactCacheKey(entry),
                let repo = sanitizedHuggingFaceRepo(entry.hfRepo) {
-                cachedByArtifact[key] = (repo, entry.sizeOnDisk)
+                cachedByArtifact[key] = (repo, entry.size)
             }
         }
         guard !cachedByArtifact.isEmpty else { return entries }
@@ -617,8 +621,9 @@ enum ModelCatalog {
             return ModelEntry(
                 alias: entry.alias,
                 hfRepo: hit.repo,
-                sizeOnDisk: hit.size,
+                sizeOnDisk: hit.size?.displayText,
                 cached: true,
+                sizeBytes: hit.size?.byteCount,
                 isExternal: entry.isExternal,
                 kind: entry.kind,
                 audioCapability: entry.audioCapability,
@@ -695,7 +700,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, $0.4) },
+            cached: cached.map { ($0.0, $0.1, $0.2, ModelSize.legacy($0.3), nil, $0.4) },
             excluded: excluded
         )
     }
@@ -707,7 +712,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, ModelSize.legacy($0.3), nil, nil) },
             excluded: excluded
         )
     }
@@ -718,13 +723,13 @@ enum ModelCatalog {
         excluded: Set<String>
     ) -> [ModelEntry] {
         var cachedIndex: [String: (
-            hfRepo: String?, subfolder: String?, size: String?
+            hfRepo: String?, subfolder: String?, size: ModelSize?
         )] = [:]
         for (alias, hf, subfolder, size, _, _) in cached
         where !alias.isEmpty && !isStatusAlias(alias) {
             cachedIndex[alias] = (hf, subfolder, size)
         }
-        var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
+        var externalIndex: [String: (hfRepo: String?, size: ModelSize?)] = [:]
         for (alias, hf, _, size, _, _) in cached where alias == "(external)" {
             guard let identifier = hf else { continue }
             externalIndex[identifier] = (hf, size)
@@ -744,12 +749,13 @@ enum ModelCatalog {
                 return nil
             }()
             if let externalIdentifier { consumedExternal.insert(externalIdentifier) }
+            let size = cachedHit?.size ?? externalIdentifier.flatMap { externalIndex[$0]?.size }
             entries.append(ModelEntry(
                 alias: alias,
                 hfRepo: cachedHit?.hfRepo ?? hfHint ?? externalIdentifier,
-                sizeOnDisk: cachedHit?.size
-                    ?? externalIdentifier.flatMap { externalIndex[$0]?.size },
+                sizeOnDisk: size?.displayText,
                 cached: cachedHit != nil || externalIdentifier != nil,
+                sizeBytes: size?.byteCount,
                 isExternal: cachedHit == nil && externalIdentifier != nil,
                 sourceSubfolder: cachedHit?.subfolder
             ))
@@ -771,8 +777,9 @@ enum ModelCatalog {
             entries.append(ModelEntry(
                 alias: alias,
                 hfRepo: hf,
-                sizeOnDisk: size,
+                sizeOnDisk: size?.displayText,
                 cached: true,
+                sizeBytes: size?.byteCount,
                 sourceSubfolder: subfolder
             ))
         }
@@ -797,8 +804,9 @@ enum ModelCatalog {
             entries.append(ModelEntry(
                 alias: repo,
                 hfRepo: repo,
-                sizeOnDisk: size,
+                sizeOnDisk: size?.displayText,
                 cached: true,
+                sizeBytes: size?.byteCount,
                 isExternal: true
             ))
         }
@@ -817,7 +825,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAvailableAndCached(
             available: available,
-            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil, nil) },
+            cached: cached.map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) },
             excluded: excluded
         )
     }
@@ -1070,7 +1078,7 @@ enum ModelCatalog {
         var modelsByID: [String: (
             repo: String,
             subfolder: String?,
-            size: String?,
+            size: ModelSize?,
             resolution: String,
             identityDigest: String?
         )] = [:]
@@ -1085,7 +1093,7 @@ enum ModelCatalog {
                   source["provider"] as? String == "huggingface",
                   let repo = sanitizedHuggingFaceRepo(source["repo_id"] as? String)
             else { return nil }
-            let size: String?
+            let size: ModelSize?
             if let bytes = model["estimated_download_size_bytes"] as? NSNumber {
                 guard CFGetTypeID(bytes) != CFBooleanGetTypeID(),
                       bytes.doubleValue.isFinite,
@@ -1093,10 +1101,7 @@ enum ModelCatalog {
                       bytes.int64Value > 0,
                       bytes.int64Value <= 9_007_199_254_740_991
                 else { return nil }
-                size = ByteCountFormatter.string(
-                    fromByteCount: bytes.int64Value,
-                    countStyle: .binary
-                )
+                size = .bytes(bytes.int64Value)
             } else {
                 size = nil
             }
@@ -1268,8 +1273,9 @@ enum ModelCatalog {
             entries.append(ModelEntry(
                 alias: alias,
                 hfRepo: model.repo,
-                sizeOnDisk: model.size,
+                sizeOnDisk: model.size?.displayText,
                 cached: false,
+                sizeBytes: model.size?.byteCount,
                 kind: kind,
                 audioCapability: audioCapability,
                 audioFamily: audioFamily,
@@ -1415,7 +1421,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, $0.4) },
+            cached: cached.map { ($0.0, $0.1, $0.2, ModelSize.legacy($0.3), nil, $0.4) },
             excluded: excluded
         )
     }
@@ -1427,7 +1433,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, $0.2, $0.3, nil, nil) },
+            cached: cached.map { ($0.0, $0.1, $0.2, ModelSize.legacy($0.3), nil, nil) },
             excluded: excluded
         )
     }
@@ -1439,14 +1445,14 @@ enum ModelCatalog {
         speculative: [String: SpeculativeDecodingPreset] = [:]
     ) -> [ModelEntry] {
         var cachedByAlias: [String: (
-            repo: String?, subfolder: String?, size: String?
+            repo: String?, subfolder: String?, size: ModelSize?
         )] = [:]
         let atomicByAlias = Dictionary(
             uniqueKeysWithValues: atomic.map { ($0.alias, $0) }
         )
-        var cachedByArtifact: [String: (repo: String, size: String?)] = [:]
-        var unmappedRootByRepo: [String: (size: String?, present: Bool)] = [:]
-        var externalByRepo: [String: (size: String?, present: Bool)] = [:]
+        var cachedByArtifact: [String: (repo: String, size: ModelSize?)] = [:]
+        var unmappedRootByRepo: [String: (size: ModelSize?, present: Bool)] = [:]
+        var externalByRepo: [String: (size: ModelSize?, present: Bool)] = [:]
         for (alias, repo, subfolder, size, _, _) in cached {
             if alias == "(external)", let repo {
                 externalByRepo[repo] = (size, true)
@@ -1477,7 +1483,7 @@ enum ModelCatalog {
             // from inheriting stale cache state while still recognizing
             // deliberately nested checkpoints.
             let cachedHit: (
-                repo: String?, subfolder: String?, size: String?
+                repo: String?, subfolder: String?, size: ModelSize?
             )? = cachedByAlias[entry.alias].flatMap { hit in
                 guard let expectedRepo = entry.hfRepo,
                       sanitizedHuggingFaceRepo(hit.repo) == expectedRepo,
@@ -1499,16 +1505,15 @@ enum ModelCatalog {
                     || externalRepo != nil else {
                 return entry
             }
+            let size = cachedHit?.size ?? siblingHit?.size ?? unmappedRoot?.1
+                ?? externalRepo.flatMap { externalByRepo[$0]?.size }
             return ModelEntry(
                 alias: entry.alias,
                 hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? unmappedRoot?.0
                     ?? entry.hfRepo ?? externalRepo,
-                sizeOnDisk: cachedHit?.size
-                    ?? siblingHit?.size
-                    ?? unmappedRoot?.1
-                    ?? externalRepo.flatMap { externalByRepo[$0]?.size }
-                    ?? entry.sizeOnDisk,
+                sizeOnDisk: size?.displayText,
                 cached: true,
+                sizeBytes: size?.byteCount,
                 isExternal: cachedHit == nil && siblingHit == nil
                     && unmappedRoot == nil && externalRepo != nil,
                 kind: entry.kind,
@@ -1534,7 +1539,7 @@ enum ModelCatalog {
             && !excluded.contains(alias) {
             seenAliases.insert(alias)
             entries.append(ModelEntry(
-                alias: alias, hfRepo: repo, sizeOnDisk: size, cached: true
+                alias: alias, hfRepo: repo, sizeOnDisk: size?.displayText, cached: true, sizeBytes: size?.byteCount
             ))
         }
         for (alias, repo, _, size, _, _) in cached where alias == "(external)" {
@@ -1547,8 +1552,9 @@ enum ModelCatalog {
             entries.append(ModelEntry(
                 alias: repo,
                 hfRepo: repo,
-                sizeOnDisk: size,
+                sizeOnDisk: size?.displayText,
                 cached: true,
+                sizeBytes: size?.byteCount,
                 isExternal: true
             ))
         }
@@ -1566,7 +1572,7 @@ enum ModelCatalog {
     ) -> [ModelEntry] {
         mergeAtomicAndCached(
             atomic: atomic,
-            cached: cached.map { ($0.0, $0.1, nil, $0.2, nil, nil) },
+            cached: cached.map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) },
             excluded: excluded,
             speculative: speculative
         )
@@ -1583,7 +1589,7 @@ enum ModelCatalog {
                   !result.contains(where: { $0.alias == path }) else { continue }
             result.removeAll { $0.alias == row.hfRepo && $0.hfRepo == row.hfRepo }
             result.append(ModelEntry(
-                alias: path, hfRepo: row.hfRepo, sizeOnDisk: row.size, cached: true,
+                alias: path, hfRepo: row.hfRepo, sizeOnDisk: row.size?.displayText, cached: true, sizeBytes: row.size?.byteCount,
                 isExternal: row.alias == "(external)"
             ))
         }
@@ -1617,7 +1623,7 @@ enum ModelCatalog {
             } else if discovery.ready, !excluded.contains(launchIdentity),
                       !result.contains(where: { $0.hfRepo == repo && $0.sourceSubfolder == nil }) {
                 result.append(ModelEntry(
-                    alias: launchIdentity, hfRepo: repo, sizeOnDisk: row.size, cached: true,
+                    alias: launchIdentity, hfRepo: repo, sizeOnDisk: row.size?.displayText, cached: true, sizeBytes: row.size?.byteCount,
                     isExternal: row.alias == "(external)",
                     cachedChatDiscovery: discovery, isUncataloged: true
                 ))
@@ -1669,8 +1675,15 @@ enum ModelCatalog {
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseImageRows(modelsOut)
-        let cachedRepos = Set(cached.compactMap { $0.1 })
-        return mergeImageRows(rows, cachedRepos: cachedRepos)
+        let cachedRepos = Set(cached.compactMap { $0.hfRepo })
+        let cachedSizes = Dictionary(
+            cached.compactMap { row -> (String, ModelSize)? in
+                guard let repo = row.hfRepo, let size = row.size else { return nil }
+                return (repo, size)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return mergeImageRows(rows, cachedRepos: cachedRepos, cachedSizes: cachedSizes)
     }
 
     /// Join the engine's image catalog to its runnable-cache view. Keeping
@@ -1684,14 +1697,17 @@ enum ModelCatalog {
             size: String?,
             capability: ImageModelCapability
         )],
-        cachedRepos: Set<String>
+        cachedRepos: Set<String>,
+        cachedSizes: [String: ModelSize] = [:]
     ) -> [ModelEntry] {
         return rows.map { row in
-            ModelEntry(
+            let size = row.hfRepo.flatMap { cachedSizes[$0] } ?? ModelSize.legacy(row.size)
+            return ModelEntry(
                 alias: row.alias,
                 hfRepo: row.hfRepo,
-                sizeOnDisk: row.size,
+                sizeOnDisk: size?.displayText,
                 cached: row.hfRepo.map { cachedRepos.contains($0) } ?? false,
+                sizeBytes: size?.byteCount,
                 kind: .image,
                 imageCapability: row.capability
             )
@@ -1746,7 +1762,7 @@ enum ModelCatalog {
         )
         let cached = await cachedTask
         let cachedByRepo = Dictionary(
-            cached.compactMap { _, repo, _, size, _, _ -> (String, String?)? in
+            cached.compactMap { _, repo, _, size, _, _ -> (String, ModelSize?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
@@ -1763,11 +1779,13 @@ enum ModelCatalog {
             isDesktopAudioAliasVisible($0.alias)
         }
         return rows.map { row in
-            ModelEntry(
+            let size = row.hfRepo.flatMap { cachedByRepo[$0] } ?? ModelSize.legacy(row.size)
+            return ModelEntry(
                 alias: row.alias,
                 hfRepo: row.hfRepo,
-                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? row.size,
+                sizeOnDisk: size?.displayText,
                 cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                sizeBytes: size?.byteCount,
                 kind: .audio,
                 audioCapability: audioCapability(
                     alias: row.alias,
@@ -1798,18 +1816,20 @@ enum ModelCatalog {
             packagedVideoAliases.contains($0.alias)
         }
         let cachedByRepo = Dictionary(
-            (await cachedTask).compactMap { _, repo, _, size, _, _ -> (String, String?)? in
+            (await cachedTask).compactMap { _, repo, _, size, _, _ -> (String, ModelSize?)? in
                 guard let repo else { return nil }
                 return (repo, size)
             },
             uniquingKeysWith: { first, _ in first }
         )
         return rows.map { row in
-            ModelEntry(
+            let size = row.hfRepo.flatMap { cachedByRepo[$0] } ?? nil
+            return ModelEntry(
                 alias: row.alias,
                 hfRepo: row.hfRepo,
-                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? nil,
+                sizeOnDisk: size?.displayText,
                 cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                sizeBytes: size?.byteCount,
                 kind: .video,
                 videoCapabilities: row.capabilities,
                 minimumMemoryGB: row.minimumMemoryGB
@@ -1839,18 +1859,20 @@ enum ModelCatalog {
             isDesktopAudioAliasVisible($0.alias)
         }
         let cachedByRepo = Dictionary(
-            parseCached(cached.stdout).compactMap { _, repo, size -> (String, String?)? in
+            parseCached(cached.stdout).compactMap { _, repo, size -> (String, ModelSize?)? in
                 guard let repo else { return nil }
-                return (repo, size)
+                return (repo, ModelSize.legacy(size))
             },
             uniquingKeysWith: { first, _ in first }
         )
         return rows.map { row in
-            ModelEntry(
+            let size = row.hfRepo.flatMap { cachedByRepo[$0] } ?? ModelSize.legacy(row.size)
+            return ModelEntry(
                 alias: row.alias,
                 hfRepo: row.hfRepo,
-                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? row.size,
+                sizeOnDisk: size?.displayText,
                 cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                sizeBytes: size?.byteCount,
                 kind: .audio,
                 audioCapability: audioCapability(
                     alias: row.alias,
@@ -2043,7 +2065,7 @@ enum ModelCatalog {
             args: ["ls"],
             hubCacheOverride: hubCacheOverride
         )
-        return parseCached(text).map { ($0.0, $0.1, nil, $0.2, nil, nil) }
+        return parseCached(text).map { ($0.0, $0.1, nil, ModelSize.legacy($0.2), nil, nil) }
     }
 
     /// Parses the ``rapid-mlx models`` output. The format (v0.6.83) is a
@@ -2212,10 +2234,7 @@ enum ModelCatalog {
                   bytes.int64Value > 0,
                   let external = row["external"] as? Bool
             else { return nil }
-            let size = ByteCountFormatter.string(
-                fromByteCount: bytes.int64Value,
-                countStyle: .binary
-            )
+            let size = ModelSize.bytes(bytes.int64Value)
             let launchPath: String?
             if let path = row["launch_path"] as? String {
                 guard path.hasPrefix("/"), !path.contains("\\"),

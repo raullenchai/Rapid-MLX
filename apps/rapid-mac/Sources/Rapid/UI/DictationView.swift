@@ -232,7 +232,7 @@ struct DictationView: View {
             // hand-rolled, so it cannot drift out of alignment with the rest
             // of the app's model management.
             if let readiness = modelReadiness {
-                ReadinessBanner(readiness: readiness, onAction: handleModelReadinessAction)
+                ReadinessBanner(readiness: readiness, modelDisplayName: selectedModelDetails?.displayName, onAction: handleModelReadinessAction)
                     // xs outside + the banner's own md inside = lg: the
                     // banner's text sits on the rows' content line and its
                     // action button on the rows' trailing control line.
@@ -356,7 +356,7 @@ struct DictationView: View {
             alias: alias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedModelEntry?.cached,
-            sizeText: selectedModelEntry?.sizeOnDisk,
+            sizeText: selectedModelEntry?.size?.displayText,
             download: AudioReadinessState.downloadSnapshot(
                 alias: alias,
                 job: downloads.job(for: alias)
@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+            totalBytes: entry.sizeBytes ?? ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
         )
     }
 
@@ -825,21 +825,21 @@ private struct TranscriptionModelOptionRow: View {
                         .frame(width: 14, height: 18)
 
                     VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                        HStack(spacing: RapidTheme.Space.xs) {
-                            Text(details.displayName)
-                                .font(RapidFont.body)
-                                .lineLimit(1)
-                            pickerBadge("offline")
-                            pickerBadge(details.badge)
-                            if details.isRecommended {
-                                pickerBadge("recommended", emphasized: true)
+                        HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.xs) {
+                            FlowLayout(spacing: RapidTheme.Space.xs) {
+                                Text(details.displayName).font(RapidFont.body)
+                                pickerBadge("offline")
+                                pickerBadge(details.badge)
+                                if details.isRecommended {
+                                    pickerBadge("recommended", emphasized: true)
+                                }
                             }
-                            Spacer(minLength: RapidTheme.Space.xs)
-                            if let size = entry.sizeOnDisk {
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            if let size = entry.size?.displayText {
                                 Text(size)
                                     .font(RapidFont.caption)
                                     .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
+                                    .fixedSize()
                             }
                             if entry.cached {
                                 Image(systemName: ModelPickerBar.cacheGlyph(cached: true))
@@ -893,8 +893,15 @@ private struct TranscriptionModelOptionRow: View {
             HStack(spacing: RapidTheme.Space.xs) {
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 42)
-                    Text(verbatim: "\(Int((fraction * 100).rounded()))%")
+                    Text(verbatim: "100%")
                         .font(RapidFont.caption)
+                        .monospacedDigit()
+                        .hidden()
+                        .overlay(alignment: .trailing) {
+                            Text(verbatim: "\(Int((fraction * 100).rounded()))%")
+                                .font(RapidFont.caption)
+                                .monospacedDigit()
+                        }
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -915,7 +922,7 @@ private struct TranscriptionModelOptionRow: View {
             .background(
                 Capsule().fill(emphasized ? RapidTheme.green.opacity(0.12) : RapidTheme.hoverFill)
             )
-            .lineLimit(1)
+            .fixedSize()
     }
 
     private var accessibilityLabel: String {
@@ -930,7 +937,7 @@ private struct TranscriptionModelOptionRow: View {
         } else {
             parts.append(entry.cached ? "Downloaded" : "Not downloaded")
         }
-        if let size = entry.sizeOnDisk { parts.append(size) }
+        if let size = entry.size?.displayText { parts.append(size) }
         parts.append(details.summary)
         return parts.joined(separator: ", ")
     }
