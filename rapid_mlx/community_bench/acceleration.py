@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rapid_mlx.cli_parser import BENCHMARK_ACCELERATION_FLAGS, build_parser
+from rapid_mlx.mllm_prefill import effective_mllm_prefill_chunk
 
 
 @dataclass(frozen=True)
@@ -228,7 +229,9 @@ def mllm_language(mllm_config, *, context_length, compute_dtype: str) -> dict:
         "kv_cache": _full_precision_kv(compute_dtype),
         "prefix_cache_enabled": bool(mllm_config.enable_prefix_cache),
         "prefill_backend": "gpu",
-        "prefill_chunk_size": int(mllm_config.prefill_step_size),
+        "prefill_chunk_size": effective_mllm_prefill_chunk(
+            mllm_config.prefill_step_size
+        ),
         "context_length": context_length,
     }
 

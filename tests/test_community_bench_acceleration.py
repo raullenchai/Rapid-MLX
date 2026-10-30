@@ -1036,10 +1036,23 @@ def test_mllm_serving_engine_run_records_mllm_lane_config(
         )
     finally:
         lr._LOADED_IDENTITY.reset(token)
-    assert language["prefill_chunk_size"] == 4096
+    assert language["prefill_chunk_size"] == 2048
     assert language["speculative_decoding"] == {"method": "none"}
     assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
     assert capture["compute_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "step_size, expected", [(8192, 2048), (4096, 2048), (1024, 1024)]
+)
+def test_mllm_language_records_effective_prefill_chunk(step_size, expected):
+    from types import SimpleNamespace
+
+    from rapid_mlx.community_bench.acceleration import mllm_language
+
+    config = SimpleNamespace(prefill_step_size=step_size, enable_prefix_cache=False)
+    language = mllm_language(config, context_length=4096, compute_dtype="bfloat16")
+    assert language["prefill_chunk_size"] == expected
 
 
 @pytest.mark.parametrize("fastpath", [False, True])
@@ -1078,7 +1091,7 @@ def test_mllm_lane_routing_with_headless_fake(monkeypatch, tmp_path, fastpath):
         _, _, _, language = asyncio.run(lr._text_measurements("org/model"))
     finally:
         lr._LOADED_IDENTITY.reset(token)
-    assert language["prefill_chunk_size"] == 4096
+    assert language["prefill_chunk_size"] == 2048
     assert language["speculative_decoding"] == {"method": "none"}
     assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
     assert capture["compute_dtype"] == "bfloat16"
