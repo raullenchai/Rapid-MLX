@@ -109,6 +109,9 @@ def test_ci_runs_the_real_license_file_package_build_once():
     assert license_index == stamp_index + 1
     assert run["if"] == "matrix.python-version == '3.12' && matrix.shard == 1"
     assert (
+        run["run"].splitlines()[0] == 'python -m pip install "setuptools>=61.0" wheel'
+    )
+    assert (
         "tests/test_license_files_packaged.py::"
         "test_real_distributions_ship_every_tracked_license_file" in run["run"]
     )
@@ -119,7 +122,10 @@ def test_ci_runs_the_real_license_file_package_build_once():
 
 @pytest.mark.slow
 def test_real_distributions_ship_every_tracked_license_file(tmp_path):
-    if importlib.util.find_spec("setuptools.build_meta") is None:
+    if (
+        importlib.util.find_spec("setuptools") is None
+        or importlib.util.find_spec("setuptools.build_meta") is None
+    ):
         pytest.skip("setuptools is not installed")
     source = tmp_path / "source"
     tracked = subprocess.run(

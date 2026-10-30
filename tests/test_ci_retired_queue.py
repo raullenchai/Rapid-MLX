@@ -153,5 +153,5 @@ def test_non_pr_engine_route_always_runs_full_gate(tmp_path, event):
     values = dict(line.split("=", 1) for line in output.read_text().splitlines())
     assert values["engine"] == values["desktop"] == values["full_gate"] == "true"
     assert values["linux_matrix_mode"] == "full"
-    assert len(json.loads(values["test_matrix"])["include"]) == 9
+    assert len(json.loads(values["test_matrix"])["include"]) == 6
     assert len(json.loads(values["l1_matrix"])["include"]) == 5

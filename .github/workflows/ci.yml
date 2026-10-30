@@ -441,6 +441,7 @@ jobs:
       - name: Run real license-file package build
         if: matrix.python-version == '3.12' && matrix.shard == 1
         run: |
+          python -m pip install "setuptools>=61.0" wheel
           pytest \
             tests/test_license_files_packaged.py::test_real_distributions_ship_every_tracked_license_file \
             --run-slow -m slow \

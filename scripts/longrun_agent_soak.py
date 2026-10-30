@@ -84,6 +84,12 @@ def diagnostic_repr(value, limit):
     formatter.maxstring = 200
     formatter.maxlong = 200
     formatter.maxother = 200
+    if type(value) is int:
+        try:
+            repr(value)
+        except ValueError:
+            # Python 3.13 reprlib hides this error behind an instance description.
+            return "<int>"[:limit]
     try:
         return formatter.repr(value)[:limit]
     except (ValueError, RecursionError):
