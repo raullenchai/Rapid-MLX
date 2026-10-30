@@ -210,7 +210,7 @@ def model_compute_dtype(model) -> str:
         total = sum(counts.values())
         if not total:
             return "unknown"
-        name = max(counts, key=counts.get)
+        name = max(counts, key=lambda dtype: counts[dtype])
         return name if counts[name] * 100 >= total * 99 else "mixed"
     except Exception:
         return "unknown"
