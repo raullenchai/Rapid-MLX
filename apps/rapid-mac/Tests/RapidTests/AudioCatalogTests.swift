@@ -98,6 +98,27 @@ struct AudioCatalogTests {
         ])
     }
 
+    @Test("new transcription aliases have guidance and prefer short names")
+    @MainActor
+    func newTranscriptionAliases() {
+        let cases = [
+            ("granite-speech", "granite-speech-5.0-470m-turboctc", "Granite Speech 5.0"),
+            ("firered-asr2", "fireredasr2-aed", "FireRedASR2"),
+            ("nemotron-asr", "nemotron-3.5-asr-streaming-0.6b", "Nemotron ASR 0.6B"),
+        ]
+        for (short, long, name) in cases {
+            for alias in [short, long] {
+                let details = AudioViewModel.transcriptionDetails(alias: alias, family: nil)
+                #expect(details.displayName == name)
+                #expect(!details.isRecommended)
+            }
+            let rows = [long, short].map {
+                audioEntry(alias: $0, capability: .transcription, family: "test", repo: "owner/\(short)")
+            }
+            #expect(AudioViewModel.deduplicatedTranscriptionModels(rows).map(\.alias) == [short])
+        }
+    }
+
     @Test("presentation ranking cannot silently change the selected checkpoint")
     @MainActor
     func transcriptionRecommendationDoesNotOverrideCachedSelectionOrder() {

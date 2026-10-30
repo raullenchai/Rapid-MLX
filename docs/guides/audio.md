@@ -7,9 +7,9 @@
 
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
-- **STT (Speech-to-Text)**: Whisper, Parakeet, SenseVoice
+- **STT (Speech-to-Text)**: Whisper, Parakeet, SenseVoice, Granite Speech, FireRedASR2, Nemotron ASR
 - **Forced alignment**: Qwen3-ForcedAligner (timings against a known transcript)
-- **TTS (Text-to-Speech)**: Kokoro, Qwen3-TTS, Chatterbox, IndexTTS, VibeVoice, VoxCPM, F5-TTS, Dia
+- **TTS (Text-to-Speech)**: Kokoro, Qwen3-TTS, Chatterbox, IndexTTS, VibeVoice, VoxCPM, VoxCPM2, MOSS-TTS-Nano, F5-TTS, Dia
 - **Zero-shot voice cloning**: IndexTTS, Qwen3-TTS Base, F5-TTS, Chatterbox
 - **Audio Processing**: SAM-Audio (voice separation)
 
@@ -26,6 +26,8 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 | `chatterbox-4bit` | TTS | `mlx-community/chatterbox-turbo-4bit` |
 | `vibevoice` / `vibevoice-realtime` | TTS | `mlx-community/VibeVoice-Realtime-0.5B-4bit` |
 | `voxcpm` | TTS | `mlx-community/VoxCPM1.5` |
+| `voxcpm2` / `voxcpm2-8bit` | TTS | `mlx-community/VoxCPM2-8bit` |
+| `moss-tts-nano` | TTS | `mlx-community/MOSS-TTS-Nano-100M` |
 | `dia` | TTS | `mlx-community/Dia-1.6B-4bit` |
 | `indextts` / `indextts-1.5` | TTS voice cloning | `mlx-community/IndexTTS-1.5` |
 | `qwen3-tts` / `qwen3-tts-customvoice` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` |
@@ -45,6 +47,9 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 | `parakeet` / `parakeet-tdt-0.6b` / `parakeet-tdt-0.6b-v2` | STT | `mlx-community/parakeet-tdt-0.6b-v2` |
 | `parakeet-v3` / `parakeet-tdt-0.6b-v3` | STT | `mlx-community/parakeet-tdt-0.6b-v3` |
 | `sensevoice` / `sensevoice-small` | STT | `mlx-community/SenseVoiceSmall` |
+| `granite-speech` / `granite-speech-5.0-470m-turboctc` | STT | `ibm-granite/granite-speech-5.0-470m-turboctc` |
+| `firered-asr2` / `fireredasr2-aed` | STT | `mlx-community/FireRedASR2-AED-mlx` |
+| `nemotron-asr` / `nemotron-3.5-asr-streaming-0.6b` | STT | `mlx-community/nemotron-3.5-asr-streaming-0.6b` |
 | `qwen3-aligner` / `qwen3-forced-aligner` | Forced alignment | `mlx-community/Qwen3-ForcedAligner-0.6B-8bit` |
 
 Run `rapid-mlx models` to see the full live list (the section header reads "Audio models" with `[audio:tts]` / `[audio:stt]` tags).

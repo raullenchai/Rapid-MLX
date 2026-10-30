@@ -27,7 +27,9 @@ from .time_stretch import time_stretch
 
 # These mlx-audio families accept but ignore speed, or lack a native tempo
 # control. All other families (including Kokoro and F5) keep native handling.
-_POST_STRETCH_FAMILIES = frozenset({"qwen3_tts", "chatterbox", "indextts"})
+_POST_STRETCH_FAMILIES = frozenset(
+    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -591,6 +593,8 @@ def detect_tts_family(model_name: str) -> str:
         return "indextts"
     elif "f5-tts" in name_lower or "f5_tts" in name_lower:
         return "f5"
+    elif "moss-tts-nano" in name_lower or "moss_tts_nano" in name_lower:
+        return "moss_tts_nano"
     else:
         return "kokoro"  # Default
 
@@ -649,11 +653,13 @@ class TTSEngine:
                 - Kokoro: mlx-community/Kokoro-82M-bf16, Kokoro-82M-4bit
                 - Chatterbox: mlx-community/chatterbox-turbo-fp16
                 - VibeVoice: mlx-community/VibeVoice-Realtime-0.5B-4bit
-                - VoxCPM: mlx-community/VoxCPM1.5
+                - VoxCPM: mlx-community/VoxCPM1.5, VoxCPM2-8bit
+                - MOSS-TTS-Nano: mlx-community/MOSS-TTS-Nano-100M
         """
         self.model_name = model_name
         self.model = None
         self._loaded = False
+        self._moss_codec_path: str | None = None
         self._model_family = self._detect_family(model_name)
 
     def _is_qwen3_voicedesign(self) -> bool:
@@ -728,6 +734,20 @@ class TTSEngine:
                     self.model = load_model(model_path)
             else:
                 self.model = load_model(model_path)
+            if self._model_family == "moss_tts_nano":
+                from .registry import runtime_assets_for
+
+                assets = runtime_assets_for(self.model_name)
+                if not assets:
+                    raise RuntimeError(
+                        "MOSS-TTS-Nano codec runtime asset is not declared"
+                    )
+                asset = assets[0]
+                self._moss_codec_path = model_downloads.snapshot_download(
+                    asset.repo_id,
+                    allow_patterns=list(asset.allow_patterns),
+                    revision=asset.revision,
+                )
             self._loaded = True
             logger.info(
                 f"TTS model loaded: {self.model_name} (family: {self._model_family})"
@@ -819,7 +839,9 @@ class TTSEngine:
             # forwarding Kokoro's single-letter ``lang_code="a"`` to it
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
-            if self._model_family == "indextts":
+            if self._model_family == "moss_tts_nano":
+                gen_kwargs: dict = self._moss_generate_kwargs(text)
+            elif self._model_family == "indextts":
                 if not ref_audio:
                     raise ValueError(
                         "IndexTTS requires ref_audio (a reference speech clip "
@@ -834,7 +856,7 @@ class TTSEngine:
                     ref_audio,
                     sample_rate=getattr(self.model, "sample_rate", 24000),
                 )
-                gen_kwargs: dict = {"text": text, "ref_audio": ref_waveform}
+                gen_kwargs = {"text": text, "ref_audio": ref_waveform}
             elif self._model_family == "chatterbox":
                 # Chatterbox's ``generate`` steers expressiveness through
                 # ``exaggeration`` and zero-shot cloning through
@@ -848,7 +870,7 @@ class TTSEngine:
                 # ``**kwargs`` on ``Model.generate`` and ``generate_audio``,
                 # so forwarding it never raises TypeError on either variant.
                 # Forward exactly those two knobs, each only when set.
-                gen_kwargs: dict = {"text": text}
+                gen_kwargs = {"text": text}
                 if exaggeration is not None:
                     gen_kwargs["exaggeration"] = exaggeration
                 if ref_audio:
@@ -905,6 +927,8 @@ class TTSEngine:
                         audio_np = np.array(audio_data.tolist(), dtype=np.float32)
                     else:
                         audio_np = np.array(audio_data, dtype=np.float32)
+                    if self._model_family == "moss_tts_nano" and audio_np.ndim == 2:
+                        audio_np = audio_np.mean(axis=1).astype(np.float32)
                     audio_chunks.append(audio_np)
 
             if not audio_chunks:
@@ -1058,6 +1082,13 @@ class TTSEngine:
             return results
         return _first_result_scoped(results, pipeline)
 
+    def _moss_generate_kwargs(self, text: str) -> dict:
+        return {
+            "text": text,
+            "mode": "continuation",
+            "audio_tokenizer_source": self._moss_codec_path,
+        }
+
     def stream_generate(
         self,
         text: str,
@@ -1083,9 +1114,12 @@ class TTSEngine:
         # rather than restarting at every boundary. This yields one complete
         # clip and delays first audio until synthesis finishes.
         post_stretch = self._model_family in _POST_STRETCH_FAMILIES
-        gen_kwargs: dict[str, object] = {"text": text, "voice": voice}
-        if not post_stretch:
-            gen_kwargs["speed"] = speed
+        if self._model_family == "moss_tts_nano":
+            gen_kwargs = self._moss_generate_kwargs(text)
+        else:
+            gen_kwargs = {"text": text, "voice": voice}
+            if not post_stretch:
+                gen_kwargs["speed"] = speed
         buffer_for_stretch = post_stretch and speed != 1.0
         buffered: list[np.ndarray] = []
         sample_rate = buffered_rate = 24000
@@ -1099,6 +1133,9 @@ class TTSEngine:
                 audio_np = np.array(audio_data.tolist(), dtype=np.float32)
             else:
                 audio_np = np.array(audio_data, dtype=np.float32)
+
+            if self._model_family == "moss_tts_nano" and audio_np.ndim == 2:
+                audio_np = audio_np.mean(axis=1).astype(np.float32)
 
             if buffer_for_stretch:
                 if buffered and sample_rate != buffered_rate:
