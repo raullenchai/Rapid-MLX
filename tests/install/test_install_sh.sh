@@ -204,18 +204,100 @@ check "plan: an x86_64 venv is rebuilt" \
 # Mock the side-effecting steps so we can assert the create/upgrade/rebuild
 # branches invoke the intended operations in order — a swapped or dropped branch
 # in install.sh would change this record.
-CALLS=""
-create_venv()    { CALLS="$CALLS create"; }
-upgrade_pip()    { CALLS="$CALLS upgrade"; }
-reset_venv_dir() { CALLS="$CALLS reset"; }
-info() { :; }; warn() { :; }; dim() { :; }   # silence banners during dispatch
+(
+    CALLS=""
+    create_venv() { CALLS="$CALLS create"; }
+    upgrade_pip() { CALLS="$CALLS upgrade"; }
+    stash_venv_entries() { CALLS="$CALLS stash"; }
+    info() { :; }; warn() { :; }; dim() { :; }
+    INSTALL_DIR="$WORK/dispatch"; mkdir -p "$INSTALL_DIR/bin"
+    CALLS=""; dispatch_venv upgrade
+    check "dispatch upgrade -> only pip upgrade" "$CALLS" " upgrade"
+    CALLS=""; dispatch_venv create
+    check "dispatch create -> only venv create" "$CALLS" " create"
+    CALLS=""; dispatch_venv rebuild
+    check "dispatch rebuild -> stash then create" "$CALLS" " stash create"
+    trap - EXIT INT TERM
+    [ "$FAIL" -eq 0 ]
+) || bad "dispatch action wiring"
 
-CALLS=""; dispatch_venv upgrade
-check "dispatch upgrade -> only pip upgrade" "$CALLS" " upgrade"
-CALLS=""; dispatch_venv create
-check "dispatch create -> only venv create" "$CALLS" " create"
-CALLS=""; dispatch_venv rebuild
-check "dispatch rebuild -> reset then create" "$CALLS" " reset create"
+# ── Transactional rebuilds preserve the old venv and shared state ───────────
+make_old_install() {
+    mkdir -p "$1/bin" "$1/lib" "$1/agents"
+    printf 'old python\n' > "$1/bin/python"
+    printf 'old lib\n' > "$1/lib/marker"
+    printf 'old config\n' > "$1/pyvenv.cfg"
+    printf 'client-abc' > "$1/telemetry-client-id"
+    printf '{"custom":true}' > "$1/agents/custom.json"
+}
+check_old_install() {
+    local dir="$1" result=yes backup
+    [ "$(cat "$dir/bin/python" 2>/dev/null)" = 'old python' ] || result=no
+    [ "$(cat "$dir/lib/marker" 2>/dev/null)" = 'old lib' ] || result=no
+    [ "$(cat "$dir/pyvenv.cfg" 2>/dev/null)" = 'old config' ] || result=no
+    [ ! -e "$dir/bin/marker-new" ] || result=no
+    [ "$(cat "$dir/telemetry-client-id" 2>/dev/null)" = 'client-abc' ] || result=no
+    [ "$(cat "$dir/agents/custom.json" 2>/dev/null)" = '{"custom":true}' ] || result=no
+    for backup in "$dir"/.venv-previous.*; do [ ! -e "$backup" ] || result=no; done
+    check "$2" "$result" yes
+}
+make_new_install() {
+    mkdir -p "$INSTALL_DIR/bin"
+    printf 'new\n' > "$INSTALL_DIR/bin/marker-new"
+    printf '#!/bin/bash\nexit 0\n' > "$INSTALL_DIR/bin/python"
+    printf '#!/bin/bash\nexit %s\n' "${CLI_STATUS:-0}" > "$INSTALL_DIR/bin/rapid-mlx"
+    chmod +x "$INSTALL_DIR/bin/python" "$INSTALL_DIR/bin/rapid-mlx"
+}
+
+ROUND="$WORK/roundtrip"; make_old_install "$ROUND"
+stash_venv_entries "$ROUND" "$ROUND/.venv-previous.1"
+check "stash leaves shared state in place" "$(cat "$ROUND/telemetry-client-id") $(cat "$ROUND/agents/custom.json")" 'client-abc {"custom":true}'
+restore_venv_entries "$ROUND" "$ROUND/.venv-previous.1"
+check_old_install "$ROUND" "stash and restore preserve venv and shared state"
+
+for failure in install create verify; do
+    FIXTURE="$WORK/failure-$failure"; make_old_install "$FIXTURE"
+    set +e
+    (
+        set -e
+        INSTALL_DIR="$FIXTURE"
+        create_venv() {
+            make_new_install
+            if [ "$failure" = create ]; then exit 1; fi
+        }
+        install_package() { if [ "$failure" = install ]; then return 1; fi; }
+        if [ "$failure" = verify ]; then CLI_STATUS=1; fi
+        dispatch_venv rebuild
+        install_package
+        finish_rebuild
+    ) >/dev/null 2>&1
+    status=$?
+    set -e
+    check "$failure failure exits nonzero" "$([ "$status" -ne 0 ] && echo yes || echo no)" yes
+    check_old_install "$FIXTURE" "$failure failure restores old venv and shared state"
+done
+
+for scenario in success interrupted; do
+    FIXTURE="$WORK/$scenario"; make_old_install "$FIXTURE"
+    if [ "$scenario" = interrupted ]; then
+        stash_venv_entries "$FIXTURE" "$FIXTURE/.venv-previous.123"
+    fi
+    (
+        INSTALL_DIR="$FIXTURE"
+        create_venv() { make_new_install; }
+        install_package() { :; }
+        dispatch_venv rebuild
+        install_package
+        finish_rebuild
+    ) >/dev/null
+    result=yes
+    [ -e "$FIXTURE/bin/marker-new" ] || result=no
+    [ ! -e "$FIXTURE/lib/marker" ] || result=no
+    [ "$(cat "$FIXTURE/telemetry-client-id")" = client-abc ] || result=no
+    [ -e "$FIXTURE/agents/custom.json" ] || result=no
+    for backup in "$FIXTURE"/.venv-previous.*; do [ ! -e "$backup" ] || result=no; done
+    check "$scenario rebuild commits new venv and preserves shared state" "$result" yes
+done
 
 # ── 13. first-chat starter mirrors Desktop Quickstart (#2385) ────────────────
 check "15 GB fresh install uses the safe 1.2B starter" \

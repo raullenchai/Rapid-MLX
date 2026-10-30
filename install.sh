@@ -14,6 +14,7 @@ GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
 MIN_PYTHON_MINOR=12
 # Newest validated interpreter; raise together with the classifiers and CI matrix.
 MAX_PYTHON_MINOR=13
+VENV_BACKUP=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,20 +103,71 @@ venv_is_complete() {
     [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ] && [ "$minor" -le "$MAX_PYTHON_MINOR" ]
 }
 
-# Remove ONLY the virtual environment's own entries under $1, so a rebuild does
-# not touch the shared ~/.rapid-mlx state that pip and the desktop app also keep
-# here — telemetry-client-id, bench-install-id, agents/ profiles, launch.pid,
-# first-run markers. `python -m venv` then recreates bin/lib/... in place,
-# alongside that preserved state.
+# Rebuilds move only venv entries aside, preserving shared state. The new venv
+# must be created at its final path because venv scripts contain absolute paths.
 reset_venv_dir() {
     local dir="$1"
     rm -rf "$dir/bin" "$dir/lib" "$dir/lib64" "$dir/include" "$dir/share" "$dir/pyvenv.cfg"
 }
 
-# Decide what a fresh install run should do with $1: "create" when nothing is
-# there, "upgrade" a compatible venv in place, or "rebuild" an incompatible one
-# (reset_venv_dir + recreate). Isolated from the actions it drives so the
-# decision is unit-testable.
+stash_venv_entries() {
+    local dir="$1" backup="$2" entry saved
+    mkdir "$backup"
+    for entry in bin lib lib64 include share pyvenv.cfg; do
+        if [ -e "$dir/$entry" ] || [ -L "$dir/$entry" ]; then
+            if ! mv "$dir/$entry" "$backup/"; then
+                for saved in "$backup"/*; do
+                    [ -e "$saved" ] || [ -L "$saved" ] || continue
+                    mv "$saved" "$dir/"
+                done
+                rmdir "$backup"
+                return 1
+            fi
+        fi
+    done
+}
+
+restore_venv_entries() {
+    local dir="$1" backup="$2" entry
+    reset_venv_dir "$dir"
+    for entry in "$backup"/*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        mv "$entry" "$dir/"
+    done
+    rmdir "$backup"
+}
+
+rollback_rebuild() {
+    if [ -n "$VENV_BACKUP" ] && [ -d "$VENV_BACKUP" ]; then
+        restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
+        VENV_BACKUP=""
+        warn "Rebuild failed — restored the previous Rapid-MLX environment unchanged."
+        dim "Install Python 3.12 or 3.13 / check the network and re-run."
+    fi
+}
+
+commit_rebuild() {
+    local backup
+    rm -rf "$VENV_BACKUP"
+    VENV_BACKUP=""
+    for backup in "$INSTALL_DIR"/.venv-previous.*; do
+        [ -d "$backup" ] || continue
+        rm -rf "$backup"
+    done
+}
+
+finish_rebuild() {
+    [ -n "$VENV_BACKUP" ] || return 0
+    if ! run_install_command "$INSTALL_DIR/bin/python" -c 'import rapid_mlx' >/dev/null 2>&1 ||
+       ! run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version >/dev/null 2>&1; then
+        err "The rebuilt environment failed verification."
+        exit 1
+    fi
+    commit_rebuild
+    trap - EXIT INT TERM
+}
+
+# Decide whether to create, upgrade, or transactionally rebuild a venv.
 plan_venv_action() {
     local dir="$1"
     if [ ! -d "$dir" ]; then echo create; return; fi
@@ -149,8 +201,24 @@ dispatch_venv() {
             ;;
         rebuild)
             warn "Existing $INSTALL_DIR has no usable virtual environment — rebuilding it."
-            dim "(shared state such as telemetry-client-id and agents/ is preserved)"
-            reset_venv_dir "$INSTALL_DIR"
+            dim "(shared state is preserved; the previous environment is kept until the new one works)"
+            local backup newest=""
+            if [ ! -d "$INSTALL_DIR/bin" ]; then
+                for backup in "$INSTALL_DIR"/.venv-previous.*; do
+                    [ -d "$backup" ] || continue
+                    if [ -z "$newest" ] || [ "$backup" -nt "$newest" ]; then
+                        newest="$backup"
+                    fi
+                done
+                if [ -n "$newest" ]; then
+                    restore_venv_entries "$INSTALL_DIR" "$newest"
+                fi
+            fi
+            VENV_BACKUP="$INSTALL_DIR/.venv-previous.$$"
+            stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
+            trap 'rollback_rebuild' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
             info "Installing Rapid-MLX..."
             dim "(this takes about a minute)"
             create_venv
@@ -495,6 +563,7 @@ if command -v uv >/dev/null 2>&1; then
 fi
 
 install_package
+finish_rebuild
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and
 # falls back to the RAM baseline; never scrape the human table or cache paths.
