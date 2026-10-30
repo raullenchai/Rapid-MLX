@@ -4,10 +4,13 @@
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 
 from .base import StepResult
@@ -53,6 +56,15 @@ def _cache_dir(ctx) -> Path | None:
         return None
 
 
+def _installed_fingerprint() -> str:
+    packages = sorted(
+        f"{name.lower()}=={dist.version}"
+        for dist in metadata.distributions()
+        if (name := dist.metadata.get("Name"))
+    )
+    return hashlib.sha256("\n".join(packages).encode()).hexdigest()
+
+
 def cache_key(ctx) -> str | None:
     head_sha = getattr(ctx, "head_sha", "") or ""
     base_sha = getattr(ctx, "base_sha", "") or ""
@@ -80,6 +92,9 @@ def cache_key(ctx) -> str | None:
     except OSError as exc:
         _log(ctx, f"GPU cache disabled: {exc}")
         return None
+    # The clean checkout commit covers in-tree scripts and baselines; the
+    # interpreter, host and installed packages cover inputs outside the tree.
+    # PR/base identity, registry, step and RAM override complete the run config.
     data = {
         "schema": 1,
         "head_sha": head_sha,
@@ -88,6 +103,11 @@ def cache_key(ctx) -> str | None:
         "registry": registry,
         "step": step,
         "ram_gb": os.environ.get("PR_VALIDATE_RAM_GB", ""),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "node": platform.node(),
+        "installed": _installed_fingerprint(),
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 

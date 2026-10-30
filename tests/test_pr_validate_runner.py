@@ -199,6 +199,32 @@ def test_stage_selection(repo_root_cwd, monkeypatch, capsys, stage, extra):
     captured = capsys.readouterr()
     assert "| admit | `fetch` |" in captured.out
     assert f"  stage: {stage}" in captured.err
+    assert (
+        f"## Verdict: **STAGE {stage} PASSED (partial, not a merge verdict)**"
+        in captured.out
+    )
+    assert "MERGE-SAFE" not in captured.out
+    assert (
+        f"Verdict: STAGE {stage} PASSED (partial run — not a merge verdict; "
+        "run without --stage for MERGE-SAFE)"
+    ) in captured.err
+    assert "Verdict: MERGE-SAFE" not in captured.err
+
+
+def test_full_run_reports_merge_safe(repo_root_cwd, capsys):
+    assert run_pipeline(999, steps=_fake_pipeline([("lint", "pass")])) == 0
+    captured = capsys.readouterr()
+    assert "## Verdict: **MERGE-SAFE**" in captured.out
+    assert "Verdict: MERGE-SAFE" in captured.err
+
+
+def test_failing_stage_reports_do_not_merge(repo_root_cwd, capsys):
+    assert (
+        run_pipeline(999, steps=_fake_pipeline([("lint", "fail")]), stage="checks") == 1
+    )
+    captured = capsys.readouterr()
+    assert "## Verdict: **DO NOT MERGE**" in captured.out
+    assert "Verdict: DO NOT MERGE" in captured.err
 
 
 @pytest.mark.parametrize(

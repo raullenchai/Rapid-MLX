@@ -221,6 +221,36 @@ def test_cache_store_holds_lock(setup, monkeypatch):
     assert len(stored) == 1
 
 
+def test_cache_key_changes_with_installed_distributions(setup, monkeypatch):
+    ctx, _ = setup
+    monkeypatch.setattr(gpu_cache, "_installed_fingerprint", lambda: "first")
+    first = gpu_cache.cache_key(ctx)
+    monkeypatch.setattr(gpu_cache, "_installed_fingerprint", lambda: "second")
+    assert first != gpu_cache.cache_key(ctx)
+
+
+def test_cache_not_stored_if_head_changes_during_run(setup, monkeypatch):
+    ctx, _ = setup
+    states = iter([(SHA, True), ("c" * 40, True)])
+    monkeypatch.setattr(gpu_cache, "_repo_state", lambda _: next(states))
+    messages = []
+    monkeypatch.setattr(ctx, "run_log", messages.append)
+    step = StressE2EBenchStep()
+    monkeypatch.setattr(
+        step,
+        "_run_matrix",
+        lambda _: StepResult(name=step.name, status="pass", summary="ok"),
+    )
+    stored = []
+    monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
+    assert step.run(ctx).status == "pass"
+    assert not stored
+    assert (
+        "GPU cache not stored: repository or environment changed during the run"
+        in messages
+    )
+
+
 def test_cache_pass_and_miss_conditions(setup, monkeypatch):
     ctx, path = setup
     step = StressE2EBenchStep()

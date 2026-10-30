@@ -295,10 +295,16 @@ def run_pipeline(
             )
 
     # Render the scorecard to stdout (so callers can pipe into PR comments).
-    print(render_scorecard(ctx))
+    print(render_scorecard(ctx, partial_stage=stage))
 
     final_verdict = verdict(ctx.results)
-    print(f"\nVerdict: {final_verdict}", file=sys.stderr)
+    display_verdict = final_verdict
+    if stage and final_verdict == "MERGE-SAFE":
+        display_verdict = (
+            f"STAGE {stage} PASSED (partial run — not a merge verdict; "
+            "run without --stage for MERGE-SAFE)"
+        )
+    print(f"\nVerdict: {display_verdict}", file=sys.stderr)
 
     if queue_on_success and final_verdict == "MERGE-SAFE":
         from .queue_ready import queue_validated_head

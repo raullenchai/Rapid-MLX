@@ -122,7 +122,12 @@ class StressE2EBenchStep(Step):
             cached = gpu_cache.load(key, ctx) if key else None
             result = cached if cached else self._run_matrix(ctx)
             if key and not cached and result.status == "pass":
-                gpu_cache.store(key, ctx, result)
+                if gpu_cache.cache_key(ctx) == key:
+                    gpu_cache.store(key, ctx, result)
+                else:
+                    log(
+                        "GPU cache not stored: repository or environment changed during the run"
+                    )
         description = lock.describe()
         result.details += "\n\n" + description
         log(description)

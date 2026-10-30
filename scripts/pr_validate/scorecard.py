@@ -30,11 +30,13 @@ _STATUS_BADGE = {
 }
 
 
-def render_scorecard(ctx: Context) -> str:
+def render_scorecard(ctx: Context, partial_stage: str = "") -> str:
     """Build the markdown report. One table row per step, then per-fail
     detail blocks below. Designed to be paste-able into a GitHub PR
     comment without further editing."""
     final = verdict(ctx.results)
+    if partial_stage and final == "MERGE-SAFE":
+        final = f"STAGE {partial_stage} PASSED (partial, not a merge verdict)"
 
     lines = []
     lines.append(f"# PR #{ctx.pr_number} validation scorecard")
