@@ -917,18 +917,19 @@ def _check_catalog_memory_fit(args: Any) -> None:
             # Trust the curated floor unless weights alone exceed a real Metal limit.
             if recommended is None:
                 return
-            footprint = size_bytes(profile.hf_path)
-            if footprint is None:
+            size = size_bytes(profile.hf_path)
+            if size is None:
                 return
+            footprint: int = int(size)
         else:
             measured = recommendation_footprint_gb(alias)
             if measured is not None:
-                footprint = measured * _GIB
+                footprint = int(measured * _GIB)
             else:
                 weights = size_bytes(profile.hf_path)
                 if weights is None:
                     return
-                footprint = (
+                footprint = int(
                     weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
                 )
         if footprint <= budget:
