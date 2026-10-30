@@ -8,6 +8,7 @@ set -euo pipefail
 TARGET="${1:-stable}"  # stable (PyPI) | latest (explicit Git commit) | x.y.z (specific version)
 
 INSTALL_DIR="${HOME}/.rapid-mlx"
+INSTALL_LOCK="${INSTALL_DIR}.install-lock"
 BIN_DIR="${HOME}/.local/bin"
 PYPI_PACKAGE="rapid-mlx"
 GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
@@ -143,6 +144,10 @@ restore_venv_entries() {
 recover_interrupted_rebuild() {
     local backup newest=""
     [ -d "$INSTALL_DIR" ] || return 0
+    for backup in "$INSTALL_DIR"/.venv-discard.*; do
+        [ -d "$backup" ] || continue
+        rm -rf "$backup"
+    done
     for backup in "$INSTALL_DIR"/.venv-previous.*; do
         [ -d "$backup" ] || continue
         if [ -z "$newest" ] || [ "$backup" -nt "$newest" ]; then
@@ -174,10 +179,10 @@ rollback_rebuild() {
 }
 
 commit_rebuild() {
-    local backup
-    rm -rf "$VENV_BACKUP"
+    local backup discard="$INSTALL_DIR/.venv-discard.$$"
+    mv "$VENV_BACKUP" "$discard"
     VENV_BACKUP=""
-    for backup in "$INSTALL_DIR"/.venv-previous.*; do
+    for backup in "$INSTALL_DIR"/.venv-previous.* "$INSTALL_DIR"/.venv-discard.*; do
         [ -d "$backup" ] || continue
         rm -rf "$backup"
     done
@@ -191,7 +196,42 @@ finish_rebuild() {
         exit 1
     fi
     commit_rebuild
-    trap - EXIT INT TERM
+}
+
+acquire_install_lock() {
+    local pid=""
+    if { [ -d "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; } || ! ln -s "$$" "$INSTALL_LOCK" 2>/dev/null; then
+        pid=$(readlink "$INSTALL_LOCK" 2>/dev/null) || pid=""
+        case "$pid" in
+            ''|*[!0-9]*|0) ;;
+            *) if kill -0 "$pid" 2>/dev/null; then
+                err "Another Rapid-MLX install is already running (pid $pid). Wait for it to finish and re-run."
+                exit 1
+            fi ;;
+        esac
+        if [ -d "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; then
+            rm -rf "$INSTALL_LOCK"
+        else
+            rm -f "$INSTALL_LOCK"
+        fi
+        if ! ln -s "$$" "$INSTALL_LOCK" 2>/dev/null; then
+            err "Could not acquire the Rapid-MLX install lock. Re-run the installer."
+            exit 1
+        fi
+    fi
+}
+
+release_install_lock() {
+    local pid
+    pid=$(readlink "$INSTALL_LOCK" 2>/dev/null) || return 0
+    if [ "$pid" = "$$" ]; then
+        rm -f "$INSTALL_LOCK"
+    fi
+}
+
+on_installer_exit() {
+    rollback_rebuild
+    release_install_lock
 }
 
 # Decide whether to create, upgrade, or transactionally rebuild a venv.
@@ -230,9 +270,6 @@ dispatch_venv() {
             warn "Existing $INSTALL_DIR has no usable virtual environment — rebuilding it."
             dim "(shared state is preserved; the previous environment is kept until the new one works)"
             VENV_BACKUP="$INSTALL_DIR/.venv-previous.$$"
-            trap 'rollback_rebuild' EXIT
-            trap 'exit 130' INT
-            trap 'exit 143' TERM
             stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
             info "Installing Rapid-MLX..."
             dim "(this takes about a minute)"
@@ -557,6 +594,10 @@ fi
 
 # ── 5. Create or update venv + install ───────────────────────────────────────
 
+acquire_install_lock
+trap on_installer_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 echo ""
 recover_interrupted_rebuild
 # The directory doubles as shared state, so create-vs-upgrade turns on whether a

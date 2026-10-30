@@ -217,7 +217,6 @@ check "plan: an x86_64 venv is rebuilt" \
     check "dispatch create -> only venv create" "$CALLS" " create"
     CALLS=""; dispatch_venv rebuild
     check "dispatch rebuild -> stash then create" "$CALLS" " stash create"
-    trap - EXIT INT TERM
     [ "$FAIL" -eq 0 ]
 ) || bad "dispatch action wiring"
 
@@ -261,6 +260,8 @@ for failure in install create verify; do
     (
         set -e
         INSTALL_DIR="$FIXTURE"
+        INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+        trap on_installer_exit EXIT
         create_venv() {
             make_new_install
             if [ "$failure" = create ]; then exit 1; fi
@@ -296,9 +297,67 @@ for scenario in success interrupted; do
     [ ! -e "$FIXTURE/lib/marker" ] || result=no
     [ "$(cat "$FIXTURE/telemetry-client-id")" = client-abc ] || result=no
     [ -e "$FIXTURE/agents/custom.json" ] || result=no
-    for backup in "$FIXTURE"/.venv-previous.*; do [ ! -e "$backup" ] || result=no; done
+    for backup in "$FIXTURE"/.venv-previous.* "$FIXTURE"/.venv-discard.*; do [ ! -e "$backup" ] || result=no; done
     check "$scenario rebuild commits new venv and preserves shared state" "$result" yes
 done
+
+# A committed discard must never replace the current environment on recovery.
+(
+    INSTALL_DIR="$WORK/recover-discard"; make_old_install "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/.venv-discard.123/bin"
+    printf 'discarded\n' > "$INSTALL_DIR/.venv-discard.123/bin/python"
+    touch "$INSTALL_DIR/.venv-discard.123/.stash-complete"
+    recover_interrupted_rebuild
+    check_old_install "$INSTALL_DIR" "recovery retains the current environment when discard exists"
+    [ ! -e "$INSTALL_DIR/.venv-discard.123" ] || exit 1
+    [ "$FAIL" -eq 0 ]
+) || bad "recovery removes committed discard"
+
+# Lock tests use separate fixtures and isolate exits and traps in subshells.
+(
+    INSTALL_LOCK="$WORK/acquire.install-lock"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    release_install_lock
+    [ ! -L "$INSTALL_LOCK" ] && [ ! -e "$INSTALL_LOCK" ] || exit 1
+) && ok "lock acquisition links to our pid and release removes it" || bad "lock acquisition and release"
+
+sleep 30 &
+live_pid=$!
+LOCK_FIXTURE="$WORK/live.install-lock"
+ln -s "$live_pid" "$LOCK_FIXTURE"
+if output=$(INSTALL_LOCK="$LOCK_FIXTURE"; acquire_install_lock 2>&1); then
+    bad "live lock rejects another installer"
+else
+    case "$output" in
+        *"Another Rapid-MLX install is already running (pid $live_pid)."*) ok "live lock rejects another installer" ;;
+        *) bad "live lock reports the running installer" ;;
+    esac
+fi
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+(
+    INSTALL_LOCK="$LOCK_FIXTURE"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    rm -f "$INSTALL_LOCK"
+    ln -s different-owner "$INSTALL_LOCK"
+    release_install_lock
+    [ "$(readlink "$INSTALL_LOCK")" = different-owner ] || exit 1
+    rm -f "$INSTALL_LOCK"
+    ln -s "$$" "$INSTALL_LOCK"
+    release_install_lock
+    [ ! -L "$INSTALL_LOCK" ] || exit 1
+) && ok "stale lock is taken over and only its owner can release it" || bad "stale lock takeover and ownership"
+
+(
+    INSTALL_LOCK="$WORK/legacy.install-lock"
+    mkdir "$INSTALL_LOCK"
+    printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    release_install_lock
+) && ok "legacy lock directory is taken over" || bad "legacy lock directory takeover"
 
 # Recovery covers both a completed stash and an interruption partway through it.
 (
@@ -367,6 +426,8 @@ set +e
 (
     set -e
     INSTALL_DIR="$FIXTURE"
+    INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+    trap on_installer_exit EXIT
     mv() { case "$1" in "$INSTALL_DIR/lib") exit 143 ;; esac; command mv "$@"; }
     dispatch_venv rebuild
 ) >/dev/null 2>&1
