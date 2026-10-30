@@ -4914,15 +4914,17 @@ struct QuickstartView: View {
                 origin: .download
             )
         case .failed(let message):
+            let kind = job.failureKind ?? FailureDiagnoser.downloadFailureKind(
+                raw: message, usingMirror: job.source != .huggingFace
+            )
+            let cause = job.failureCause ?? (kind == .downloadSourceUnavailable ? .sourceUnavailable : .other)
             DesktopFunnelReporter.enqueue(
                 .modelDownloadFailed,
+                detail: .download(cause, source: DesktopFunnelReporter.DownloadSourceTag(job.source)),
                 flowToken: activeFunnelFlowToken
             )
             enterRecovery(
-                kind: job.failureKind ?? FailureDiagnoser.downloadFailureKind(
-                    raw: message,
-                    usingMirror: job.source != .huggingFace
-                ),
+                kind: kind,
                 message: QuickstartView.friendlyFailureMessage(raw: message),
                 origin: .download
             )
