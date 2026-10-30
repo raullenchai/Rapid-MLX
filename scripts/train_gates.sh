@@ -21,7 +21,7 @@
 #   0  GATES OK — all 5 gates passed on a clean tree (the freeze receipt)
 #   1  a gate failed, or fewer than 5 gates passed (a skip is not a pass)
 #   2  usage error, unresolvable base, base == HEAD, base not an ancestor, or
-#      an unusable control interpreter (no PyYAML, or python < 3.10)
+#      an unusable control interpreter (no PyYAML, or python < 3.12)
 #   3  GATES DIRTY — all 5 gates passed but the tree has modified tracked files
 #
 # The gate definitions are NOT hardcoded here: they are parsed at runtime from
@@ -34,7 +34,7 @@
 #   TRAIN_GATES_PYTHON           control interpreter: must be able to import
 #                                yaml (PyYAML); every gate builds its own fresh
 #                                venv FROM this interpreter. The hosted coverage
-#                                union is 3.11-only, so use a python3.11 for a
+#                                union is 3.12-only, so use a python3.12 for a
 #                                faithful freeze (a WARNING is printed for any
 #                                other version). Defaults to python3, then falls
 #                                back to a repo .venv.
@@ -112,9 +112,9 @@ Receipt (last line) and exit code:
         are ignored by the dirty check)
   GATES FAILED / GATES INCOMPLETE                        1
   usage error, unresolvable base, base == HEAD, base not an ancestor   2
-  unusable control interpreter (no PyYAML, or python < 3.10)           2
+  unusable control interpreter (no PyYAML, or python < 3.12)           2
 
-Environment (optional): TRAIN_GATES_PYTHON (PyYAML-capable python3.11
+Environment (optional): TRAIN_GATES_PYTHON (PyYAML-capable python3.12
   recommended), TRAIN_GATES_APPLE_VENV, TRAIN_GATES_ALLOW_APPLE_INSTALL=1,
   TRAIN_GATES_SKIP_APPLE=1, TRAIN_GATES_SKIP_SWIFT=1 — see the script header.
 EOF
@@ -208,6 +208,10 @@ py_version_of() {
   "$1" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo "unknown"
 }
 
+usable_control_python() {
+  "$1" -c 'import sys, yaml; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1
+}
+
 resolve_python() {
   local candidate=""
   if [[ -n "${TRAIN_GATES_PYTHON:-}" ]]; then
@@ -216,23 +220,22 @@ resolve_python() {
       return 1
     fi
     candidate="${TRAIN_GATES_PYTHON}"
-  elif python3 -c 'import yaml' >/dev/null 2>&1; then
+  elif usable_control_python python3; then
     candidate="python3"
   elif [[ -x "$ROOT/.venv/bin/python" ]] \
-    && "$ROOT/.venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then
+    && usable_control_python "$ROOT/.venv/bin/python"; then
     candidate="$ROOT/.venv/bin/python"
   else
-    echo "ERROR: no interpreter with PyYAML found; set TRAIN_GATES_PYTHON (a python3.11 with pyyaml)" >&2
+    echo "ERROR: no Python >= 3.12 with PyYAML found; set TRAIN_GATES_PYTHON (a python3.12 with pyyaml)" >&2
     return 1
   fi
-  # HARD floor: pyproject's requires-python and the hosted matrix (3.10/3.11/
-  # 3.12) never go below 3.10, and every gate venv is created FROM this
-  # interpreter — below the floor the package cannot even install, so this is
-  # an error (exit 2), not the 3.11 WARNING below.
-  if ! "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-    echo "ERROR: control interpreter $candidate is python $(py_version_of "$candidate"), below the 3.10 floor" >&2
-    echo "       (pyproject requires-python >= 3.10; the hosted matrix is 3.10/3.11/3.12)." >&2
-    echo "       Set TRAIN_GATES_PYTHON=<python3.11 with pyyaml> for a faithful freeze." >&2
+  # HARD floor: pyproject's requires-python and the hosted matrix (3.12/3.13) never go below 3.12,
+  # and every gate venv is created FROM this interpreter. Below the floor the package cannot
+  # install, so this is an error (exit 2), not the 3.12 WARNING below.
+  if ! "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
+    echo "ERROR: control interpreter $candidate is python $(py_version_of "$candidate"), below the 3.12 floor" >&2
+    echo "       (pyproject requires-python >= 3.12; the hosted matrix is 3.12/3.13)." >&2
+    echo "       Set TRAIN_GATES_PYTHON=<python3.12 with pyyaml> for a faithful freeze." >&2
     return 1
   fi
   echo "$candidate"
@@ -243,11 +246,11 @@ if ! PYTHON_BIN="$(resolve_python)"; then
 fi
 PY_VERSION="$(py_version_of "$PYTHON_BIN")"
 echo "train-gates: control interpreter: $PYTHON_BIN (python $PY_VERSION)"
-if [[ "${PY_VERSION%.*}" != "3.11" ]]; then
+if [[ "${PY_VERSION%.*}" != "3.12" ]]; then
   echo "train-gates: WARNING: control interpreter is python $PY_VERSION, but the hosted coverage union" >&2
-  echo "                      (changed-lines-coverage) and the Linux data it consumes are 3.11-only." >&2
+  echo "                      (changed-lines-coverage) and the Linux data it consumes are 3.12-only." >&2
   echo "                      Every gate venv is created from this interpreter, so line coverage can" >&2
-  echo "                      diverge on version-conditional code. Set TRAIN_GATES_PYTHON=<python3.11>" >&2
+  echo "                      diverge on version-conditional code. Set TRAIN_GATES_PYTHON=<python3.12>" >&2
   echo "                      for a faithful freeze." >&2
 fi
 
@@ -352,8 +355,8 @@ gate1_linux() {
   # never an ad hoc package list here (a pin change there also changes the
   # gates-hash). Remaining, documented divergence from hosted: this runs on
   # the local OS/arch with the control interpreter's version, not on
-  # ubuntu-latest x86-64 across the 3.10/3.11/3.12 matrix; discovery, flags
-  # and the coverage data name (coverage-linux-3.11.data — the leg the hosted
+  # ubuntu-latest x86-64 across the 3.12/3.13 matrix; discovery, flags
+  # and the coverage data name (coverage-linux-3.12.data — the leg the hosted
   # union consumes) are identical.
   "$py" -m pip install --quiet -e "$ROOT" --no-deps \
     || { fail 1 "pip install -e . --no-deps into the fresh Linux venv failed"; return 1; }
@@ -375,7 +378,7 @@ gate1_linux() {
   local n_inv
   n_inv="$("$PYTHON_BIN" -c 'import sys,json; print(len(json.loads(sys.argv[1])))' "$LINUX_JSON")"
   echo "  running $n_inv Linux pytest process(es) parsed from ci.yml"
-  local covfile="$COV_DIR/coverage-linux-3.11.data"
+  local covfile="$COV_DIR/coverage-linux-3.12.data"
   for (( i=0; i<n_inv; i++ )); do
     local n_files cov_append paths_str ignore_str deselect_str marker_str m_str
     n_files="$("$PYTHON_BIN" - "$LINUX_JSON" "$i" <<'PY'
@@ -492,7 +495,7 @@ gate3_diffcover() {
   echo
   echo "== Gate 3: coverage union + diff-cover =="
   local base_sha="$1"
-  local linux_data="$COV_DIR/coverage-linux-3.11.data"
+  local linux_data="$COV_DIR/coverage-linux-3.12.data"
   local apple_data="$COV_DIR/coverage-apple.data"
   if [[ ! -f "$linux_data" ]]; then
     fail 3 "missing $linux_data (Gate 1 must produce it)"

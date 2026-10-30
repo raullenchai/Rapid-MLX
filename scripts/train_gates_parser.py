@@ -246,7 +246,7 @@ def parse_diff_cover_invocation() -> dict[str, Any]:
     step = _find_step_by_name(job, "Combine coverage and enforce changed lines")
     run_text = step["run"]
 
-    linux = "coverage-data/linux/coverage-linux-3.11.data"
+    linux = "coverage-data/linux/coverage-linux-3.12.data"
     apple = "coverage-data/apple/coverage-apple.data"
     if linux not in run_text or apple not in run_text:
         raise _drift(
@@ -266,7 +266,7 @@ def parse_diff_cover_invocation() -> dict[str, Any]:
             f"'pip install coverage \"diff-cover==X.Y.Z\"', found {install_text!r}"
         )
     return {
-        "linux": "coverage-linux-3.11.data",
+        "linux": "coverage-linux-3.12.data",
         "apple": "coverage-apple.data",
         "fail_under": 100,
         "diff_cover_pin": pin_match.group(1),

@@ -150,11 +150,7 @@ def test_vision_extra_pulls_in_mlx_vlm():
     """L-07 lock-in: the ``[vision]`` extra in pyproject.toml MUST
     declare ``mlx-vlm`` so ``pip install rapid-mlx[vision]`` is a
     complete fix without needing a separate ``pip install mlx-vlm``."""
-    try:
-        import tomllib
-    except ImportError:  # pragma: no cover — Python 3.10 path
-        import tomli as tomllib
-
+    import tomllib
     from pathlib import Path
 
     pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"

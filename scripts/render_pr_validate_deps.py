@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
 from pathlib import Path
 
 from jinja2 import BaseLoader, Environment
@@ -41,16 +42,7 @@ TEMPLATE = """\
 
 
 def _ci_linux_extra() -> list[str]:
-    """Read the canonical ``[ci-linux]`` extra on every supported Python.
-
-    ``tomllib`` is stdlib on 3.11+ only; this script also runs on 3.10 (the
-    test-matrix includes it), where the declared CI dependency set installs
-    the API-compatible ``tomli`` backport.
-    """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib
+    """Read the canonical ``[ci-linux]`` extra."""
     with PYPROJECT.open("rb") as fh:
         return tomllib.load(fh)["project"]["optional-dependencies"]["ci-linux"]
 

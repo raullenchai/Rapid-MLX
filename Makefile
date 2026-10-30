@@ -2,8 +2,8 @@
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
-#      a 3.10/3.11/3.13 venv get their venv's python regardless of PATH.
-#   2. Versioned binaries that actually run a >=3.10 interpreter — we
+#      a venv get their venv's python regardless of PATH.
+#   2. Binaries that actually run a Python 3.12–3.13 interpreter — we
 #      must run --version because pyenv shims appear on PATH for *every*
 #      version even if only one is installed, and macOS's bare 'python'
 #      is often system 3.9 (below requires-python).
@@ -14,9 +14,9 @@ PY ?= $(shell \
   if [ -n "$$VIRTUAL_ENV" ] && [ -x "$$VIRTUAL_ENV/bin/python" ]; then \
     echo "$$VIRTUAL_ENV/bin/python"; exit 0; \
   fi; \
-  for cand in python3.13 python3.12 python3.11 python3.10 python3; do \
+  for cand in python3.13 python3.12 python3; do \
     path=$$(command -v $$cand 2>/dev/null) || continue; \
-    "$$path" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' \
+    "$$path" -c 'import sys; sys.exit(0 if (3,12) <= sys.version_info[:2] <= (3,13) else 1)' \
       2>/dev/null && echo "$$path" && exit 0; \
   done; \
   echo python3)

@@ -133,7 +133,7 @@ def test_pr_validate_dependency_and_test_diff_is_engine_only():
         "tests/test_pr_validate_full_unit.py",
     ]
     assert classify(paths) == Lanes(engine=True, desktop=False, docs_only=False)
-    assert classify_policy(paths).linux_matrix_mode == "py311"
+    assert classify_policy(paths).linux_matrix_mode == "py312"
     assert classify_policy(paths).linux_matrix_reason == "pr-single-python"
 
 
@@ -173,17 +173,17 @@ def test_empty_diff_fails_closed():
         ["tests/test_telemetry_registry_drift.py"],
     ],
 )
-def test_ordinary_engine_pr_changes_use_complete_py311_matrix(paths):
+def test_ordinary_engine_pr_changes_use_complete_py312_matrix(paths):
     policy = classify_policy(paths)
 
     assert policy.lanes.engine is True
-    assert policy.linux_matrix_mode == "py311"
+    assert policy.linux_matrix_mode == "py312"
     assert policy.linux_matrix_reason == "pr-single-python"
     assert linux_test_matrix(policy.linux_matrix_mode) == {
         "include": [
-            {"python-version": "3.11", "shard": 1},
-            {"python-version": "3.11", "shard": 2},
-            {"python-version": "3.11", "shard": 3},
+            {"python-version": "3.12", "shard": 1},
+            {"python-version": "3.12", "shard": 2},
+            {"python-version": "3.12", "shard": 3},
         ]
     }
 
@@ -252,12 +252,12 @@ def test_shared_unknown_and_control_pr_changes_use_single_python(path):
     policy = classify_policy([path])
 
     assert policy.lanes.engine is True
-    assert policy.linux_matrix_mode == "py311"
+    assert policy.linux_matrix_mode == "py312"
     assert policy.linux_matrix_reason == "pr-single-python"
     matrix = linux_test_matrix(policy.linux_matrix_mode)["include"]
     assert len(matrix) == 3
     assert {entry["python-version"] for entry in matrix} == {
-        "3.11",
+        "3.12",
     }
     assert {entry["shard"] for entry in matrix} == {1, 2, 3}
 
@@ -269,7 +269,7 @@ def test_mixed_desktop_and_engine_pr_change_uses_single_python():
 
     assert policy.lanes == Lanes(engine=True, desktop=True, docs_only=False)
     assert policy.lanes.engine is True
-    assert policy.linux_matrix_mode == "py311"
+    assert policy.linux_matrix_mode == "py312"
     assert policy.linux_matrix_reason == "pr-single-python"
 
 
@@ -309,7 +309,7 @@ def test_promoted_head_forces_full_matrix_without_changing_lane_scope():
     assert policy.lanes == Lanes(engine=True, desktop=False, docs_only=False)
     assert policy.linux_matrix_mode == "full"
     assert policy.linux_matrix_reason == "promoted-head"
-    assert len(json.loads(policy.as_outputs()["test_matrix"])["include"]) == 9
+    assert len(json.loads(policy.as_outputs()["test_matrix"])["include"]) == 6
 
 
 @pytest.mark.parametrize("paths", [[], ["", "  "]])
@@ -318,14 +318,14 @@ def test_missing_diff_keeps_full_matrix(paths):
     assert policy.lanes == Lanes(True, True, False)
     assert policy.linux_matrix_mode == "full"
     assert policy.linux_matrix_reason == "missing-diff"
-    assert len(json.loads(policy.as_outputs()["test_matrix"])["include"]) == 9
+    assert len(json.loads(policy.as_outputs()["test_matrix"])["include"]) == 6
 
 
 def test_normalized_pr_paths_use_single_python():
     policy = classify_policy([" ./rapid_mlx/server.py ", "", "README.md"])
-    assert policy.linux_matrix_mode == "py311"
+    assert policy.linux_matrix_mode == "py312"
     assert policy.linux_matrix_reason == "pr-single-python"
-    assert json.loads(policy.as_outputs()["test_matrix"]) == linux_test_matrix("py311")
+    assert json.loads(policy.as_outputs()["test_matrix"]) == linux_test_matrix("py312")
 
 
 def test_force_full_accepts_explicit_reason():

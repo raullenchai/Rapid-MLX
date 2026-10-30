@@ -12,19 +12,11 @@ from __future__ import annotations
 import json
 import subprocess
 import textwrap
+import tomllib
 from types import SimpleNamespace
 
 import pytest
 import yaml
-
-# Same compatibility shim the production merge path uses. Importing plain
-# ``tomllib`` here would make every TOML test below fail with
-# ModuleNotFoundError on 3.10 — which ``requires-python`` still supports —
-# so these tests would stop covering the very fallback they exist to guard.
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover — Python 3.10 only
-    import tomli as tomllib
 
 from rapid_mlx.agents.adapter import (
     _deep_merge,

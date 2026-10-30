@@ -45,4 +45,4 @@ def test_classifier_changes_have_real_hosted_coverage_in_existing_shards():
     # Keep the combined coverage and mandatory diff gate; enrollment is not a waiver.
     gate = jobs()["changed-lines-coverage"]["steps"][-1]["run"]
     assert "--fail-under 100" in gate
-    assert "coverage-data/linux/coverage-linux-3.11.data" in gate
+    assert "coverage-data/linux/coverage-linux-3.12.data" in gate

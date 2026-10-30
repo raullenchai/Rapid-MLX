@@ -178,13 +178,7 @@ def test_matrix_test_dependencies_are_client_only(matrix):
     client is ALSO added to ``[project].dependencies``); permit only HTTPX,
     which is independently required by the built-in chat runtime.
     """
-    try:
-        import tomllib  # type: ignore[import-not-found]
-    except ModuleNotFoundError:  # pragma: no cover — 3.10 fallback
-        try:
-            import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-        except ModuleNotFoundError:
-            pytest.skip("tomllib/tomli required to parse pyproject.toml")
+    import tomllib
 
     pyproject_path = _REPO_ROOT / "pyproject.toml"
     with pyproject_path.open("rb") as fp:

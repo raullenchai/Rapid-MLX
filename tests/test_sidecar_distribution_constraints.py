@@ -136,12 +136,9 @@ def test_tensorfold_repair_matches_sidecar_and_running_python(monkeypatch):
 
 
 def test_arsenal_dependency_matches_release_tested_sidecar(constraints):
-    from packaging.requirements import Requirement
+    import tomllib
 
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib
+    from packaging.requirements import Requirement
 
     project = tomllib.loads((SCRIPT.parents[3] / "pyproject.toml").read_text())[
         "project"
@@ -161,17 +158,14 @@ def test_arsenal_dependency_matches_release_tested_sidecar(constraints):
             {"platform_system": "Darwin", "python_version": "3.11"}
         )
         assert not requirement.marker.evaluate(
-            {"platform_system": "Darwin", "python_version": "3.10"}
-        )
-        assert not requirement.marker.evaluate(
             {"platform_system": "Linux", "python_version": "3.12"}
         )
 
 
 def test_all_base_requirements_have_reviewed_upper_bounds():
-    from importlib import import_module
 
-    tomllib = import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
+    import tomllib
+
     from packaging.requirements import Requirement
 
     project = tomllib.loads((SCRIPT.parents[3] / "pyproject.toml").read_text())[
@@ -189,9 +183,8 @@ def test_all_base_requirements_have_reviewed_upper_bounds():
 
 def test_hash_lock_covers_base_and_desktop_extras():
     import re
-    from importlib import import_module
+    import tomllib
 
-    tomllib = import_module("tomllib" if sys.version_info >= (3, 11) else "tomli")
     from packaging.requirements import Requirement
     from packaging.utils import canonicalize_name
 

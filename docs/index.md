@@ -76,7 +76,7 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)
-- Python 3.10+
+- Python 3.12 or newer for pip installs; the installer uses Python 3.12 or 3.13 (and installs Python 3.12 automatically if neither is found)
 - 8GB+ RAM recommended
 
 ## License

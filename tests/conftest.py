@@ -1014,29 +1014,6 @@ def pytest_configure(config):
     )
 
 
-class _UnsupportedHarnessModule(pytest.Module):
-    def collect(self):
-        pytest.skip("The opt-in chat harness requires Python 3.11 or newer")
-
-
-def pytest_pycollect_makemodule(module_path, parent):
-    # Skip before importing the Python 3.11-only agent dependency, including
-    # files explicitly selected by pr_validate. Missing deps on 3.11+ fail.
-    if sys.version_info < (3, 11) and module_path.name.startswith(
-        (
-            "test_chat_runtime",
-            "test_chat_harness",
-            "test_chat_context",
-            "test_chat_cov_b",
-            "test_chat_cov_c",
-            "test_chat_cov_d",
-            "test_chat_image_attachments",
-            "test_chat_image_turns",
-        )
-    ):
-        return _UnsupportedHarnessModule.from_parent(parent, path=module_path)
-
-
 def pytest_collection_modifyitems(config, items):
     """Skip slow tests unless --run-slow is passed."""
     if not config.getoption("--run-slow"):

@@ -1019,16 +1019,7 @@ import sys
 from rapid_mlx import cli
 
 if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
-    from types import SimpleNamespace
     from rapid_mlx.runtime import video_lane
-
-    class _PinnedVersion(tuple):
-        major = 3
-        minor = 11
-
-    video_lane.sys = SimpleNamespace(
-        version_info=_PinnedVersion((3, 11)), stderr=sys.stderr
-    )
     video_lane._default_video_runtime_requirements = lambda _model: [
         "the mlx-video runtime"
     ]

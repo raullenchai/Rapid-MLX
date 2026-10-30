@@ -113,7 +113,7 @@ jobs:
           #                        (exit 3). The linux-compat subset is
           #                        already covered by ci.yml's
           #                        test-matrix job, which runs the same
-          #                        files on 3.10/3.11/3.12 without MLX.
+          #                        files on 3.12/3.13 without MLX.
           # Codex auto-skips for lack of ~/.codex/auth.json — no skip
           # entry needed.
           PR_VALIDATE_SKIP_STEPS: stress_e2e_bench,full_unit

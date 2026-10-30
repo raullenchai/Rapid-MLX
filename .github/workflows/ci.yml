@@ -99,7 +99,7 @@ jobs:
               echo 'full_gate=true'
               echo 'linux_matrix_mode=full'
               echo 'linux_matrix_reason=non-pr-full'
-              echo 'test_matrix={"include":[{"python-version":"3.10","shard":1},{"python-version":"3.10","shard":2},{"python-version":"3.10","shard":3},{"python-version":"3.11","shard":1},{"python-version":"3.11","shard":2},{"python-version":"3.11","shard":3},{"python-version":"3.12","shard":1},{"python-version":"3.12","shard":2},{"python-version":"3.12","shard":3}]}'
+              echo 'test_matrix={"include":[{"python-version":"3.12","shard":1},{"python-version":"3.12","shard":2},{"python-version":"3.12","shard":3},{"python-version":"3.13","shard":1},{"python-version":"3.13","shard":2},{"python-version":"3.13","shard":3}]}'
               echo 'l1_matrix={"include":[{"model":"qwen3.5-4b-4bit","contract_only":"0"},{"model":"llama3-3b-4bit","contract_only":"0"},{"model":"gemma3-4b-qat-4bit","contract_only":"1"},{"model":"qwen3-4b-instruct-2507-4bit","contract_only":"1"},{"model":"qwen3-4b-thinking-2507-4bit","contract_only":"1"}]}'
             } >> "$GITHUB_OUTPUT"
           fi
@@ -319,7 +319,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -339,7 +339,7 @@ jobs:
     runs-on: ${{ fromJSON((vars.CI_LINUX_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_RUNNER || '"ubuntu-latest"') }}
     strategy:
       fail-fast: false
-      # Ordinary PRs run all three shards on Python 3.11, the coverage
+      # Ordinary PRs run all three shards on Python 3.12, the coverage
       # interpreter. Promoted heads and non-PR events retain all supported
       # Python versions; missing or invalid diffs also fail safe to full.
       matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
@@ -427,11 +427,11 @@ jobs:
             --cov-report=term-missing
 
       - name: Install package builder for release-stamp integration test
-        if: matrix.python-version == '3.11' && matrix.shard == 1
+        if: matrix.python-version == '3.12' && matrix.shard == 1
         run: python -m pip install build
 
       - name: Run real release-stamp package build
-        if: matrix.python-version == '3.11' && matrix.shard == 1
+        if: matrix.python-version == '3.12' && matrix.shard == 1
         run: |
           pytest \
             tests/test_release_stamp_scripts.py::test_real_build_ships_the_stamp_in_wheel_and_sdist \
@@ -439,19 +439,20 @@ jobs:
             -v --tb=short
 
       - name: Run real license-file package build
-        if: matrix.python-version == '3.11' && matrix.shard == 1
+        if: matrix.python-version == '3.12' && matrix.shard == 1
         run: |
+          python -m pip install "setuptools>=61.0" wheel
           pytest \
             tests/test_license_files_packaged.py::test_real_distributions_ship_every_tracked_license_file \
             --run-slow -m slow \
             -v --tb=short
 
       - name: Upload Linux shard coverage data
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-coverage-${{ github.sha }}-${{ matrix.shard }}
-          path: coverage-linux-3.11-${{ matrix.shard }}.data
+          path: coverage-linux-3.12-${{ matrix.shard }}.data
           if-no-files-found: error
           retention-days: 1
 
@@ -466,7 +467,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Download all Python 3.11 shard coverage
+      - name: Download all Python 3.12 shard coverage
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: linux-coverage-${{ github.sha }}-*
@@ -477,9 +478,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install coverage
-          python -m coverage combine coverage-data/linux-shards/coverage-linux-3.11-*.data
-          mv .coverage coverage-linux-3.11.data
-          COVERAGE_FILE=coverage-linux-3.11.data python -m coverage xml -o coverage.xml
+          python -m coverage combine coverage-data/linux-shards/coverage-linux-3.12-*.data
+          mv .coverage coverage-linux-3.12.data
+          COVERAGE_FILE=coverage-linux-3.12.data python -m coverage xml -o coverage.xml
 
       - name: Upload combined coverage to Codecov
         # The external report is advisory. Keep action bootstrap failures from
@@ -494,7 +495,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-coverage-${{ github.sha }}
-          path: coverage-linux-3.11.data
+          path: coverage-linux-3.12.data
           if-no-files-found: error
           retention-days: 1
 
@@ -511,7 +512,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install project and dependencies
         run: |
@@ -844,7 +845,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install coverage tools
         run: pip install coverage "diff-cover==8.0.3"
@@ -867,7 +868,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m coverage combine \
-            coverage-data/linux/coverage-linux-3.11.data \
+            coverage-data/linux/coverage-linux-3.12.data \
             coverage-data/apple/coverage-apple.data
           python -m coverage xml -o coverage.xml
           python -m diff_cover.diff_cover_tool \
@@ -925,7 +926,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install project
         run: |

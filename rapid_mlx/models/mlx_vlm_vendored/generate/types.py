@@ -4,10 +4,7 @@ from typing import Any, Callable, Protocol, TypedDict
 
 import mlx.core as mx
 
-try:
-    from typing import Unpack as Unpack
-except ImportError:  # pragma: no cover - Python 3.10 compatibility
-    from typing_extensions import Unpack as Unpack
+from typing import Unpack as Unpack
 
 __all__ = ["GenerateKwargs", "ProcessorLike", "Unpack"]
 

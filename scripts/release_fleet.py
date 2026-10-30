@@ -36,10 +36,7 @@ _checkout_root_str = str(_CHECKOUT_ROOT)
 sys.path[:] = [entry for entry in sys.path if entry != _checkout_root_str]
 sys.path.insert(0, _checkout_root_str)
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
-    import tomli as tomllib
+import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = Path(__file__).with_name("release_fleet.json")

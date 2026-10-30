@@ -555,12 +555,8 @@ class TestMlxAudioVersionPin:
     """
 
     def test_mlx_audio_pin_starts_at_qualified_0_5_3_line(self):
+        import tomllib
         from pathlib import Path
-
-        try:
-            import tomllib  # 3.11+
-        except ImportError:  # pragma: no cover — keep 3.10 fallback
-            import tomli as tomllib  # type: ignore[import-not-found]
 
         root = Path(__file__).resolve().parents[1]
         with (root / "pyproject.toml").open("rb") as f:

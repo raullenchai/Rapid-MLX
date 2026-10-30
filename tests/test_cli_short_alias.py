@@ -1,11 +1,7 @@
 """Packaging contract for the first-class short CLI command."""
 
+import tomllib
 from pathlib import Path
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib
 
 
 def test_rmlx_uses_the_canonical_cli_entrypoint():

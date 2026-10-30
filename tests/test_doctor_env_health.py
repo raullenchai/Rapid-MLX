@@ -28,11 +28,7 @@ import subprocess
 import sys
 import threading
 import time
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 test matrix
-    import tomli as tomllib
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -651,7 +647,7 @@ def test_python_version_reported():
     section = eh.section_python()
     py_row = section.checks[0]
     assert py_row.label.startswith("Python ")
-    # Anything >= 3.10 is OK, < 3.10 is FAIL — the running interpreter is
+    # Anything >= 3.12 is OK, < 3.12 is FAIL — the running interpreter is
     # whatever pytest is using, which is always supported by our matrix.
     assert py_row.status is eh.CheckStatus.OK
 

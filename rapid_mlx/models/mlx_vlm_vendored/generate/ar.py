@@ -3332,7 +3332,7 @@ class BatchGenerator:
             return self._next(**kwargs)
 
 
-def batch_generate(
+def batch_generate(  # type: ignore[misc]
     model: nn.Module,
     processor: ProcessorLike,
     images: Union[str, List[str], None] = None,

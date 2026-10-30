@@ -47,14 +47,11 @@ def _apple_mlx_test_run(workflow: dict) -> str:
 def _ci_linux_extra() -> list[str]:
     """Parse the canonical ``[ci-linux]`` test-dependency list from pyproject.
 
-    Version-agnostic: ``tomllib`` is stdlib on 3.11+ only, and the Linux
-    test-matrix explicitly includes 3.10. The declared CI dependency set
-    installs the API-compatible ``tomli`` backport there.
+    Version-agnostic: ``tomllib`` is stdlib on 3.12+ only, and the Linux
+    test matrix uses the standard-library TOML parser.
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        import tomli as tomllib
+    import tomllib
+
     with PYPROJECT.open("rb") as fh:
         return tomllib.load(fh)["project"]["optional-dependencies"]["ci-linux"]
 
@@ -80,7 +77,7 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
 
     gate_run = gate["steps"][-1]["run"]
     assert "coverage combine" in gate_run
-    assert "coverage-data/linux/coverage-linux-3.11.data" in gate_run
+    assert "coverage-data/linux/coverage-linux-3.12.data" in gate_run
     assert "coverage-data/apple/coverage-apple.data" in gate_run
     assert "--fail-under 100" in gate_run
 

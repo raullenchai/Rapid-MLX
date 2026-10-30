@@ -1574,13 +1574,8 @@ def test_deepseek_r1_prefilled_think_template_is_tolerated(lltok):
 # silently re-break default-on out-of-the-box. They carry NO optional dependency
 # (parse pyproject.toml only), so they ALWAYS run — never skipped.
 def _load_pyproject():
-    import sys
+    import tomllib
     from pathlib import Path
-
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:  # pragma: no cover — 3.10 floor
-        import tomli as tomllib
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject.open("rb") as fh:

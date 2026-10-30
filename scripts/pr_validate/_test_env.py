@@ -47,6 +47,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -182,7 +183,6 @@ def is_dep_declaration_file(path: str) -> bool:
 # decision; pr_validate refuses to silently follow a PR's lead.
 TRUSTED_TEST_PINS: tuple[str, ...] = (
     "packaging>=23,<27",
-    'tomli>=2.0.1,<3; python_version < "3.11"',
     "pytest>=7.0.0,<9",
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
@@ -216,11 +216,6 @@ def canonical_test_requirements(
 
     from packaging.requirements import Requirement
     from packaging.utils import canonicalize_name
-
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:  # pragma: no cover - exercised by the Python 3.10 CI lane
-        import tomli as tomllib
 
     root = repo_root or PROJECT_ROOT
     data = tomllib.loads((root / "pyproject.toml").read_text())

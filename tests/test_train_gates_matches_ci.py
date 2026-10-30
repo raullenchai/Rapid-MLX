@@ -206,11 +206,11 @@ def test_diff_cover_invocation_matches_workflow() -> None:
         CI_PARSED,
     )
     assert "coverage combine" in run_text
-    assert "coverage-data/linux/coverage-linux-3.11.data" in run_text
+    assert "coverage-data/linux/coverage-linux-3.12.data" in run_text
     assert "coverage-data/apple/coverage-apple.data" in run_text
     assert "--fail-under 100" in run_text
     assert parsed["fail_under"] == 100
-    assert parsed["linux"] == "coverage-linux-3.11.data"
+    assert parsed["linux"] == "coverage-linux-3.12.data"
     assert parsed["apple"] == "coverage-apple.data"
 
 

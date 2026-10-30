@@ -183,27 +183,6 @@ def test_pull_ltx25_override_invalid_never_claims_bundled_runtime(
     assert "ships with rapid-mlx" not in out
 
 
-def test_pull_ltx25_python_floor_uses_upgrade_hint(monkeypatch, capsys) -> None:
-    """On the 3.10 floor the hint upgrades Python, not the same interpreter."""
-    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("python_unsupported"))
-    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(
-        cli,
-        "_pull_repository",
-        lambda *a, **k: pytest.fail("must not download without a runtime"),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        _pull(_pull_model(LTX25_ALIAS))
-
-    assert exc.value.code == 2
-    out = capsys.readouterr().out
-    assert "Python 3.11 or newer" in out
-    assert "uv tool install --force --python 3.12" in out
-    assert "pip install --upgrade --force-reinstall" not in out
-    assert "ships with rapid-mlx" not in out
-
-
 def test_pull_ltx25_ffmpeg_only_uses_ffmpeg_hint(monkeypatch, capsys) -> None:
     """A trusted runtime with no ffmpeg fails with an ffmpeg-only fix."""
     monkeypatch.setattr(
@@ -346,16 +325,6 @@ def test_models_text_table_marks_every_video_alias_needs_setup(monkeypatch) -> N
 
 
 # --- hint text contract ----------------------------------------------------
-
-
-def test_ltx25_python_floor_hint_has_no_same_interpreter_pip_reinstall() -> None:
-    """The floor hint must not suggest pip-installing into Python 3.10."""
-    from rapid_mlx.runtime.base_runtime import python_upgrade_hint
-
-    hint = python_upgrade_hint()
-    assert "Python 3.11 or newer" in hint
-    assert "uv tool install --force --python 3.12" in hint
-    assert "pip install" not in hint
 
 
 def test_ltx25_ffmpeg_hint_is_specific_to_encoding() -> None:

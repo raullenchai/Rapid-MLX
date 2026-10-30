@@ -2,7 +2,7 @@
 # Offline regression tests for install.sh interpreter + venv handling (#1953).
 #
 # install.sh used to pick the first python3.x on PATH by name, ignoring its
-# architecture, so a uv/pyenv x86_64 python3.12 ahead of an arm64 python3.11
+# architecture, so a uv/pyenv x86_64 python3.13 ahead of an arm64 python3.12
 # was chosen on Apple Silicon; the resulting venv was incomplete (no bin/pip)
 # and every re-run then died on the upgrade path calling the missing pip.
 #
@@ -48,14 +48,14 @@ EOF
 
 # ── 1. arch-aware selection: skip x86_64, pick the native arm64 build ─────────
 BIN1="$WORK/bin1"; mkdir -p "$BIN1"
-make_py "$BIN1/python3.12" 3.12 x86_64     # earlier in loop order, WRONG arch
-make_py "$BIN1/python3.11" 3.11 arm64      # later in order, right arch
+make_py "$BIN1/python3.13" 3.13 x86_64     # earlier in loop order, WRONG arch
+make_py "$BIN1/python3.12" 3.12 arm64      # later in order, right arch
 sel="$(PATH="$BIN1" select_python 2>/dev/null)"
-check "picks the native arm64 python over an earlier x86_64 one" "$sel" "python3.11"
+check "picks the native arm64 python over an earlier x86_64 one" "$sel" "python3.12"
 
 # ── 2. selection fails cleanly when only an x86_64 python exists ──────────────
 BIN2="$WORK/bin2"; mkdir -p "$BIN2"
-make_py "$BIN2/python3.12" 3.12 x86_64
+make_py "$BIN2/python3.13" 3.13 x86_64
 if PATH="$BIN2" select_python >/dev/null 2>&1; then
     bad "returns non-zero when no arm64 python is available"
 else
@@ -66,16 +66,28 @@ fi
 # Only a 3.9 candidate is present, so selection MUST fail. (Pairing it with a
 # valid fallback would pass even if the version check were removed.)
 BIN3="$WORK/bin3"; mkdir -p "$BIN3"
-make_py "$BIN3/python3.11" 3.9 arm64       # 3.9 < MIN_PYTHON_MINOR, only candidate
+make_py "$BIN3/python3.12" 3.11 arm64       # 3.11 < MIN_PYTHON_MINOR, only candidate
 if PATH="$BIN3" select_python >/dev/null 2>&1; then
     bad "rejects an arm64 python older than MIN_PYTHON_MINOR"
 else
     ok "rejects an arm64 python older than MIN_PYTHON_MINOR"
 fi
 
+# ── 3b. version gate: a too-new generic python is not accepted ────────────────
+BINNEW="$WORK/binnew"; mkdir -p "$BINNEW"
+make_py "$BINNEW/python3" 3.14 arm64
+if PATH="$BINNEW" select_python >/dev/null 2>&1; then
+    bad "rejects an arm64 python newer than MAX_PYTHON_MINOR"
+else
+    ok "rejects an arm64 python newer than MAX_PYTHON_MINOR"
+fi
+make_py "$BINNEW/python3.12" 3.12 arm64
+sel="$(PATH="$BINNEW" select_python 2>/dev/null)"
+check "picks python3.12 when generic python3 is too new" "$sel" "python3.12"
+
 # ── 4. venv completeness: missing bin/pip is treated as incomplete ───────────
 VBAD="$WORK/venv_bad"; mkdir -p "$VBAD/bin"
-make_py "$VBAD/bin/python" 3.11 arm64      # python present, pip MISSING
+make_py "$VBAD/bin/python" 3.12 arm64      # python present, pip MISSING
 if PATH="$SYS_PATH" venv_is_complete "$VBAD"; then
     bad "an existing venv without bin/pip is reported incomplete"
 else
@@ -84,8 +96,8 @@ fi
 
 # ── 5. venv completeness: python + working pip is complete ───────────────────
 VOK="$WORK/venv_ok"; mkdir -p "$VOK/bin"
-make_py "$VOK/bin/python" 3.11 arm64
-make_py "$VOK/bin/pip"    3.11 arm64
+make_py "$VOK/bin/python" 3.12 arm64
+make_py "$VOK/bin/pip"    3.12 arm64
 if PATH="$SYS_PATH" venv_is_complete "$VOK"; then
     ok "a venv with both bin/python and bin/pip is reported complete"
 else
@@ -103,7 +115,7 @@ fi
 # Mirrors a ~/.vllm-mlx → ~/.rapid-mlx migration where pip's shebang is stale:
 # the file is present and +x, but running it fails.
 VBROKEN="$WORK/venv_broken"; mkdir -p "$VBROKEN/bin"
-make_py "$VBROKEN/bin/python" 3.11 arm64
+make_py "$VBROKEN/bin/python" 3.12 arm64
 printf '#!/bin/bash\nexit 1\n' > "$VBROKEN/bin/pip"   # +x but errors when run
 chmod +x "$VBROKEN/bin/pip"
 if PATH="$SYS_PATH" venv_is_complete "$VBROKEN"; then
@@ -133,11 +145,23 @@ else
     ok "an existing Python 3.9 venv is reported incomplete (must be rebuilt)"
 fi
 
+# ── 9b. venv completeness: a runnable but too-new (3.14) venv is incompatible ─
+VNEW="$WORK/venv_new"; mkdir -p "$VNEW/bin"
+make_py "$VNEW/bin/python" 3.14 arm64
+make_py "$VNEW/bin/pip"    3.14 arm64
+if PATH="$SYS_PATH" venv_is_complete "$VNEW"; then
+    bad "an existing Python 3.14 venv is reported incomplete (must be rebuilt)"
+else
+    ok "an existing Python 3.14 venv is reported incomplete (must be rebuilt)"
+fi
+check "plan: a Python 3.14 venv is rebuilt" \
+    "$(PATH="$SYS_PATH" plan_venv_action "$VNEW")" "rebuild"
+
 # ── 10. rebuild removes only venv entries, preserves shared ~/.rapid-mlx state ─
 # ~/.rapid-mlx doubles as the state dir (telemetry-client-id, bench-install-id,
 # agents/ profiles, launch.pid). A rebuild must not delete any of that.
 RVD="$WORK/rapid_state"; mkdir -p "$RVD/bin" "$RVD/lib" "$RVD/include" "$RVD/agents"
-make_py "$RVD/bin/python" 3.11 arm64
+make_py "$RVD/bin/python" 3.12 arm64
 printf 'x' > "$RVD/pyvenv.cfg"
 printf 'client-abc' > "$RVD/telemetry-client-id"
 printf 'bench-xyz'  > "$RVD/bench-install-id"
@@ -160,13 +184,13 @@ check "plan: a missing dir is created" \
     "$(PATH="$SYS_PATH" plan_venv_action "$WORK/absent")" "create"
 
 PUP="$WORK/plan_ok"; mkdir -p "$PUP/bin"
-make_py "$PUP/bin/python" 3.11 arm64
-make_py "$PUP/bin/pip"    3.11 arm64
+make_py "$PUP/bin/python" 3.12 arm64
+make_py "$PUP/bin/pip"    3.12 arm64
 check "plan: a complete arm64 venv is upgraded" \
     "$(PATH="$SYS_PATH" plan_venv_action "$PUP")" "upgrade"
 
 PRB="$WORK/plan_rebuild"; mkdir -p "$PRB/bin"
-make_py "$PRB/bin/python" 3.11 arm64       # no bin/pip -> incomplete
+make_py "$PRB/bin/python" 3.12 arm64       # no bin/pip -> incomplete
 check "plan: an incomplete venv is rebuilt" \
     "$(PATH="$SYS_PATH" plan_venv_action "$PRB")" "rebuild"
 
@@ -180,18 +204,237 @@ check "plan: an x86_64 venv is rebuilt" \
 # Mock the side-effecting steps so we can assert the create/upgrade/rebuild
 # branches invoke the intended operations in order — a swapped or dropped branch
 # in install.sh would change this record.
-CALLS=""
-create_venv()    { CALLS="$CALLS create"; }
-upgrade_pip()    { CALLS="$CALLS upgrade"; }
-reset_venv_dir() { CALLS="$CALLS reset"; }
-info() { :; }; warn() { :; }; dim() { :; }   # silence banners during dispatch
+(
+    CALLS=""
+    create_venv() { CALLS="$CALLS create"; }
+    upgrade_pip() { CALLS="$CALLS upgrade"; }
+    stash_venv_entries() { CALLS="$CALLS stash"; }
+    info() { :; }; warn() { :; }; dim() { :; }
+    INSTALL_DIR="$WORK/dispatch"; mkdir -p "$INSTALL_DIR/bin"
+    CALLS=""; dispatch_venv upgrade
+    check "dispatch upgrade -> only pip upgrade" "$CALLS" " upgrade"
+    CALLS=""; dispatch_venv create
+    check "dispatch create -> only venv create" "$CALLS" " create"
+    CALLS=""; dispatch_venv rebuild
+    check "dispatch rebuild -> stash then create" "$CALLS" " stash create"
+    [ "$FAIL" -eq 0 ]
+) || bad "dispatch action wiring"
 
-CALLS=""; dispatch_venv upgrade
-check "dispatch upgrade -> only pip upgrade" "$CALLS" " upgrade"
-CALLS=""; dispatch_venv create
-check "dispatch create -> only venv create" "$CALLS" " create"
-CALLS=""; dispatch_venv rebuild
-check "dispatch rebuild -> reset then create" "$CALLS" " reset create"
+# ── Transactional rebuilds preserve the old venv and shared state ───────────
+make_old_install() {
+    mkdir -p "$1/bin" "$1/lib" "$1/agents"
+    printf 'old python\n' > "$1/bin/python"
+    printf 'old lib\n' > "$1/lib/marker"
+    printf 'old config\n' > "$1/pyvenv.cfg"
+    printf 'client-abc' > "$1/telemetry-client-id"
+    printf '{"custom":true}' > "$1/agents/custom.json"
+}
+check_old_install() {
+    local dir="$1" result=yes backup
+    [ "$(cat "$dir/bin/python" 2>/dev/null)" = 'old python' ] || result=no
+    [ "$(cat "$dir/lib/marker" 2>/dev/null)" = 'old lib' ] || result=no
+    [ "$(cat "$dir/pyvenv.cfg" 2>/dev/null)" = 'old config' ] || result=no
+    [ ! -e "$dir/bin/marker-new" ] || result=no
+    [ "$(cat "$dir/telemetry-client-id" 2>/dev/null)" = 'client-abc' ] || result=no
+    [ "$(cat "$dir/agents/custom.json" 2>/dev/null)" = '{"custom":true}' ] || result=no
+    for backup in "$dir"/.venv-previous.*; do [ ! -e "$backup" ] || result=no; done
+    check "$2" "$result" yes
+}
+make_new_install() {
+    mkdir -p "$INSTALL_DIR/bin"
+    printf 'new\n' > "$INSTALL_DIR/bin/marker-new"
+    printf '#!/bin/bash\nexit 0\n' > "$INSTALL_DIR/bin/python"
+    printf '#!/bin/bash\nexit %s\n' "${CLI_STATUS:-0}" > "$INSTALL_DIR/bin/rapid-mlx"
+    chmod +x "$INSTALL_DIR/bin/python" "$INSTALL_DIR/bin/rapid-mlx"
+}
+
+ROUND="$WORK/roundtrip"; make_old_install "$ROUND"
+stash_venv_entries "$ROUND" "$ROUND/.venv-previous.1"
+check "stash leaves shared state in place" "$(cat "$ROUND/telemetry-client-id") $(cat "$ROUND/agents/custom.json")" 'client-abc {"custom":true}'
+restore_venv_entries "$ROUND" "$ROUND/.venv-previous.1"
+check_old_install "$ROUND" "stash and restore preserve venv and shared state"
+
+for failure in install create verify; do
+    FIXTURE="$WORK/failure-$failure"; make_old_install "$FIXTURE"
+    set +e
+    (
+        set -e
+        INSTALL_DIR="$FIXTURE"
+        INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+        trap on_installer_exit EXIT
+        create_venv() {
+            make_new_install
+            if [ "$failure" = create ]; then exit 1; fi
+        }
+        install_package() { if [ "$failure" = install ]; then return 1; fi; }
+        if [ "$failure" = verify ]; then CLI_STATUS=1; fi
+        dispatch_venv rebuild
+        install_package
+        finish_rebuild
+    ) >/dev/null 2>&1
+    status=$?
+    set -e
+    check "$failure failure exits nonzero" "$([ "$status" -ne 0 ] && echo yes || echo no)" yes
+    check_old_install "$FIXTURE" "$failure failure restores old venv and shared state"
+done
+
+for scenario in success interrupted; do
+    FIXTURE="$WORK/$scenario"; make_old_install "$FIXTURE"
+    if [ "$scenario" = interrupted ]; then
+        stash_venv_entries "$FIXTURE" "$FIXTURE/.venv-previous.123"
+    fi
+    (
+        INSTALL_DIR="$FIXTURE"
+        create_venv() { make_new_install; }
+        install_package() { :; }
+        recover_interrupted_rebuild
+        dispatch_venv rebuild
+        install_package
+        finish_rebuild
+    ) >/dev/null
+    result=yes
+    [ -e "$FIXTURE/bin/marker-new" ] || result=no
+    [ ! -e "$FIXTURE/lib/marker" ] || result=no
+    [ "$(cat "$FIXTURE/telemetry-client-id")" = client-abc ] || result=no
+    [ -e "$FIXTURE/agents/custom.json" ] || result=no
+    for backup in "$FIXTURE"/.venv-previous.* "$FIXTURE"/.venv-discard.*; do [ ! -e "$backup" ] || result=no; done
+    check "$scenario rebuild commits new venv and preserves shared state" "$result" yes
+done
+
+# A committed discard must never replace the current environment on recovery.
+(
+    INSTALL_DIR="$WORK/recover-discard"; make_old_install "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/.venv-discard.123/bin"
+    printf 'discarded\n' > "$INSTALL_DIR/.venv-discard.123/bin/python"
+    touch "$INSTALL_DIR/.venv-discard.123/.stash-complete"
+    recover_interrupted_rebuild
+    check_old_install "$INSTALL_DIR" "recovery retains the current environment when discard exists"
+    [ ! -e "$INSTALL_DIR/.venv-discard.123" ] || exit 1
+    [ "$FAIL" -eq 0 ]
+) || bad "recovery removes committed discard"
+
+# Lock tests use separate fixtures and isolate exits and traps in subshells.
+(
+    INSTALL_LOCK="$WORK/acquire.install-lock"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    release_install_lock
+    [ ! -L "$INSTALL_LOCK" ] && [ ! -e "$INSTALL_LOCK" ] || exit 1
+) && ok "lock acquisition links to our pid and release removes it" || bad "lock acquisition and release"
+
+sleep 30 &
+live_pid=$!
+LOCK_FIXTURE="$WORK/live.install-lock"
+ln -s "$live_pid" "$LOCK_FIXTURE"
+if output=$(INSTALL_LOCK="$LOCK_FIXTURE"; acquire_install_lock 2>&1); then
+    bad "live lock rejects another installer"
+else
+    case "$output" in
+        *"Another Rapid-MLX install is already running (pid $live_pid)."*) ok "live lock rejects another installer" ;;
+        *) bad "live lock reports the running installer" ;;
+    esac
+fi
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+(
+    INSTALL_LOCK="$LOCK_FIXTURE"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    rm -f "$INSTALL_LOCK"
+    ln -s different-owner "$INSTALL_LOCK"
+    release_install_lock
+    [ "$(readlink "$INSTALL_LOCK")" = different-owner ] || exit 1
+    rm -f "$INSTALL_LOCK"
+    ln -s "$$" "$INSTALL_LOCK"
+    release_install_lock
+    [ ! -L "$INSTALL_LOCK" ] || exit 1
+) && ok "stale lock is taken over and only its owner can release it" || bad "stale lock takeover and ownership"
+
+(
+    INSTALL_LOCK="$WORK/legacy.install-lock"
+    mkdir "$INSTALL_LOCK"
+    printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
+    acquire_install_lock
+    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
+    release_install_lock
+) && ok "legacy lock directory is taken over" || bad "legacy lock directory takeover"
+
+# Recovery covers both a completed stash and an interruption partway through it.
+(
+    INSTALL_DIR="$WORK/recover-created"; make_old_install "$INSTALL_DIR"
+    stash_venv_entries "$INSTALL_DIR" "$INSTALL_DIR/.venv-previous.111"
+    make_new_install
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "recovery replaces a newly created venv with the old one"
+    [ "$FAIL" -eq 0 ]
+) || bad "completed stash recovery"
+
+(
+    INSTALL_DIR="$WORK/recover-partial"; make_old_install "$INSTALL_DIR"
+    mkdir "$INSTALL_DIR/.venv-previous.222"
+    mv "$INSTALL_DIR/bin" "$INSTALL_DIR/.venv-previous.222/"
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "partial stash recovery preserves unmoved entries"
+    [ "$FAIL" -eq 0 ]
+) || bad "partial stash recovery"
+
+(
+    INSTALL_DIR="$WORK/recover-multiple"; make_old_install "$INSTALL_DIR"
+    mkdir "$INSTALL_DIR/.venv-previous.111"
+    touch -t 202001010000 "$INSTALL_DIR/.venv-previous.111"
+    stash_venv_entries "$INSTALL_DIR" "$INSTALL_DIR/.venv-previous.222"
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "recovery selects newest backup and removes older backups"
+    [ "$FAIL" -eq 0 ]
+) || bad "multiple backup recovery"
+
+(
+    INSTALL_DIR="$WORK/restore-failure"; make_old_install "$INSTALL_DIR"
+    VENV_BACKUP="$INSTALL_DIR/.venv-previous.333"
+    stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
+    mv() { case "$1" in */lib) return 1 ;; esac; command mv "$@"; }
+    if restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"; then exit 1; fi
+    [ -d "$VENV_BACKUP/lib" ] || exit 1
+    output=$(rollback_rebuild 2>&1)
+    case "$output" in *"preserved at $VENV_BACKUP"*) : ;; *) exit 1 ;; esac
+    unset -f mv
+    recover_interrupted_rebuild >/dev/null
+    check_old_install "$INSTALL_DIR" "failed restore preserves backup and can be retried"
+    [ "$FAIL" -eq 0 ]
+) || bad "restore failure reports the preserved backup"
+
+FIXTURE="$WORK/stash-failure"; make_old_install "$FIXTURE"
+set +e
+(
+    set -e
+    INSTALL_DIR="$FIXTURE"
+    mv() { case "$1" in "$INSTALL_DIR/lib") return 1 ;; esac; command mv "$@"; }
+    create_venv() { :; }; install_package() { :; }; run_install_command() { :; }
+    dispatch_venv rebuild
+) >/dev/null 2>&1
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+    bad "mid-stash failure exits nonzero"
+else
+    ok "mid-stash failure exits nonzero"
+fi
+check_old_install "$FIXTURE" "mid-stash failure restores the entire old environment"
+
+FIXTURE="$WORK/stash-exit"; make_old_install "$FIXTURE"
+set +e
+(
+    set -e
+    INSTALL_DIR="$FIXTURE"
+    INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+    trap on_installer_exit EXIT
+    mv() { case "$1" in "$INSTALL_DIR/lib") exit 143 ;; esac; command mv "$@"; }
+    dispatch_venv rebuild
+) >/dev/null 2>&1
+status=$?
+set -e
+check "exit during stash retains its exit status" "$status" 143
+check_old_install "$FIXTURE" "exit during stash invokes rollback trap"
 
 # ── 13. first-chat starter mirrors Desktop Quickstart (#2385) ────────────────
 check "15 GB fresh install uses the safe 1.2B starter" \

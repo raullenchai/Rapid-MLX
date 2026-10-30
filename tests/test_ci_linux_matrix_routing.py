@@ -53,15 +53,12 @@ def test_test_matrix_comes_from_tested_classifier_output() -> None:
 def test_promoted_and_non_pr_heads_keep_full_supported_python_matrix() -> None:
     run = _classification_run()
     full_json = (
-        '{"include":[{"python-version":"3.10","shard":1},'
-        '{"python-version":"3.10","shard":2},'
-        '{"python-version":"3.10","shard":3},'
-        '{"python-version":"3.11","shard":1},'
-        '{"python-version":"3.11","shard":2},'
-        '{"python-version":"3.11","shard":3},'
-        '{"python-version":"3.12","shard":1},'
+        '{"include":[{"python-version":"3.12","shard":1},'
         '{"python-version":"3.12","shard":2},'
-        '{"python-version":"3.12","shard":3}]}'
+        '{"python-version":"3.12","shard":3},'
+        '{"python-version":"3.13","shard":1},'
+        '{"python-version":"3.13","shard":2},'
+        '{"python-version":"3.13","shard":3}]}'
     )
 
     assert "--force-full" in run
@@ -72,7 +69,7 @@ def test_promoted_and_non_pr_heads_keep_full_supported_python_matrix() -> None:
     assert linux_test_matrix("full") == {
         "include": [
             {"python-version": version, "shard": shard}
-            for version in ("3.10", "3.11", "3.12")
+            for version in ("3.12", "3.13")
             for shard in (1, 2, 3)
         ]
     }
@@ -80,18 +77,18 @@ def test_promoted_and_non_pr_heads_keep_full_supported_python_matrix() -> None:
 
 def test_reduced_route_keeps_all_three_coverage_shards() -> None:
     workflow = _workflow()
-    matrix = linux_test_matrix("py311")["include"]
+    matrix = linux_test_matrix("py312")["include"]
 
     assert matrix == [
-        {"python-version": "3.11", "shard": 1},
-        {"python-version": "3.11", "shard": 2},
-        {"python-version": "3.11", "shard": 3},
+        {"python-version": "3.12", "shard": 1},
+        {"python-version": "3.12", "shard": 2},
+        {"python-version": "3.12", "shard": 3},
     ]
     steps = workflow["jobs"]["test-matrix"]["steps"]
     upload = next(
         step for step in steps if step.get("name") == "Upload Linux shard coverage data"
     )
-    assert upload["if"] == "matrix.python-version == '3.11'"
+    assert upload["if"] == "matrix.python-version == '3.12'"
     assert upload["with"]["if-no-files-found"] == "error"
 
     linux_coverage = workflow["jobs"]["linux-coverage"]

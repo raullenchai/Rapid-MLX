@@ -8,7 +8,6 @@ import json
 import subprocess
 import sys
 import threading
-from collections import namedtuple
 from pathlib import Path
 from types import ModuleType
 
@@ -102,7 +101,6 @@ def test_wan_wraps_non_utf8_config(monkeypatch, tmp_path) -> None:
 
 
 def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
     monkeypatch.setattr(
         "rapid_mlx.runtime.video_lane._submodule_spec_exists_without_import",
@@ -115,7 +113,6 @@ def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
 
 
 def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "version_info", (3, 11))
 
     def fake_find_spec(module):
         if module == "mlx_video":
@@ -150,7 +147,6 @@ def test_wan_submodule_probe_does_not_import_parent(monkeypatch, tmp_path) -> No
 def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
     monkeypatch.setattr(
         "rapid_mlx.runtime.video_lane._submodule_spec_exists_without_import",
@@ -163,16 +159,9 @@ def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
     assert issue == "video generation requires ffmpeg (`brew install ffmpeg`)."
 
 
-def test_wan_runtime_probe_reports_unsupported_python_and_ready_runtime(
+def test_wan_runtime_probe_reports_ready_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    version_info = namedtuple("version_info", "major minor")
-    monkeypatch.setattr(sys, "version_info", version_info(3, 10))
-    issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
-    assert issue is not None
-    assert "Python 3.11 or newer (current: 3.10)" in issue
-
-    monkeypatch.setattr(sys, "version_info", version_info(3, 11))
     monkeypatch.setattr(
         "rapid_mlx.runtime.video_lane._default_video_runtime_requirements",
         lambda _model: [],

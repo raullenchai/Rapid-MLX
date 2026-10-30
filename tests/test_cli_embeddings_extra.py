@@ -132,13 +132,8 @@ def test_pyproject_declares_embeddings_extra():
     ``[vision]``). Without this, the install hint above would point
     at a non-existent extra and the user could never recover.
     """
-    import sys
+    import tomllib
     from pathlib import Path
-
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:  # pragma: no cover — 3.10 floor
-        import tomli as tomllib
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject.open("rb") as fh:

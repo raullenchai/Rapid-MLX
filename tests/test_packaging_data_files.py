@@ -26,15 +26,10 @@ shipping a broken wheel to PyPI.
 from __future__ import annotations
 
 import importlib.resources
+import tomllib
 from pathlib import Path
 
 import pytest
-
-try:  # pragma: no cover - py311+ has tomllib in stdlib
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
-
 
 # Files that must be present in every installed/source layout.
 # Format: (package, file-name-relative-to-package, package-data-glob).

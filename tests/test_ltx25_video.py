@@ -68,9 +68,7 @@ def _reset_ltx25_runtime_cache(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def _supported_runtime_python(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise runtime integrity independently of the host Python floor."""
-    monkeypatch.setattr(
-        ltx25, "sys", SimpleNamespace(version_info=(3, 11), executable=sys.executable)
-    )
+    monkeypatch.setattr(ltx25, "sys", SimpleNamespace(executable=sys.executable))
 
 
 def _load_vendor_script():
@@ -504,23 +502,6 @@ def test_ltx25_runtime_invalid_override_never_falls_through(
     assert ltx25.LTX25_RUNTIME_COMMIT in (runtime.detail or "")
 
 
-def test_ltx25_runtime_python_floor_precedes_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ltx25.sys, "version_info", (3, 10))
-    monkeypatch.setenv("RAPID_MLX_LTX25_RUNTIME", "/anywhere")
-    monkeypatch.setattr(
-        ltx25,
-        "resolve_ltx25_runtime",
-        lambda: pytest.fail("the Python floor must fail before resolving a runtime"),
-    )
-
-    runtime = ltx25.ltx25_runtime()
-
-    assert runtime.state == "python_unsupported"
-    assert runtime.source is None
-
-
 def test_ltx25_runtime_unavailable_message_for_vendored_failure() -> None:
     for state in ("absent", "corrupt"):
         message = ltx25.runtime_unavailable_message(
@@ -528,15 +509,6 @@ def test_ltx25_runtime_unavailable_message_for_vendored_failure() -> None:
         )
         assert "missing or damaged" in message
         assert "Reinstall rapid-mlx" in message
-
-
-def test_ltx25_runtime_unavailable_message_for_python_floor() -> None:
-    message = ltx25.runtime_unavailable_message(
-        ltx25.LTX25Runtime(state="python_unsupported")
-    )
-    assert "Python 3.11 or newer" in message
-    assert "missing or damaged" not in message
-    assert "pip install --upgrade --force-reinstall" not in message
 
 
 def test_ltx25_runtime_unavailable_message_for_invalid_override() -> None:
@@ -575,7 +547,6 @@ def test_ltx25_runtime_unavailable_message_for_shadowed_copy() -> None:
 def test_ltx25_runtime_preflight_needs_no_checkout_or_uv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -681,7 +652,6 @@ def _runtime(
 def test_ltx25_runtime_preflight_absent_uses_reinstall_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
     monkeypatch.setattr(
         video_lane, "_resolve_ffmpeg", lambda: "/opt/homebrew/bin/ffmpeg"
@@ -701,7 +671,6 @@ def test_ltx25_runtime_preflight_absent_uses_reinstall_hint(
 def test_ltx25_runtime_preflight_corrupt_uses_reinstall_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -725,7 +694,6 @@ def test_ltx25_runtime_preflight_shadowed_uses_removal_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A shadowing copy must be removed, not reinstalled over."""
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -757,7 +725,6 @@ def test_ltx25_runtime_preflight_shadowed_uses_removal_hint(
 def test_ltx25_runtime_preflight_invalid_override_points_at_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -780,31 +747,9 @@ def test_ltx25_runtime_preflight_invalid_override_points_at_env_var(
     assert exc.value.status == "broken"
 
 
-def test_ltx25_runtime_preflight_python_floor_uses_upgrade_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from collections import namedtuple
-
-    Version = namedtuple("Version", "major minor")
-    monkeypatch.setattr(video_lane.sys, "version_info", Version(3, 10))
-    monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("python_unsupported"))
-
-    with pytest.raises(OptionalRuntimeMissing) as exc:
-        video_lane.require_video_runtime_or_exit("MrMofer/ltx-2.5-mlx-q8")
-
-    error = exc.value.format_user_message()
-    assert "Python 3.11 or newer" in error
-    assert "uv tool install --force --python 3.12" in error
-    assert "pip install --upgrade --force-reinstall" not in error
-    assert "ships with rapid-mlx" not in error
-    assert exc.value.status == "incompatible"
-    assert exc.value.marker_reason == "python_version_unsupported"
-
-
 def test_ltx25_runtime_preflight_requires_uv_for_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -825,7 +770,6 @@ def test_ltx25_runtime_preflight_requires_uv_for_override(
 def test_ltx25_runtime_preflight_ffmpeg_only_uses_ffmpeg_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -847,7 +791,6 @@ def test_ltx25_runtime_preflight_ffmpeg_only_uses_ffmpeg_hint(
 def test_ltx25_runtime_preflight_runtime_blocker_dominates_ffmpeg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: None)
 
@@ -863,7 +806,6 @@ def test_ltx25_runtime_preflight_runtime_blocker_dominates_ffmpeg(
 def test_ltx25_runtime_preflight_catalog_is_side_effect_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -887,7 +829,6 @@ def test_ltx25_runtime_preflight_catalog_is_side_effect_free(
 def test_ltx25_runtime_preflight_catalog_marks_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(ltx25, "ltx25_runtime", lambda: _runtime("absent", "vendored"))
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/usr/bin/ffmpeg")
 
@@ -897,7 +838,6 @@ def test_ltx25_runtime_preflight_catalog_marks_unavailable(
 def test_ltx25_provisioning_failure_surfaces_cause_not_clone_steps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr(
         ltx25,
         "ltx25_runtime",
@@ -1547,9 +1487,6 @@ def test_serve_routes_ltx25_model_to_specific_preflight(
         cli.serve_command(args)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
-)
 def test_ltx25_child_pin_beats_a_shadowing_working_directory(
     tmp_path: Path,
 ) -> None:
@@ -1597,9 +1534,6 @@ def test_ltx25_child_pin_beats_a_shadowing_working_directory(
     assert pinned.stdout.strip() == str(REPO_ROOT / "ltx_pipelines_mlx" / "__init__.py")
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
-)
 def test_ltx25_child_refuses_a_pin_without_audited_provenance(
     tmp_path: Path,
 ) -> None:
@@ -1629,9 +1563,6 @@ def test_ltx25_child_refuses_a_pin_without_audited_provenance(
     assert "ltx_core_mlx: provenance file is missing" in completed.stderr
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="LTX-2.5 child execution requires Python 3.11+"
-)
 def test_ltx25_child_refuses_a_pin_that_does_not_contain_the_import(
     tmp_path: Path,
 ) -> None:

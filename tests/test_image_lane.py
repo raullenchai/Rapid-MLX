@@ -9,7 +9,6 @@ validation / dispatch / transport contract rather than the diffusion pipeline.
 import base64
 import io
 import types
-from collections import namedtuple
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,25 +21,8 @@ from rapid_mlx.image.engine import (
     ImageRuntimeError,
 )
 from rapid_mlx.runtime.image_lane import ImageEngine
-from rapid_mlx.runtime.optional_runtime import OptionalRuntimeMissing
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-
-
-def test_image_runtime_probe_and_guard_report_unsupported_python(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from rapid_mlx.runtime import image_lane
-
-    version_info = namedtuple("version_info", "major minor")
-    monkeypatch.setattr(image_lane.sys, "version_info", version_info(3, 10))
-
-    issue = image_lane.image_runtime_issue("flux2-klein-4b")
-    assert issue is not None
-    assert "Python 3.11 or newer (current: 3.10)" in issue
-    with pytest.raises(OptionalRuntimeMissing) as exc:
-        image_lane.require_image_runtime_or_exit("flux2-klein-4b")
-    assert "Python 3.11 or newer" in exc.value.format_user_message()
 
 
 class _FakeGeneratedImage:

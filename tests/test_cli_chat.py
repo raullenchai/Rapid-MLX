@@ -3782,7 +3782,6 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         real_pthread_sigmask(_signal.SIG_SETMASK, saved_mask)
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="Harness requires Python 3.11")
 @pytest.mark.parametrize("requested,expected", [(None, 32768), (65536, 65536)])
 @pytest.mark.parametrize("env_enabled", [False, True])
 def test_harness_reuses_one_command_server_start_and_cleanup(
@@ -3840,16 +3839,13 @@ def test_harness_reuses_one_command_server_start_and_cleanup(
 
 
 @pytest.mark.parametrize("env_enabled", [False, True])
-@pytest.mark.parametrize("missing", ["python", "pydantic_ai", "prompt_toolkit"])
+@pytest.mark.parametrize("missing", ["pydantic_ai", "prompt_toolkit"])
 def test_harness_preflight_fails_before_model_download_or_spawn(
     monkeypatch, capsys, env_enabled, missing
 ):
     import importlib
 
     monkeypatch.setenv("RAPID_MLX_CHAT_HARNESS", "1" if env_enabled else "0")
-    monkeypatch.setattr(
-        sys, "version_info", (3, 10) if missing == "python" else (3, 12)
-    )
     original_import = importlib.import_module
 
     def import_module(name, *args, **kwargs):
@@ -3871,11 +3867,7 @@ def test_harness_preflight_fails_before_model_download_or_spawn(
     assert error.value.code == 2
     message = capsys.readouterr().err
     assert "pip install rapid-mlx" in message
-    assert (
-        "Python 3.11" in message
-        if missing == "python"
-        else "chat dependencies" in message
-    )
+    assert "chat dependencies" in message
 
 
 def test_legacy_chat_does_not_load_optional_harness_dependencies(monkeypatch):

@@ -41,38 +41,16 @@ Gemma 4 — same failure shape).
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.requires_mlx
+
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
-
-# Codex round-1 BLOCKING: ``import tomllib`` at module-import time would
-# crash on Python 3.10 (the floor in ``pyproject.toml`` →
-# ``requires-python = ">=3.10"``) before the version-floor test could
-# emit a diagnostic. Fall back to the third-party ``tomli`` backport
-# (same API surface) so the file imports cleanly on every supported
-# interpreter. The runtime is identical on 3.11+ where ``tomllib`` is
-# stdlib; on 3.10 the user must ``pip install tomli`` to run the
-# vision-extra lock-in tests (skipped at the file level otherwise).
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # pragma: no cover — 3.10 fallback
-    try:
-        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-    except ModuleNotFoundError:
-        import pytest
-
-        pytest.skip(
-            "tomllib (stdlib ≥3.11) or tomli (3.10 backport) is required "
-            "to parse pyproject.toml; install one with `pip install tomli` "
-            "to run the L-07 lock-in tests.",
-            allow_module_level=True,
-        )
 
 
 def _load_pyproject() -> dict:
@@ -249,36 +227,21 @@ def test_all_extra_contains_complete_audio_extra() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Tooling sanity — pyproject pins ``requires-python = ">=3.10"``. To
-# keep the L-07 lock-in suite running on every supported interpreter
-# (codex round-2 BLOCKING: a 3.10 CI worker without tomli would have
-# module-skipped the entire suite), the [dev] extra declares
-# ``tomli>=2.0.1; python_version < "3.11"``. This test pins both
-# halves of that contract: the requires-python floor AND the matching
-# tomli dev-dep declaration.
+# Tooling sanity: the supported Python floor is 3.12.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_pyproject_requires_python_floor_matches_tomllib_fallback() -> None:
-    """The TOML import block falls back to ``tomli`` on Python <3.11 so
-    the L-07 lock-in tests work on every Python the project supports.
-    Pin both halves of that contract here so a future floor bump
-    (e.g. ``>=3.11``) lets a reviewer notice the now-dead fallback."""
-    py = _load_pyproject()
-    requires = py.get("project", {}).get("requires-python", "")
-    assert requires, "pyproject.toml must declare requires-python"
-    # The floor must be ``>=3.10`` or stricter — anything looser would
-    # widen the surface this test file's tomli fallback covers.
-    assert ">=3." in requires, (
-        f"requires-python={requires!r} doesn't pin a 3.x floor — the "
-        f"tomli fallback in this file assumes a Python 3 floor."
-    )
-    # Document the runtime we're using so a 3.10 contributor sees a
-    # meaningful trail when reviewing the fallback.
-    assert sys.version_info >= (3, 10), (
-        f"Test runtime {sys.version_info[:2]} is below the project's "
-        f"3.10 floor — the tomli fallback can't help here."
-    )
+# ──────────────────────────────────────────────────────────────────────
+def test_pyproject_requires_python_floor() -> None:
+    assert _load_pyproject()["project"]["requires-python"] == ">=3.12"
+
+
+def test_project_does_not_declare_tomli() -> None:
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    groups = [project["dependencies"], *project["optional-dependencies"].values()]
+    assert all(Requirement(spec).name != "tomli" for group in groups for spec in group)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -530,37 +493,6 @@ def _module_names_imported(body) -> list[str]:
             for alias in stmt.names:
                 names.append(alias.name)
     return names
-
-
-def test_dev_extra_pins_tomli_for_python_310() -> None:
-    """Codex round-2 BLOCKING: without ``tomli`` in the [dev] extra
-    for Python <3.11, a 3.10 CI worker without the package would have
-    module-skipped this whole L-07 suite — letting a future refactor
-    silently drop the ``[vision]`` extra without any test ever firing.
-
-    Pin that ``tomli`` is declared with the ``python_version < "3.11"``
-    marker (PEP 508) so the dep only resolves on 3.10 where it's
-    actually needed. On 3.11+ the stdlib ``tomllib`` is used; the
-    marker keeps the install lean.
-    """
-    py = _load_pyproject()
-    dev_specs = _extra_specs(py, "dev")
-    # PEP 508 marker form: spec is something like
-    # ``tomli>=2.0.1; python_version < "3.11"``. The dep name + marker
-    # check is what we care about; the exact version is the dev's choice.
-    matching = [
-        spec
-        for spec in dev_specs
-        if "tomli" in spec.lower()
-        and ";" in spec
-        and "python_version" in spec
-        and "3.11" in spec
-    ]
-    assert matching, (
-        f"`[dev]` extra must declare tomli with a `python_version < "
-        f'"3.11"` marker so 3.10 CI workers can actually run the '
-        f"L-07 lock-in suite. Got dev specs: {dev_specs!r}"
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 {
   "source": "https://github.com/raullenchai/Rapid-MLX/actions/runs/40301161048",
   "unit": "milliseconds",
-  "description": "Python 3.11 ordinary-suite weights from timestamp deltas between consecutive verbose test results, summed by file. Includes fixture and log overhead; not pytest call-only timings. Unknown files retain a one-millisecond-per-line estimate. Regenerate after substantial suite changes.",
+  "description": "Python 3.12 ordinary-suite weights from timestamp deltas between consecutive verbose test results, summed by file. Includes fixture and log overhead; not pytest call-only timings. Unknown files retain a one-millisecond-per-line estimate. Regenerate after substantial suite changes.",
   "files": {
     "tests/install/test_install_security.py": 85,
     "tests/install/test_install_stdin.py": 1327,

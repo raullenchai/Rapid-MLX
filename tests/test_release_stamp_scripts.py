@@ -839,7 +839,7 @@ def test_ci_runs_the_real_release_stamp_build_once():
         steps, "Install package builder for release-stamp integration test"
     )
     _, run = _step_named(steps, "Run real release-stamp package build")
-    expected_if = "matrix.python-version == '3.11' && matrix.shard == 1"
+    expected_if = "matrix.python-version == '3.12' && matrix.shard == 1"
     assert install["if"] == expected_if
     assert install["run"] == "python -m pip install build"
     assert run["if"] == expected_if

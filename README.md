@@ -37,7 +37,7 @@ oMLX 0.7.0 and LM Studio, using the same base 4-bit weights for each model.
 <p align="center">
   <a href="https://pypi.org/project/rapid-mlx/"><img src="https://img.shields.io/pypi/v/rapid-mlx?color=blue&label=PyPI" alt="PyPI"></a>
   <a href="https://formulae.brew.sh/formula/rapid-mlx"><img src="https://img.shields.io/badge/Homebrew-core-orange?logo=homebrew" alt="Homebrew core"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
   <a href="https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
 </p>
@@ -218,7 +218,7 @@ This saves a private Claude Code profile, starts a local server if needed, and l
 
 > **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, set `RAPID_MLX_API_KEY=your-secret` for both `rapid-mlx serve ...` and `rapid-mlx launch cursor --server-url https://your-public-host`. This is no longer a fully local connection; never expose an unauthenticated server. Rapid-MLX rejects explicit local/private addresses but cannot verify reachability from Cursor's network, whose DNS view may differ from your Mac.
 
-> **Vision / image / video models?** They work out of the box with the official installer above (and Rapid-MLX Desktop), which include the vision, image-generation and video-generation runtimes (image and video generation need Python 3.11+). Audio (TTS, STT, voice cloning) and embeddings ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
+> **Vision / image / video models?** They work out of the box with the official installer above (and Rapid-MLX Desktop), which include the vision, image-generation and video-generation runtimes. Audio (TTS, STT, voice cloning) and embeddings ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
 > **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com/desktop) bundles the same engine inside a one-click Mac app.
 
@@ -235,8 +235,7 @@ This saves a private Claude Code profile, starts a local server if needed, and l
 ## Image generation
 
 Generate images locally from the Desktop **Images** tab or the
-OpenAI-compatible Images API. The image runtime ships with the base install
-(Python 3.11+):
+OpenAI-compatible Images API. The image runtime ships with the base install:
 
 ```bash
 rapid-mlx serve flux2-klein-4b
@@ -331,8 +330,7 @@ Videos API. Three backends ship — **Wan 2.1 / 2.2**, **CogVideoX-Fun** and
 recommended starting point: smallest of the Wan set, and TI2V means one
 checkpoint does both text-to-video and image-to-video.
 
-The video runtime ships with the base install on Python 3.11+ (it does not
-support 3.10; core text and audio still do). Install `ffmpeg` for the final MP4
+The video runtime ships with the base install. Install `ffmpeg` for the final MP4
 mux.
 
 ```bash
@@ -690,7 +688,7 @@ Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade wi
 </details>
 
 <details>
-<summary><strong>pip</strong> — requires Python 3.10+ (macOS ships 3.9)</summary>
+<summary><strong>pip</strong> — requires Python 3.12+ (macOS ships 3.9)</summary>
 
 ```bash
 python3.12 -m pip install rapid-mlx
@@ -804,7 +802,7 @@ Apache 2.0 — see [LICENSE](https://github.com/raullenchai/Rapid-MLX/blob/main/
 
 ### Experimental persistent chat
 
-The harness is included in the base install and requires Python 3.11 or newer.
+The harness is included in the base install.
 Try it with a local inference server:
 
 ```bash

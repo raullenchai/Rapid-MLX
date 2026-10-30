@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import concurrent.futures
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -16,11 +17,6 @@ from rapid_mlx.speculative.native_mtp.eligibility import (
     resolve_native_mtp_pair,
 )
 from rapid_mlx.speculative.native_mtp.server import _validate_greedy_request
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib
 
 
 def test_native_mtp_resolves_only_qualified_pair() -> None:

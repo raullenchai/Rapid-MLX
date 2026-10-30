@@ -14,7 +14,7 @@ If the command is unavailable in the current shell, run
 ## Requirements
 
 - macOS on Apple Silicon
-- Python 3.10+ for a manual Python install; image and video need Python 3.11+
+- Python 3.12 or newer for pip installs; the installer uses Python 3.12 or 3.13 (and installs Python 3.12 automatically if neither is found)
 
 ## Install with uv
 
@@ -65,7 +65,7 @@ Python environment and install the repository in editable mode.
 
 The base install includes the vision (mlx-vlm), image-generation (mflux) and
 video-generation (mlx-video) runtimes, so multimodal, image and video models
-start without an extra step. Image and video generation need Python 3.11+.
+start without an extra step.
 Audio, embeddings and the other features below
 ship as opt-in extras. `vision`, `image`, `video`, `dflash` and `mtp` remain
 accepted extra names for existing scripts; on macOS they add nothing.

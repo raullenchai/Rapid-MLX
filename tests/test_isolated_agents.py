@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tomllib
 import urllib.error
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
@@ -17,11 +18,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 from rapid_mlx.agents import isolated
 
