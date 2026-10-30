@@ -18,6 +18,20 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _disable_catalog_memory_preflight(request, monkeypatch):
+    """Disable the host-dependent check unless a test opts in.
+
+    The check reads physical RAM, and the hermetic HF cache makes every catalog
+    model uncached. Tests exercising it opt in with the marker.
+    """
+    if request.node.get_closest_marker("catalog_memory_preflight") is None:
+        from rapid_mlx.byom import preflight
+
+        monkeypatch.setattr(preflight, "_check_catalog_memory_fit", lambda args: None)
+
+
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
 
 

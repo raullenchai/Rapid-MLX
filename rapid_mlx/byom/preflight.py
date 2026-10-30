@@ -934,9 +934,13 @@ def _check_catalog_memory_fit(args: Any) -> None:
                 )
         if footprint <= budget:
             return
-        pick = fitting_pick(ram / _GIB, budget / _GIB, exclude=alias)
     except Exception:
         return
+
+    try:
+        pick = fitting_pick(ram / _GIB, budget / _GIB, exclude=alias)
+    except Exception:
+        pick = None
 
     print(
         f"\n  ✗ {alias} needs ~{_gb(footprint)} of GPU memory; "

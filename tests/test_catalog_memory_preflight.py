@@ -8,6 +8,8 @@ from rapid_mlx.byom import preflight
 from rapid_mlx.model_aliases import resolve_profile
 from rapid_mlx.recommendations import fitting_pick, load_recommendation_tiers
 
+pytestmark = pytest.mark.catalog_memory_preflight
+
 GIB = 1 << 30
 
 
@@ -70,6 +72,16 @@ def test_refuses_before_download(alias, ram, monkeypatch, capsys, offline_prefli
 )
 def test_fitting_models_pass(alias, ram, monkeypatch):
     run(alias, ram, monkeypatch)
+
+
+def test_refuses_when_fitting_pick_fails(monkeypatch, capsys):
+    with (
+        patch("rapid_mlx.recommendations.fitting_pick", side_effect=RuntimeError),
+        pytest.raises(SystemExit) as exc,
+    ):
+        run("qwen3.8-27b-4bit", 24, monkeypatch)
+    assert exc.value.code == 1
+    assert "rapid-mlx models" in capsys.readouterr().err
 
 
 def test_tier_picks_pass_at_floor(monkeypatch):
