@@ -12,6 +12,8 @@ BIN_DIR="${HOME}/.local/bin"
 PYPI_PACKAGE="rapid-mlx"
 GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
 MIN_PYTHON_MINOR=12
+# Newest validated interpreter; raise together with the classifiers and CI matrix.
+MAX_PYTHON_MINOR=13
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,18 +57,19 @@ download() {
 
 # ── Interpreter + venv helpers (also sourced by tests/install) ────────────────
 
-# Echo the first python3.x (>= MIN_PYTHON_MINOR) on PATH that is a NATIVE arm64
+# Echo the first python3.x within the supported minor range on PATH that is a NATIVE arm64
 # build, else nothing. MLX ships arm64 wheels only: a uv/pyenv-managed x86_64
 # interpreter earlier in PATH would build a Rosetta venv that cannot import mlx
 # and, historically, left ~/.rapid-mlx half-built with no bin/pip (#1953). The
 # arch note goes to stderr so command substitution captures only the name.
 select_python() {
     local py ver major minor pyarch
-    for py in python3.14 python3.13 python3.12 python3; do
+    for py in python3.13 python3.12 python3; do
         command -v "$py" >/dev/null 2>&1 || continue
         ver=$(run_install_command "$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
         major="${ver%%.*}"; minor="${ver#*.}"
         { [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]; } || continue
+        [ "$minor" -le "$MAX_PYTHON_MINOR" ] || continue
         pyarch=$(run_install_command "$py" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
         if [ "$pyarch" != "arm64" ]; then
             dim "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)" >&2
@@ -80,7 +83,7 @@ select_python() {
 
 # A venv is reusable only if it is COMPLETE (python + pip present and runnable)
 # AND COMPATIBLE (a native arm64 interpreter, Python >= MIN_PYTHON_MINOR) — the
-# same contract fresh selection enforces. Anything else is treated as
+# minimum version fresh selection enforces. Anything else is treated as
 # not-installed and rebuilt under the newly selected interpreter:
 #   - missing bin/pip: an aborted earlier run left it out (the original #1953).
 #   - executable-but-broken pip: a ~/.vllm-mlx -> ~/.rapid-mlx migration leaves a

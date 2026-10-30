@@ -73,6 +73,18 @@ else
     ok "rejects an arm64 python older than MIN_PYTHON_MINOR"
 fi
 
+# ── 3b. version gate: a too-new generic python is not accepted ────────────────
+BINNEW="$WORK/binnew"; mkdir -p "$BINNEW"
+make_py "$BINNEW/python3" 3.14 arm64
+if PATH="$BINNEW" select_python >/dev/null 2>&1; then
+    bad "rejects an arm64 python newer than MAX_PYTHON_MINOR"
+else
+    ok "rejects an arm64 python newer than MAX_PYTHON_MINOR"
+fi
+make_py "$BINNEW/python3.12" 3.12 arm64
+sel="$(PATH="$BINNEW" select_python 2>/dev/null)"
+check "picks python3.12 when generic python3 is too new" "$sel" "python3.12"
+
 # ── 4. venv completeness: missing bin/pip is treated as incomplete ───────────
 VBAD="$WORK/venv_bad"; mkdir -p "$VBAD/bin"
 make_py "$VBAD/bin/python" 3.12 arm64      # python present, pip MISSING
