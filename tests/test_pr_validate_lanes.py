@@ -185,18 +185,21 @@ def test_blocking_review_cancels_waiting_checks(repo_root_cwd):
     assert time.monotonic() - before < 5
 
 
-def test_lane_execute_crash_blocks_merge(repo_root_cwd, monkeypatch):
+@pytest.mark.parametrize(
+    "exception", [RuntimeError("boom"), SystemExit("boom"), KeyboardInterrupt("boom")]
+)
+def test_lane_execute_crash_blocks_merge(repo_root_cwd, monkeypatch, exception):
     step = FakeStep("lint", lambda name: result(name))
 
     def crash(ctx):
-        raise RuntimeError("boom")
+        raise exception
 
     monkeypatch.setattr(step, "execute", crash)
     assert runner.run_pipeline(1, steps=[step]) == 1
     row = repo_root_cwd.results[0]
     assert (row.status, row.summary, row.stage) == (
         "error",
-        "lane crashed: RuntimeError: boom",
+        f"lane crashed: {type(exception).__name__}: boom",
         "checks",
     )
 

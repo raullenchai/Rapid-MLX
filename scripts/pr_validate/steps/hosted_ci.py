@@ -114,6 +114,11 @@ class HostedCIStep(Step):
                 for c in checks
                 if c.get("status") != "completed" or c.get("conclusion") != "success"
             }
+            pending.update(
+                f"workflow {run.get('name') or run['workflow_id']}"
+                for run in runs.values()
+                if run.get("status") != "completed"
+            )
             if not any(
                 c["name"] == "tests"
                 and (c.get("check_suite") or {}).get("id") in ci_suites

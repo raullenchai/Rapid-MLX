@@ -20,7 +20,7 @@ from .full_unit import (
 )
 
 
-def select_mac_only_files(repo_root: Path) -> list[str]:
+def select_roster_files(repo_root: Path) -> list[str]:
     workflow = repo_root / ".github/workflows/ci.yml"
     roster = set()
     if workflow.exists():
@@ -33,6 +33,11 @@ def select_mac_only_files(repo_root: Path) -> list[str]:
             roster = set(
                 re.findall(r"^\s+(tests/[\w./-]+\.py)\s*\\?\s*$", block.group(1), re.M)
             )
+    return sorted(path for path in roster if (repo_root / path).is_file())
+
+
+def select_mac_only_files(repo_root: Path) -> list[str]:
+    roster = set(select_roster_files(repo_root))
     marker = re.compile(
         r"requires_mlx|real_hf_cache|requires_network|importorskip|darwin|sys\.platform|platform\.(machine|system)"
     )
@@ -62,9 +67,7 @@ class MacOnlyTestsStep(Step):
 
     def run(self, ctx: Context) -> StepResult:
         files = select_mac_only_files(ctx.repo_root)
-        if not files:
-            return StepResult(self.name, "skip", "no local-only test files")
-        log_path = ctx.artifact_path("mac-only-tests.log")
+        roster = select_roster_files(ctx.repo_root)
         parallel_args, note = pytest_parallel_args()
         ctx.run_log(note)
         raw = os.environ.get("PR_VALIDATE_MAC_ONLY_TIMEOUT_S")
@@ -79,49 +82,63 @@ class MacOnlyTestsStep(Step):
             raise ValueError(
                 "PR_VALIDATE_MAC_ONLY_TIMEOUT_S must be a positive integer"
             )
-        cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            *files,
-            "-q",
-            "--no-header",
-            "-rfE",
-            "-o",
-            "faulthandler_timeout=600",
-            *parallel_args,
-        ]
-        try:
-            proc = _run_group_bounded(cmd, cwd=str(ctx.repo_root), timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            log_path.write_text(
-                note + "\n" + _timeout_dump("mac_only_tests pytest", cmd, exc)
+
+        def run_group(paths: list[str], log_name: str, marker: bool = False):
+            if not paths:
+                return "skip", "no test files", "", []
+            log_path = ctx.artifact_path(log_name)
+            cmd = [
+                sys.executable,
+                "-m",
+                "pytest",
+                *paths,
+                "-q",
+                "--no-header",
+                "-rfE",
+                "-o",
+                "faulthandler_timeout=600",
+                *parallel_args,
+            ]
+            if marker:
+                cmd.extend(["-m", "real_hf_cache or requires_network"])
+            try:
+                proc = _run_group_bounded(cmd, cwd=str(ctx.repo_root), timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                log_path.write_text(
+                    note + "\n" + _timeout_dump("mac_only_tests pytest", cmd, exc)
+                )
+                return "fail", f"exceeded {timeout}s", "", [str(log_path)]
+            log_path.write_text(note + "\n" + (proc.stdout or "") + (proc.stderr or ""))
+            summary = (
+                _last_summary_line(proc.stdout) or f"pytest exited {proc.returncode}"
             )
-            return StepResult(
-                self.name,
-                "fail",
-                f"{len(files)} files exceeded {timeout}s; {note}",
-                artifacts=[str(log_path)],
+            status = (
+                "pass"
+                if proc.returncode == 0
+                else "skip"
+                if proc.returncode == 5
+                else "fail"
             )
-        log_path.write_text(note + "\n" + (proc.stdout or "") + (proc.stderr or ""))
-        summary = _last_summary_line(proc.stdout) or f"pytest exited {proc.returncode}"
+            details = ""
+            if status == "fail":
+                failed = _extract_failed_lines(proc.stdout)
+                details = (
+                    "\n**Failed tests:**\n```\n" + "\n".join(failed[:30]) + "\n```"
+                )
+                if len(failed) > 30:
+                    details += f"\n…and {len(failed) - 30} more — see {log_path}"
+            return status, summary, details, [str(log_path)]
+
+        a = run_group(files, "mac-only-tests.log")
+        b = run_group(roster, "mac-only-roster-gated.log", marker=True)
+        statuses = {a[0], b[0]}
         status = (
-            "pass"
-            if proc.returncode == 0
-            else "skip"
-            if proc.returncode == 5
-            else "fail"
+            "fail" if "fail" in statuses else "pass" if "pass" in statuses else "skip"
         )
-        details = note
-        if status == "fail":
-            failed = _extract_failed_lines(proc.stdout)
-            details += "\n**Failed tests:**\n```\n" + "\n".join(failed[:30]) + "\n```"
-            if len(failed) > 30:
-                details += f"\n…and {len(failed) - 30} more — see {log_path}"
         return StepResult(
             self.name,
             status,
-            f"{summary} ({len(files)} files); {note}",
-            details=details,
-            artifacts=[str(log_path)],
+            f"{a[1]} ({len(files)} files); roster gated: {b[1]}; {note}",
+            details=note + a[2] + b[2],
+            artifacts=a[3] + b[3],
         )

@@ -31,6 +31,7 @@ def run(
         "run_attempt": attempt,
         "id": id,
         "path": path,
+        "status": "completed",
     }
 
 
@@ -175,3 +176,14 @@ def test_tests_from_another_workflow_do_not_satisfy_gate(monkeypatch, ctx):
     result = hosted_ci.HostedCIStep().run(ctx)
     assert result.status == "fail"
     assert "tests" in result.details
+
+
+def test_green_checks_wait_for_workflow(monkeypatch, ctx):
+    monkeypatch.setenv("PR_VALIDATE_HOSTED_CI_TIMEOUT_S", "0")
+    pending = run()
+    pending.update(status="in_progress", name="CI")
+    monkeypatch.setattr(hosted_ci, "_fetch_runs", lambda ctx: [pending])
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", lambda ctx: [check()])
+    result = hosted_ci.HostedCIStep().run(ctx)
+    assert result.status == "fail"
+    assert "workflow CI" in result.details

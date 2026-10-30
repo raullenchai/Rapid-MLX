@@ -337,8 +337,6 @@ def run_pipeline(
                 )
             try:
                 result = step.execute(ctx)
-            except (KeyboardInterrupt, SystemExit):
-                raise
             except BaseException as e:
                 result = StepResult(
                     step.name,
