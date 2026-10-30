@@ -274,12 +274,12 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
     revision = kwargs.pop("revision", None)
     model_path = resolve_vlm_checkpoint(model_name, revision=revision)
     with (model_path / "config.json").open(encoding="utf-8") as handle:
-        config = json.load(handle)
-    if not isinstance(config, dict):
+        disk_config = json.load(handle)
+    if not isinstance(disk_config, dict):
         raise ValueError("Model config must contain an object")
-    config = {**config, **(kwargs.get("model_config") or {})}
+    config = {**disk_config, **(kwargs.get("model_config") or {})}
     validate_model_code(config, trust_remote_code=trust)
-    validate_vlm_processor_code(model_path, config, trust_remote_code=trust)
+    validate_vlm_processor_code(model_path, disk_config, trust_remote_code=trust)
     if config.get("model_file"):
         validate_local_model_file(model_path, model_config=config)
     if config.get("model_type") == "kimi_k25" and not config.get("model_file"):

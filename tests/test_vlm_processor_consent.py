@@ -82,6 +82,22 @@ def test_mllm_refuses_before_execution_and_retries(tmp_path, monkeypatch, mllm_l
 
 
 @pytest.mark.requires_mlx
+def test_policy_processor_validation_uses_disk_config(tmp_path, monkeypatch):
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    write_model(tmp_path, "got")
+    loader = Mock()
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        load_vlm_with_policy(
+            tmp_path,
+            loader=loader,
+            model_config={"model_type": "qwen3_vl", "auto_map": None},
+        )
+    loader.assert_not_called()
+
+
+@pytest.mark.requires_mlx
 def test_inkling_refuses_before_loader(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
 
