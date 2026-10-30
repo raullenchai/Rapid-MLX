@@ -252,6 +252,7 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
         )
         from huggingface_hub.utils import RepositoryNotFoundError
 
+        from rapid_mlx.memory_budget import MetalPreflightError
         from rapid_mlx.model_aliases import DraftModelNotServableError
         from rapid_mlx.model_load_errors import (
             IncompatibleWeights,
@@ -277,10 +278,12 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
             chain.append(current)
             current = current.__cause__
 
-        # The four explicit load-boundary types are authoritative across the
+        # Explicit load-boundary types are authoritative across the
         # cause chain. A generic outer wrapper may mention memory or corruption
         # while merely relaying one of these more precise failures.
         for current in chain:
+            if isinstance(current, MetalPreflightError):
+                return "insufficient_memory"
             if isinstance(current, InvalidModelConfig):
                 return "invalid_config"
             if isinstance(current, TokenizerLoadFailed):
