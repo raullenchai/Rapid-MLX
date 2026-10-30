@@ -56,6 +56,19 @@ def test_local_sidecar_identity(tmp_path):
     assert _local_mtp_sidecar_for_served_model(args, REPO) == str(tmp_path)
 
 
+def test_local_sidecar_identity_when_profile_resolution_fails(tmp_path, monkeypatch):
+    import rapid_mlx.model_aliases as model_aliases
+
+    def fail(_original):
+        raise RuntimeError("profile resolution failed")
+
+    monkeypatch.setattr(model_aliases, "resolve_profile", fail)
+    args = _args(model=str(tmp_path), _original_alias=REPO)
+    assert _local_mtp_sidecar_for_served_model(args, REPO) == str(tmp_path)
+    args._original_alias = ALIAS
+    assert _local_mtp_sidecar_for_served_model(args, REPO) == REPO
+
+
 def test_normalize_uses_external_model_folder(tmp_path):
     args = _args(
         model=str(tmp_path),
