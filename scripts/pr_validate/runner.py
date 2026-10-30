@@ -27,7 +27,9 @@ from .steps.codex_review import CodexReviewStep
 from .steps.diff_coverage import DiffCoverageStep
 from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
+from .steps.hosted_ci import HostedCIStep
 from .steps.lint import LintStep
+from .steps.mac_only_tests import MacOnlyTestsStep
 from .steps.review_vocabulary import ReviewVocabularyStep
 from .steps.sdk_env_check import SDKEnvCheckStep
 from .steps.stress_e2e_bench import StressE2EBenchStep
@@ -61,16 +63,17 @@ STAGE_STEPS: dict[str, list[Step]] = {
     "checks": [
         LintStep(),
         TargetedTestsStep(),
-        FullUnitStep(),
-        # Advisory patch coverage ends checks before gpu; it never gates.
-        DiffCoverageStep(),
+        MacOnlyTestsStep(),
+        HostedCIStep(),
     ],
     "gpu": [StressE2EBenchStep()],
 }
+NIGHTLY_CHECK_STEPS: list[Step] = [FullUnitStep(), DiffCoverageStep()]
 STEPS: list[Step] = [step for name in STAGE_NAMES for step in STAGE_STEPS[name]]
 STEP_STAGE: dict[str, str] = {
     step.name: name for name, stage_steps in STAGE_STEPS.items() for step in stage_steps
 }
+STEP_STAGE.update({step.name: "checks" for step in NIGHTLY_CHECK_STEPS})
 
 
 def stage_of(name: str) -> str:
@@ -139,6 +142,7 @@ def run_pipeline(
     body_only: bool = False,
     queue_on_success: bool = False,
     stage: str = "",
+    local_full_suite: bool = False,
 ) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
 
@@ -203,7 +207,13 @@ def run_pipeline(
     if body_only:
         pipeline = [FetchStep(), CLDescriptionQualityStep()]
     else:
-        pipeline = STEPS if steps is None else steps
+        pipeline = list(STEPS if steps is None else steps)
+        if steps is None and local_full_suite:
+            gpu_index = next(
+                (i for i, s in enumerate(pipeline) if stage_of(s.name) == "gpu"),
+                len(pipeline),
+            )
+            pipeline[gpu_index:gpu_index] = NIGHTLY_CHECK_STEPS
         if stage:
             selected = {"admit", stage}
             pipeline = [
@@ -401,7 +411,7 @@ def run_pipeline(
         from .queue_ready import queue_validated_head
 
         try:
-            queue_validated_head(ctx, [step.name for step in STEPS])
+            queue_validated_head(ctx, [step.name for step in pipeline])
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
             print(f"Queue handoff stopped: {error}", file=sys.stderr)
             return 1

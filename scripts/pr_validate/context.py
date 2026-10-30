@@ -192,6 +192,7 @@ class Context:
 # inherit them as ambient state (#4984), and ``--queue-on-success`` refuses to
 # run when any of them is set.
 STEP_OPT_OUT_ENV_VARS = (
+    "PR_VALIDATE_NO_HOSTED_CI",
     "PR_VALIDATE_SKIP_DESC",
     "PR_VALIDATE_NO_STRESS",
     "PR_VALIDATE_NO_CODEX",

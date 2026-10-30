@@ -168,8 +168,8 @@ def test_stage_order_and_mapping():
         "codex_review",
         "lint",
         "targeted_tests",
-        "full_unit",
-        "diff_coverage",
+        "mac_only_tests",
+        "hosted_ci",
         "stress_e2e_bench",
     ]
     assert all(stage_of(step.name) in STAGE_NAMES for step in STEPS)
@@ -181,7 +181,7 @@ def test_stage_order_and_mapping():
     [
         ("admit", []),
         ("review", ["codex_review"]),
-        ("checks", ["lint", "targeted_tests", "full_unit", "diff_coverage"]),
+        ("checks", ["lint", "targeted_tests", "mac_only_tests", "hosted_ci"]),
         ("gpu", ["sdk_env_check", "stress_e2e_bench"]),
     ],
 )
@@ -1555,3 +1555,44 @@ def test_cli_fail_fast_resolution(monkeypatch, env, args, expected):
     )
     assert pr_validate.main(["42", *args]) == 0
     assert calls[0]["fail_fast"] is expected
+
+
+def test_cli_local_full_suite(monkeypatch):
+    from scripts.pr_validate import pr_validate
+
+    calls = []
+    monkeypatch.setattr(
+        pr_validate, "run_pipeline", lambda *a, **kw: calls.append(kw) or 0
+    )
+    assert pr_validate.main(["42", "--local-full-suite"]) == 0
+    assert calls[0]["local_full_suite"] is True
+
+
+def test_local_full_suite_inserts_nightly_checks(monkeypatch, tmp_path):
+    from scripts.pr_validate import runner
+
+    captured = []
+    monkeypatch.setattr(
+        runner,
+        "Context",
+        lambda **kw: __import__(
+            "scripts.pr_validate.context", fromlist=["Context"]
+        ).Context(**kw),
+    )
+    monkeypatch.setattr(
+        runner,
+        "NIGHTLY_CHECK_STEPS",
+        [_FakeStep("full_unit", "pass"), _FakeStep("diff_coverage", "pass")],
+    )
+    monkeypatch.setattr(
+        runner,
+        "STEPS",
+        [_FakeStep("hosted_ci", "pass"), _FakeStep("stress_e2e_bench", "pass")],
+    )
+    monkeypatch.setattr(
+        runner,
+        "render_scorecard",
+        lambda ctx, **kw: captured.extend(r.name for r in ctx.results) or "",
+    )
+    assert runner.run_pipeline(42, local_full_suite=True) == 0
+    assert captured == ["hosted_ci", "full_unit", "diff_coverage", "stress_e2e_bench"]

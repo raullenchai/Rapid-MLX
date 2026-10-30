@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 
+from .context import env_truthy
 from .runner import STAGE_NAMES, run_pipeline
 
 
@@ -89,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
             "Never retries a previously queued PR; incompatible with partial runs."
         ),
     )
+    parser.add_argument(
+        "--local-full-suite",
+        action="store_true",
+        help="also run the full local unit suite and the advisory diff coverage; for nightly runs — the default relies on hosted CI for these",
+    )
     args = parser.parse_args(argv)
     fail_fast = not args.no_fail_fast and os.environ.get(
         "PR_VALIDATE_FAIL_FAST", ""
@@ -104,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         body_only=args.body_only,
         queue_on_success=args.queue_on_success,
         stage=args.stage,
+        local_full_suite=args.local_full_suite
+        or env_truthy("PR_VALIDATE_LOCAL_FULL_SUITE"),
     )
 
 
