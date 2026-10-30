@@ -81,6 +81,11 @@ DEFAULT_STRESS_TIMEOUT_S = 900
 RAM_HEADROOM_GB = 8.0  # leave this much free for the OS + model load spike
 
 
+def _ctx_log(ctx):
+    log = getattr(ctx, "run_log", None)
+    return log if callable(log) else lambda _: None
+
+
 @dataclass
 class ModelChoice:
     family: str
@@ -108,16 +113,17 @@ class StressE2EBenchStep(Step):
         return ctx.blast_radius == "high"
 
     def run(self, ctx: Context) -> StepResult:
+        log = _ctx_log(ctx)
         key = gpu_cache.cache_key(ctx)
         cached = gpu_cache.load(key, ctx) if key else None
         if cached:
             return cached
-        with hold_gpu_lock(gpu_lock_path(), log=ctx.run_log) as lock:
+        with hold_gpu_lock(gpu_lock_path(), log=log) as lock:
             cached = gpu_cache.load(key, ctx) if key else None
             result = cached if cached else self._run_matrix(ctx)
         description = lock.describe()
         result.details += "\n\n" + description
-        ctx.run_log(description)
+        log(description)
         if key and not cached and result.status == "pass":
             gpu_cache.store(key, ctx, result)
         return result

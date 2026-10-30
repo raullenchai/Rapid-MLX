@@ -14,6 +14,12 @@ from .base import StepResult
 from .context import env_truthy
 
 
+def _log(ctx, msg: str) -> None:
+    log = getattr(ctx, "run_log", None)
+    if callable(log):
+        log(msg)
+
+
 def _git(repo_root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],
@@ -48,18 +54,20 @@ def _cache_dir(ctx) -> Path | None:
 
 
 def cache_key(ctx) -> str | None:
+    head_sha = getattr(ctx, "head_sha", "") or ""
+    base_sha = getattr(ctx, "base_sha", "") or ""
     if env_truthy("PR_VALIDATE_NO_GPU_CACHE"):
-        ctx.run_log("GPU cache disabled by PR_VALIDATE_NO_GPU_CACHE")
+        _log(ctx, "GPU cache disabled by PR_VALIDATE_NO_GPU_CACHE")
         return None
-    if not re.fullmatch(r"[0-9a-f]{40}", ctx.head_sha):
-        ctx.run_log("GPU cache disabled: invalid head SHA")
+    if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        _log(ctx, "GPU cache disabled: invalid head SHA")
         return None
     head, clean = _repo_state(ctx.repo_root)
     if not head or not clean:
-        ctx.run_log("GPU cache disabled: repository state is dirty or unavailable")
+        _log(ctx, "GPU cache disabled: repository state is dirty or unavailable")
         return None
     if _cache_dir(ctx) is None:
-        ctx.run_log("GPU cache disabled: git common directory unavailable")
+        _log(ctx, "GPU cache disabled: git common directory unavailable")
         return None
     package = Path(__file__).parent
     try:
@@ -70,12 +78,12 @@ def cache_key(ctx) -> str | None:
             (package / "steps/stress_e2e_bench.py").read_bytes()
         ).hexdigest()
     except OSError as exc:
-        ctx.run_log(f"GPU cache disabled: {exc}")
+        _log(ctx, f"GPU cache disabled: {exc}")
         return None
     data = {
         "schema": 1,
-        "head_sha": ctx.head_sha,
-        "base_sha": ctx.base_sha,
+        "head_sha": head_sha,
+        "base_sha": base_sha,
         "repo_head": head,
         "registry": registry,
         "step": step,
@@ -85,6 +93,7 @@ def cache_key(ctx) -> str | None:
 
 
 def load(key, ctx) -> StepResult | None:
+    head_sha = getattr(ctx, "head_sha", "") or ""
     directory = _cache_dir(ctx)
     if directory is None:
         return None
@@ -93,7 +102,7 @@ def load(key, ctx) -> StepResult | None:
         if (
             data["schema"] != 1
             or data["key"] != key
-            or data["head_sha"] != ctx.head_sha
+            or data["head_sha"] != head_sha
             or data["status"] != "pass"
         ):
             return None
@@ -111,7 +120,7 @@ def load(key, ctx) -> StepResult | None:
         return StepResult(
             name="stress_e2e_bench",
             status="pass",
-            summary=f"cached pass for head {ctx.head_sha[:12]}: {data['summary']}",
+            summary=f"cached pass for head {head_sha[:12]}: {data['summary']}",
             details=f"Reused the passing gpu result recorded at {data['recorded_at']} for this exact head and config (set PR_VALIDATE_NO_GPU_CACHE=1 to force a fresh run).\n\n{data['details']}",
             findings=data["findings"],
             artifacts=data["artifacts"],
@@ -129,7 +138,7 @@ def store(key, ctx, result: StepResult) -> None:
     data = {
         "schema": 1,
         "key": key,
-        "head_sha": ctx.head_sha,
+        "head_sha": getattr(ctx, "head_sha", "") or "",
         "status": "pass",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "summary": result.summary,
@@ -146,7 +155,7 @@ def store(key, ctx, result: StepResult) -> None:
             json.dump(data, f)
         os.replace(tmp, directory / f"{key}.json")
     except OSError as exc:
-        ctx.run_log(f"warning: could not store GPU cache: {exc}")
+        _log(ctx, f"warning: could not store GPU cache: {exc}")
     finally:
         if tmp is not None:
             try:

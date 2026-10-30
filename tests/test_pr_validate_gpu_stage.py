@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -138,6 +139,19 @@ def test_matrix_holds_lock(setup, monkeypatch):
 
     monkeypatch.setattr(step, "_run_matrix", matrix)
     assert "shared lock" in step.run(ctx).details
+
+
+def test_matrix_with_minimal_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    monkeypatch.setenv("PR_VALIDATE_GPU_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("PR_VALIDATE_NO_GPU_CACHE", raising=False)
+    ctx = types.SimpleNamespace(repo_root=tmp_path, base_sha="0" * 40)
+    step = StressE2EBenchStep()
+    result = StepResult(name=step.name, status="pass", summary="ok")
+    monkeypatch.setattr(step, "_run_matrix", lambda _: result)
+
+    assert step.run(ctx) is result
+    assert not (tmp_path / "cache").exists()
 
 
 def test_cache_pass_and_miss_conditions(setup, monkeypatch):
