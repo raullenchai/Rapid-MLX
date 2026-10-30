@@ -8,6 +8,13 @@
         "revision": "e02c9eada7ce7416798af36b190a8a2dd2ecd566",
         "allow_patterns": ["voices/*.safetensors"]
       }
+    ],
+    "moss_tts_nano": [
+      {
+        "repo_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+        "revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+        "allow_patterns": ["config.json", "model.safetensors.index.json", "model-00001-of-00001.safetensors"]
+      }
     ]
   },
 
@@ -83,7 +90,7 @@
     "revision": "b2d0a13aa7cfff0a06d9acb247ae91c8f19a6d75",
     "family": "chatterbox",
     "default_voice": "default",
-    "notes": "Multilingual expressive TTS. Voice cloning via reference audio."
+    "notes": "Chatterbox Turbo (fp16): English-only expressive TTS. Optional voice cloning via reference audio."
   },
   "chatterbox-4bit": {
     "type": "tts",
@@ -118,6 +125,31 @@
     "family": "voxcpm",
     "default_voice": "default",
     "notes": "English (experimental) TTS (CPM-based). WARNING: Chinese is currently BROKEN in this MLX port — Chinese input produces Thai-script gibberish plus long runaway generation, so do NOT use voxcpm for Chinese. For Chinese TTS use `f5-tts-zh` (EN+ZH, cloneable) or `qwen3-tts` (named Chinese speakers) instead. English-only is usable but best-effort; report upstream if synth fails."
+  },
+
+  "voxcpm2": {
+    "type": "tts",
+    "hf_id": "mlx-community/VoxCPM2-8bit",
+    "revision": "d52725898a0675703f7f9ddc5a4d1a3cdbb99032",
+    "family": "voxcpm",
+    "default_voice": "default",
+    "notes": "OpenBMB VoxCPM2 2B (8-bit, Apache-2.0). 48 kHz multilingual TTS (30 languages including Chinese and English) with no named speakers (voice=default). Works for Chinese, unlike ``voxcpm``."
+  },
+  "voxcpm2-8bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/VoxCPM2-8bit",
+    "revision": "d52725898a0675703f7f9ddc5a4d1a3cdbb99032",
+    "family": "voxcpm",
+    "default_voice": "default",
+    "notes": "Explicit 8-bit alias for ``voxcpm2`` — same HF id."
+  },
+  "moss-tts-nano": {
+    "type": "tts",
+    "hf_id": "mlx-community/MOSS-TTS-Nano-100M",
+    "revision": "229a9c51bb0ffff6fd0dbe53b5bf0c441e438a79",
+    "family": "moss_tts_nano",
+    "default_voice": "default",
+    "notes": "MOSS-TTS-Nano 100M (Apache-2.0). Tiny 48 kHz multilingual TTS (20 languages including Chinese and English) that runs faster than real time. Uses its built-in voice (voice=default); reference-audio cloning is not exposed."
   },
 
   "dia": {
@@ -381,5 +413,53 @@
     "family": "sensevoice",
     "languages": "zh,yue,ja,ko,en",
     "notes": "Explicit long-form alias for ``sensevoice`` — same HF id."
+  },
+  "granite-speech": {
+    "type": "stt",
+    "hf_id": "ibm-granite/granite-speech-5.0-470m-turboctc",
+    "revision": "1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+    "family": "granite_speech5_ctc",
+    "languages": "en,fr,de,es,pt,it,ja",
+    "notes": "IBM Granite Speech 5.0 470M TurboCTC (Apache-2.0). Non-autoregressive CTC: very fast, with punctuated and capitalized output. English, French, German, Spanish, Portuguese, Italian and Japanese. Chinese is not supported."
+  },
+  "granite-speech-5.0-470m-turboctc": {
+    "type": "stt",
+    "hf_id": "ibm-granite/granite-speech-5.0-470m-turboctc",
+    "revision": "1dd23f46f6d4e6eae2531982ba2e33220086dd97",
+    "family": "granite_speech5_ctc",
+    "languages": "en,fr,de,es,pt,it,ja",
+    "notes": "Long-form alias for ``granite-speech`` — same HF id."
+  },
+  "firered-asr2": {
+    "type": "stt",
+    "hf_id": "mlx-community/FireRedASR2-AED-mlx",
+    "revision": "f3212eacfa49b851130b97c63653c8e06ee09bdb",
+    "family": "fireredasr2",
+    "languages": "zh,en",
+    "notes": "FireRedASR2-AED (Apache-2.0), MLX safetensors conversion. Mandarin-first ASR with strong Chinese dialect accuracy and Mandarin/English code-switching. Output is lowercase without punctuation."
+  },
+  "fireredasr2-aed": {
+    "type": "stt",
+    "hf_id": "mlx-community/FireRedASR2-AED-mlx",
+    "revision": "f3212eacfa49b851130b97c63653c8e06ee09bdb",
+    "family": "fireredasr2",
+    "languages": "zh,en",
+    "notes": "Long-form alias for ``firered-asr2`` — same HF id."
+  },
+  "nemotron-asr": {
+    "type": "stt",
+    "hf_id": "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+    "revision": "e550040c0478027ed679b2b6b0d055502c103663",
+    "family": "nemotron_asr",
+    "languages": "multilingual",
+    "notes": "NVIDIA Nemotron 3.5 ASR Streaming 0.6B (OpenMDW-1.1). Served as a regular whole-file transcription model; incremental streaming is not exposed. Punctuated output across 40 locales; for Chinese prefer qwen3-asr or firered-asr2."
+  },
+  "nemotron-3.5-asr-streaming-0.6b": {
+    "type": "stt",
+    "hf_id": "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+    "revision": "e550040c0478027ed679b2b6b0d055502c103663",
+    "family": "nemotron_asr",
+    "languages": "multilingual",
+    "notes": "Long-form alias for ``nemotron-asr`` — same HF id."
   }
 }

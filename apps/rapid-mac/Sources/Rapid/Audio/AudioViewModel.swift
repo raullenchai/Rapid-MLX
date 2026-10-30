@@ -354,6 +354,27 @@ final class AudioViewModel {
                 summary: "Fast Chinese, Cantonese, Japanese, Korean, and English recognition with sound-event tags.",
                 isRecommended: false
             )
+        case "granite-speech", "granite-speech-5.0-470m-turboctc":
+            return .init(
+                displayName: "Granite Speech 5.0",
+                badge: "fast",
+                summary: "Very fast transcription with punctuation for English, French, German, Spanish, Portuguese, Italian, and Japanese. Chinese is not supported.",
+                isRecommended: false
+            )
+        case "firered-asr2", "fireredasr2-aed":
+            return .init(
+                displayName: "FireRedASR2",
+                badge: "Chinese",
+                summary: "High-accuracy Mandarin and Chinese dialect transcription with English code-switching. Output has no punctuation.",
+                isRecommended: false
+            )
+        case "nemotron-asr", "nemotron-3.5-asr-streaming-0.6b":
+            return .init(
+                displayName: "Nemotron ASR 0.6B",
+                badge: "40 languages",
+                summary: "Fast multilingual transcription with punctuation across 40 languages.",
+                isRecommended: false
+            )
         default:
             let familyName = family?
                 .replacingOccurrences(of: "_", with: " ")
@@ -416,11 +437,13 @@ final class AudioViewModel {
 
     private static func transcriptionAliasPriority(_ alias: String) -> Int {
         switch alias.lowercased() {
-        case "whisper-large-v3", "parakeet", "parakeet-v3", "qwen3-asr", "sensevoice":
+        case "whisper-large-v3", "parakeet", "parakeet-v3", "qwen3-asr", "sensevoice",
+             "granite-speech", "firered-asr2", "nemotron-asr":
             return 0
         case "whisper", "whisper-1", "parakeet-tdt-0.6b",
              "parakeet-tdt-0.6b-v2", "parakeet-tdt-0.6b-v3",
-             "qwen3-asr-1.7b", "sensevoice-small":
+             "qwen3-asr-1.7b", "sensevoice-small", "granite-speech-5.0-470m-turboctc",
+             "fireredasr2-aed", "nemotron-3.5-asr-streaming-0.6b":
             return 2
         default:
             return 1
