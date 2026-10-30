@@ -52,6 +52,22 @@ def test_lanes_overlap(repo_root_cwd):
     )
 
 
+def test_failing_lane_records_remaining_steps_as_cancelled(repo_root_cwd, monkeypatch):
+    monkeypatch.setattr(runner, "_terminate_child_processes", lambda: None)
+    ran = []
+
+    def action(name):
+        ran.append(name)
+        return result(name, "fail" if name == "lint" else "pass")
+
+    names = ("lint", "targeted_tests", "mac_only_tests")
+    assert runner.run_pipeline(1, steps=[FakeStep(n, action) for n in names]) == 1
+    assert ran == ["lint"]
+    rows = repo_root_cwd.results
+    assert [row.name for row in rows] == list(names)
+    assert all(row.status == "skip" and "cancelled" in row.summary for row in rows[1:])
+
+
 @pytest.mark.parametrize("failing_lane", ["checks", "review"])
 def test_cancellation_stops_subprocess_and_remaining_steps(
     repo_root_cwd, monkeypatch, failing_lane

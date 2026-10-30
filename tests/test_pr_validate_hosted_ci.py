@@ -187,3 +187,43 @@ def test_green_checks_wait_for_workflow(monkeypatch, ctx):
     result = hosted_ci.HostedCIStep().run(ctx)
     assert result.status == "fail"
     assert "workflow CI" in result.details
+
+
+def test_pull_request_failure_not_superseded_by_newer_push(monkeypatch, ctx):
+    pr = run()
+    pr.update(event="pull_request")
+    push = run(suite=2, number=2, id=2)
+    push.update(event="push")
+    failed = check(conclusion="failure")
+    passed = check(id=2)
+    passed["check_suite"] = {"id": 2}
+    monkeypatch.setattr(hosted_ci, "_fetch_runs", lambda ctx: [pr, push])
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", lambda ctx: [failed, passed])
+    assert hosted_ci.HostedCIStep().run(ctx).status == "fail"
+
+
+def test_push_tests_cannot_satisfy_pull_request_gate(monkeypatch, ctx):
+    monkeypatch.setenv("PR_VALIDATE_HOSTED_CI_TIMEOUT_S", "0")
+    pr = run()
+    pr.update(event="pull_request")
+    push = run(suite=2, number=2, id=2)
+    push.update(event="push")
+    passed = check(id=2)
+    passed["check_suite"] = {"id": 2}
+    monkeypatch.setattr(hosted_ci, "_fetch_runs", lambda ctx: [pr, push])
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", lambda ctx: [passed])
+    assert "tests" in hosted_ci.HostedCIStep().run(ctx).details
+
+
+def test_failed_workflow_without_checks_fails_immediately(monkeypatch, ctx):
+    failed = run()
+    failed.update(
+        name="CI", conclusion="startup_failure", html_url="https://example.test/run"
+    )
+    monkeypatch.setattr(hosted_ci, "_fetch_runs", lambda ctx: [failed])
+    monkeypatch.setattr(
+        hosted_ci, "_fetch_checks", lambda ctx: pytest.fail("fetched checks")
+    )
+    result = hosted_ci.HostedCIStep().run(ctx)
+    assert result.status == "fail"
+    assert "CI" in result.details and "https://example.test/run" in result.details

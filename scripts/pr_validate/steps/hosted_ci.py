@@ -63,23 +63,41 @@ class HostedCIStep(Step):
                 )
             runs = {}
             for run in _fetch_runs(ctx):
-                workflow_id = run["workflow_id"]
-                if workflow_id not in runs or (
+                key = (run["workflow_id"], run.get("event"))
+                if key not in runs or (
                     run["run_number"],
                     run["run_attempt"],
                     run["id"],
                 ) > (
-                    runs[workflow_id]["run_number"],
-                    runs[workflow_id]["run_attempt"],
-                    runs[workflow_id]["id"],
+                    runs[key]["run_number"],
+                    runs[key]["run_attempt"],
+                    runs[key]["id"],
                 ):
-                    runs[workflow_id] = run
+                    runs[key] = run
+            failed_runs = [
+                run
+                for run in runs.values()
+                if run.get("status") == "completed"
+                and run.get("conclusion") in _FAILURES
+            ]
+            if failed_runs:
+                return StepResult(
+                    self.name,
+                    "fail",
+                    "hosted CI failed",
+                    details="\n".join(
+                        f"- {run.get('name') or run['workflow_id']}: {run.get('html_url', '')}"
+                        for run in failed_runs
+                    ),
+                )
             suites = {run["check_suite_id"] for run in runs.values()}
-            ci_suites = {
-                run["check_suite_id"]
+            ci_runs = [
+                run
                 for run in runs.values()
                 if run["path"].split("@", 1)[0] == ".github/workflows/ci.yml"
-            }
+            ]
+            pr_runs = [run for run in ci_runs if run.get("event") == "pull_request"]
+            ci_suites = {run["check_suite_id"] for run in (pr_runs or ci_runs)}
             latest = {}
             for check in _fetch_checks(ctx):
                 if (check.get("app") or {}).get("slug") != "github-actions":

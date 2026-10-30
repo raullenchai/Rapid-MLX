@@ -366,7 +366,6 @@ def run_pipeline(
                 print_result(step, result)
             if terminate:
                 _terminate_child_processes()
-                break
 
     if run_serial(serial):
         threads = [
