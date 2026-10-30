@@ -6144,7 +6144,7 @@ def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
                 served_model_name=getattr(args, "served_model_name", None) or alias,
                 default_max_tokens=getattr(args, "max_tokens", None) or 2048,
                 enable_prefix_cache=False,
-                tensorfold_lanes=None,
+                tensorfold_lanes=1,
                 **options,
             )
             try:

@@ -131,7 +131,7 @@ def _capture_runtime_exit():
     output = io.StringIO()
     try:
         with (
-            contextlib.redirect_stdout(Tee(sys.stdout, output)),
+            contextlib.redirect_stdout(Tee(sys.stderr, output)),
             contextlib.redirect_stderr(Tee(sys.stderr, output)),
         ):
             yield

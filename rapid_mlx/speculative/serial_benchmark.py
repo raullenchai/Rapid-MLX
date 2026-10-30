@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -124,12 +125,20 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
         prefill_chunk_size=prefill,
     )
 
+    closed = False
+
     def close():
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+
         def cleanup():
             import mlx.core as mx
 
             handle.token_stream = None
             handle.tokenizer = None
+            gc.collect()
             mx.clear_cache()
 
         _dflash_executor.submit(cleanup).result()
@@ -241,8 +250,10 @@ def tensorfold_runtime_handle(
 ):
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tensorfold-bench")
 
+    holder = {"backend": backend, "provider": provider}
+
     def token_stream(prompt_ids, n):
-        iterator = provider._outputs(
+        iterator = holder["provider"]._outputs(
             "",
             prompt_token_ids=prompt_ids,
             ignore_eos=True,
@@ -260,13 +271,32 @@ def tensorfold_runtime_handle(
         finally:
             iterator.close()
 
+    closed = False
+
     def close():
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+
+        def cleanup():
+            import mlx.core as mx
+
+            try:
+                holder["backend"].close()
+            finally:
+                handle.token_stream = None
+                handle.tokenizer = None
+                holder.clear()
+                gc.collect()
+                mx.clear_cache()
+
         try:
-            backend.close()
+            executor.submit(cleanup).result()
         finally:
             executor.shutdown(wait=True)
 
-    return SerialRuntimeHandle(
+    handle = SerialRuntimeHandle(
         lane=lane,
         tokenizer=backend._app.tokenizer,
         executor=executor,
@@ -283,6 +313,7 @@ def tensorfold_runtime_handle(
         context_length=None,
         close=close,
     )
+    return handle
 
 
 def tensorfold_live_max_draft(backend) -> int:

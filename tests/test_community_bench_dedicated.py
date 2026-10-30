@@ -80,7 +80,20 @@ def test_adapter_counts_and_closes():
     assert closed == [True]
 
 
-def test_tensorfold_handle_embedded_head():
+def test_tensorfold_handle_embedded_head(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from rapid_mlx.speculative import serial_benchmark
+
+    events = []
+    mlx = ModuleType("mlx")
+    core = ModuleType("mlx.core")
+    core.clear_cache = lambda: events.append("cache")
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    monkeypatch.setattr(serial_benchmark.gc, "collect", lambda: events.append("gc"))
     from rapid_mlx.speculative.serial_benchmark import tensorfold_runtime_handle
 
     closed = []
@@ -116,7 +129,10 @@ def test_tensorfold_handle_embedded_head():
     assert language["speculative_decoding"]["assistant_source"] == "embedded_head"
     assert "draft_model_identity_digest" not in language["speculative_decoding"]
     handle.close()
+    handle.close()
     assert closed == [True]
+    assert handle.tokenizer is None and handle.token_stream is None
+    assert events == ["gc", "cache"]
 
 
 def test_runtime_capture_delegates_stream_attributes():
@@ -124,7 +140,7 @@ def test_runtime_capture_delegates_stream_attributes():
 
     from rapid_mlx.community_bench.acceleration import _capture_runtime_exit
 
-    original = sys.stdout
+    original = sys.stderr
     with _capture_runtime_exit():
         assert sys.stdout.isatty() == original.isatty()
         assert sys.stdout.fileno() == original.fileno()
@@ -195,7 +211,9 @@ def test_runtime_exit_preserves_message(capsys):
     ):
         print("load refused")
         raise SystemExit(1)
-    assert "load refused" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "load refused" in captured.err
 
 
 @pytest.fixture
@@ -518,3 +536,31 @@ def test_baseline_uses_plain_loader(fake_dedicated, monkeypatch):
             "example", archive=fake_dedicated.archive, acceleration=request
         )
     assert fake_dedicated.closed == []
+
+
+def test_tensorfold_loader_pins_one_lane(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.speculative import serial_benchmark, tensorfold_qwen27_server
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
+
+    monkeypatch.setenv(LANES_ENV, "4")
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "tensorfold_dflash")
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda *a: None)
+    monkeypatch.setattr(cli, "_download_tensorfold_artifacts", lambda *a: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(
+        tensorfold_qwen27_server,
+        "load_tensorfold_backend",
+        lambda **kwargs: calls.append(kwargs) or (object(), object()),
+    )
+    monkeypatch.setattr(
+        serial_benchmark, "tensorfold_live_max_draft", lambda backend: 1
+    )
+    monkeypatch.setattr(
+        serial_benchmark, "tensorfold_runtime_handle", lambda *a, **k: "handle"
+    )
+    launch = cli.prepare_dedicated_runtime(SimpleNamespace(model="test-model"))
+    assert launch.load() == "handle"
+    assert calls[0]["tensorfold_lanes"] == 1

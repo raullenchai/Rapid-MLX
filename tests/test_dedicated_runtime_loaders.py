@@ -81,8 +81,13 @@ def test_runtime_handles_read_live_facts(monkeypatch):
     monkeypatch.setitem(sys.modules, server.__name__, server)
     monkeypatch.setitem(sys.modules, common.__name__, common)
     monkeypatch.setattr(serial, "cached_snapshot_path", lambda repo, revision: "/draft")
+    events = []
+    monkeypatch.setattr(serial.gc, "collect", lambda: events.append("gc"))
     monkeypatch.setattr(
-        sys.modules["mlx.core"], "clear_cache", lambda: None, raising=False
+        sys.modules["mlx.core"],
+        "clear_cache",
+        lambda: events.append("cache"),
+        raising=False,
     )
     runtime = SimpleNamespace(
         drafter=SimpleNamespace(config=SimpleNamespace(block_size=8)),
@@ -116,7 +121,9 @@ def test_runtime_handles_read_live_facts(monkeypatch):
     assert handles[2].speculative["draft_path"] == "/sidecar"
     for handle in handles:
         handle.close()
-        assert handle.tokenizer is None
+        handle.close()
+        assert handle.tokenizer is None and handle.token_stream is None
+    assert events == ["gc", "cache"] * 3
     executor.shutdown()
 
 
