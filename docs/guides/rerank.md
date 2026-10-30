@@ -45,6 +45,9 @@ Its `relevance_score` is that cosine similarity mapped to 0 to 1, as
 `(1 + cosine) / 2`; to compare with tools that report the raw cosine, use
 `2 * relevance_score - 1`. Its query is
 limited to 512 tokens and `--rerank-max-length` applies to each document.
+jina-reranker-v3.5 (official MLX checkpoint `jinaai/jina-reranker-v3.5-mlx`)
+uses the same listwise scoring and runs its interleaved sliding-window attention
+layers as configured.
 
 ## Request and Response
 

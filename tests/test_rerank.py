@@ -1052,6 +1052,131 @@ def test_jina_overflow_policy():
         engine.score("q" * 513, ["xa"])
 
 
+def _tiny_jina_config():
+    return {
+        "model_type": "qwen3",
+        "hidden_size": 32,
+        "num_hidden_layers": 3,
+        "intermediate_size": 64,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 8,
+        "rms_norm_eps": 1e-6,
+        "vocab_size": 64,
+        "max_position_embeddings": 128,
+        "rope_theta": 10000,
+        "tie_word_embeddings": True,
+        "use_sliding_window": True,
+        "sliding_window": 4,
+        "max_window_layers": 3,
+        "layer_types": ["sliding_attention", "full_attention", "sliding_attention"],
+    }
+
+
+def _manual_jina_backbone(backbone, ids, windows):
+    import mlx.core as mx
+
+    h = backbone.embed_tokens(ids)
+    positions = mx.arange(ids.shape[1])
+    q, k = positions[:, None], positions[None, :]
+    for layer, window in zip(backbone.layers, windows):
+        mask = k <= q
+        if window is not None:
+            mask = mask & (k > q - window)
+        h = layer(h, mask, None)
+    return backbone.norm(h)
+
+
+@pytest.mark.parametrize(
+    ("mode", "windows"),
+    [("hybrid", [4, None, 4]), ("disabled", [None] * 3), ("default", [None, 4, 4])],
+)
+def test_jina_layer_attention_masks(mode, windows):
+    import mlx.core as mx
+    from mlx_lm.models import qwen3
+
+    from rapid_mlx import rerank
+
+    config = _tiny_jina_config()
+    if mode == "disabled":
+        config["use_sliding_window"] = False
+    elif mode == "default":
+        del config["layer_types"]
+        config["max_window_layers"] = 1
+    mx.random.seed(42)
+    model_class, args_class = rerank._jina_model_classes(config)
+    model = model_class(args_class.from_dict(config))
+    ids = mx.array([list(range(12))])
+    actual = model.model(ids)
+    expected = _manual_jina_backbone(model.model, ids, windows)
+    assert mx.allclose(actual, expected, atol=1e-5).item()
+    if mode == "hybrid":
+        full = _manual_jina_backbone(model.model, ids, [None] * 3)
+        assert not mx.allclose(actual, full, atol=1e-5).item()
+    if mode == "disabled":
+        assert type(model.model) is qwen3.Qwen3Model
+
+
+def test_jina_invalid_layer_types():
+    from rapid_mlx import rerank
+
+    config = _tiny_jina_config()
+    config["layer_types"] = ["full_attention"]
+    with pytest.raises(ValueError, match="layer_types length"):
+        rerank._jina_model_classes(config)
+    config["layer_types"] = ["full_attention", "invalid", "full_attention"]
+    with pytest.raises(ValueError, match="layer_types entries"):
+        rerank._jina_model_classes(config)
+
+
+@pytest.mark.slow
+@pytest.mark.real_hf_cache
+def test_jina_v35_parity():
+    import json
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from rapid_mlx.rerank import RerankEngine
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/rerank/jina_reranker_v35_parity.json"
+        ).read_text()
+    )
+    try:
+        path = snapshot_download(
+            fixture["model"], revision=fixture["model_revision"], local_files_only=True
+        )
+    except (LocalEntryNotFoundError, OSError):
+        pytest.skip("Reference model snapshot is not cached")
+    engine = RerankEngine(path)
+    for case in fixture["cases"]:
+        documents = []
+        for doc in case["documents"]:
+            if isinstance(doc, str):
+                documents.append(doc)
+            else:
+                parts = fixture["long_parts"][doc["parts"]]
+                documents.append(
+                    " ".join(
+                        f"({i + 1}) {parts[i % len(parts)]}"
+                        for i in range(doc["repeat"] * len(parts))
+                    )
+                )
+        result = engine.score(case["query"], documents)
+        cosine = [2 * score - 1 for score in result.scores]
+        reference = case["reference_cosine"]
+        diff = max(abs(a - b) for a, b in zip(cosine, reference))
+        print(f"{case['name']}: max abs cosine diff = {diff:.6f}", flush=True)
+        assert result.prompt_tokens == case["prompt_tokens"]
+        assert sorted(range(len(cosine)), key=cosine.__getitem__) == sorted(
+            range(len(reference)), key=reference.__getitem__
+        )
+        assert diff <= 0.01
+
+
 @pytest.mark.parametrize("separate_projector", [False, True])
 def test_jina_loads_transformers_projector_names(
     monkeypatch, tmp_path, separate_projector
