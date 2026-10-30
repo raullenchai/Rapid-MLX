@@ -208,6 +208,10 @@ py_version_of() {
   "$1" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo "unknown"
 }
 
+usable_control_python() {
+  "$1" -c 'import sys, yaml; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1
+}
+
 resolve_python() {
   local candidate=""
   if [[ -n "${TRAIN_GATES_PYTHON:-}" ]]; then
@@ -216,18 +220,18 @@ resolve_python() {
       return 1
     fi
     candidate="${TRAIN_GATES_PYTHON}"
-  elif python3 -c 'import yaml' >/dev/null 2>&1; then
+  elif usable_control_python python3; then
     candidate="python3"
   elif [[ -x "$ROOT/.venv/bin/python" ]] \
-    && "$ROOT/.venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then
+    && usable_control_python "$ROOT/.venv/bin/python"; then
     candidate="$ROOT/.venv/bin/python"
   else
-    echo "ERROR: no interpreter with PyYAML found; set TRAIN_GATES_PYTHON (a python3.12 with pyyaml)" >&2
+    echo "ERROR: no Python >= 3.12 with PyYAML found; set TRAIN_GATES_PYTHON (a python3.12 with pyyaml)" >&2
     return 1
   fi
-  # HARD floor: pyproject's requires-python and the hosted matrix (3.12/3.13) never go below 3.12, and every gate venv is created FROM this
-  # interpreter — below the floor the package cannot even install, so this is
-  # an error (exit 2), not the 3.12 WARNING below.
+  # HARD floor: pyproject's requires-python and the hosted matrix (3.12/3.13) never go below 3.12,
+  # and every gate venv is created FROM this interpreter. Below the floor the package cannot
+  # install, so this is an error (exit 2), not the 3.12 WARNING below.
   if ! "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
     echo "ERROR: control interpreter $candidate is python $(py_version_of "$candidate"), below the 3.12 floor" >&2
     echo "       (pyproject requires-python >= 3.12; the hosted matrix is 3.12/3.13)." >&2
