@@ -507,6 +507,27 @@ enum FailureDiagnoser {
         return containsAny(value, mirrorSignals) ? .downloadSourceUnavailable : .downloadFailed
     }
 
+    nonisolated static func downloadFailureCause(raw: String, kind: FailureDiagnosis.Kind) -> DesktopFunnelReporter.DownloadFailureCause {
+        let value = raw.lowercased()
+        if containsAny(value, ["no space left on device", "insufficient disk", "not enough disk space"]) { return .diskFull }
+        if containsAny(value, ["sha256 mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt"]) { return .integrity }
+        if containsAny(value, ["not found on huggingface", "repository not found", "repositorynotfound", "entrynotfound", "revisionnotfound", "404 client error", "http 404", "status 404", " 404 "]) { return .notFound }
+        if value.contains("could not reach hugging face") { return .network }
+        if kind == .downloadSourceUnavailable { return .sourceUnavailable }
+        if containsAny(value, offlineSignals) || DownloadManager.isTransientDownloadError(value) { return .network }
+        return .other
+    }
+
+    nonisolated static func funnelEngineStartCause(for state: ServerState) -> DesktopFunnelReporter.EngineStartFailureCause {
+        guard case let .crashed(_, message) = state else { return .other }
+        switch engineFailureKind(raw: message) {
+        case .modelOutOfMemory: return .outOfMemory
+        case .modelLoadFailed: return .modelLoadFailed
+        case .engineNotRunning: return .engineNotRunning
+        default: return .other
+        }
+    }
+
     nonisolated static func modelLoadFailureKind(raw: String) -> FailureDiagnosis.Kind {
         let value = raw.lowercased()
         return containsAny(value, memorySignals) ? .modelOutOfMemory : .modelLoadFailed

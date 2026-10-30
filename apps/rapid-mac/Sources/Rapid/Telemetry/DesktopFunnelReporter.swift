@@ -3,7 +3,8 @@ import Foundation
 
 /// Sends identifier-free, aggregate milestones for the Desktop first-run
 /// funnel. The wire body is deliberately limited to app version + a closed
-/// milestone enum; no telemetry identity is read or created.
+/// milestone enum, with an optional closed failure cause and download source;
+/// no telemetry identity is read or created.
 actor DesktopFunnelReporter {
     struct FlowToken: Hashable, Sendable {
         let id: UUID
@@ -17,6 +18,32 @@ actor DesktopFunnelReporter {
         case engineReady = "engine_ready"
         case engineStartFailed = "engine_start_failed"
         case firstChatReply = "first_chat_reply"
+    }
+
+    nonisolated enum DownloadFailureCause: String, CaseIterable, Sendable, Equatable {
+        case network, diskFull = "disk_full", sourceUnavailable = "source_unavailable"
+        case notFound = "not_found", integrity, other
+    }
+
+    nonisolated enum DownloadSourceTag: String, CaseIterable, Sendable, Equatable {
+        case huggingface, mirror
+
+        init(_ source: DownloadManager.DownloadSource) {
+            switch source {
+            case .mirror: self = .mirror
+            case .huggingFace: self = .huggingface
+            }
+        }
+    }
+
+    nonisolated enum EngineStartFailureCause: String, CaseIterable, Sendable, Equatable {
+        case outOfMemory = "out_of_memory", modelLoadFailed = "model_load_failed"
+        case engineNotRunning = "engine_not_running", other
+    }
+
+    nonisolated enum FailureDetail: Sendable, Equatable {
+        case download(DownloadFailureCause, source: DownloadSourceTag?)
+        case engine(EngineStartFailureCause)
     }
 
     typealias Enabled = @Sendable () -> Bool
@@ -71,10 +98,11 @@ actor DesktopFunnelReporter {
     /// actor and can never delay a view or lifecycle transition.
     nonisolated static func enqueue(
         _ milestone: Milestone,
+        detail: FailureDetail? = nil,
         flowToken: FlowToken? = nil
     ) {
         Task.detached(priority: .utility) {
-            await shared.report(milestone, flowToken: flowToken)
+            await shared.report(milestone, detail: detail, flowToken: flowToken)
         }
     }
 
@@ -130,13 +158,14 @@ actor DesktopFunnelReporter {
     /// emitted; later manual starts, restarts, and model switches are inert.
     nonisolated static func enqueueEngineOutcomeIfArmed(
         _ milestone: Milestone,
-        alias: String
+        alias: String,
+        engineCause: EngineStartFailureCause? = nil
     ) {
         guard let flowToken = engineAttemptGate.consume(
             milestone: milestone,
             alias: alias
         ) else { return }
-        enqueue(milestone, flowToken: flowToken)
+        enqueue(milestone, detail: milestone == .engineStartFailed ? engineCause.map { .engine($0) } : nil, flowToken: flowToken)
     }
 
     /// Enrols only a genuinely new install. The empty cohort marker is local
@@ -156,7 +185,7 @@ actor DesktopFunnelReporter {
         }
     }
 
-    func report(_ milestone: Milestone, flowToken: FlowToken? = nil) async {
+    func report(_ milestone: Milestone, detail: FailureDetail? = nil, flowToken: FlowToken? = nil) async {
         guard FileManager.default.fileExists(atPath: cohortMarkerURL.path) else { return }
         if milestone != .firstChatReply {
             guard let flowToken,
@@ -172,7 +201,7 @@ actor DesktopFunnelReporter {
         // Claim before evaluating those gates so a later opt-in cannot turn a
         // later occurrence into a misleading "first" milestone.
         guard claimMarker(at: marker) else { return }
-        guard let request = Self.request(version: version, milestone: milestone) else { return }
+        guard let request = Self.request(version: version, milestone: milestone, detail: detail) else { return }
         // Read the synchronous latch last: evaluating the other gates may race
         // with (or itself observe) a Settings opt-out, which must still stop
         // transport after the milestone has been consumed.
@@ -180,13 +209,35 @@ actor DesktopFunnelReporter {
         await send(request)
     }
 
-    nonisolated static func request(version: String, milestone: Milestone) -> URLRequest? {
+    nonisolated static func request(version: String, milestone: Milestone, detail: FailureDetail? = nil) -> URLRequest? {
         struct Payload: Encodable {
             let v: String
             let m: String
+            let k: String?
+            let s: String?
         }
 
-        guard let body = try? JSONEncoder().encode(Payload(v: version, m: milestone.rawValue)),
+        let cause: String?
+        let source: String?
+        switch milestone {
+        case .modelDownloadFailed:
+            if case let .download(value, tag) = detail {
+                cause = value.rawValue
+                source = tag?.rawValue
+            } else {
+                cause = "other"
+                source = nil
+            }
+        case .engineStartFailed:
+            if case let .engine(value) = detail { cause = value.rawValue } else { cause = "other" }
+            source = nil
+        default:
+            cause = nil
+            source = nil
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let body = try? encoder.encode(Payload(v: version, m: milestone.rawValue, k: cause, s: source)),
               body.count <= maxBodyBytes else {
             return nil
         }

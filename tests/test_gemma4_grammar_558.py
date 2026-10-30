@@ -592,19 +592,20 @@ def _tokenizer_in_cache() -> bool:
     repo/revision was never fetched. Only a genuine ``str`` path counts as cached.
     Degrades to ``False`` (treat as not cached -> skip-eligible) if the hub helper
     is unavailable or raises — never masks a real load failure, since the ``tok``
-    fixture loads a present cache with ``local_files_only=True`` so a corrupt or
-    partial cache raises loudly (the test FAILS) rather than being skipped."""
+    fixture loads a complete cache with ``local_files_only=True`` so an unloadable
+    tokenizer fails rather than being skipped. Partial snapshots are skipped."""
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:  # pragma: no cover - very old hub
         return False
     try:
-        path = try_to_load_from_cache(
-            _TOKENIZER_MODEL, "tokenizer_config.json", revision=_TOKENIZER_REVISION
+        paths = (
+            try_to_load_from_cache(_TOKENIZER_MODEL, name, revision=_TOKENIZER_REVISION)
+            for name in ("tokenizer_config.json", "tokenizer.json")
         )
+        return all(isinstance(path, str) for path in paths)
     except Exception:  # pragma: no cover - defensive
         return False
-    return isinstance(path, str)
 
 
 @pytest.fixture(scope="module")
@@ -614,13 +615,14 @@ def tok():
     # offline-vs-corrupt decision is made entirely by cache presence, so there is no
     # live download to fail on a firewalled/offline CI and no wrapped-exception
     # classification to get wrong. NOT cached -> skip (genuinely unavailable);
-    # cached -> load with ``local_files_only=True`` so a partial/corrupt cache raises
-    # immediately (the test FAILS) instead of silently triggering a download.
+    # Both tokenizer files must be present: a partial snapshot can silently load a
+    # degenerate tokenizer. A complete but unloadable cache still fails on load.
     if not _tokenizer_in_cache():
         pytest.skip(
             f"tokenizer {_TOKENIZER_MODEL}@{_TOKENIZER_REVISION[:8]} not in the local "
             "HF cache — gemma4 enforcement tests are cache-only (no network). "
-            "Pre-cache the tokenizer to run them."
+            "The pinned snapshot may be PARTIAL (tokenizer.json missing); it must "
+            "be fully cached to run them."
         )
     return transformers.AutoTokenizer.from_pretrained(
         _TOKENIZER_MODEL, revision=_TOKENIZER_REVISION, local_files_only=True

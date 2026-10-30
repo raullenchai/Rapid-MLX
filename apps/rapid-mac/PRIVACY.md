@@ -205,10 +205,12 @@ directly initiated by that setup flow; a later manual start, restart, or model
 switch is not counted as an onboarding result. The first chat reply is counted
 even if it happens on a later launch.
 
-The request is `POST https://rapidmlx.com/api/desktop-funnel` with exactly
-`{"v":"<app version>","m":"<milestone>"}`. It contains no install ID, device,
-OS, chip, RAM, timestamp, model name, error text, query parameter, prompt, or
-response. The service keeps aggregate per-version counters only. It never
+The request body is `{"v":"<app version>","m":"<milestone>"}`. A failed milestone may add one cause from a fixed list as `k` —
+for `model_download_failed`: `network`, `disk_full`, `source_unavailable`, `not_found`, `integrity`, or `other`; for
+`engine_start_failed`: `out_of_memory`, `model_load_failed`, `engine_not_running`, or `other` — and, for a download, its source as `s`
+(`huggingface` or `mirror`, the Rapid-MLX mirror). Nothing else is sent. It contains no install ID, device,
+OS, chip, RAM, timestamp, model name, error text, file path, query parameter, prompt, or
+response. The service keeps aggregate per-version counters only (and, for failures, per cause and source). It never
 stores the IP address and does not derive or store a country for this endpoint.
 This measures aggregate first-run step conversion, not retention or individual
 paths.

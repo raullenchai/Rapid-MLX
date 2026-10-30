@@ -103,6 +103,7 @@ final class DownloadManager {
         fileprivate(set) var retryDelaySeconds: Int?
         fileprivate(set) var isStalled = false
         fileprivate(set) var failureKind: FailureDiagnosis.Kind?
+        fileprivate(set) var failureCause: DesktopFunnelReporter.DownloadFailureCause?
         /// Live handle to the HF cache-directory byte monitor, when
         /// one is running for this job. ``nil`` when the alias's HF
         /// path was unknown (so no cache dir to watch) or when the
@@ -152,6 +153,7 @@ final class DownloadManager {
             self.downloadEndpoint = downloadEndpoint
             self.retryDelaySeconds = nil
             self.failureKind = nil
+            self.failureCause = nil
             self.byteMonitor = nil
             self.lastProgressAt = Date()
             self.lastObservedBytes = nil
@@ -394,6 +396,7 @@ final class DownloadManager {
             if trimmed.utf8.count <= ModelCatalog.maxAliasBytes {
                 let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
                 job.failureKind = .downloadFailed
+                job.failureCause = .other
                 job.status = .failed(message: "That model name isn't valid.")
                 jobs[trimmed] = job
             }
@@ -429,6 +432,7 @@ final class DownloadManager {
                 source: effectiveSource, downloadEndpoint: downloadEndpoint
             )
             job.failureKind = .downloadFailed
+            job.failureCause = .other
             job.status = .failed(message: binaryResolution.failureMessage)
             jobs[trimmed] = job
             return false
@@ -516,6 +520,7 @@ final class DownloadManager {
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             print("[download] couldn't start \(trimmed): \(error.localizedDescription)")
             job.failureKind = .downloadFailed
+            job.failureCause = .other
             job.status = .failed(
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
@@ -848,6 +853,7 @@ final class DownloadManager {
         if stalledProcesses.removeValue(forKey: alias) === process {
             if !scheduleAutomaticRetry(job: job, alias: alias) {
                 job.failureKind = .downloadFailed
+                job.failureCause = .network
                 job.status = .failed(
                     message: "The download stopped making progress. Check your network and try again."
                 )
@@ -858,6 +864,7 @@ final class DownloadManager {
         switch reason {
         case .exit where status == 0:
             job.failureKind = nil
+            job.failureCause = nil
             // Weights just landed: every catalog snapshot in the app is
             // now stale.
             markCacheChanged()
@@ -873,6 +880,7 @@ final class DownloadManager {
             recordFailure(job: job, alias: alias, signal: true)
         @unknown default:
             job.failureKind = .downloadFailed
+            job.failureCause = .other
             job.status = .failed(
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
@@ -942,6 +950,7 @@ final class DownloadManager {
                 usingMirror: job.source == .mirror
             )
         job.failureKind = kind
+        job.failureCause = signal ? .other : FailureDiagnoser.downloadFailureCause(raw: tail, kind: kind)
         if signal {
             job.status = .failed(message: "The model download was interrupted. Retry to resume it.")
         } else {

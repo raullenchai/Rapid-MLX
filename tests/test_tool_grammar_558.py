@@ -477,10 +477,24 @@ def tok(original_hf_settings):
                 patcher.delenv("HF_HUB_OFFLINE", raising=False)
             else:
                 patcher.setenv("HF_HUB_OFFLINE", offline_env)
-            from huggingface_hub import constants
+            from huggingface_hub import constants, try_to_load_from_cache
 
             patcher.setattr(constants, "HF_HUB_OFFLINE", offline)
             patcher.setattr(constants, "HF_HUB_CACHE", cache)
+            if not isinstance(
+                try_to_load_from_cache(
+                    _TOKENIZER_MODEL,
+                    "tokenizer.json",
+                    revision=_TOKENIZER_REVISION,
+                    cache_dir=cache,
+                ),
+                str,
+            ):
+                pytest.skip(
+                    f"{_TOKENIZER_MODEL}@{_TOKENIZER_REVISION[:8]} pinned snapshot "
+                    "is PARTIAL or absent (tokenizer.json missing); it must be "
+                    "fully cached to run"
+                )
             return transformers.AutoTokenizer.from_pretrained(
                 _TOKENIZER_MODEL,
                 revision=_TOKENIZER_REVISION,
@@ -1493,6 +1507,19 @@ def test_deepseek_r1_prefilled_think_template_is_tolerated(lltok):
     in AUTO (the model may reason then choose to call); FORCED + reasoning is
     free-form (not grammar-constrained) under the #558 forced-leak fix."""
     transformers = pytest.importorskip("transformers")
+    from huggingface_hub import try_to_load_from_cache
+
+    if not isinstance(
+        try_to_load_from_cache(
+            _DEEPSEEK_MODEL, "tokenizer.json", revision=_DEEPSEEK_REVISION
+        ),
+        str,
+    ):
+        pytest.skip(
+            f"{_DEEPSEEK_MODEL}@{_DEEPSEEK_REVISION[:8]} pinned snapshot "
+            "is PARTIAL or absent (tokenizer.json missing); it must be "
+            "fully cached to run"
+        )
     try:
         ds_tok = transformers.AutoTokenizer.from_pretrained(
             _DEEPSEEK_MODEL,
