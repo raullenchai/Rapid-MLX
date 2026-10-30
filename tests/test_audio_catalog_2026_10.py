@@ -162,7 +162,15 @@ def test_moss_load_resolves_codec(monkeypatch, tmp_path):
     engine = TTSEngine(MOSS)
     engine.load()
     assert engine._loaded and engine._moss_codec_path == "/local/codec"
-    assert calls == [(CODEC, {"allow_patterns": list(PATTERNS)})]
+    assert calls == [
+        (
+            CODEC,
+            {
+                "allow_patterns": list(PATTERNS),
+                "revision": "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+            },
+        )
+    ]
     monkeypatch.setattr(registry, "runtime_assets_for", lambda name: ())
     engine = TTSEngine(MOSS)
     with pytest.raises(RuntimeError, match="codec runtime asset"):

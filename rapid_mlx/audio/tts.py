@@ -744,7 +744,9 @@ class TTSEngine:
                     )
                 asset = assets[0]
                 self._moss_codec_path = model_downloads.snapshot_download(
-                    asset.repo_id, allow_patterns=list(asset.allow_patterns)
+                    asset.repo_id,
+                    allow_patterns=list(asset.allow_patterns),
+                    revision=asset.revision,
                 )
             self._loaded = True
             logger.info(
