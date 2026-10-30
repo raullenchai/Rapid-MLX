@@ -1506,7 +1506,7 @@ enum ModelCatalog {
                 return entry
             }
             let size = cachedHit?.size ?? siblingHit?.size ?? unmappedRoot?.1
-                ?? externalRepo.flatMap { externalByRepo[$0]?.size } ?? entry.size
+                ?? externalRepo.flatMap { externalByRepo[$0]?.size }
             return ModelEntry(
                 alias: entry.alias,
                 hfRepo: cachedHit?.repo ?? siblingHit?.repo ?? unmappedRoot?.0

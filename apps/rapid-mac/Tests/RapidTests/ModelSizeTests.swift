@@ -31,6 +31,15 @@ struct ModelSizeTests {
         #expect(merged.first?.sizeBytes == 2_000_000_000)
     }
 
+    @Test func cachedInventoryWithoutSizeDoesNotUseEstimate() {
+        let entry = ModelEntry(alias: "a", hfRepo: "org/a", sizeOnDisk: "751 MB", cached: false, sizeBytes: 787_276_896)
+        let row: CachedModelInventoryEntry = (alias: "a", hfRepo: "org/a", subfolder: nil, size: nil, discovery: nil, launchPath: nil)
+        let merged = ModelCatalog.mergeAtomicAndCached(atomic: [entry], cached: [row], excluded: [])
+        #expect(merged.first?.cached == true)
+        #expect(merged.first?.sizeBytes == nil)
+        #expect(merged.first?.sizeOnDisk == nil)
+    }
+
     @Test func pickerAndSettingsUseCatalogSize() {
         let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: "mlx-community/Qwen3-ASR-0.6B-5bit", sizeOnDisk: "751 MB", cached: false, sizeBytes: 787_276_896)
         #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "751 MB")
