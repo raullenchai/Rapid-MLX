@@ -100,6 +100,28 @@ _VIDEO_ARTIFACT_PROBE_TIMEOUT_S = 120.0
 _MAX_VIDEO_ARTIFACT_BYTES = 1024 * 1024 * 1024
 
 
+def _bench_server_request(
+    server: dict, send: Callable[..., requests.Response], url: str, **kwargs: Any
+) -> requests.Response:
+    """Send a request and diagnose a server exit on connection failure."""
+    try:
+        return send(url, **kwargs)
+    except requests.exceptions.Timeout:
+        raise
+    except (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+    ) as exc:
+        exit_error = server.get("exit_error")
+        error = exit_error() if callable(exit_error) else None
+        if error is not None:
+            raise error from exc
+        raise RuntimeError(
+            "The benchmark request to the local model server failed without a "
+            "response, but the server process is still running: " + str(exc)[:500]
+        ) from exc
+
+
 def _raise_for_status(response: requests.Response, *, phase: str) -> None:
     """Preserve a bounded localhost API error instead of only its status line."""
 
@@ -663,7 +685,9 @@ def _run_image(
         total = case["warmup_rounds"] + case["measured_rounds"]
         for index in range(total):
             started = time.perf_counter()
-            response = requests.post(
+            response = _bench_server_request(
+                server,
+                requests.post,
                 endpoint,
                 json=payload,
                 headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
@@ -743,7 +767,9 @@ def _run_video(
         _stage_finished(progress, boot_started, "Server ready")
         _report(progress, f"{case['case_id']:<16} round 1/1  generating...")
         started = time.perf_counter()
-        response = requests.post(
+        response = _bench_server_request(
+            server,
+            requests.post,
             f"{server['base_url']}/videos",
             data=payload,
             headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
@@ -761,7 +787,9 @@ def _run_video(
                     f"video benchmark timed out after {_VIDEO_JOB_TIMEOUT_S:g} seconds"
                 )
             time.sleep(min(_VIDEO_POLL_INTERVAL_S, remaining))
-            response = requests.get(
+            response = _bench_server_request(
+                server,
+                requests.get,
                 f"{server['base_url']}/videos/{job['id']}",
                 headers=rapid_mlx_client_headers(RAPID_CLIENT_BENCH),
                 timeout=min(10, max(0.001, deadline - time.monotonic())),

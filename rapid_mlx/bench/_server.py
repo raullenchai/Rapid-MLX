@@ -45,6 +45,22 @@ class ServerStartFailed(RuntimeError):  # noqa: N818 — domain-specific error n
     """Server did not become healthy within the timeout."""
 
 
+class ServerExitedError(RuntimeError):
+    """The local server exited during a benchmark request."""
+
+    def __init__(
+        self,
+        message: str,
+        returncode: int | None,
+        signal_name: str | None,
+        log_tail: str,
+    ):
+        super().__init__(message)
+        self.returncode = returncode
+        self.signal_name = signal_name
+        self.log_tail = log_tail
+
+
 def find_free_port() -> int:
     """Pick a free TCP port on localhost.
 
@@ -177,11 +193,17 @@ def serve(
                 ) from exc
             raise
         boot_time_ms = (time.perf_counter() - t_spawn) * 1000.0
+
+        def exit_error(wait_s: float = 5.0) -> ServerExitedError | None:
+            log_fh.flush()
+            return describe_server_exit(proc, log_path or tmp_log, wait_s=wait_s)
+
         yield {
             "base_url": v1_url,
             "health_url": health_url,
             "port": port,
             "boot_time_ms": boot_time_ms,
+            "exit_error": exit_error,
         }
     finally:
         _terminate(proc, isolated_process_group=isolate_process_group)
@@ -200,6 +222,41 @@ def _read_log_tail(log_path: Path | None, max_lines: int) -> str:
     except OSError:
         return ""
     return "".join(lines[-max_lines:]).strip()
+
+
+def describe_server_exit(
+    proc: subprocess.Popen, log_path: Path | None, *, wait_s: float
+) -> ServerExitedError | None:
+    """Describe an exited server, waiting briefly for a concurrent exit."""
+    deadline = time.monotonic() + wait_s
+    while (rc := proc.poll()) is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(0.05, remaining))
+    signal_name = None
+    if rc < 0:
+        try:
+            signal_name = signal.Signals(-rc).name
+        except ValueError:
+            signal_name = f"signal {-rc}"
+        message = (
+            f"The local model server stopped unexpectedly (killed by {signal_name})."
+        )
+        if signal_name == "SIGKILL":
+            message += (
+                " On macOS this usually means the system was short on memory and"
+                " terminated the largest process. Close other memory-heavy apps and"
+                " retry, or run this benchmark on a Mac with more unified memory."
+            )
+    else:
+        message = f"The local model server stopped unexpectedly (exit code {rc})."
+    tail = _read_log_tail(log_path, _BOOT_LOG_TAIL_LINES)
+    if tail:
+        message += f"\n--- server log tail ---\n{tail}"
+    else:
+        message += " The server wrote no log output before it stopped."
+    return ServerExitedError(message, rc, signal_name, tail)
 
 
 def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) -> None:
@@ -251,4 +308,4 @@ def _terminate(proc: subprocess.Popen, *, isolated_process_group: bool = True) -
         pass
 
 
-__all__ = ["serve", "find_free_port", "ServerStartFailed"]
+__all__ = ["serve", "find_free_port", "ServerStartFailed", "ServerExitedError"]
