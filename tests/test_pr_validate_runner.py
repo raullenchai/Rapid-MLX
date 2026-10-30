@@ -179,7 +179,7 @@ def test_stage_order_and_mapping():
 @pytest.mark.parametrize(
     "stage,extra",
     [
-        ("admit", ["sdk_env_check"]),
+        ("admit", []),
         ("review", ["codex_review"]),
         ("checks", ["lint", "targeted_tests", "full_unit", "diff_coverage"]),
         ("gpu", ["sdk_env_check", "stress_e2e_bench"]),

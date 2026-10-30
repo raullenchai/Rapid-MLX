@@ -71,6 +71,20 @@ def _ancestor_pids() -> set[int]:
     return ancestors
 
 
+def _process_name(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        return os.path.basename(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 @contextmanager
 def hold_gpu_lock(
     path: Path,
@@ -79,6 +93,7 @@ def hold_gpu_lock(
     poll_seconds: float = 5.0,
     holder_pids: Callable[[Path], list[int]] | None = None,
     ancestor_pids: Callable[[], set[int]] | None = None,
+    process_name: Callable[[int], str] | None = None,
 ) -> Iterator[LockInfo]:
     start = time.monotonic()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +101,7 @@ def hold_gpu_lock(
     info = LockInfo(path)
     holder_pids = holder_pids or _holder_pids
     ancestor_pids = ancestor_pids or _ancestor_pids
+    process_name = process_name or _process_name
     last_log = float("-inf")
     try:
         while True:
@@ -95,7 +111,12 @@ def hold_gpu_lock(
                 break
             except BlockingIOError:
                 pids = holder_pids(path)
-                if set(pids) & ancestor_pids():
+                # lockf(1) opens the file with an exclusive flock and keeps it
+                # open only while holding it. Another ancestor's open descriptor
+                # does not prove that it holds the lock.
+                if any(
+                    process_name(pid) == "lockf" for pid in set(pids) & ancestor_pids()
+                ):
                     log(
                         "shared GPU lock already held by the calling process; wrapping the validator in lockf is no longer needed"
                     )

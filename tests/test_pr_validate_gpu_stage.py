@@ -86,10 +86,56 @@ def test_legacy_holder(tmp_path):
             log=lambda _: None,
             holder_pids=lambda _: [4242],
             ancestor_pids=lambda: {4242},
+            process_name=lambda _: "lockf",
         ) as info:
             assert info.mode == "held-by-caller"
     finally:
         os.close(fd)
+
+
+def test_ancestor_with_open_file_is_not_necessarily_lock_holder(tmp_path):
+    path = tmp_path / "lock"
+    fd = lock_fd(path)
+    entered = threading.Event()
+    result = []
+
+    def worker():
+        with hold_gpu_lock(
+            path,
+            log=lambda _: None,
+            poll_seconds=0.02,
+            holder_pids=lambda _: [4242],
+            ancestor_pids=lambda: {4242},
+            process_name=lambda _: "python3.12",
+        ) as info:
+            result.append(info.mode)
+            entered.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        assert not entered.wait(0.2)
+    finally:
+        os.close(fd)
+        thread.join(2)
+    assert not thread.is_alive()
+    assert result == ["acquired"]
+
+
+def test_repo_state_detects_untracked_files(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "tracked").write_text("tracked")
+    subprocess.run(["git", "add", "tracked"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    head, clean = gpu_cache._repo_state(tmp_path)
+    assert head and clean
+    (tmp_path / "untracked").write_text("untracked")
+    assert gpu_cache._repo_state(tmp_path) == (head, False)
 
 
 def test_non_gpu_pipeline_runs_concurrently_under_lock(setup):
@@ -152,6 +198,27 @@ def test_matrix_with_minimal_context(tmp_path, monkeypatch):
 
     assert step.run(ctx) is result
     assert not (tmp_path / "cache").exists()
+
+
+def test_cache_store_holds_lock(setup, monkeypatch):
+    ctx, path = setup
+    step = StressE2EBenchStep()
+    monkeypatch.setattr(
+        step,
+        "_run_matrix",
+        lambda _: StepResult(name=step.name, status="pass", summary="ok"),
+    )
+    stored = []
+
+    def store(key, context, result):
+        with pytest.raises(BlockingIOError):
+            fd = lock_fd(path)
+            os.close(fd)
+        stored.append(result)
+
+    monkeypatch.setattr(gpu_cache, "store", store)
+    assert step.run(ctx).status == "pass"
+    assert len(stored) == 1
 
 
 def test_cache_pass_and_miss_conditions(setup, monkeypatch):

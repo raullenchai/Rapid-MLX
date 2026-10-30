@@ -121,11 +121,11 @@ class StressE2EBenchStep(Step):
         with hold_gpu_lock(gpu_lock_path(), log=log) as lock:
             cached = gpu_cache.load(key, ctx) if key else None
             result = cached if cached else self._run_matrix(ctx)
+            if key and not cached and result.status == "pass":
+                gpu_cache.store(key, ctx, result)
         description = lock.describe()
         result.details += "\n\n" + description
         log(description)
-        if key and not cached and result.status == "pass":
-            gpu_cache.store(key, ctx, result)
         return result
 
     def _run_matrix(self, ctx: Context) -> StepResult:

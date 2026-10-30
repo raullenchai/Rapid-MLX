@@ -34,7 +34,7 @@ def _git(repo_root: Path, *args: str) -> str:
 def _repo_state(repo_root: Path) -> tuple[str, bool]:
     try:
         return _git(repo_root, "rev-parse", "HEAD"), not _git(
-            repo_root, "status", "--porcelain", "--untracked-files=no"
+            repo_root, "status", "--porcelain"
         )
     except (OSError, subprocess.SubprocessError):
         return "", False

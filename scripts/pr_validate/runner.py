@@ -177,7 +177,7 @@ def run_pipeline(
                 s
                 for s in pipeline
                 if stage_of(s.name) in selected
-                and (stage in ("admit", "gpu") or s.name != "sdk_env_check")
+                and (stage == "gpu" or s.name != "sdk_env_check")
             ]
         if skip_steps:
             dropped = set(skip_steps)
