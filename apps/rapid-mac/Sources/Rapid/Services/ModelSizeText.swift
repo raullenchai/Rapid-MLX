@@ -3,14 +3,21 @@ import Foundation
 /// One formatter for every model size label, so the same model reads the same
 /// in the picker, Settings, and download progress.
 enum ModelSizeText {
+    /// Accept localized separators because size strings can arrive from other producers.
     nonisolated static func bytes(_ raw: String?) -> Int64? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
-        let pattern = #"^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"#
+        let pattern = #"^([0-9]+(?:[.,' \u00A0\u202F][0-9]+)*)\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
               let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
               let numberRange = Range(match.range(at: 1), in: raw),
-              let unitRange = Range(match.range(at: 2), in: raw),
-              let number = Double(raw[numberRange]) else { return nil }
+              let unitRange = Range(match.range(at: 2), in: raw) else { return nil }
+        let separators = CharacterSet(charactersIn: ".,' \u{00A0}\u{202F}")
+        let parts = String(raw[numberRange]).components(separatedBy: separators)
+        let hasDecimal = parts.count > 1 && (1...2).contains(parts.last!.count)
+        let groups = hasDecimal ? parts.dropLast() : parts[...]
+        guard groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+        let normalized = groups.joined() + (hasDecimal ? "." + parts.last! : "")
+        guard let number = Double(normalized) else { return nil }
         let unit = raw[unitRange].uppercased().replacingOccurrences(of: "I", with: "")
         let exponent: Int
         switch unit {

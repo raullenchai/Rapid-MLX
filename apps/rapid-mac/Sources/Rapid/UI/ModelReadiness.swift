@@ -500,8 +500,10 @@ enum ModelReadiness: Equatable {
         case .ready(let alias):
             let a = shown(alias)
             return String(localized: "Ready — \(a)")
-        case .failed(let a, _, _):
-            return a.map { String(localized: "Couldn't start \(shown($0))") } ?? String(localized: "Something went wrong")
+        case .failed(let name, _, _):
+            guard let name else { return String(localized: "Something went wrong") }
+            let a = shown(name)
+            return String(localized: "Couldn't start \(a)")
         }
     }
 

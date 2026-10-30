@@ -25,6 +25,21 @@ struct ModelSizeTextTests {
         #expect(ModelSizeText.bytes("1kib") == 1024)
     }
 
+    @Test func localizedNumberShapes() {
+        #expect(ModelSizeText.display("750,8 MB") == "751 MB")
+        #expect(ModelSizeText.bytes("1,010 MB") == Int64(1010) * 1024 * 1024)
+        #expect(ModelSizeText.bytes("1.023,3 MB") == Int64((1023.3 * 1024 * 1024).rounded()))
+        #expect(ModelSizeText.bytes("1\u{00A0}010 MB") == Int64(1010) * 1024 * 1024)
+        #expect(ModelSizeText.bytes("2.34 GB") == Int64((2.34 * 1024 * 1024 * 1024).rounded()))
+        #expect(ModelSizeText.bytes("1,0,0 MB") == nil)
+    }
+
+    @Test func cachedCatalogUsesCanonicalSize() throws {
+        let payload = #"{"cached":[{"alias":"a","repo":"org/a","subfolder":null,"size_bytes":787276896,"state":"ok","external":false}]}"#
+        let rows = try #require(ModelCatalog.parseCachedJSON(payload))
+        #expect(rows.first?.size == "751 MB")
+    }
+
     @Test func catalogSizeWins() {
         let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: "mlx-community/Qwen3-ASR-0.6B-5bit", sizeOnDisk: "750.8 MiB", cached: false)
         #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "751 MB")

@@ -1093,10 +1093,7 @@ enum ModelCatalog {
                       bytes.int64Value > 0,
                       bytes.int64Value <= 9_007_199_254_740_991
                 else { return nil }
-                size = ByteCountFormatter.string(
-                    fromByteCount: bytes.int64Value,
-                    countStyle: .binary
-                )
+                size = ModelSizeText.display(bytes: bytes.int64Value)
             } else {
                 size = nil
             }
@@ -2212,10 +2209,7 @@ enum ModelCatalog {
                   bytes.int64Value > 0,
                   let external = row["external"] as? Bool
             else { return nil }
-            let size = ByteCountFormatter.string(
-                fromByteCount: bytes.int64Value,
-                countStyle: .binary
-            )
+            let size = ModelSizeText.display(bytes: bytes.int64Value)
             let launchPath: String?
             if let path = row["launch_path"] as? String {
                 guard path.hasPrefix("/"), !path.contains("\\"),
