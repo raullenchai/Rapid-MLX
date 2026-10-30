@@ -1,0 +1,124 @@
+{
+  "_comment": "Reference cosine scores for jinaai/jina-reranker-v3.5 from the model card scoring code (rerank(), single block per case), run with transformers 4.57.3 / torch 2.15.0 on CPU in float32. Long documents are built as \" \".join(f\"({i + 1}) {parts[i % len(parts)]}\" for i in range(repeat * len(parts))).",
+  "reference_revision": "e8a93f33f0b22108f8c2364f8484ce3422552fbc",
+  "model": "jinaai/jina-reranker-v3.5-mlx",
+  "model_revision": "3dd4ac901ccdcac85abe3815df0a0aaaf44e4a21",
+  "long_parts": {
+    "bees": [
+      "Honeybee foragers that discover a rich patch of flowers return to the hive and perform a waggle dance on the vertical surface of the comb.",
+      "The angle of the waggle run relative to vertical encodes the direction of the food source relative to the current position of the sun.",
+      "The duration of each waggle run encodes distance, so a longer run tells recruits that the flowers are farther from the colony.",
+      "Follower bees stay in close contact with the dancer, sensing vibrations and the scent of nectar carried on her body.",
+      "For nearby food the foragers perform a round dance, which signals that flowers are close without giving a precise bearing.",
+      "Researchers verified the dance language by moving feeders and watching recruits search where the dance predicted."
+    ],
+    "volcano": [
+      "Stratovolcanoes are built from alternating layers of lava flows, ash, and pyroclastic debris accumulated over many eruptions.",
+      "Viscous andesitic magma traps dissolved gases, which can drive explosive eruptions when pressure is suddenly released.",
+      "Monitoring stations track ground deformation, sulfur dioxide emissions, and swarms of small earthquakes beneath the summit.",
+      "Lahars, which are mudflows of volcanic debris and water, can travel tens of kilometers down river valleys.",
+      "Ash columns injected into the stratosphere can cool global temperatures for a year or more after a large eruption.",
+      "Hazard maps divide the surrounding land into zones based on the likely reach of flows and falling ash."
+    ],
+    "trade": [
+      "Medieval merchants in the Hanseatic towns traded timber, furs, grain, and salted herring across the Baltic Sea.",
+      "Guilds regulated prices, quality, and apprenticeship, giving established traders control over who could enter a craft.",
+      "Bills of exchange allowed merchants to move value between distant fairs without carrying large amounts of coin.",
+      "Tolls on rivers and bridges were a major source of revenue for lords and a constant complaint of travelling traders.",
+      "Champagne fairs rotated through several towns each year and drew merchants from Italy, Flanders, and beyond.",
+      "Account books with double-entry records spread from Italian cities as trading houses grew larger and more complex."
+    ]
+  },
+  "cases": [
+    {
+      "name": "short_multilingual",
+      "query": "What are the health benefits of green tea?",
+      "documents": [
+        "Green tea contains antioxidants called catechins that may help reduce inflammation and protect cells from damage.",
+        "El precio del café ha aumentado un 20% este año debido a problemas en la cadena de suministro.",
+        "Studies show that drinking green tea regularly can improve brain function and boost metabolism.",
+        "Basketball is one of the most popular sports in the United States.",
+        "绿茶富含儿茶素等抗氧化剂，可以降低心脏病风险，还有助于控制体重。",
+        "Le thé vert est riche en antioxydants et peut améliorer la fonction cérébrale."
+      ],
+      "prompt_tokens": 346,
+      "reference_cosine": [
+        0.374609,
+        -0.185368,
+        0.298122,
+        -0.175881,
+        0.297748,
+        0.202396
+      ]
+    },
+    {
+      "name": "short_capital",
+      "query": "What is the capital of France?",
+      "documents": [
+        "The Eiffel Tower is a wrought-iron lattice tower in Paris.",
+        "Paris is the capital and most populous city of France.",
+        "Berlin is the capital of Germany.",
+        "MLX is an array framework for machine learning on Apple silicon."
+      ],
+      "prompt_tokens": 245,
+      "reference_cosine": [
+        -0.040499,
+        0.537998,
+        -0.113773,
+        -0.155925
+      ]
+    },
+    {
+      "name": "long_relevant_first",
+      "query": "How do honeybees tell other bees where to find flowers?",
+      "documents": [
+        {
+          "parts": "bees",
+          "repeat": 9
+        },
+        {
+          "parts": "volcano",
+          "repeat": 9
+        },
+        {
+          "parts": "trade",
+          "repeat": 9
+        },
+        "Basketball is one of the most popular sports in the United States."
+      ],
+      "prompt_tokens": 4536,
+      "reference_cosine": [
+        0.461644,
+        -0.051544,
+        -0.226662,
+        -0.115413
+      ]
+    },
+    {
+      "name": "long_relevant_last",
+      "query": "How do honeybees tell other bees where to find flowers?",
+      "documents": [
+        {
+          "parts": "trade",
+          "repeat": 8
+        },
+        {
+          "parts": "volcano",
+          "repeat": 8
+        },
+        "Volcanic soils are often fertile, which attracts farmers despite the risk.",
+        {
+          "parts": "bees",
+          "repeat": 8
+        }
+      ],
+      "prompt_tokens": 4055,
+      "reference_cosine": [
+        -0.118493,
+        -0.206925,
+        -0.168478,
+        0.471278
+      ]
+    }
+  ]
+}

@@ -391,12 +391,49 @@ def _load_cross_encoder(model_name: str, config: dict):
 
 def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
     from mlx_lm.models import qwen3
+    from mlx_lm.models.base import create_attention_mask
+
+    count = config["num_hidden_layers"]
+    window = config.get("sliding_window") if config.get("use_sliding_window") else None
+    layer_types = config.get("layer_types") or [
+        "sliding_attention"
+        if window is not None and i >= config.get("max_window_layers", 28)
+        else "full_attention"
+        for i in range(count)
+    ]
+    if len(layer_types) != count:
+        raise ValueError("layer_types length must match num_hidden_layers")
+    if any(t not in ("sliding_attention", "full_attention") for t in layer_types):
+        raise ValueError(
+            "layer_types entries must be sliding_attention or full_attention"
+        )
+    windows = [window if t == "sliding_attention" else None for t in layer_types]
+
+    class HybridQwen3Model(qwen3.Qwen3Model):
+        # v3.5 interleaves full and sliding-window attention layers.
+        def __call__(self, inputs, cache=None, input_embeddings=None):
+            h = (
+                input_embeddings
+                if input_embeddings is not None
+                else self.embed_tokens(inputs)
+            )
+            if cache is None:
+                cache = [None] * len(self.layers)
+            masks = {
+                w: create_attention_mask(h, cache[0], window_size=w)
+                for w in set(windows)
+            }
+            for layer, c, w in zip(self.layers, cache, windows):
+                h = layer(h, masks[w], c)
+            return self.norm(h)
 
     class JinaForRanking(qwen3.Model):
         """Qwen3 backbone plus the projector that maps marker states to 512 dims."""
 
         def __init__(self, args):
             super().__init__(args)
+            if any(w is not None for w in windows):
+                self.model = HybridQwen3Model(args)
             hidden = args.hidden_size
             self.projector = nn.Sequential(
                 nn.Linear(hidden, hidden // 2, bias=False),
