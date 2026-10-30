@@ -3,8 +3,13 @@ import Foundation
 /// One formatter for every model size label, so the same model reads the same
 /// in the picker, Settings, and download progress.
 enum ModelSizeText {
-    /// Accept localized separators; a single dot or comma followed by three digits is ambiguous.
+    /// Resolve ambiguous separators using the locale of the system byte-count formatter.
+    /// Canonical app producers use a dot with one decimal digit, so they are unambiguous.
     nonisolated static func bytes(_ raw: String?) -> Int64? {
+        bytes(raw, locale: .current)
+    }
+
+    nonisolated static func bytes(_ raw: String?, locale: Locale) -> Int64? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
         let pattern = #"^([0-9]+(?:[.,' \u00A0\u202F][0-9]+)*)\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
@@ -14,9 +19,10 @@ enum ModelSizeText {
         let separators = CharacterSet(charactersIn: ".,' \u{00A0}\u{202F}")
         let numberText = String(raw[numberRange])
         let parts = numberText.components(separatedBy: separators)
-        if parts.count == 2, parts[1].count == 3,
-           numberText.contains(".") || numberText.contains(",") { return nil }
-        let hasDecimal = parts.count > 1 && (1...2).contains(parts.last!.count)
+        let ambiguousDecimal = parts.count == 2 && parts[1].count == 3
+            && (numberText.contains(".") || numberText.contains(","))
+            && locale.decimalSeparator.map { numberText.contains($0) } == true
+        let hasDecimal = parts.count > 1 && ((1...2).contains(parts.last!.count) || ambiguousDecimal)
         let groups = hasDecimal ? parts.dropLast() : parts[...]
         guard groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
         let normalized = groups.joined() + (hasDecimal ? "." + parts.last! : "")

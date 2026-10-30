@@ -27,14 +27,24 @@ struct ModelSizeTextTests {
 
     @Test func localizedNumberShapes() {
         #expect(ModelSizeText.display("750,8 MB") == "751 MB")
-        #expect(ModelSizeText.bytes("1,010 MB") == nil)
-        #expect(ModelSizeText.bytes("1.234 GiB") == nil)
-        #expect(ModelSizeText.display("1.234 GiB") == "1.234 GiB")
+        let en = Locale(identifier: "en_US")
+        let de = Locale(identifier: "de_DE")
+        #expect(ModelSizeText.bytes("1,010 MB", locale: en) == Int64(1010) * 1024 * 1024)
+        #expect(ModelSizeText.bytes("1.234 GiB", locale: en) == Int64((1.234 * 1024 * 1024 * 1024).rounded()))
+        #expect(ModelSizeText.bytes("1.010 MB", locale: de) == Int64(1010) * 1024 * 1024)
+        #expect(ModelSizeText.bytes("1,234 GiB", locale: de) == Int64((1.234 * 1024 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1.023,3 MB") == Int64((1023.3 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1,023.3 MB") == Int64((1023.3 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1\u{00A0}010 MB") == Int64(1010) * 1024 * 1024)
         #expect(ModelSizeText.bytes("2.34 GB") == Int64((2.34 * 1024 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1,0,0 MB") == nil)
+    }
+
+    @Test func systemByteCountRoundTrip() {
+        for bytes: Int64 in [1_059_061_760, 787_276_896, 2_508_940_517] {
+            let formatted = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .binary)
+            #expect(ModelSizeText.display(formatted) == DownloadProgress.formatBytes(bytes))
+        }
     }
 
     @Test func cachedCatalogUsesCanonicalSize() throws {
@@ -50,9 +60,9 @@ struct ModelSizeTextTests {
     }
 
     @Test func unparseableCatalogSizeWins() {
-        let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: nil, sizeOnDisk: "1,010 MB", cached: false)
+        let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: nil, sizeOnDisk: "about 1 GB", cached: false)
         #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == ModelSizeText.display(entry.sizeOnDisk))
-        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "1,010 MB")
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "about 1 GB")
     }
 
     @Test @MainActor func readinessDisplayName() {
