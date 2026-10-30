@@ -66,6 +66,8 @@ def test_recorded_metadata_is_loadable(inventory, tmp_path):
 
 
 def test_dependency_forced_trust_routes_reviewed():
+    import ast
+
     if importlib.util.find_spec("mlx_vlm") is None:
         pytest.skip("mlx_vlm is not installed")
     spec = importlib.util.find_spec("mlx_vlm")
@@ -81,8 +83,23 @@ def test_dependency_forced_trust_routes_reviewed():
     }
     hits = set()
     for file in models.glob("*/*.py"):
-        for line in file.read_text(encoding="utf-8").splitlines():
-            if re.search(r"\btrust_remote_code\s*=\s*True\b", line.split("#", 1)[0]):
+        tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword):
+                targets = [node.arg]
+            elif isinstance(node, ast.Assign):
+                targets = [
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                ]
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target.id] if isinstance(node.target, ast.Name) else []
+            else:
+                continue
+            if (
+                "trust_remote_code" in targets
+                and isinstance(node.value, ast.Constant)
+                and node.value.value is True
+            ):
                 hits.add(file.parent.name)
     assert hits <= reviewed, (
         f"Re-review FORCED_TRUST_PROCESSOR_TYPES: {hits - reviewed}"
