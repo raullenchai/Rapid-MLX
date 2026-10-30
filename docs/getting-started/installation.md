@@ -14,7 +14,7 @@ If the command is unavailable in the current shell, run
 ## Requirements
 
 - macOS on Apple Silicon
-- Python 3.12+
+- Python 3.12 or newer for pip installs; the installer uses Python 3.12 or 3.13 (and installs Python 3.12 automatically if neither is found)
 
 ## Install with uv
 
