@@ -579,11 +579,7 @@ def _run_group_bounded(
             — cgroups / job objects don't exist on Darwin, and there is no
             non-reaping group wait to enumerate survivors race-free.
           - It is at PARITY with the merge-GATING ``full_unit`` step, which runs
-            the SAME suite via a bare ``subprocess.run`` with NO session, NO
-            group-kill and NO timeout — so it leaks a daemonized descendant TODAY
-            on every gating run, and would additionally HANG on a pipe-holder
-            where this step returns. An advisory measurer cannot reasonably be
-            held to a stricter containment bar than the gate it mirrors.
+            the same suite using this same bounded runner.
           - The exposure is a misbehaving TEST that daemonizes a server; the fix
             for that belongs in the test, and the same leak already reaches the
             gate. We take the strictly-safer, never-wedge, never-wrong-kill

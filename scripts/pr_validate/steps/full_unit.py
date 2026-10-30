@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Step 4 — full unit test suite.
+"""Step 4 — full unit test suite, bounded by a process-group timeout.
 
 Skipped for low-blast PRs (docs, examples) — they can't break behavior.
 For medium and high blast PRs, runs the same set we use locally:
@@ -13,6 +13,7 @@ broken that's a separate problem and we want to surface it loudly.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -20,6 +21,10 @@ import sys
 from .._xdist import pytest_parallel_args
 from ..base import Step, StepResult
 from ..context import Context
+from .diff_coverage import _run_group_bounded, _timeout_dump
+
+_FULL_UNIT_TIMEOUT_S = 3600
+_FULL_UNIT_SERIAL_TIMEOUT_S = 4 * 3600
 
 
 class FullUnitStep(Step):
@@ -35,6 +40,20 @@ class FullUnitStep(Step):
 
         parallel_args, note = pytest_parallel_args()
         ctx.run_log(note)
+        raw_timeout = os.environ.get("PR_VALIDATE_FULL_UNIT_TIMEOUT_S")
+        if raw_timeout is None:
+            timeout = (
+                _FULL_UNIT_TIMEOUT_S if parallel_args else _FULL_UNIT_SERIAL_TIMEOUT_S
+            )
+        else:
+            try:
+                timeout = int(raw_timeout)
+                if timeout <= 0:
+                    raise ValueError
+            except ValueError:
+                raise ValueError(
+                    "PR_VALIDATE_FULL_UNIT_TIMEOUT_S must be a positive integer"
+                ) from None
 
         # Mirror what we run by hand. Two ignores: integrations needs a
         # live server (covered in step 5), and test_event_loop is the
@@ -49,14 +68,25 @@ class FullUnitStep(Step):
             "-q",
             "--no-header",
             "-rfE",
+            "-o",
+            "faulthandler_timeout=600",
             *parallel_args,
             # Don't stop on first failure — we want the full count for
             # the scorecard ("3 failed, 2080 passed" is more actionable
             # than "1 failed, ???? passed").
         ]
-        proc = subprocess.run(  # noqa: S603
-            cmd, capture_output=True, text=True, cwd=str(ctx.repo_root)
-        )
+        try:
+            proc = _run_group_bounded(cmd, cwd=str(ctx.repo_root), timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            log_path.write_text(
+                note + "\n" + _timeout_dump("full_unit pytest", cmd, exc)
+            )
+            return StepResult(
+                name=self.name,
+                status="fail",
+                summary=f"full suite exceeded {timeout}s — process group killed (stuck test or leaked pipe holder; see faulthandler dump in log); {note}",
+                artifacts=[str(log_path)],
+            )
         log_path.write_text(note + "\n" + (proc.stdout or "") + (proc.stderr or ""))
 
         # Pull the summary line: pytest ends with a line like

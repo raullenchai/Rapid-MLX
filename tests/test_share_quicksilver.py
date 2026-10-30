@@ -60,12 +60,15 @@ def _isolate(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         return real_run(argv, *args, **kwargs)
 
-    with (
-        patch.object(qs.shutil, "which", return_value="/usr/local/bin/rapid-mlx"),
-        patch.object(qs, "_launcher_belongs_to_running_install", return_value=True),
-        patch.object(qs.subprocess, "run", side_effect=isolated_run),
-    ):
-        yield tmp_path
+    # Share monkeypatch's LIFO undo stack with patches made by individual tests.
+    monkeypatch.setattr(
+        qs.shutil, "which", MagicMock(return_value="/usr/local/bin/rapid-mlx")
+    )
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", MagicMock(return_value=True)
+    )
+    monkeypatch.setattr(qs.subprocess, "run", MagicMock(side_effect=isolated_run))
+    yield tmp_path
     qs._SECRETS.clear()
 
 
