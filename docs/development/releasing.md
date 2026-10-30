@@ -82,7 +82,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 5. **Homebrew (homebrew/core) — post-release check** — `rapid-mlx` is on Homebrew's autobump list. BrewTestBot runs about every 3 hours and opens the `rapid-mlx X.Y.Z` PR, but homebrew/core's 1-day release cooldown means the PR cannot appear until about 24 hours after the PyPI upload. Bottles then build and a maintainer merges the PR. The official installer gets the release immediately; Homebrew users wait for the cooldown, bottling, and review.
 
-   At about **6 hours** after release, confirm the autobump log shows `rapid-mlx` in "release cooldown" or a bump PR exists. If the log reports an error for `rapid-mlx`, use the manual fallback below. At about **36 hours**, the `rapid-mlx X.Y.Z` PR must exist; if it does not, inspect the autobump log and use the fallback if it shows an error. Track the PR to merge.
+   At about **6 hours** after release, confirm the autobump log shows `rapid-mlx` in "release cooldown" or a bump PR exists. If the log reports an error for `rapid-mlx`, note it and use the manual fallback once the release is at least 24 hours old. At about **36 hours**, if the `rapid-mlx X.Y.Z` PR does not exist, check the autobump log for the reason and use the fallback. Track the PR to merge.
 
    ```sh
    brew info --json=v2 rapid-mlx | jq -r '.formulae[0].versions.stable'
@@ -91,7 +91,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    gh run view <id> -R Homebrew/homebrew-core --log | grep -A4 rapid-mlx
    ```
 
-   A "release cooldown" log line is expected during the first day. The formula file can also be checked on GitHub. `brew bump-formula-pr` refuses autobumped formulae. Use this fallback only when the autobump log shows an error for `rapid-mlx`, not merely during cooldown: in a homebrew/core checkout, update `url` and `sha256` in `Formula/r/rapid-mlx.rb` to the new PyPI sdist, then run:
+   A "release cooldown" log line is expected during the first day. The formula file can also be checked on GitHub. `brew bump-formula-pr` refuses autobumped formulae. Use this fallback when autobump errored or the PR is missing at about 36 hours, and never before the release is 24 hours old: in a homebrew/core checkout, update `url` and `sha256` in `Formula/r/rapid-mlx.rb` to the new PyPI sdist, then run:
 
    ```sh
    brew update-python-resources rapid-mlx
