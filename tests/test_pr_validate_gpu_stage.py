@@ -229,9 +229,32 @@ def test_cache_key_changes_with_installed_distributions(setup, monkeypatch):
     assert first != gpu_cache.cache_key(ctx)
 
 
+def test_cache_key_recomputed_after_lock(setup, monkeypatch):
+    ctx, _ = setup
+    keys = iter(["before", "after", "after"])
+    monkeypatch.setattr(gpu_cache, "cache_key", lambda _: next(keys))
+    lookups = []
+    cached = StepResult(name="stress_e2e_bench", status="pass", summary="cached")
+
+    def load(key, _):
+        lookups.append(key)
+        return cached if key == "before" and len(lookups) > 1 else None
+
+    monkeypatch.setattr(gpu_cache, "load", load)
+    stored = []
+    monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
+    step = StressE2EBenchStep()
+    result = StepResult(name=step.name, status="pass", summary="matrix ran")
+    monkeypatch.setattr(step, "_run_matrix", lambda _: result)
+
+    assert step.run(ctx) is result
+    assert lookups == ["before", "after"]
+    assert stored[0][0] == "after"
+
+
 def test_cache_not_stored_if_head_changes_during_run(setup, monkeypatch):
     ctx, _ = setup
-    states = iter([(SHA, True), ("c" * 40, True)])
+    states = iter([(SHA, True), (SHA, True), ("c" * 40, True)])
     monkeypatch.setattr(gpu_cache, "_repo_state", lambda _: next(states))
     messages = []
     monkeypatch.setattr(ctx, "run_log", messages.append)
