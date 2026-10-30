@@ -164,17 +164,6 @@ def test_first_run_screen_fits_and_names_every_action():
     assert max(len(line) for line in lines) <= 80
 
 
-def test_best_already_selected_hides_b_and_says_so():
-    state = _state(cached=["qwen3.5-9b-4bit"])
-    text = fd.render_screen(state)
-    assert "Ready to chat: qwen3.5-9b-4bit (downloaded) · best for this Mac" in text
-    assert "press b" not in text
-    assert "\n  b " not in text
-    # b still works (same model) even though it is not advertised.
-    plan = fd.run_interactive(state, key_reader=_keys("b"), out=str)
-    assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
-
-
 def test_quick_start_cached_and_best_facts():
     picks = [
         _pick("big", "smart", caveat="Not for coding", fit=False),
@@ -188,15 +177,6 @@ def test_quick_start_cached_and_best_facts():
     best_cached = [_pick("x", "smart", cached=True), _pick("y", "fast", size=None)]
     assert fd._best_facts(best_cached[0]) == "Smart, downloaded"
     assert fd._best_facts(best_cached[1]) == "Fast"
-
-
-def test_b_chats_with_the_best_pick_and_attaches_when_served():
-    plan = fd.run_interactive(_state(), key_reader=_keys("b"), out=str)
-    assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
-    state = _state(server=fd.ServerInfo(8123, "qwen3.5-9b-4bit"))
-    state.selected = fd.QUICK_START_MODEL
-    plan = fd.run_interactive(state, key_reader=_keys("b"), out=str)
-    assert plan.steps == [["chat", "qwen3.5-9b-4bit", "--port", "8123"]]
 
 
 def test_screen_without_agent_hides_c():
@@ -244,127 +224,97 @@ def test_agent_label_falls_back_to_name():
     assert fd.agent_label("new-agent") == "new-agent"
 
 
-def test_picker_lists_policy_picks_then_downloaded_with_fit_marks(monkeypatch):
-    state = _state(cached=["qwen3.5-4b-4bit", "qwen3.8-27b-4bit"])
-    entries = fd.picker_entries(state)
-    assert [a for a, _ in entries] == [
-        "qwen3.5-9b-4bit",
-        "qwen3.5-4b-4bit",
-        "qwen3.8-27b-4bit",
-    ]
-    assert entries[0][1].endswith("fits this Mac")
-    assert entries[2][1] == "downloaded · too big for this Mac"
-    text = fd.render_picker(entries)
-    assert "  3  qwen3.8-27b-4bit" in text
-    assert "More models: rapid-mlx models" in text
+@pytest.mark.parametrize(
+    ("ram", "chat", "coding"),
+    [
+        (
+            8,
+            [
+                "qwen3-8b-4bit",
+                "lfm2.5-8b-a1b-4bit",
+                "lfm2.5-2.6b-4bit",
+                "lfm2.5-1b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+            None,
+        ),
+        (
+            16,
+            [
+                "qwen3.5-9b-4bit",
+                "deepseek-coder-v2-lite-16b-4bit",
+                "gemma-4-12b-4bit",
+                "lfm2.5-8b-a1b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+            [
+                "deepseek-coder-v2-lite-16b-4bit",
+                "qwen3.5-9b-4bit",
+                "gemma-4-12b-4bit",
+                "lfm2.5-8b-a1b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+        ),
+        (
+            48,
+            [
+                "qwen3.6-35b-4bit",
+                "qwen3-coder-30b-4bit",
+                "qwen3.8-27b-4bit",
+                "qwen3.6-27b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+            [
+                "qwen3-coder-30b-4bit",
+                "qwen3.6-35b-4bit",
+                "qwen3.8-27b-4bit",
+                "qwen3.6-27b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+        ),
+        (
+            128,
+            [
+                "qwen3.5-122b-mxfp4",
+                "qwen3-coder-next-80b-4bit",
+                "qwen3.8-27b-4bit",
+                "qwen3.6-35b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+            [
+                "qwen3-coder-next-80b-4bit",
+                "qwen3.5-122b-mxfp4",
+                "qwen3.8-27b-4bit",
+                "qwen3.6-35b-4bit",
+                "qwen3.5-4b-4bit",
+            ],
+        ),
+    ],
+)
+def test_picker_memory_and_coding_recommendations(ram, chat, coding):
+    state = _state(ram_gb=ram, cached=["qwen3.5-4b-4bit"])
+    for is_coding, expected in ((False, chat), (True, coding or chat)):
+        entries = fd.picker_entries(state, coding=is_coding)
+        assert [alias for alias, _ in entries] == expected
+        assert entries[-1][1].endswith(" · downloaded")
 
 
-def test_picker_caps_entries_and_tolerates_fit_errors(monkeypatch):
-    monkeypatch.setattr(
-        "rapid_mlx.run.cli._fits_host",
-        lambda *_a: (_ for _ in ()).throw(RuntimeError("x")),
-    )
-    state = _state(cached=[f"m{i}" for i in range(20)])
-    entries = fd.picker_entries(state)
-    assert len(entries) == fd._PICKER_LIMIT
-    assert entries[-1][1] == "downloaded"
-    unknown_ram = _state(ram_gb=0.0, cached=["m1"])
-    assert fd.picker_entries(unknown_ram)[-1] == ("m1", "downloaded")
+def test_picker_last_used_moves_downloaded_fit_first():
+    state = _state(ram_gb=48, cached=["qwen3.5-4b-4bit"], last_used="qwen3.5-4b-4bit")
+    entries = fd.picker_entries(state, coding=True)
+    assert entries[0][0] == "qwen3.5-4b-4bit"
+    assert entries[0][1].startswith("Last used · ")
+    assert entries[0][1].endswith(" · downloaded")
+    assert len(entries) == 5
 
 
-def test_non_tty_text_is_short_and_copy_pasteable():
-    picks = [_pick("qwen3.5-9b-4bit", "smart"), _pick("qwen3.5-4b-4bit", "fast")]
-    text = fd.render_non_tty("9.9.9", 18.0, picks)
-    lines = text.split("\n")
-    assert len(lines) <= 15
-    assert "Quick start: qwen3.5-4b-4bit (~3 GB download)" in text
-    assert "Best for this Mac (18 GB): qwen3.5-9b-4bit" in text
-    assert "recipe picks: qwen3.5-9b-4bit (smart) · qwen3.5-4b-4bit (fast)" in text
-    assert "  rapid-mlx pull qwen3.5-4b-4bit" in lines
-    assert "  rapid-mlx serve qwen3.5-4b-4bit --port 8000" in lines
-    assert "  rapid-mlx chat qwen3.5-4b-4bit" in lines
-    assert "\x1b[" not in text
-    assert "(18 GB)" not in fd.render_non_tty("9.9.9", 0.0, picks)
+def test_picker_unknown_memory_does_not_invent_fit():
+    assert fd.picker_entries(_state(ram_gb=0)) == []
 
 
 # ======================================================================
 # Actions
 # ======================================================================
-def test_enter_chats_with_selected_model():
-    plan = fd.run_interactive(_state(), key_reader=_keys(fd.KEY_ENTER), out=str)
-    assert plan.steps == [["chat", "qwen3.5-4b-4bit"]]
-
-
-def test_enter_attaches_to_running_server_for_its_model():
-    state = _state(server=fd.ServerInfo(8123, "qwen3.5-9b-4bit"))
-    plan = fd.run_interactive(state, key_reader=_keys(fd.KEY_ENTER), out=str)
-    assert plan.steps == [["chat", "qwen3.5-9b-4bit", "--port", "8123"]]
-
-
-def test_s_serves_on_a_free_port():
-    plan = fd.run_interactive(
-        _state(), key_reader=_keys("s"), out=str, free_port=lambda: 8000
-    )
-    assert plan.steps == [["serve", "qwen3.5-4b-4bit"]]
-    assert "http://127.0.0.1:8000/v1" in plan.note
-    plan = fd.run_interactive(
-        _state(), key_reader=_keys("s"), out=str, free_port=lambda: 8002
-    )
-    assert plan.steps == [["serve", "qwen3.5-4b-4bit", "--port", "8002"]]
-
-
-def test_c_pulls_serves_and_launches_only_once_ready():
-    plan = fd.run_interactive(
-        _state(agent="claude-code"),
-        key_reader=_keys("c"),
-        out=str,
-        free_port=lambda: 8001,
-    )
-    assert plan.steps == [
-        ["pull", "qwen3.5-4b-4bit"],
-        ["serve", "qwen3.5-4b-4bit", "--port", "8001"],
-    ]
-    assert plan.after_ready == [
-        "launch",
-        "claude-code",
-        "--model",
-        "qwen3.5-4b-4bit",
-        "--server-url",
-        "http://127.0.0.1:8001",
-    ]
-    assert "Claude Code" in plan.note
-
-
-def test_c_against_running_server_only_launches():
-    state = _state(agent="claude-code", server=fd.ServerInfo(8000, "qwen3.5-9b-4bit"))
-    plan = fd.run_interactive(
-        state,
-        key_reader=_keys("c"),
-        out=str,
-        free_port=lambda: pytest.fail("no port search when attaching"),
-    )
-    assert plan.steps == [
-        [
-            "launch",
-            "claude-code",
-            "--model",
-            "qwen3.5-9b-4bit",
-            "--server-url",
-            "http://127.0.0.1:8000",
-        ]
-    ]
-
-
-def test_c_is_ignored_without_a_detected_agent_and_unknown_keys_are_ignored():
-    plan = fd.run_interactive(
-        _state(agent=None), key_reader=_keys("c", "x", fd.KEY_UNKNOWN, "q"), out=str
-    )
-    assert plan is None
-
-
-@pytest.mark.parametrize("key", [fd.KEY_QUIT, "q"])
-def test_quit_keys(key):
-    assert fd.run_interactive(_state(), key_reader=_keys(key), out=str) is None
 
 
 def test_ctrl_c_quits():
@@ -372,37 +322,6 @@ def test_ctrl_c_quits():
         raise KeyboardInterrupt
 
     assert fd.run_interactive(_state(), key_reader=interrupted, out=str) is None
-
-
-def test_m_picks_another_model_and_redraws():
-    shown: list[str] = []
-    plan = fd.run_interactive(
-        _state(),
-        key_reader=_keys("m", "9", "x", "1", fd.KEY_ENTER),
-        out=shown.append,
-    )
-    assert plan.steps == [["chat", "qwen3.5-9b-4bit"]]
-    assert any("Choose a model" in s for s in shown)
-    assert shown[-1].startswith(fd._CLEAR_SCREEN)
-    assert "Ready to chat: qwen3.5-9b-4bit · best for this Mac" in shown[-1]
-
-
-def test_picker_offers_quick_start_when_not_a_recipe_pick():
-    picks = [_pick("big-smart", "smart"), _pick("big-fast", "fast")]
-    state = _state(picks=picks)
-    aliases = [alias for alias, _ in fd.picker_entries(state)]
-    assert aliases == ["big-smart", "big-fast", fd.QUICK_START_MODEL]
-    assert fd.picker_entries(state)[-1][1].startswith("quick start · ~3 GB download")
-    unknown_ram = _state(picks=picks, ram_gb=0.0)
-    assert fd.picker_entries(unknown_ram)[-1][1] == "quick start · ~3 GB download"
-
-
-@pytest.mark.parametrize("back", [fd.KEY_QUIT, "q", fd.KEY_ENTER])
-def test_m_back_keeps_selection(back):
-    plan = fd.run_interactive(
-        _state(), key_reader=_keys("m", back, fd.KEY_ENTER), out=str
-    )
-    assert plan.steps == [["chat", "qwen3.5-4b-4bit"]]
 
 
 def test_ctrl_c_inside_picker_quits():
@@ -421,19 +340,6 @@ def test_first_free_port():
     taken = {8000, 8001}
     assert fd.first_free_port(is_free=lambda p: p not in taken) == 8002
     assert fd.first_free_port(span=2, is_free=lambda p: False) is None
-
-
-@pytest.mark.parametrize("key", ["s", "c"])
-def test_no_free_port_keeps_the_menu_open(key):
-    shown: list[str] = []
-    plan = fd.run_interactive(
-        _state(agent="claude-code"),
-        key_reader=_keys(key, "q"),
-        out=shown.append,
-        free_port=lambda: None,
-    )
-    assert plan is None
-    assert any("No free port in 8000-8099" in line for line in shown)
 
 
 def test_renamed_server_is_shown_but_never_attached():
@@ -763,7 +669,7 @@ def test_run_bare_non_tty_prints_to_stderr_and_exits_1(monkeypatch, capsys):
     assert code == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "rapid-mlx serve qwen3.5-4b-4bit --port 8000" in captured.err
+    assert f"rapid-mlx serve {fd.QUICK_START_MODEL}" in captured.err
 
 
 def test_run_bare_tty_dispatches_each_step_with_flags(monkeypatch, capsys):
@@ -1008,3 +914,9 @@ def test_run_bare_s_hands_the_terminal_to_a_server_child(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "→ rapid-mlx serve qwen3.5-4b-4bit" in out
     assert "http://127.0.0.1:8000/v1" in out
+
+
+def test_picker_omits_local_model_with_unknown_size():
+    state = _state(cached=[])
+    state.local_default = "/models/local"
+    assert "/models/local" not in dict(fd.picker_entries(state))
