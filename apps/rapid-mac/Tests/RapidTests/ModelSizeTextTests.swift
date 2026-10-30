@@ -49,6 +49,12 @@ struct ModelSizeTextTests {
         #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == ModelSizeText.display(entry.sizeOnDisk))
     }
 
+    @Test func unparseableCatalogSizeWins() {
+        let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: nil, sizeOnDisk: "1,010 MB", cached: false)
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == ModelSizeText.display(entry.sizeOnDisk))
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "1,010 MB")
+    }
+
     @Test @MainActor func readinessDisplayName() {
         let readiness = ModelReadiness.needsDownload(alias: "qwen3-asr-0.6b", sizeText: "750.8 MB")
         let headline = readiness.headline(displayName: "Qwen3 ASR 0.6B")

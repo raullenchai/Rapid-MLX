@@ -918,13 +918,14 @@ struct SettingsModelManagementPanel: View {
     }
 
     /// The row renders this with a leading "~" because it is a pre-download figure.
-    /// Prefer the catalog's download size, the checked-in manifest byte count of
-    /// the repo's files, because the alias heuristic underestimates some repos
-    /// (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus 787,276,896 bytes). Fall back to
+    /// Display the catalog's download size, the checked-in manifest byte count of
+    /// the repo's files, through ModelSizeText exactly as the Speech to Text picker
+    /// does, even if the string cannot be parsed. The alias heuristic underestimates
+    /// some repos (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus 787,276,896 bytes), so use
     /// ModelSizing's estimate only when the catalog has no size.
     nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
-        if ModelSizeText.bytes(entry.sizeOnDisk) != nil {
-            return ModelSizeText.display(entry.sizeOnDisk)
+        if let size = ModelSizeText.display(entry.sizeOnDisk) {
+            return size
         }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
