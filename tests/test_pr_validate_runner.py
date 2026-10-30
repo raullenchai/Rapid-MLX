@@ -3,9 +3,9 @@
 
 We want to lock in two contracts:
 
-1. Default (``fail_fast=False``) continues after ordinary failures,
+1. Full-picture mode (``fail_fast=False``) continues after ordinary failures,
    but stops on critical prerequisites or blocking Codex findings.
-2. Opt-in ``fail_fast=True`` stops at the first ``fail`` / ``error``
+2. Default ``fail_fast=True`` stops at the first ``fail`` / ``error``
    AFTER the always-on fetch fail-fast — so CI doesn't waste compute on
    stress/bench when an earlier cheap check already blocked the PR.
 
@@ -327,11 +327,10 @@ class TestFailFast:
         assert ctx.results[1].status == expected_status
         assert ctx.results[1].findings == expected_findings
         assert rc == (1 if stops_before_tests else 0)
-        assert [result.name for result in ctx.results] == [
-            "fetch",
-            "codex_review",
-            *([] if stops_before_tests else [step.name for step in test_steps]),
-        ]
+        assert [result.name for result in ctx.results[:2]] == ["fetch", "codex_review"]
+        assert (
+            "stress_e2e_bench" in [r.name for r in ctx.results]
+        ) is not stops_before_tests
         assert ("stopping before tests" in captured.err) is stops_before_tests
 
     @pytest.mark.parametrize("override", [None, "0"])
@@ -342,15 +341,18 @@ class TestFailFast:
         if override is not None:
             monkeypatch.setenv("PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL", override)
         steps = _fake_pipeline(
-            [("codex_review", "fail", ["[BLOCKING] something"]), ("step_c", "pass")]
+            [
+                ("codex_review", "fail", ["[BLOCKING] something"]),
+                ("stress_e2e_bench", "pass"),
+            ]
         )
 
         rc = run_pipeline(pr_number=999, fail_fast=False, steps=steps)
 
         captured = capsys.readouterr()
         assert rc == 1
-        assert "## [step_c]" not in captured.err
-        assert "step_c" not in captured.out
+        assert "## [stress_e2e_bench]" not in captured.err
+        assert "stress_e2e_bench" not in captured.out
         assert "codex_review" in captured.out
         assert (
             "fail-fast: [codex_review] found blocking issues; stopping before tests "
@@ -409,19 +411,17 @@ class TestFailFast:
         assert "stopping before tests" not in captured.err
 
     @pytest.mark.parametrize("status", ["fail", "error"])
-    def test_fail_fast_overrides_codex_escape_hatch(
+    def test_fail_fast_allows_codex_infrastructure_failure_to_finish_checks(
         self, repo_root_cwd, monkeypatch, capsys, status
     ):
         monkeypatch.setenv("PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL", "1")
-        steps = _fake_pipeline([("codex_review", status), ("step_c", "pass")])
-
-        rc = run_pipeline(pr_number=999, fail_fast=True, steps=steps)
-
+        steps = _fake_pipeline(
+            [("codex_review", status), ("lint", "pass"), ("stress_e2e_bench", "pass")]
+        )
+        assert run_pipeline(pr_number=999, fail_fast=True, steps=steps) == 1
         captured = capsys.readouterr()
-        assert rc == 1
-        assert "## [step_c]" not in captured.err
-        assert "step_c" not in captured.out
-        assert "[codex_review] failed and --fail-fast is on" in captured.err
+        assert "## [lint]" in captured.err
+        assert "## [stress_e2e_bench]" not in captured.err
 
     def test_default_runs_all_steps_after_a_fail(self, repo_root_cwd, capsys):
         """Without fail_fast, every step after fetch runs even when one
@@ -1530,3 +1530,28 @@ class TestLangChainGuidedCapabilityHandling:
             RuntimeError("guided_extra_required appeared in unrelated text")
         )
         assert not test_langchain._is_ok_result("FAIL: schema mismatch")
+
+
+@pytest.mark.parametrize(
+    "env,args,expected",
+    [
+        (None, [], True),
+        (None, ["--no-fail-fast"], False),
+        ("0", [], False),
+        ("", [], True),
+        ("0", ["--fail-fast"], False),
+        ("1", ["--fail-fast", "--no-fail-fast"], False),
+    ],
+)
+def test_cli_fail_fast_resolution(monkeypatch, env, args, expected):
+    from scripts.pr_validate import pr_validate
+
+    monkeypatch.delenv("PR_VALIDATE_FAIL_FAST", raising=False)
+    if env is not None:
+        monkeypatch.setenv("PR_VALIDATE_FAIL_FAST", env)
+    calls = []
+    monkeypatch.setattr(
+        pr_validate, "run_pipeline", lambda *a, **kw: calls.append(kw) or 0
+    )
+    assert pr_validate.main(["42", *args]) == 0
+    assert calls[0]["fail_fast"] is expected

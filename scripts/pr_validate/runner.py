@@ -12,11 +12,14 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
-from .base import Step
+import psutil
+
+from .base import Step, StepResult
 from .context import STEP_OPT_OUT_ENV_VARS, Context, env_truthy
 from .scorecard import render_scorecard, verdict
 from .steps.cl_description_quality import CLDescriptionQualityStep
@@ -74,31 +77,62 @@ def stage_of(name: str) -> str:
     return STEP_STAGE.get(name, "other")
 
 
-# Steps that, if they fail, stop the pipeline immediately regardless of
-# the user's preference (subsequent steps would either crash or waste
-# CPU). Fetch failures mean we have nothing to validate. Most other
-# failures still let later steps run by default so the scorecard
-# surfaces the FULL picture rather than only the first bug — the user
-# opts in to the "stop at first fail" behaviour with ``--fail-fast`` /
-# ``PR_VALIDATE_FAIL_FAST=1`` (typical for CI / incoming-PR gating).
-# Missing SDK prerequisites invalidate the matrix and stop before costly tests,
-# even when the caller wants the full picture for ordinary product failures.
-# Codex review runs early (~1 min): blocking findings mean the head must be
-# re-pushed, so spending 5–30 min on tests would be wasted. Only "fail" carrying
-# [BLOCKING] findings stops by default. Infrastructure failures (timeout,
-# auth/backend error, empty or malformed reply), "error", and "skip" let tests
-# provide signal. PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1 restores the full
-# picture, while --fail-fast still stops on any fail/error.
+# Prerequisite failures always stop. Blocking review findings also stop unless
+# explicitly overridden; review infrastructure failures still allow checks to run.
+# Other failures stop when fail-fast is enabled (the default).
 FAIL_FAST_STEPS = {"fetch", "sdk_env_check"}
-# Only failures carrying [BLOCKING] findings stop these steps by default.
 STOP_ON_BLOCKING_FINDINGS_STEPS = {"codex_review"}
+
+
+def _stop_reason(step: Step, result: StepResult, fail_fast: bool) -> str | None:
+    if result.status not in ("fail", "error"):
+        return None
+    if step.name in FAIL_FAST_STEPS:
+        return f"[{step.name}] is critical, stopping pipeline"
+    if step.name in STOP_ON_BLOCKING_FINDINGS_STEPS:
+        if (
+            result.status == "fail"
+            and any(f.startswith("[BLOCKING]") for f in result.findings)
+            and not env_truthy("PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL")
+        ):
+            return (
+                f"[{step.name}] found blocking issues; stopping before tests "
+                "(fix and re-push; set PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1 "
+                "to run the remaining steps anyway)"
+            )
+        return None
+    if fail_fast:
+        return (
+            f"[{step.name}] failed and --fail-fast is on, "
+            "stopping pipeline (subsequent steps not run)"
+        )
+    return None
+
+
+def _terminate_child_processes(grace_seconds: float = 5.0) -> None:
+    try:
+        children = psutil.Process().children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError) as error:
+        print(f"  warning: cannot enumerate child processes: {error}", file=sys.stderr)
+        return
+    for child in children:
+        try:
+            child.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _, survivors = psutil.wait_procs(children, timeout=grace_seconds)
+    for child in survivors:
+        try:
+            child.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
 
 def run_pipeline(
     pr_number: int,
     *,
     verbose: bool = False,
-    fail_fast: bool = False,
+    fail_fast: bool = True,
     skip_steps: Sequence[str] = (),
     steps: Sequence[Step] | None = None,
     base: str = "",
@@ -111,15 +145,14 @@ def run_pipeline(
     Strict scoring: ANY single ``fail`` or ``error`` blocks merge.
     ``skip`` is neutral (a step decided it didn't apply).
 
-    Codex review ``fail`` carrying ``[BLOCKING]`` findings stops before tests; set
+    Codex review ``fail`` carrying ``[BLOCKING]`` findings cancels checks; set
     ``PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1`` to continue instead.
     Infrastructure failures (timeout, auth/backend error, empty or malformed
     reply), ``error``, and ``skip`` do not trigger this default stop.
 
-    With ``fail_fast=True`` the pipeline stops at the first ``fail`` /
-    ``error`` after fetch — useful for CI gating where running the
-    expensive stress/bench step on a PR that already failed lint or
-    the codex review is just wasted compute.
+    With ``fail_fast=True`` ordinary failures stop their lane and cancel the
+    other lane. Review infrastructure failures still allow checks to finish.
+    Any failure prevents the subsequent GPU phase.
 
     ``skip_steps`` is the list of step names to drop from the pipeline
     entirely (e.g. ``("stress_e2e_bench",)`` in CI where no MLX
@@ -222,58 +255,116 @@ def run_pipeline(
     print(f"  artifacts → {ctx.work_dir}", file=sys.stderr)
     if stage:
         print(f"  stage: {stage}", file=sys.stderr)
-    if fail_fast:
-        print("  fail-fast: ON", file=sys.stderr)
+    print(
+        "  fail-fast: ON" if fail_fast else "  fail-fast: OFF (--no-fail-fast)",
+        file=sys.stderr,
+    )
     print("", file=sys.stderr)
 
-    for step in pipeline:
+    serial = [s for s in pipeline if stage_of(s.name) in ("admit", "other")]
+    lanes = {
+        stage_name: [s for s in pipeline if stage_of(s.name) == stage_name]
+        for stage_name in ("review", "checks")
+    }
+    gpu = [s for s in pipeline if stage_of(s.name) == "gpu"]
+    lock = threading.Lock()
+    cancel = threading.Event()
+    cancel_reason = ""
+
+    def print_result(step: Step, result: StepResult) -> None:
         print(
             f"## [{step.name}] {step.description} (stage: {stage_of(step.name)})",
             file=sys.stderr,
         )
-        result = step.execute(ctx)
-        result.stage = stage_of(step.name)
-        ctx.results.append(result)
-
-        marker = {
-            "pass": "OK",
-            "fail": "FAIL",
-            "skip": "skip",
-            "error": "ERROR",
-        }[result.status]
+        marker = {"pass": "OK", "fail": "FAIL", "skip": "skip", "error": "ERROR"}[
+            result.status
+        ]
         print(
             f"  → {marker:6s} {result.summary} ({result.duration_seconds:.1f}s)",
             file=sys.stderr,
         )
         print("", file=sys.stderr)
 
-        is_blocking = result.status in ("fail", "error")
-        if is_blocking and step.name in FAIL_FAST_STEPS:
+    def run_serial(steps_to_run: Sequence[Step]) -> bool:
+        for step in steps_to_run:
             print(
-                f"  fail-fast: [{step.name}] is critical, stopping pipeline",
+                f"## [{step.name}] {step.description} (stage: {stage_of(step.name)})",
                 file=sys.stderr,
             )
-            break
-        if is_blocking and fail_fast:
+            result = step.execute(ctx)
+            result.stage = stage_of(step.name)
+            ctx.results.append(result)
+            marker = {"pass": "OK", "fail": "FAIL", "skip": "skip", "error": "ERROR"}[
+                result.status
+            ]
             print(
-                f"  fail-fast: [{step.name}] failed and --fail-fast is on, "
-                "stopping pipeline (subsequent steps not run)",
+                f"  → {marker:6s} {result.summary} ({result.duration_seconds:.1f}s)\n",
                 file=sys.stderr,
             )
-            break
-        if (
-            result.status == "fail"
-            and step.name in STOP_ON_BLOCKING_FINDINGS_STEPS
-            and any(f.startswith("[BLOCKING]") for f in result.findings)
-            and not env_truthy("PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL")
+            reason = _stop_reason(step, result, fail_fast)
+            if reason:
+                print(f"  fail-fast: {reason}", file=sys.stderr)
+                return False
+        return True
+
+    def run_lane(stage_name: str, lane: Sequence[Step]) -> None:
+        nonlocal cancel_reason
+        for step in lane:
+            with lock:
+                if cancel.is_set():
+                    result = StepResult(
+                        step.name,
+                        "skip",
+                        f"cancelled: {cancel_reason}",
+                        stage=stage_name,
+                    )
+                    ctx.results.append(result)
+                    print_result(step, result)
+                    continue
+                print(
+                    f"## [{step.name}] started (stage: {stage_name})", file=sys.stderr
+                )
+            result = step.execute(ctx)
+            result.stage = stage_name
+            terminate = False
+            with lock:
+                if cancel.is_set():
+                    result.status = "skip"
+                    result.summary = (
+                        f"cancelled: {cancel_reason} (partial: {result.summary})"
+                    )
+                else:
+                    reason = _stop_reason(step, result, fail_fast)
+                    if reason:
+                        cancel_reason = f"[{step.name}] failed in the {stage_name} lane"
+                        cancel.set()
+                        terminate = True
+                        print(f"  fail-fast: {reason}", file=sys.stderr)
+                ctx.results.append(result)
+                print_result(step, result)
+            if terminate:
+                _terminate_child_processes()
+                break
+
+    if run_serial(serial):
+        threads = [
+            threading.Thread(target=run_lane, args=(name, lane))
+            for name, lane in lanes.items()
+            if lane
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if cancel.is_set() or (
+            fail_fast and any(r.status in ("fail", "error") for r in ctx.results)
         ):
-            print(
-                f"  fail-fast: [{step.name}] found blocking issues; stopping before tests "
-                "(fix and re-push; set PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1 "
-                "to run the remaining steps anyway)",
-                file=sys.stderr,
-            )
-            break
+            print("  fail-fast: stopping before gpu", file=sys.stderr)
+        else:
+            run_serial(gpu)
+
+    order = {step.name: i for i, step in enumerate(pipeline)}
+    ctx.results.sort(key=lambda result: order.get(result.name, len(pipeline)))
 
     # ``--body-only`` exists to reproduce the description-quality verdict
     # locally. If that single gate got SKIPPED (via

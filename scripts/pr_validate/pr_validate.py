@@ -7,7 +7,6 @@ import argparse
 import os
 import sys
 
-from .context import env_truthy
 from .runner import STAGE_NAMES, run_pipeline
 
 
@@ -30,12 +29,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fail-fast",
         action="store_true",
-        help=(
-            "Stop at the first failing step instead of running the whole "
-            "pipeline. Saves compute on PRs that fail an early check; "
-            "loses the 'show me everything wrong at once' view. Also "
-            "enabled by PR_VALIDATE_FAIL_FAST=1 in the environment."
-        ),
+        help="Compatibility no-op; fail-fast is enabled by default.",
+    )
+    parser.add_argument(
+        "--no-fail-fast",
+        action="store_true",
+        help="Run every lane and step to completion for the full picture; gpu still runs after failures.",
     )
     parser.add_argument(
         "--skip-steps",
@@ -91,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    fail_fast = args.fail_fast or env_truthy("PR_VALIDATE_FAIL_FAST")
+    fail_fast = not args.no_fail_fast and os.environ.get(
+        "PR_VALIDATE_FAIL_FAST", ""
+    ).strip().lower() not in {"0", "false", "no", "off"}
     skip_raw = args.skip_steps or os.environ.get("PR_VALIDATE_SKIP_STEPS", "")
     skip_steps = tuple(s.strip() for s in skip_raw.split(",") if s.strip())
     return run_pipeline(
