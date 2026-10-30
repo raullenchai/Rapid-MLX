@@ -9,11 +9,29 @@ on this module (not on :mod:`rapid_mlx.cli`) to affect parser construction.
 """
 
 import argparse
+import copy
 import sys
 import textwrap
 
 from rapid_mlx._completion import alias_completer
 from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
+
+# TurboQuant and min-quantize-tokens affect prefix-cache entries, which the
+# benchmark disables. Auto-k and finer PFlash knobs are not recorded; alias
+# defaults still apply and are pinned by model identity and runtime version.
+BENCHMARK_ACCELERATION_FLAGS = (
+    "--speculative-config",
+    "--no-spec-decode",
+    "--mtp-max-k",
+    "--kv-cache-dtype",
+    "--kv-cache-quantization",
+    "--kv-cache-quantization-bits",
+    "--kv-cache-quantization-group-size",
+    "--prefill-step-size",
+    "--pflash",
+    "--pflash-threshold",
+    "--pflash-keep-ratio",
+)
 
 
 def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
@@ -2272,6 +2290,21 @@ def _add_benchmark_parser(
         action="store_true",
         help="Print machine-readable JSON instead of the text summary",
     )
+    community_run.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Measure with every acceleration off (the original Community Benchmark protocol)",
+    )
+    acceleration = community_run.add_argument_group(
+        "acceleration (same flags and meaning as `rapid-mlx serve`)"
+    )
+    serve = subparsers.choices["serve"]
+    for action in serve._actions:
+        if any(flag in BENCHMARK_ACCELERATION_FLAGS for flag in action.option_strings):
+            copied = copy.copy(action)
+            copied.default = argparse.SUPPRESS
+            copied.required = False
+            acceleration._add_action(copied)
     community_run.add_argument(
         "--progress",
         action="store_true",

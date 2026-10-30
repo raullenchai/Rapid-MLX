@@ -19,12 +19,14 @@ import argparse
 import atexit
 import functools
 import ipaddress
+import logging
 import os
 import shlex
 import sys
 import threading
 import urllib.error
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, NoReturn
 
 from rapid_mlx._env import env_truthy
@@ -5911,6 +5913,413 @@ def _validate_local_search_exposure_or_exit(args) -> None:
         raise SystemExit(2) from None
 
 
+def serve_runtime_lane(args) -> str:
+    if getattr(args, "_companion_dspark_pair", None) is not None:
+        return "companion_dspark"
+    if getattr(args, "mtp_backend", None) == "native":
+        return "native_mtp"
+    if getattr(args, "mtp_backend", None) == "tensorfold":
+        return "tensorfold_mtp"
+    if getattr(args, "enable_dflash", False):
+        return (
+            "tensorfold_dflash"
+            if getattr(args, "dflash_backend", None) == "tensorfold"
+            else "dflash"
+        )
+    if getattr(args, "enable_ddtree", False):
+        return "ddtree"
+    return "engine"
+
+
+def resolve_serve_pflash_config(args, *, resolve_auto_config):
+    from .api.utils import resolve_serving_lane
+    from .pflash import resolve_pflash_config, validate_model_support
+
+    _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
+    if _requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
+        _requested_spec_decode = "auto"
+    _serve_is_mllm, _ = resolve_serving_lane(
+        args.model,
+        force_mllm=getattr(args, "mllm", False),
+        force_text=getattr(args, "no_mllm", False),
+        requested_spec_decode=_requested_spec_decode,
+    )
+    # Resolve BOTH PFlash defaults (mode + per-alias keep_ratio, e.g.
+    # bonsai-27b-2bit explicit opt-in → 0.50) and build the config in one shared
+    # helper; an explicit --pflash / --pflash-keep-ratio still wins inside.
+    try:
+        pflash_detection = {}
+        if args.pflash is None or args.pflash_keep_ratio is None:
+            pflash_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
+        pflash_config = resolve_pflash_config(
+            args,
+            model_name=args.model,
+            is_multimodal=_serve_is_mllm,
+            **pflash_detection,
+        )
+        validate_model_support(
+            pflash_config,
+            model_name=args.model,
+            is_mllm=_serve_is_mllm,
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    return pflash_config, _serve_is_mllm
+
+
+def resolve_serve_kv_cache(
+    args, *, auto_config, auto_config_resolved, resolve_auto_config
+):
+    turboquant_detection = {}
+    if auto_config_resolved:
+        turboquant_detection["_detected_config"] = auto_config
+    elif getattr(args, "kv_cache_turboquant", None) is None and not getattr(
+        args, "kv_cache_quantization", False
+    ):
+        turboquant_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
+    _continuous_cache_conflict = continuous_mtp_cache_conflict(args)
+    if _continuous_cache_conflict is not None:
+        print(f"\n  Error: {_continuous_cache_conflict}\n")
+        sys.exit(2)
+
+    # The alias's TurboQuant tier is an automatic serving default, not an
+    # operator request. Continuous MTP's stricter cache capability takes
+    # precedence; an explicit incompatible mode was rejected above.
+    args.kv_cache_turboquant = _resolve_turboquant_with_mtp_policy(
+        args, model_name=args.model, **turboquant_detection
+    )
+
+    # Reject conflicting KV-cache flag combinations before anything else in
+    # this block reads them. Extracted so the rejection can be tested without
+    # spawning ``serve`` — see ``kv_cache_flag_conflict``.
+    _kv_conflict = kv_cache_flag_conflict(args)
+    if _kv_conflict is not None:
+        print(f"\n  Error: {_kv_conflict}\n")
+        sys.exit(1)
+
+    # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
+    # the legacy --kv-cache-quantization flag wins. When --kv-cache-
+    # turboquant is on, leave the kv-cache-dtype path alone — TurboQuant
+    # owns the V cache and would conflict with QuantizedKVCache. When
+    # the legacy --kv-cache-quantization flag is passed, honor it
+    # verbatim for backwards compatibility; the new dtype flag only
+    # takes effect on operators who haven't pinned the legacy bool.
+    # Operator-explicit quantization (either CLI shape), computed BEFORE
+    # the branch below mutates ``args.kv_cache_quantization`` (#78).
+    _kv_quant_explicit = bool(args.kv_cache_quantization) or (
+        args.kv_cache_dtype != "bf16"
+    )
+    # The typed rejection must be importable at the point the
+    # scheduler/MLLM-lane backstop raises it during load_model, regardless
+    # of which KV branch ran above (#78). Imported into this function scope
+    # so the ``except`` clause below always resolves the name.
+
+    kv_cache_decision = None
+    if not args.kv_cache_turboquant and not args.kv_cache_quantization:
+        from .kv_cache_dtype import (
+            KVCacheQuantizationUnsupportedError,
+            dtype_to_quantization_bits,
+            log_kv_cache_decision,
+            resolve_kv_cache_dtype,
+        )
+
+        hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
+        _continuous_mtp = getattr(args, "mtp_continuous_batching", False) or getattr(
+            args, "mtp_unquantized_cache", False
+        )
+        try:
+            kv_cache_decision = resolve_kv_cache_dtype(
+                args.kv_cache_dtype,
+                # BF16 is at least as quality-preserving as the reasoning
+                # profile's int8 cache. Continuous MTP requires the unquantized
+                # transactional cache, so the method-specific capability wins.
+                reasoning=args.reasoning and not _continuous_mtp,
+                explicit=_kv_quant_explicit,
+                model_name=args.model,
+                hf_path=(alias_meta or {}).get("hf_path"),
+                hf_config=hf_cfg,
+                alias_metadata=alias_meta,
+            )
+        except KVCacheQuantizationUnsupportedError as e:
+            print(f"\n  Error: {e}\n")
+            sys.exit(2)
+        if _continuous_mtp and args.reasoning:
+            logging.getLogger(__name__).info(
+                "MTP cache policy: keeping BF16 KV cache; the reasoning "
+                "profile's int8 memory optimization is not applied to the "
+                "artifact's qualified MTP cache contract."
+            )
+        log_kv_cache_decision(kv_cache_decision, model_name=args.model)
+        quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
+        # Mutate args so the existing SchedulerConfig wiring picks up
+        # the resolved values without a second code path.
+        args.kv_cache_quantization = quant
+        args.kv_cache_quantization_bits = bits
+        # Stash on the shared ServerConfig so /metrics surfaces the
+        # effective dtype during the pre-engine load window — operator
+        # uptime dashboards scrape within ms of process start.
+        try:
+            from rapid_mlx.config import get_config as _get_config
+
+            _get_config().kv_cache_dtype = kv_cache_decision.dtype
+        except Exception:
+            # ServerConfig is best-effort observability; never block
+            # serve start on a metrics-only side effect.
+            pass
+    elif args.kv_cache_quantization:
+        # Legacy flag took precedence — synthesize a decision so
+        # observability still has a single source of truth.
+        from .kv_cache_dtype import (
+            REASONING_KV_CACHE_DTYPE,
+            KVCacheDtypeDecision,
+            KVCacheQuantizationUnsupportedError,
+            resolve_kv_cache_dtype,
+        )
+
+        # The two rejections that used to live here (``--reasoning`` +
+        # bits=4, and an out-of-range bits value) moved into
+        # ``kv_cache_flag_conflict`` and already fired above, so anything
+        # reaching this point has a legal bits value.
+        legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
+        # The legacy flag is equally operator-explicit, so it goes through
+        # the same resolver gate as --kv-cache-dtype (#78).
+        _legacy_hf_cfg, _legacy_alias_meta = _gather_kv_cache_dtype_inputs(args.model)
+        try:
+            resolve_kv_cache_dtype(
+                legacy_dtype,
+                explicit=True,
+                model_name=args.model,
+                hf_path=(_legacy_alias_meta or {}).get("hf_path"),
+                hf_config=_legacy_hf_cfg,
+                alias_metadata=_legacy_alias_meta,
+            )
+        except KVCacheQuantizationUnsupportedError as e:
+            print(f"\n  Error: {e}\n")
+            sys.exit(2)
+        # When --reasoning is set alongside the (compatible) bits=8
+        # legacy flag, the operator-facing reason should still
+        # advertise the reasoning profile so the startup banner is
+        # consistent across the two CLI shapes.
+        if args.reasoning:
+            assert legacy_dtype == REASONING_KV_CACHE_DTYPE  # by the guard above
+            reason = (
+                f"legacy --kv-cache-quantization flag + --reasoning — "
+                f"resolved to {REASONING_KV_CACHE_DTYPE} (reasoning profile "
+                f"pin matches legacy bits=8)"
+            )
+        else:
+            reason = (
+                f"legacy --kv-cache-quantization flag (bits="
+                f"{args.kv_cache_quantization_bits}) — equivalent to "
+                f"--kv-cache-dtype {legacy_dtype}"
+            )
+        kv_cache_decision = KVCacheDtypeDecision(
+            dtype=legacy_dtype,
+            reason=reason,
+            downgraded=False,
+            requested=legacy_dtype,
+        )
+        try:
+            from rapid_mlx.config import get_config as _get_config  # pragma: no cover
+
+            _get_config().kv_cache_dtype = legacy_dtype
+        except Exception:
+            pass
+
+    return kv_cache_decision, _kv_quant_explicit
+
+
+def resolve_serve_mtp_model_type(args) -> str | None:
+    _cli_mtp_model_type: str | None = None
+    if getattr(args, "spec_decode", "none") == "mtp":
+        try:
+            _hf_cfg_for_mtype, _ = _gather_kv_cache_dtype_inputs(args.model)
+            if isinstance(_hf_cfg_for_mtype, dict):
+                _mt = _hf_cfg_for_mtype.get("model_type")
+                if isinstance(_mt, str):
+                    _cli_mtp_model_type = _mt
+        except Exception:  # pragma: no cover — best-effort
+            _cli_mtp_model_type = None
+
+    return _cli_mtp_model_type
+
+
+def serve_acceleration_scheduler_kwargs(
+    args,
+    *,
+    prefill_step_size,
+    kv_cache_dtype,
+    kv_quant_explicit,
+    pflash_config,
+    mtp_model_type,
+) -> dict:
+    from .turboquant import turboquant_scheduler_kwargs
+
+    return {
+        "prefill_step_size": prefill_step_size,
+        "enable_mtp": getattr(args, "enable_mtp", False),
+        "mtp_num_draft_tokens": getattr(args, "mtp_num_draft_tokens", 1),
+        "mtp_optimistic": getattr(args, "mtp_optimistic", False),
+        "spec_decode": getattr(args, "spec_decode", "none"),
+        "dspark_num_speculative_tokens": getattr(
+            args, "dspark_num_speculative_tokens", 5
+        ),
+        "dflash_drafter_path": getattr(args, "dflash_drafter_path", "") or "",
+        "mtp_sidecar": getattr(args, "mtp_sidecar", None),
+        "mtp_model_type": mtp_model_type,
+        "mtp_max_k": getattr(args, "mtp_max_k", 3),
+        "mtp_disable_auto_k": getattr(args, "mtp_disable_auto_k", False),
+        "mtp_continuous_batching": getattr(args, "mtp_continuous_batching", False),
+        "mtp_allow_dynamic_membership": getattr(
+            args, "mtp_allow_dynamic_membership", False
+        ),
+        "enable_suffix_decoding": args.suffix_decoding,
+        "suffix_max_draft": args.suffix_max_draft,
+        "suffix_max_suffix_len": args.suffix_max_suffix_len,
+        "suffix_min_confidence": args.suffix_min_confidence,
+        "suffix_min_draft_len": args.suffix_min_draft_len,
+        "kv_cache_dtype": kv_cache_dtype,
+        "kv_cache_quantization": args.kv_cache_quantization,
+        "kv_cache_quantization_bits": args.kv_cache_quantization_bits,
+        "kv_cache_quantization_group_size": args.kv_cache_quantization_group_size,
+        "kv_cache_min_quantize_tokens": args.kv_cache_min_quantize_tokens,
+        "kv_cache_dtype_explicit": kv_quant_explicit,
+        **turboquant_scheduler_kwargs(args),
+        "pflash_config": pflash_config,
+    }
+
+
+@dataclass(frozen=True)
+class ServeAccelerationPlan:
+    lane: str
+    scheduler_kwargs: dict
+    is_mllm: bool
+    prefill_step_size: int | None
+    kv_cache_decision: object | None
+
+
+def serve_acceleration_preflights(args) -> None:
+    _normalize_speculative_config_or_exit(args)
+    _require_tensorfold_family_lane_or_exit(args)
+    _reject_tensorfold_lanes_off_lane_or_exit(args)
+    _preflight_native_mtp_or_exit(args)
+    _preflight_companion_dspark_or_exit(args)
+    if getattr(args, "enable_ddtree", False):
+        _preflight_ddtree_or_exit(args)
+
+    if getattr(args, "enable_dflash", False):
+        _preflight_dflash_mutexes_or_exit(args)
+
+    # DFlash depends on the optional ``mlx-vlm`` bridge that ships in
+    # the ``[dflash]`` extra. Pre-0.9.3 the missing-runtime error only
+    # surfaced ~50 lines into serve_command, AFTER:
+    #   - alias profile resolved (logged twice via pflash)
+    #   - tool/reasoning parsers auto-configured
+    #   - CORS allow-origin warning printed
+    # so the operator saw five INFO lines and a banner before the
+    # actionable optional-extra install instructions,
+    # matching Diego's earlier ``[embeddings]`` regression shape exactly.
+    # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
+    # as the other extras so the error lands FIRST. ``importlib.util.
+    # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
+    # hot CLI path.
+    _spec_config = getattr(args, "_speculative_config", None)
+    _wants_tensorfold = (
+        _spec_config is not None and _spec_config.backend == "tensorfold"
+    )
+    if _spec_config is not None and _spec_config.backend == "tensorfold":
+        from .speculative.tensorfold_families import profile_for as _tf_family_for
+
+        if _spec_config.method == "mtp" or _tf_family_for(
+            getattr(args, "_original_alias", None) or getattr(args, "model", None)
+        ):
+            _preflight_tensorfold_qwen27_or_exit(args)
+        else:
+            _preflight_tensorfold_qwen27_or_exit()
+    _wants_dflash = getattr(args, "enable_dflash", False) and not _wants_tensorfold
+    if _wants_dflash:
+        from .speculative.dflash.eligibility import have_runtime
+
+        if not have_runtime():
+            print(
+                "\n  Error: DFlash speculative decoding "
+                '(--speculative-config \'{"method":"dflash"}\') requires '
+                "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
+                f"\n  {optional_extra_install_hint('dflash')}\n"
+            )
+            sys.exit(1)
+
+
+def resolve_serve_acceleration(args) -> ServeAccelerationPlan:
+    serve_acceleration_preflights(args)
+    lane = serve_runtime_lane(args)
+    if lane != "engine":
+        return ServeAccelerationPlan(lane, {}, False, None, None)
+
+    auto_config = None
+    auto_config_resolved = False
+
+    def resolve_auto_config(*, non_fatal: bool):
+        nonlocal auto_config, auto_config_resolved
+        if auto_config_resolved:
+            return auto_config
+        try:
+            from .model_auto_config import detect_model_config
+        except ImportError:
+            auto_config_resolved = True
+            return None
+        try:
+            identity = getattr(args, "_original_alias", None) or args.model
+            auto_config = detect_model_config(_auto_config_lookup_key(identity))
+        except Exception as e:
+            if not non_fatal:
+                raise
+            logging.getLogger(__name__).debug(f"Auto-detection failed (non-fatal): {e}")
+            return None
+        auto_config_resolved = True
+        return auto_config
+
+    pflash_config, is_mllm = resolve_serve_pflash_config(
+        args, resolve_auto_config=resolve_auto_config
+    )
+    decision, explicit = resolve_serve_kv_cache(
+        args,
+        auto_config=auto_config,
+        auto_config_resolved=auto_config_resolved,
+        resolve_auto_config=resolve_auto_config,
+    )
+    prefill = _resolve_prefill_step_size(
+        model_name=getattr(args, "_original_alias", None) or args.model,
+        configured=args.prefill_step_size,
+        user_set_explicit=bool(getattr(args, "_prefill_step_size_explicit", False)),
+    )
+    from .runtime.config_adapter import RuntimeLaunchValues
+
+    effective = _resolve_cli_effective_runtime_config(
+        args=args,
+        prefill_step_size=prefill,
+        prefill_user_set_explicit=bool(
+            getattr(args, "_prefill_step_size_explicit", False)
+        ),
+        enable_prefix_cache=args.enable_prefix_cache and not args.disable_prefix_cache,
+        kv_cache_decision=decision,
+        kv_quant_explicit=explicit,
+    )
+    values = RuntimeLaunchValues.from_effective(effective)
+    mtp_type = resolve_serve_mtp_model_type(args)
+    kwargs = serve_acceleration_scheduler_kwargs(
+        args,
+        prefill_step_size=values.prefill_step_size,
+        kv_cache_dtype=values.kv_cache_dtype,
+        kv_quant_explicit=explicit,
+        pflash_config=pflash_config,
+        mtp_model_type=mtp_type,
+    )
+    return ServeAccelerationPlan(lane, kwargs, is_mllm, prefill, decision)
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -6723,11 +7132,8 @@ def serve_command(args):
     # so the default (``"off"`` for every alias since #4092) is materialized into
     # ``args.pflash``. The resolved value then flows through the same
     # validation path the user-explicit case takes.
-    from .api.utils import resolve_serving_lane
-    from .pflash import (
-        resolve_pflash_config,
-        validate_model_support,
-    )
+    from .api.utils import resolve_serving_lane  # noqa: F401
+    from .pflash import resolve_pflash_config, validate_model_support  # noqa: F401
 
     # Lazily resolve checkpoint/profile metadata at most once for the serve-time
     # defaults below. Fully explicit startup must not inspect metadata at all.
@@ -6768,45 +7174,10 @@ def serve_command(args):
     # the effective lane, NOT the raw multimodal classification: a hybrid VLM
     # that auto-downgrades to the text-only lane is PFlash-capable there,
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
-    if (
-        not args.enable_dflash
-        and getattr(args, "mtp_backend", None) not in {"native", "tensorfold"}
-        and _companion_dspark_pair is None
-    ):
-        _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
-        if _requested_spec_decode == "none" and getattr(
-            args, "force_spec_decode", False
-        ):
-            _requested_spec_decode = "auto"
-        _serve_is_mllm, _ = resolve_serving_lane(
-            args.model,
-            force_mllm=getattr(args, "mllm", False),
-            force_text=getattr(args, "no_mllm", False),
-            requested_spec_decode=_requested_spec_decode,
+    if serve_runtime_lane(args) in {"engine", "ddtree"}:
+        pflash_config, _serve_is_mllm = resolve_serve_pflash_config(
+            args, resolve_auto_config=resolve_auto_config
         )
-        # Resolve BOTH PFlash defaults (mode + per-alias keep_ratio, e.g.
-        # bonsai-27b-2bit explicit opt-in → 0.50) and build the config in one shared
-        # helper; an explicit --pflash / --pflash-keep-ratio still wins inside.
-        try:
-            pflash_detection = {}
-            if args.pflash is None or args.pflash_keep_ratio is None:
-                pflash_detection["_detected_config"] = resolve_auto_config(
-                    non_fatal=False
-                )
-            pflash_config = resolve_pflash_config(
-                args,
-                model_name=args.model,
-                is_multimodal=_serve_is_mllm,
-                **pflash_detection,
-            )
-            validate_model_support(
-                pflash_config,
-                model_name=args.model,
-                is_mllm=_serve_is_mllm,
-            )
-        except ValueError as e:
-            print(f"Error: {e}")
-            sys.exit(1)
 
     # Auto-detect parser config from model name when not explicitly set.
     # --no-tool-call-parser / --no-reasoning-parser are escape hatches
@@ -7511,166 +7882,16 @@ def serve_command(args):
     # ``turboquant_scheduler_kwargs`` helper is the shared invariant
     # (#969) — ``python -m rapid_mlx.server`` calls the same helper so
     # the two entrypoints can't drift.
-    from .turboquant import (
-        turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs,
+    from .turboquant import turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs  # noqa: F401
+
+    kv_cache_decision, _kv_quant_explicit = resolve_serve_kv_cache(
+        args,
+        auto_config=auto_config,
+        auto_config_resolved=auto_config_resolved,
+        resolve_auto_config=resolve_auto_config,
     )
 
-    turboquant_detection = {}
-    if auto_config_resolved:
-        turboquant_detection["_detected_config"] = auto_config
-    elif getattr(args, "kv_cache_turboquant", None) is None and not getattr(
-        args, "kv_cache_quantization", False
-    ):
-        turboquant_detection["_detected_config"] = resolve_auto_config(non_fatal=False)
-    _continuous_cache_conflict = continuous_mtp_cache_conflict(args)
-    if _continuous_cache_conflict is not None:
-        print(f"\n  Error: {_continuous_cache_conflict}\n")
-        sys.exit(2)
-
-    # The alias's TurboQuant tier is an automatic serving default, not an
-    # operator request. Continuous MTP's stricter cache capability takes
-    # precedence; an explicit incompatible mode was rejected above.
-    args.kv_cache_turboquant = _resolve_turboquant_with_mtp_policy(
-        args, model_name=args.model, **turboquant_detection
-    )
-
-    # Reject conflicting KV-cache flag combinations before anything else in
-    # this block reads them. Extracted so the rejection can be tested without
-    # spawning ``serve`` — see ``kv_cache_flag_conflict``.
-    _kv_conflict = kv_cache_flag_conflict(args)
-    if _kv_conflict is not None:
-        print(f"\n  Error: {_kv_conflict}\n")
-        sys.exit(1)
-
-    # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
-    # the legacy --kv-cache-quantization flag wins. When --kv-cache-
-    # turboquant is on, leave the kv-cache-dtype path alone — TurboQuant
-    # owns the V cache and would conflict with QuantizedKVCache. When
-    # the legacy --kv-cache-quantization flag is passed, honor it
-    # verbatim for backwards compatibility; the new dtype flag only
-    # takes effect on operators who haven't pinned the legacy bool.
-    # Operator-explicit quantization (either CLI shape), computed BEFORE
-    # the branch below mutates ``args.kv_cache_quantization`` (#78).
-    _kv_quant_explicit = bool(args.kv_cache_quantization) or (
-        args.kv_cache_dtype != "bf16"
-    )
-    # The typed rejection must be importable at the point the
-    # scheduler/MLLM-lane backstop raises it during load_model, regardless
-    # of which KV branch ran above (#78). Imported into this function scope
-    # so the ``except`` clause below always resolves the name.
     from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
-
-    kv_cache_decision = None
-    if not args.kv_cache_turboquant and not args.kv_cache_quantization:
-        from .kv_cache_dtype import (
-            KVCacheQuantizationUnsupportedError,
-            dtype_to_quantization_bits,
-            log_kv_cache_decision,
-            resolve_kv_cache_dtype,
-        )
-
-        hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
-        _continuous_mtp = getattr(args, "mtp_continuous_batching", False) or getattr(
-            args, "mtp_unquantized_cache", False
-        )
-        try:
-            kv_cache_decision = resolve_kv_cache_dtype(
-                args.kv_cache_dtype,
-                # BF16 is at least as quality-preserving as the reasoning
-                # profile's int8 cache. Continuous MTP requires the unquantized
-                # transactional cache, so the method-specific capability wins.
-                reasoning=args.reasoning and not _continuous_mtp,
-                explicit=_kv_quant_explicit,
-                model_name=args.model,
-                hf_path=(alias_meta or {}).get("hf_path"),
-                hf_config=hf_cfg,
-                alias_metadata=alias_meta,
-            )
-        except KVCacheQuantizationUnsupportedError as e:
-            print(f"\n  Error: {e}\n")
-            sys.exit(2)
-        if _continuous_mtp and args.reasoning:
-            logging.getLogger(__name__).info(
-                "MTP cache policy: keeping BF16 KV cache; the reasoning "
-                "profile's int8 memory optimization is not applied to the "
-                "artifact's qualified MTP cache contract."
-            )
-        log_kv_cache_decision(kv_cache_decision, model_name=args.model)
-        quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
-        # Mutate args so the existing SchedulerConfig wiring picks up
-        # the resolved values without a second code path.
-        args.kv_cache_quantization = quant
-        args.kv_cache_quantization_bits = bits
-        # Stash on the shared ServerConfig so /metrics surfaces the
-        # effective dtype during the pre-engine load window — operator
-        # uptime dashboards scrape within ms of process start.
-        try:
-            from rapid_mlx.config import get_config as _get_config
-
-            _get_config().kv_cache_dtype = kv_cache_decision.dtype
-        except Exception:
-            # ServerConfig is best-effort observability; never block
-            # serve start on a metrics-only side effect.
-            pass
-    elif args.kv_cache_quantization:
-        # Legacy flag took precedence — synthesize a decision so
-        # observability still has a single source of truth.
-        from .kv_cache_dtype import (
-            REASONING_KV_CACHE_DTYPE,
-            KVCacheDtypeDecision,
-            KVCacheQuantizationUnsupportedError,
-            resolve_kv_cache_dtype,
-        )
-
-        # The two rejections that used to live here (``--reasoning`` +
-        # bits=4, and an out-of-range bits value) moved into
-        # ``kv_cache_flag_conflict`` and already fired above, so anything
-        # reaching this point has a legal bits value.
-        legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
-        # The legacy flag is equally operator-explicit, so it goes through
-        # the same resolver gate as --kv-cache-dtype (#78).
-        _legacy_hf_cfg, _legacy_alias_meta = _gather_kv_cache_dtype_inputs(args.model)
-        try:
-            resolve_kv_cache_dtype(
-                legacy_dtype,
-                explicit=True,
-                model_name=args.model,
-                hf_path=(_legacy_alias_meta or {}).get("hf_path"),
-                hf_config=_legacy_hf_cfg,
-                alias_metadata=_legacy_alias_meta,
-            )
-        except KVCacheQuantizationUnsupportedError as e:
-            print(f"\n  Error: {e}\n")
-            sys.exit(2)
-        # When --reasoning is set alongside the (compatible) bits=8
-        # legacy flag, the operator-facing reason should still
-        # advertise the reasoning profile so the startup banner is
-        # consistent across the two CLI shapes.
-        if args.reasoning:
-            assert legacy_dtype == REASONING_KV_CACHE_DTYPE  # by the guard above
-            reason = (
-                f"legacy --kv-cache-quantization flag + --reasoning — "
-                f"resolved to {REASONING_KV_CACHE_DTYPE} (reasoning profile "
-                f"pin matches legacy bits=8)"
-            )
-        else:
-            reason = (
-                f"legacy --kv-cache-quantization flag (bits="
-                f"{args.kv_cache_quantization_bits}) — equivalent to "
-                f"--kv-cache-dtype {legacy_dtype}"
-            )
-        kv_cache_decision = KVCacheDtypeDecision(
-            dtype=legacy_dtype,
-            reason=reason,
-            downgraded=False,
-            requested=legacy_dtype,
-        )
-        try:
-            from rapid_mlx.config import get_config as _get_config  # pragma: no cover
-
-            _get_config().kv_cache_dtype = legacy_dtype
-        except Exception:
-            pass
 
     # Build scheduler config
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
@@ -7738,16 +7959,7 @@ def serve_command(args):
     # ``--speculative-config``; for the "none" path the field stays
     # None and the engine takes the pre-0.9.13 fallback branch that
     # best-effort re-reads the config on the executor.
-    _cli_mtp_model_type: str | None = None
-    if getattr(args, "spec_decode", "none") == "mtp":
-        try:
-            _hf_cfg_for_mtype, _ = _gather_kv_cache_dtype_inputs(args.model)
-            if isinstance(_hf_cfg_for_mtype, dict):
-                _mt = _hf_cfg_for_mtype.get("model_type")
-                if isinstance(_mt, str):
-                    _cli_mtp_model_type = _mt
-        except Exception:  # pragma: no cover — best-effort
-            _cli_mtp_model_type = None
+    _cli_mtp_model_type = resolve_serve_mtp_model_type(args)
 
     scheduler_config = SchedulerConfig(
         max_num_seqs=_effective_runtime_values.max_num_seqs,
@@ -7794,67 +8006,23 @@ def serve_command(args):
         # reads it off scheduler_config only; the legacy load_model kwarg was
         # accepted but never used. See #400 and the CLI ↔ Config fidelity
         # audit at scripts/audit_cli_config_fidelity.py.
-        prefill_step_size=_effective_runtime_values.prefill_step_size,
+        **serve_acceleration_scheduler_kwargs(
+            args,
+            prefill_step_size=_effective_runtime_values.prefill_step_size,
+            kv_cache_dtype=_effective_runtime_values.kv_cache_dtype,
+            kv_quant_explicit=_kv_quant_explicit,
+            pflash_config=pflash_config,
+            mtp_model_type=_cli_mtp_model_type,
+        ),
         vision_prefill_token_budget=_vision_prefill_token_budget,
         vision_min_pixels=getattr(args, "vision_min_pixels", 0),
         vision_max_pixels=getattr(args, "vision_max_pixels", 0),
-        # Speculative decoding selection.
-        enable_mtp=getattr(args, "enable_mtp", False),
-        mtp_num_draft_tokens=getattr(args, "mtp_num_draft_tokens", 1),
-        mtp_optimistic=getattr(args, "mtp_optimistic", False),
-        spec_decode=getattr(args, "spec_decode", "none"),
-        dspark_num_speculative_tokens=getattr(args, "dspark_num_speculative_tokens", 5),
-        dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
-        # Optional external MTP sidecar path. ``None`` is the "no
-        # sidecar; native-MTP path only" sentinel.
-        mtp_sidecar=getattr(args, "mtp_sidecar", None),
-        # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
-        # ``config.json::model_type`` for the dispatch step. See the
-        # ``_cli_mtp_model_type`` block above for why this is
-        # resolved on the CLI thread instead of on the executor.
-        mtp_model_type=_cli_mtp_model_type,
-        # 0.9.13 PR-B: EV depth controller knobs.
-        mtp_max_k=getattr(args, "mtp_max_k", 3),
-        mtp_disable_auto_k=getattr(args, "mtp_disable_auto_k", False),
-        # Default-off live coordinator for persistent continuous self-MTP.
-        mtp_continuous_batching=getattr(args, "mtp_continuous_batching", False),
-        mtp_allow_dynamic_membership=getattr(
-            args, "mtp_allow_dynamic_membership", False
-        ),
-        # SuffixDecoding
-        enable_suffix_decoding=args.suffix_decoding,
-        suffix_max_draft=args.suffix_max_draft,
-        suffix_max_suffix_len=args.suffix_max_suffix_len,
-        suffix_min_confidence=args.suffix_min_confidence,
-        suffix_min_draft_len=args.suffix_min_draft_len,
-        # KV cache quantization (R15 #300: dtype string is the canonical
-        # observability surface; ``_quantization`` / ``_bits`` are the
-        # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
-        kv_cache_dtype=_effective_runtime_values.kv_cache_dtype,
-        kv_cache_quantization=args.kv_cache_quantization,
-        kv_cache_quantization_bits=args.kv_cache_quantization_bits,
-        kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
-        kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
-        # Lane-level gates (MLLM engine, live-cache probe) hard-fail
-        # explicit requests they cannot honor (#78).
-        kv_cache_dtype_explicit=_kv_quant_explicit,
-        # TurboQuant compression (R15 Phase 4: mode-aware). Shared
-        # helper (#969) — ``python -m rapid_mlx.server`` calls the same
-        # ``turboquant_scheduler_kwargs`` so both entrypoints stay in
-        # lock-step. ``--kv-cache-turboquant`` carries a mode value:
-        # ``None`` when off, ``"v4"`` for the legacy V-only path,
-        # ``"k8v4"`` for the K-8bit + V-4bit mix. SchedulerConfig keeps
-        # the boolean ``kv_cache_turboquant`` for downstream callers;
-        # the mode string rides on the dedicated ``_mode`` field.
-        **_turboquant_scheduler_kwargs(args),
         # R15-P1 (task #296): disk-backed KV checkpointing. ``0``
         # (default) disables; each snapshot blocks the decode thread for
         # O(context) so the feature is opt-in (#1853). The runtime module
         # guards every hot-path call with ``should_checkpoint`` so the
         # cost when off is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 0),
-        # PFlash long-prompt compression (#287)
-        pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
         # SchedulerConfig so the admission gate enforces the same cap
         # that ``mx.set_memory_limit`` only treats as a guideline. The

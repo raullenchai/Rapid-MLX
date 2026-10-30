@@ -7,6 +7,7 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
+import contextlib
 import contextvars
 import copy
 import inspect
@@ -33,6 +34,15 @@ import requests
 
 from ..client_header import RAPID_CLIENT_BENCH
 from ..http_auth import rapid_mlx_client_headers
+from .acceleration import (
+    AccelerationConfigError,
+    AccelerationRequest,
+    build_serve_args,
+    effective_language,
+    preflight_benchmark_acceleration,
+    resolve_benchmark_acceleration,
+    validate_request,
+)
 from .benchmark_contracts import public_prompt, registered_workload
 from .hardware import collect, run_conditions
 
@@ -1196,27 +1206,10 @@ def _text_speculative_execution(repo_id: str) -> dict[str, Any] | None:
     }
 
 
-def _with_v41_sidecar_identity(
-    primary: dict[str, Any], mtp_snapshot_path: str, repo_id: str | None = None
-) -> dict[str, Any]:
-    """Record the external DSpark sidecar beside the target checkpoint."""
-    from rapid_mlx.models.deepseek_v41_native.artifacts import (
-        MTP_REPO,
-        product_artifact,
-    )
-
-    artifact = product_artifact(repo_id)
-
+def _with_sidecar_identity(primary, sidecar_repo, snapshot_path, subfolder=None):
     combined = copy.deepcopy(primary)
     sidecar = unresolved_model_identity(
-        artifact.mtp_repo if artifact else MTP_REPO,
-        "text_generation",
-        **(
-            {"subfolder": artifact.draft_subfolder}
-            if artifact and artifact.draft_subfolder
-            else {}
-        ),
-        snapshot_path=mtp_snapshot_path,
+        sidecar_repo, "text_generation", subfolder, snapshot_path=snapshot_path
     )["components"][0]
     sidecar["component_id"] = "sidecar"
     sidecar["role"] = "other"
@@ -1225,12 +1218,117 @@ def _with_v41_sidecar_identity(
     return combined
 
 
+def _with_v41_sidecar_identity(primary, mtp_snapshot_path, repo_id=None):
+    from rapid_mlx.models.deepseek_v41_native.artifacts import (
+        MTP_REPO,
+        product_artifact,
+    )
+
+    artifact = product_artifact(repo_id)
+    return _with_sidecar_identity(
+        primary,
+        artifact.mtp_repo if artifact else MTP_REPO,
+        mtp_snapshot_path,
+        artifact.draft_subfolder if artifact else None,
+    )
+
+
+async def _load_serving_engine(model_id, scheduler_config, serve_args):
+    from rapid_mlx import server
+
+    server.load_model(
+        model_id,
+        scheduler_config=scheduler_config,
+        force_mllm=serve_args.mllm,
+        force_text=serve_args.no_mllm,
+        force_hybrid=getattr(serve_args, "force_hybrid", False),
+        no_hybrid=getattr(serve_args, "no_hybrid", False),
+        force_spec_decode=getattr(serve_args, "force_spec_decode", False),
+        no_spec_decode=getattr(serve_args, "no_spec_decode", False),
+        force_openai_harmony_streaming=getattr(
+            serve_args, "force_openai_harmony_streaming", False
+        ),
+        no_openai_harmony_streaming=getattr(
+            serve_args, "no_openai_harmony_streaming", False
+        ),
+    )
+    engine = server._engine
+    try:
+        await engine.start()
+    except BaseException:
+        await engine.stop()
+        raise
+    return engine
+
+
+def _engine_scheduler(engine):
+    inner = getattr(engine, "_engine", None)
+    candidates = [getattr(engine, "_mllm_scheduler", None)]
+    for holder in (
+        engine,
+        inner,
+        getattr(inner, "engine", None),
+        getattr(engine, "engine", None),
+    ):
+        if holder is not None:
+            candidates.append(getattr(holder, "scheduler", None))
+    return next(
+        (
+            item
+            for item in candidates
+            if item is not None
+            and callable(getattr(item, "projected_memory_max_context", None))
+        ),
+        None,
+    )
+
+
+def _ensure_model_downloaded(model_id):
+    from rapid_mlx.cli import _ensure_model_downloaded as ensure
+
+    return ensure(model_id)
+
+
+def _sidecar_identity(sidecar):
+    from pathlib import Path
+
+    from rapid_mlx.catalog import rcj_digest
+
+    parts = Path(sidecar).parts
+    if "snapshots" in parts:
+        index = len(parts) - 1 - parts[::-1].index("snapshots")
+        cache_name = parts[index - 1]
+        if not cache_name.startswith("models--") or index + 1 >= len(parts):
+            raise AccelerationConfigError("Cannot identify MTP sidecar snapshot")
+        repo = cache_name[len("models--") :].replace("--", "/")
+        snapshot = str(Path(*parts[: index + 2]))
+        revision = parts[index + 1]
+        subfolder = str(Path(*parts[index + 2 :])) if parts[index + 2 :] else None
+    else:
+        repo, snapshot, subfolder = sidecar, None, None
+        identity = unresolved_model_identity(repo, "text_generation")
+        revision = identity["components"][0]["source"].get("resolved_revision")
+        if not revision:
+            raise AccelerationConfigError(
+                "Cannot resolve MTP sidecar snapshot revision"
+            )
+    identity = unresolved_model_identity(
+        repo, "text_generation", subfolder, snapshot_path=snapshot
+    )
+    identity["components"][0]["source"]["resolved_revision"] = revision
+    projection = {
+        key: identity[key] for key in ("schema_version", "pipeline_kind", "components")
+    }
+    return repo, snapshot, subfolder, rcj_digest(projection)
+
+
 async def _text_measurements(
     model_name: str,
     catalog_repo_id: str | None = None,
     *,
     progress: Progress | None = None,
-) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
+    acceleration: AccelerationRequest | None = None,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None, dict | None]:
     """Measure ``model_name`` — the catalog alias, not the bare repo id.
 
     The loader resolves an explicit alias to that alias's checkpoint
@@ -1239,7 +1337,6 @@ async def _text_measurements(
     could silently measure the 8-bit checkpoint. Loading by alias keeps the
     measured artifact and the recorded identity the same thing.
     """
-    from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.engine_core import (
         AsyncEngineCore,
         EngineConfig,
@@ -1268,6 +1365,7 @@ async def _text_measurements(
     # text lane. Architecture-owned backbones such as GLM-5 Next use the
     # production MLLM loader instead of failing in mlx-lm. Dedicated runtimes
     # such as DeepSeek V4.1 use their own adapter below.
+    acceleration = acceleration or AccelerationRequest()
     use_v41_runtime = _is_deepseek_v41_benchmark_target(repo_id)
     use_serving_engine = not use_v41_runtime and _uses_serving_benchmark_engine(target)
 
@@ -1275,6 +1373,7 @@ async def _text_measurements(
     executor = None
     serving_engine = None
     mtp_source: str | None = None
+    language = None
     try:
         if progress is not None:
             cached = model_is_cached(repo_id)
@@ -1288,6 +1387,8 @@ async def _text_measurements(
         load_started = _stage_started(progress)
 
         async def start_serving_engine() -> tuple[Any, Any]:
+            from rapid_mlx.engine.batched import BatchedEngine
+
             scheduler = SchedulerConfig(
                 max_num_seqs=1,
                 max_concurrent_requests=1,
@@ -1362,6 +1463,26 @@ async def _text_measurements(
             model, tokenizer, v41_runtime, loaded_source, mtp_source = executor.submit(
                 load_v41_runtime
             ).result()
+        elif not acceleration.baseline:
+            preflight_benchmark_acceleration(model_name, acceleration)
+            initial_args = build_serve_args(model_name, acceleration)
+            _ensure_model_downloaded(initial_args.model)
+            plan, serve_args = resolve_benchmark_acceleration(model_name, acceleration)
+            scheduler_kwargs = dict(plan.scheduler_kwargs)
+            scheduler_kwargs.pop("enable_prefix_cache", None)
+            scheduler = SchedulerConfig(
+                max_num_seqs=1,
+                max_concurrent_requests=1,
+                prefill_batch_size=1,
+                completion_batch_size=1,
+                enable_prefix_cache=False,
+                **scheduler_kwargs,
+            )
+            serving_engine = await _load_serving_engine(
+                serve_args.model, scheduler, serve_args
+            )
+            tokenizer = serving_engine.tokenizer
+            loaded_source, model = "", None
         elif use_serving_engine:
             serving_engine, tokenizer = await start_serving_engine()
             loaded_source, model = "", None
@@ -1407,14 +1528,15 @@ async def _text_measurements(
         capture = _LOADED_IDENTITY.get()
         if capture is not None:
             capture["identity"] = loaded_identity
-        scheduler = SchedulerConfig(
-            max_num_seqs=1,
-            max_concurrent_requests=1,
-            prefill_batch_size=1,
-            completion_batch_size=1,
-            enable_prefix_cache=False,
-            spec_decode="none",
-        )
+        if acceleration.baseline or use_v41_runtime:
+            scheduler = SchedulerConfig(
+                max_num_seqs=1,
+                max_concurrent_requests=1,
+                prefill_batch_size=1,
+                completion_batch_size=1,
+                enable_prefix_cache=False,
+                spec_decode="none",
+            )
         config = EngineConfig(model_name=repo_id, scheduler_config=scheduler)
         engine_context: Any
         context_source: Any
@@ -1453,6 +1575,41 @@ async def _text_measurements(
                     else None
                 ),
             )
+            if not use_v41_runtime:
+                runtime_method = None
+                draft_digest = None
+                if acceleration.baseline and serving_engine is not None:
+                    live_scheduler = _engine_scheduler(serving_engine)
+                    if live_scheduler is not None:
+                        scheduler = live_scheduler.config
+                if not acceleration.baseline:
+                    live_scheduler = _engine_scheduler(serving_engine)
+                    if live_scheduler is None:
+                        raise RuntimeError("Serving engine has no live scheduler")
+                    scheduler = live_scheduler.config
+                    runtime_method = getattr(
+                        live_scheduler, "spec_decode_runtime_method", None
+                    )
+                    if runtime_method == "mtp" and scheduler.mtp_sidecar:
+                        sidecar_repo, snapshot, subfolder, draft_digest = (
+                            _sidecar_identity(scheduler.mtp_sidecar)
+                        )
+                        loaded_identity = _with_sidecar_identity(
+                            loaded_identity, sidecar_repo, snapshot, subfolder
+                        )
+                        if capture is not None:
+                            capture["identity"] = loaded_identity
+                language = effective_language(
+                    scheduler,
+                    runtime_method=runtime_method,
+                    draft_identity_digest=draft_digest,
+                    context_length=context_length,
+                    live_kv_quant=(
+                        getattr(live_scheduler, "_live_kv_quant", None)
+                        if not acceleration.baseline
+                        else None
+                    ),
+                )
             _record_conditions_after()
     finally:
         try:
@@ -1501,7 +1658,7 @@ async def _text_measurements(
                     "decode_duration_ms": decode_ms,
                 }
             )
-    return measurements, context_length, loaded_identity
+    return measurements, context_length, loaded_identity, language
 
 
 def _is_dedicated_process_group_leader() -> bool:
@@ -1582,6 +1739,7 @@ def run_local(
     inherit_process_group: bool = False,
     progress: Progress | None = None,
     events: EventSink | None = None,
+    acceleration: AccelerationRequest | None = None,
 ) -> dict[str, Any]:
     """Run a registered protocol, validate it, and save it locally only.
 
@@ -1605,8 +1763,20 @@ def run_local(
     except Exception as exc:
         raise LocalBenchmarkError(str(exc), None, saved=False) from exc
     model = plan["model"]
-    started_at = utc_now()
     task_type = model["task_type"]
+    acceleration = acceleration or AccelerationRequest()
+    try:
+        validate_request(
+            acceleration,
+            task_type,
+            is_fixed_runtime=(
+                task_type == "text_generation"
+                and _is_deepseek_v41_benchmark_target(model["repo_id"])
+            ),
+        )
+    except AccelerationConfigError as exc:
+        raise LocalBenchmarkError(str(exc), None, saved=False) from exc
+    started_at = utc_now()
     if task_type not in {"text_generation", "image_generation", "video_generation"}:
         raise ValueError(f"unsupported task type {task_type!r}")
     destination = archive or LocalRunArchive.default()
@@ -1631,6 +1801,7 @@ def run_local(
             inherit_process_group,
             loaded,
             progress=progress,
+            acceleration=acceleration,
         )
     finally:
         _LOADED_IDENTITY.reset(loaded_token)
@@ -1647,8 +1818,10 @@ def _run_local_measured(
     loaded: dict[str, Any],
     *,
     progress: Progress | None = None,
+    acceleration: AccelerationRequest | None = None,
 ) -> dict[str, Any]:
     context_length = None
+    language = None
     hardware = None
     software = None
     execution = None
@@ -1671,12 +1844,20 @@ def _run_local_measured(
         capture_token = _CONDITIONS_AFTER.set(capture)
         try:
             if task_type == "text_generation":
-                measured = asyncio.run(
-                    _text_measurements(alias, model["repo_id"], progress=progress)
-                )
+                with contextlib.redirect_stdout(sys.stderr):
+                    measured = asyncio.run(
+                        _text_measurements(
+                            alias,
+                            model["repo_id"],
+                            progress=progress,
+                            acceleration=acceleration,
+                        )
+                    )
                 measurements, context_length = measured[0], measured[1]
                 # The identity read right after the loader pinned its snapshot
                 # (3-tuple from the real helper; test doubles may return two).
+                if len(measured) > 3:
+                    language = measured[3]
                 if len(measured) > 2 and measured[2] is not None:
                     model_identity = measured[2]
             elif task_type == "image_generation":
@@ -1720,6 +1901,7 @@ def _run_local_measured(
         execution = execution_config(
             task_type,
             context_length=context_length,
+            language=language,
             speculative_decoding=(
                 _text_speculative_execution(model["repo_id"])
                 if task_type == "text_generation"
@@ -1740,6 +1922,8 @@ def _run_local_measured(
             conditions_before=conditions_before,
             conditions_after=conditions_after,
         )
+    except AccelerationConfigError as exc:
+        raise LocalBenchmarkError(str(exc), None, saved=False) from exc
     except (Exception, asyncio.CancelledError) as exc:
         # ``CancelledError`` is a BaseException: without naming it here a
         # cancelled benchmark would skip the archived cancellation record

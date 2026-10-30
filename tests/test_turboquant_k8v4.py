@@ -550,7 +550,11 @@ class TestCLIFlag:
         # trigger the gate.
         assert "kv_cache_turboquant and args.kv_cache_quantization" in source
         assert "mutually exclusive" in source.lower()
-        assert "kv_cache_flag_conflict" in inspect.getsource(cli.serve_command)
+        assert "kv_cache_flag_conflict" in inspect.getsource(cli.resolve_serve_kv_cache)
+        assert "resolve_serve_kv_cache" in inspect.getsource(
+            cli.resolve_serve_acceleration
+        )
+        assert "resolve_serve_kv_cache" in inspect.getsource(cli.serve_command)
 
         # Behavioural companion to the greps above: the gate must actually
         # fire for the string modes the ``nargs="?"`` flag now produces.

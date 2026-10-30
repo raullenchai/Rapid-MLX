@@ -1352,7 +1352,7 @@ def test_cli_resolves_artifact_auto_policy_before_default_off_scheduler_by_ast()
         cli_source
     )
     assert (
-        'mtp_continuous_batching=getattr(args, "mtp_continuous_batching", False)'
+        '"mtp_continuous_batching": getattr(args, "mtp_continuous_batching", False)'
         in cli_source
     )
     assert "mtp_continuous_batching: bool = False" in scheduler_source
@@ -1361,7 +1361,7 @@ def test_cli_resolves_artifact_auto_policy_before_default_off_scheduler_by_ast()
         'if self.mtp_continuous_batching and self.spec_decode != "mtp"'
         in scheduler_source
     )
-    assert "mtp_allow_dynamic_membership=getattr(" in cli_source
+    assert '"mtp_allow_dynamic_membership": getattr(' in cli_source
 
 
 @pytest.mark.parametrize(

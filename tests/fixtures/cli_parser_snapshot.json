@@ -1679,6 +1679,200 @@
            "completer": null,
            "const": true,
            "default": false,
+           "dest": "baseline",
+           "help": "Measure with every acceleration off (the original Community Benchmark protocol)",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "--baseline"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "choices": [
+            "bf16",
+            "int8",
+            "int4"
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "kv_cache_dtype",
+           "help": "KV cache dtype (R15 #300, default: bf16). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts, but the live-cache dequant-on-read costs O(context) per decode step — measured -27%% (int4) / -36%% (int8) at 16k context (#1853). An explicit int8/int4 on a sliding-window (Gemma 3/4, GPT-OSS) or MLA (DeepSeek V3+, Kimi K2.5) model is rejected before the server reports ready; only auto/profile-selected quantization downgrades to bf16. Use --reasoning for AIME / hard math.",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--kv-cache-dtype"
+           ],
+           "required": false,
+           "type": "builtins.str"
+          },
+          {
+           "class": "argparse._StoreTrueAction",
+           "completer": null,
+           "const": true,
+           "default": "==SUPPRESS==",
+           "dest": "kv_cache_quantization",
+           "help": "[deprecated alias of --kv-cache-dtype int8] Quantize stored KV caches to reduce memory (8-bit by default). When both flags are passed, this one wins for backwards compatibility.",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "--kv-cache-quantization"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "choices": [
+            4,
+            8
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "kv_cache_quantization_bits",
+           "help": "Bit width for KV cache quantization (default: 8)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--kv-cache-quantization-bits"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "kv_cache_quantization_group_size",
+           "help": "Group size for KV cache quantization (default: 64)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--kv-cache-quantization-group-size"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "speculative_config",
+           "help": "vLLM-style speculative decoding JSON config. This frontend parses method/model/num_speculative_tokens now. DFlash ships in the base install and is available with '{\"method\":\"dflash\"}', DDTree with '{\"method\":\"ddtree\"}', and MTP with '{\"method\":\"mtp\",\"num_speculative_tokens\":3,\"disable_auto_k\":false,\"continuous_batching\":false,\"allow_dynamic_membership\":false}'. Continuous self-MTP and dynamic membership are default-off. SuffixDecoding is an explicit, workload-specific flag for high prompt/output-overlap traffic and is available with '{\"method\":\"suffix\",\"num_speculative_tokens\":8}'.",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--speculative-config"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "mtp_max_k",
+           "help": "==SUPPRESS==",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--mtp-max-k"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "prefill_step_size",
+           "help": "Chunk size for prompt prefill processing. Larger values use more memory but can improve prefill throughput. (default: 2048; bench-verified model profiles may recommend a smaller value unless explicitly set)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--prefill-step-size"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "class": "argparse._StoreTrueAction",
+           "completer": null,
+           "const": true,
+           "default": "==SUPPRESS==",
+           "dest": "no_spec_decode",
+           "help": "Force-disable speculative-decode eligibility (suffix / MTP / DFlash / DDTree) even when AliasProfile says the model supports it. Mutually exclusive with --force-spec-decode.",
+           "metavar": null,
+           "nargs": 0,
+           "option_strings": [
+            "--no-spec-decode"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "choices": [
+            "off",
+            "auto",
+            "always"
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "pflash",
+           "help": "Opt in to PFlash long-prompt prefill compression (off, auto, always). Default: off. Compression is lossy: it drops most of the middle of the prompt for a faster cold prefill. 'auto' compresses only prompts of at least --pflash-threshold tokens; 'always' compresses every eligible long prompt.",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--pflash"
+           ],
+           "required": false,
+           "type": null
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "pflash_threshold",
+           "help": "Minimum prompt tokens before --pflash auto compresses (default: 32768).",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--pflash-threshold"
+           ],
+           "required": false,
+           "type": "builtins.int"
+          },
+          {
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": "==SUPPRESS==",
+           "dest": "pflash_keep_ratio",
+           "help": "Fraction of prompt tokens to keep when compressing. Unset lets the engine resolve it: a per-alias ``pflash_keep_ratio`` override if the alias pins one (e.g. 0.50 for a ternary arch), else the default 0.20 (the bench-validated profile in PR #649: TTFT 3.87x-8.5x, needle recall 5/5). An explicit value here always wins.",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--pflash-keep-ratio"
+           ],
+           "required": false,
+           "type": "builtins.float"
+          },
+          {
+           "class": "argparse._StoreTrueAction",
+           "completer": null,
+           "const": true,
+           "default": false,
            "dest": "progress",
            "help": "==SUPPRESS==",
            "metavar": null,
@@ -1724,10 +1918,28 @@
            "dests": [
             "help",
             "json",
+            "baseline",
             "progress",
             "inherit_process_group"
            ],
            "title": "options"
+          },
+          {
+           "description": null,
+           "dests": [
+            "kv_cache_dtype",
+            "kv_cache_quantization",
+            "kv_cache_quantization_bits",
+            "kv_cache_quantization_group_size",
+            "speculative_config",
+            "mtp_max_k",
+            "prefill_step_size",
+            "no_spec_decode",
+            "pflash",
+            "pflash_threshold",
+            "pflash_keep_ratio"
+           ],
+           "title": "acceleration (same flags and meaning as `rapid-mlx serve`)"
           }
          ],
          "mutually_exclusive": [],

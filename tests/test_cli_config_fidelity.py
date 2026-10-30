@@ -52,7 +52,17 @@ def _function_scheduler_config_kwargs(source_path: Path, func_name: str) -> set[
                 and isinstance(call.func, ast.Name)
                 and call.func.id == "SchedulerConfig"
             ):
-                return {kw.arg for kw in call.keywords if kw.arg}
+                from scripts.audit_cli_config_fidelity import KWARG_INJECTOR_HELPERS
+
+                fields = {kw.arg for kw in call.keywords if kw.arg}
+                for kw in call.keywords:
+                    if (
+                        kw.arg is None
+                        and isinstance(kw.value, ast.Call)
+                        and isinstance(kw.value.func, ast.Name)
+                    ):
+                        fields.update(KWARG_INJECTOR_HELPERS.get(kw.value.func.id, ()))
+                return fields
     raise AssertionError(
         f"function {func_name} or its SchedulerConfig(...) call not found in {source_path}"
     )

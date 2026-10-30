@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from rapid_mlx.community_bench import local_runner
+from rapid_mlx.community_bench.acceleration import AccelerationRequest
 from rapid_mlx.community_bench.hardware import Hardware, Software
 from rapid_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
 from rapid_mlx.community_bench.workspace import LocalRunArchive
@@ -668,7 +669,7 @@ def test_text_lane_uses_pinned_v41_serial_runtime(
 
     monkeypatch.setattr(local_runner, "unresolved_model_identity", identity)
 
-    measurements, context_length, _identity = asyncio.run(
+    measurements, context_length, _identity, _language = asyncio.run(
         local_runner._text_measurements(
             "deepseek-v41-flash-reap-2bit", artifacts.TARGET_REPO
         )
@@ -800,8 +801,12 @@ def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
         local_runner, "unresolved_model_identity", lambda *_args, **_kwargs: {}
     )
 
-    measurements, context_length, _identity = asyncio.run(
-        local_runner._text_measurements("glm5.3-flash-4bit", "vendor/glm")
+    measurements, context_length, _identity, _language = asyncio.run(
+        local_runner._text_measurements(
+            "glm5.3-flash-4bit",
+            "vendor/glm",
+            acceleration=AccelerationRequest(baseline=True),
+        )
     )
 
     assert len(measurements) == 10
@@ -836,7 +841,11 @@ def test_text_lane_reaps_failed_serving_start(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(batched, "BatchedEngine", Engine)
 
     with pytest.raises(RuntimeError, match="startup failed"):
-        asyncio.run(local_runner._text_measurements("glm", "vendor/glm"))
+        asyncio.run(
+            local_runner._text_measurements(
+                "glm", "vendor/glm", acceleration=AccelerationRequest(baseline=True)
+            )
+        )
     assert events == ["start", "stop"]
 
 
@@ -882,8 +891,10 @@ def test_text_lane_falls_back_only_for_exact_architecture_rejection(
         ),
     )
 
-    measurements, context_length, _identity = asyncio.run(
-        local_runner._text_measurements("future", "vendor/future")
+    measurements, context_length, _identity, _language = asyncio.run(
+        local_runner._text_measurements(
+            "future", "vendor/future", acceleration=AccelerationRequest(baseline=True)
+        )
     )
     assert len(measurements) == 10
     assert context_length == 32768
@@ -896,7 +907,13 @@ def test_text_lane_falls_back_only_for_exact_architecture_rejection(
         ),
     )
     with pytest.raises(ValueError, match="corrupt tensor shape"):
-        asyncio.run(local_runner._text_measurements("future", "vendor/future"))
+        asyncio.run(
+            local_runner._text_measurements(
+                "future",
+                "vendor/future",
+                acceleration=AccelerationRequest(baseline=True),
+            )
+        )
 
 
 def test_text_lane_converts_engine_result_and_reaps_executor(
@@ -1004,7 +1021,9 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     )
     monkeypatch.setattr(runner, "run_standardized_bench", standardized)
 
-    run = local_runner.run_local("example-text", archive=archive)
+    run = local_runner.run_local(
+        "example-text", archive=archive, acceleration=AccelerationRequest(baseline=True)
+    )
 
     assert len(run["measurements"]) == 10
     assert [(row["case_id"], row["round_index"]) for row in run["measurements"]] == [
@@ -1060,7 +1079,9 @@ def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
     with pytest.raises(RuntimeError, match="stop here"):
         asyncio.run(
             local_runner._text_measurements(
-                "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
+                "qwen3.5-4b-4bit",
+                "mlx-community/Qwen3.5-4B-MLX-4bit",
+                acceleration=AccelerationRequest(baseline=True),
             )
         )
     assert targets == ["mlx-community/Qwen3.5-4B-MLX-4bit"]

@@ -438,16 +438,59 @@ class LocalRunArchive:
     """Private, atomic JSON run archive. Reading never executes or uploads."""
 
     root: Path
+    fallback_root: Path | None = None
 
     @classmethod
     def default(cls) -> LocalRunArchive:
         override = os.environ.get("RAPID_MLX_BENCHMARK_HOME")
-        root = (
-            Path(override).expanduser()
-            if override
-            else Path.home() / ".rapid-mlx" / "benchmarks"
-        )
-        return cls(root)
+        legacy = Path.home() / ".rapid-mlx" / "benchmarks"
+        if override:
+            return cls(Path(override).expanduser())
+        home = os.environ.get("RAPID_MLX_HOME", "").strip()
+        if home:
+            root = Path(home).expanduser() / "benchmarks"
+            return cls(
+                root,
+                fallback_root=legacy if root.resolve() != legacy.resolve() else None,
+            )
+        return cls(legacy)
+
+    @staticmethod
+    def _validate_run_id(run_id: str) -> None:
+        if not run_id or any(
+            character not in "0123456789abcdef-" for character in run_id
+        ):
+            raise ValueError("invalid run id")
+
+    def _read_text(self, directory: Path, name: str, category: str) -> str:
+        try:
+            return (directory / f"{name}.json").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if self.fallback_root is None:
+                raise
+            return (self.fallback_root / category / f"{name}.json").read_text(
+                encoding="utf-8"
+            )
+
+    def _run_metadata_dir(self, run_id: str, category: str) -> Path:
+        if self.fallback_root is not None:
+            self._validate_run_id(run_id)
+            if (
+                not (self.runs_dir / f"{run_id}.json").exists()
+                and (self.fallback_root / "runs" / f"{run_id}.json").exists()
+            ):
+                return self.fallback_root / category
+        return self.root / category
+
+    def _read_run_metadata(self, run_id: str, category: str) -> str:
+        if self.fallback_root is not None:
+            self._validate_run_id(run_id)
+        try:
+            return (self.root / category / f"{run_id}.json").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return (
+                self._run_metadata_dir(run_id, category) / f"{run_id}.json"
+            ).read_text(encoding="utf-8")
 
     @property
     def runs_dir(self) -> Path:
@@ -554,9 +597,8 @@ class LocalRunArchive:
         publish.
         """
 
-        path = self.provenance_dir / f"{run_id}.json"
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = self._read_run_metadata(run_id, "provenance")
         except FileNotFoundError:
             return None
         except OSError as exc:
@@ -602,9 +644,8 @@ class LocalRunArchive:
     def receipt(self, run_id: str) -> dict[str, Any] | None:
         # Reuse the run-id validation and require that the result still exists.
         self.get(run_id)
-        path = self.receipts_dir / f"{run_id}.json"
         try:
-            envelope = json.loads(path.read_text(encoding="utf-8"))
+            envelope = json.loads(self._read_run_metadata(run_id, "receipts"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         if not isinstance(envelope, dict) or envelope.get("schema_version") != 1:
@@ -631,11 +672,8 @@ class LocalRunArchive:
         return value
 
     def get(self, run_id: str) -> dict[str, Any]:
-        if not run_id or any(
-            character not in "0123456789abcdef-" for character in run_id
-        ):
-            raise ValueError("invalid run id")
-        run = json.loads((self.runs_dir / f"{run_id}.json").read_text(encoding="utf-8"))
+        self._validate_run_id(run_id)
+        run = json.loads(self._read_text(self.runs_dir, run_id, "runs"))
         if not isinstance(run, dict):
             raise ValueError("benchmark run archive entry is not a JSON object")
         BenchmarkRunValidator().validate(run)
@@ -644,11 +682,17 @@ class LocalRunArchive:
     def list(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         if limit is not None and limit < 1:
             raise ValueError("result limit must be positive")
-        if not self.runs_dir.exists():
-            return []
         runs: list[dict[str, Any]] = []
         latest: list[tuple[str, str, dict[str, Any]]] = []
-        for path in self.runs_dir.glob("*.json"):
+        directories = [self.runs_dir]
+        if self.fallback_root is not None:
+            directories.append(self.fallback_root / "runs")
+        seen: set[str] = set()
+        paths = (path for directory in directories for path in directory.glob("*.json"))
+        for path in paths:
+            if path.stem in seen:
+                continue
+            seen.add(path.stem)
             try:
                 run = self.get(path.stem)
             except (OSError, ValueError, json.JSONDecodeError):

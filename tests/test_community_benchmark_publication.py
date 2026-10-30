@@ -24,9 +24,14 @@ from typing import Any
 import pytest
 
 from rapid_mlx.community_bench import atomic_upload
+from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
 from rapid_mlx.community_bench.publication import (
     describe_withheld,
     project_run_for_publication,
+)
+from rapid_mlx.community_bench.run_builder import (
+    execution_config,
+    execution_config_digest,
 )
 from tests.ingestion_contract import (
     IngestionRejected,
@@ -148,6 +153,76 @@ def test_a_bare_record_is_projected_unchanged(
     public, withheld = project_run_for_publication(bare)
     assert public == bare
     assert withheld == []
+
+
+def test_chunk_size_is_withheld_and_execution_digest_is_recomputed() -> None:
+    run = _cached_run()
+    component = run["model"]["components"][0]
+    component["source"] = {
+        "kind": "huggingface",
+        "repo_id": component["source"]["repo_id"],
+    }
+    component["quantization"] = {"kind": "unknown", "base_dtype": "unknown"}
+    language = copy.deepcopy(run["execution"]["task"]["language"])
+    language["kv_cache"] = {
+        "mode": "quantized",
+        "dtype": "q8",
+        "bits_x2": 16,
+        "group_size": 64,
+    }
+    language["prefill_chunk_size"] = 2048
+    language["pflash"] = {
+        "mode": "auto",
+        "threshold": 1024,
+        "keep_ratio_millionths": 200000,
+    }
+    language["speculative_decoding"] = {
+        "method": "mtp",
+        "assistant_source": "external_model",
+        "max_draft_tokens": 4,
+        "draft_model_identity_digest": "sha256:" + "a" * 64,
+    }
+    run["execution"] = execution_config("text_generation", language=language)
+    before = copy.deepcopy(run)
+
+    public, withheld = project_run_for_publication(run)
+
+    projected = public["execution"]["task"]["language"]
+    assert projected == {**language, "prefill_chunk_size": None}
+    assert [fact.path for fact in withheld] == [
+        "execution.task.language.prefill_chunk_size"
+    ]
+    assert withheld[0].value == 2048
+    assert withheld[0].reason == (
+        "a 2048-token prefill chunk is the original protocol setting, which the "
+        "benchmark service records as unset"
+    )
+    assert public["execution"]["config_digest"] == execution_config_digest(
+        public["execution"]
+    )
+    assert public["execution"]["config_digest"] != run["execution"]["config_digest"]
+    assert run == before
+    BenchmarkRunValidator().validate(public)
+
+
+@pytest.mark.parametrize("chunk_size", [512, 1024])
+def test_other_chunk_sizes_are_published_unchanged(chunk_size: int) -> None:
+    run = _cached_run()
+    component = run["model"]["components"][0]
+    component["source"] = {
+        "kind": "huggingface",
+        "repo_id": component["source"]["repo_id"],
+    }
+    component["quantization"] = {"kind": "unknown", "base_dtype": "unknown"}
+    language = copy.deepcopy(run["execution"]["task"]["language"])
+    language["prefill_chunk_size"] = chunk_size
+    run["execution"] = execution_config("text_generation", language=language)
+
+    public, withheld = project_run_for_publication(run)
+
+    assert public == run
+    assert withheld == []
+    assert public["execution"]["config_digest"] == run["execution"]["config_digest"]
 
 
 @pytest.mark.parametrize("model", [None, "not-an-object", {"components": None}])
