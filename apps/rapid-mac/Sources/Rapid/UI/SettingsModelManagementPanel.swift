@@ -917,27 +917,25 @@ struct SettingsModelManagementPanel: View {
         return "\(ctx)"
     }
 
-    /// ESTIMATED download size for a model that is not on disk, derived
-    /// from the alias string by ``ModelSizing`` — not a measurement of
-    /// anything. The caller renders it with a leading "~" so it can't be
-    /// mistaken for the measured on-disk figure cached rows in the same
-    /// column now show; #1550 has a case where this estimate lands ~12%
-    /// under the real download.
-    nonisolated static func downloadSizeLabel(_ alias: String) -> String? {
-        let fp = ModelSizing.estimate(alias: alias)
+    /// The row renders this with a leading "~" because it is a pre-download figure.
+    /// Prefer the catalog's download size, the checked-in manifest byte count of
+    /// the repo's files, because the alias heuristic underestimates some repos
+    /// (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus 787,276,896 bytes). Fall back to
+    /// ModelSizing's estimate only when the catalog has no size.
+    nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
+        if ModelSizeText.bytes(entry.sizeOnDisk) != nil {
+            return ModelSizeText.display(entry.sizeOnDisk)
+        }
+        let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
-        return String(format: "%.1f GB", fp.weightsGB)
+        return ModelSizeText.display(bytes: Int64(fp.weightsGB * 1024 * 1024 * 1024))
     }
 
-    /// MEASURED size of a cached model, exactly as ``rapid-mlx ls``
-    /// reported it (and as Settings → Models quotes it, so the two
-    /// surfaces can't print different numbers for the same model).
-    /// Never an estimate: if the measurement is missing, the row shows no
-    /// size rather than substituting ``ModelSizing``'s guess.
+    /// Never an estimate: if the measurement is missing, the row shows no size
+    /// rather than substituting ModelSizing's guess. The measured figure is
+    /// rendered through ModelSizeText so every surface uses one format.
     nonisolated static func onDiskSizeLabel(_ entry: ModelEntry) -> String? {
-        guard let raw = entry.sizeOnDisk?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return nil }
-        return raw
+        ModelSizeText.display(entry.sizeOnDisk)
     }
 
     @ViewBuilder
@@ -1090,7 +1088,7 @@ struct SettingsModelManagementPanel: View {
             }
         case .notCached:
             HStack(spacing: 8) {
-                if let gb = Self.downloadSizeLabel(entry.alias) {
+                if let gb = Self.downloadSizeLabel(entry) {
                     Text("~\(gb)")
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)

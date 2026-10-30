@@ -670,7 +670,8 @@ struct ModelSurfaceRedesignTests {
     // MARK: - Size column: measured vs. estimated
 
     /// A cached row must quote what was MEASURED on disk
-    /// (``ModelEntry.sizeOnDisk``, from `rapid-mlx ls`), verbatim, so the
+    /// (``ModelEntry.sizeOnDisk``, from `rapid-mlx ls`), normalized through
+    /// ModelSizeText, so the
     /// Model Management table and Settings → Models cannot print
     /// different numbers for the same model.
     @Test("size column: a cached row quotes the measured on-disk size")
@@ -678,7 +679,7 @@ struct ModelSurfaceRedesignTests {
         let entry = ModelEntry(
             alias: "bonsai-27b-2bit", hfRepo: nil, sizeOnDisk: "7.9 GiB", cached: true
         )
-        #expect(SettingsModelManagementPanel.onDiskSizeLabel(entry) == "7.9 GiB")
+        #expect(SettingsModelManagementPanel.onDiskSizeLabel(entry) == "7.9 GB")
     }
 
     /// No measurement, no number. Substituting the alias-derived
@@ -692,7 +693,7 @@ struct ModelSurfaceRedesignTests {
         )
         #expect(SettingsModelManagementPanel.onDiskSizeLabel(unmeasured) == nil)
         // The estimate for that alias exists and is NOT what we show.
-        #expect(SettingsModelManagementPanel.downloadSizeLabel("qwen3.5-9b-4bit") != nil)
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(ModelEntry(alias: "qwen3.5-9b-4bit", hfRepo: nil, sizeOnDisk: nil, cached: false)) != nil)
 
         let blank = ModelEntry(
             alias: "qwen3.5-9b-4bit", hfRepo: nil, sizeOnDisk: "   ", cached: true
@@ -706,11 +707,11 @@ struct ModelSurfaceRedesignTests {
     /// exactly once.
     @Test("size column: the download estimate is a bare figure the row marks as approximate")
     func downloadEstimateIsBare() {
-        let estimate = SettingsModelManagementPanel.downloadSizeLabel("qwen3.5-9b-4bit")
+        let estimate = SettingsModelManagementPanel.downloadSizeLabel(ModelEntry(alias: "qwen3.5-9b-4bit", hfRepo: nil, sizeOnDisk: nil, cached: false))
         #expect(estimate?.hasPrefix("~") == false)
         #expect(estimate?.hasSuffix(" GB") == true)
         // An alias ``ModelSizing`` cannot size at all yields no figure
         // rather than "~0.0 GB".
-        #expect(SettingsModelManagementPanel.downloadSizeLabel("") == nil)
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(ModelEntry(alias: "", hfRepo: nil, sizeOnDisk: nil, cached: false)) == nil)
     }
 }

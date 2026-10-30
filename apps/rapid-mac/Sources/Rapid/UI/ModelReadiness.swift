@@ -474,25 +474,34 @@ enum ModelReadiness: Equatable {
     // drift this section exists to prevent.
 
     /// Short status line — the bold half of the readiness banner.
-    var headline: String {
+    var headline: String { headline(displayName: nil) }
+
+    func headline(displayName: String?) -> String {
+        let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        func shown(_ alias: String) -> String { name.flatMap { $0.isEmpty ? nil : $0 } ?? alias }
         switch self {
         case .sharingCompute: return String(localized: "Local chat paused for sharing")
         case .engineMissing:
             return String(localized: "Setup didn't finish")
         case .noModel:
             return String(localized: "No model chosen")
-        case .needsDownload(let a, _):
+        case .needsDownload(let alias, _):
+            let a = shown(alias)
             return String(localized: "\(a) isn't downloaded yet")
-        case .needsStart(let a), .unknownModel(let a):
+        case .needsStart(let alias), .unknownModel(let alias):
+            let a = shown(alias)
             return String(localized: "\(a) isn't running")
-        case .downloading(let a, _, _):
+        case .downloading(let alias, _, _):
+            let a = shown(alias)
             return String(localized: "Downloading \(a)")
-        case .starting(let a, _):
+        case .starting(let alias, _):
+            let a = shown(alias)
             return String(localized: "Starting \(a)")
-        case .ready(let a):
+        case .ready(let alias):
+            let a = shown(alias)
             return String(localized: "Ready — \(a)")
         case .failed(let a, _, _):
-            return a.map { String(localized: "Couldn't start \($0)") } ?? String(localized: "Something went wrong")
+            return a.map { String(localized: "Couldn't start \(shown($0))") } ?? String(localized: "Something went wrong")
         }
     }
 
@@ -644,8 +653,10 @@ enum ModelReadiness: Equatable {
 
     /// Composed VoiceOver label for the readiness banner. Comma-joined
     /// tokens are how AppKit consumes a composed label.
-    var accessibilityLabel: String {
-        var parts = [headline]
+    var accessibilityLabel: String { accessibilityLabel(displayName: nil) }
+
+    func accessibilityLabel(displayName: String?) -> String {
+        var parts = [headline(displayName: displayName)]
         if let detail { parts.append(detail) }
         return parts.joined(separator: ", ")
     }

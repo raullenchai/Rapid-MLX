@@ -27,6 +27,7 @@ struct ReadinessBanner: View {
     /// Bumped by the composer each time a send is attempted while gated.
     /// Drives a brief emphasis so a blocked Return is never silent.
     var attentionToken: Int = 0
+    var modelDisplayName: String? = nil
     var onAction: (ModelReadiness.Action) -> Void
 
     @Environment(ServerManager.self) private var server
@@ -46,7 +47,7 @@ struct ReadinessBanner: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(readiness.headline)
+                    Text(readiness.headline(displayName: modelDisplayName))
                         .font(RapidFont.bodyEmphasis)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -120,7 +121,7 @@ struct ReadinessBanner: View {
                 )
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(readiness.accessibilityLabel)
+        .accessibilityLabel(readiness.accessibilityLabel(displayName: modelDisplayName))
         .rapidAnimation(RapidMotion.quick, value: attentionActive)
         .task(id: attentionToken) {
             // Token 0 is the initial value — only a real bump (a blocked
