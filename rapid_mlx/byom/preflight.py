@@ -566,7 +566,10 @@ def _mlx_recommended_working_set_bytes() -> int | None:
 
 
 def metal_working_set_bytes(ram_bytes: int | None) -> int | None:
-    recommended = _mlx_recommended_working_set_bytes()
+    return _working_set_budget(ram_bytes, _mlx_recommended_working_set_bytes())
+
+
+def _working_set_budget(ram_bytes: int | None, recommended: int | None) -> int | None:
     if recommended is not None:
         return min(recommended, ram_bytes) if ram_bytes is not None else recommended
     if not ram_bytes:
@@ -906,19 +909,28 @@ def _check_catalog_memory_fit(args: Any) -> None:
         ):
             return
         ram = physical_ram_bytes()
-        budget = metal_working_set_bytes(ram)
+        recommended = _mlx_recommended_working_set_bytes()
+        budget = _working_set_budget(ram, recommended)
         if not ram or not budget:
             return
         if profile.min_memory_gb is not None and ram >= profile.min_memory_gb * _GIB:
-            return
-        measured = recommendation_footprint_gb(alias)
-        if measured is not None:
-            footprint = measured * _GIB
-        else:
-            weights = size_bytes(profile.hf_path)
-            if weights is None:
+            # Trust the curated floor unless weights alone exceed a real Metal limit.
+            if recommended is None:
                 return
-            footprint = weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
+            footprint = size_bytes(profile.hf_path)
+            if footprint is None:
+                return
+        else:
+            measured = recommendation_footprint_gb(alias)
+            if measured is not None:
+                footprint = measured * _GIB
+            else:
+                weights = size_bytes(profile.hf_path)
+                if weights is None:
+                    return
+                footprint = (
+                    weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
+                )
         if footprint <= budget:
             return
         pick = fitting_pick(ram / _GIB, budget / _GIB, exclude=alias)

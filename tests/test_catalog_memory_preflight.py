@@ -102,6 +102,37 @@ def test_metal_budget(monkeypatch):
     assert preflight.metal_working_set_bytes(None) is None
 
 
+@pytest.mark.parametrize("recommended", [20 * GIB, None])
+def test_met_floor_passes_with_sufficient_or_unknown_metal_limit(
+    monkeypatch, recommended
+):
+    probe = patch.object(
+        preflight, "_mlx_recommended_working_set_bytes", return_value=recommended
+    )
+    with probe as mock_probe:
+        run("qwen3-coder-30b-4bit", 24, monkeypatch)
+    mock_probe.assert_called_once()
+
+
+def test_met_floor_refuses_weights_above_metal_limit(monkeypatch, capsys):
+    from rapid_mlx.model_sizes import size_bytes
+
+    alias = "qwen3-coder-30b-4bit"
+    profile = resolve_profile(alias)
+    assert profile is not None
+    weights = size_bytes(profile.hf_path)
+    assert weights is not None and weights > 12 * GIB
+    with (
+        patch.object(
+            preflight, "_mlx_recommended_working_set_bytes", return_value=12 * GIB
+        ) as probe,
+        pytest.raises(SystemExit),
+    ):
+        run(alias, 24, monkeypatch)
+    probe.assert_called_once()
+    assert f"needs ~{preflight._gb(weights)} of GPU memory" in capsys.readouterr().err
+
+
 def test_fitting_pick():
     tier = next(t for t in load_recommendation_tiers() if t.floor_gb == 16)
     assert fitting_pick(16, 100) == tier.picks[0].alias
@@ -110,3 +141,16 @@ def test_fitting_pick():
         == tier.picks[1].alias
     )
     assert fitting_pick(16, 0) is None
+
+
+def test_fitting_pick_searches_lower_tiers():
+    tiers = load_recommendation_tiers()
+    lower, current = tiers[1], tiers[2]
+    budget = 3.0
+    assert all(pick.footprint_gb > budget for pick in current.picks)
+    expected = next(pick.alias for pick in lower.picks if pick.footprint_gb <= budget)
+    assert fitting_pick(current.floor_gb, budget) == expected
+    assert (
+        fitting_pick(current.floor_gb, budget, exclude=expected.upper())
+        == tiers[0].picks[0].alias
+    )
