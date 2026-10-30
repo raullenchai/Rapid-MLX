@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qualify catalog processor metadata without downloading executable code or weights."""
+"""Qualify catalog processor metadata without downloading executable code or weights.
+
+Metadata is fetched into a temporary directory; the shared model cache is never written.
+"""
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
@@ -35,14 +39,18 @@ AUX_KEYS = (
 )
 
 
-def metadata(api, repo, revision, subfolder=None, *, config_only=False):
+def metadata(api, repo, revision, temp_dir, subfolder=None, *, config_only=False):
     names = {s.rfilename for s in api.model_info(repo, revision=revision).siblings}
     prefix = f"{subfolder.strip('/')}/" if subfolder else ""
     data = {}
     for name in FILES[:1] if config_only else FILES:
         remote_name = prefix + name
         if remote_name in names:
-            path = hf_hub_download(repo, filename=remote_name, revision=revision)
+            # Keep metadata-only snapshots out of the shared model cache.
+            local_dir = Path(temp_dir) / repo.replace("/", "--") / revision
+            path = hf_hub_download(
+                repo, filename=remote_name, revision=revision, local_dir=local_dir
+            )
             with open(path, encoding="utf-8") as handle:
                 value = json.load(handle)
             if not isinstance(value, dict):
@@ -74,6 +82,11 @@ def route(model_type):
 
 
 def generate():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        return _generate(temp_dir)
+
+
+def _generate(temp_dir):
     catalog = json.loads((ROOT / "rapid_mlx/aliases.json").read_text())
     api = HfApi()
     aliases, auxiliary, pending = {}, {}, {}
@@ -83,6 +96,7 @@ def generate():
             api,
             entry["hf_path"],
             entry["revision"],
+            temp_dir,
             entry.get("subfolder"),
             config_only=True,
         )
@@ -96,7 +110,7 @@ def generate():
     for alias, entry in candidates:
         repo, rev = entry["hf_path"], entry["revision"]
         subfolder = entry.get("subfolder")
-        data, python_files = metadata(api, repo, rev, subfolder)
+        data, python_files = metadata(api, repo, rev, temp_dir, subfolder)
         model_type = data.get("config.json", {}).get("model_type")
         maps, files = declarations(data)
         processor_class = next(
@@ -135,7 +149,7 @@ def generate():
                     raise ValueError(f"Conflicting revisions for auxiliary {aux_repo}")
                 pending.setdefault(aux_repo, (aux_rev, []))[1].append(f"{alias}:{key}")
     for repo, (rev, users) in pending.items():
-        data, python_files = metadata(api, repo, rev or "main")
+        data, python_files = metadata(api, repo, rev or "main", temp_dir)
         maps, files = declarations(data)
         auxiliary[repo] = dict(
             revision=rev,
