@@ -548,6 +548,7 @@ def execution_config(
     context_length: int | None = None,
     speculative_decoding: dict[str, Any] | None = None,
     language: dict[str, Any] | None = None,
+    compute_dtype: str = "unknown",
 ) -> dict[str, Any]:
     provenance = resolve_provenance()
     source_revision = provenance.get("revision")
@@ -576,7 +577,7 @@ def execution_config(
         installed = _installed(package)
         if installed is not None:
             runtime[field] = installed
-    resources = {"max_concurrency": 1, "compute_dtype": "unknown"}
+    resources = {"max_concurrency": 1, "compute_dtype": compute_dtype}
     diffusion = {
         "attention_backend": "unknown",
         "compilation": "unknown",

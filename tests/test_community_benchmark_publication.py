@@ -155,7 +155,7 @@ def test_a_bare_record_is_projected_unchanged(
     assert withheld == []
 
 
-def test_chunk_size_is_withheld_and_execution_digest_is_recomputed() -> None:
+def test_chunk_size_and_dtype_are_published_unchanged() -> None:
     run = _cached_run()
     component = run["model"]["components"][0]
     component["source"] = {
@@ -164,12 +164,7 @@ def test_chunk_size_is_withheld_and_execution_digest_is_recomputed() -> None:
     }
     component["quantization"] = {"kind": "unknown", "base_dtype": "unknown"}
     language = copy.deepcopy(run["execution"]["task"]["language"])
-    language["kv_cache"] = {
-        "mode": "quantized",
-        "dtype": "q8",
-        "bits_x2": 16,
-        "group_size": 64,
-    }
+    language["kv_cache"] = {"mode": "full_precision", "dtype": "bfloat16"}
     language["prefill_chunk_size"] = 2048
     language["pflash"] = {
         "mode": "auto",
@@ -182,25 +177,20 @@ def test_chunk_size_is_withheld_and_execution_digest_is_recomputed() -> None:
         "max_draft_tokens": 4,
         "draft_model_identity_digest": "sha256:" + "a" * 64,
     }
-    run["execution"] = execution_config("text_generation", language=language)
+    run["execution"] = execution_config(
+        "text_generation", language=language, compute_dtype="bfloat16"
+    )
     before = copy.deepcopy(run)
 
     public, withheld = project_run_for_publication(run)
 
-    projected = public["execution"]["task"]["language"]
-    assert projected == {**language, "prefill_chunk_size": None}
-    assert [fact.path for fact in withheld] == [
-        "execution.task.language.prefill_chunk_size"
-    ]
-    assert withheld[0].value == 2048
-    assert withheld[0].reason == (
-        "a 2048-token prefill chunk is the original protocol setting, which the "
-        "benchmark service records as unset"
-    )
+    assert public["execution"]["task"]["language"] == language
+    assert public["execution"]["resources"]["compute_dtype"] == "bfloat16"
+    assert withheld == []
     assert public["execution"]["config_digest"] == execution_config_digest(
         public["execution"]
     )
-    assert public["execution"]["config_digest"] != run["execution"]["config_digest"]
+    assert public["execution"]["config_digest"] == run["execution"]["config_digest"]
     assert run == before
     BenchmarkRunValidator().validate(public)
 

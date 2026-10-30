@@ -600,6 +600,13 @@ final class ServerManager {
         resolvePendingModelSwitch(request, approved: false)
     }
 
+    private func enqueueOnboardingEngineStartFailed(alias: String) {
+        DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
+            .engineStartFailed, alias: alias,
+            engineCause: FailureDiagnoser.funnelEngineStartCause(for: state)
+        )
+    }
+
     private func resolvePendingModelSwitch(
         _ request: PendingModelSwitch,
         approved: Bool
@@ -2665,10 +2672,7 @@ final class ServerManager {
         }
         guard let binary = binaryPath else {
             state = .missing
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: alias
-            )
+            enqueueOnboardingEngineStartFailed(alias: alias)
             return
         }
         let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2684,10 +2688,7 @@ final class ServerManager {
                 alias: trimmedAlias,
                 message: "That model name isn't valid. Pick a model from the bar at the top."
             )
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: trimmedAlias
-            )
+            enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
             return
         }
         let startCatalogGeneration = downloads?.cacheGeneration ?? 0
@@ -2988,10 +2989,7 @@ final class ServerManager {
                 alias: trimmedAlias,
                 message: "Couldn't start the model — another app may already be using what Rapid needs to run. Quit other local AI apps or development servers, then click Restart."
             )
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: trimmedAlias
-            )
+            enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
             return
         }
         activePort = resolvedPort
@@ -3023,10 +3021,7 @@ final class ServerManager {
                 alias: trimmedAlias,
                 message: "Couldn't start the model securely. Restart Rapid-MLX; if this keeps happening, please file a bug."
             )
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: trimmedAlias
-            )
+            enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
             return
         }
         if sharesAgentConnection && embeddedBearerLifetime != .perLaunch &&
@@ -3298,10 +3293,7 @@ final class ServerManager {
             // (principle: error copy must be human + actionable).
             print("[server] failed to start the model: \(error.localizedDescription)")
             state = .crashed(alias: trimmedAlias, message: "Couldn't start the model. Restart Rapid-MLX and try again.")
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: trimmedAlias
-            )
+            enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
             isOperating = false
             return
         }
@@ -4018,10 +4010,7 @@ final class ServerManager {
             if let message = reason {
                 state = .crashed(alias: alias, message: message)
                 if !spawnCycleReachedReady {
-                    DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                        .engineStartFailed,
-                        alias: alias
-                    )
+                    enqueueOnboardingEngineStartFailed(alias: alias)
                 }
             } else {
                 state = .stopped
@@ -4149,10 +4138,7 @@ final class ServerManager {
         }
         state = .crashed(alias: alias, message: message)
         if !reachedReadyThisCycle {
-            DesktopFunnelReporter.enqueueEngineOutcomeIfArmed(
-                .engineStartFailed,
-                alias: alias
-            )
+            enqueueOnboardingEngineStartFailed(alias: alias)
         }
         // Issue #270: silent idle-state crash. The user closed every
         // chat window via Cmd+W and then rapid-mlx died (OOM, SIGSEGV,

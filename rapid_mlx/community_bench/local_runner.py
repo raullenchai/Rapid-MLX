@@ -40,6 +40,8 @@ from .acceleration import (
     build_serve_args,
     dedicated_language,
     effective_language,
+    mllm_language,
+    model_compute_dtype,
     preflight_benchmark_acceleration,
     resolve_benchmark_acceleration,
     validate_request,
@@ -1449,6 +1451,19 @@ def _engine_scheduler(engine):
     )
 
 
+def _serving_mllm_scheduler(engine):
+    if (
+        getattr(engine, "_is_mllm", False)
+        and getattr(engine, "_mllm_scheduler", None) is not None
+        and (
+            getattr(engine, "_engine", None) is None
+            or getattr(engine, "_mllm_dense_singleton_fastpath", False)
+        )
+    ):
+        return engine._mllm_scheduler
+    return None
+
+
 def _ensure_model_downloaded(model_id):
     from rapid_mlx.cli import _ensure_model_downloaded as ensure
 
@@ -1771,40 +1786,56 @@ async def _text_measurements(
                 ),
             )
             if not use_v41_runtime:
-                runtime_method = None
-                draft_digest = None
-                if acceleration.baseline and serving_engine is not None:
-                    live_scheduler = _engine_scheduler(serving_engine)
-                    if live_scheduler is not None:
-                        scheduler = live_scheduler.config
-                if not acceleration.baseline:
-                    live_scheduler = _engine_scheduler(serving_engine)
-                    if live_scheduler is None:
-                        raise RuntimeError("Serving engine has no live scheduler")
-                    scheduler = live_scheduler.config
-                    runtime_method = getattr(
-                        live_scheduler, "spec_decode_runtime_method", None
-                    )
-                    if runtime_method == "mtp" and scheduler.mtp_sidecar:
-                        sidecar_repo, snapshot, subfolder, draft_digest = (
-                            _sidecar_identity(scheduler.mtp_sidecar)
-                        )
-                        loaded_identity = _with_sidecar_identity(
-                            loaded_identity, sidecar_repo, snapshot, subfolder
-                        )
-                        if capture is not None:
-                            capture["identity"] = loaded_identity
-                language = effective_language(
-                    scheduler,
-                    runtime_method=runtime_method,
-                    draft_identity_digest=draft_digest,
-                    context_length=context_length,
-                    live_kv_quant=(
-                        getattr(live_scheduler, "_live_kv_quant", None)
-                        if not acceleration.baseline
-                        else None
-                    ),
+                compute_dtype = model_compute_dtype(
+                    getattr(serving_engine, "_model", None)
+                    if serving_engine is not None
+                    else model
                 )
+                if capture is not None:
+                    capture["compute_dtype"] = compute_dtype
+                mllm_scheduler = _serving_mllm_scheduler(serving_engine)
+                if mllm_scheduler is not None:
+                    language = mllm_language(
+                        mllm_scheduler.config,
+                        context_length=context_length,
+                        compute_dtype=compute_dtype,
+                    )
+                else:
+                    runtime_method = None
+                    draft_digest = None
+                    if acceleration.baseline and serving_engine is not None:
+                        live_scheduler = _engine_scheduler(serving_engine)
+                        if live_scheduler is not None:
+                            scheduler = live_scheduler.config
+                    if not acceleration.baseline:
+                        live_scheduler = _engine_scheduler(serving_engine)
+                        if live_scheduler is None:
+                            raise RuntimeError("Serving engine has no live scheduler")
+                        scheduler = live_scheduler.config
+                        runtime_method = getattr(
+                            live_scheduler, "spec_decode_runtime_method", None
+                        )
+                        if runtime_method == "mtp" and scheduler.mtp_sidecar:
+                            sidecar_repo, snapshot, subfolder, draft_digest = (
+                                _sidecar_identity(scheduler.mtp_sidecar)
+                            )
+                            loaded_identity = _with_sidecar_identity(
+                                loaded_identity, sidecar_repo, snapshot, subfolder
+                            )
+                            if capture is not None:
+                                capture["identity"] = loaded_identity
+                    language = effective_language(
+                        scheduler,
+                        runtime_method=runtime_method,
+                        draft_identity_digest=draft_digest,
+                        context_length=context_length,
+                        compute_dtype=compute_dtype,
+                        live_kv_quant=(
+                            getattr(live_scheduler, "_live_kv_quant", None)
+                            if not acceleration.baseline
+                            else None
+                        ),
+                    )
             _record_conditions_after()
     finally:
         try:
@@ -2096,6 +2127,9 @@ def _run_local_measured(
         execution = execution_config(
             task_type,
             context_length=context_length,
+            compute_dtype=loaded.get("compute_dtype", "unknown")
+            if task_type == "text_generation"
+            else "unknown",
             language=language,
             speculative_decoding=(
                 _text_speculative_execution(model["repo_id"])

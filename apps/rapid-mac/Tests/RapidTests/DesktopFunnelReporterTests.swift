@@ -55,6 +55,64 @@ struct DesktopFunnelReporterTests {
         #expect(Set(object.keys) == ["v", "m"])
     }
 
+    @Test("Failure wire contract")
+    func failureWireContract() throws {
+        typealias Reporter = DesktopFunnelReporter
+        let downloads = ["network", "disk_full", "source_unavailable", "not_found", "integrity", "other"]
+        let sources = ["huggingface", "mirror"]
+        let engines = ["out_of_memory", "model_load_failed", "engine_not_running", "other"]
+        #expect(Reporter.DownloadFailureCause.allCases.map(\.rawValue) == downloads)
+        #expect(Reporter.DownloadSourceTag.allCases.map(\.rawValue) == sources)
+        #expect(Reporter.EngineStartFailureCause.allCases.map(\.rawValue) == engines)
+        #expect(Reporter.DownloadSourceTag(.mirror) == .mirror)
+        #expect(Reporter.DownloadSourceTag(.huggingFace) == .huggingface)
+        for (cause, wire) in zip(Reporter.DownloadFailureCause.allCases, downloads) {
+            let tags: [(Reporter.DownloadSourceTag?, String?)] = [(.huggingface, "huggingface"), (.mirror, "mirror"), (nil, nil)]
+            for (tag, source) in tags {
+                let body = try #require(Reporter.request(version: "1.0.0", milestone: .modelDownloadFailed, detail: .download(cause, source: tag))?.httpBody)
+                let sourcePart = source.map { ",\"s\":\"\($0)\"" } ?? ""
+                #expect(String(data: body, encoding: .utf8) == "{\"k\":\"\(wire)\",\"m\":\"model_download_failed\"\(sourcePart),\"v\":\"1.0.0\"}")
+                #expect(body.count <= Reporter.maxBodyBytes)
+            }
+        }
+        for (cause, wire) in zip(Reporter.EngineStartFailureCause.allCases, engines) {
+            let body = try #require(Reporter.request(version: "1.0.0", milestone: .engineStartFailed, detail: .engine(cause))?.httpBody)
+            #expect(String(data: body, encoding: .utf8) == "{\"k\":\"\(wire)\",\"m\":\"engine_start_failed\",\"v\":\"1.0.0\"}")
+            #expect(body.count <= Reporter.maxBodyBytes)
+        }
+        let cases: [(Reporter.Milestone, Reporter.FailureDetail?, String)] = [
+            (.modelDownloadFailed, nil, "model_download_failed"),
+            (.modelDownloadFailed, .engine(.outOfMemory), "model_download_failed"),
+            (.engineStartFailed, nil, "engine_start_failed"),
+            (.engineStartFailed, .download(.network, source: .mirror), "engine_start_failed"),
+        ]
+        for (milestone, detail, wire) in cases {
+            let body = try #require(Reporter.request(version: "1.0.0", milestone: milestone, detail: detail)?.httpBody)
+            #expect(String(data: body, encoding: .utf8) == "{\"k\":\"other\",\"m\":\"\(wire)\",\"v\":\"1.0.0\"}")
+            #expect(body.count <= Reporter.maxBodyBytes)
+        }
+        for milestone in Reporter.Milestone.allCases where milestone != .modelDownloadFailed && milestone != .engineStartFailed {
+            for detail: Reporter.FailureDetail in [.engine(.outOfMemory), .download(.network, source: .mirror)] {
+                let body = try #require(Reporter.request(version: "1.0.0", milestone: milestone, detail: detail)?.httpBody)
+                let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+                #expect(Set(object.keys) == ["v", "m"])
+                #expect(body.count <= Reporter.maxBodyBytes)
+            }
+        }
+    }
+
+    @Test("Failure detail reaches transport")
+    func failureDetailReachesTransport() async throws {
+        let directory = temporaryDirectory("failure-detail")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let probe = FunnelSendProbe()
+        let reporter = DesktopFunnelReporter(isEnabled: { true }, send: { await probe.send($0) }, markerDirectory: directory, version: "1.0.0")
+        let token = try #require(await reporter.beginFirstRunFlow(isFirstRun: true))
+        await reporter.report(.modelDownloadFailed, detail: .download(.network, source: .huggingface), flowToken: token)
+        let body = try #require(await probe.firstBody)
+        #expect(String(data: body, encoding: .utf8) == #"{"k":"network","m":"model_download_failed","s":"huggingface","v":"1.0.0"}"#)
+    }
+
     @Test("Oversize payload is never constructed")
     func oversizePayloadIsRejectedLocally() {
         #expect(DesktopFunnelReporter.request(
@@ -709,6 +767,7 @@ private actor FunnelSendProbe {
     private var requests: [URLRequest] = []
 
     var count: Int { requests.count }
+    var firstBody: Data? { requests.first?.httpBody }
 
     func send(_ request: URLRequest) {
         requests.append(request)

@@ -64,6 +64,10 @@ from .hybrid_state_checkpoints import (  # noqa: E402
     restore_recurrent_layer,
 )
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
+from .mllm_prefill import (  # noqa: E402
+    MLLM_PREFILL_CHUNK_TOKENS,
+    effective_mllm_prefill_chunk,
+)
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .request import ClientRequestError  # noqa: E402
 from .vision_embedding_cache import (  # noqa: E402
@@ -187,18 +191,7 @@ def _vision_pixel_ceiling(
     return max(patch_unit**2, budget_per_image * patch_unit**2)
 
 
-# Upper bound on the per-forward chunk size used when prefilling a long
-# text-only prompt on the MLLM path (issue #1187, Problem B). The actual
-# chunk is ``min(prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)`` so an
-# operator who deliberately set a *smaller* ``--prefill-step-size`` (a
-# memory-constrained box) still gets chunks no larger than they asked for,
-# while the large values needed to clear the per-batch cap (the #682
-# reporter runs ``--prefill-step-size 22000``) no longer force the whole
-# prompt through a single forward. 2048 measured the lowest peak on a
-# gemma-4-26b 20k-token prefill (18.4 GB vs 20.0 GB at 4096, 35.2 GB
-# single-shot) with no throughput cost — it is also mlx-lm's own text-lane
-# default (``generate_step``/``PromptProcessingBatch`` prefill_step_size).
-_MLLM_PREFILL_CHUNK_TOKENS = 2048
+_MLLM_PREFILL_CHUNK_TOKENS = MLLM_PREFILL_CHUNK_TOKENS
 
 # How many exact hybrid snapshots mlx-vlm's APC keeps in memory for the MLLM
 # lane when ``APC_EXACT_CACHE_ENTRIES`` is unset. mlx-vlm's own default is 2,
@@ -4130,7 +4123,7 @@ class MLLMBatchGenerator:
         # ``mx.eval``/``mx.clear_cache`` barrier. Chunking only engages once
         # the un-chunked activations +
         # full-sequence logits would actually spike memory (long contexts).
-        chunk = max(1, min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS))
+        chunk = effective_mllm_prefill_chunk(self.prefill_step_size)
         is_text_only = _is_text_only_request(request)
         no_extra_kwargs = not request.extra_kwargs
         prompt_length = input_ids.shape[1]
