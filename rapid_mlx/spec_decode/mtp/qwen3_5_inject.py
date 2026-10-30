@@ -353,11 +353,13 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
       filename does NOT have to be one of the two well-known
       names).
     * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
-      (downloaded via ``snapshot_download`` to the HF cache, then
-      probed for the layouts above; only relevant files are downloaded). The
-      nested ``mtp/`` layout lets a
-      single repository contain target and drafter weights without
-      ``mlx_lm.load`` mistaking the drafter for a target-model shard.
+      (resolved via ``snapshot_download`` in two filtered stages): first
+      embedded-head files (``mtp.safetensors``, ``model-mtp.safetensors``,
+      ``mtp/*``), then a standalone sidecar's ``model.safetensors`` only
+      if no embedded head exists, so target trunk weights are never
+      downloaded (#5395). The nested ``mtp/`` layout lets a single
+      repository contain target and drafter weights without ``mlx_lm.load``
+      mistaking the drafter for a target-model shard.
 
     Returns ``None`` if the reference cannot be resolved — caller
     treats this as a soft failure and logs.
@@ -391,9 +393,20 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
                 "mtp.safetensors",
                 "model-mtp.safetensors",
                 "mtp/*",
-                "model.safetensors",
                 "mtplx_runtime.json",
             ],
+        )
+        root = Path(local)
+        for candidate in (
+            root / "mtp.safetensors",
+            root / "model-mtp.safetensors",
+            root / "mtp" / "model.safetensors",
+        ):
+            if candidate.exists():
+                return candidate
+        local = snapshot_download(
+            repo_id=str(mtp_sidecar),
+            allow_patterns=["model.safetensors", "mtplx_runtime.json"],
         )
         return _find_mtp_weights_file(Path(local))
     except ModelDownloadsDisabledError:

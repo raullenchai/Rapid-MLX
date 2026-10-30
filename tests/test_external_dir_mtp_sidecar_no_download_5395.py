@@ -99,15 +99,36 @@ def test_repo_resolution_limits_downloads(tmp_path, monkeypatch):
 
     monkeypatch.setattr(downloads, "snapshot_download", fake_download)
     assert _resolve_sidecar_file(REPO) == head
+    assert len(calls) == 1
     assert calls[0]["repo_id"] == REPO
     patterns = calls[0]["allow_patterns"]
     assert patterns == [
         "mtp.safetensors",
         "model-mtp.safetensors",
         "mtp/*",
-        "model.safetensors",
         "mtplx_runtime.json",
     ]
-    assert not any(
-        fnmatch.fnmatch("model-00001-of-00003.safetensors", p) for p in patterns
-    )
+    for target in ("model.safetensors", "model-00001-of-00003.safetensors"):
+        assert not any(fnmatch.fnmatch(target, p) for p in patterns)
+
+
+def test_repo_resolution_falls_back_to_standalone_sidecar(tmp_path, monkeypatch):
+    import rapid_mlx.model_downloads as downloads
+
+    first = tmp_path / "first"
+    first.mkdir()
+    second = tmp_path / "second"
+    second.mkdir()
+    head = second / "model.safetensors"
+    head.touch()
+    calls = []
+
+    def fake_download(**kwargs):
+        calls.append(kwargs)
+        return str((first, second)[len(calls) - 1])
+
+    monkeypatch.setattr(downloads, "snapshot_download", fake_download)
+    assert _resolve_sidecar_file(REPO) == head
+    assert len(calls) == 2
+    assert calls[1]["repo_id"] == REPO
+    assert calls[1]["allow_patterns"] == ["model.safetensors", "mtplx_runtime.json"]
