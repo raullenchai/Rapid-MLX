@@ -1015,7 +1015,6 @@ def test_mllm_serving_engine_run_records_mllm_lane_config(
     monkeypatch.setattr(lr, "_load_serving_engine", load)
     if baseline:
         monkeypatch.setattr(lr, "_uses_serving_benchmark_engine", lambda target: True)
-        import rapid_mlx.engine.batched as batched
 
         class FakeBatched:
             def __init__(self, *args, **kwargs):
@@ -1024,7 +1023,9 @@ def test_mllm_serving_engine_run_records_mllm_lane_config(
             async def start(self):
                 self.__dict__.update((await load()).__dict__)
 
-        monkeypatch.setattr(batched, "BatchedEngine", FakeBatched)
+        monkeypatch.setattr(
+            sys.modules["rapid_mlx.engine.batched"], "BatchedEngine", FakeBatched
+        )
     capture = {}
     token = lr._LOADED_IDENTITY.set(capture)
     try:
