@@ -270,3 +270,86 @@ def test_prepare_native_and_companion(monkeypatch):
     cli.serve_acceleration_preflights(args)
     launch = cli.prepare_dedicated_runtime(args)
     assert launch.lane == "companion_dspark" and launch.load is not None
+
+
+def test_stream_default_import_zero_and_criteria_methods(monkeypatch):
+    criteria = object()
+    tokenizer = SimpleNamespace(stopping_criteria=criteria, decode=lambda ids: "")
+
+    def generate(*args, **kwargs):
+        tokenizer.stopping_criteria.reset()
+        tokenizer.stopping_criteria.add_eos_token_ids([1])
+        yield SimpleNamespace(token=7, prompt_tokens=1)
+
+    monkeypatch.setitem(
+        sys.modules, "mlx_vlm", SimpleNamespace(stream_generate=generate)
+    )
+    stream = mlx_vlm_token_stream(
+        None, tokenizer, stream_generate_fn=None, generation_kwargs=lambda n: {}
+    )
+    assert list(stream([1], 0)) == []
+    assert list(stream([1], 1)) == [TokenChunk(7, 1)]
+    assert tokenizer.stopping_criteria is criteria
+
+
+def test_cached_snapshot_paths(monkeypatch, tmp_path):
+    from rapid_mlx import model_downloads
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    assert cached_snapshot_path(str(tmp_path), None) == str(tmp_path.resolve())
+    monkeypatch.setattr(model_downloads, "snapshot_download", lambda *a, **k: "/cached")
+    assert cached_snapshot_path("org/model", "rev") == "/cached"
+
+    def missing(*args, **kwargs):
+        raise OSError("missing")
+
+    monkeypatch.setattr(model_downloads, "snapshot_download", missing)
+    assert cached_snapshot_path("org/model", "rev") is None
+
+
+def test_dflash_unknown_profile_refusal(monkeypatch):
+    from rapid_mlx import cli, model_aliases
+    from rapid_mlx.speculative import dflash
+    from rapid_mlx.speculative.dflash import eligibility
+
+    monkeypatch.setattr(model_aliases, "resolve_profile", lambda name: None)
+    monkeypatch.setattr(cli, "_resolve_dflash_drafter_repo", lambda *a: "draft")
+    monkeypatch.setattr(
+        eligibility, "report", lambda *a, **k: SimpleNamespace(warnings=[])
+    )
+
+    def refuse(*args, **kwargs):
+        raise dflash.DFlashUnavailable("refused")
+
+    monkeypatch.setattr(dflash, "check", refuse)
+    with pytest.raises(SystemExit):
+        cli._resolve_dflash_launch_or_exit(SimpleNamespace(model="unknown"))
+
+
+def test_deferred_native_and_companion_loads(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.spec_decode.dspark import server as companion
+    from rapid_mlx.speculative import serial_benchmark as serial
+    from rapid_mlx.speculative.native_mtp import server as native
+
+    pair = SimpleNamespace(target_repo="target", target_revision="rev")
+    monkeypatch.setattr(cli, "_prepare_native_mtp_checks", lambda args: pair)
+    monkeypatch.setattr(cli, "_native_mtp_prefill", lambda *a: 42)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_download_companion_dspark_artifacts", lambda *a: "artifacts"
+    )
+    monkeypatch.setattr(native, "load_native_mtp_runtime", lambda *a, **k: (1, 2, 3, 4))
+    monkeypatch.setattr(
+        companion, "load_companion_dspark_runtime", lambda *a: (1, 2, 3, 4)
+    )
+    monkeypatch.setattr(serial, "cached_snapshot_path", lambda *a: "/target")
+    monkeypatch.setattr(serial, "native_mtp_runtime_handle", lambda *a, **k: (a, k))
+    monkeypatch.setattr(
+        serial, "companion_dspark_runtime_handle", lambda *a, **k: (a, k)
+    )
+    args = SimpleNamespace(model="target", _companion_dspark_pair=pair)
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda a: "native_mtp")
+    assert cli.prepare_dedicated_runtime(args).load()[1]["target_path"] == "/target"
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda a: "companion_dspark")
+    assert cli.prepare_dedicated_runtime(args).load()[1]["artifacts"] == "artifacts"

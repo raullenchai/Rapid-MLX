@@ -564,3 +564,136 @@ def test_tensorfold_loader_pins_one_lane(monkeypatch):
     launch = cli.prepare_dedicated_runtime(SimpleNamespace(model="test-model"))
     assert launch.load() == "handle"
     assert calls[0]["tensorfold_lanes"] == 1
+
+
+def test_tensorfold_loader_live_cap_failure(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.speculative import serial_benchmark, tensorfold_qwen27_server
+
+    closed = []
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "tensorfold_dflash")
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda *a: None)
+    monkeypatch.setattr(cli, "_download_tensorfold_artifacts", lambda *a: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    backend = SimpleNamespace(close=lambda: closed.append(True))
+    monkeypatch.setattr(
+        tensorfold_qwen27_server, "load_tensorfold_backend", lambda **k: (backend, None)
+    )
+
+    def fail(backend):
+        raise RuntimeError("invalid cap")
+
+    monkeypatch.setattr(serial_benchmark, "tensorfold_live_max_draft", fail)
+    with pytest.raises(AccelerationConfigError, match="invalid cap"):
+        cli.prepare_dedicated_runtime(SimpleNamespace(model="model")).load()
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        SimpleNamespace(
+            head_drafts=SimpleNamespace(drafter=SimpleNamespace(block_size=1))
+        ),
+        SimpleNamespace(drafts=0),
+    ],
+)
+def test_tensorfold_invalid_model_cap(model):
+    from rapid_mlx.speculative.serial_benchmark import tensorfold_live_max_draft
+
+    backend = SimpleNamespace(
+        _app=SimpleNamespace(engine=SimpleNamespace(max_draft=4, model=model))
+    )
+    with pytest.raises(RuntimeError):
+        tensorfold_live_max_draft(backend)
+
+
+def test_capture_flush_and_engine_preflight(monkeypatch):
+    import sys
+
+    from rapid_mlx import cli
+    from rapid_mlx.community_bench.acceleration import (
+        AccelerationRequest,
+        _capture_runtime_exit,
+        preflight_benchmark_acceleration,
+    )
+
+    with _capture_runtime_exit():
+        sys.stdout.flush()
+    monkeypatch.setattr(cli, "serve_acceleration_preflights", lambda args: None)
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "engine")
+    with pytest.raises(AccelerationConfigError, match="dspark"):
+        preflight_benchmark_acceleration(
+            "model", AccelerationRequest(overrides={"spec_decode": "dspark"})
+        )
+
+
+def test_adapter_exhaustion_and_timeout():
+    async def run(executor):
+        adapter = _DedicatedRuntimeBenchmarkAdapter(
+            SimpleNamespace(executor=executor, token_stream=lambda *a: (x for x in ()))
+        )
+        sampling = SimpleNamespace(max_tokens=2)
+        adapter._requests["empty"] = ([1], sampling)
+        assert [x async for x in adapter.stream_outputs("empty")] == []
+        adapter._requests["timeout"] = ([1], sampling)
+        with pytest.raises(asyncio.TimeoutError):
+            _ = [x async for x in adapter.stream_outputs("timeout", timeout=0)]
+        assert not adapter._active
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        asyncio.run(run(executor))
+
+
+@pytest.mark.parametrize("case", ["fallback", "mismatch", "draft", "missing"])
+def test_dedicated_identity_refusals(fake_dedicated, monkeypatch, case):
+    f = fake_dedicated
+    lr = f.lr
+    if case == "missing":
+        f.handle.target_path = None
+        with pytest.raises(AccelerationConfigError, match="target snapshot"):
+            asyncio.run(
+                lr._measure_dedicated(f.handle, "org/model", "example", {}, None)
+            )
+    elif case == "fallback":
+        f.handle.target_path = "org/model"
+        monkeypatch.setattr(
+            lr,
+            "_sidecar_identity",
+            lambda path: (_ for _ in ()).throw(ValueError("bad")),
+        )
+        # The target fallback succeeds; the draft lookup fails separately.
+        with pytest.raises(ValueError, match="bad"):
+            asyncio.run(
+                lr._measure_dedicated(f.handle, "org/model", "example", {}, None)
+            )
+    else:
+        if case == "mismatch":
+            f.handle.target_path = "other/model"
+            monkeypatch.setattr(
+                lr,
+                "_sidecar_identity",
+                lambda path: (_ for _ in ()).throw(ValueError("bad")),
+            )
+            match = "catalog checkpoint"
+        else:
+            f.handle.speculative.pop("draft_path")
+            match = "draft snapshot"
+        with pytest.raises(AccelerationConfigError, match=match):
+            asyncio.run(
+                lr._measure_dedicated(f.handle, "org/model", "example", {}, None)
+            )
+
+
+def test_dedicated_launch_refusal(fake_dedicated, monkeypatch):
+    from rapid_mlx import cli
+
+    f = fake_dedicated
+    monkeypatch.setattr(
+        cli,
+        "prepare_dedicated_runtime",
+        lambda args: cli.DedicatedRuntimeLaunch("dflash", None, "refused"),
+    )
+    with pytest.raises(f.lr.LocalBenchmarkError, match="refused"):
+        f.lr.run_local("example", archive=f.archive)
