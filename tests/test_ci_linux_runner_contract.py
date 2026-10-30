@@ -48,7 +48,7 @@ def test_every_linux_job_uses_exact_fork_safe_runner_expression(filename):
     for name, job in jobs.items():
         if name in mac_jobs:
             if filename == "ci.yml":
-                assert job["runs-on"] == "macos-14"
+                assert job["runs-on"] == "macos-15"
             else:
                 assert job["runs-on"] == (
                     "${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' "
