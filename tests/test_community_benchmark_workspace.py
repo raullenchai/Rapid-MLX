@@ -54,6 +54,7 @@ from rapid_mlx.community_bench.workspace import (
     describe_case,
     plan_for_alias,
 )
+from rapid_mlx.model_aliases import DraftModelNotServableError, draft_only_conflict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -326,8 +327,8 @@ def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
     catalog = benchmark_catalog(memory_gib=18)
     by_alias = {model["alias"]: model for model in catalog["models"]}
     assert by_alias["qwen3.8-27b-4bit"]["memory_fit"] == "does_not_fit"
-    assert by_alias["qwen3.6-35b-mtp-4bit"]["memory_fit"] == "does_not_fit"
-    assert by_alias["qwen3.6-35b-mtp-4bit"]["estimated_memory_gib"] >= 20
+    assert "qwen3.6-35b-mtp-4bit" not in by_alias
+    assert "qwen3.6-27b-mtp-4bit" not in by_alias
     assert by_alias["qwen3.5-4b-4bit"]["memory_fit"] == "fits"
     assert by_alias["qwen3.5-9b-4bit"]["memory_fit"] == "fits"
     assert by_alias["gemma-4-31b-assistant"]["memory_fit"] == "fits"
@@ -335,6 +336,40 @@ def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
     assert benchmark_catalog(memory_gib=64)["models"]
     big = {m["alias"]: m for m in benchmark_catalog(memory_gib=64)["models"]}
     assert big["qwen-image-2.1-bf16"]["memory_fit"] == "fits"
+
+
+def test_catalog_excludes_draft_only_models() -> None:
+    entries = benchmark_catalog(memory_gib=256)["models"]
+    assert all(draft_only_conflict(entry["alias"]) is None for entry in entries)
+    aliases = {entry["alias"] for entry in entries}
+    assert "qwen3.6-35b-mtp-4bit" not in aliases
+    assert "qwen3.6-27b-mtp-4bit" not in aliases
+    assert "qwen3.6-35b-4bit" in aliases
+    assert "qwen3.6-27b-4bit" in aliases
+
+
+def test_plan_rejects_draft_only_model() -> None:
+    with pytest.raises(DraftModelNotServableError) as error:
+        plan_for_alias("qwen3.6-35b-mtp-4bit")
+    assert "draft checkpoint" in str(error.value)
+    assert "Serve '" in str(error.value)
+
+
+def test_run_local_rejects_draft_before_loading_or_archiving(
+    monkeypatch, tmp_path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    monkeypatch.setattr(
+        local_runner,
+        "_text_measurements",
+        lambda *args, **kwargs: pytest.fail("loaded"),
+    )
+    with pytest.raises(
+        local_runner.LocalBenchmarkError, match="draft checkpoint"
+    ) as error:
+        local_runner.run_local("qwen3.6-27b-mtp-4bit", archive=archive)
+    assert error.value.saved is False
+    assert archive.list() == []
 
 
 def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:

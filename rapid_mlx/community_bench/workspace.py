@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from rapid_mlx.catalog import build_legacy_catalog_snapshot
+from rapid_mlx.model_aliases import draft_only_conflict, raise_if_draft_only_model
 
 from .benchmark_contracts import (
     BenchmarkRunValidator,
@@ -268,6 +269,9 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
     models = {item["registry_model_id"]: item for item in snapshot["models"]}
     entries: list[dict[str, Any]] = []
     for alias in snapshot["aliases"]:
+        # Serve refuses draft-only checkpoints, so the benchmark catalog never offers them.
+        if draft_only_conflict(alias["alias"]) is not None:
+            continue
         task_types = list(alias["capabilities"]["task_types"])
         task = _primary_task(task_types)
         if task is None:
@@ -381,6 +385,7 @@ def plan_for_alias(
     filesystem and never downloads anything.
     """
 
+    raise_if_draft_only_model(alias_name)
     catalog = benchmark_catalog(memory_gib=memory_gib)
     for entry in catalog["models"]:
         if entry["alias"] == alias_name:
