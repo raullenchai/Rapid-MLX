@@ -3,7 +3,7 @@ import Foundation
 /// One formatter for every model size label, so the same model reads the same
 /// in the picker, Settings, and download progress.
 enum ModelSizeText {
-    /// Accept localized separators because size strings can arrive from other producers.
+    /// Accept localized separators; a single dot or comma followed by three digits is ambiguous.
     nonisolated static func bytes(_ raw: String?) -> Int64? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
         let pattern = #"^([0-9]+(?:[.,' \u00A0\u202F][0-9]+)*)\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$"#
@@ -12,7 +12,10 @@ enum ModelSizeText {
               let numberRange = Range(match.range(at: 1), in: raw),
               let unitRange = Range(match.range(at: 2), in: raw) else { return nil }
         let separators = CharacterSet(charactersIn: ".,' \u{00A0}\u{202F}")
-        let parts = String(raw[numberRange]).components(separatedBy: separators)
+        let numberText = String(raw[numberRange])
+        let parts = numberText.components(separatedBy: separators)
+        if parts.count == 2, parts[1].count == 3,
+           numberText.contains(".") || numberText.contains(",") { return nil }
         let hasDecimal = parts.count > 1 && (1...2).contains(parts.last!.count)
         let groups = hasDecimal ? parts.dropLast() : parts[...]
         guard groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }

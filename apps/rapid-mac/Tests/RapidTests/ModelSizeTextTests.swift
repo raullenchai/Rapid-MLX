@@ -27,8 +27,11 @@ struct ModelSizeTextTests {
 
     @Test func localizedNumberShapes() {
         #expect(ModelSizeText.display("750,8 MB") == "751 MB")
-        #expect(ModelSizeText.bytes("1,010 MB") == Int64(1010) * 1024 * 1024)
+        #expect(ModelSizeText.bytes("1,010 MB") == nil)
+        #expect(ModelSizeText.bytes("1.234 GiB") == nil)
+        #expect(ModelSizeText.display("1.234 GiB") == "1.234 GiB")
         #expect(ModelSizeText.bytes("1.023,3 MB") == Int64((1023.3 * 1024 * 1024).rounded()))
+        #expect(ModelSizeText.bytes("1,023.3 MB") == Int64((1023.3 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1\u{00A0}010 MB") == Int64(1010) * 1024 * 1024)
         #expect(ModelSizeText.bytes("2.34 GB") == Int64((2.34 * 1024 * 1024 * 1024).rounded()))
         #expect(ModelSizeText.bytes("1,0,0 MB") == nil)
