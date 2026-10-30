@@ -1,0 +1,500 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Contract tests for dedicated serial benchmark runtimes, without MLX."""
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import pytest
+
+from rapid_mlx.community_bench.acceleration import (
+    AccelerationConfigError,
+    _refuse_engine_method,
+    acceleration_summary,
+    dedicated_language,
+)
+from rapid_mlx.community_bench.local_runner import _DedicatedRuntimeBenchmarkAdapter
+from rapid_mlx.speculative.serial_benchmark import TokenChunk
+
+
+def test_dedicated_metadata_and_summary():
+    handle = SimpleNamespace(
+        lane="dflash",
+        speculative={
+            "method": "dflash",
+            "max_draft_tokens": 15,
+            "algorithm": "dflash2",
+        },
+    )
+    language = dedicated_language(
+        handle,
+        context_length=8192,
+        prefill_chunk_size=2048,
+        draft_identity_digest="sha256:" + "a" * 64,
+    )
+    assert language["runtime"] == {"kind": "dflash", "algorithm": "dflash2"}
+    assert "DFlash dflash2 k=15 (dedicated runtime)" in acceleration_summary(language)
+
+
+@pytest.mark.parametrize("method", ["dspark", "draft_model"])
+def test_engine_methods_refused(method):
+    with pytest.raises(AccelerationConfigError, match=method):
+        _refuse_engine_method({"spec_decode": method})
+
+
+def test_adapter_counts_and_closes():
+    closed = []
+
+    def stream(prompt, maximum):
+        try:
+            for i in range(maximum):
+                yield TokenChunk(i, len(prompt))
+        finally:
+            closed.append(True)
+
+    async def run(executor):
+        adapter = _DedicatedRuntimeBenchmarkAdapter(
+            SimpleNamespace(executor=executor, token_stream=stream)
+        )
+        sampling = SimpleNamespace(
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            min_p=0.0,
+            repetition_penalty=1.0,
+            presence_penalty=0.0,
+            frequency_penalty=0.0,
+            stop=None,
+            stop_token_ids=None,
+            ignore_eos=True,
+            max_tokens=3,
+        )
+        request = await adapter.add_request([1, 2], sampling)
+        outputs = [out async for out in adapter.stream_outputs(request)]
+        assert outputs[-1].completion_tokens == 3
+        assert outputs[-1].prompt_tokens == 2
+        assert outputs[-1].finished
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        asyncio.run(run(executor))
+    assert closed == [True]
+
+
+def test_tensorfold_handle_embedded_head():
+    from rapid_mlx.speculative.serial_benchmark import tensorfold_runtime_handle
+
+    closed = []
+
+    class Provider:
+        def _outputs(self, prompt, **kwargs):
+            assert kwargs["prompt_token_ids"] == [1, 2]
+            assert kwargs["ignore_eos"]
+            yield SimpleNamespace(new_token_ids=[])
+            yield SimpleNamespace(new_token_ids=[3, 4])
+
+    backend = SimpleNamespace(
+        _app=SimpleNamespace(tokenizer=object()), close=lambda: closed.append(True)
+    )
+    handle = tensorfold_runtime_handle(
+        backend,
+        Provider(),
+        lane="tensorfold_mtp",
+        method="mtp",
+        algorithm="mtp",
+        draft_repo=None,
+        draft_revision=None,
+        draft_path=None,
+        target_path="/target",
+        max_draft_tokens=3,
+        lanes=1,
+    )
+    assert [chunk.token for chunk in handle.token_stream([1, 2], 2)] == [3, 4]
+    language = dedicated_language(
+        handle, context_length=8192, prefill_chunk_size=None, draft_identity_digest=None
+    )
+    assert language["runtime"] == {"kind": "tensorfold_mtp", "lanes": 1}
+    assert language["speculative_decoding"]["assistant_source"] == "embedded_head"
+    assert "draft_model_identity_digest" not in language["speculative_decoding"]
+    handle.close()
+    assert closed == [True]
+
+
+def test_runtime_capture_delegates_stream_attributes():
+    import sys
+
+    from rapid_mlx.community_bench.acceleration import _capture_runtime_exit
+
+    original = sys.stdout
+    with _capture_runtime_exit():
+        assert sys.stdout.isatty() == original.isatty()
+        assert sys.stdout.fileno() == original.fileno()
+        assert sys.stdout.encoding == original.encoding
+
+
+@pytest.mark.parametrize(
+    ("cap", "model", "expected"),
+    [
+        (
+            32,
+            SimpleNamespace(
+                head_drafts=SimpleNamespace(drafter=SimpleNamespace(block_size=16)),
+                drafts=15,
+            ),
+            15,
+        ),
+        (
+            8,
+            SimpleNamespace(
+                head_drafts=SimpleNamespace(drafter=SimpleNamespace(block_size=16)),
+                drafts=15,
+            ),
+            8,
+        ),
+        (15, SimpleNamespace(drafts=3), 3),
+        (2, SimpleNamespace(drafts=3), 2),
+        (7, SimpleNamespace(), 7),
+    ],
+)
+def test_tensorfold_live_draft_cap(cap, model, expected):
+    from rapid_mlx.speculative.serial_benchmark import tensorfold_live_max_draft
+
+    backend = SimpleNamespace(
+        _app=SimpleNamespace(engine=SimpleNamespace(max_draft=cap, model=model))
+    )
+    assert tensorfold_live_max_draft(backend) == expected
+
+
+def test_tensorfold_missing_live_cap_refused():
+    from rapid_mlx.speculative.serial_benchmark import tensorfold_live_max_draft
+
+    with pytest.raises(RuntimeError, match="live max_draft"):
+        tensorfold_live_max_draft(SimpleNamespace())
+
+
+def test_ddtree_preflight_refuses_without_download(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.community_bench import local_runner
+    from rapid_mlx.community_bench.acceleration import _refuse_unsupported
+
+    def download(*args, **kwargs):
+        pytest.fail("unexpected download")
+
+    monkeypatch.setattr(local_runner, "_ensure_model_downloaded", download)
+    args = SimpleNamespace(enable_ddtree=True)
+    assert cli.serve_runtime_lane(args) == "ddtree"
+    with pytest.raises(AccelerationConfigError, match="non-streaming"):
+        _refuse_unsupported("model", "ddtree", False, args)
+
+
+def test_runtime_exit_preserves_message(capsys):
+    from rapid_mlx.community_bench.acceleration import _capture_runtime_exit
+
+    with (
+        pytest.raises(AccelerationConfigError, match="load refused"),
+        _capture_runtime_exit(),
+    ):
+        print("load refused")
+        raise SystemExit(1)
+    assert "load refused" in capsys.readouterr().out
+
+
+@pytest.fixture
+def fake_dedicated(monkeypatch, tmp_path):
+    import sys
+
+    from rapid_mlx import cli
+    from rapid_mlx.community_bench import local_runner as lr
+    from rapid_mlx.community_bench import runner, workspace
+    from rapid_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.speculative.serial_benchmark import SerialRuntimeHandle
+
+    for name, attrs in {
+        "rapid_mlx.engine_core": dict(
+            AsyncEngineCore=object,
+            EngineConfig=object,
+            _init_mlx_step_thread=lambda: None,
+        ),
+        "rapid_mlx.scheduler": dict(SchedulerConfig=object),
+        "rapid_mlx.service.helpers": dict(
+            get_model_max_context=lambda *a: 8192,
+            _read_local_config_max_context=lambda *a: 8192,
+        ),
+        "rapid_mlx.utils.tokenizer": dict(
+            load_model_with_fallback=lambda *a, **k: None
+        ),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace(**attrs))
+    target = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
+    draft = tmp_path / "models--org--draft" / "snapshots" / ("b" * 40)
+    target.mkdir(parents=True)
+    draft.mkdir(parents=True)
+    closed = []
+    state = SimpleNamespace(fail=False, exit_at=None)
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def stream(prompt, maximum):
+        for i in range(maximum):
+            if state.fail and i == 1:
+                raise RuntimeError("stream broke")
+            yield TokenChunk(i, len(prompt))
+
+    handle = SerialRuntimeHandle(
+        lane="dflash",
+        tokenizer=SimpleNamespace(vocab_size=1000, all_special_ids=[]),
+        executor=executor,
+        token_stream=stream,
+        speculative={
+            "method": "dflash",
+            "max_draft_tokens": 15,
+            "draft_path": str(draft),
+            "algorithm": "dflash2",
+        },
+        target_path=str(target),
+        context_length=8192,
+        close=lambda: closed.append(True),
+        prefill_chunk_size=2048,
+    )
+
+    def prepare(args):
+        if state.exit_at == "prepare":
+            print("prepare refused")
+            raise SystemExit(1)
+
+        def load():
+            print("runtime progress")
+            if state.exit_at == "load":
+                print("load refused")
+                raise SystemExit(1)
+            return handle
+
+        return cli.DedicatedRuntimeLaunch("dflash", load, None)
+
+    async def bench(adapter, tokenizer, **kwargs):
+        buckets = []
+        for prompt_count, output_count in [(512, 128), (2048, 512)]:
+            sampling = SimpleNamespace(
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                stop=None,
+                stop_token_ids=None,
+                ignore_eos=True,
+                max_tokens=output_count,
+            )
+            request = await adapter.add_request([1] * prompt_count, sampling)
+            outputs = [out async for out in adapter.stream_outputs(request)]
+            assert outputs[-1].completion_tokens == output_count
+            result = runner.RoundResult(
+                100,
+                100,
+                10,
+                prompt_tokens=outputs[-1].prompt_tokens,
+                output_tokens=outputs[-1].completion_tokens,
+            )
+            buckets.append(runner.BucketResult([result] * 5))
+        return runner.BenchResult(*buckets, 1, "fake", "greedy")
+
+    monkeypatch.setattr(runner, "run_standardized_bench", bench)
+    monkeypatch.setattr(cli, "prepare_dedicated_runtime", prepare)
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "dflash")
+    monkeypatch.setattr(lr, "preflight_benchmark_acceleration", lambda *a: None)
+    monkeypatch.setattr(
+        lr, "build_serve_args", lambda *a: SimpleNamespace(model="org/model")
+    )
+    monkeypatch.setattr(
+        lr,
+        "resolve_benchmark_acceleration",
+        lambda *a: (SimpleNamespace(lane="dflash"), SimpleNamespace(model="org/model")),
+    )
+    monkeypatch.setattr(lr, "_ensure_model_downloaded", lambda *a: None)
+    monkeypatch.setattr(lr, "_uses_serving_benchmark_engine", lambda *a: False)
+    monkeypatch.setattr(lr, "_is_deepseek_v41_benchmark_target", lambda *a: False)
+    monkeypatch.setattr(
+        workspace, "benchmark_runtime_readiness", lambda *a: {"status": "available"}
+    )
+    monkeypatch.setattr(
+        lr,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {
+                "alias": alias,
+                "repo_id": "org/model",
+                "task_type": "text_generation",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        lr,
+        "collect",
+        lambda: (
+            Hardware("Apple M4 Pro", 24, 12, 16),
+            Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
+        ),
+    )
+    archive = workspace.LocalRunArchive(tmp_path / "archive")
+    yield SimpleNamespace(lr=lr, archive=archive, closed=closed, state=state)
+    executor.shutdown(wait=True)
+
+
+def test_dedicated_run_archives_valid_metadata(fake_dedicated):
+    from rapid_mlx.community_bench.benchmark_contracts import BenchmarkRunValidator
+
+    f = fake_dedicated
+    run = f.lr.run_local("example", archive=f.archive)
+    archived = f.archive.get(run["run_id"])
+    BenchmarkRunValidator().validate(archived)
+    language = archived["execution"]["task"]["language"]
+    assert language["runtime"]["kind"] == "dflash"
+    assert language["prefill_chunk_size"] == 2048
+    spec = language["speculative_decoding"]
+    assert spec["method"] == "dflash" and spec["max_draft_tokens"] == 15
+    assert spec["draft_model_identity_digest"].startswith("sha256:")
+    assert any(
+        c["source"].get("repo_id") == "org/draft"
+        for c in archived["model"]["components"]
+    )
+    assert f.closed == [True]
+
+
+def test_dedicated_stream_failure_closes_and_records(fake_dedicated):
+    f = fake_dedicated
+    f.state.fail = True
+    with pytest.raises(f.lr.LocalBenchmarkError, match="stream broke") as exc:
+        f.lr.run_local("example", archive=f.archive)
+    assert exc.value.saved
+    assert f.archive.list()[0]["outcome"]["status"] == "failed"
+    assert f.closed == [True]
+
+
+@pytest.mark.parametrize("phase", ["prepare", "load"])
+def test_runtime_exit_is_unarchived_refusal(fake_dedicated, phase):
+    f = fake_dedicated
+    f.state.exit_at = phase
+    with pytest.raises(f.lr.LocalBenchmarkError, match=f"{phase} refused") as exc:
+        f.lr.run_local("example", archive=f.archive)
+    assert not exc.value.saved
+    assert f.archive.list() == []
+
+
+def test_cli_json_dedicated_run(fake_dedicated, monkeypatch, capsys):
+    import json
+
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+
+    monkeypatch.setattr(cli.LocalRunArchive, "default", lambda: fake_dedicated.archive)
+    args = build_parser().parse_args(["benchmark", "run", "example", "--json"])
+    assert cli.benchmark_command(args) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["outcome"]["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    ("alias", "flags", "expected"),
+    [
+        ("qwen3.8-27b-tensorfold", [], "tensorfold_dflash"),
+        ("glm5.3-flash-4bit", [], "native_mtp"),
+        (
+            "qwen3.8-27b-4bit",
+            [
+                "--speculative-config",
+                '{"method":"dflash","model":"z-lab/Qwen3.8-27B-DFlash2"}',
+            ],
+            "dflash",
+        ),
+        ("llama-3.2-1b-4bit", [], "engine"),
+        ("glm5.3-flash-4bit", ["--no-spec-decode"], "engine"),
+        ("qwen3.8-27b-4bit", ["--no-spec-decode"], "engine"),
+    ],
+)
+def test_parser_lane_parity(monkeypatch, alias, flags, expected):
+    import sys
+    import types
+
+    import numpy as np
+    import psutil
+
+    from rapid_mlx import cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench.acceleration import (
+        build_serve_args,
+        request_from_args,
+        resolve_benchmark_acceleration,
+    )
+
+    mlx = types.ModuleType("mlx")
+    core = types.ModuleType("mlx.core")
+    core.array, core.float16 = np.array, np.float16
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    import rapid_mlx.api.utils as utils
+    import rapid_mlx.model_auto_config as auto
+    import rapid_mlx.spec_decode.mtp as mtp
+    import rapid_mlx.speculative.dflash.eligibility as dflash
+    import rapid_mlx.speculative.native_mtp.runtime as native
+
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(total=64 * 1024**3, available=64 * 1024**3),
+    )
+    monkeypatch.setattr(
+        mtp,
+        "detect_mtp_eligibility",
+        lambda *a, **k: next(
+            x for x in mtp.MTPEligibility if x != mtp.MTPEligibility.NONE
+        ),
+    )
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda sidecar: sidecar)
+    monkeypatch.setattr(cli, "_auto_config_lookup_key", lambda x: x)
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", lambda *a: ({}, {}))
+    monkeypatch.setattr(cli, "_native_mtp_runtime_ready", lambda *a: True)
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda *a: None)
+    monkeypatch.setattr(auto, "detect_model_config", lambda *a: None)
+    monkeypatch.setattr(utils, "resolve_serving_lane", lambda *a, **k: (False, None))
+    monkeypatch.setattr(dflash, "have_runtime", lambda: True)
+    monkeypatch.setattr(native, "have_runtime", lambda: True)
+    monkeypatch.setattr(native, "have_glm_cache_runtime", lambda: True)
+    parser = build_parser()
+    request = request_from_args(parser.parse_args(["benchmark", "run", alias, *flags]))
+    resolved = build_serve_args(alias, request)
+    direct = parser.parse_args(["serve", alias, *flags])
+    direct.model = resolved.model
+    if hasattr(resolved, "_original_alias"):
+        direct._original_alias = resolved._original_alias
+    direct._prefill_step_size_explicit = False
+    plan = cli.resolve_serve_acceleration(direct)
+    actual, _ = resolve_benchmark_acceleration(alias, request)
+    assert actual.lane == cli.serve_runtime_lane(direct) == plan.lane == expected
+
+
+def test_baseline_uses_plain_loader(fake_dedicated, monkeypatch):
+    import sys
+
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench.acceleration import request_from_args
+
+    def baseline_loader(*args, **kwargs):
+        raise RuntimeError("baseline loader reached")
+
+    monkeypatch.setattr(
+        sys.modules["rapid_mlx.utils.tokenizer"],
+        "load_model_with_fallback",
+        baseline_loader,
+    )
+    request = request_from_args(
+        build_parser().parse_args(["benchmark", "run", "example", "--baseline"])
+    )
+    assert request.baseline
+    with pytest.raises(
+        fake_dedicated.lr.LocalBenchmarkError, match="baseline loader reached"
+    ):
+        fake_dedicated.lr.run_local(
+            "example", archive=fake_dedicated.archive, acceleration=request
+        )
+    assert fake_dedicated.closed == []

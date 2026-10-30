@@ -38,6 +38,7 @@ from .acceleration import (
     AccelerationConfigError,
     AccelerationRequest,
     build_serve_args,
+    dedicated_language,
     effective_language,
     preflight_benchmark_acceleration,
     resolve_benchmark_acceleration,
@@ -1178,6 +1179,155 @@ class _DeepSeekV41BenchmarkAdapter:
             )
 
 
+class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
+    def __init__(self, handle):
+        self._handle = handle
+        self._requests = {}
+        self._active = {}
+
+    async def abort_request(self, request_id):
+        self._requests.pop(request_id, None)
+        iterator = self._active.pop(request_id, None)
+        if iterator is not None:
+            await asyncio.get_running_loop().run_in_executor(
+                self._handle.executor, iterator.close
+            )
+
+    async def stream_outputs(self, request_id, timeout=None):
+        from rapid_mlx.request import RequestOutput
+
+        prompt, sampling = self._requests.pop(request_id)
+        loop = asyncio.get_running_loop()
+        iterator = await loop.run_in_executor(
+            self._handle.executor,
+            self._handle.token_stream,
+            prompt,
+            sampling.max_tokens,
+        )
+        self._active[request_id] = iterator
+        deadline = None if timeout is None else loop.time() + timeout
+        tokens = []
+        try:
+            while len(tokens) < sampling.max_tokens:
+                remaining = None if deadline is None else deadline - loop.time()
+                if remaining is not None and remaining <= 0:
+                    raise asyncio.TimeoutError
+                future = loop.run_in_executor(
+                    self._handle.executor, _next_generation_chunk, iterator
+                )
+                has_chunk, chunk = (
+                    await asyncio.wait_for(future, remaining)
+                    if remaining is not None
+                    else await future
+                )
+                if not has_chunk:
+                    return
+                tokens.append(chunk.token)
+                finished = len(tokens) == sampling.max_tokens
+                yield RequestOutput(
+                    request_id=request_id,
+                    new_token_ids=[chunk.token],
+                    new_text="",
+                    output_token_ids=list(tokens),
+                    output_text="",
+                    finished=finished,
+                    finish_reason="length" if finished else None,
+                    prompt_tokens=chunk.prompt_tokens,
+                    completion_tokens=len(tokens),
+                    cached_tokens=0,
+                )
+        finally:
+            await self.abort_request(request_id)
+
+
+async def _measure_dedicated(handle, repo_id, model_name, workload, progress):
+    from pathlib import Path
+
+    from rapid_mlx.model_aliases import resolve_subfolder
+    from rapid_mlx.service.helpers import _read_local_config_max_context
+
+    from .runner import _reported_token_count, run_standardized_bench
+
+    try:
+        path = handle.target_path
+        if not path:
+            raise AccelerationConfigError("The target snapshot could not be resolved")
+        try:
+            target_repo, _, _, _ = _sidecar_identity(path)
+        except (AccelerationConfigError, ValueError, OSError):
+            target_repo = path
+        if target_repo.lower() != repo_id.lower():
+            raise AccelerationConfigError(
+                f"serve loads {target_repo} for this alias, not the catalog checkpoint"
+            )
+        identity = unresolved_model_identity(
+            repo_id,
+            "text_generation",
+            resolve_subfolder(model_name),
+            snapshot_path=path,
+        )
+        draft = handle.speculative.get("draft_path") or handle.speculative.get(
+            "draft_repo"
+        )
+        digest = None
+        if draft:
+            draft_repo, snapshot, subfolder, digest = _sidecar_identity(draft)
+            identity = _with_sidecar_identity(identity, draft_repo, snapshot, subfolder)
+        elif handle.speculative.get("method") != "mtp":
+            raise AccelerationConfigError("Cannot resolve draft snapshot revision")
+        capture = _LOADED_IDENTITY.get()
+        if capture is not None:
+            capture["identity"] = identity
+        context = handle.context_length or _read_local_config_max_context(
+            str(Path(path) / "config.json")
+        )
+        language = dedicated_language(
+            handle,
+            context_length=context,
+            prefill_chunk_size=handle.prefill_chunk_size,
+            draft_identity_digest=digest,
+        )
+        adapter = _DedicatedRuntimeBenchmarkAdapter(handle)
+        result = await run_standardized_bench(
+            adapter,
+            handle.tokenizer,
+            sampling="greedy",
+            registered_token_ids=True,
+            on_round=_text_round_observer(progress, workload["cases"])
+            if progress is not None
+            else None,
+        )
+        _record_conditions_after()
+        measurements = []
+        for case, bucket in zip(
+            workload["cases"], (result.short, result.long), strict=True
+        ):
+            for index, round_result in enumerate(bucket.rounds_raw, start=1):
+                decode_ms = (
+                    (case["target_output_tokens"] - 1) / round_result.decode_tps * 1000
+                )
+                measurements.append(
+                    {
+                        "case_id": case["case_id"],
+                        "round_index": index,
+                        "total_duration_ms": round_result.ttft_ms + decode_ms,
+                        "peak_active_memory_mib": result.peak_ram_mb,
+                        "completed": True,
+                        "prompt_tokens": _reported_token_count(
+                            round_result.prompt_tokens, case["target_prompt_tokens"]
+                        ),
+                        "output_tokens": _reported_token_count(
+                            round_result.output_tokens, case["target_output_tokens"]
+                        ),
+                        "ttft_ms": round_result.ttft_ms,
+                        "decode_duration_ms": decode_ms,
+                    }
+                )
+        return measurements, context, identity, language
+    finally:
+        handle.close()
+
+
 def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
     from rapid_mlx.models.deepseek_v41_native.artifacts import is_product_target
 
@@ -1466,8 +1616,27 @@ async def _text_measurements(
         elif not acceleration.baseline:
             preflight_benchmark_acceleration(model_name, acceleration)
             initial_args = build_serve_args(model_name, acceleration)
-            _ensure_model_downloaded(initial_args.model)
+            from rapid_mlx.cli import serve_runtime_lane
+
+            if not serve_runtime_lane(initial_args).startswith("tensorfold_"):
+                _ensure_model_downloaded(initial_args.model)
             plan, serve_args = resolve_benchmark_acceleration(model_name, acceleration)
+            if plan.lane != "engine":
+                from rapid_mlx.cli import prepare_dedicated_runtime
+
+                from .acceleration import _capture_runtime_exit
+
+                with _capture_runtime_exit():
+                    launch = prepare_dedicated_runtime(serve_args)
+                if launch.refusal or launch.load is None:
+                    raise AccelerationConfigError(
+                        launch.refusal or "Dedicated runtime is unavailable"
+                    )
+                with _capture_runtime_exit():
+                    handle = launch.load()
+                return await _measure_dedicated(
+                    handle, repo_id, model_name, workload, progress
+                )
             scheduler_kwargs = dict(plan.scheduler_kwargs)
             scheduler_kwargs.pop("enable_prefix_cache", None)
             scheduler = SchedulerConfig(

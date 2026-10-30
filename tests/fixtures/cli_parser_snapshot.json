@@ -1902,7 +1902,7 @@
          "allow_abbrev": true,
          "class": "rapid_mlx.cli_parser._PortContextArgumentParser",
          "defaults": {},
-         "description": null,
+         "description": "Runs serve runtime selection, including DFlash, native MTP and companion DSpark. TensorFold profiles are supported. Choose DFlash with --speculative-config '{\"method\":\"dflash\",\"model\":\"<drafter>\"}'; disable speculation with --no-spec-decode or accelerations with --baseline. DDTree cannot measure time to first token; suffix decoding is refused because prompts repeat.",
          "epilog": null,
          "formatter_class": "argparse.HelpFormatter",
          "groups": [

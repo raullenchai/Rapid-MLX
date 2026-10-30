@@ -264,32 +264,10 @@ def _prepare_multimodal_prompt(
     return PreparedPrompt(prompt=prompt, generation_kwargs=generation_kwargs)
 
 
-def run_companion_dspark_server(
-    *,
-    pair: CompanionDSparkPair,
-    artifacts: CompanionDSparkArtifacts | None,
-    host: str,
-    port: int,
-    port_explicit: bool | None = None,
-    served_model_name: str,
-    default_max_tokens: int,
-    cors_origins: list[str],
-    uvicorn_log_level: str,
-    no_thinking: bool = False,
-    api_key: str | None = None,
-    rate_limit: int = 0,
-    max_request_bytes: int = 8 * 1024 * 1024,
-    body_receive_timeout_seconds: float = 15.0,
-    default_timeout: float = 1800.0,
-    max_concurrent_requests: int = 256,
-    cors_policy: Any | None = None,
-    reasoning_parser_name: str | None = None,
-) -> None:
-    """Load the immutable pair before binding and run the serial API."""
-
-    from rapid_mlx._uvicorn import run_uvicorn
-    from rapid_mlx.speculative.dflash.server import _build_app, _dflash_executor
-    from rapid_mlx.telemetry.model_id import telemetry_model_id
+def load_companion_dspark_runtime(
+    pair: CompanionDSparkPair, artifacts: CompanionDSparkArtifacts | None
+):
+    from rapid_mlx.speculative.dflash.server import _dflash_executor
     from rapid_mlx.telemetry.server_start import failure_stage
 
     def _load_all():
@@ -321,6 +299,40 @@ def run_companion_dspark_server(
             "draft_kind": runtime.kind,
             "draft_block_size": runtime.draft_block_size,
         }
+
+    return model, processor, runtime, _generation_kwargs
+
+
+def run_companion_dspark_server(
+    *,
+    pair: CompanionDSparkPair,
+    artifacts: CompanionDSparkArtifacts | None,
+    host: str,
+    port: int,
+    port_explicit: bool | None = None,
+    served_model_name: str,
+    default_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+    no_thinking: bool = False,
+    api_key: str | None = None,
+    rate_limit: int = 0,
+    max_request_bytes: int = 8 * 1024 * 1024,
+    body_receive_timeout_seconds: float = 15.0,
+    default_timeout: float = 1800.0,
+    max_concurrent_requests: int = 256,
+    cors_policy: Any | None = None,
+    reasoning_parser_name: str | None = None,
+) -> None:
+    """Load the immutable pair before binding and run the serial API."""
+
+    from rapid_mlx._uvicorn import run_uvicorn
+    from rapid_mlx.speculative.dflash.server import _build_app
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+
+    model, processor, runtime, _generation_kwargs = load_companion_dspark_runtime(
+        pair, artifacts
+    )
 
     model_info = _build_companion_model_info(
         pair=pair,

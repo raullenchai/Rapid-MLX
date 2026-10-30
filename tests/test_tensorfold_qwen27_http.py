@@ -408,6 +408,16 @@ def test_provider_preserves_exact_token_ids_and_request_outputs(
     assert record["token_ids"] == [21, 22]
     assert len(record["token_sha256"]) == 64
 
+    outputs = list(
+        provider._outputs(
+            "ignored", prompt_token_ids=[7, 8], ignore_eos=True, max_tokens=2
+        )
+    )
+    assert scheduler.job.prompt_ids == [7, 8]
+    assert scheduler.job.ignore_eos is True
+    assert [token for output in outputs for token in output.new_token_ids] == [21, 22]
+    assert outputs[-1].output_text == "AB"
+
     # No seed: sampled requests draw a fresh one each time, greedy ones none.
     drawn = iter((11, 12, 13))
     monkeypatch.setattr(

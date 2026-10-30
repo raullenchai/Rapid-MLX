@@ -85,7 +85,7 @@ def test_cli_wires_tensorfold_preflight_before_pair_download() -> None:
 
     source = inspect.getsource(cli.serve_command)
     assert source.index("_preflight_tensorfold_qwen27_or_exit()") < source.index(
-        "download_qualified_pair"
+        "_download_tensorfold_artifacts(args)"
     )
 
 

@@ -268,7 +268,7 @@ def test_serve_parity(acceleration_probes, alias, flags):
         direct._original_alias = args._original_alias
     direct._prefill_step_size_explicit = "--prefill-step-size" in flags
     expected = cli.resolve_serve_acceleration(direct)
-    if expected.lane != "engine":
+    if expected.lane == "ddtree":
         with pytest.raises(AccelerationConfigError, match="--baseline"):
             resolve_benchmark_acceleration(alias, request)
     else:
@@ -376,7 +376,9 @@ def _fake_live_serving_scheduler(
         lr,
         "resolve_benchmark_acceleration",
         lambda *a: (
-            Namespace(scheduler_kwargs={"spec_decode": "mtp", "mtp_max_k": 3}),
+            Namespace(
+                lane="engine", scheduler_kwargs={"spec_decode": "mtp", "mtp_max_k": 3}
+            ),
             Namespace(model="org/model"),
         ),
     )
@@ -723,49 +725,6 @@ def test_removed_benchmark_flags_rejected():
             parser.parse_args(["benchmark", "run", "model", flag, "1"])
 
 
-def test_dedicated_lane_refused_before_download(
-    monkeypatch, tmp_path, acceleration_probes
-):
-    from rapid_mlx.community_bench import local_runner as lr
-    from rapid_mlx.community_bench.hardware import Hardware, Software
-
-    monkeypatch.setattr(
-        lr,
-        "collect",
-        lambda: (
-            Hardware("Apple M4 Pro", 24, 12, 16),
-            Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
-        ),
-    )
-    from rapid_mlx.community_bench.acceleration import preflight_benchmark_acceleration
-
-    _fake_live_serving_scheduler(monkeypatch, tmp_path, None)
-    monkeypatch.setattr(
-        lr, "preflight_benchmark_acceleration", preflight_benchmark_acceleration
-    )
-    alias = "qwen3.8-27b-tensorfold"
-    monkeypatch.setattr(
-        lr,
-        "plan_for_alias",
-        lambda alias: {
-            "model": {
-                "alias": alias,
-                "repo_id": "org/model",
-                "task_type": "text_generation",
-            }
-        },
-    )
-    monkeypatch.setattr(lr, "_is_deepseek_v41_benchmark_target", lambda repo: False)
-
-    def unexpected_download(model):
-        pytest.fail("download must not be called")
-
-    monkeypatch.setattr(lr, "_ensure_model_downloaded", unexpected_download)
-    with pytest.raises(lr.LocalBenchmarkError, match="--baseline") as exc:
-        lr.run_local(alias)
-    assert exc.value.saved is False
-
-
 def test_sidecar_snapshot_subfolders_have_distinct_identities(tmp_path):
     from rapid_mlx.community_bench.local_runner import (
         _sidecar_identity,
@@ -921,3 +880,20 @@ def test_text_measurements_missing_live_scheduler(monkeypatch, tmp_path):
     monkeypatch.setattr(lr, "_engine_scheduler", lambda engine: None)
     with pytest.raises(RuntimeError, match="Serving engine has no live scheduler"):
         asyncio.run(lr._text_measurements("org/model"))
+
+
+def test_dedicated_runtime_schema_is_additive():
+    root = Path(__file__).resolve().parents[1]
+    assert (
+        root / "proto/model-runtime/v1/execution-config.schema.json"
+    ).read_bytes() == (
+        root / "rapid_mlx/catalog/schemas/execution-config.schema.json"
+    ).read_bytes()
+    execution = execution_config("text_generation")
+    jsonschema.validate(execution, SCHEMA)
+    language = execution["task"]["language"]
+    language["runtime"] = {"kind": "native_mtp"}
+    jsonschema.validate(execution, SCHEMA)
+    language["runtime"]["unexpected"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(execution, SCHEMA)

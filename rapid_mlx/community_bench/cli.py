@@ -467,11 +467,18 @@ def benchmark_command(args) -> int:
         if not runs:
             print("No local benchmark results yet.")
         for run in runs:
+            kind = (
+                run.get("execution", {})
+                .get("task", {})
+                .get("language", {})
+                .get("runtime", {})
+                .get("kind")
+            )
             print(
                 f"{run['run_id']}  {run['workload']['task_type']:<18} "
                 f"{run['outcome']['status']:<10} "
                 f"{_local_time(run.get('completed_at'))}  "
-                f"{_run_model_label(run)}"
+                f"{_run_model_label(run)}" + (f"  ({kind})" if kind else "")
             )
     elif action == "inspect":
         _print_json(value)

@@ -69,12 +69,14 @@ def validate_request(
         except (TypeError, ValueError):
             return
         if isinstance(config, dict):
-            unknown = sorted(config.keys() - {"method", "num_speculative_tokens"})
+            unknown = sorted(
+                config.keys() - {"method", "num_speculative_tokens", "model", "backend"}
+            )
             if unknown:
                 raise AccelerationConfigError(
                     f"--speculative-config keys {', '.join(unknown)} change speculative "
                     "decoding in ways the benchmark result cannot record; the benchmark "
-                    "accepts only method and num_speculative_tokens (the model's serve "
+                    "accepts only method, num_speculative_tokens, model, and backend (the model's serve "
                     "defaults apply to the rest)."
                 )
 
@@ -107,15 +109,53 @@ def _capture_preflight_exit():
         raise AccelerationConfigError(output.getvalue().strip() or str(exc)) from None
 
 
-def _refuse_unsupported(alias: str, lane: str, suffix: bool) -> None:
-    if lane != "engine":
-        lane = lane.replace("_", " ")
-        raise AccelerationConfigError(
-            f"`serve {alias}` runs this model on its dedicated {lane} runtime, which the Community Benchmark cannot measure yet. Re-run with --baseline to measure it without accelerations."
-        )
+@contextlib.contextmanager
+def _capture_runtime_exit():
+    # Tee progress while retaining the refusal text.
+    class Tee:
+        def __init__(self, stream, capture):
+            self.stream, self.capture = stream, capture
+
+        def write(self, text):
+            self.capture.write(text)
+            return self.stream.write(text)
+
+        def flush(self):
+            self.stream.flush()
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    import sys
+
+    output = io.StringIO()
+    try:
+        with (
+            contextlib.redirect_stdout(Tee(sys.stdout, output)),
+            contextlib.redirect_stderr(Tee(sys.stderr, output)),
+        ):
+            yield
+    except SystemExit as exc:
+        raise AccelerationConfigError(output.getvalue().strip() or str(exc)) from None
+
+
+def _refuse_unsupported(alias: str, lane: str, suffix: bool, args=None) -> None:
     if suffix:
         raise AccelerationConfigError(
             "Suffix decoding cannot be benchmarked because this workload repeats the same prompt across warmup and measured rounds."
+        )
+    if lane == "ddtree":
+        from rapid_mlx.cli import prepare_dedicated_runtime
+
+        # DDTree preparation does not download or load artifacts.
+        raise AccelerationConfigError(prepare_dedicated_runtime(args).refusal)
+
+
+def _refuse_engine_method(kwargs, *, allow_auto=False) -> None:
+    method = kwargs.get("spec_decode") or "none"
+    if method not in {"none", "mtp"} and not (allow_auto and method == "auto"):
+        raise AccelerationConfigError(
+            f"the engine speculative method {method} cannot be recorded; re-run with --no-spec-decode or --baseline"
         )
 
 
@@ -131,7 +171,10 @@ def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -
         lane,
         getattr(args, "spec_decode", None) == "suffix"
         or getattr(args, "suffix_decoding", False),
+        args,
     )
+    if lane == "engine":
+        _refuse_engine_method(vars(args), allow_auto=True)
 
 
 def resolve_benchmark_acceleration(alias: str, request: AccelerationRequest):
@@ -145,7 +188,10 @@ def resolve_benchmark_acceleration(alias: str, request: AccelerationRequest):
         plan.lane,
         plan.scheduler_kwargs.get("spec_decode") == "suffix"
         or bool(plan.scheduler_kwargs.get("enable_suffix_decoding")),
+        serve_args,
     )
+    if plan.lane == "engine":
+        _refuse_engine_method(plan.scheduler_kwargs)
     return plan, serve_args
 
 
@@ -209,10 +255,50 @@ def effective_language(
     return language
 
 
+def dedicated_language(
+    handle, *, context_length, prefill_chunk_size, draft_identity_digest
+):
+    spec = {
+        "method": handle.speculative["method"],
+        "max_draft_tokens": handle.speculative["max_draft_tokens"],
+    }
+    if draft_identity_digest:
+        spec["draft_model_identity_digest"] = draft_identity_digest
+    if spec["method"] == "mtp":
+        spec["assistant_source"] = (
+            "external_model" if draft_identity_digest else "embedded_head"
+        )
+    runtime = {"kind": handle.lane}
+    if handle.lane.startswith("tensorfold_"):
+        runtime["lanes"] = 1
+    if handle.speculative.get("algorithm") in {"dflash", "dflash2"}:
+        runtime["algorithm"] = handle.speculative["algorithm"]
+    return {
+        "speculative_decoding": spec,
+        "kv_cache": {"mode": "unknown", "dtype": "unknown"},
+        "prefix_cache_enabled": False,
+        "prefill_backend": "gpu",
+        "prefill_chunk_size": prefill_chunk_size,
+        "context_length": context_length,
+        "runtime": runtime,
+    }
+
+
 def acceleration_summary(language: Mapping[str, Any]) -> str:
     parts = []
     spec = language["speculative_decoding"]
-    if spec["method"] == "mtp":
+    runtime = language.get("runtime")
+    if runtime:
+        name = {
+            "native_mtp": "native MTP",
+            "dflash": "DFlash",
+            "companion_dspark": "DSpark",
+        }.get(runtime["kind"], runtime["kind"])
+        algorithm = f" {runtime['algorithm']}" if runtime.get("algorithm") else ""
+        parts.append(
+            f"{name}{algorithm} k={spec['max_draft_tokens']} (dedicated runtime)"
+        )
+    elif spec["method"] == "mtp":
         suffix = (
             " (external draft)"
             if spec.get("assistant_source") == "external_model"

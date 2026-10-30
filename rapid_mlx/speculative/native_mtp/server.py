@@ -49,31 +49,7 @@ def _validate_greedy_request(request: Any) -> None:
         )
 
 
-def run_native_mtp_server(
-    *,
-    pair: NativeMTPPair,
-    host: str,
-    port: int,
-    port_explicit: bool | None = None,
-    served_model_name: str,
-    default_max_tokens: int,
-    cors_origins: list[str],
-    uvicorn_log_level: str,
-    no_thinking: bool = False,
-    api_key: str | None = None,
-    rate_limit: int = 0,
-    max_request_bytes: int = 8 * 1024 * 1024,
-    body_receive_timeout_seconds: float = 15.0,
-    default_timeout: float = 1800.0,
-    max_concurrent_requests: int = 256,
-    cors_policy: Any | None = None,
-    tool_call_parser: str | None = "qwen3_coder_xml",
-    reasoning_parser_name: str | None = "qwen3",
-    prefill_step_size: int = 2048,
-    default_reasoning_effort: str | None = None,
-) -> None:
-    """Load the immutable target/drafter pair and run the serial API server."""
-
+def load_native_mtp_runtime(pair: NativeMTPPair, *, prefill_step_size: int):
     try:
         from mlx_vlm import load
     except ImportError as exc:
@@ -86,7 +62,7 @@ def run_native_mtp_server(
     # Reuse the established serial speculative server's thread-affine API and
     # lifecycle boundary. It already owns auth, admission, deadlines,
     # cancellation, stream backpressure, and OpenAI response shaping.
-    from ..dflash.server import _build_app, _dflash_executor
+    from ..dflash.server import _dflash_executor
 
     def _load_all():
         started = time.perf_counter()
@@ -153,6 +129,40 @@ def run_native_mtp_server(
                 temperature,
             )
         return kwargs
+
+    return model, processor, runtime, _generation_kwargs
+
+
+def run_native_mtp_server(
+    *,
+    pair: NativeMTPPair,
+    host: str,
+    port: int,
+    port_explicit: bool | None = None,
+    served_model_name: str,
+    default_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+    no_thinking: bool = False,
+    api_key: str | None = None,
+    rate_limit: int = 0,
+    max_request_bytes: int = 8 * 1024 * 1024,
+    body_receive_timeout_seconds: float = 15.0,
+    default_timeout: float = 1800.0,
+    max_concurrent_requests: int = 256,
+    cors_policy: Any | None = None,
+    tool_call_parser: str | None = "qwen3_coder_xml",
+    reasoning_parser_name: str | None = "qwen3",
+    prefill_step_size: int = 2048,
+    default_reasoning_effort: str | None = None,
+) -> None:
+    """Load the immutable target/drafter pair and run the serial API server."""
+
+    from ..dflash.server import _build_app
+
+    model, processor, runtime, _generation_kwargs = load_native_mtp_runtime(
+        pair, prefill_step_size=prefill_step_size
+    )
 
     app = _build_app(
         model=model,

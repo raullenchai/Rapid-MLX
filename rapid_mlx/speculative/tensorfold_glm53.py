@@ -220,7 +220,8 @@ class TensorFoldGLM53Backend(TensorFoldQwen27Backend):
                 model_id=f"{target.resolve()}|tensorfold={SUPPORTED_VERSION}",
                 model_dir=target,
             )
-            return cls(app)
+            backend = cls(app)
+            return backend
         except BaseException as error:
             # Preserve the startup error even if teardown itself fails.
             try:
@@ -258,8 +259,11 @@ def run_tensorfold_glm53_server(**kwargs: Any) -> None:
 
     from .tensorfold_qwen27_server import run_tensorfold_qwen27_server
 
-    run_tensorfold_qwen27_server(
-        **kwargs,
+    run_tensorfold_qwen27_server(**kwargs, **tensorfold_glm53_server_kwargs())
+
+
+def tensorfold_glm53_server_kwargs() -> dict:
+    return dict(
         backend_class=TensorFoldGLM53Backend,
         profile_id="glm5.3-flash-tensorfold",
         backend_label="TensorFold GLM-5.3-Flash",
