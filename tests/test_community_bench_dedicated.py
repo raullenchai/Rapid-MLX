@@ -834,3 +834,56 @@ def test_measure_timeout_does_not_wait_for_blocked_step(fake_dedicated, monkeypa
             assert closed == [False]
         finally:
             release.set()
+
+
+@pytest.mark.parametrize(
+    "lane,expected_download",
+    [
+        ("companion_dspark", False),
+        ("tensorfold_mtp", False),
+        ("engine", True),
+        ("native_mtp", True),
+        ("dflash", True),
+    ],
+)
+def test_text_download_follows_resolved_lane(
+    fake_dedicated, monkeypatch, lane, expected_download
+):
+    from rapid_mlx import cli
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
+    from rapid_mlx.spec_decode.dspark import eligibility, runtime
+
+    lr = fake_dedicated.lr
+    args = SimpleNamespace(model="org/model")
+    pair = object()
+    calls = []
+    monkeypatch.setattr(lr, "build_serve_args", lambda *a: args)
+    monkeypatch.setattr(
+        cli,
+        "_normalize_speculative_config_or_exit",
+        lambda a: setattr(
+            a,
+            "_speculative_config",
+            SimpleNamespace(
+                method="dspark" if lane == "companion_dspark" else "none", model="draft"
+            ),
+        ),
+    )
+    monkeypatch.setattr(eligibility, "resolve_companion_dspark_pair", lambda **kw: pair)
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "serve_runtime_lane",
+        lambda a: "companion_dspark" if a._companion_dspark_pair is pair else lane,
+    )
+    monkeypatch.setattr(lr, "_ensure_model_downloaded", calls.append)
+
+    def stop(*args):
+        raise RuntimeError("download decision complete")
+
+    monkeypatch.setattr(lr, "resolve_benchmark_acceleration", stop)
+    with pytest.raises(RuntimeError, match="download decision complete"):
+        asyncio.run(
+            lr._text_measurements("example", acceleration=AccelerationRequest())
+        )
+    assert calls == (["org/model"] if expected_download else [])

@@ -1632,9 +1632,19 @@ async def _text_measurements(
         elif not acceleration.baseline:
             preflight_benchmark_acceleration(model_name, acceleration)
             initial_args = build_serve_args(model_name, acceleration)
-            from rapid_mlx.cli import serve_runtime_lane
+            from rapid_mlx.cli import (
+                _normalize_speculative_config_or_exit,
+                _preflight_companion_dspark_or_exit,
+                serve_runtime_lane,
+            )
 
-            if not serve_runtime_lane(initial_args).startswith("tensorfold_"):
+            from .acceleration import _capture_preflight_exit
+
+            with _capture_preflight_exit():
+                _normalize_speculative_config_or_exit(initial_args)
+                _preflight_companion_dspark_or_exit(initial_args)
+            lane = serve_runtime_lane(initial_args)
+            if lane != "companion_dspark" and not lane.startswith("tensorfold_"):
                 _ensure_model_downloaded(initial_args.model)
             plan, serve_args = resolve_benchmark_acceleration(model_name, acceleration)
             if plan.lane != "engine":

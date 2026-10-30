@@ -109,7 +109,9 @@ def load_native_mtp_runtime(pair: NativeMTPPair, *, prefill_step_size: int):
     with failure_stage("prepare"):
         model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
-    def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
+    def _generation_kwargs(
+        runtime, *, max_tokens: int, temperature: float, top_p: float
+    ):
         kwargs = {
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -182,7 +184,7 @@ def run_native_mtp_server(
         tool_call_parser=tool_call_parser,
         reasoning_parser_name=reasoning_parser_name,
         default_reasoning_effort=default_reasoning_effort,
-        generation_kwargs_fn=_generation_kwargs,
+        generation_kwargs_fn=lambda **kw: _generation_kwargs(runtime, **kw),
         validate_request_fn=_validate_greedy_request,
         backend_name="Native MTP",
     )

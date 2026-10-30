@@ -109,10 +109,20 @@ def test_runtime_handles_read_live_facts(monkeypatch):
             target_path="/target",
         ),
         serial.native_mtp_runtime_handle(
-            None, processor, runtime, lambda **kw: kw, pair=None, target_path="/target"
+            None,
+            processor,
+            runtime,
+            lambda runtime, **kw: kw,
+            pair=None,
+            target_path="/target",
         ),
         serial.companion_dspark_runtime_handle(
-            None, processor, runtime, lambda **kw: kw, pair=None, artifacts=artifacts
+            None,
+            processor,
+            runtime,
+            lambda runtime, **kw: kw,
+            pair=None,
+            artifacts=artifacts,
         ),
     ]
     assert [h.speculative["max_draft_tokens"] for h in handles] == [7, 2, 7]
@@ -146,7 +156,10 @@ def test_servers_delegate_loading(monkeypatch):
     from rapid_mlx.speculative.native_mtp import server as mtp
 
     calls = []
-    monkeypatch.setattr(dflash, "_build_app", lambda **kwargs: object())
+    apps = []
+    monkeypatch.setattr(
+        dflash, "_build_app", lambda **kwargs: apps.append(kwargs) or object()
+    )
     monkeypatch.setattr(_uvicorn, "run_uvicorn", lambda *args, **kwargs: None)
     monkeypatch.setattr(mtp, "run_uvicorn", lambda *args, **kwargs: None)
     monkeypatch.setattr(dspark, "_build_companion_model_info", lambda **kwargs: None)
@@ -158,13 +171,17 @@ def test_servers_delegate_loading(monkeypatch):
     monkeypatch.setattr(
         mtp,
         "load_native_mtp_runtime",
-        lambda pair, **kwargs: calls.append((pair, kwargs)) or (None, None, None, None),
+        lambda pair, **kwargs: (
+            calls.append((pair, kwargs))
+            or (None, None, "mtp-runtime", lambda runtime, **kw: runtime)
+        ),
     )
     monkeypatch.setattr(
         dspark,
         "load_companion_dspark_runtime",
         lambda pair, artifacts: (
-            calls.append((pair, artifacts)) or (None, None, None, None)
+            calls.append((pair, artifacts))
+            or (None, None, "dspark-runtime", lambda runtime, **kw: runtime)
         ),
     )
     common = dict(
@@ -187,6 +204,8 @@ def test_servers_delegate_loading(monkeypatch):
     pair = SimpleNamespace(target_repo="target")
     mtp.run_native_mtp_server(pair=pair, prefill_step_size=42, **common)
     dspark.run_companion_dspark_server(pair=pair, artifacts="artifacts", **common)
+    assert apps[1]["generation_kwargs_fn"]() == "mtp-runtime"
+    assert apps[2]["generation_kwargs_fn"]() == "dspark-runtime"
     assert calls == [
         dict(
             main_model_repo="target",
@@ -363,7 +382,12 @@ def test_runtime_handle_releases_model(monkeypatch):
 
     server = ModuleType("rapid_mlx.speculative.dflash.server")
     server._dflash_executor = ThreadPoolExecutor(max_workers=1)
+    server.dflash_generation_kwargs = lambda runtime, **kw: {"prefill_step_size": 1}
     monkeypatch.setitem(sys.modules, server.__name__, server)
+    common = ModuleType("mlx_vlm.speculative.common")
+    common._dflash_block_total = lambda drafter, override: 2
+    monkeypatch.setitem(sys.modules, common.__name__, common)
+    monkeypatch.setattr(serial, "cached_snapshot_path", lambda *args: None)
     monkeypatch.setattr(
         sys.modules["mlx.core"], "clear_cache", lambda: None, raising=False
     )
@@ -371,29 +395,34 @@ def test_runtime_handle_releases_model(monkeypatch):
     class Model:
         pass
 
-    model = Model()
-    ref = weakref.ref(model)
-    processor = SimpleNamespace(tokenizer=object())
-    handle = serial._runtime_handle(
-        "dflash",
+    class Runtime:
+        drafter = object()
+        drafter_repo = "draft"
+        drafter_revision = "rev"
+        algorithm = "dflash"
+
+    model, runtime = Model(), Runtime()
+    model_ref, runtime_ref = weakref.ref(model), weakref.ref(runtime)
+    handle = serial.dflash_runtime_handle(
         model,
-        processor,
-        object(),
-        lambda **kw: {"prefill_step_size": 1},
-        {},
-        "/target",
+        SimpleNamespace(tokenizer=object()),
+        runtime,
+        drafter_repo="draft",
+        drafter_revision="rev",
+        target_path="/target",
     )
 
     def fake_stream(model, processor, *, stream_generate_fn, generation_kwargs):
-        assert model is ref()
+        assert model is model_ref()
         assert generation_kwargs(2)["prefill_step_size"] == 1
         return lambda prompt, maximum: iter([maximum])
 
     monkeypatch.setattr(serial, "mlx_vlm_token_stream", fake_stream)
     assert list(handle.token_stream([1], 2)) == [2]
-    del model
+    del model, runtime
     handle.close()
-    assert ref() is None
+    assert model_ref() is None
+    assert runtime_ref() is None
     server._dflash_executor.shutdown()
 
 
@@ -420,7 +449,7 @@ def test_handle_close_without_wait_queues_cleanup(monkeypatch, kind):
             None,
             object(),
             None,
-            lambda **kwargs: {"prefill_step_size": 1},
+            lambda runtime, **kwargs: {"prefill_step_size": 1},
             {},
             "/target",
         )
@@ -463,3 +492,25 @@ def test_handle_close_without_wait_queues_cleanup(monkeypatch, kind):
     finally:
         release.set()
         executor.shutdown(wait=True)
+
+
+def test_companion_loader_generation_receives_runtime(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rapid_mlx.spec_decode.dspark import server as companion
+    from rapid_mlx.speculative.dflash import server as dflash
+
+    runtime = SimpleNamespace(drafter=object(), kind="dspark", draft_block_size=8)
+    monkeypatch.setattr(
+        companion, "load_runtime", lambda pair, artifacts: (1, 2, runtime)
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(dflash, "_dflash_executor", executor)
+        _, _, loaded, generation = companion.load_companion_dspark_runtime(
+            None, "artifacts"
+        )
+        kwargs = generation(loaded, max_tokens=5, temperature=0.0, top_p=1.0)
+    assert kwargs["draft_model"] is runtime.drafter
+    assert kwargs["draft_block_size"] == 8
+    with pytest.raises(RuntimeError, match="greedy"):
+        generation(loaded, max_tokens=5, temperature=1.0, top_p=1.0)

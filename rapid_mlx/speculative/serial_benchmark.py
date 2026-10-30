@@ -114,11 +114,13 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
             holder["processor"],
             stream_generate_fn=None,
             generation_kwargs=lambda n: holder["kwargs_fn"](
-                max_tokens=n, temperature=0.0, top_p=1.0
+                holder["runtime"], max_tokens=n, temperature=0.0, top_p=1.0
             ),
         )(prompt, maximum)
 
-    kwargs = holder["kwargs_fn"](max_tokens=1, temperature=0.0, top_p=1.0)
+    kwargs = holder["kwargs_fn"](
+        holder["runtime"], max_tokens=1, temperature=0.0, top_p=1.0
+    )
     prefill = kwargs.get("prefill_step_size")
     if prefill is None:
         from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
@@ -185,7 +187,7 @@ def dflash_runtime_handle(
         model,
         processor,
         runtime,
-        lambda **kw: dflash_generation_kwargs(runtime, **kw),
+        dflash_generation_kwargs,
         {
             "method": "dflash",
             "max_draft_tokens": count,

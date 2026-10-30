@@ -285,7 +285,9 @@ def load_companion_dspark_runtime(
     with failure_stage("prepare"):
         model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
-    def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
+    def _generation_kwargs(
+        runtime, *, max_tokens: int, temperature: float, top_p: float
+    ):
         # Request validation guarantees these sampling values. Assert again at
         # the final call boundary so a programmatic app caller cannot attach the
         # drafter to an unqualified sampling request.
@@ -356,7 +358,7 @@ def run_companion_dspark_server(
         tool_call_parser=None,
         reasoning_parser_name=reasoning_parser_name,
         render_prompt_fn=_prepare_multimodal_prompt,
-        generation_kwargs_fn=_generation_kwargs,
+        generation_kwargs_fn=lambda **kw: _generation_kwargs(runtime, **kw),
         validate_request_fn=lambda request, **telemetry_context: (
             _validate_companion_request(
                 request,
