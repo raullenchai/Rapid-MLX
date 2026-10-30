@@ -30,8 +30,9 @@ from scripts.pr_validate.steps import stress_e2e_bench
 
 
 def _run_body():
+    """The matrix body lives in ``_run_matrix``; ``run`` wraps it with the GPU result cache and shared lock."""
     return ast.parse(
-        inspect.getsource(stress_e2e_bench.StressE2EBenchStep.run).lstrip()
+        inspect.getsource(stress_e2e_bench.StressE2EBenchStep._run_matrix).lstrip()
     )
 
 

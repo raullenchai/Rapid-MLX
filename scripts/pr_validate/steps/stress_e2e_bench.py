@@ -42,8 +42,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import gpu_cache
 from ..base import Step, StepResult
 from ..context import Context, env_truthy
+from ..gpu_lock import gpu_lock_path, hold_gpu_lock
 
 REGISTRY_PATH = Path(__file__).parent.parent / "golden_models.yaml"
 BASELINE_DIR = Path("harness/baselines")
@@ -79,6 +81,11 @@ DEFAULT_STRESS_TIMEOUT_S = 900
 RAM_HEADROOM_GB = 8.0  # leave this much free for the OS + model load spike
 
 
+def _ctx_log(ctx):
+    log = getattr(ctx, "run_log", None)
+    return log if callable(log) else lambda _: None
+
+
 @dataclass
 class ModelChoice:
     family: str
@@ -106,6 +113,28 @@ class StressE2EBenchStep(Step):
         return ctx.blast_radius == "high"
 
     def run(self, ctx: Context) -> StepResult:
+        log = _ctx_log(ctx)
+        key = gpu_cache.cache_key(ctx)
+        cached = gpu_cache.load(key, ctx) if key else None
+        if cached:
+            return cached
+        with hold_gpu_lock(gpu_lock_path(), log=log) as lock:
+            key = gpu_cache.cache_key(ctx)
+            cached = gpu_cache.load(key, ctx) if key else None
+            result = cached if cached else self._run_matrix(ctx)
+            if key and not cached and result.status == "pass":
+                if gpu_cache.cache_key(ctx) == key:
+                    gpu_cache.store(key, ctx, result)
+                else:
+                    log(
+                        "GPU cache not stored: repository or environment changed during the run"
+                    )
+        description = lock.describe()
+        result.details += "\n\n" + description
+        log(description)
+        return result
+
+    def _run_matrix(self, ctx: Context) -> StepResult:
         try:
             registry = _load_registry()
         except Exception as e:  # noqa: BLE001

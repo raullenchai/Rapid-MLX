@@ -516,15 +516,30 @@ _HF_CACHE_ENV_VARS = ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE")
 _NETWORK_OPT_IN_MARKER = "requires_network"
 
 
+@pytest.fixture(scope="session")
+def _pr_validate_gpu_tmp_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("pr-validate-gpu")
+
+
 @pytest.fixture(autouse=True)
-def _isolate_pr_validate_step_opt_outs(monkeypatch):
-    """Drop pr_validate's operator step opt-outs from every test (#4984).
+def _isolate_pr_validate_step_opt_outs(monkeypatch, _pr_validate_gpu_tmp_dir):
+    """Isolate pr_validate operator settings from every test (#4984).
 
     ``PR_VALIDATE_NO_STRESS=1`` and friends are documented for the person
     running the validator, so they are inherited by its ``full_unit`` pytest
     subprocess. Tests that exercise the runner must see the default pipeline;
     a test that wants an opt-out sets it explicitly with ``monkeypatch``.
+    Mocked ``StressE2EBenchStep().run`` calls must never block on or create
+    the operator's shared GPU lock or write the real per-clone GPU cache.
+    Tests needing other values can override these with ``monkeypatch``.
     """
+    monkeypatch.setenv(
+        "PR_VALIDATE_GPU_LOCK", str(_pr_validate_gpu_tmp_dir / "gpu.lock")
+    )
+    monkeypatch.setenv(
+        "PR_VALIDATE_GPU_CACHE_DIR", str(_pr_validate_gpu_tmp_dir / "gpu-cache")
+    )
+    monkeypatch.delenv("PR_VALIDATE_NO_GPU_CACHE", raising=False)
     try:
         from scripts.pr_validate.context import STEP_OPT_OUT_ENV_VARS
     except ImportError:

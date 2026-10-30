@@ -30,11 +30,13 @@ _STATUS_BADGE = {
 }
 
 
-def render_scorecard(ctx: Context) -> str:
+def render_scorecard(ctx: Context, partial_stage: str = "") -> str:
     """Build the markdown report. One table row per step, then per-fail
     detail blocks below. Designed to be paste-able into a GitHub PR
     comment without further editing."""
     final = verdict(ctx.results)
+    if partial_stage and final == "MERGE-SAFE":
+        final = f"STAGE {partial_stage} PASSED (partial, not a merge verdict)"
 
     lines = []
     lines.append(f"# PR #{ctx.pr_number} validation scorecard")
@@ -57,14 +59,14 @@ def render_scorecard(ctx: Context) -> str:
     lines.append("")
 
     # Step results table.
-    lines.append("| step | status | summary | time |")
-    lines.append("|---|---|---|---:|")
+    lines.append("| stage | step | status | summary | time |")
+    lines.append("|---|---|---|---|---:|")
     for r in ctx.results:
         badge = _STATUS_BADGE[r.status]
         # Markdown-escape any pipes in summary.
         summary = r.summary.replace("|", "\\|")
         lines.append(
-            f"| `{r.name}` | {badge} | {summary} | {r.duration_seconds:.1f}s |"
+            f"| {r.stage or '-'} | `{r.name}` | {badge} | {summary} | {r.duration_seconds:.1f}s |"
         )
     lines.append("")
 
@@ -72,7 +74,8 @@ def render_scorecard(ctx: Context) -> str:
     detail_blocks = []
     for r in ctx.results:
         if r.status in ("fail", "error") or r.findings:
-            block = [f"### `{r.name}` — {_STATUS_BADGE[r.status]}", ""]
+            label = f"{r.stage}/{r.name}" if r.stage else r.name
+            block = [f"### `{label}` — {_STATUS_BADGE[r.status]}", ""]
             if r.findings:
                 block.append("**Findings:**")
                 for f in r.findings:

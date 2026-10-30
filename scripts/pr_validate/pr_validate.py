@@ -8,7 +8,7 @@ import os
 import sys
 
 from .context import env_truthy
-from .runner import run_pipeline
+from .runner import STAGE_NAMES, run_pipeline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,6 +73,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--stage",
+        choices=STAGE_NAMES,
+        default="",
+        help=(
+            "Run only that stage; review, checks, and gpu also re-run the cheap "
+            "admit stage first for context and the supply-chain scan."
+        ),
+    )
+    parser.add_argument(
         "--queue-on-success",
         action="store_true",
         help=(
@@ -93,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         base=args.base,
         body_only=args.body_only,
         queue_on_success=args.queue_on_success,
+        stage=args.stage,
     )
 
 
