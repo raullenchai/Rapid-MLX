@@ -28,9 +28,6 @@ runtime and start the service:
 rapid-mlx system-one convaiinnovations/laya --port 8700
 ```
 
-`laya-mlx` requires Python 3.11 or newer. Rapid-MLX itself continues to support
-Python 3.10; use the CLM backend or upgrade Python when running this service on
-3.10.
 
 ## CLM-8B
 

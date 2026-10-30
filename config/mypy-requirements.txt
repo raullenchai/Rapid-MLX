@@ -1,4 +1,4 @@
-# Fully pinned environment for config/mypy-error-baseline.txt (Python 3.11).
+# Fully pinned environment for config/mypy-error-baseline.txt (Python 3.12).
 # Regenerate and review the baseline whenever any version changes.
 annotated-doc==0.0.5
 annotated-types==0.8.0

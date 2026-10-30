@@ -1788,12 +1788,12 @@ def section_python() -> Section:
 
     py_ver = ".".join(str(x) for x in sys.version_info[:3])
     exe = Path(sys.executable).absolute()
-    # Defensive: pyproject pins ``requires-python = ">=3.10"`` so install-
+    # Defensive: pyproject pins ``requires-python = ">=3.12"`` so install-
     # time pip would already have refused — but doctor should still tell the
     # user clearly if they somehow got rapid-mlx onto an older interpreter
     # (e.g. a hand-copied wheel). Ruff's UP036 flags this as dead under our
     # support matrix; that's the point of the defensive branch.
-    if sys.version_info >= (3, 10):  # noqa: UP036
+    if sys.version_info >= (3, 12):  # noqa: UP036
         s.add(
             f"Python {py_ver}",
             CheckStatus.OK,
@@ -1801,7 +1801,7 @@ def section_python() -> Section:
         )
     else:  # pragma: no cover — only reachable on unsupported interpreters
         s.add(
-            f"Python {py_ver} (rapid-mlx requires >= 3.10)",
+            f"Python {py_ver} (rapid-mlx requires >= 3.12)",
             CheckStatus.FAIL,
             detail=f"executable={exe}; prefix={Path(sys.prefix).resolve()}",
         )

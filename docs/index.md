@@ -76,7 +76,7 @@ See the [current web documentation](https://rapidmlx.com/docs/) for full guides.
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)
-- Python 3.10+
+- Python 3.12+
 - 8GB+ RAM recommended
 
 ## License

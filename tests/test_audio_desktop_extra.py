@@ -4,13 +4,8 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
-
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
-    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
-
 
 PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
 

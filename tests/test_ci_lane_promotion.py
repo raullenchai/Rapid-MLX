@@ -471,7 +471,7 @@ def test_combined_platform_job_enforces_changed_lines_coverage_without_baseline(
     assert gate["env"] == {"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}"}
     assert "continue-on-error" not in gate
     assert "coverage combine" in gate["run"]
-    assert "coverage-data/linux/coverage-linux-3.11.data" in gate["run"]
+    assert "coverage-data/linux/coverage-linux-3.12.data" in gate["run"]
     assert "coverage-data/apple/coverage-apple.data" in gate["run"]
     assert "coverage.xml" in gate["run"]
     assert '--compare-branch "$PR_BASE_SHA"' in gate["run"]

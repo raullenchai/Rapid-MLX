@@ -3,7 +3,7 @@
 
 The workflow deliberately keeps this policy in tested Python instead of a
 large, fragile GitHub Actions expression.  Unknown paths fail safe by selecting
-both product lanes. Ordinary PR diffs with an engine lane use Python 3.11
+both product lanes. Ordinary PR diffs with an engine lane use Python 3.12
 across all three shards, preserving the coverage interpreter. Missing/invalid
 diffs and dormant engine lanes keep the full matrix; promoted heads force full.
 Non-PR events bypass this classifier in ci.yml and keep the full matrix.
@@ -33,7 +33,7 @@ class Lanes:
         }
 
 
-LinuxMatrixMode = Literal["py311", "full"]
+LinuxMatrixMode = Literal["py312", "full"]
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ _DOC_FILES = {
 
 def linux_test_matrix(mode: LinuxMatrixMode) -> dict[str, list[dict[str, object]]]:
     """Return an explicit matrix so route changes cannot alter shard count."""
-    versions = ("3.11",) if mode == "py311" else ("3.10", "3.11", "3.12")
+    versions = ("3.12",) if mode == "py312" else ("3.12", "3.13")
     return {
         "include": [
             {"python-version": version, "shard": shard}
@@ -143,7 +143,7 @@ def _linux_matrix_decision(
     ):
         return "full", "invalid-path"
 
-    return "py311", "pr-single-python"
+    return "py312", "pr-single-python"
 
 
 def classify(paths: Iterable[str]) -> Lanes:

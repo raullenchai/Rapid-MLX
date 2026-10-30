@@ -32,20 +32,6 @@ def runtime_install_spec(extra: str, version: str) -> str:
     return f"rapid-mlx[{extra}]=={version}"
 
 
-def python_upgrade_hint() -> str:
-    """Guidance for a runtime that the current Python cannot install.
-
-    The image and video runtimes require Python 3.11+, so on the 3.10 floor
-    reinstalling into the same interpreter cannot help.
-    """
-    from rapid_mlx import __version__
-
-    return (
-        "Reinstall rapid-mlx on Python 3.11 or newer, for example:\n"
-        f"    uv tool install --force --python 3.12 'rapid-mlx=={__version__}'"
-    )
-
-
 def homebrew_runtime_hint(extra: str, version: str) -> str:
     """Guidance for a bundled runtime on the text-only Homebrew formula.
 

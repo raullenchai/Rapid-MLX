@@ -105,8 +105,7 @@ _VALID_CHANNELS = frozenset({"stable", "rc"})
 #: indentation, and an optional trailing comment. Anchored to whole lines
 #: so ``{name = "Rapid-MLX contributors"}`` inside the authors array (or
 #: a like-named package) cannot match. pyproject.toml is read as text
-#: rather than parsed with tomllib because this repo supports Python 3.10
-#: and tomllib is 3.11+.
+#: rather than parsed with tomllib to keep this check lightweight.
 _PROJECT_NAME_RE = re.compile(
     r"(?m)^\s*name\s*=\s*[\"']" + re.escape(_DISTRIBUTION_NAME) + r"[\"']\s*(?:#.*)?$"
 )

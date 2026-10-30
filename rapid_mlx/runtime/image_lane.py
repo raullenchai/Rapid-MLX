@@ -12,7 +12,6 @@ from __future__ import annotations
 import concurrent.futures
 import importlib.util
 import os
-import sys
 import threading
 from collections.abc import Callable
 from typing import ParamSpec, TypeVar
@@ -97,13 +96,6 @@ def image_runtime_issue(model_name: str | None = None) -> str | None:
     """Return an actionable, side-effect-free image runtime problem."""
 
     family = _detect_family(model_name) if model_name else ""
-    if sys.version_info < (3, 11) and family not in {"sdxl-base", "sd35-large"}:
-        return (
-            "image generation requires Python 3.11 or newer "
-            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-            "Rapid-MLX core still supports Python 3.10, but the mflux runtime "
-            "does not."
-        )
     runtime_module = (
         "mlx_vlm"
         if family == "hidream-o1-dev"
@@ -130,25 +122,12 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
             optional_extra_install_hint,
         )
 
-        reason = (
-            "python_version_unsupported"
-            if "requires Python 3.11 or newer" in issue
-            else "runtime_extra_missing"
-        )
-        from .base_runtime import python_upgrade_hint
-
         raise OptionalRuntimeMissing(
             extra="image",
-            install_hint=(
-                python_upgrade_hint()
-                if reason == "python_version_unsupported"
-                else optional_extra_install_hint("image")
-            ),
+            install_hint=optional_extra_install_hint("image"),
             detail=f"\n  Error: {issue.rstrip()}\n",
-            status=(
-                "incompatible" if reason == "python_version_unsupported" else "absent"
-            ),
-            marker_reason=reason,
+            status="absent",
+            marker_reason="runtime_extra_missing",
         )
 
 

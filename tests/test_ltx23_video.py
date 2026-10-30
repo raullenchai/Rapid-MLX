@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -30,11 +31,6 @@ from rapid_mlx.runtime.video_lane import (
     _resolve_ffmpeg,
     require_video_runtime_or_exit,
 )
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    import tomli as tomllib
 
 
 def test_ltx23_alias_routes_to_video_lane() -> None:
@@ -68,7 +64,6 @@ def test_invalid_video_reference_image_is_rejected(tmp_path: Path) -> None:
 def test_video_runtime_preflight_fails_before_download(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(video_lane.sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _: None)
     monkeypatch.setattr("shutil.which", lambda _: None)
     monkeypatch.setattr(video_lane, "_FFMPEG_FALLBACK_PATHS", ())
@@ -203,24 +198,7 @@ def test_video_remux_uses_resolved_ffmpeg_absolute_path(
     assert output.read_bytes() == b"video-only"
 
 
-def test_video_runtime_preflight_reports_python_311_floor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Python310(tuple):
-        major = 3
-        minor = 10
-
-    monkeypatch.setattr(video_lane.sys, "version_info", Python310((3, 10, 0)))
-
-    with pytest.raises(OptionalRuntimeMissing) as exc:
-        require_video_runtime_or_exit()
-
-    error = exc.value.format_user_message()
-    assert "requires Python 3.11 or newer" in error
-    assert "current: 3.10" in error
-
-
-def test_video_extra_marks_every_dependency_python_311_or_newer() -> None:
+def test_video_extra_dependencies_keep_platform_markers() -> None:
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as file:
         pyproject = tomllib.load(file)
@@ -228,7 +206,8 @@ def test_video_extra_marks_every_dependency_python_311_or_newer() -> None:
     video_specs = pyproject["project"]["optional-dependencies"]["video"]
     assert video_specs
     assert any(spec.startswith("mlx-video-with-audio==0.1.36;") for spec in video_specs)
-    assert all("python_version >= '3.11'" in spec for spec in video_specs)
+    assert all("python_version" not in spec for spec in video_specs)
+    assert all("platform_system" in spec for spec in video_specs)
 
 
 @pytest.mark.asyncio

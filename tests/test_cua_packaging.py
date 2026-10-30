@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import sys
+import tomllib
 from pathlib import Path
-
-try:
-    import tomllib
-except ImportError:  # Python 3.10 test lane
-    import tomli as tomllib
-
 
 ROOT = Path(__file__).parents[1]
 PYOBJC_PACKAGES = {

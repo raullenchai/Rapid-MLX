@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Codex server-root input must reach the same API in setup and tests."""
 
+import tomllib
 from argparse import Namespace
 
 import pytest
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
 
 from rapid_mlx.agents import get_profile
 from rapid_mlx.agents.adapter import setup_agent_config

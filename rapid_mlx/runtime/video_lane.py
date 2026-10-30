@@ -9,7 +9,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -133,7 +132,7 @@ def _submodule_spec_exists_without_import(parent: str, child: str) -> bool:
     )
 
 
-# The mlx-video runtime ships in the base install (Python 3.11+ on macOS), so
+# The mlx-video runtime ships in the base install on macOS, so
 # its absence means a damaged environment; the install hint repairs it.
 _VIDEO_RUNTIME_LABEL = "the mlx-video runtime"
 
@@ -154,13 +153,6 @@ def _default_video_runtime_requirements(model_name: str | None) -> list[str]:
 def registered_wan_runtime_issue(model_name: str) -> str | None:
     """Return an actionable, side-effect-free Wan benchmark runtime problem."""
 
-    if sys.version_info < (3, 11):
-        return (
-            "video generation requires Python 3.11 or newer "
-            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-            "Rapid-MLX core still supports Python 3.10, but the upstream "
-            "mlx-video runtime does not."
-        )
     missing = _default_video_runtime_requirements(model_name)
     if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
@@ -188,17 +180,9 @@ _LTX25_FFMPEG_HINT = (
 def _ltx25_runtime_issue(*, provision: bool) -> VideoRuntimeIssue | None:
     """Shared LTX-2.5 preflight used by serve, pull and the model catalog."""
     from ..video import ltx25
-    from .base_runtime import python_upgrade_hint
     from .optional_runtime import optional_extra_install_hint
 
     runtime = ltx25.ltx25_runtime()
-    if runtime.state == "python_unsupported":
-        return VideoRuntimeIssue(
-            detail="\n  Error: " + ltx25.python_unsupported_detail() + "\n",
-            install_hint=python_upgrade_hint(),
-            status="incompatible",
-            marker_reason="python_version_unsupported",
-        )
 
     missing: list[str] = []
     install_hint: str | None = None
@@ -274,7 +258,6 @@ def video_runtime_issue(
     form so listing aliases never installs anything. ``serve`` and ``pull``
     provision an explicit LTX-2.5 override before they touch model weights.
     """
-    from .base_runtime import python_upgrade_hint
     from .optional_runtime import optional_extra_install_hint
 
     if _is_ltx25_name(model_name):
@@ -303,19 +286,6 @@ def video_runtime_issue(
             install_hint=optional_extra_install_hint("video", status="broken"),
             status="broken",
             marker_reason="runtime_dependency_missing",
-        )
-
-    if sys.version_info < (3, 11):
-        return VideoRuntimeIssue(
-            detail=(
-                "\n  Error: video generation requires Python 3.11 or newer "
-                f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-                "Rapid-MLX core still supports Python 3.10, but the upstream "
-                "mlx-video runtime does not.\n"
-            ),
-            install_hint=python_upgrade_hint(),
-            status="incompatible",
-            marker_reason="python_version_unsupported",
         )
 
     missing: list[str] = []

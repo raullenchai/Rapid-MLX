@@ -54,9 +54,7 @@ LTX25_PROVENANCE_FILE = "_vendored.py"
 # Files the vendor script generates next to the upstream sources; they are not
 # part of the audited tree digest (see scripts/vendor_ltx25.py).
 LTX25_GENERATED_FILES = frozenset({LTX25_PROVENANCE_FILE, "LICENSE", "NOTICE"})
-LTX25RuntimeState = Literal[
-    "trusted", "absent", "corrupt", "override_invalid", "python_unsupported"
-]
+LTX25RuntimeState = Literal["trusted", "absent", "corrupt", "override_invalid"]
 LTX25RuntimeSource = Literal["vendored", "override"]
 LTX25RuntimeReason = Literal["missing", "damaged", "shadowed"]
 
@@ -461,13 +459,11 @@ def _vendored_runtime() -> LTX25Runtime:
 def ltx25_runtime() -> LTX25Runtime:
     """Resolve the runtime once into a closed state.
 
-    Precedence is explicit and never falls through: the Python floor, then the
+    Precedence is explicit and never falls through: the
     ``RAPID_MLX_LTX25_RUNTIME`` override, then the bundled copy. A broken
     override is reported as ``override_invalid`` rather than quietly running
     the bundled runtime.
     """
-    if sys.version_info < (3, 11):
-        return LTX25Runtime(state="python_unsupported")
     executable = resolve_ltx25_runtime()
     if executable is not None:
         return LTX25Runtime(state="trusted", source="override", executable=executable)
@@ -484,20 +480,8 @@ def ltx25_runtime() -> LTX25Runtime:
     return _vendored_runtime()
 
 
-def python_unsupported_detail() -> str:
-    """Explain the LTX-2.5 Python floor in standalone terms."""
-    return (
-        "LTX-2.5 video generation requires Python 3.11 or newer "
-        f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
-        "Rapid-MLX core still supports Python 3.10, but the LTX-2.5 runtime "
-        "does not."
-    )
-
-
 def runtime_unavailable_message(runtime: LTX25Runtime) -> str:
     """Return the actionable generation-time message for a non-trusted state."""
-    if runtime.state == "python_unsupported":
-        return python_unsupported_detail()
     if runtime.state == "override_invalid":
         return (
             (runtime.detail or "The LTX-2.5 runtime override is invalid.")

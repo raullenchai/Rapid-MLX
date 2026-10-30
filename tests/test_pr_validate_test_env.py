@@ -21,18 +21,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from packaging.requirements import InvalidRequirement, Requirement
-
-# Standard pyproject parser — stdlib on 3.11+, vendored tomli marker
-# on 3.10 (already an existing dev dep).
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover — branch only taken on 3.10 CI
-    import tomli as tomllib
 
 from scripts.pr_validate._test_env import (
     REQUIRED_TEST_PACKAGES,
@@ -123,7 +117,7 @@ class TestPyprojectTestExtras:
 def _pkg_name(dep: str) -> str:
     """Pull the bare package name out of a PEP 508-ish requirement
     string. ``"pytest-asyncio>=0.21.0"`` → ``"pytest-asyncio"``;
-    ``'tomli>=2.0.1; python_version < "3.11"'`` → ``"tomli"``."""
+    ``'example>=2.0.1; python_version < "3.11"'`` → ``"example"``."""
     # Strip env markers (everything after the ; ), then version spec.
     head = dep.split(";", 1)[0].strip()
     for sep in ("<=", ">=", "==", "<", ">", "~=", "!="):

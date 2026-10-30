@@ -6,12 +6,9 @@ config shape matches what Codex CLI's TOML parser actually expects —
 catches refactor-time breakage of `rapid-mlx agents codex --setup`.
 """
 
-import pytest
+import tomllib
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
-    import tomli as tomllib
+import pytest
 
 from rapid_mlx.agents import get_profile, list_profiles
 

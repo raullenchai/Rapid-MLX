@@ -7,7 +7,6 @@ import shlex
 import subprocess
 import sys
 import textwrap
-from collections import namedtuple
 
 import pytest
 
@@ -39,13 +38,10 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     """The released Wan failure keeps its human text and rc, plus one marker."""
     result = _run_guard(
         """
-        from collections import namedtuple
         from unittest.mock import patch
         import rapid_mlx.runtime.video_lane as lane
 
-        Version = namedtuple("Version", "major minor")
-        with patch.object(lane.sys, "version_info", Version(3, 11)), \\
-             patch("importlib.util.find_spec", return_value=None), \\
+        with patch("importlib.util.find_spec", return_value=None), \\
              patch.object(lane, "_resolve_ffmpeg", return_value="ffmpeg"):
             lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
         """
@@ -66,13 +62,10 @@ def test_video_extra_guard_emits_one_stderr_marker_without_changing_cli_error() 
     [
         (
             """
-            from collections import namedtuple
             from unittest.mock import patch
             import rapid_mlx.runtime.image_lane as lane
 
-            Version = namedtuple("Version", "major minor")
-            with patch.object(lane.sys, "version_info", Version(3, 11)), \\
-                 patch("importlib.util.find_spec", return_value=None):
+            with patch("importlib.util.find_spec", return_value=None):
                 lane.require_image_runtime_or_exit("flux2-klein-4b")
             """,
             "\n  Error: image generation requires the `mflux` runtime. "
@@ -136,28 +129,10 @@ def test_sibling_extra_guards_emit_closed_marker_once(
     [
         (
             """
-            from collections import namedtuple
             from unittest.mock import patch
             import rapid_mlx.runtime.video_lane as lane
 
-            Version = namedtuple("Version", "major minor")
-            with patch.object(lane.sys, "version_info", Version(3, 10)):
-                lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
-            """,
-            "\n  Error: video generation requires Python 3.11 or newer "
-            "(current: 3.10). Rapid-MLX core still supports Python 3.10, but "
-            "the upstream mlx-video runtime does not.\n\n",
-            f"{MARKER_PREFIX} python_version_unsupported extra=video",
-        ),
-        (
-            """
-            from collections import namedtuple
-            from unittest.mock import patch
-            import rapid_mlx.runtime.video_lane as lane
-
-            Version = namedtuple("Version", "major minor")
-            with patch.object(lane.sys, "version_info", Version(3, 11)), \\
-                 patch.object(lane, "_default_video_runtime_requirements", return_value=[]), \\
+            with patch.object(lane, "_default_video_runtime_requirements", return_value=[]), \\
                  patch.object(lane, "_resolve_ffmpeg", return_value=None):
                 lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
             """,
@@ -258,8 +233,6 @@ def test_video_guard_marker_branches_are_covered_in_process(
 ) -> None:
     from rapid_mlx.runtime import video_lane
 
-    version = namedtuple("Version", "major minor")
-    monkeypatch.setattr(video_lane.sys, "version_info", version(3, 11))
     monkeypatch.setattr(video_lane, "_is_ltx25_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_is_cogvideox_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "ffmpeg")
@@ -284,13 +257,6 @@ def test_video_guard_marker_branches_are_covered_in_process(
         )
     assert "runtime_dependency_missing extra=video" in capsys.readouterr().err
 
-    monkeypatch.setattr(video_lane.sys, "version_info", version(3, 10))
-    with pytest.raises(SystemExit, match="2"):
-        _handle_guard(
-            lambda: video_lane.require_video_runtime_or_exit("wan2.2-ti2v-5b-q8")
-        )
-    assert "python_version_unsupported extra=video" in capsys.readouterr().err
-
 
 def test_image_and_audio_marker_branches_are_covered_in_process(
     monkeypatch, capsys
@@ -298,21 +264,12 @@ def test_image_and_audio_marker_branches_are_covered_in_process(
     from rapid_mlx.audio import probe
     from rapid_mlx.runtime import image_lane
 
-    version = namedtuple("Version", "major minor")
-    monkeypatch.setattr(image_lane.sys, "version_info", version(3, 11))
     monkeypatch.setattr(image_lane.importlib.util, "find_spec", lambda _name: None)
     with pytest.raises(SystemExit, match="2"):
         _handle_guard(
             lambda: image_lane.require_image_runtime_or_exit("flux2-klein-4b")
         )
     assert "runtime_extra_missing extra=image" in capsys.readouterr().err
-
-    monkeypatch.setattr(image_lane.sys, "version_info", version(3, 10))
-    with pytest.raises(SystemExit, match="2"):
-        _handle_guard(
-            lambda: image_lane.require_image_runtime_or_exit("flux2-klein-4b")
-        )
-    assert "python_version_unsupported extra=image" in capsys.readouterr().err
 
     with pytest.raises(SystemExit, match="2"):
         _handle_guard(lambda: probe.require_audio_or_exit("kokoro"))

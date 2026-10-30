@@ -2,7 +2,7 @@
 # Offline regression tests for install.sh interpreter + venv handling (#1953).
 #
 # install.sh used to pick the first python3.x on PATH by name, ignoring its
-# architecture, so a uv/pyenv x86_64 python3.12 ahead of an arm64 python3.11
+# architecture, so a uv/pyenv x86_64 python3.13 ahead of an arm64 python3.12
 # was chosen on Apple Silicon; the resulting venv was incomplete (no bin/pip)
 # and every re-run then died on the upgrade path calling the missing pip.
 #
@@ -48,14 +48,14 @@ EOF
 
 # ── 1. arch-aware selection: skip x86_64, pick the native arm64 build ─────────
 BIN1="$WORK/bin1"; mkdir -p "$BIN1"
-make_py "$BIN1/python3.12" 3.12 x86_64     # earlier in loop order, WRONG arch
-make_py "$BIN1/python3.11" 3.11 arm64      # later in order, right arch
+make_py "$BIN1/python3.13" 3.13 x86_64     # earlier in loop order, WRONG arch
+make_py "$BIN1/python3.12" 3.12 arm64      # later in order, right arch
 sel="$(PATH="$BIN1" select_python 2>/dev/null)"
-check "picks the native arm64 python over an earlier x86_64 one" "$sel" "python3.11"
+check "picks the native arm64 python over an earlier x86_64 one" "$sel" "python3.12"
 
 # ── 2. selection fails cleanly when only an x86_64 python exists ──────────────
 BIN2="$WORK/bin2"; mkdir -p "$BIN2"
-make_py "$BIN2/python3.12" 3.12 x86_64
+make_py "$BIN2/python3.13" 3.13 x86_64
 if PATH="$BIN2" select_python >/dev/null 2>&1; then
     bad "returns non-zero when no arm64 python is available"
 else
@@ -66,7 +66,7 @@ fi
 # Only a 3.9 candidate is present, so selection MUST fail. (Pairing it with a
 # valid fallback would pass even if the version check were removed.)
 BIN3="$WORK/bin3"; mkdir -p "$BIN3"
-make_py "$BIN3/python3.11" 3.9 arm64       # 3.9 < MIN_PYTHON_MINOR, only candidate
+make_py "$BIN3/python3.12" 3.11 arm64       # 3.11 < MIN_PYTHON_MINOR, only candidate
 if PATH="$BIN3" select_python >/dev/null 2>&1; then
     bad "rejects an arm64 python older than MIN_PYTHON_MINOR"
 else
@@ -75,7 +75,7 @@ fi
 
 # ── 4. venv completeness: missing bin/pip is treated as incomplete ───────────
 VBAD="$WORK/venv_bad"; mkdir -p "$VBAD/bin"
-make_py "$VBAD/bin/python" 3.11 arm64      # python present, pip MISSING
+make_py "$VBAD/bin/python" 3.12 arm64      # python present, pip MISSING
 if PATH="$SYS_PATH" venv_is_complete "$VBAD"; then
     bad "an existing venv without bin/pip is reported incomplete"
 else
@@ -84,8 +84,8 @@ fi
 
 # ── 5. venv completeness: python + working pip is complete ───────────────────
 VOK="$WORK/venv_ok"; mkdir -p "$VOK/bin"
-make_py "$VOK/bin/python" 3.11 arm64
-make_py "$VOK/bin/pip"    3.11 arm64
+make_py "$VOK/bin/python" 3.12 arm64
+make_py "$VOK/bin/pip"    3.12 arm64
 if PATH="$SYS_PATH" venv_is_complete "$VOK"; then
     ok "a venv with both bin/python and bin/pip is reported complete"
 else
@@ -103,7 +103,7 @@ fi
 # Mirrors a ~/.vllm-mlx → ~/.rapid-mlx migration where pip's shebang is stale:
 # the file is present and +x, but running it fails.
 VBROKEN="$WORK/venv_broken"; mkdir -p "$VBROKEN/bin"
-make_py "$VBROKEN/bin/python" 3.11 arm64
+make_py "$VBROKEN/bin/python" 3.12 arm64
 printf '#!/bin/bash\nexit 1\n' > "$VBROKEN/bin/pip"   # +x but errors when run
 chmod +x "$VBROKEN/bin/pip"
 if PATH="$SYS_PATH" venv_is_complete "$VBROKEN"; then
@@ -137,7 +137,7 @@ fi
 # ~/.rapid-mlx doubles as the state dir (telemetry-client-id, bench-install-id,
 # agents/ profiles, launch.pid). A rebuild must not delete any of that.
 RVD="$WORK/rapid_state"; mkdir -p "$RVD/bin" "$RVD/lib" "$RVD/include" "$RVD/agents"
-make_py "$RVD/bin/python" 3.11 arm64
+make_py "$RVD/bin/python" 3.12 arm64
 printf 'x' > "$RVD/pyvenv.cfg"
 printf 'client-abc' > "$RVD/telemetry-client-id"
 printf 'bench-xyz'  > "$RVD/bench-install-id"
@@ -160,13 +160,13 @@ check "plan: a missing dir is created" \
     "$(PATH="$SYS_PATH" plan_venv_action "$WORK/absent")" "create"
 
 PUP="$WORK/plan_ok"; mkdir -p "$PUP/bin"
-make_py "$PUP/bin/python" 3.11 arm64
-make_py "$PUP/bin/pip"    3.11 arm64
+make_py "$PUP/bin/python" 3.12 arm64
+make_py "$PUP/bin/pip"    3.12 arm64
 check "plan: a complete arm64 venv is upgraded" \
     "$(PATH="$SYS_PATH" plan_venv_action "$PUP")" "upgrade"
 
 PRB="$WORK/plan_rebuild"; mkdir -p "$PRB/bin"
-make_py "$PRB/bin/python" 3.11 arm64       # no bin/pip -> incomplete
+make_py "$PRB/bin/python" 3.12 arm64       # no bin/pip -> incomplete
 check "plan: an incomplete venv is rebuilt" \
     "$(PATH="$SYS_PATH" plan_venv_action "$PRB")" "rebuild"
 

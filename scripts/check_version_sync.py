@@ -54,10 +54,7 @@ try:
 except ModuleNotFoundError:  # imported by tests as ``scripts.*`` from repo root
     from scripts.release_version import VERSION_RE
 
-try:  # 3.11+
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - 3.10 and older
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"

@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import argparse
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
 
 from rapid_mlx.cli import (
     _resolve_system_one_backend,

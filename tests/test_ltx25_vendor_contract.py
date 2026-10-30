@@ -22,7 +22,6 @@ import io
 import re
 import shutil
 import subprocess
-import sys
 import tarfile
 from pathlib import Path
 
@@ -37,10 +36,7 @@ from rapid_mlx.video import ltx25
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDOR_SCRIPT = REPO_ROOT / "scripts" / "vendor_ltx25.py"
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - exercised only on the 3.10 floor
-    import tomli as tomllib
+import tomllib
 
 # Floors recorded from the pinned upstream source, commit
 # 57952288076766abe27dda3a774b2c24f7346977:

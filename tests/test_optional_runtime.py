@@ -11,7 +11,6 @@ import shlex
 import subprocess
 import sys
 import threading
-from collections import namedtuple
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,7 +47,6 @@ def _run_real_missing_extra_dispatch(
     status: str = "absent",
     standalone: bool = False,
     install_missing: bool = False,
-    video_python_version: tuple[int, int] = (3, 11),
 ) -> tuple[subprocess.CompletedProcess[str], list[SimpleNamespace], str]:
     home = tmp_path / "home"
     telemetry_dir = home / ".rapid-mlx"
@@ -164,16 +162,7 @@ if lane in {"vision", "vision-present", "bonsai"}:
     }[status]
     mllm.vision_runtime_status = lambda: (runtime_status, "test detail")
 if lane == "video":
-    from collections import namedtuple
     from rapid_mlx.runtime import video_lane
-
-    Version = namedtuple("Version", "major minor")
-    video_lane.sys = types.SimpleNamespace(
-        version_info=Version(
-            int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR"]),
-            int(os.environ["RAPID_MLX_TEST_VIDEO_PYTHON_MINOR"]),
-        )
-    )
     video_lane._default_video_runtime_requirements = lambda _model: [
         "the mlx-video runtime"
     ]
@@ -214,8 +203,6 @@ if lane == "vision-present":
         RAPID_MLX_DISABLE_VERSION_CHECK="1",
         RAPID_MLX_TEST_EXTRA_LANE=lane,
         RAPID_MLX_TEST_EXTRA_STATUS="install" if install_missing else status,
-        RAPID_MLX_TEST_VIDEO_PYTHON_MAJOR=str(video_python_version[0]),
-        RAPID_MLX_TEST_VIDEO_PYTHON_MINOR=str(video_python_version[1]),
         HF_HUB_OFFLINE="1",
         TRANSFORMERS_OFFLINE="1",
     )
@@ -320,13 +307,8 @@ def _assert_actionable_failure_contract(
     ]
     assert markers == [expected_marker]
 
-    expected_hint = (
-        f"    uv tool install --force --python 3.12 "
-        f"'rapid-mlx=={rapid_mlx.__version__}'"
-        if marker_reason == "python_version_unsupported"
-        else _expected_install_hint_line(
-            extra, child_executable=child_executable, status=status
-        )
+    expected_hint = _expected_install_hint_line(
+        extra, child_executable=child_executable, status=status
     )
     assert stderr.splitlines().count(expected_hint) == 1
     return expected_marker, expected_hint
@@ -462,8 +444,6 @@ def _lane_failure(monkeypatch, lane: str) -> tuple[OptionalRuntimeMissing, str]:
     elif lane == "video":
         from rapid_mlx.runtime import video_lane
 
-        version = namedtuple("Version", "major minor")
-        monkeypatch.setattr(video_lane.sys, "version_info", version(3, 11))
         monkeypatch.setattr(video_lane, "_is_ltx25_name", lambda _name: False)
         monkeypatch.setattr(video_lane, "_is_cogvideox_name", lambda _name: False)
         monkeypatch.setattr(
@@ -595,30 +575,6 @@ def test_real_dispatch_posts_one_actionable_failure_to_loopback(
     assert not hasattr(matching_failures[0].props, "detail")
 
 
-def test_real_video_dispatch_reports_unsupported_python_as_preflight_failure(
-    tmp_path,
-) -> None:
-    proc, events, child_executable = _run_real_missing_extra_dispatch(
-        tmp_path,
-        lane="video",
-        model="wan2.2-ti2v-5b-q8",
-        video_python_version=(3, 10),
-    )
-
-    assert proc.returncode == 2
-    assert "Traceback" not in proc.stderr
-    _assert_actionable_failure_contract(
-        proc.stderr,
-        extra="video",
-        marker_reason="python_version_unsupported",
-        child_executable=child_executable,
-    )
-    assert _contracted_failure_events(events) == [
-        ("server_start_state", "failed", "preflight", None, None),
-        ("model_serve_failed", None, "preflight", "missing_extra", "video"),
-    ]
-
-
 def test_real_video_dispatch_missing_extra_prints_exact_install_command(
     tmp_path,
 ) -> None:
@@ -629,7 +585,6 @@ def test_real_video_dispatch_missing_extra_prints_exact_install_command(
         tmp_path,
         lane="video",
         model="wan2.2-ti2v-5b-q8",
-        video_python_version=(3, 11),
     )
 
     assert proc.returncode == 2
@@ -912,8 +867,7 @@ def test_present_extras_emit_no_failure(monkeypatch) -> None:
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
 
     mllm.require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
-    version = namedtuple("Version", "major minor")
-    monkeypatch.setattr(video_lane.sys, "version_info", version(3, 11))
+
     monkeypatch.setattr(video_lane, "_is_ltx25_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_is_cogvideox_name", lambda _name: False)
     monkeypatch.setattr(video_lane, "_default_video_runtime_requirements", lambda _: [])

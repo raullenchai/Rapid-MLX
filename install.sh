@@ -11,7 +11,7 @@ INSTALL_DIR="${HOME}/.rapid-mlx"
 BIN_DIR="${HOME}/.local/bin"
 PYPI_PACKAGE="rapid-mlx"
 GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
-MIN_PYTHON_MINOR=10
+MIN_PYTHON_MINOR=12
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ download() {
 # arch note goes to stderr so command substitution captures only the name.
 select_python() {
     local py ver major minor pyarch
-    for py in python3.13 python3.12 python3.11 python3.10 python3; do
+    for py in python3.14 python3.13 python3.12 python3; do
         command -v "$py" >/dev/null 2>&1 || continue
         ver=$(run_install_command "$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
         major="${ver%%.*}"; minor="${ver#*.}"
@@ -131,7 +131,7 @@ create_venv() {
     if ! venv_is_complete "$INSTALL_DIR"; then
         err "Could not create a working virtual environment at $INSTALL_DIR."
         dim "Selected Python: $(run_install_command "$PYTHON" -c 'import platform, sys; print(platform.machine(), sys.version.split()[0])' 2>/dev/null || echo unknown)"
-        dim "Install an arm64 Python 3.10+ (e.g. 'brew install python@3.12') and re-run."
+        dim "Install an arm64 Python 3.12+ (e.g. 'brew install python@3.12') and re-run."
         exit 1
     fi
     upgrade_pip
@@ -381,13 +381,13 @@ if [ "$RAM_GB" -ge 16 ]; then RAM_TIER="16+ GB"; else RAM_TIER="under 16 GB"; fi
 
 dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
 
-# ── 3. Find or install Python 3.10+ ─────────────────────────────────────────
+# ── 3. Find or install Python 3.12+ ─────────────────────────────────────────
 
 PYTHON="$(select_python || true)"
 
 if [ -z "$PYTHON" ]; then
     echo ""
-    warn "Python 3.10+ not found. Installing automatically..."
+    warn "Python 3.12+ not found. Installing automatically..."
     if command -v brew >/dev/null 2>&1; then
         info "Installing Python 3.12 via Homebrew..."
         run_install_command brew install python@3.12
@@ -441,7 +441,7 @@ if [ -z "$PYTHON" ]; then
         PYTHON="${STANDALONE_DIR}/bin/python3"
         if ! run_install_command "$PYTHON" --version >/dev/null 2>&1; then
             err "Failed to install standalone Python."
-            dim "Please install Python 3.10+ from https://www.python.org/downloads/"
+            dim "Please install Python 3.12+ from https://www.python.org/downloads/"
             exit 1
         fi
         ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
@@ -458,7 +458,7 @@ PY_ARCH=$(run_install_command "$PYTHON" -c 'import platform; print(platform.mach
 if [ "$PY_ARCH" != "arm64" ]; then
     err "Selected Python is ${PY_ARCH}, but Apple Silicon needs a native arm64 Python."
     dim "Interpreter: $PYTHON"
-    dim "Install an arm64 Python 3.10+ (e.g. 'brew install python@3.12') and re-run."
+    dim "Install an arm64 Python 3.12+ (e.g. 'brew install python@3.12') and re-run."
     exit 1
 fi
 

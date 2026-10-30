@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import rapid_mlx
 from rapid_mlx.runtime import base_runtime, optional_runtime
 
 
@@ -101,15 +100,6 @@ def test_bundled_prompt_offers_a_repair_without_a_size(monkeypatch) -> None:
     result = optional_runtime._prompt_to_install("image")
     assert result is optional_runtime.PromptResult.DECLINED
     assert stderr.getvalue() == "Install now? [Y/n] (image runtime) "
-
-
-def test_python_upgrade_hint_points_at_a_supported_interpreter() -> None:
-    hint = base_runtime.python_upgrade_hint()
-    assert "Python 3.11 or newer" in hint
-    assert (
-        f"uv tool install --force --python 3.12 'rapid-mlx=={rapid_mlx.__version__}'"
-        in hint
-    )
 
 
 def test_desktop_sidecar_bundled_hint_asks_for_an_app_reinstall(monkeypatch) -> None:
