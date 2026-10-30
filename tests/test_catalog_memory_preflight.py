@@ -1,5 +1,6 @@
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +12,7 @@ from rapid_mlx.recommendations import fitting_pick, load_recommendation_tiers
 pytestmark = pytest.mark.catalog_memory_preflight
 
 GIB = 1 << 30
+_REAL_PROBE = preflight._mlx_recommended_working_set_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -112,6 +114,53 @@ def test_metal_budget(monkeypatch):
     assert preflight.metal_working_set_bytes(16 * GIB) == int(16 * GIB * 2 / 3)
     assert preflight.metal_working_set_bytes(64 * GIB) == 48 * GIB
     assert preflight.metal_working_set_bytes(None) is None
+
+
+@pytest.mark.parametrize("value, expected", [(123, 123), (0, None), (None, None)])
+def test_real_mlx_working_set_probe(monkeypatch, value, expected):
+    fake_pkg = ModuleType("mlx")
+    fake_core = ModuleType("mlx.core")
+
+    def device_info():
+        if value is None:
+            raise RuntimeError("device unavailable")
+        return {"max_recommended_working_set_size": value}
+
+    fake_core.device_info = device_info
+    fake_pkg.core = fake_core
+    monkeypatch.setitem(sys.modules, "mlx", fake_pkg)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+    assert _REAL_PROBE() == expected
+
+
+def test_catalog_check_passes_when_ram_unknown(monkeypatch):
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: None)
+    args = SimpleNamespace(command="serve", model="qwen3.8-27b-4bit")
+    preflight._check_catalog_memory_fit(args)
+
+
+def test_met_floor_passes_when_weights_unknown(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: None)
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 12 * GIB
+    )
+    run("qwen3-coder-30b-4bit", 24, monkeypatch)
+
+
+def test_unmeasured_model_passes_when_weights_unknown(monkeypatch):
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: None)
+    run("qwen3.8-27b-mixed-3.5bpw", 24, monkeypatch)
+
+
+def test_catalog_check_swallows_resolver_exception(monkeypatch, capsys):
+    args = SimpleNamespace(command="serve", model="qwen3.8-27b-4bit")
+
+    def fail(_):
+        raise RuntimeError("resolution failed")
+
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", fail)
+    preflight._check_catalog_memory_fit(args)
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("recommended", [20 * GIB, None])
