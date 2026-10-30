@@ -1240,7 +1240,13 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
             await self.abort_request(request_id)
 
 
-async def _measure_dedicated(handle, repo_id, model_name, workload, progress):
+async def _measure_dedicated(
+    handle: Any,
+    repo_id: str,
+    model_name: str,
+    workload: dict[str, Any],
+    progress: Progress | None,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None, dict[Any, Any] | None]:
     from pathlib import Path
 
     from rapid_mlx.model_aliases import resolve_subfolder
@@ -1281,6 +1287,10 @@ async def _measure_dedicated(handle, repo_id, model_name, workload, progress):
         context = handle.context_length or _read_local_config_max_context(
             str(Path(path) / "config.json")
         )
+        if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+            raise AccelerationConfigError(
+                "Cannot determine the dedicated runtime context length"
+            )
         language = dedicated_language(
             handle,
             context_length=context,

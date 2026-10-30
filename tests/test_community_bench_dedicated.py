@@ -336,7 +336,9 @@ def fake_dedicated(monkeypatch, tmp_path):
         ),
     )
     archive = workspace.LocalRunArchive(tmp_path / "archive")
-    yield SimpleNamespace(lr=lr, archive=archive, closed=closed, state=state)
+    yield SimpleNamespace(
+        lr=lr, archive=archive, closed=closed, state=state, handle=handle
+    )
     executor.shutdown(wait=True)
 
 
@@ -367,6 +369,24 @@ def test_dedicated_stream_failure_closes_and_records(fake_dedicated):
         f.lr.run_local("example", archive=f.archive)
     assert exc.value.saved
     assert f.archive.list()[0]["outcome"]["status"] == "failed"
+    assert f.closed == [True]
+
+
+def test_dedicated_missing_context_refused_and_closed(fake_dedicated, monkeypatch):
+    import sys
+
+    f = fake_dedicated
+    f.handle.context_length = None
+    monkeypatch.setattr(
+        sys.modules["rapid_mlx.service.helpers"],
+        "_read_local_config_max_context",
+        lambda *args: None,
+    )
+    with pytest.raises(
+        f.lr.LocalBenchmarkError,
+        match="Cannot determine the dedicated runtime context length",
+    ):
+        f.lr.run_local("example", archive=f.archive)
     assert f.closed == [True]
 
 
