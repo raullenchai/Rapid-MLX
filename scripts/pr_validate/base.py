@@ -51,6 +51,7 @@ class StepResult:
     # Free-form findings list; populated by the adversarial-review step
     # so the scorecard can render them inline. Each is one short string.
     findings: list[str] = field(default_factory=list)
+    stage: str = ""
 
 
 class Step:

@@ -153,6 +153,78 @@ def test_cli_opt_in_reaches_runner(monkeypatch):
     assert calls[0]["queue_on_success"] is True
 
 
+def test_stage_order_and_mapping():
+    from scripts.pr_validate.runner import STAGE_NAMES, STEPS, stage_of
+
+    # Deliberately pin the complete pipeline order.
+    assert [step.name for step in STEPS] == [
+        "fetch",
+        "test_plan_check",
+        "cl_description_quality",
+        "review_vocabulary",
+        "supply_chain",
+        "test_env_check",
+        "sdk_env_check",
+        "codex_review",
+        "lint",
+        "targeted_tests",
+        "full_unit",
+        "diff_coverage",
+        "stress_e2e_bench",
+    ]
+    assert all(stage_of(step.name) in STAGE_NAMES for step in STEPS)
+    assert stage_of("unknown") == "other"
+
+
+@pytest.mark.parametrize(
+    "stage,extra",
+    [
+        ("admit", ["sdk_env_check"]),
+        ("review", ["codex_review"]),
+        ("checks", ["lint", "targeted_tests", "full_unit", "diff_coverage"]),
+        ("gpu", ["sdk_env_check", "stress_e2e_bench"]),
+    ],
+)
+def test_stage_selection(repo_root_cwd, monkeypatch, capsys, stage, extra):
+    from scripts.pr_validate import runner
+
+    names = [step.name for step in runner.STEPS]
+    ctx = Context(pr_number=999)
+    monkeypatch.setattr(runner, "Context", lambda **kwargs: ctx)
+    steps = _fake_pipeline([(name, "pass") for name in names[1:]])
+    assert run_pipeline(999, steps=steps, stage=stage) == 0
+    expected = names[:6] + extra
+    assert [result.name for result in ctx.results] == expected
+    assert all(result.stage == runner.stage_of(result.name) for result in ctx.results)
+    captured = capsys.readouterr()
+    assert "| admit | `fetch` |" in captured.out
+    assert f"  stage: {stage}" in captured.err
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"stage": "invalid"},
+        {"stage": "checks", "queue_on_success": True},
+        {"stage": "checks", "body_only": True},
+    ],
+)
+def test_invalid_stage_options(repo_root_cwd, capsys, options):
+    assert run_pipeline(999, **options) == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_stage_reaches_runner(monkeypatch):
+    from scripts.pr_validate import pr_validate
+
+    calls = []
+    monkeypatch.setattr(
+        pr_validate, "run_pipeline", lambda *args, **kwargs: calls.append(kwargs) or 0
+    )
+    assert pr_validate.main(["5", "--stage", "checks"]) == 0
+    assert calls[0]["stage"] == "checks"
+
+
 class TestFailFast:
     @pytest.mark.parametrize(
         ("reply", "expected_status", "expected_findings", "stops_before_tests"),

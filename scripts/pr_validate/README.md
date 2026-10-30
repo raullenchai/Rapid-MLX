@@ -13,6 +13,12 @@ python3.12 -m scripts.pr_validate <PR#>
 # verbose mode (more progress logging on stderr)
 python3.12 -m scripts.pr_validate <PR#> -v
 
+# Run a single stage (review, checks, and gpu first rerun admit).
+python3.12 -m scripts.pr_validate <PR#> --stage admit
+python3.12 -m scripts.pr_validate <PR#> --stage review
+python3.12 -m scripts.pr_validate <PR#> --stage checks
+python3.12 -m scripts.pr_validate <PR#> --stage gpu
+
 # Pin the review/diff-coverage base to an EXPLICIT merge-base.
 # Overrides automatic `git merge-base` derivation so the reviewer sees
 # only THIS PR's diff even after the base branch tip has moved on.
@@ -28,6 +34,13 @@ python3.12 -m scripts.pr_validate <PR#> --body-only
 # stderr = progress logs
 # exit 0 = MERGE-SAFE, exit 1 = DO NOT MERGE
 ```
+
+A default run executes admit, review, checks, and gpu in order and prints one
+MERGE-SAFE / DO NOT MERGE verdict. `--stage X` runs only the selected stage;
+review, checks, and gpu first rerun the cheap admit stage for context and so
+the supply-chain scan precedes anything that may pip-install from the PR tree.
+`sdk_env_check` runs only with the gpu stage. `--stage` cannot be combined with
+`--body-only` or `--queue-on-success`. Fail-fast remains off by default.
 
 ## Automatic queue handoff (maintainer opt-in)
 
@@ -67,24 +80,56 @@ an untrusted PR's execution environment.
 
 ## Pipeline
 
-| # | step | gate | runtime |
+| stage | step | gate | runtime |
 |---|---|---|---|
-| 0 | `fetch` | always (fail-fast) | ~3s |
-| 0.5 | `test_plan_check` | always | <1s |
-| 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
-| 0.75 | `supply_chain` | always | ~5s |
-| 0.8 | `test_env_check` | always (auto-install opt-out: `PR_VALIDATE_NO_AUTO_INSTALL=1`) | <1s (≈10s if install runs) |
-| 0.9 | `review_vocabulary` | when a diff is available | <1s |
-| 1 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
-| 2 | `lint` | when diff has .py | ~3s |
-| 3 | `targeted_tests` | when diff has .py | 30s–3min |
-| 4 | `full_unit` | blast ≥ medium | ~3 min (parallel; host-dependent) |
-| 5 | `stress_e2e_bench` | blast == high | 5–10min |
+| admit | `fetch` | always (fail-fast) | ~3s |
+| admit | `test_plan_check` | always | <1s |
+| admit | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
+| admit | `review_vocabulary` | when a diff is available | <1s |
+| admit | `supply_chain` | always | ~5s |
+| admit | `test_env_check` | always (auto-install opt-out: `PR_VALIDATE_NO_AUTO_INSTALL=1`) | <1s (≈10s if install runs) |
+| admit | `sdk_env_check` | gpu stage prerequisite | <1s |
+| review | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
+| checks | `lint` | when diff has .py | ~3s |
+| checks | `targeted_tests` | when diff has .py | 30s–3min |
+| checks | `full_unit` | blast ≥ medium | ~3 min (parallel; host-dependent) |
+| checks | `diff_coverage` | advisory, never gates | ~3 min |
+| gpu | `stress_e2e_bench` | blast == high | 5–10min |
+
+Scorecard rows are labelled with their stage.
 
 (The codex review goes near the front by design: get cheap critical
 thinking *before* spending 10 minutes on tests. The two cheapest
 description-quality gates run first so a bad title or empty body
 fails in under a second without burning the codex budget.)
+
+## Shared GPU lock and gpu result cache
+
+Only the gpu stage is exclusive: `stress_e2e_bench` uses the GPU, port 8451,
+and most of the machine's memory. When it actually runs, it takes a shared
+flock on `PR_VALIDATE_GPU_LOCK` (default `/tmp/harbor-prvalidate.lock`) and
+logs the wait and held time as `shared lock: acquired after Xs wait, held Ys`.
+The admit, review, and checks stages of different PRs run concurrently.
+
+Do not wrap the validator in `lockf`; run
+`python3.12 -m scripts.pr_validate <PR#>` directly. During transition, the gpu
+stage uses the same file held by a legacy `lockf <file> python -m
+scripts.pr_validate ...` wrapper, so old wrapped runs and new runs still
+exclude each other on the GPU. If an ancestor calling process already holds
+the lock (detected with lsof and the parent-process chain), the gpu stage
+proceeds without reacquiring it and logs `already held by the calling process`.
+The legacy wrapper remains harmful because it serializes the whole run. A
+separate gpu-only file would allow a legacy wrapped run from an older checkout,
+whose stress step does not lock, to collide with a new gpu stage on the GPU
+and port.
+
+A passing gpu result is stored under `<git common dir>/pr-validate-gpu-cache/`
+(override with `PR_VALIDATE_GPU_CACHE_DIR`). The key includes the exact PR head
+SHA, merge-base SHA, checked-out commit, golden model registry, gpu step source,
+and `PR_VALIDATE_RAM_GB`. Re-running the same head with the same key reuses the
+result without taking the lock; the scorecard summary starts `cached pass for
+head ...`. Failures, errors, dirty working trees, and invalid head SHAs are not
+cached. Set `PR_VALIDATE_NO_GPU_CACHE=1` to force a fresh run.
 
 ## Threat model (#275)
 
@@ -104,7 +149,7 @@ The validator can't trust the PR's `pyproject.toml` until the
 supply-chain scan has had a chance to flag it. Therefore the step
 order is **non-negotiable**:
 
-* `supply_chain` runs at index ≈ 0.75 — BEFORE any
+* `supply_chain` runs in admit BEFORE any
   auto-installing step. Any modification to `pyproject.toml`,
   any repo-root `requirements*.txt` (the prefix matcher catches
   `requirements-dev.txt`, `requirements-test.txt`,
@@ -114,7 +159,7 @@ order is **non-negotiable**:
   is `[BLOCKING]`. Detection delegates to
   `_test_env.is_dep_declaration_file()` so the supply-chain step
   and `test_env_check` share one source of truth.
-* `test_env_check` runs at index ≈ 0.8 — AFTER `supply_chain`.
+* `test_env_check` runs in admit AFTER `supply_chain`.
   Its `pip install '.[test]'` (project-extras) fallback is gated:
   if the PR diff touches any dep-declaration file, the
   project-extras path is REFUSED.
@@ -202,20 +247,20 @@ pipeline policy is grep-able from one file.
 
 ## Step details
 
-### `fetch` (step 0)
+### `fetch` (admit stage)
 
 Wraps `gh pr view --json` + `gh pr diff`. Saves the diff to
 `<work_dir>/pr.diff`. Refuses CLOSED / MERGED / DIRTY (merge-conflict)
 PRs by design — re-open or rebase first.
 
-### `test_plan_check` (step 0.5)
+### `test_plan_check` (admit stage)
 
 Scans the PR body for unchecked task items (`- [ ]`, Markdown task list)
 anywhere in any section — the `## Verification` list most often — and
 fails if any is left unchecked: the author hasn't finished what they said
 they'd do. Lesson from #427.
 
-### `cl_description_quality` (step 0.7)
+### `cl_description_quality` (admit stage)
 
 Cheap title + body hygiene gate built from
 [Google's CL-descriptions guidance](https://github.com/google/eng-practices/blob/master/review/developer/cl-descriptions.md).
@@ -234,7 +279,7 @@ Three checks:
 Override: `PR_VALIDATE_SKIP_DESC=1` for two-line dep-bumps where
 rationale is genuinely overkill.
 
-### `test_env_check` (step 0.8)
+### `test_env_check` (admit stage)
 
 Verifies that the same Python interpreter `targeted_tests` and
 `full_unit` will hand to pytest can import the plugins the suite needs and
@@ -282,7 +327,7 @@ Override: `PR_VALIDATE_NO_AUTO_INSTALL=1` disables the auto-recover
 it just won't mutate the host Python). Use this in CI sandboxes that
 must keep the runner image read-only.
 
-### `codex_review` (step 6, runs early)
+### `codex_review` (review stage)
 
 Sends the diff to `codex exec` (OpenAI gpt-5.6-sol) with the prompt
 embedded as the `PROMPT_TEMPLATE` string constant in
@@ -344,7 +389,7 @@ Replaces the previous DeepSeek V4 Pro step. See the
 switched — DeepSeek is asymptotic across rounds; codex converges in a
 small bounded number.
 
-### `supply_chain` (step 0.75)
+### `supply_chain` (admit stage)
 
 Runs BEFORE any auto-installing step so a malicious PR can't get its
 build-hook executed inside the validator venv before the scan flags
@@ -367,7 +412,7 @@ prerequisites (including the `module:symbol` attributes imported by each script)
 with the same `python3.12`, working directory and Python path
 used by the model matrix. This check does not install packages or execute
 integration scripts. Missing prerequisites or scripts stop validation before
-full-unit/model work, including when `--fail-fast` is off. The documented
+model work, including when `--fail-fast` is off. The documented
 CPU-only partial pipeline that explicitly omits the model matrix also omits
 its SDK prerequisite check; partial runs cannot use `--queue-on-success`.
 
@@ -392,18 +437,18 @@ not make them pre-existing test failures. Real completed test failures retain
 the existing base-comparison policy. Model-specific registry exclusions and
 the supported guided-output capability skip remain unchanged.
 
-### `lint` (step 2)
+### `lint` (checks stage)
 
 `ruff check` + `ruff format --check` on the changed `.py` files only.
 
-### `targeted_tests` (step 3)
+### `targeted_tests` (checks stage)
 
 Maps each changed `.py` to candidate test files (heuristic by
 filename) and runs them. **Negative control**: if any fail, re-runs
 the same set on a fresh `git worktree` of `main` to filter
 pre-existing flakes. Real regressions = fail.
 
-### `full_unit` (step 4)
+### `full_unit` (checks stage)
 
 `pytest tests/` minus integrations + event_loop. Gated on blast ≥
 medium (low-blast PRs can't break runtime). Runs in parallel by default with
@@ -413,7 +458,7 @@ runs serially. Invalid counts fail explicitly. If pytest-xdist is unavailable,
 the step reports the serial fallback in its result and log. The advisory
 `diff_coverage` suite uses the same worker selection.
 
-### `stress_e2e_bench` (step 5)
+### `stress_e2e_bench` (gpu stage)
 
 The heaviest. Gated on blast == high. For each model in
 `golden_models.yaml` that fits machine RAM (highest-quality candidate

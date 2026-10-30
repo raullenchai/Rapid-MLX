@@ -816,19 +816,18 @@ class TestAdvisoryContract:
 
 
 # --------------------------------------------------------------------------
-# Registration — advisory step is wired in and positioned last.
+# Registration — advisory step ends checks before the GPU stage.
 # --------------------------------------------------------------------------
 
 
 class TestRegistration:
-    def test_registered_and_last(self):
+    def test_registered_at_end_of_checks(self):
         from scripts.pr_validate.runner import STEPS
 
         names = [s.name for s in STEPS]
         assert "diff_coverage" in names
-        # Last on purpose: skip its ~40 s cost in fail-fast mode once any
-        # real gate above has already blocked the PR.
-        assert names[-1] == "diff_coverage"
+        # Keep the advisory measurement after the other checks and before GPU.
+        assert names[-2:] == ["diff_coverage", "stress_e2e_bench"]
 
     def test_never_declared_as_gating(self):
         # A defensive pin on the advisory intent: the step opts into

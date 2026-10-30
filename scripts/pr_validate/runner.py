@@ -34,56 +34,45 @@ from .steps.test_env_check import TestEnvCheckStep
 from .steps.test_plan_check import TestPlanCheckStep
 
 # Step order — see scripts/pr_validate/README.md for the rationale.
-# Codex review goes early so cheap critical thinking happens before
-# we spend 10 minutes on tests.
-#
-# ORDERING INVARIANT (#275 / codex review on #885): SupplyChainStep
-# must run BEFORE any step that auto-installs from the PR's working
-# tree (currently only TestEnvCheckStep). Otherwise an external PR
-# that adds a malicious build hook or a fake package source to
-# ``pyproject.toml`` would get its code executed inside the validator
-# venv before the supply-chain scan ever flagged the change. The
-# ``test_supply_chain_runs_before_auto_installing_steps`` invariant
-# test in ``tests/test_pr_validate_runner.py`` pins this order so a
-# future refactor can't silently regress it.
-STEPS: list[Step] = [
-    FetchStep(),  # 0 — fetch PR + diff + classify blast radius
-    TestPlanCheckStep(),  # 0.5 — unchecked test-plan items block merge (#427 lesson)
-    CLDescriptionQualityStep(),  # 0.7 — title + body rationale (Google eng-practices)
-    # 0.75 — supply-chain scan must run BEFORE any step that might
-    # ``pip install`` from the PR's working tree. Otherwise a
-    # malicious build hook / fake package source in pyproject.toml
-    # would execute inside the validator venv before the gate that
-    # was supposed to flag it. See #275.
-    SupplyChainStep(),
-    # 0.8 — verify pytest plugins importable in the same Python pytest
-    # will be invoked with. Closes #185 (was failing the targeted_tests
-    # + full_unit gates with cryptic "async def functions are not
-    # natively supported" pytest errors when pytest-asyncio fell out of
-    # the host env). MUST run AFTER ``supply_chain`` because this step
-    # may ``pip install '.[test]'`` to auto-recover a missing plugin,
-    # and that install would execute attacker-controlled code from a
-    # tampered pyproject.toml. The auto-install path is also disabled
-    # when the diff touches dep-declaration files — see ``_test_env.py``
-    # for the gate.
-    TestEnvCheckStep(),
-    SDKEnvCheckStep(),  # registered SDK imports before full unit/model costs
-    ReviewVocabularyStep(),  # reject diff text that can steer that reviewer (#1528)
-    CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.6-sol)
-    LintStep(),  # 2 — ruff check + format
-    TargetedTestsStep(),  # 3 — diff-aware test selection + neg control
-    FullUnitStep(),  # 4 — full pytest, gated on blast radius
-    StressE2EBenchStep(),  # 5 — stress + e2e + bench (multi-model × agents)
-    # 6 — ADVISORY patch-coverage measurement (never gates). Last on
-    # purpose: it re-runs the FULL unit suite under coverage instrumentation
-    # (~3 min, same order as full_unit's ~2:45 — see diff_coverage.py), so in
-    # fail-fast mode we skip that cost the moment any real gate above has
-    # already blocked the PR. It also physically cannot change the verdict —
-    # every path returns pass/skip — but
-    # position still saves compute. See steps/diff_coverage.py for the
-    # "measure-first, no threshold" rationale (dev-flow gate proposal).
-    DiffCoverageStep(),
-]
+STAGE_NAMES = ("admit", "review", "checks", "gpu")
+STAGE_STEPS: dict[str, list[Step]] = {
+    "admit": [
+        FetchStep(),
+        TestPlanCheckStep(),
+        CLDescriptionQualityStep(),
+        ReviewVocabularyStep(),  # reject reviewer-steering diff text before scanning
+        # ORDERING INVARIANT (#275 / codex review on #885): SupplyChainStep
+        # must run BEFORE any step that auto-installs from the PR's working
+        # tree (currently only TestEnvCheckStep). Otherwise an external PR
+        # that adds a malicious build hook or a fake package source to
+        # ``pyproject.toml`` would get its code executed inside the validator
+        # venv before the supply-chain scan ever flagged the change. The
+        # ``test_supply_chain_runs_before_auto_installing_steps`` invariant
+        # test in ``tests/test_pr_validate_test_env.py`` pins this order so a
+        # future refactor can't silently regress it.
+        SupplyChainStep(),
+        TestEnvCheckStep(),
+        SDKEnvCheckStep(),
+    ],
+    "review": [CodexReviewStep()],
+    "checks": [
+        LintStep(),
+        TargetedTestsStep(),
+        FullUnitStep(),
+        # Advisory patch coverage ends checks before gpu; it never gates.
+        DiffCoverageStep(),
+    ],
+    "gpu": [StressE2EBenchStep()],
+}
+STEPS: list[Step] = [step for name in STAGE_NAMES for step in STAGE_STEPS[name]]
+STEP_STAGE: dict[str, str] = {
+    step.name: name for name, stage_steps in STAGE_STEPS.items() for step in stage_steps
+}
+
+
+def stage_of(name: str) -> str:
+    return STEP_STAGE.get(name, "other")
+
 
 # Steps that, if they fail, stop the pipeline immediately regardless of
 # the user's preference (subsequent steps would either crash or waste
@@ -115,6 +104,7 @@ def run_pipeline(
     base: str = "",
     body_only: bool = False,
     queue_on_success: bool = False,
+    stage: str = "",
 ) -> int:
     """Execute the pipeline. Returns process exit code (0 = merge-safe).
 
@@ -152,8 +142,21 @@ def run_pipeline(
     gate needs only the prod-fetched title/body, never the diff.
     When set, ``steps`` and ``skip_steps`` are ignored.
     """
+    if stage and stage not in STAGE_NAMES:
+        print(
+            f"error: unknown stage {stage!r}; choose from {', '.join(STAGE_NAMES)}",
+            file=sys.stderr,
+        )
+        return 1
+    if stage and (body_only or queue_on_success):
+        print(
+            "error: --stage runs a partial pipeline and cannot be combined with --body-only or --queue-on-success",
+            file=sys.stderr,
+        )
+        return 1
     if queue_on_success and (
-        body_only
+        stage
+        or body_only
         or base
         or skip_steps
         or steps is not None
@@ -168,6 +171,14 @@ def run_pipeline(
         pipeline = [FetchStep(), CLDescriptionQualityStep()]
     else:
         pipeline = STEPS if steps is None else steps
+        if stage:
+            selected = {"admit", stage}
+            pipeline = [
+                s
+                for s in pipeline
+                if stage_of(s.name) in selected
+                and (stage in ("admit", "gpu") or s.name != "sdk_env_check")
+            ]
         if skip_steps:
             dropped = set(skip_steps)
             # The SDK prerequisite check belongs to the model matrix. CI's
@@ -209,13 +220,19 @@ def run_pipeline(
 
     print(f"# PR #{pr_number} validation", file=sys.stderr)
     print(f"  artifacts → {ctx.work_dir}", file=sys.stderr)
+    if stage:
+        print(f"  stage: {stage}", file=sys.stderr)
     if fail_fast:
         print("  fail-fast: ON", file=sys.stderr)
     print("", file=sys.stderr)
 
     for step in pipeline:
-        print(f"## [{step.name}] {step.description}", file=sys.stderr)
+        print(
+            f"## [{step.name}] {step.description} (stage: {stage_of(step.name)})",
+            file=sys.stderr,
+        )
         result = step.execute(ctx)
+        result.stage = stage_of(step.name)
         ctx.results.append(result)
 
         marker = {

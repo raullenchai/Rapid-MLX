@@ -42,8 +42,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import gpu_cache
 from ..base import Step, StepResult
 from ..context import Context, env_truthy
+from ..gpu_lock import gpu_lock_path, hold_gpu_lock
 
 REGISTRY_PATH = Path(__file__).parent.parent / "golden_models.yaml"
 BASELINE_DIR = Path("harness/baselines")
@@ -106,6 +108,21 @@ class StressE2EBenchStep(Step):
         return ctx.blast_radius == "high"
 
     def run(self, ctx: Context) -> StepResult:
+        key = gpu_cache.cache_key(ctx)
+        cached = gpu_cache.load(key, ctx) if key else None
+        if cached:
+            return cached
+        with hold_gpu_lock(gpu_lock_path(), log=ctx.run_log) as lock:
+            cached = gpu_cache.load(key, ctx) if key else None
+            result = cached if cached else self._run_matrix(ctx)
+        description = lock.describe()
+        result.details += "\n\n" + description
+        ctx.run_log(description)
+        if key and not cached and result.status == "pass":
+            gpu_cache.store(key, ctx, result)
+        return result
+
+    def _run_matrix(self, ctx: Context) -> StepResult:
         try:
             registry = _load_registry()
         except Exception as e:  # noqa: BLE001
