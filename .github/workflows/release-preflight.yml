@@ -9,11 +9,11 @@ name: Release pre-flight
 #
 # Gate coverage (see docs/development/releasing.md for the canonical list):
 #
-#   G1   clean-room install + import smoke     macOS-14
+#   G1   clean-room install + import smoke     macOS-15
 #   G2   codex review presence assertion       advisory comment
 #   G3   CLI ↔ Config fidelity audit           covered by ci.yml lint
 #   G10  MLX upstream cross-chip-family scan   advisory
-#   G11  auto-routing escape-hatch registry    macOS-14 (needs MLX)
+#   G11  auto-routing escape-hatch registry    macOS-15 (needs MLX)
 #   PF-1 exact PR/SHA + canonical bump contract ubuntu-latest
 #   PF-2 release secret + var presence         ubuntu-latest
 #        + Cloudflare credential probe (expiry blocks; scope gaps advise)
@@ -270,10 +270,10 @@ jobs:
           echo "PF3_OK=1"
 
   g1-release-smoke:
-    # G1 — clean-room install + import smoke on macOS-14. Catches the
+    # G1 — clean-room install + import smoke on macOS-15. Catches the
     # #408 class where dev mlx has a symbol PyPI mlx doesn't.
     needs: bind-bump-pr
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -294,7 +294,7 @@ jobs:
     # The release-er must cite "audited" in the PR description if any
     # finding lands in a code path our compat shim doesn't already cover.
     needs: bind-bump-pr
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -322,7 +322,7 @@ jobs:
     # user override for hardware probe). Requires MLX because the test
     # introspects rapid_mlx.engine / rapid_mlx.server signatures.
     needs: bind-bump-pr
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0

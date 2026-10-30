@@ -505,7 +505,7 @@ jobs:
       !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -879,7 +879,7 @@ jobs:
 
   l1-smoke:
     # L1 release-flow gate — a small-model GPU coherence + tool-call format
-    # smoke on the FREE macos-14 hosted runner. That runner HAS a real Metal GPU
+    # smoke on the FREE macos-15 hosted runner. That runner HAS a real Metal GPU
     # (``mx.default_device()`` -> ``Device(gpu, 0)``), so MLX runs on the GPU
     # there for $0; its ~7GB RAM caps it at small models, not the 35B self-hosted
     # Studio (L2) tier. Runs on promoted and integration heads to catch GROSS
@@ -913,7 +913,7 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.full_gate == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     strategy:
       # Don't cancel the other legs when one family fails — we want to see
@@ -940,7 +940,7 @@ jobs:
           pip install httpx
 
       - name: Verify Metal GPU
-        # macos-14 hosted runners expose a paravirtualized Metal GPU and MLX
+        # macos-15 hosted runners expose a paravirtualized Metal GPU and MLX
         # defaults to it. A CPU-only default here means a broken toolchain, so
         # assert the GPU device rather than silently smoke-testing on CPU.
         run: |
