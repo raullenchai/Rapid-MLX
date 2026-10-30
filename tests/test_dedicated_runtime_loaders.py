@@ -395,3 +395,71 @@ def test_runtime_handle_releases_model(monkeypatch):
     handle.close()
     assert ref() is None
     server._dflash_executor.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["runtime", "tensorfold"])
+def test_handle_close_without_wait_queues_cleanup(monkeypatch, kind):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rapid_mlx.speculative import serial_benchmark as serial
+
+    monkeypatch.setattr(
+        sys.modules["mlx.core"], "clear_cache", lambda: None, raising=False
+    )
+    started = threading.Event()
+    release = threading.Event()
+    cleaned = threading.Event()
+    if kind == "runtime":
+        executor = ThreadPoolExecutor(max_workers=1)
+        server = ModuleType("rapid_mlx.speculative.dflash.server")
+        server._dflash_executor = executor
+        monkeypatch.setitem(sys.modules, server.__name__, server)
+        handle = serial._runtime_handle(
+            "dflash",
+            None,
+            object(),
+            None,
+            lambda **kwargs: {"prefill_step_size": 1},
+            {},
+            "/target",
+        )
+        monkeypatch.setattr(serial.gc, "collect", lambda: cleaned.set())
+    else:
+        backend = SimpleNamespace(
+            _app=SimpleNamespace(tokenizer=object()), close=cleaned.set
+        )
+        handle = serial.tensorfold_runtime_handle(
+            backend,
+            object(),
+            lane="tensorfold_mtp",
+            method="mtp",
+            algorithm="mtp",
+            draft_repo=None,
+            draft_revision=None,
+            draft_path=None,
+            target_path="/target",
+            max_draft_tokens=1,
+            lanes=1,
+        )
+        executor = handle.executor
+
+    def block():
+        started.set()
+        release.wait()
+
+    executor.submit(block)
+    assert started.wait(2)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            try:
+                caller.submit(handle.close, wait=False).result(timeout=2)
+                handle.close(wait=False)
+                assert not cleaned.is_set()
+            finally:
+                release.set()
+        executor.shutdown(wait=True)
+        assert cleaned.is_set()
+    finally:
+        release.set()
+        executor.shutdown(wait=True)

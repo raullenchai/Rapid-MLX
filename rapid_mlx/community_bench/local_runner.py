@@ -1184,6 +1184,7 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         self._handle = handle
         self._requests = {}
         self._active = {}
+        self.timed_out = False
 
     async def abort_request(self, request_id):
         self._requests.pop(request_id, None)
@@ -1237,6 +1238,9 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
                     completion_tokens=len(tokens),
                     cached_tokens=0,
                 )
+        except asyncio.TimeoutError:
+            self.timed_out = True
+            raise
         finally:
             await self.abort_request(request_id)
 
@@ -1255,6 +1259,7 @@ async def _measure_dedicated(
 
     from .runner import _reported_token_count, run_standardized_bench
 
+    adapter = None
     try:
         path = handle.target_path
         if not path:
@@ -1336,7 +1341,7 @@ async def _measure_dedicated(
                 )
         return measurements, context, identity, language
     finally:
-        handle.close()
+        handle.close(wait=adapter is None or not adapter.timed_out)
 
 
 def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:

@@ -269,7 +269,7 @@ def fake_dedicated(monkeypatch, tmp_path):
         },
         target_path=str(target),
         context_length=8192,
-        close=lambda: closed.append(True),
+        close=lambda *, wait=True: closed.append(wait),
         prefill_chunk_size=2048,
     )
 
@@ -791,3 +791,46 @@ def test_tensorfold_profile_lane_resolution(monkeypatch, alias, lane, profile_id
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
     cli.prepare_dedicated_runtime(SimpleNamespace(model=alias, tensorfold_lanes=1))
     assert seen == [(profile_id, 1)]
+
+
+def test_measure_timeout_does_not_wait_for_blocked_step(fake_dedicated, monkeypatch):
+    import threading
+
+    from rapid_mlx.community_bench import runner
+
+    f = fake_dedicated
+    started = threading.Event()
+    release = threading.Event()
+    closed = []
+
+    def stream(*args):
+        started.set()
+        release.wait()
+        yield TokenChunk(1, 1)
+
+    def close(*, wait=True):
+        closed.append(wait)
+        future = f.handle.executor.submit(lambda: None)
+        if wait:
+            future.result()
+
+    async def bench(adapter, tokenizer, **kwargs):
+        adapter._requests["blocked"] = ([1], SimpleNamespace(max_tokens=1))
+        return [x async for x in adapter.stream_outputs("blocked", timeout=0.1)]
+
+    f.handle.token_stream = stream
+    f.handle.close = close
+    monkeypatch.setattr(runner, "run_standardized_bench", bench)
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        future = caller.submit(
+            lambda: asyncio.run(
+                f.lr._measure_dedicated(f.handle, "org/model", "example", {}, None)
+            )
+        )
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                future.result(timeout=2)
+            assert started.is_set() and not release.is_set()
+            assert closed == [False]
+        finally:
+            release.set()

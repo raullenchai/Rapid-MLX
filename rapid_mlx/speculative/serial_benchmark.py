@@ -25,7 +25,7 @@ class SerialRuntimeHandle:
     speculative: dict
     target_path: str | None
     context_length: int | None
-    close: Callable[[], None]
+    close: Callable[..., None]
     prefill_chunk_size: int | None = None
 
 
@@ -132,13 +132,13 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
         speculative=facts,
         target_path=target_path,
         context_length=None,
-        close=lambda: None,
+        close=lambda *, wait=True: None,
         prefill_chunk_size=prefill,
     )
 
     closed = False
 
-    def close():
+    def close(*, wait: bool = True):
         nonlocal closed
         if closed:
             return
@@ -153,7 +153,9 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
             gc.collect()
             mx.clear_cache()
 
-        _dflash_executor.submit(cleanup).result()
+        future = _dflash_executor.submit(cleanup)
+        if wait:
+            future.result()
 
     handle.close = close
     return handle
@@ -285,7 +287,7 @@ def tensorfold_runtime_handle(
 
     closed = False
 
-    def close():
+    def close(*, wait: bool = True):
         nonlocal closed
         if closed:
             return
@@ -304,9 +306,11 @@ def tensorfold_runtime_handle(
                 mx.clear_cache()
 
         try:
-            executor.submit(cleanup).result()
+            future = executor.submit(cleanup)
+            if wait:
+                future.result()
         finally:
-            executor.shutdown(wait=True)
+            executor.shutdown(wait=wait)
 
     handle = SerialRuntimeHandle(
         lane=lane,
