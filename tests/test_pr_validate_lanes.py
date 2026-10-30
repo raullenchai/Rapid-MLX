@@ -183,6 +183,40 @@ def test_terminate_children_terminates_then_kills_survivors(monkeypatch):
     child.kill.assert_not_called()
 
 
+def test_terminate_children_warns_when_enumeration_is_denied(monkeypatch, capsys):
+    from unittest.mock import Mock
+
+    process = Mock()
+    process.children.side_effect = runner.psutil.AccessDenied(pid=123)
+    monkeypatch.setattr(runner.psutil, "Process", lambda: process)
+    wait = Mock()
+    monkeypatch.setattr(runner.psutil, "wait_procs", wait)
+
+    _REAL_TERMINATE()
+
+    assert "cannot enumerate child processes" in capsys.readouterr().err
+    wait.assert_not_called()
+
+
+def test_terminate_children_ignores_processes_that_disappear(monkeypatch):
+    from unittest.mock import Mock
+
+    child, survivor = Mock(), Mock()
+    child.terminate.side_effect = runner.psutil.NoSuchProcess(pid=123)
+    survivor.kill.side_effect = runner.psutil.NoSuchProcess(pid=456)
+    process = Mock()
+    process.children.return_value = [child, survivor]
+    monkeypatch.setattr(runner.psutil, "Process", lambda: process)
+    wait = Mock(return_value=([child], [survivor]))
+    monkeypatch.setattr(runner.psutil, "wait_procs", wait)
+
+    _REAL_TERMINATE()
+
+    child.terminate.assert_called_once()
+    wait.assert_called_once_with([child, survivor], timeout=5.0)
+    survivor.kill.assert_called_once()
+
+
 def test_blocking_review_cancels_waiting_checks(repo_root_cwd):
     started = threading.Event()
 
