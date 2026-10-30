@@ -14,6 +14,7 @@ regression there hits every request.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -111,6 +112,7 @@ class Context:
 
     # CLI flags / config knobs — keep small.
     verbose: bool = False
+    cancel_event: threading.Event | None = None
 
     def __post_init__(self) -> None:
         # Repo root = current working directory by convention. Validator

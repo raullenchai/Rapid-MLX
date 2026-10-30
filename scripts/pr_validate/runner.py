@@ -279,6 +279,7 @@ def run_pipeline(
     gpu = [s for s in pipeline if stage_of(s.name) == "gpu"]
     lock = threading.Lock()
     cancel = threading.Event()
+    ctx.cancel_event = cancel
     cancel_reason = ""
 
     def print_result(step: Step, result: StepResult) -> None:

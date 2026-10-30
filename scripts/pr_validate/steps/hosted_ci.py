@@ -50,13 +50,17 @@ class HostedCIStep(Step):
         deadline = time.monotonic() + timeout
         previous = None
         while True:
+            if ctx.cancel_event is not None and ctx.cancel_event.is_set():
+                return StepResult(
+                    self.name, "skip", "cancelled while waiting for hosted CI"
+                )
             latest = {}
             for check in _fetch_checks(ctx):
                 if (check.get("app") or {}).get("slug") != "github-actions":
                     continue
-                name = check["name"]
-                if name not in latest or check["id"] > latest[name]["id"]:
-                    latest[name] = check
+                key = ((check.get("check_suite") or {}).get("id"), check["name"])
+                if key not in latest or check["id"] > latest[key]["id"]:
+                    latest[key] = check
             checks = [
                 c
                 for c in latest.values()
@@ -105,4 +109,10 @@ class HostedCIStep(Step):
                     "timed out waiting for hosted CI",
                     details="Pending checks: " + ", ".join(sorted(pending)),
                 )
-            _sleep(min(interval, remaining))
+            seconds = min(interval, remaining)
+            if ctx.cancel_event is None:
+                _sleep(seconds)
+            elif ctx.cancel_event.wait(seconds):
+                return StepResult(
+                    self.name, "skip", "cancelled while waiting for hosted CI"
+                )

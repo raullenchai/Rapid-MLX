@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +23,10 @@ def check(
 @pytest.fixture
 def ctx():
     return SimpleNamespace(
-        head_sha="a" * 40, repo="owner/repo", run_log=lambda msg: None
+        head_sha="a" * 40,
+        repo="owner/repo",
+        run_log=lambda msg: None,
+        cancel_event=None,
     )
 
 
@@ -81,3 +85,44 @@ def test_skip_in_ci_and_opt_out(monkeypatch, ctx):
 def test_bad_sha(ctx):
     ctx.head_sha = "bad"
     assert hosted_ci.HostedCIStep().run(ctx).status == "error"
+
+
+def test_cancelled_before_fetch(monkeypatch, ctx):
+    ctx.cancel_event = threading.Event()
+    ctx.cancel_event.set()
+
+    def fetch(ctx):
+        pytest.fail("cancelled poll fetched checks")
+
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", fetch)
+    result = hosted_ci.HostedCIStep().run(ctx)
+    assert result.status == "skip"
+    assert result.summary == "cancelled while waiting for hosted CI"
+
+
+def test_cancelled_during_wait(monkeypatch, ctx):
+    class CancelDuringWait:
+        def is_set(self):
+            return False
+
+        def wait(self, seconds):
+            return True
+
+    ctx.cancel_event = CancelDuringWait()
+    monkeypatch.setattr(
+        hosted_ci, "_fetch_checks", lambda ctx: [check(status="queued")]
+    )
+    result = hosted_ci.HostedCIStep().run(ctx)
+    assert result.status == "skip"
+    assert result.summary == "cancelled while waiting for hosted CI"
+
+
+def test_same_name_in_distinct_suites_failure(monkeypatch, ctx):
+    failed = check("changes", conclusion="failure", id=1)
+    passed = check("changes", id=2)
+    failed["check_suite"] = {"id": 1}
+    passed["check_suite"] = {"id": 2}
+    monkeypatch.setattr(
+        hosted_ci, "_fetch_checks", lambda ctx: [check(), failed, passed]
+    )
+    assert hosted_ci.HostedCIStep().run(ctx).status == "fail"

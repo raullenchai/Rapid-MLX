@@ -159,3 +159,27 @@ def test_terminate_children_terminates_then_kills_survivors(monkeypatch):
     wait.assert_called_once_with([child, survivor], timeout=0.25)
     survivor.kill.assert_called_once()
     child.kill.assert_not_called()
+
+
+def test_blocking_review_cancels_waiting_checks(repo_root_cwd):
+    started = threading.Event()
+
+    class WaitingCheck(Step):
+        name = "hosted_ci"
+        description = "wait for cancellation"
+
+        def run(self, ctx):
+            started.set()
+            assert ctx.cancel_event.wait(10)
+            return result(self.name, "skip")
+
+    def fail(name):
+        assert started.wait(5)
+        return result(name, "fail", ["[BLOCKING] problem"])
+
+    before = time.monotonic()
+    assert (
+        runner.run_pipeline(1, steps=[FakeStep("codex_review", fail), WaitingCheck()])
+        == 1
+    )
+    assert time.monotonic() - before < 5
