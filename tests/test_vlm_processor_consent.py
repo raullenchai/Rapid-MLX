@@ -82,6 +82,64 @@ def test_mllm_refuses_before_execution_and_retries(tmp_path, monkeypatch, mllm_l
 
 
 @pytest.mark.requires_mlx
+def test_real_got_processor_route_executes_only_with_consent(tmp_path, monkeypatch):
+    import mlx_vlm.models.got.processing_got  # noqa: F401
+    import transformers.dynamic_module_utils
+    import transformers.utils
+    import transformers.utils.hub
+
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+    model = tmp_path / "model"
+    model.mkdir()
+    marker = tmp_path / "executed"
+    (model / "config.json").write_text(json.dumps({"model_type": "got"}))
+    (model / "tokenizer_config.json").write_text(
+        json.dumps(
+            {"auto_map": {"AutoTokenizer": ["tok.T", None]}, "tokenizer_class": "T"}
+        )
+    )
+    (model / "tok.py").write_text(
+        "from transformers import PreTrainedTokenizer\n"
+        f"open({str(marker)!r}, 'w').write('executed')\n"
+        "class T(PreTrainedTokenizer): pass\n"
+    )
+    modules = str(tmp_path / "modules")
+    for module in (
+        transformers.dynamic_module_utils,
+        transformers.utils,
+        transformers.utils.hub,
+    ):
+        monkeypatch.setattr(module, "HF_MODULES_CACHE", modules, raising=False)
+    monkeypatch.syspath_prepend(modules)
+
+    def loader(path, *, trust_remote_code):
+        from mlx_vlm.utils import load_processor
+
+        try:
+            load_processor(Path(path), False, trust_remote_code=trust_remote_code)
+        except Exception:
+            pass
+        return (object(), object())
+
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    with pytest.raises(ValueError, match="explicitly opt in"):
+        load_vlm_with_policy(model, loader=loader)
+    assert not marker.exists()
+
+    loader(model, trust_remote_code=False)
+    assert marker.exists()
+    marker.unlink()
+    # Force Transformers to re-execute the cached module for the consented load.
+    with (model / "tok.py").open("a") as tokenizer_file:
+        tokenizer_file.write("# consented reload\n")
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+    load_vlm_with_policy(model, loader=loader)
+    assert marker.exists()
+
+
+@pytest.mark.requires_mlx
 def test_policy_processor_validation_uses_disk_config(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
 

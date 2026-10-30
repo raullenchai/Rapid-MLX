@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -73,17 +74,19 @@ def test_dependency_forced_trust_routes_reviewed():
     spec = importlib.util.find_spec("mlx_vlm")
     models = Path(next(iter(spec.submodule_search_locations))) / "models"
     reviewed = {
-        "got",
-        "inkling",
-        "moondream2",
-        "minicpmv4_6",
-        "minicpmo",
-        "internvl_chat",
-        "z_image",
+        "got/processing_got.py": 1,  # Guarded by FORCED_TRUST_PROCESSOR_TYPES.
+        "inkling/processing_inkling.py": 1,  # Guarded by FORCED_TRUST_PROCESSOR_TYPES.
+        "moondream2/processing_moondream2.py": 1,  # Guarded by AUXILIARY_TRUST_PROCESSOR_TYPES.
+        "minicpmv4_6/processing_minicpmv4_6.py": 1,  # Caller has opted in.
+        "minicpmo/processing_minicpmo.py": 1,  # Caller has opted in.
+        "internvl_chat/processor.py": 1,  # __init__ takes a tokenizer name; from_pretrained honors the caller.
+        "z_image/pipeline.py": 1,  # Image generation pipeline, not a VLM processor route.
     }
-    hits = set()
+    hits = Counter()
+    hit_lines = {}
     for file in models.glob("*/*.py"):
-        tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+        source = file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(file))
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword):
                 targets = [node.arg]
@@ -100,10 +103,21 @@ def test_dependency_forced_trust_routes_reviewed():
                 and isinstance(node.value, ast.Constant)
                 and node.value.value is True
             ):
-                hits.add(file.parent.name)
-    assert hits <= reviewed, (
-        f"Re-review FORCED_TRUST_PROCESSOR_TYPES: {hits - reviewed}"
-    )
+                relative = file.relative_to(models).as_posix()
+                hits[relative] += 1
+                hit_lines.setdefault(relative, []).append(node.lineno)
+    assert hits == reviewed, f"Re-review FORCED_TRUST_PROCESSOR_TYPES: {hits}"
+    for relative in (
+        "minicpmv4_6/processing_minicpmv4_6.py",
+        "minicpmo/processing_minicpmo.py",
+    ):
+        lines = (models / relative).read_text(encoding="utf-8").splitlines()
+        guards = [
+            i for i, line in enumerate(lines, 1) if "if not trust_remote_code:" in line
+        ]
+        assert guards and min(guards) < min(hit_lines[relative]), (
+            f"Re-review FORCED_TRUST_PROCESSOR_TYPES: missing preceding guard in {relative}"
+        )
     from rapid_mlx.utils.model_file_guard import (
         AUXILIARY_TRUST_PROCESSOR_TYPES,
         FORCED_TRUST_PROCESSOR_TYPES,
