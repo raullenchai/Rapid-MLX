@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- The anonymous first-run funnel now says why a model download or the first engine start failed, as one cause from a fixed list (plus the download source). No error text, paths, or model names are sent. (#5401)
+
 ## [1.0.0] — 2026-10-29
 
 Desktop adds experimental built-in agent harness chats, a simpler Share Compute, more images per message and new models.
