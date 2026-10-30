@@ -7,13 +7,124 @@ import copy
 import importlib.util
 import ipaddress
 import os
+import shutil
+import signal
 import socket
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
+
+
+_REAL_SIGNAL = signal.signal
+_REAL_GETSIGNAL = signal.getsignal
+_REAL_SIGMASK = getattr(signal, "pthread_sigmask", None)
+_TRACKED_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in (
+        "SIGINT",
+        "SIGTERM",
+        "SIGHUP",
+        "SIGQUIT",
+        "SIGUSR1",
+        "SIGUSR2",
+        "SIGALRM",
+        "SIGCHLD",
+        "SIGPIPE",
+    )
+    if hasattr(signal, name)
+)
+
+
+def _normalize_inherited_signal_dispositions():
+    """Give tests the interactive-shell baseline regardless of how pytest was launched.
+
+    POSIX preserves ignored dispositions across exec, and CPython skips its
+    KeyboardInterrupt handler when SIGINT starts ignored (CI, validator, or
+    background launches can all inherit this state).
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    signals = []
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        signals.append(signum)
+        if signal.getsignal(signum) == signal.SIG_IGN:
+            signal.signal(
+                signum,
+                signal.default_int_handler if name == "SIGINT" else signal.SIG_DFL,
+            )
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
+
+
+def _snapshot_signal_state():
+    snapshot = {signum: _REAL_GETSIGNAL(signum) for signum in _TRACKED_SIGNALS}
+    if _REAL_SIGMASK is not None:
+        snapshot["mask"] = _REAL_SIGMASK(signal.SIG_BLOCK, [])
+    return snapshot
+
+
+def _restore_signal_state(snapshot):
+    if threading.current_thread() is not threading.main_thread():
+        return
+    observability = sys.modules.get("rapid_mlx._signal_observability")
+    if observability is not None and observability._get_installed_handlers():
+        observability._reset_for_tests()
+    for signum in _TRACKED_SIGNALS:
+        try:
+            saved = snapshot[signum]
+            if saved is not None and _REAL_GETSIGNAL(signum) != saved:
+                _REAL_SIGNAL(signum, saved)
+        except (OSError, ValueError):
+            pass
+    if _REAL_SIGMASK is not None and "mask" in snapshot:
+        try:
+            if _REAL_SIGMASK(signal.SIG_BLOCK, []) != snapshot["mask"]:
+                _REAL_SIGMASK(signal.SIG_SETMASK, snapshot["mask"])
+        except (OSError, ValueError):
+            pass
+
+
+def _snapshot_stdlib_callables():
+    targets = (
+        (shutil, "which"),
+        (subprocess, "run"),
+        (subprocess, "Popen"),
+        (subprocess, "check_output"),
+        (subprocess, "check_call"),
+        (os, "kill"),
+        (os, "killpg"),
+        (time, "sleep"),
+    )
+    return [
+        (module, name, getattr(module, name))
+        for module, name in targets
+        if hasattr(module, name)
+    ]
+
+
+def _restore_stdlib_callables(snapshot):
+    for module, name, saved in snapshot:
+        if getattr(module, name, None) is not saved:
+            setattr(module, name, saved)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_global_state():
+    """Prevent signal dispositions, masks, crash tees, and stdlib patches leaking."""
+    signal_snapshot = _snapshot_signal_state()
+    stdlib_snapshot = _snapshot_stdlib_callables()
+    yield
+    _restore_signal_state(signal_snapshot)
+    _restore_stdlib_callables(stdlib_snapshot)
 
 
 @pytest.fixture
@@ -977,6 +1088,7 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     """Configure custom markers."""
+    _normalize_inherited_signal_dispositions()
     config.addinivalue_line(
         "markers", "slow: mark test as slow (requires model loading)"
     )

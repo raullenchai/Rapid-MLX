@@ -19,6 +19,7 @@ from scripts.pr_validate.steps.full_unit import (
 @pytest.fixture(autouse=True)
 def clean_workers(monkeypatch):
     monkeypatch.delenv("PR_VALIDATE_UNIT_WORKERS", raising=False)
+    monkeypatch.delenv("PR_VALIDATE_FULL_UNIT_TIMEOUT_S", raising=False)
     monkeypatch.setattr(_xdist.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(_xdist.os, "getloadavg", lambda: (0.0, 0.0, 0.0), raising=False)
 
@@ -223,14 +224,18 @@ def test_full_unit_result(tmp_path, monkeypatch, present, returncode):
             "-q",
             "--no-header",
             "-rfE",
+            "-o",
+            "faulthandler_timeout=600",
             *(["-n", "4", "--dist", "loadgroup"] if present else []),
         ]
-        assert kwargs == dict(capture_output=True, text=True, cwd=str(ctx.repo_root))
+        assert kwargs == dict(
+            cwd=str(ctx.repo_root), timeout=3600 if present else 14400
+        )
         return subprocess.CompletedProcess(
             cmd, returncode, stdout=stdout, stderr="stderr"
         )
 
-    monkeypatch.setattr("scripts.pr_validate.steps.full_unit.subprocess.run", run)
+    monkeypatch.setattr("scripts.pr_validate.steps.full_unit._run_group_bounded", run)
     result = step.run(ctx)
     assert result.status == ("pass" if returncode == 0 else "fail")
     assert ("2 passed" if returncode == 0 else "19 errors") in result.summary
@@ -247,7 +252,7 @@ def test_full_unit_result(tmp_path, monkeypatch, present, returncode):
 def test_full_unit_without_summary(tmp_path, monkeypatch, returncode):
     monkeypatch.setenv("PR_VALIDATE_UNIT_WORKERS", "1")
     monkeypatch.setattr(
-        "scripts.pr_validate.steps.full_unit.subprocess.run",
+        "scripts.pr_validate.steps.full_unit._run_group_bounded",
         lambda *a, **k: subprocess.CompletedProcess(
             a, returncode, stdout=None, stderr=None
         ),
@@ -264,10 +269,43 @@ def test_failure_truncation(tmp_path, monkeypatch):
         f"FAILED test_{i}" for i in range(35)
     )
     monkeypatch.setattr(
-        "scripts.pr_validate.steps.full_unit.subprocess.run",
+        "scripts.pr_validate.steps.full_unit._run_group_bounded",
         lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout=stdout, stderr=""),
     )
     result = FullUnitStep().run(Context(pr_number=1, work_dir=tmp_path))
     assert "FAILED test_29" in result.details
     assert "FAILED test_30" not in result.details
     assert "5 more" in result.details
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "abc"])
+def test_invalid_full_unit_timeout(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("PR_VALIDATE_FULL_UNIT_TIMEOUT_S", value)
+    with pytest.raises(ValueError, match="PR_VALIDATE_FULL_UNIT_TIMEOUT_S must be"):
+        FullUnitStep().run(Context(pr_number=1, work_dir=tmp_path))
+
+
+def test_full_unit_timeout_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_VALIDATE_FULL_UNIT_TIMEOUT_S", "120")
+
+    def run(cmd, *, cwd, timeout):
+        assert timeout == 120
+        return subprocess.CompletedProcess(cmd, 0, stdout="1 passed in 1s", stderr="")
+
+    monkeypatch.setattr("scripts.pr_validate.steps.full_unit._run_group_bounded", run)
+    assert FullUnitStep().run(Context(pr_number=1, work_dir=tmp_path)).status == "pass"
+
+
+def test_full_unit_timeout_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_VALIDATE_FULL_UNIT_TIMEOUT_S", "120")
+
+    def run(cmd, *, cwd, timeout):
+        raise subprocess.TimeoutExpired(cmd, timeout, output="partial", stderr="dump")
+
+    monkeypatch.setattr("scripts.pr_validate.steps.full_unit._run_group_bounded", run)
+    result = FullUnitStep().run(Context(pr_number=1, work_dir=tmp_path))
+    assert result.status == "fail"
+    assert "120s" in result.summary
+    log = Path(result.artifacts[0]).read_text()
+    assert "TIMED OUT" in log
+    assert "partial" in log and "dump" in log
