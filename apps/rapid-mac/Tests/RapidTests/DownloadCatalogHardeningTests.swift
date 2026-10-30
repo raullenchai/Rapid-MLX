@@ -530,14 +530,7 @@ struct DownloadCatalogHardeningTests {
         let registry = CatalogProcessRegistry()
         let dir = try makeTemporaryDirectory()
         let pidFile = dir.appendingPathComponent("pid.txt")
-        let script = try makeExecutableScript(
-            """
-            #!/bin/sh
-            echo $$ > \(shellQuote(pidFile.path))
-            trap '' TERM
-            while :; do :; done
-            """
-        )
+        let script = try makeExecutableScript(signalIgnoringFixture(pidFile: pidFile))
         let task = Task {
             await ModelCatalog._testingRunRapidMlx(
                 binary: script,
@@ -553,6 +546,9 @@ struct DownloadCatalogHardeningTests {
             String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         )))
+        // #5387: never leave the TERM-ignoring fixture behind if the reap under test fails.
+        defer { if Darwin.kill(pid, 0) == 0 { Darwin.kill(pid, SIGKILL) } }
+        #expect(Darwin.kill(pid, 0) == 0, "fixture must still be running before shutdown")
 
         registry.beginShutdown()
         registry.finishShutdown()
@@ -568,14 +564,7 @@ struct DownloadCatalogHardeningTests {
         let registry = CatalogProcessRegistry()
         let dir = try makeTemporaryDirectory()
         let pidFile = dir.appendingPathComponent("pid.txt")
-        let script = try makeExecutableScript(
-            """
-            #!/bin/sh
-            echo $$ > \(shellQuote(pidFile.path))
-            trap '' TERM
-            while :; do :; done
-            """
-        )
+        let script = try makeExecutableScript(signalIgnoringFixture(pidFile: pidFile))
         let admitted = DispatchSemaphore(value: 0)
         let allowLaunch = DispatchSemaphore(value: 0)
         let finishReturned = DispatchSemaphore(value: 0)
@@ -619,6 +608,9 @@ struct DownloadCatalogHardeningTests {
             String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         )))
+        // #5387: never leave the TERM-ignoring fixture behind if the reap under test fails.
+        defer { if Darwin.kill(pid, 0) == 0 { Darwin.kill(pid, SIGKILL) } }
+        #expect(Darwin.kill(pid, 0) == 0, "fixture must still be running before shutdown")
         // Keep a deliberately broken launch ordering from leaving the
         // TERM-ignoring fixture alive or hanging task.value below.
         if earlyFinish == .success {
@@ -720,6 +712,20 @@ private func makeTemporaryDirectory() throws -> URL {
         .appendingPathComponent("rapid-download-catalog-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
+}
+
+// #5387: a leaked fixture must never outlive the test.
+private func signalIgnoringFixture(pidFile: URL) -> String {
+    """
+    #!/bin/sh
+    echo $$ > \(shellQuote(pidFile.path))
+    trap '' TERM
+    i=0
+    while [ "$i" -lt 300 ] && kill -0 "$PPID" 2>/dev/null; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    """
 }
 
 private func makeExecutableScript(_ body: String) throws -> URL {

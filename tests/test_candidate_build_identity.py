@@ -1,5 +1,6 @@
 import os
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -121,7 +122,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         "#!/bin/bash\n"
         "set -eu\n"
         f"printf '%s\\n' \"$RAPID_MLX_SOURCE\" > {quoted_engine_root_seen}\n"
-        "(trap '' TERM; while :; do sleep 1; done) &\n"
+        "(trap '' TERM; i=0; while [ \"$i\" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done) &\n"
         f"echo $! > {quoted_child_pid}\n"
         "wait\n"
     )
@@ -146,29 +147,39 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         "RAPID_MLX_ENGINE_ROOT": str(ROOT),
         "RUNNER_TEMP": str(tmp_path),
     }
-    result = subprocess.run(
-        ["bash", str(BUILD)],
-        cwd=BUILD.parent.parent,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    reaped = False
+    try:
+        result = subprocess.run(
+            ["bash", str(BUILD)],
+            cwd=BUILD.parent.parent,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
 
-    assert result.returncode == 47, result.stdout + result.stderr
-    assert engine_root_seen.read_text().strip() == str(ROOT)
-    assert "ignored SIGTERM; sending SIGKILL" in result.stderr
-    pid = int(child_pid.read_text())
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.02)
-    else:
-        pytest.fail(f"sidecar grandchild {pid} survived process-group cleanup")
+        assert result.returncode == 47, result.stdout + result.stderr
+        assert engine_root_seen.read_text().strip() == str(ROOT)
+        assert "ignored SIGTERM; sending SIGKILL" in result.stderr
+        pid = int(child_pid.read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                reaped = True
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail(f"sidecar grandchild {pid} survived process-group cleanup")
+
+    finally:
+        if not reaped and child_pid.exists():
+            try:
+                os.kill(int(child_pid.read_text()), signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
 
 
 def test_parallel_sidecar_rejects_unsafe_stage_before_recursive_delete() -> None:

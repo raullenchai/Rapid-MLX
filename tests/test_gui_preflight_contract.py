@@ -1074,7 +1074,8 @@ import time
 from pathlib import Path
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 Path(sys.argv[1]).touch()
-while True:
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
     time.sleep(0.05)
 """
     stubborn_code = """
@@ -1084,7 +1085,8 @@ import time
 from pathlib import Path
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 Path(sys.argv[1]).touch()
-while True:
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
     time.sleep(0.05)
 """
     ready_paths = [tmp_path / name for name in ("graceful", "stubborn", "operator")]
@@ -1253,7 +1255,8 @@ for _ in range(100):
         break
     time.sleep(0.01)
 Path(sys.argv[1]).write_text(str(child.pid))
-while True:
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
     time.sleep(1)
 """
     )
