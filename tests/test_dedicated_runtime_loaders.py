@@ -353,3 +353,45 @@ def test_deferred_native_and_companion_loads(monkeypatch):
     assert cli.prepare_dedicated_runtime(args).load()[1]["target_path"] == "/target"
     monkeypatch.setattr(cli, "serve_runtime_lane", lambda a: "companion_dspark")
     assert cli.prepare_dedicated_runtime(args).load()[1]["artifacts"] == "artifacts"
+
+
+def test_runtime_handle_releases_model(monkeypatch):
+    import weakref
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rapid_mlx.speculative import serial_benchmark as serial
+
+    server = ModuleType("rapid_mlx.speculative.dflash.server")
+    server._dflash_executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setitem(sys.modules, server.__name__, server)
+    monkeypatch.setattr(
+        sys.modules["mlx.core"], "clear_cache", lambda: None, raising=False
+    )
+
+    class Model:
+        pass
+
+    model = Model()
+    ref = weakref.ref(model)
+    processor = SimpleNamespace(tokenizer=object())
+    handle = serial._runtime_handle(
+        "dflash",
+        model,
+        processor,
+        object(),
+        lambda **kw: {"prefill_step_size": 1},
+        {},
+        "/target",
+    )
+
+    def fake_stream(model, processor, *, stream_generate_fn, generation_kwargs):
+        assert model is ref()
+        assert generation_kwargs(2)["prefill_step_size"] == 1
+        return lambda prompt, maximum: iter([maximum])
+
+    monkeypatch.setattr(serial, "mlx_vlm_token_stream", fake_stream)
+    assert list(handle.token_stream([1], 2)) == [2]
+    del model
+    handle.close()
+    assert ref() is None
+    server._dflash_executor.shutdown()

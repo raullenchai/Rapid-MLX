@@ -6107,6 +6107,7 @@ def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
         )
     alias = getattr(args, "_original_alias", None) or args.model
     if lane.startswith("tensorfold_"):
+        from .speculative.tensorfold_concurrency import request_lanes
         from .speculative.tensorfold_families import (
             profile_for,
             tensorfold_family_server_kwargs,
@@ -6114,6 +6115,19 @@ def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
         from .speculative.tensorfold_glm53 import tensorfold_glm53_server_kwargs
 
         family = profile_for(alias)
+        profile_id = (
+            family.profile_id
+            if family
+            else "glm5.3-flash-tensorfold"
+            if lane == "tensorfold_mtp"
+            else "qwen3.8-27b-tensorfold"
+        )
+        try:
+            lanes = request_lanes(profile_id, getattr(args, "tensorfold_lanes", None))
+        except ValueError as exc:
+            from .community_bench.acceleration import AccelerationConfigError
+
+            raise AccelerationConfigError(str(exc)) from exc
         _preflight_tensorfold_qwen27_or_exit(args)
         _download_tensorfold_artifacts(args)
         _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
@@ -6144,7 +6158,7 @@ def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
                 served_model_name=getattr(args, "served_model_name", None) or alias,
                 default_max_tokens=getattr(args, "max_tokens", None) or 2048,
                 enable_prefix_cache=False,
-                tensorfold_lanes=1,
+                tensorfold_lanes=lanes,
                 **options,
             )
             try:
@@ -6165,7 +6179,7 @@ def prepare_dedicated_runtime(args) -> DedicatedRuntimeLaunch:
                 draft_path=draft_path,
                 target_path=args.model,
                 max_draft_tokens=k,
-                lanes=1,
+                lanes=lanes,
             )
 
         return DedicatedRuntimeLaunch(lane, load, None)

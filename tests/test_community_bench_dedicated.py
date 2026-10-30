@@ -538,12 +538,16 @@ def test_baseline_uses_plain_loader(fake_dedicated, monkeypatch):
     assert fake_dedicated.closed == []
 
 
-def test_tensorfold_loader_pins_one_lane(monkeypatch):
+@pytest.mark.parametrize("env, expected", [("4", 4), (None, 1)])
+def test_tensorfold_loader_lanes(monkeypatch, env, expected):
     from rapid_mlx import cli
     from rapid_mlx.speculative import serial_benchmark, tensorfold_qwen27_server
     from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
 
-    monkeypatch.setenv(LANES_ENV, "4")
+    if env is None:
+        monkeypatch.delenv(LANES_ENV, raising=False)
+    else:
+        monkeypatch.setenv(LANES_ENV, env)
     monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "tensorfold_dflash")
     monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda *a: None)
     monkeypatch.setattr(cli, "_download_tensorfold_artifacts", lambda *a: None)
@@ -559,11 +563,38 @@ def test_tensorfold_loader_pins_one_lane(monkeypatch):
         serial_benchmark, "tensorfold_live_max_draft", lambda backend: 1
     )
     monkeypatch.setattr(
-        serial_benchmark, "tensorfold_runtime_handle", lambda *a, **k: "handle"
+        serial_benchmark,
+        "tensorfold_runtime_handle",
+        lambda *a, **k: SimpleNamespace(
+            lane=k["lane"],
+            speculative={
+                "method": k["method"],
+                "max_draft_tokens": k["max_draft_tokens"],
+                "lanes": k["lanes"],
+            },
+        ),
     )
-    launch = cli.prepare_dedicated_runtime(SimpleNamespace(model="test-model"))
-    assert launch.load() == "handle"
-    assert calls[0]["tensorfold_lanes"] == 1
+    launch = cli.prepare_dedicated_runtime(
+        SimpleNamespace(model="qwen3.8-27b-tensorfold")
+    )
+    handle = launch.load()
+    assert calls[0]["tensorfold_lanes"] == expected
+    assert (
+        dedicated_language(
+            handle, context_length=1, prefill_chunk_size=1, draft_identity_digest=None
+        )["runtime"]["lanes"]
+        == expected
+    )
+
+
+def test_tensorfold_unqualified_lanes_refused_before_load(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.tensorfold_concurrency import LANES_ENV
+
+    monkeypatch.setenv(LANES_ENV, "4")
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: "tensorfold_mtp")
+    with pytest.raises(AccelerationConfigError, match="qualified"):
+        cli.prepare_dedicated_runtime(SimpleNamespace(model="glm5.3-flash-tensorfold"))
 
 
 def test_tensorfold_loader_live_cap_failure(monkeypatch):
@@ -697,3 +728,66 @@ def test_dedicated_launch_refusal(fake_dedicated, monkeypatch):
     )
     with pytest.raises(f.lr.LocalBenchmarkError, match="refused"):
         f.lr.run_local("example", archive=f.archive)
+
+
+def test_timeout_submits_close_without_waiting():
+    import threading
+    import time
+
+    started = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    def stream(*args):
+        try:
+            started.set()
+            release.wait()
+            yield TokenChunk(1, 1)
+        finally:
+            closed.set()
+
+    async def run(executor):
+        adapter = _DedicatedRuntimeBenchmarkAdapter(
+            SimpleNamespace(executor=executor, token_stream=stream)
+        )
+        adapter._requests["blocked"] = ([1], SimpleNamespace(max_tokens=1))
+        start = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            _ = [x async for x in adapter.stream_outputs("blocked", timeout=0.1)]
+        assert started.is_set()
+        assert time.monotonic() - start < 1
+        assert not closed.is_set()
+        release.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            asyncio.run(run(executor))
+        finally:
+            release.set()
+    assert closed.is_set()
+
+
+@pytest.mark.parametrize(
+    "alias,lane,profile_id",
+    [
+        ("glm5.3-flash-tensorfold", "tensorfold_mtp", "glm5.3-flash-tensorfold"),
+        ("bonsai2-27b-tensorfold", "tensorfold_dflash", "bonsai2-27b-tensorfold"),
+    ],
+)
+def test_tensorfold_profile_lane_resolution(monkeypatch, alias, lane, profile_id):
+    from rapid_mlx import cli
+    from rapid_mlx.speculative import tensorfold_concurrency
+
+    seen = []
+    monkeypatch.setattr(
+        tensorfold_concurrency,
+        "request_lanes",
+        lambda profile, value: seen.append((profile, value)) or 1,
+    )
+    monkeypatch.setattr(cli, "serve_runtime_lane", lambda args: lane)
+    monkeypatch.setattr(cli, "_preflight_tensorfold_qwen27_or_exit", lambda *a: None)
+    monkeypatch.setattr(cli, "_download_tensorfold_artifacts", lambda *a: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    cli.prepare_dedicated_runtime(SimpleNamespace(model=alias, tensorfold_lanes=1))
+    assert seen == [(profile_id, 1)]

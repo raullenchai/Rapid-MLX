@@ -1189,8 +1189,9 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         self._requests.pop(request_id, None)
         iterator = self._active.pop(request_id, None)
         if iterator is not None:
-            await asyncio.get_running_loop().run_in_executor(
-                self._handle.executor, iterator.close
+            future = self._handle.executor.submit(iterator.close)
+            future.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
             )
 
     async def stream_outputs(self, request_id, timeout=None):

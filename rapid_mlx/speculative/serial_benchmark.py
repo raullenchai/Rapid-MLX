@@ -101,13 +101,24 @@ def cached_snapshot_path(repo, revision):
 def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_path):
     from rapid_mlx.speculative.dflash.server import _dflash_executor
 
-    stream = mlx_vlm_token_stream(
-        model,
-        processor,
-        stream_generate_fn=None,
-        generation_kwargs=lambda n: kwargs_fn(max_tokens=n, temperature=0.0, top_p=1.0),
-    )
-    kwargs = kwargs_fn(max_tokens=1, temperature=0.0, top_p=1.0)
+    holder = {
+        "model": model,
+        "processor": processor,
+        "runtime": runtime,
+        "kwargs_fn": kwargs_fn,
+    }
+
+    def stream(prompt, maximum):
+        return mlx_vlm_token_stream(
+            holder["model"],
+            holder["processor"],
+            stream_generate_fn=None,
+            generation_kwargs=lambda n: holder["kwargs_fn"](
+                max_tokens=n, temperature=0.0, top_p=1.0
+            ),
+        )(prompt, maximum)
+
+    kwargs = holder["kwargs_fn"](max_tokens=1, temperature=0.0, top_p=1.0)
     prefill = kwargs.get("prefill_step_size")
     if prefill is None:
         from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
@@ -138,6 +149,7 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
 
             handle.token_stream = None
             handle.tokenizer = None
+            holder.clear()
             gc.collect()
             mx.clear_cache()
 
@@ -308,6 +320,7 @@ def tensorfold_runtime_handle(
             "draft_revision": draft_revision,
             "draft_path": draft_path,
             "max_draft_tokens": max_draft_tokens,
+            "lanes": lanes,
         },
         target_path=target_path,
         context_length=None,

@@ -270,7 +270,7 @@ def dedicated_language(
         )
     runtime = {"kind": handle.lane}
     if handle.lane.startswith("tensorfold_"):
-        runtime["lanes"] = 1
+        runtime["lanes"] = handle.speculative["lanes"]
     if handle.speculative.get("algorithm") in {"dflash", "dflash2"}:
         runtime["algorithm"] = handle.speculative["algorithm"]
     return {
