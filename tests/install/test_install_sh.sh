@@ -145,6 +145,18 @@ else
     ok "an existing Python 3.9 venv is reported incomplete (must be rebuilt)"
 fi
 
+# ── 9b. venv completeness: a runnable but too-new (3.14) venv is incompatible ─
+VNEW="$WORK/venv_new"; mkdir -p "$VNEW/bin"
+make_py "$VNEW/bin/python" 3.14 arm64
+make_py "$VNEW/bin/pip"    3.14 arm64
+if PATH="$SYS_PATH" venv_is_complete "$VNEW"; then
+    bad "an existing Python 3.14 venv is reported incomplete (must be rebuilt)"
+else
+    ok "an existing Python 3.14 venv is reported incomplete (must be rebuilt)"
+fi
+check "plan: a Python 3.14 venv is rebuilt" \
+    "$(PATH="$SYS_PATH" plan_venv_action "$VNEW")" "rebuild"
+
 # ── 10. rebuild removes only venv entries, preserves shared ~/.rapid-mlx state ─
 # ~/.rapid-mlx doubles as the state dir (telemetry-client-id, bench-install-id,
 # agents/ profiles, launch.pid). A rebuild must not delete any of that.

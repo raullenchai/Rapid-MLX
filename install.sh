@@ -82,15 +82,14 @@ select_python() {
 }
 
 # A venv is reusable only if it is COMPLETE (python + pip present and runnable)
-# AND COMPATIBLE (a native arm64 interpreter, Python >= MIN_PYTHON_MINOR) — the
-# minimum version fresh selection enforces. Anything else is treated as
+# AND COMPATIBLE (a native arm64 interpreter, Python MIN_PYTHON_MINOR through
+# MAX_PYTHON_MINOR) — the same supported range as fresh selection. Anything else is treated as
 # not-installed and rebuilt under the newly selected interpreter:
 #   - missing bin/pip: an aborted earlier run left it out (the original #1953).
 #   - executable-but-broken pip: a ~/.vllm-mlx -> ~/.rapid-mlx migration leaves a
 #     stale shebang, so `-x` passes but running fails — hence the `--version` run.
-#   - wrong arch / too-old version: a venv built earlier under a Rosetta x86_64
-#     or a 3.9 Python still runs, so it would pass a liveness check and quietly
-#     survive the upgrade path even though mlx can never import there.
+#   - wrong arch / too-old or too-new version: a venv built under Rosetta x86_64,
+#     Python 3.9, or Python 3.14 can run but must not survive the upgrade path.
 venv_is_complete() {
     local dir="$1" arch ver major minor
     [ -x "$dir/bin/python" ] && [ -x "$dir/bin/pip" ] || return 1
@@ -100,7 +99,7 @@ venv_is_complete() {
     [ "$arch" = "arm64" ] || return 1
     ver=$(run_install_command "$dir/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
     major="${ver%%.*}"; minor="${ver#*.}"
-    [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]
+    [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ] && [ "$minor" -le "$MAX_PYTHON_MINOR" ]
 }
 
 # Remove ONLY the virtual environment's own entries under $1, so a rebuild does
