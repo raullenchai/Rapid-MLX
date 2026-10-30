@@ -917,26 +917,25 @@ struct SettingsModelManagementPanel: View {
         return "\(ctx)"
     }
 
-    /// The row renders this with a leading "~" because it is a pre-download figure.
-    /// Display the catalog's download size, the checked-in manifest byte count of
-    /// the repo's files, through ModelSizeText exactly as the Speech to Text picker
-    /// does, even if the string cannot be parsed. The alias heuristic underestimates
-    /// some repos (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus 787,276,896 bytes), so use
-    /// ModelSizing's estimate only when the catalog has no size.
+    /// Catalog byte counts from the manifest or cache inventory are formatted once
+    /// at display with DownloadProgress.formatBytes; legacy CLI strings are shown
+    /// verbatim and never parsed. The row adds a leading "~". The alias heuristic
+    /// is only a fallback because it underestimates some repos (Qwen3 ASR 0.6B
+    /// 5-bit: ~0.3 GB versus 787,276,896 bytes).
     nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
-        if let size = ModelSizeText.display(entry.sizeOnDisk) {
-            return size
-        }
+        if let size = entry.size?.displayText { return size }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
-        return ModelSizeText.display(bytes: Int64(fp.weightsGB * 1024 * 1024 * 1024))
+        return DownloadProgress.formatBytes(Int64(fp.weightsGB * 1024 * 1024 * 1024))
     }
 
-    /// Never an estimate: if the measurement is missing, the row shows no size
-    /// rather than substituting ModelSizing's guess. The measured figure is
-    /// rendered through ModelSizeText so every surface uses one format.
+    /// Catalog byte counts from the manifest or cache inventory are formatted once
+    /// at display with DownloadProgress.formatBytes; legacy CLI strings are shown
+    /// verbatim and never parsed. No alias estimate substitutes for a missing size:
+    /// the heuristic can underestimate (Qwen3 ASR 0.6B 5-bit: ~0.3 GB versus
+    /// 787,276,896 bytes), and is only a download-size fallback.
     nonisolated static func onDiskSizeLabel(_ entry: ModelEntry) -> String? {
-        ModelSizeText.display(entry.sizeOnDisk)
+        entry.size?.displayText
     }
 
     @ViewBuilder

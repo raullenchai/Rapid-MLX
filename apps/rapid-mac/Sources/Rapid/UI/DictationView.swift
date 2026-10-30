@@ -356,7 +356,7 @@ struct DictationView: View {
             alias: alias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedModelEntry?.cached,
-            sizeText: ModelSizeText.display(selectedModelEntry?.sizeOnDisk),
+            sizeText: selectedModelEntry?.size?.displayText,
             download: AudioReadinessState.downloadSnapshot(
                 alias: alias,
                 job: downloads.job(for: alias)
@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+            totalBytes: entry.sizeBytes ?? ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
         )
     }
 
@@ -835,7 +835,7 @@ private struct TranscriptionModelOptionRow: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            if let size = ModelSizeText.display(entry.sizeOnDisk) {
+                            if let size = entry.size?.displayText {
                                 Text(size)
                                     .font(RapidFont.caption)
                                     .foregroundStyle(.tertiary)
@@ -937,7 +937,7 @@ private struct TranscriptionModelOptionRow: View {
         } else {
             parts.append(entry.cached ? "Downloaded" : "Not downloaded")
         }
-        if let size = ModelSizeText.display(entry.sizeOnDisk) { parts.append(size) }
+        if let size = entry.size?.displayText { parts.append(size) }
         parts.append(details.summary)
         return parts.joined(separator: ", ")
     }
