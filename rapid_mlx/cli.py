@@ -3202,6 +3202,28 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     return sidecar, depth
 
 
+def _local_mtp_sidecar_for_served_model(args, sidecar):
+    """Use the served directory for a sidecar from the same repository."""
+    model = getattr(args, "model", None)
+    if not sidecar or not model or not os.path.isdir(model):
+        return sidecar
+    original = getattr(args, "_original_alias", None)
+    identities = set()
+    if original:
+        try:
+            from .model_aliases import resolve_profile
+
+            profile = resolve_profile(original)
+            if profile and profile.hf_path:
+                identities.add(profile.hf_path.strip().casefold())
+        except Exception:  # noqa: BLE001
+            pass
+        if "/" in original:
+            identities.add(original.strip().casefold())
+    # #5395: the external model folder already contains this repository's head.
+    return model if sidecar.strip().casefold() in identities else sidecar
+
+
 def _cached_mtp_sidecar(sidecar: str) -> str | None:
     """Resolve an automatic sidecar locally, honoring its catalog revision.
 
@@ -3840,7 +3862,15 @@ def _normalize_speculative_config_or_exit(args):
                 )
             else:
                 sidecar, _ = _alias_mtp_declaration(args.model)
-                cached_sidecar = _cached_mtp_sidecar(sidecar) if sidecar else None
+                # #5395: a matching external model folder is already local.
+                local_sidecar = _local_mtp_sidecar_for_served_model(args, sidecar)
+                cached_sidecar = (
+                    local_sidecar
+                    if local_sidecar != sidecar
+                    else _cached_mtp_sidecar(sidecar)
+                    if sidecar
+                    else None
+                )
                 if sidecar and cached_sidecar is None:
                     print(
                         "Automatic MTP skipped: sidecar is not cached; "
@@ -4004,6 +4034,11 @@ def _normalize_speculative_config_or_exit(args):
         # ``num_speculative_tokens`` in the JSON always wins.
         alias_sidecar, alias_k = _alias_mtp_declaration(getattr(args, "model", None))
         args.mtp_sidecar = config.model or alias_sidecar
+        # #5395: native and tensorfold backends require repository IDs.
+        if config.backend not in ("native", "tensorfold"):
+            args.mtp_sidecar = _local_mtp_sidecar_for_served_model(
+                args, args.mtp_sidecar
+            )
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
         elif alias_k is not None:
