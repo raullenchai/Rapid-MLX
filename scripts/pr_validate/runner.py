@@ -335,15 +335,28 @@ def run_pipeline(
                 print(
                     f"## [{step.name}] started (stage: {stage_name})", file=sys.stderr
                 )
-            result = step.execute(ctx)
+            try:
+                result = step.execute(ctx)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                result = StepResult(
+                    step.name,
+                    "error",
+                    f"lane crashed: {type(e).__name__}: {e}",
+                    stage=stage_name,
+                )
             result.stage = stage_name
             terminate = False
             with lock:
                 if cancel.is_set():
-                    result.status = "skip"
-                    result.summary = (
-                        f"cancelled: {cancel_reason} (partial: {result.summary})"
-                    )
+                    if result.status in {"fail", "error"}:
+                        result.summary = f"after cancellation: {result.summary}"
+                    else:
+                        result.status = "skip"
+                        result.summary = (
+                            f"cancelled: {cancel_reason} (partial: {result.summary})"
+                        )
                 else:
                     reason = _stop_reason(step, result, fail_fast)
                     if reason:

@@ -183,3 +183,43 @@ def test_blocking_review_cancels_waiting_checks(repo_root_cwd):
         == 1
     )
     assert time.monotonic() - before < 5
+
+
+def test_lane_execute_crash_blocks_merge(repo_root_cwd, monkeypatch):
+    step = FakeStep("lint", lambda name: result(name))
+
+    def crash(ctx):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(step, "execute", crash)
+    assert runner.run_pipeline(1, steps=[step]) == 1
+    row = repo_root_cwd.results[0]
+    assert (row.status, row.summary, row.stage) == (
+        "error",
+        "lane crashed: RuntimeError: boom",
+        "checks",
+    )
+
+
+@pytest.mark.parametrize("status", ["fail", "error"])
+def test_failure_after_cancellation_is_preserved(repo_root_cwd, status):
+    started = threading.Event()
+
+    def delayed_failure(name):
+        started.set()
+        assert repo_root_cwd.cancel_event.wait(5)
+        return result(name, status)
+
+    def fail(name):
+        assert started.wait(5)
+        return result(name, "fail", ["[BLOCKING] problem"])
+
+    assert (
+        runner.run_pipeline(
+            1, steps=[FakeStep("codex_review", fail), FakeStep("lint", delayed_failure)]
+        )
+        == 1
+    )
+    row = next(r for r in repo_root_cwd.results if r.name == "lint")
+    assert row.status == status
+    assert row.summary == f"after cancellation: {status}"

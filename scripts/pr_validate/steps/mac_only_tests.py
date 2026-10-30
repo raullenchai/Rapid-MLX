@@ -22,15 +22,17 @@ from .full_unit import (
 
 def select_mac_only_files(repo_root: Path) -> list[str]:
     workflow = repo_root / ".github/workflows/ci.yml"
-    roster = (
-        set(
-            re.findall(
-                r"^\s+(tests/[\w./-]+\.py)\s*\\?\s*$", workflow.read_text(), re.M
-            )
+    roster = set()
+    if workflow.exists():
+        block = re.search(
+            r"^  test-apple-silicon:\s*$([\s\S]*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)",
+            workflow.read_text(),
+            re.M,
         )
-        if workflow.exists()
-        else set()
-    )
+        if block:
+            roster = set(
+                re.findall(r"^\s+(tests/[\w./-]+\.py)\s*\\?\s*$", block.group(1), re.M)
+            )
     marker = re.compile(
         r"requires_mlx|real_hf_cache|requires_network|importorskip|darwin|sys\.platform|platform\.(machine|system)"
     )

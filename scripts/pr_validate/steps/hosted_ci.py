@@ -17,6 +17,13 @@ def _fetch_checks(ctx: Context) -> list[dict]:
     )
 
 
+def _fetch_runs(ctx: Context) -> list[dict]:
+    return pages(
+        f"repos/{ctx.repo}/actions/runs?head_sha={ctx.head_sha}&per_page=100",
+        "workflow_runs",
+    )
+
+
 _sleep = time.sleep
 _FAILURES = {
     "failure",
@@ -54,11 +61,33 @@ class HostedCIStep(Step):
                 return StepResult(
                     self.name, "skip", "cancelled while waiting for hosted CI"
                 )
+            runs = {}
+            for run in _fetch_runs(ctx):
+                workflow_id = run["workflow_id"]
+                if workflow_id not in runs or (
+                    run["run_number"],
+                    run["run_attempt"],
+                    run["id"],
+                ) > (
+                    runs[workflow_id]["run_number"],
+                    runs[workflow_id]["run_attempt"],
+                    runs[workflow_id]["id"],
+                ):
+                    runs[workflow_id] = run
+            suites = {run["check_suite_id"] for run in runs.values()}
+            ci_suites = {
+                run["check_suite_id"]
+                for run in runs.values()
+                if run["path"].split("@", 1)[0] == ".github/workflows/ci.yml"
+            }
             latest = {}
             for check in _fetch_checks(ctx):
                 if (check.get("app") or {}).get("slug") != "github-actions":
                     continue
-                key = ((check.get("check_suite") or {}).get("id"), check["name"])
+                suite = (check.get("check_suite") or {}).get("id")
+                if suite not in suites:
+                    continue
+                key = (suite, check["name"])
                 if key not in latest or check["id"] > latest[key]["id"]:
                     latest[key] = check
             checks = [
@@ -87,6 +116,7 @@ class HostedCIStep(Step):
             }
             if not any(
                 c["name"] == "tests"
+                and (c.get("check_suite") or {}).get("id") in ci_suites
                 and c.get("status") == "completed"
                 and c.get("conclusion") == "success"
                 for c in checks

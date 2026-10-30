@@ -16,8 +16,29 @@ def check(
         "conclusion": conclusion,
         "app": {"slug": app},
         "id": id,
+        "check_suite": {"id": 1},
         "html_url": "https://example.test/check",
     }
+
+
+def run(
+    workflow_id=1, suite=1, number=1, attempt=1, id=1, path=".github/workflows/ci.yml"
+):
+    return {
+        "workflow_id": workflow_id,
+        "check_suite_id": suite,
+        "run_number": number,
+        "run_attempt": attempt,
+        "id": id,
+        "path": path,
+    }
+
+
+@pytest.fixture(autouse=True)
+def fake_runs(monkeypatch):
+    monkeypatch.setattr(
+        hosted_ci, "_fetch_runs", lambda ctx: [run(), run(2, 2, path="other")]
+    )
 
 
 @pytest.fixture
@@ -126,3 +147,31 @@ def test_same_name_in_distinct_suites_failure(monkeypatch, ctx):
         hosted_ci, "_fetch_checks", lambda ctx: [check(), failed, passed]
     )
     assert hosted_ci.HostedCIStep().run(ctx).status == "fail"
+
+
+def test_superseded_failure_is_ignored(monkeypatch, ctx):
+    monkeypatch.setattr(
+        hosted_ci,
+        "_fetch_runs",
+        lambda ctx: [
+            run(),
+            run(
+                suite=2, number=2, id=2, path=".github/workflows/ci.yml@refs/heads/main"
+            ),
+        ],
+    )
+    failed = check(conclusion="failure")
+    passed = check(id=2)
+    passed["check_suite"] = {"id": 2}
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", lambda ctx: [failed, passed])
+    assert hosted_ci.HostedCIStep().run(ctx).status == "pass"
+
+
+def test_tests_from_another_workflow_do_not_satisfy_gate(monkeypatch, ctx):
+    monkeypatch.setenv("PR_VALIDATE_HOSTED_CI_TIMEOUT_S", "0")
+    other = check()
+    other["check_suite"] = {"id": 2}
+    monkeypatch.setattr(hosted_ci, "_fetch_checks", lambda ctx: [other])
+    result = hosted_ci.HostedCIStep().run(ctx)
+    assert result.status == "fail"
+    assert "tests" in result.details

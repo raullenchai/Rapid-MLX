@@ -8,7 +8,11 @@ from scripts.pr_validate.steps import mac_only_tests
 
 def test_selection(tmp_path):
     files = {
-        ".github/workflows/ci.yml": "    tests/test_roster.py \\\n",
+        ".github/workflows/ci.yml": (
+            "  test-apple-silicon:\n    tests/test_roster.py\n"
+            "  other-job:\n    tests/test_other.py\n"
+        ),
+        "tests/test_other.py": "requires_mlx",
         "tests/test_roster.py": "requires_mlx",
         "tests/test_yes.py": "importorskip('mlx')",
         "tests/sub/test_yes.py": "sys.platform",
@@ -23,6 +27,7 @@ def test_selection(tmp_path):
         path.write_text(content)
     assert mac_only_tests.select_mac_only_files(tmp_path) == [
         "tests/sub/test_yes.py",
+        "tests/test_other.py",
         "tests/test_yes.py",
     ]
 
