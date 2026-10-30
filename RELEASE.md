@@ -30,7 +30,9 @@ extended operational guide, `docs/development/releasing.md`, defers to it.
    and the protected `rapid-mac-tag` deployment requests approval, a **reviewer
    inspects the exact SHA / main-head / blocker evidence** shown there and
    approves it. Automation then tags `vX.Y.Z`, publishes a GitHub Release,
-   PyPI, Homebrew, and the Desktop DMG/updater feeds.
+   PyPI, and the Desktop DMG/updater feeds. Homebrew's autobump bumps the
+   homebrew/core formula after its 1-day cooldown; complete the
+   [Homebrew post-release check](docs/development/releasing.md) afterward.
 
 There is **no separate manual tag or publish command** — no button, no
 hand-run script. The reviewer's approval at the protected environment gate is
@@ -431,6 +433,7 @@ delete the tag.
 
 ## Related docs
 
+- [Homebrew post-release check](docs/development/releasing.md) — formula bump verification and fallback.
 - `docs/release-notes/README.md` — how curated release notes are written.
 - `scripts/build_release_notes.sh` + `tests/release/test_build_release_notes.sh`
   — the notes builder and its offline tests.

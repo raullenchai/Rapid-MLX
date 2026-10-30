@@ -80,7 +80,28 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment).
 
-5. **Homebrew (homebrew/core)** — no action needed. `rapid-mlx` is in homebrew/core, which tracks new PyPI releases via Homebrew's autobump/livecheck (BrewTestBot opens the bump PR and builds bottles). If autobump ever lags, a maintainer can run `brew bump-formula-pr --version=X.Y.Z rapid-mlx`.
+5. **Homebrew (homebrew/core) — post-release check** — `rapid-mlx` is on Homebrew's autobump list. BrewTestBot runs about every 3 hours and opens the `rapid-mlx X.Y.Z` PR, but homebrew/core's 1-day release cooldown means the PR cannot appear until about 24 hours after the PyPI upload. Bottles then build and a maintainer merges the PR. The official installer gets the release immediately; Homebrew users wait for the cooldown, bottling, and review.
+
+   At about **6 hours** after release, confirm the autobump log shows `rapid-mlx` in "release cooldown" or a bump PR exists. If the log reports an error for `rapid-mlx`, use the manual fallback below. At about **36 hours**, the `rapid-mlx X.Y.Z` PR must exist; if it does not, inspect the autobump log and use the fallback if it shows an error. Track the PR to merge.
+
+   ```sh
+   brew info --json=v2 rapid-mlx | jq -r '.formulae[0].versions.stable'
+   gh pr list -R Homebrew/homebrew-core --search "rapid-mlx in:title" --state all
+   gh run list -R Homebrew/homebrew-core --workflow autobump.yml --limit 3
+   gh run view <id> -R Homebrew/homebrew-core --log | grep -A4 rapid-mlx
+   ```
+
+   A "release cooldown" log line is expected during the first day. The formula file can also be checked on GitHub. `brew bump-formula-pr` refuses autobumped formulae. Use this fallback only when the autobump log shows an error for `rapid-mlx`, not merely during cooldown: in a homebrew/core checkout, update `url` and `sha256` in `Formula/r/rapid-mlx.rb` to the new PyPI sdist, then run:
+
+   ```sh
+   brew update-python-resources rapid-mlx
+   HOMEBREW_NO_INSTALL_FROM_API=1 brew install --build-from-source rapid-mlx
+   brew test rapid-mlx
+   brew audit --strict --online rapid-mlx
+   brew style rapid-mlx
+   ```
+
+   `brew update-python-resources` refuses a main package uploaded less than a day ago; `--ignore-main-package-cooldown` is rejected for official taps. Open a PR titled `rapid-mlx X.Y.Z` explaining why autobump did not handle it.
 
 6. **Verify**: once the core bump merges, `brew update && brew upgrade rapid-mlx` pulls in the new version.
 
