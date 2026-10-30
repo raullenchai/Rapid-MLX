@@ -153,6 +153,9 @@ def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_pa
             gc.collect()
             mx.clear_cache()
 
+        # After a timeout, wait=False queues cleanup behind the in-flight MLX
+        # step, which cannot be interrupted from another thread. The benchmark
+        # reports immediately; the worker finishes or is reclaimed at exit.
         future = _dflash_executor.submit(cleanup)
         if wait:
             future.result()
@@ -305,6 +308,9 @@ def tensorfold_runtime_handle(
                 gc.collect()
                 mx.clear_cache()
 
+        # After a timeout, wait=False queues cleanup behind the in-flight MLX
+        # step, which cannot be interrupted from another thread. The benchmark
+        # reports immediately; the worker finishes or is reclaimed at exit.
         try:
             future = executor.submit(cleanup)
             if wait:

@@ -15,6 +15,7 @@ import threading
 import uuid
 import weakref
 from collections.abc import Generator
+from contextlib import suppress
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
@@ -636,11 +637,16 @@ def load_tensorfold_backend(
     )
     # Qualification-only token evidence. Unset by default so production
     # requests never persist generated token IDs.
-    provider = TensorFoldRequestProvider(
-        backend,
-        audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
-        sampling_defaults=_model_sampling_defaults(main_model_repo),
-    )
+    try:
+        provider = TensorFoldRequestProvider(
+            backend,
+            audit_path=os.environ.get("RAPID_MLX_TENSORFOLD_AUDIT_PATH"),
+            sampling_defaults=_model_sampling_defaults(main_model_repo),
+        )
+    except BaseException:
+        with suppress(BaseException):
+            backend.close()
+        raise
     return backend, provider
 
 
