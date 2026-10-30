@@ -897,3 +897,201 @@ def test_dedicated_runtime_schema_is_additive():
     language["runtime"]["unexpected"] = True
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(execution, SCHEMA)
+
+
+def test_model_compute_dtype(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    mx = SimpleNamespace(bfloat16="bf16", float16="f16", float32="f32", uint32="u32")
+    mx.zeros = lambda shape, dtype: SimpleNamespace(size=shape[0], dtype=dtype)
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx.utils",
+        SimpleNamespace(tree_flatten=lambda p: list(p.items())),
+    )
+
+    from rapid_mlx.community_bench.acceleration import model_compute_dtype
+
+    def model(*arrays):
+        return SimpleNamespace(
+            parameters=lambda: {str(i): a for i, a in enumerate(arrays)}
+        )
+
+    bf = mx.zeros((100,), dtype=mx.bfloat16)
+    fp = mx.zeros((100,), dtype=mx.float16)
+    assert model_compute_dtype(model(bf)) == "bfloat16"
+    assert model_compute_dtype(model(fp)) == "float16"
+    assert model_compute_dtype(model(bf, fp)) == "mixed"
+    assert (
+        model_compute_dtype(model(bf, mx.zeros((200,), dtype=mx.uint32))) == "bfloat16"
+    )
+    assert model_compute_dtype(model(mx.zeros((2,), dtype=mx.uint32))) == "unknown"
+    assert model_compute_dtype(object()) == "unknown"
+    assert (
+        model_compute_dtype(model(bf, mx.zeros((1,), dtype=mx.float32))) == "bfloat16"
+    )
+
+
+def test_effective_language_compute_dtype_and_digest():
+    from types import SimpleNamespace
+
+    from rapid_mlx.community_bench.acceleration import effective_language
+
+    config = SimpleNamespace(
+        enable_prefix_cache=False, prefill_step_size=2048, pflash_config=None
+    )
+
+    def language(dtype, live=None):
+        return effective_language(
+            config,
+            runtime_method=None,
+            draft_identity_digest=None,
+            context_length=4096,
+            live_kv_quant=live,
+            compute_dtype=dtype,
+        )
+
+    assert language("bfloat16")["kv_cache"] == {
+        "mode": "full_precision",
+        "dtype": "bfloat16",
+    }
+    assert language("mixed")["kv_cache"] == {"mode": "unknown", "dtype": "unknown"}
+    assert language("float16", (64, 8))["kv_cache"]["mode"] == "quantized"
+    a = execution_config("text_generation")
+    b = execution_config("text_generation", compute_dtype="bfloat16")
+    assert b["resources"]["compute_dtype"] == "bfloat16"
+    assert a["config_digest"] != b["config_digest"]
+
+
+@pytest.mark.parametrize("fastpath", [False, True])
+@pytest.mark.parametrize("baseline", [False, True])
+def test_mllm_serving_engine_run_records_mllm_lane_config(
+    monkeypatch, tmp_path, fastpath, baseline
+):
+    import asyncio
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    probe = subprocess.run(
+        [sys.executable, "-c", "import mlx.core"], capture_output=True
+    )
+    if probe.returncode:
+        pytest.skip("MLX Metal device unavailable")
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
+    from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, None)
+    config = MLLMSchedulerConfig(
+        prefill_step_size=4096,
+        enable_prefix_cache=False,
+        max_num_seqs=1,
+        prefill_batch_size=1,
+        completion_batch_size=1,
+    )
+    model = nn.Linear(2, 2)
+    model.set_dtype(mx.bfloat16)
+
+    async def load(*args, **kwargs):
+        async def stop():
+            pass
+
+        return SimpleNamespace(
+            tokenizer=object(),
+            _is_mllm=True,
+            _engine=object() if fastpath else None,
+            _mllm_dense_singleton_fastpath=fastpath,
+            _mllm_scheduler=SimpleNamespace(config=config),
+            _model=model,
+            stop=stop,
+        )
+
+    monkeypatch.setattr(lr, "_load_serving_engine", load)
+    if baseline:
+        monkeypatch.setattr(lr, "_uses_serving_benchmark_engine", lambda target: True)
+
+        class FakeBatched:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def start(self):
+                self.__dict__.update((await load()).__dict__)
+
+        monkeypatch.setattr(
+            sys.modules["rapid_mlx.engine.batched"], "BatchedEngine", FakeBatched
+        )
+    capture = {}
+    token = lr._LOADED_IDENTITY.set(capture)
+    try:
+        _, _, _, language = asyncio.run(
+            lr._text_measurements(
+                "org/model", acceleration=AccelerationRequest(baseline=baseline)
+            )
+        )
+    finally:
+        lr._LOADED_IDENTITY.reset(token)
+    assert language["prefill_chunk_size"] == 2048
+    assert language["speculative_decoding"] == {"method": "none"}
+    assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
+    assert capture["compute_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "step_size, expected", [(8192, 2048), (4096, 2048), (1024, 1024)]
+)
+def test_mllm_language_records_effective_prefill_chunk(step_size, expected):
+    from types import SimpleNamespace
+
+    from rapid_mlx.community_bench.acceleration import mllm_language
+
+    config = SimpleNamespace(prefill_step_size=step_size, enable_prefix_cache=False)
+    language = mllm_language(config, context_length=4096, compute_dtype="bfloat16")
+    assert language["prefill_chunk_size"] == expected
+
+
+@pytest.mark.parametrize("fastpath", [False, True])
+def test_mllm_lane_routing_with_headless_fake(monkeypatch, tmp_path, fastpath):
+    import asyncio
+    from types import SimpleNamespace
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, None)
+    config = SimpleNamespace(prefill_step_size=4096, enable_prefix_cache=False)
+    model = object()
+
+    async def stop():
+        pass
+
+    async def load(*args):
+        return SimpleNamespace(
+            tokenizer=object(),
+            _is_mllm=True,
+            _engine=object() if fastpath else None,
+            _mllm_dense_singleton_fastpath=fastpath,
+            _mllm_scheduler=SimpleNamespace(config=config),
+            _model=model,
+            stop=stop,
+        )
+
+    monkeypatch.setattr(lr, "_load_serving_engine", load)
+    monkeypatch.setattr(lr, "_engine_scheduler", lambda engine: None)
+    monkeypatch.setattr(
+        lr,
+        "model_compute_dtype",
+        lambda loaded: "bfloat16" if loaded is model else "unknown",
+    )
+    capture = {}
+    token = lr._LOADED_IDENTITY.set(capture)
+    try:
+        _, _, _, language = asyncio.run(lr._text_measurements("org/model"))
+    finally:
+        lr._LOADED_IDENTITY.reset(token)
+    assert language["prefill_chunk_size"] == 2048
+    assert language["speculative_decoding"] == {"method": "none"}
+    assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
+    assert capture["compute_dtype"] == "bfloat16"

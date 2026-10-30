@@ -30,9 +30,8 @@ it. Two rules govern the projection:
    what it withheld, the consent prompt prints it, and ``--preview --json``
    carries it so a GUI can show the same thing before the user agrees.
 
-The original protocol's 2048-token prefill chunk is withheld because the service
-records that setting as unset. Other chunk sizes, KV cache, and PFlash settings
-are sent truthfully, so a service that cannot store them rejects the upload.
+Execution settings are sent truthfully, so a service that cannot store them
+rejects the upload.
 
 When the service widens its allowlist this module gets smaller, and the local
 record does not change at all.
@@ -43,7 +42,6 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .run_builder import execution_config_digest
 from .workspace import ProvenanceUnreadable, validate_provenance
 
 #: Keys the ingestion validator allows on ``model.components[0].source``.
@@ -53,10 +51,6 @@ _PUBLIC_SOURCE_KEYS = ("kind", "repo_id")
 #: The only quantization block the validator accepts. Mirrors
 #: ``component.quantization.kind !== "unknown" || … base_dtype !== "unknown"``.
 _PUBLIC_QUANTIZATION: dict[str, str] = {"kind": "unknown", "base_dtype": "unknown"}
-
-#: The original protocol used SchedulerConfig's default prefill_step_size of
-#: 2048 and recorded it as null, so null denotes exactly that configuration.
-_LEGACY_PROTOCOL_PREFILL_CHUNK_SIZE = 2048
 
 
 class PublicationRefused(Exception):  # noqa: N818 - stable domain error name
@@ -156,11 +150,6 @@ _QUANTIZATION_REASON = (
     "beta, so the measured artifact's quantization is not published"
 )
 
-_EXECUTION_REASON = (
-    "a 2048-token prefill chunk is the original protocol setting, which the "
-    "benchmark service records as unset"
-)
-
 
 def project_run_for_publication(
     run: dict[str, Any],
@@ -199,24 +188,6 @@ def project_run_for_publication(
                 )
             )
             component["quantization"] = dict(_PUBLIC_QUANTIZATION)
-    execution = public.get("execution")
-    task = execution.get("task") if isinstance(execution, dict) else None
-    language = task.get("language") if isinstance(task, dict) else None
-    if isinstance(execution, dict) and isinstance(language, dict):
-        if (
-            "runtime" not in language
-            and language.get("prefill_chunk_size")
-            == _LEGACY_PROTOCOL_PREFILL_CHUNK_SIZE
-        ):
-            withheld.append(
-                WithheldFact(
-                    "execution.task.language.prefill_chunk_size",
-                    copy.deepcopy(language["prefill_chunk_size"]),
-                    _EXECUTION_REASON,
-                )
-            )
-            language["prefill_chunk_size"] = None
-            execution["config_digest"] = execution_config_digest(execution)
     return public, withheld
 
 

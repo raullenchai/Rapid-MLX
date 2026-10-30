@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rapid_mlx.cli_parser import BENCHMARK_ACCELERATION_FLAGS, build_parser
+from rapid_mlx.mllm_prefill import effective_mllm_prefill_chunk
 
 
 @dataclass(frozen=True)
@@ -195,6 +196,46 @@ def resolve_benchmark_acceleration(alias: str, request: AccelerationRequest):
     return plan, serve_args
 
 
+def model_compute_dtype(model) -> str:
+    """Identify the dominant floating parameter dtype of the loaded model."""
+    try:
+        parameters = model.parameters()
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+
+        dtypes = {mx.bfloat16: "bfloat16", mx.float16: "float16", mx.float32: "float32"}
+        counts = {name: 0 for name in dtypes.values()}
+        for _, parameter in tree_flatten(parameters):
+            if parameter.dtype in dtypes:
+                counts[dtypes[parameter.dtype]] += parameter.size
+        total = sum(counts.values())
+        if not total:
+            return "unknown"
+        name = max(counts, key=lambda dtype: counts[dtype])
+        return name if counts[name] * 100 >= total * 99 else "mixed"
+    except Exception:
+        return "unknown"
+
+
+def _full_precision_kv(compute_dtype: str) -> dict:
+    if compute_dtype in ("bfloat16", "float16", "float32"):
+        return {"mode": "full_precision", "dtype": compute_dtype}
+    return {"mode": "unknown", "dtype": "unknown"}
+
+
+def mllm_language(mllm_config, *, context_length, compute_dtype: str) -> dict:
+    return {
+        "speculative_decoding": {"method": "none"},
+        "kv_cache": _full_precision_kv(compute_dtype),
+        "prefix_cache_enabled": bool(mllm_config.enable_prefix_cache),
+        "prefill_backend": "gpu",
+        "prefill_chunk_size": effective_mllm_prefill_chunk(
+            mllm_config.prefill_step_size
+        ),
+        "context_length": context_length,
+    }
+
+
 def effective_language(
     scheduler_config,
     *,
@@ -202,6 +243,7 @@ def effective_language(
     draft_identity_digest: str | None,
     context_length,
     live_kv_quant: tuple[int, int] | None,
+    compute_dtype: str = "unknown",
 ) -> dict:
     if runtime_method == "mtp":
         spec = {"method": "mtp", "max_draft_tokens": scheduler_config.mtp_max_k}
@@ -236,7 +278,7 @@ def effective_language(
             "scheme": "affine",
         }
     else:
-        kv = {"mode": "unknown", "dtype": "unknown"}
+        kv = _full_precision_kv(compute_dtype)
     language = {
         "speculative_decoding": spec,
         "kv_cache": kv,
