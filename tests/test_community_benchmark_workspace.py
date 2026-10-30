@@ -1432,7 +1432,9 @@ def test_run_local_archives_registered_token_drift_as_failure(
     measurements = _text_run()["measurements"]
     measurements[0]["prompt_tokens"] = 510
 
-    async def drifted_measurements(alias: str, repo_id: str, *, progress=None):
+    async def drifted_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         return measurements, 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
@@ -1478,7 +1480,9 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
         order.append("conditions")
         return next(snapshots)
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         assert progress is None
@@ -1522,7 +1526,9 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
             "available_memory_mib": 9000,
         }
 
-    async def silent_measurements(alias: str, repo_id: str, *, progress=None):
+    async def silent_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         assert progress is None
@@ -1558,7 +1564,7 @@ def test_capture_is_disarmed_when_the_helper_raises(
             "available_memory_mib": 9000,
         }
 
-    async def broken(alias: str, repo_id: str, *, progress=None):
+    async def broken(alias: str, repo_id: str, *, progress=None, acceleration=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
@@ -1629,7 +1635,7 @@ def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def cancelled(alias: str, repo_id: str, *, progress=None):
+    async def cancelled(alias: str, repo_id: str, *, progress=None, acceleration=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise asyncio.CancelledError()
@@ -1659,7 +1665,7 @@ def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def broken(alias: str, repo_id: str, *, progress=None):
+    async def broken(alias: str, repo_id: str, *, progress=None, acceleration=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
@@ -2953,6 +2959,7 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
 ) -> None:
     from rapid_mlx import engine_core
     from rapid_mlx.community_bench import runner
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
     from rapid_mlx.utils import tokenizer as tokenizer_module
 
     archive = LocalRunArchive(tmp_path)
@@ -3015,7 +3022,10 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     )
     monkeypatch.setattr(runner, "run_standardized_bench", standardized)
 
-    run = local_runner.run_local("example-text", archive=archive)
+    # The native loader is used only for baseline runs.
+    run = local_runner.run_local(
+        "example-text", archive=archive, acceleration=AccelerationRequest(baseline=True)
+    )
 
     assert len(run["measurements"]) == 10
     assert [(row["case_id"], row["round_index"]) for row in run["measurements"]] == [
@@ -5387,7 +5397,15 @@ def test_text_measurements_reports_model_load_stage(
         EngineConfig=lambda **kwargs: None,
         _init_mlx_step_thread=lambda: None,
     )
-    fake_scheduler = types.SimpleNamespace(SchedulerConfig=lambda **kwargs: None)
+    fake_scheduler = types.SimpleNamespace(
+        SchedulerConfig=lambda **kwargs: SimpleNamespace(
+            **kwargs,
+            kv_cache_turboquant=False,
+            kv_cache_quantization=False,
+            prefill_step_size=2048,
+            pflash_config=None,
+        )
+    )
     fake_helpers = types.SimpleNamespace(get_model_max_context=lambda engine: 4096)
     fake_tokenizer = types.SimpleNamespace(
         load_model_with_fallback=lambda repo_id, **kwargs: (
@@ -5427,10 +5445,17 @@ def test_text_measurements_reports_model_load_stage(
     p, o = cases[0]["target_prompt_tokens"], cases[0]["target_output_tokens"]
     monkeypatch.setattr(bench_runner, "run_standardized_bench", fake_bench)
 
-    measurements, context, _identity = asyncio.run(
-        local_runner._text_measurements("org/model", progress=lines.append)
+    measurements, context, _identity, _language = asyncio.run(
+        local_runner._text_measurements(
+            "org/model",
+            progress=lines.append,
+            acceleration=local_runner.AccelerationRequest(baseline=True),
+        )
     )
     assert context == 4096
+    assert _language["speculative_decoding"] == {"method": "none"}
+    assert _language["kv_cache"] == {"mode": "unknown", "dtype": "unknown"}
+    assert _language["prefill_chunk_size"] == 2048
     assert lines[0] == (
         "Loading org/model (not cached yet; downloading from Hugging Face first)..."
     )
@@ -5441,20 +5466,36 @@ def test_text_measurements_reports_model_load_stage(
     # No sink: no observer is installed and nothing is logged.
     monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: True)
     lines.clear()
-    asyncio.run(local_runner._text_measurements("org/model"))
+    asyncio.run(
+        local_runner._text_measurements(
+            "org/model", acceleration=local_runner.AccelerationRequest(baseline=True)
+        )
+    )
     assert observed["on_round"] is None
     assert lines == []
 
     # An inconclusive cache probe is reported as such, not as "cached".
     monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: None)
-    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    asyncio.run(
+        local_runner._text_measurements(
+            "org/model",
+            progress=lines.append,
+            acceleration=local_runner.AccelerationRequest(baseline=True),
+        )
+    )
     assert lines[0] == (
         "Loading org/model (cache state unknown; downloads anything missing)..."
     )
 
     lines.clear()
     monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: True)
-    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    asyncio.run(
+        local_runner._text_measurements(
+            "org/model",
+            progress=lines.append,
+            acceleration=local_runner.AccelerationRequest(baseline=True),
+        )
+    )
     assert lines[0] == "Loading org/model (from the local Hugging Face cache)..."
 
 
@@ -5773,7 +5814,9 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     )
     seen: list[str] = []
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         seen.append(alias)
         return _text_run()["measurements"], 32768
 
@@ -5853,7 +5896,9 @@ def test_run_local_prefers_the_identity_read_right_after_loading(
         "base_dtype": "unknown",
     }
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         return _text_run()["measurements"], 32768, loaded
 
     def after_read(repo_id, task_type, subfolder=None, snapshot_path=None):
@@ -5905,7 +5950,9 @@ def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(
         }
         return identity
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "unresolved_model_identity", moving_cache)
@@ -5932,7 +5979,9 @@ def test_run_local_resolves_identity_before_loading_the_model(
         order.append("identity")
         return real_identity(repo_id, task_type, subfolder)
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         order.append("measure")
         return _text_run()["measurements"], 32768
 
@@ -5988,7 +6037,9 @@ def test_failed_run_after_loading_archives_the_loaded_identity(
     loaded = real("mlx-community/example-text-model", "text_generation")
     loaded["components"][0]["source"]["resolved_revision"] = "e" * 40
 
-    async def load_then_fail(alias: str, repo_id: str, *, progress=None):
+    async def load_then_fail(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         capture = local_runner._LOADED_IDENTITY.get()
         assert capture is not None
         capture["identity"] = loaded
@@ -6071,7 +6122,9 @@ def test_completed_run_keeps_the_identity_the_loader_pinned_even_if_refs_moved(
     moved = real("mlx-community/example-text-model", "text_generation")
     moved["components"][0]["source"]["resolved_revision"] = "b" * 40
 
-    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+    async def fake_measurements(
+        alias: str, repo_id: str, *, progress=None, acceleration=None
+    ):
         capture = local_runner._LOADED_IDENTITY.get()
         assert capture is not None
         capture["identity"] = pinned
@@ -6109,3 +6162,104 @@ def test_loader_target_refuses_a_same_named_local_directory(
     (tmp_path / "org" / "Plain").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="also a local path"):
         local_runner._loader_target("plain", "org/Plain")
+
+
+def test_archive_default_root_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_BENCHMARK_HOME", raising=False)
+    monkeypatch.delenv("RAPID_MLX_HOME", raising=False)
+    legacy = tmp_path / ".rapid-mlx" / "benchmarks"
+    assert LocalRunArchive.default().root == legacy
+    monkeypatch.setenv("RAPID_MLX_HOME", "  ~/custom  ")
+    archive = LocalRunArchive.default()
+    assert archive.root == tmp_path / "custom" / "benchmarks"
+    assert archive.fallback_root == legacy
+    monkeypatch.setenv("RAPID_MLX_BENCHMARK_HOME", "~/override")
+    archive = LocalRunArchive.default()
+    assert archive.root == tmp_path / "override"
+    assert archive.fallback_root is None
+    monkeypatch.delenv("RAPID_MLX_BENCHMARK_HOME")
+    monkeypatch.setenv("RAPID_MLX_HOME", "  ")
+    assert LocalRunArchive.default().root == legacy
+    monkeypatch.setenv("RAPID_MLX_HOME", "~/.rapid-mlx")
+    assert LocalRunArchive.default().fallback_root is None
+
+
+def test_archive_legacy_fallback_and_primary_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RAPID_MLX_HOME", "~/new-home")
+    monkeypatch.delenv("RAPID_MLX_BENCHMARK_HOME", raising=False)
+    legacy_root = tmp_path / ".rapid-mlx" / "benchmarks"
+    legacy = LocalRunArchive(legacy_root)
+    run = _text_run()
+    provenance = {"distribution": "release"}
+    legacy.save_with_provenance(run, provenance)
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+    legacy.save_receipt(receipt, install_id=install_id)
+    before = {
+        p.relative_to(legacy_root): p.read_bytes() for p in legacy_root.rglob("*.json")
+    }
+
+    archive = LocalRunArchive.default()
+    assert archive.get(run["run_id"]) == run
+    assert archive.provenance(run["run_id"]) == provenance
+    assert archive.receipt(run["run_id"]) == receipt
+    assert archive.list() == [run]
+    assert archive.save_receipt(receipt, install_id=install_id).is_relative_to(
+        archive.root
+    )
+    primary = json.loads(json.dumps(run))
+    primary["measurements"][0]["total_duration_ms"] += 1
+    assert archive.save(primary).is_relative_to(archive.root)
+    assert archive.get(run["run_id"]) == primary
+    assert archive.list(limit=1) == [primary]
+    assert {
+        p.relative_to(legacy_root): p.read_bytes() for p in legacy_root.rglob("*.json")
+    } == before
+    for method in (archive.get, archive.receipt):
+        with pytest.raises(ValueError, match="invalid run id"):
+            method("../escape")
+
+
+def test_archive_metadata_follows_run_root(tmp_path: Path) -> None:
+    legacy = LocalRunArchive(tmp_path / "legacy")
+    archive = LocalRunArchive(tmp_path / "primary", fallback_root=legacy.root)
+    run = _text_run()
+    provenance = {"distribution": "release"}
+    legacy.save_with_provenance(run, provenance)
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    receipt = _receipt(run["run_id"], run_digest=atomic_upload.atomic_run_digest(wire))
+    legacy.save_receipt(receipt, install_id=install_id)
+
+    assert archive.provenance(run["run_id"]) == provenance
+    assert archive.receipt(run["run_id"]) == receipt
+    archive.save(run)
+    assert archive.provenance(run["run_id"]) is None
+    assert archive.receipt(run["run_id"]) is None
+
+
+def test_legacy_run_reads_new_primary_metadata_first(tmp_path: Path) -> None:
+    legacy = LocalRunArchive(tmp_path / "legacy")
+    archive = LocalRunArchive(tmp_path / "primary", fallback_root=legacy.root)
+    run = _text_run()
+    legacy.save_with_provenance(run, {"distribution": "release"})
+    install_id = "012345abcdef"
+    wire = {**run, "install_id": install_id}
+    digest = atomic_upload.atomic_run_digest(wire)
+    old_receipt = _receipt(run["run_id"], run_digest=digest)
+    legacy.save_receipt(old_receipt, install_id=install_id)
+    assert archive.receipt(run["run_id"]) == old_receipt
+
+    new_receipt = _receipt(run["run_id"], already=True, run_digest=digest)
+    archive.save_receipt(new_receipt, install_id=install_id)
+    assert archive.receipt(run["run_id"]) == new_receipt
+    provenance = {"distribution": "source", "revision": "a" * 40}
+    archive.save_provenance(run["run_id"], provenance)
+    assert archive.provenance(run["run_id"]) == provenance

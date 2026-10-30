@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ..leaderboard_links import run_url
+from .acceleration import acceleration_summary, request_from_args
 from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
 from .local_runner import LocalBenchmarkError, run_local
@@ -387,6 +388,7 @@ def benchmark_command(args) -> int:
                 inherit_process_group=getattr(args, "inherit_process_group", False),
                 progress=progress_sink,
                 events=event_sink,
+                acceleration=request_from_args(args),
             )
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))
@@ -496,6 +498,11 @@ def benchmark_command(args) -> int:
             print("Upload cancelled. Nothing was sent.")
     else:  # run
         print(f"Saved local result {value['run_id']}")
+        task = value.get("execution", {}).get("task", {})
+        if value.get("workload", {}).get("task_type") == "text_generation" and task.get(
+            "language"
+        ):
+            print(f"Acceleration: {acceleration_summary(task['language'])}")
         for line in summarize_measurements(value):
             print(line)
         print("Nothing was uploaded.")

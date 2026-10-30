@@ -534,11 +534,20 @@ def _reset_provenance_cache() -> None:
     _PROVENANCE = None
 
 
+def execution_config_digest(execution: dict[str, Any]) -> str:
+    """Digest the execution settings that identify a benchmark configuration."""
+
+    return rcj_digest(
+        {key: execution[key] for key in ("task_type", "resources", "task")}
+    )
+
+
 def execution_config(
     task_type: str,
     *,
     context_length: int | None = None,
     speculative_decoding: dict[str, Any] | None = None,
+    language: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     provenance = resolve_provenance()
     source_revision = provenance.get("revision")
@@ -582,7 +591,9 @@ def execution_config(
         )
         task = {
             "kind": task_type,
-            "language": {
+            "language": copy.deepcopy(language)
+            if language is not None
+            else {
                 "context_length": context_length,
                 "speculative_decoding": speculative,
                 "kv_cache": {"mode": "unknown", "dtype": "unknown"},
@@ -604,7 +615,7 @@ def execution_config(
     projection = {"task_type": task_type, "resources": resources, "task": task}
     return {
         "schema_version": 1,
-        "config_digest": rcj_digest(projection),
+        "config_digest": execution_config_digest(projection),
         "runtime": runtime,
         **projection,
     }
@@ -662,4 +673,10 @@ def build_run(
     return run
 
 
-__all__ = ["build_run", "execution_config", "machine_observation", "utc_now"]
+__all__ = [
+    "build_run",
+    "execution_config",
+    "execution_config_digest",
+    "machine_observation",
+    "utc_now",
+]

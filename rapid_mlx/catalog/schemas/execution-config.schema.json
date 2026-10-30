@@ -81,12 +81,13 @@
         "mode": {"enum": ["full_precision", "quantized", "unknown"]},
         "dtype": {"enum": ["float32", "float16", "bfloat16", "q8", "q6", "q4", "q3", "q2", "other", "unknown"]},
         "bits_x2": {"type": "integer", "minimum": 2, "maximum": 64},
-        "group_size": {"type": "integer", "minimum": 1, "maximum": 4096}
+        "group_size": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "scheme": {"enum": ["affine", "turboquant_v4", "turboquant_k8v4"]}
       },
       "allOf": [{
         "if": {"properties": {"mode": {"const": "quantized"}}, "required": ["mode"]},
         "then": {"required": ["bits_x2", "group_size"], "properties": {"dtype": {"enum": ["q8", "q6", "q4", "q3", "q2", "other"]}}},
-        "else": {"not": {"anyOf": [{"required": ["bits_x2"]}, {"required": ["group_size"]}]}}
+        "else": {"not": {"anyOf": [{"required": ["bits_x2"]}, {"required": ["group_size"]}, {"required": ["scheme"]}]}}
       }, {
         "if": {"properties": {"mode": {"const": "full_precision"}}, "required": ["mode"]},
         "then": {"properties": {"dtype": {"enum": ["float32", "float16", "bfloat16"]}}}
@@ -104,7 +105,8 @@
         "kv_cache": {"$ref": "#/$defs/kvCache"},
         "prefix_cache_enabled": {"type": "boolean"},
         "prefill_backend": {"enum": ["gpu", "cpu", "hybrid"]},
-        "prefill_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}
+        "prefill_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991},
+        "pflash": {"type": "object", "additionalProperties": false, "required": ["mode", "threshold", "keep_ratio_millionths"], "properties": {"mode": {"enum": ["auto", "always"]}, "threshold": {"type": "integer", "minimum": 1}, "keep_ratio_millionths": {"type": "integer", "minimum": 1, "maximum": 1000000}}}
       }
     },
     "mediaInput": {

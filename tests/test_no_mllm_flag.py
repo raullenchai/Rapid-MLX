@@ -1861,6 +1861,8 @@ LOAD_MODEL_ENTRYPOINT_EXEMPTIONS: frozenset[str] = frozenset(
     {
         # Eval harness — bench / scoring tool, not a serving entrypoint.
         "agents/testing.py",
+        # Community Benchmark measurement tool, not a serving entrypoint: it measures the alias's default serve routing and deliberately exposes no routing overrides, which its result could not record.
+        "community_bench/local_runner.py",
     }
 )
 
