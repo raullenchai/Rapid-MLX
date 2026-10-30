@@ -354,7 +354,8 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
       names).
     * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
       (downloaded via ``snapshot_download`` to the HF cache, then
-      probed for the layouts above). The nested ``mtp/`` layout lets a
+      probed for the layouts above; only relevant files are downloaded). The
+      nested ``mtp/`` layout lets a
       single repository contain target and drafter weights without
       ``mlx_lm.load`` mistaking the drafter for a target-model shard.
 
@@ -383,7 +384,17 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
             snapshot_download,
         )
 
-        local = snapshot_download(repo_id=str(mtp_sidecar))
+        # #5395: do not download sharded target weights to resolve an MTP head.
+        local = snapshot_download(
+            repo_id=str(mtp_sidecar),
+            allow_patterns=[
+                "mtp.safetensors",
+                "model-mtp.safetensors",
+                "mtp/*",
+                "model.safetensors",
+                "mtplx_runtime.json",
+            ],
+        )
         return _find_mtp_weights_file(Path(local))
     except ModelDownloadsDisabledError:
         raise
