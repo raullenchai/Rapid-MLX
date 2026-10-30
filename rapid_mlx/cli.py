@@ -16308,7 +16308,8 @@ def main():
     # Bring-your-own-model preflight: an uncataloged repo or local path that
     # provably cannot run here (GGUF/.bin-only, unsupported architecture, too
     # big for this Mac) stops BEFORE the size gate and any download. Silent for
-    # catalog, cached and unreadable models. See rapid_mlx/byom/preflight.py.
+    # cached and unreadable models; uncached catalog text models also receive a
+    # memory-fit check. See rapid_mlx/byom/preflight.py.
     if getattr(args, "command", None) in ("serve", "pull"):
         from rapid_mlx.byom.preflight import run_cli_preflight
 

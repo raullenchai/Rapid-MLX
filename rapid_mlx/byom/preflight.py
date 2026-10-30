@@ -12,7 +12,7 @@ unsupported architecture — and stops before any weight byte is fetched when it
 can PROVE the model cannot run. Every verdict is conservative: anything it
 cannot establish (network trouble, gated repo, unusual layout, unknown loader
 inventory) is "no verdict", and the existing download/load paths run exactly
-as before. Cached repos and catalog models never reach this module.
+as before. Uncached catalog text models receive a local-only memory check.
 
 Telemetry: a rejection is raised as :class:`PreflightRejectedError`, whose closed
 ``failure_class`` the existing ``model_serve_failed`` / ``model_pull_failed``
@@ -87,6 +87,12 @@ _HUB_TIMEOUT_SECONDS = 10.0
 # Rough served footprint: weights plus KV cache / activations / runtime.
 _SERVE_OVERHEAD_FRACTION = 0.2
 _SERVE_OVERHEAD_BYTES = 1 << 30
+# macOS's default GPU wired limit / Metal recommendedMaxWorkingSetSize is
+# about 2/3 of unified memory on smaller Macs and 3/4 on larger ones. These
+# fractions are used only when MLX cannot report the real value.
+_SMALL_MAC_METAL_FRACTION = 2 / 3
+_LARGE_MAC_METAL_FRACTION = 3 / 4
+_SMALL_MAC_RAM_LIMIT = 36 * (1 << 30)
 # Above this share of unified memory the fit is reported as "tight".
 _COMFORTABLE_FRACTION = 0.75
 
@@ -549,6 +555,30 @@ def physical_ram_bytes() -> int | None:
     return total if total > 0 else None
 
 
+def _mlx_recommended_working_set_bytes() -> int | None:
+    try:
+        import mlx.core as mx
+
+        value = int(mx.device_info().get("max_recommended_working_set_size", 0))
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def metal_working_set_bytes(ram_bytes: int | None) -> int | None:
+    recommended = _mlx_recommended_working_set_bytes()
+    if recommended is not None:
+        return min(recommended, ram_bytes) if ram_bytes is not None else recommended
+    if not ram_bytes:
+        return None
+    fraction = (
+        _SMALL_MAC_METAL_FRACTION
+        if ram_bytes <= _SMALL_MAC_RAM_LIMIT
+        else _LARGE_MAC_METAL_FRACTION
+    )
+    return int(ram_bytes * fraction)
+
+
 def evaluate(
     inspection: Inspection,
     *,
@@ -853,6 +883,69 @@ def _note_uncataloged_serve(args: Any) -> None:
         )
 
 
+def _check_catalog_memory_fit(args: Any) -> None:
+    try:
+        if (
+            args.command != "serve"
+            or getattr(args, "no_preflight", False)
+            or getattr(args, "disk_stream", False)
+            or os.path.exists(args.model)
+        ):
+            return
+        from rapid_mlx._download_gate import is_repo_cached
+        from rapid_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_sizes import size_bytes
+        from rapid_mlx.recommendations import fitting_pick, recommendation_footprint_gb
+
+        alias = getattr(args, "_original_alias", None) or args.model
+        profile = resolve_profile(alias)
+        if (
+            profile is None
+            or profile.modality != "text"
+            or is_repo_cached(profile.hf_path)
+        ):
+            return
+        ram = physical_ram_bytes()
+        budget = metal_working_set_bytes(ram)
+        if not ram or not budget:
+            return
+        if profile.min_memory_gb is not None and ram >= profile.min_memory_gb * _GIB:
+            return
+        measured = recommendation_footprint_gb(alias)
+        if measured is not None:
+            footprint = measured * _GIB
+        else:
+            weights = size_bytes(profile.hf_path)
+            if weights is None:
+                return
+            footprint = weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
+        if footprint <= budget:
+            return
+        pick = fitting_pick(ram / _GIB, budget / _GIB, exclude=alias)
+    except Exception:
+        return
+
+    print(
+        f"\n  ✗ {alias} needs ~{_gb(footprint)} of GPU memory; "
+        f"this Mac's GPU can use about {_gb(budget)} of its {_gb(ram)}.",
+        file=sys.stderr,
+    )
+    print("  Nothing was downloaded.", file=sys.stderr)
+    if pick:
+        print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
+    else:
+        print(
+            "  Pick a smaller or more quantized build: rapid-mlx models",
+            file=sys.stderr,
+        )
+    print(
+        "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
+        file=sys.stderr,
+    )
+    _emit_rejection(args, PreflightRejectedError(INSUFFICIENT_MEMORY))
+    raise SystemExit(1)
+
+
 def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
     """Run the preflight for ``serve``/``pull`` args; exit 1 on a rejection.
 
@@ -872,6 +965,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
             _note_uncataloged_serve(args)
         if unchecked is not None:
             funnel.set_preflight(unchecked)
+        _check_catalog_memory_fit(args)
         return
     ref, is_local = target
     # Until a verdict lands, an interrupted or unreadable check is no verdict.

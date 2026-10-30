@@ -115,6 +115,56 @@ def test_memory_failure_uses_existing_class_and_remedy(tmp_path):
     )
 
 
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_metal_preflight_failure_uses_existing_class_and_remedy(tmp_path, wrapped):
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+    from rapid_mlx.memory_budget import MetalPreflightError, format_preflight_error
+
+    model = _model(tmp_path)
+    failure = MetalPreflightError(
+        format_preflight_error(
+            required_bytes=20_000_000_000,
+            active_bytes=18_000_000_000,
+            min_kv_bytes=2_000_000_000,
+            cap_bytes=16_000_000_000,
+            utilization=0.8,
+            device_budget_bytes=20_000_000_000,
+        )
+    )
+    if wrapped:
+        try:
+            raise RuntimeError("engine failed") from failure
+        except RuntimeError as error:
+            failure = error
+    assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
+    assert startup_error_lines(failure, str(model)) == (
+        "The model ran out of memory while loading weights.",
+        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "[METAL] Command buffer execution failed: Insufficient Memory "
+        "(00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)",
+        "[metal::malloc] Attempting to allocate 21474836480 bytes which is greater "
+        "than the maximum allowed buffer size of 17179869184 bytes.",
+        "[malloc] Unable to allocate 1073741824 bytes.",
+    ],
+)
+def test_metal_oom_uses_existing_class_and_remedy(tmp_path, message):
+    from rapid_mlx.local_serve_diagnostics import startup_error_lines
+
+    model = _model(tmp_path)
+    failure = RuntimeError(message)
+    assert serve_error_class(failure, model_ref=str(model)) == "insufficient_memory"
+    assert startup_error_lines(failure, str(model)) == (
+        "The model ran out of memory while loading weights.",
+        "Free memory, then run `rapid-mlx serve qwen3-0.6b-4bit` for a smaller model.",
+    )
+
+
 def test_unrelated_error_is_not_relabeled(tmp_path):
     from rapid_mlx.local_serve_diagnostics import startup_error_lines
 
