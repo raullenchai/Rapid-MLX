@@ -659,7 +659,7 @@ class TTSEngine:
         self.model_name = model_name
         self.model = None
         self._loaded = False
-        self._moss_codec_path = None
+        self._moss_codec_path: str | None = None
         self._model_family = self._detect_family(model_name)
 
     def _is_qwen3_voicedesign(self) -> bool:
@@ -840,7 +840,7 @@ class TTSEngine:
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
             if self._model_family == "moss_tts_nano":
-                gen_kwargs = self._moss_generate_kwargs(text)
+                gen_kwargs: dict = self._moss_generate_kwargs(text)
             elif self._model_family == "indextts":
                 if not ref_audio:
                     raise ValueError(
@@ -856,7 +856,7 @@ class TTSEngine:
                     ref_audio,
                     sample_rate=getattr(self.model, "sample_rate", 24000),
                 )
-                gen_kwargs: dict = {"text": text, "ref_audio": ref_waveform}
+                gen_kwargs = {"text": text, "ref_audio": ref_waveform}
             elif self._model_family == "chatterbox":
                 # Chatterbox's ``generate`` steers expressiveness through
                 # ``exaggeration`` and zero-shot cloning through
@@ -870,7 +870,7 @@ class TTSEngine:
                 # ``**kwargs`` on ``Model.generate`` and ``generate_audio``,
                 # so forwarding it never raises TypeError on either variant.
                 # Forward exactly those two knobs, each only when set.
-                gen_kwargs: dict = {"text": text}
+                gen_kwargs = {"text": text}
                 if exaggeration is not None:
                     gen_kwargs["exaggeration"] = exaggeration
                 if ref_audio:
