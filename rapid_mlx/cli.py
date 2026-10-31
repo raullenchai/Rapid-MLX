@@ -15326,7 +15326,9 @@ def upgrade_command(args):
         print(
             f"  Homebrew offers {target} now; {latest} will follow once the formula is updated."
         )
-    print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
+    print(
+        f"  Install:  {vc.install_method_label(info)} ({info.binary_path or sys.executable})"
+    )
     print(f"  Command:  {info.upgrade_command}")
     print()
 

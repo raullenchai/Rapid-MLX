@@ -11,6 +11,10 @@ break the CLI on an offline laptop.
 from __future__ import annotations
 
 import json
+import os
+import site
+import subprocess
+import sys
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
@@ -1584,6 +1588,70 @@ def test_fresh_process_version_falls_back_to_python(monkeypatch):
         assert vc.installed_version_in_fresh_process(info) is None
 
 
+@pytest.mark.parametrize(
+    "prefix,base_prefix,enabled,expected_paths",
+    [
+        ("/base", "/base", True, ["/user/site"]),
+        ("/venv", "/base", True, []),
+        ("/base", "/base", False, []),
+    ],
+)
+def test_fresh_process_user_site_conditions(
+    monkeypatch, prefix, base_prefix, enabled, expected_paths
+):
+    monkeypatch.setattr(sys, "prefix", prefix)
+    monkeypatch.setattr(sys, "base_prefix", base_prefix)
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", enabled)
+    monkeypatch.setattr(site, "getusersitepackages", lambda: "/user/site")
+    info = vc.InstallInfo("pip", "upgrade", ["upgrade"])
+    with patch(
+        "subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="\n")
+    ) as run:
+        assert vc.installed_version_in_fresh_process(info) is None
+    assert run.call_args.args[0][4:] == expected_paths
+
+
+def test_fresh_process_finds_user_site_without_launcher(tmp_path):
+    base_python = os.path.realpath(getattr(sys, "_base_executable", sys.executable))
+    env = os.environ.copy()
+    env.update(
+        PYTHONUSERBASE=str(tmp_path / "ub"), PATH="/usr/bin:/bin", HOME=str(tmp_path)
+    )
+    env.pop("PYTHONPATH", None)
+    is_base = subprocess.run(
+        [base_python, "-c", "import sys; print(sys.prefix == sys.base_prefix)"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if is_base.stdout.strip() != "True":
+        pytest.skip("base interpreter is a virtual environment")
+    result = subprocess.run(
+        [base_python, "-c", "import site; print(site.getusersitepackages())"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    dist_info = Path(result.stdout.strip()) / "rapid_mlx-9.9.9.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 9.9.9\n"
+    )
+    paths = [str(Path(__file__).resolve().parents[1]), *site.getsitepackages()]
+    script = (
+        f"import sys; sys.path[:0] = {paths!r}; "
+        "from rapid_mlx._version_check import InstallInfo, installed_version_in_fresh_process; "
+        "print(installed_version_in_fresh_process(InstallInfo("
+        "method='pip', upgrade_command='x', upgrade_argv=['x'], binary_path=None)))"
+    )
+    result = subprocess.run(
+        [base_python, "-c", script], env=env, capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "9.9.9"
+
+
 def test_python_supports_without_packaging(monkeypatch):
     import builtins
 
@@ -1716,6 +1784,7 @@ def test_user_pip_install_upgrade_and_python_instructions(tmp_path, monkeypatch)
 
     import rapid_mlx
 
+    monkeypatch.setattr(vc, "_externally_managed", lambda: False)
     user_site = tmp_path / "site-packages"
     monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
     monkeypatch.setattr(
@@ -1739,3 +1808,91 @@ def test_user_pip_install_upgrade_and_python_instructions(tmp_path, monkeypatch)
     assert all("--user" not in line for line in instructions)
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
     assert "--user" not in vc.detect_install_method().upgrade_argv
+
+
+@pytest.mark.parametrize(
+    ("method", "argv", "label"),
+    [
+        ("brew", [], "Homebrew"),
+        ("install_sh", [], "one-line installer"),
+        ("uv", [], "uv tool"),
+        ("pipx", [], "pipx"),
+        ("pip", [], "pip"),
+        ("pip", ["pip", "install", "--user"], "pip --user"),
+        ("other", [], "unknown"),
+    ],
+)
+def test_install_method_label(method, argv, label):
+    assert vc.install_method_label(vc.InstallInfo(method, "", argv)) == label
+
+
+def test_pip_python_upgrade_uses_versioned_environment():
+    instructions = vc.python_upgrade_instructions(
+        vc.InstallInfo("pip", "", []), ">=3.12"
+    )
+    assert instructions[1] == (
+        "python3.12 -m venv ~/.venvs/rapid-mlx-py312 && "
+        "~/.venvs/rapid-mlx-py312/bin/pip install rapid-mlx"
+    )
+    assert instructions[2] == (
+        "Add ~/.venvs/rapid-mlx-py312/bin to PATH (or call it directly); "
+        "remove the old environment only after the new one works."
+    )
+
+
+@pytest.mark.parametrize(
+    "marker,venv,user",
+    [
+        (True, False, True),
+        (True, False, False),
+        (False, False, True),
+        (True, True, True),
+    ],
+)
+def test_pip_externally_managed_marker(tmp_path, monkeypatch, marker, venv, user):
+    import site
+    import sysconfig
+
+    import rapid_mlx
+
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    if marker:
+        (stdlib / "EXTERNALLY-MANAGED").touch()
+    user_site = tmp_path / "site-packages"
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: str(stdlib))
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setattr(
+        rapid_mlx,
+        "__file__",
+        str((user_site if user else tmp_path) / "rapid_mlx" / "__init__.py"),
+    )
+    monkeypatch.setattr(
+        vc.sys, "prefix", str(tmp_path / "venv") if venv else vc.sys.base_prefix
+    )
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    argv = vc.detect_install_method().upgrade_argv
+    assert ("--break-system-packages" in argv) == (marker and user and not venv)
+    assert ("--user" in argv) == (user and not venv)
+    if marker and user and not venv:
+        assert argv[argv.index("install") + 1] == "--break-system-packages"
+
+
+def test_externally_managed_handles_oserror(monkeypatch):
+    def fail(_name):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(vc.sysconfig, "get_path", fail)
+    assert vc._externally_managed() is False
+
+
+def test_installation_docs_identify_running_python():
+    from pathlib import Path
+
+    text = (
+        Path(__file__).resolve().parents[1] / "docs/getting-started/installation.md"
+    ).read_text()
+    assert (
+        "Check `rapid-mlx --version`, then run `rapid-mlx doctor --only python`: its first check line (for example `✓ Python 3.11.9`) is the Python your install actually runs."
+        in text
+    )
