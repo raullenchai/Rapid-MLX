@@ -1701,7 +1701,8 @@ def test_chat_completions_parses_tool_calls(monkeypatch) -> None:
     assert r.status_code == 200, r.text
     choice = r.json()["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
-    assert choice["message"]["content"] == ""
+    # Tool-call-only turns carry content null per the OpenAI chat.completion schema.
+    assert "content" in choice["message"] and choice["message"]["content"] is None
     call = choice["message"]["tool_calls"][0]
     assert call["function"]["name"] == "get_weather"
     assert call["function"]["arguments"] == '{"city": "Paris"}'
