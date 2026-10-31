@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -140,7 +140,8 @@ FAMILIES: dict[str, RerankFamily] = {
             ),
             scoring="listwise",
             marker_tokens=("<|embed_token|>", "<|rerank_token|>"),
-            # Per document; the query has its own max_query_tokens.
+            # Per-document v3 defaults; v3.5 overrides these and the query
+            # limit at load time, matching its model card reference rerank().
             auto_max_length=2048,
             max_query_tokens=512,
             max_block_documents=125,
@@ -389,10 +390,7 @@ def _load_cross_encoder(model_name: str, config: dict):
     )
 
 
-def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
-    from mlx_lm.models import qwen3
-    from mlx_lm.models.base import create_attention_mask
-
+def _jina_attention_windows(config: dict) -> list[int | None]:
     count = config["num_hidden_layers"]
     window = config.get("sliding_window") if config.get("use_sliding_window") else None
     layer_types = config.get("layer_types") or [
@@ -407,7 +405,14 @@ def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
         raise ValueError(
             "layer_types entries must be sliding_attention or full_attention"
         )
-    windows = [window if t == "sliding_attention" else None for t in layer_types]
+    return [window if t == "sliding_attention" else None for t in layer_types]
+
+
+def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
+    from mlx_lm.models import qwen3
+    from mlx_lm.models.base import create_attention_mask
+
+    windows = _jina_attention_windows(config)
 
     class HybridQwen3Model(qwen3.Qwen3Model):
         # v3.5 interleaves full and sliding-window attention layers.
@@ -546,6 +551,13 @@ class RerankEngine:
         model_downloads.require_local(self.model_name)
         config = _read_model_config(self.model_name)
         family = detect_family(config, self.model_name, self._family_setting)
+        if (
+            family.family_id == "jina3"
+            and config.get("use_sliding_window")
+            and config.get("sliding_window") is not None
+            and any(w is not None for w in _jina_attention_windows(config))
+        ):
+            family = replace(family, auto_max_length=8192, max_query_tokens=1024)
         if self._instruction_setting and not family.accepts_instruction:
             raise UnsupportedRerankModelError(
                 f"'{self.model_name}' ({family.label}) takes no instruction; "
