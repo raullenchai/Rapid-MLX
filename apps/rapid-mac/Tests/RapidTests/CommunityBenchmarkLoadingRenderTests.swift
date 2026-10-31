@@ -19,7 +19,7 @@ struct CommunityBenchmarkLoadingRenderTests {
         let stage = GoldenStage(
             CommunityBenchmarkView(
                 catalog: [],
-                preferredAlias: nil,
+                preferredAliases: [],
                 binary: binary,
                 prepareServer: { UUID() },
                 releaseServer: { _ in },

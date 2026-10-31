@@ -240,9 +240,11 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         ].filter { !$0.models.isEmpty }
     }
 
-    static func reconciledSelection(current: String, models: [Self], preferred: String? = nil) -> String {
+    static func reconciledSelection(current: String, models: [Self], preferred: [String] = []) -> String {
         if models.contains(where: { $0.entry.alias == current }) { return current }
-        if let preferred, models.contains(where: { $0.entry.alias == preferred }) { return preferred }
+        if let match = preferred.first(where: { candidate in
+            !candidate.isEmpty && models.contains(where: { $0.entry.alias == candidate })
+        }) { return match }
         return models.first(where: { $0.task == .textGeneration })?.entry.alias
             ?? models.first?.entry.alias ?? ""
     }
@@ -1628,7 +1630,7 @@ enum CommunityBenchmarkRunContent: Equatable {
 /// spawn, progress parsing, result decoding, publish payload — is unchanged.
 struct CommunityBenchmarkView: View {
     let catalog: [ModelEntry]
-    var preferredAlias: String? = nil
+    var preferredAliases: [String] = []
     let binary: URL?
     let prepareServer: () async throws -> UUID
     let releaseServer: (UUID) -> Void
@@ -1826,7 +1828,7 @@ struct CommunityBenchmarkView: View {
         .task {
             await refreshProductCatalog()
             selectedAlias = CommunityBenchmarkModel.reconciledSelection(
-                current: selectedAlias, models: models, preferred: preferredAlias
+                current: selectedAlias, models: models, preferred: preferredAliases
             )
             await refreshBenchmarkCatalog()
             await refreshResults()
@@ -2592,7 +2594,7 @@ struct CommunityBenchmarkView: View {
         productCatalog = entries
         selectedAlias = CommunityBenchmarkModel.reconciledSelection(
             current: selectedAlias,
-            models: models, preferred: preferredAlias
+            models: models, preferred: preferredAliases
         )
     }
 
@@ -2624,7 +2626,7 @@ struct CommunityBenchmarkView: View {
             benchmarkMetadata = metadata
             selectedAlias = CommunityBenchmarkModel.reconciledSelection(
                 current: selectedAlias,
-                models: models, preferred: preferredAlias
+                models: models, preferred: preferredAliases
             )
         } catch {
             runtimeState = .unavailable

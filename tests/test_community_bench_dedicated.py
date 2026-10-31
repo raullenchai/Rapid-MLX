@@ -36,6 +36,25 @@ def test_dedicated_metadata_and_summary():
     assert "DFlash dflash2 k=15 (dedicated runtime)" in acceleration_summary(language)
 
 
+@pytest.mark.parametrize(
+    ("digest", "suffix"),
+    [("sha256:" + "a" * 64, ", external draft"), (None, "")],
+)
+def test_dedicated_mtp_summary_draft_source(digest, suffix):
+    handle = SimpleNamespace(
+        lane="native_mtp", speculative={"method": "mtp", "max_draft_tokens": 3}
+    )
+    language = dedicated_language(
+        handle,
+        context_length=8192,
+        prefill_chunk_size=2048,
+        draft_identity_digest=digest,
+    )
+    assert acceleration_summary(language).startswith(
+        f"native MTP k=3 (dedicated runtime{suffix})"
+    )
+
+
 @pytest.mark.parametrize("method", ["dspark", "draft_model"])
 def test_engine_methods_refused(method):
     with pytest.raises(AccelerationConfigError, match=method):
