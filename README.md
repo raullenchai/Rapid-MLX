@@ -683,7 +683,7 @@ Ships in homebrew-core since 0.10.12 — no tap, no trust prompt. Upgrade with `
 uv tool install rapid-mlx@latest
 ```
 
-Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade with `uv tool upgrade rapid-mlx`.
+Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade with `uv tool upgrade rapid-mlx`. On a Python 3.10/3.11 tool environment use `uv tool upgrade --python 3.12 rapid-mlx`.
 
 </details>
 
@@ -694,7 +694,7 @@ Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade wi
 python3.12 -m pip install rapid-mlx
 ```
 
-If `python3.12` is missing, use the official installer above or install Python 3.12 with Homebrew first. Upgrade a Python 3.12 installation with `python3.12 -m pip install -U rapid-mlx`.
+If `python3.12` is missing, use the official installer above or install Python 3.12 with Homebrew first. Upgrade a Python 3.12 installation with `python3.12 -m pip install -U rapid-mlx`. An install on Python 3.10/3.11 stays on 1.0.0 (`Requirement already satisfied`); reinstall it with Python 3.12 — see [Upgrading from Python 3.10 or 3.11](https://rapidmlx.com/docs/getting-started/installation.html#upgrading-from-python-310-or-311).
 
 Image-input / VLM models (Qwen-VL, Gemma 4, true multimodal) need no extra step — the vision runtime ships with the base install. See [Optional extras](https://rapidmlx.com/docs/extras.html) for audio and embeddings.
 

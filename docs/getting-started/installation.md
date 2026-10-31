@@ -24,7 +24,8 @@ uv tool install rapid-mlx@latest
 
 One command, isolated tool venv, no Python-version juggling — uv finds (or
 installs) the right Python automatically. Upgrade later with
-`uv tool upgrade rapid-mlx`. If you don't have uv yet, install it first:
+`uv tool upgrade rapid-mlx` (if the tool was installed on Python 3.10/3.11, see
+[Upgrading from Python 3.10 or 3.11](#upgrading-from-python-310-or-311)). If you don't have uv yet, install it first:
 `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 
 ## One-liner install script
@@ -60,6 +61,27 @@ first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
 
 Follow the [contributor setup](../../CONTRIBUTING.md) to create a supported
 Python environment and install the repository in editable mode.
+
+## Upgrading from Python 3.10 or 3.11
+
+Rapid-MLX 1.0.1 requires Python 3.12 or newer, so an older Python environment cannot upgrade to it.
+Check `rapid-mlx --version` and `python3 --version`; for a pip install, check the Python interpreter in that environment.
+
+- **One-line installer:** rerun `curl -fsSL https://rapidmlx.com/install.sh | bash`. It rebuilds `~/.rapid-mlx` using a supported Python (installing Python 3.12 if needed), reinstalls optional features it finds, and keeps settings, credentials, and working `~/.local/bin` symlinks.
+- **uv:** `uv tool upgrade --python 3.12 rapid-mlx`.
+- **pipx:** `pipx reinstall --python python3.12 rapid-mlx`.
+- **pip:** run `brew install python@3.12`, then `python3.12 -m pip install rapid-mlx` (or install into a new Python 3.12 virtual environment). The old Python 3.10/3.11 environment can be removed afterwards.
+- **Homebrew:** its formula has its own Python; run `brew upgrade rapid-mlx` once the formula is updated.
+- **Desktop:** the app bundles Python 3.12 and updates itself; no Python upgrade is needed.
+
+Re-add any extras installed in a new pip, uv, or pipx environment, for example `python3.12 -m pip install 'rapid-mlx[audio]'`. Downloaded models remain in the Hugging Face cache and are not re-downloaded.
+
+**Symptoms:**
+
+- `pip install -U rapid-mlx` or `rapid-mlx upgrade` reports `Requirement already satisfied ... (1.0.0)` and stays on 1.0.0: use the fix for your install method above.
+- A pinned pip install reports `ERROR: Package 'rapid-mlx' requires a different Python: 3.11.x not in '>=3.12'` or `No matching distribution found`: use the pip fix above.
+- `uv tool upgrade rapid-mlx` reports `Nothing to upgrade`: use the uv fix above.
+- `pipx upgrade rapid-mlx` reports `already at latest version 1.0.0`: use the pipx fix above.
 
 ## Optional Extras
 
