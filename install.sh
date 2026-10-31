@@ -19,7 +19,10 @@ VENV_BACKUP=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-BOLD='\033[1m'  DIM='\033[2m'  GREEN='\033[32m'  YELLOW='\033[33m'  RED='\033[31m'  RESET='\033[0m'
+BOLD='' DIM='' GREEN='' YELLOW='' RED='' RESET=''
+if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' YELLOW='\033[33m' RED='\033[31m' RESET='\033[0m'
+fi
 
 info()  { printf "  ${BOLD}%s${RESET}\n" "$*"; }
 ok()    { printf "  ${GREEN}%s${RESET}\n" "$*"; }
@@ -419,10 +422,80 @@ validate_target() {
     esac
 }
 
+transformers_override() {
+    local url result
+    case "$TARGET" in
+        stable) url="https://pypi.org/pypi/rapid-mlx/json" ;;
+        latest) url="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/${RAPID_MLX_GIT_COMMIT}/pyproject.toml" ;;
+        *) url="https://pypi.org/pypi/rapid-mlx/${TARGET}/json" ;;
+    esac
+    # Metadata is advisory: any download or parsing failure leaves the normal
+    # resolver behavior intact. Python reads the pipeline, not installer stdin.
+    result=$( ( download "$url" | "$INSTALL_DIR/bin/python" -I -c '
+import json, re, sys, tomllib
+
+try:
+    if sys.argv[1] == "latest":
+        project = tomllib.loads(sys.stdin.read())["project"]
+        requirements = list(project["dependencies"])
+        for group in project.get("optional-dependencies", {}).values():
+            requirements.extend(group)
+    else:
+        requirements = json.load(sys.stdin)["info"]["requires_dist"]
+    specs = []
+    for requirement in requirements:
+        if not isinstance(requirement, str):
+            raise ValueError("invalid requirement")
+        match = re.match(r"^\s*transformers(?=\s|\[|[<>=!~;]|$)(.*)$", requirement, re.I)
+        if not match:
+            continue
+        rest = match.group(1).split(";", 1)[0].strip()
+        rest = re.sub(r"^\[[^\[\]]+\]\s*", "", rest)
+        if not re.fullmatch(r"(?:<=|>=|==|!=|~=|<|>)\s*[0-9]+(?:\.[0-9]+)*(?:\s*,\s*(?:<=|>=|==|!=|~=|<|>)\s*[0-9]+(?:\.[0-9]+)*)*", rest):
+            raise ValueError("invalid specifier")
+        specs.append(rest)
+    result = "transformers" + ",".join(specs)
+    if specs and "<" in result and re.fullmatch(r"transformers[<>=!~,.0-9 ]+", result):
+        print(result)
+except Exception:
+    pass
+' "$TARGET" ) 2>/dev/null ) || return 0
+    printf '%s' "$result"
+}
+
+# Preserve the installer status even when grep removes every stderr line.
+run_package_command() {
+    if [ "$1" = uv ]; then
+        # A subshell scopes the cleanup trap and leaves uv stderr untouched.
+        (
+            local override
+            override=$(transformers_override)
+            if [ -n "$override" ] && tmpdir=$(mktemp -d 2>/dev/null); then
+                trap 'rm -rf "$tmpdir"' EXIT
+                if printf '%s\n' "$override" 2>/dev/null > "$tmpdir/overrides.txt"; then
+                    run_install_command "$@" --overrides "$tmpdir/overrides.txt"
+                else
+                    run_install_command "$@"
+                fi
+            else
+                run_install_command "$@"
+            fi
+        )
+        return $?
+    fi
+    local status
+    if run_install_command "$@" 2>&1 1>&3 | grep --line-buffered -Ev '^WARNING: transformers [^ ]+ does not provide the extra '\''tokenizers'\''$' >&2; then
+        status=${PIPESTATUS[0]}
+    else
+        status=${PIPESTATUS[0]}
+    fi 3>&1
+    return "$status"
+}
+
 install_package() {
     case "$TARGET" in
         stable)
-            run_install_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" || {
+            run_package_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" || {
                 err "Package-index install failed; refusing to fall back to GitHub. Check the error above and retry."
                 return 1
             }
@@ -430,11 +503,11 @@ install_package() {
         latest)
             validate_target || return 1
             info "Installing reviewed Git commit ${RAPID_MLX_GIT_COMMIT}..."
-            run_install_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT}"
+            run_package_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT}"
             ;;
         *)
             info "Installing version ${TARGET}..."
-            run_install_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" || {
+            run_package_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" || {
                 err "Requested version unavailable from the package index; refusing to change sources."
                 return 1
             }
