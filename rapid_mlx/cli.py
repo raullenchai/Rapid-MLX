@@ -172,7 +172,11 @@ def _configure_bootstrap_logging(log_level: str) -> None:
 
     import logging
 
+    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+
     normalized = _log_level_choice(log_level)
+    quiet_transport_loggers(normalized)
+    silence_hf_unauthenticated_warning()
     level = getattr(logging, normalized, logging.INFO)
     # Install a handler when this is a standalone CLI process. If an embedder
     # already owns the handlers, basicConfig is deliberately a no-op while the
@@ -1405,6 +1409,12 @@ def _serve_retrieval_only_mode(args) -> None:
         _load_embedding_model_or_exit(args, server.load_embedding_model)
     if getattr(args, "rerank_model", None):
         _load_rerank_model_or_exit(args, server.load_rerank_model)
+
+    from . import update_refresh
+    from ._version_check import print_staleness_warning_if_any
+
+    announced = print_staleness_warning_if_any(allow_non_tty=True)
+    update_refresh.start(announced=announced)
 
     print()
     print("  Retrieval-only mode: no primary model loaded.")
@@ -3499,6 +3509,23 @@ def _reject_tensorfold_lanes_off_lane_or_exit(args) -> None:
     raise SystemExit(2)
 
 
+def _speculative_changes(args, before):
+    """Record attributes added or replaced by normalization."""
+    return {
+        k: v for k, v in vars(args).items() if k not in before or before[k] is not v
+    }
+
+
+def _restore_speculative_changes(args, before, after):
+    """Undo normalization changes that have not subsequently been replaced."""
+    for key, value in after.items():
+        if hasattr(args, key) and getattr(args, key) is value:
+            if key in before:
+                setattr(args, key, before[key])
+            else:
+                delattr(args, key)
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -3852,14 +3879,20 @@ def _normalize_speculative_config_or_exit(args):
                     )
                     _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
                     reason = reason or "cached target config could not be read"
+                    if not getattr(args, "_auto_mtp_retry", False) and reason.endswith(
+                        "is not in the local cache"
+                    ):
+                        args._auto_mtp_deferred = True
+                        reason = None
                 else:
                     reason = _detect_mtp_eligibility_verbose(
                         hf_cfg, has_external_sidecar=True
                     ).reason
-                print(
-                    f"Automatic MTP skipped: {reason}; using plain decode.",
-                    file=sys.stderr,
-                )
+                if reason is not None:
+                    print(
+                        f"Automatic MTP skipped: {reason}; using plain decode.",
+                        file=sys.stderr,
+                    )
             else:
                 sidecar, _ = _alias_mtp_declaration(args.model)
                 # #5395: a matching external model folder is already local.
@@ -6058,6 +6091,12 @@ def _serve_cua_only_mode(args) -> None:
     else:
         cfg.bind_listen_fd = listen_fd
 
+    from . import update_refresh
+    from ._version_check import print_staleness_warning_if_any
+
+    announced = print_staleness_warning_if_any(allow_non_tty=True)
+    update_refresh.start(announced=announced)
+
     print()
     print("  🐆 Rapid-MLX CUA server")
     print("  Model-free control plane; no model will be resolved or downloaded.")
@@ -6946,7 +6985,9 @@ def serve_command(args):
     # This lets an explicit --mllm suppress an alias-owned MTP default while
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
+    _spec_before = dict(vars(args))
     _normalize_speculative_config_or_exit(args)
+    _spec_after = _speculative_changes(args, _spec_before)
     _require_tensorfold_family_lane_or_exit(args)
     _reject_tensorfold_lanes_off_lane_or_exit(args)
     _reject_unsupported_listen_fd_lane(
@@ -7301,6 +7342,18 @@ def serve_command(args):
             # number of embedders/tests replace this hook with a one-argument
             # prefetch function.
             _ensure_model_downloaded(args.model)
+
+    if getattr(args, "_auto_mtp_deferred", False):
+        _restore_speculative_changes(args, _spec_before, _spec_after)
+        args._auto_mtp_retry = True
+        try:
+            _normalize_speculative_config_or_exit(args)
+        finally:
+            args._auto_mtp_retry = False
+        args._auto_mtp_deferred = False
+        _require_tensorfold_family_lane_or_exit(args)
+        _reject_tensorfold_lanes_off_lane_or_exit(args)
+        _preflight_native_mtp_or_exit(args)
 
     # The prefetch above swallows transport errors on purpose ("server will
     # retry"), which is right for a text model — the loader retries and raises
@@ -15788,6 +15841,10 @@ def _capture_start_failures(func: Callable):
 
 @_capture_start_failures
 def main():
+    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+
+    silence_hf_unauthenticated_warning()
+    quiet_transport_loggers("INFO")
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure) and not sys.stdout.isatty():
         try:
@@ -15862,6 +15919,11 @@ def main():
             ):
                 _print_next_step()
         raise
+    quiet_transport_loggers(
+        _resolve_serve_log_level(getattr(args, "log_level", None))
+        if hasattr(args, "log_level")
+        else "INFO"
+    )
     if getattr(args, "command", None) == "serve" and getattr(
         args, "enable_local_search", False
     ):

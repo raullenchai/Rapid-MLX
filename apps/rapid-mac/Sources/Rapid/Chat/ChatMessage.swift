@@ -23,10 +23,7 @@ struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable
 
     /// A human-readable form of ``maxCombinedEncodedImageBytes`` for notices.
     static var formattedCombinedImageBudget: String {
-        let bytes = maxCombinedEncodedImageBytes
-        let mb = Double(bytes) / Double(1024 * 1024)
-        if mb == mb.rounded() { return "\(Int(mb)) MB" }
-        return String(format: "%.1f MB", mb)
+        DownloadProgress.formatBytes(Int64(maxCombinedEncodedImageBytes))
     }
 
     /// User-facing explanation for attachments rejected by the per-message

@@ -121,3 +121,10 @@ def silence_hf_unauthenticated_warning() -> None:
         filt = _DropUnauthenticatedAdvisory()
         setattr(filt, _FILTER_TAG, True)
         logger.addFilter(filt)
+
+
+def quiet_transport_loggers(level_name: str) -> None:
+    """Suppress transport chatter unless debug logging was requested."""
+    target = logging.NOTSET if level_name.upper() == "DEBUG" else logging.WARNING
+    for name in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
+        logging.getLogger(name).setLevel(target)

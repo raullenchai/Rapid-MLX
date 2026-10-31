@@ -676,7 +676,7 @@ struct ModelSurfaceRedesignTests {
         let entry = ModelEntry(
             alias: "bonsai-27b-2bit", hfRepo: nil, sizeOnDisk: "7.9 GiB", cached: true
         )
-        #expect(SettingsModelManagementPanel.onDiskSizeLabel(entry) == "7.9 GiB")
+        #expect(SettingsModelManagementPanel.onDiskSizeLabel(entry) == DownloadProgress.formatBytes(Int64(7.9 * Double(1 << 30))))
     }
 
     /// No measurement, no number. Substituting the alias-derived

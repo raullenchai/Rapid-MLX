@@ -171,7 +171,7 @@ struct SettingsConnectorsPanel: View {
                     .accessibilityIdentifier("Settings.Connectors.Row.Status.\(entry.name)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Toggle("", isOn: Binding(
+            Toggle(entry.name, isOn: Binding(
                 get: { entry.enabled },
                 set: { setEnabled(entry, $0) }
             ))

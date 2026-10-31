@@ -216,8 +216,13 @@ struct ShareComputeCreditsTab: View {
             } else {
                 Text(ShareComputeCreditsCopy.summary(sessions: localSummary.sessionCount, duration: ShareComputeDuration.total(localSummary.totalShared), models: localSummary.modelCount))
             }
-            Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
-                .font(.rapid(size: 11)).foregroundStyle(.tertiary)
+            if account.map({ !$0.isEmpty }) == true {
+                Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record, and not matched to the windows above.")
+                    .font(.rapid(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                Text("Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record.")
+                    .font(.rapid(size: 11)).foregroundStyle(.tertiary)
+            }
         }.font(.rapid(size: 12)).foregroundStyle(.secondary)
             .accessibilityIdentifier("ShareCompute.Credits.LocalActivity")
     }

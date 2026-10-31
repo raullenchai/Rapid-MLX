@@ -519,10 +519,10 @@ struct MemoryProjectionInvariantTests {
                 freedGB: c.freedGB, projectedGB: c.projectedGB, limitGB: c.limitGB
             ).rejectionMessage(alias: c.alias)
             #expect(message != nil, "typed insufficient-memory projection must produce a message")
-            #expect(message?.contains("\(Int(c.projectedGB)) GB") == true)
-            #expect(message?.contains("\(Int(c.limitGB)) GB model-memory budget") == true)
+            #expect(message?.contains("\(DownloadProgress.formatMemory(Int64(c.projectedGB * Double(1 << 30))))") == true)
+            #expect(message?.contains("\(DownloadProgress.formatMemory(Int64(c.limitGB * Double(1 << 30)))) model-memory budget") == true)
             if c.expectRelease {
-                #expect(message?.contains("release about \(max(1, Int(c.freedGB.rounded()))) GB") == true)
+                #expect(message?.contains("release about \(DownloadProgress.formatMemory(Int64(c.freedGB * Double(1 << 30))))") == true)
             }
         }
 
@@ -580,9 +580,9 @@ struct MemoryProjectionInvariantTests {
         #expect(server.isModelResident(currentAlias))
         #expect(child.isRunning, "typed rejection must not stop the resident sidecar")
         let failure = server.residentLoadFailure(for: targetAlias)
-        #expect(failure?.message.contains("release about 6 GB") == true)
-        #expect(failure?.message.contains("26 GB") == true)
-        #expect(failure?.message.contains("24 GB model-memory budget") == true)
+        #expect(failure?.message.contains("release about \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))") == true)
+        #expect(failure?.message.contains(DownloadProgress.formatMemory(Int64(26) * (1 << 30))) == true)
+        #expect(failure?.message.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget") == true)
     }
 
     // MARK: - Helpers
