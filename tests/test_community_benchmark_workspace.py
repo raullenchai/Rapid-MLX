@@ -164,10 +164,8 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
     assert by_alias["qwen-image-2.1"]["focus"] is True
-    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 39
-    assert (
-        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "weights_estimate"
-    )
+    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 28
+    assert by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "measured_peak"
     assert all("modality" not in model for model in catalog["models"])
 
 

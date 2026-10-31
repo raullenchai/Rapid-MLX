@@ -953,7 +953,13 @@ def catalog_memory_fit(
             image_estimate = measured_image_estimate_bytes(alias)
             if image_estimate is None:
                 image_estimate = measured_image_estimate_bytes(profile.hf_path)
-        if measured is not None:
+        if image_estimate is not None:
+            curated = int(measured * _GIB) if measured is not None else None
+            if curated is not None and curated > image_estimate:
+                estimate, source = curated, "curated_footprint"
+            else:
+                estimate, source = image_estimate, "measured_peak"
+        elif measured is not None:
             estimate, source = int(measured * _GIB), "curated_footprint"
         elif weights is not None:
             estimate = int(
@@ -962,10 +968,6 @@ def catalog_memory_fit(
             source = "weights_estimate"
         else:
             estimate, source = None, "unknown"
-        if image_estimate is not None and (
-            estimate is None or image_estimate > estimate
-        ):
-            estimate, source = image_estimate, "measured_peak"
         floor = profile.min_memory_gb
         fits: bool | None
         if _enforced_memory_floor(profile, ram_bytes):
@@ -1059,7 +1061,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
             or os.path.exists(args.model)
         ):
             return
-        from rapid_mlx._download_gate import is_repo_cached
+        from rapid_mlx.cli import _cache_runnability
         from rapid_mlx.model_aliases import resolve_profile
         from rapid_mlx.recommendations import fitting_pick
 
@@ -1067,7 +1069,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
         profile = resolve_profile(alias)
         if profile is None:
             return
-        cached = is_repo_cached(profile.hf_path)
+        cached = _cache_runnability(profile.hf_path) is True
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
         result = catalog_memory_refusal(

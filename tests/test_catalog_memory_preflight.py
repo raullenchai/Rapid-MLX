@@ -16,9 +16,10 @@ _REAL_PROBE = preflight._mlx_recommended_working_set_bytes
 
 
 @pytest.fixture(autouse=True)
-def offline_preflight(monkeypatch):
+def offline_preflight(monkeypatch, request):
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
-    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
+    if request.node.name != "test_cached_mflux_snapshot_keeps_floor_warning":
+        monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
     calls = []
 
     def reject(name):
@@ -292,19 +293,22 @@ def test_image_fit_uses_admission_charge():
     assert result.estimate_source == "measured_peak"
 
 
-def test_image_estimate_preserves_weights_estimate():
-    from rapid_mlx.model_sizes import size_bytes
+@pytest.mark.parametrize("alias", ["qwen-image", "qwen-image-2.1"])
+def test_image_fit_uses_admission_charge_instead_of_weights(alias):
+    kwargs = dict(ram_bytes=16 * GIB, recommended_working_set_bytes=int(10.67 * GIB))
+    result = preflight.catalog_memory_fit(alias, **kwargs)
+    assert result.fits is True
+    assert result.estimate_bytes == 6 * GIB
+    assert result.estimate_source == "measured_peak"
+    assert preflight.catalog_memory_refusal(alias, cached=False, **kwargs) is None
 
-    alias = "qwen-image-2.1-bf16"
-    weights = size_bytes(resolve_profile(alias).hf_path)
+
+def test_image_bf16_uses_admission_charge():
     result = preflight.catalog_memory_fit(
-        alias, ram_bytes=64 * GIB, recommended_working_set_bytes=None
+        "qwen-image-2.1-bf16", ram_bytes=64 * GIB, recommended_working_set_bytes=None
     )
-    assert result.estimate_bytes >= int(
-        weights * (1 + preflight._SERVE_OVERHEAD_FRACTION)
-        + preflight._SERVE_OVERHEAD_BYTES
-    )
-    assert result.estimate_source == "weights_estimate"
+    assert result.estimate_bytes == 28 * GIB
+    assert result.estimate_source == "measured_peak"
 
 
 def test_image_at_floor_refuses_when_weights_exceed_gpu_budget(monkeypatch):
@@ -367,10 +371,45 @@ def test_non_text_refuses_before_download(alias, monkeypatch, capsys):
     assert "proceeding anyway" not in output
 
 
+def test_cached_mflux_snapshot_keeps_floor_warning(tmp_path, monkeypatch):
+    import huggingface_hub.file_download as file_download
+
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    profile = resolve_profile("qwen-image-edit")
+    repo = profile.hf_path
+    repo_root = tmp_path / f"models--{repo.replace('/', '--')}"
+    revision = IMAGE_MODEL_REVISIONS[repo]
+    snap = repo_root / "snapshots" / revision
+    (snap / "tokenizer").mkdir(parents=True)
+    (snap / "tokenizer" / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae"):
+        directory = snap / component
+        directory.mkdir()
+        (directory / "model.safetensors.index.json").write_text(
+            '{"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}}'
+        )
+        for shard in ("0.safetensors", "1.safetensors"):
+            (directory / shard).write_bytes(b"weights")
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text(revision)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(file_download, "HF_HUB_CACHE", str(tmp_path), raising=False)
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 64 * GIB)
+    monkeypatch.setattr(
+        preflight, "mlx_recommended_working_set_bytes", lambda: 48 * GIB
+    )
+    preflight._check_catalog_memory_fit(
+        SimpleNamespace(command="serve", model="qwen-image-edit")
+    )
+
+
 def test_cached_image_keeps_floor_warning(monkeypatch, capsys):
     from rapid_mlx.cli import _check_alias_min_memory
 
-    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: True)
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: True)
     monkeypatch.setattr(
         "psutil.virtual_memory", lambda: SimpleNamespace(total=32 * GIB)
     )
