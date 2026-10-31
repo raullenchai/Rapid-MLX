@@ -1550,9 +1550,14 @@ class MLLMScheduler:
                 # An explicit type owns the public-message trust boundary.
                 # Arbitrary RuntimeError/ValueError text may include caller
                 # data or local paths that happen to match the old markers.
+                error_kind = (
+                    "invalid_request" if is_client_error else classify_engine_abort(e)
+                )
                 public_error = (
                     err_msg
                     if is_client_error
+                    else "MLLM inference ran out of memory processing the request"
+                    if error_kind == "insufficient_memory"
                     else (
                         "MLLM inference was interrupted by a transient engine "
                         "error; retry the request"
@@ -1566,9 +1571,7 @@ class MLLMScheduler:
                             output_text="",
                             finished=True,
                             error=public_error,
-                            error_kind=(
-                                "invalid_request" if is_client_error else "lifecycle"
-                            ),
+                            error_kind=error_kind,
                             # Preserve the established terminal reason for
                             # internal aborts; the non-None error is what
                             # prevents routes from serializing fake success.

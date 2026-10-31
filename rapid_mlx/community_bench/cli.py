@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import signal
 import statistics
 import sys
+import threading
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
+from ..byom.preflight import _gb, mlx_recommended_working_set_bytes
 from ..leaderboard_links import run_url
 from .acceleration import (
     acceleration_summary,
@@ -118,37 +121,84 @@ def _local_time(timestamp: Any) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M local")
 
 
-def _memory_line(model: dict[str, Any], memory_gib: Any) -> str:
-    estimate = model.get("estimated_memory_gib")
+def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str:
+    estimate = model.get("estimated_memory_gb")
     fit = model.get("memory_fit")
-    if not isinstance(estimate, int):
-        return "unknown (no estimate for this model)"
-    line = f"~{estimate} GB estimated"
-    if model.get("memory_estimate_source") == "artifact_size_fallback":
-        line += " (from download size)"
-    if isinstance(memory_gib, int) and fit == "fits":
-        line += f"; fits this Mac ({memory_gib} GB)"
-    elif isinstance(memory_gib, int) and fit == "does_not_fit":
-        line += f"; does NOT fit this Mac ({memory_gib} GB)"
+    if not isinstance(estimate, (int, float)):
+        if fit not in ("fits", "does_not_fit"):
+            return "unknown (no estimate for this model)"
+        line = "no working-set estimate"
+    else:
+        line = f"~{_gb(int(estimate * (1 << 30)))} working set"
+    if (
+        isinstance(estimate, (int, float))
+        and model.get("memory_estimate_source") == "weights_estimate"
+    ):
+        line += " (estimated from weight size)"
+    floor = model.get("memory_floor_gib")
+    if model.get("memory_fit_basis") == "memory_floor" and isinstance(
+        floor, (int, float)
+    ):
+        if (
+            fit == "does_not_fit"
+            and isinstance(estimate, (int, float))
+            and isinstance(memory_gib, (int, float))
+            and memory_gib >= floor
+            and isinstance(budget_gib, (int, float))
+        ):
+            budget_text = _gb(int(budget_gib * (1 << 30)))
+            return f"{line}; does NOT fit this Mac (weights exceed the GPU limit of about {budget_text})"
+        verdict = "fits" if fit == "fits" else "does NOT fit"
+        qualification = "qualified for Macs" if fit == "fits" else "requires a Mac"
+        return (
+            f"{line}; {verdict} this Mac "
+            f"(profile {qualification} with {floor:g} GB or more)"
+        )
+    if isinstance(memory_gib, int) and fit in ("fits", "does_not_fit"):
+        verdict = "fits" if fit == "fits" else "does NOT fit"
+        line += f"; {verdict} this Mac"
+        if isinstance(budget_gib, (int, float)):
+            budget_text = _gb(int(budget_gib * (1 << 30)))
+            ram_text = _gb(memory_gib * (1 << 30))
+            line += f" (GPU can use about {budget_text} of {ram_text})"
+        else:
+            line += f" ({_gb(memory_gib * (1 << 30))})"
     return line
 
 
 def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
     print("Community Benchmark models (local by default)")
     memory_gib = value.get("memory_gib")
-    if isinstance(memory_gib, int) and value.get("memory_source") == "override":
-        print(
-            f"Fit column assumes {memory_gib} GB (--memory-gib), "
-            "not this Mac's memory\n"
+    budget = value.get("memory_budget_gib")
+    if isinstance(memory_gib, int):
+        ram_text = _gb(memory_gib * (1 << 30))
+        prefix = (
+            f"Assuming {ram_text} unified memory (--memory-gib)"
+            if value.get("memory_source") == "override"
+            else f"This Mac: {ram_text} unified memory"
         )
-    elif isinstance(memory_gib, int):
-        print(f"This Mac: {memory_gib} GB unified memory (fit column below)\n")
+        if isinstance(budget, (int, float)):
+            prefix += f"; the GPU can use about {_gb(int(budget * (1 << 30)))}"
+        print(prefix + " (fit column below)\n")
     else:
         print("This Mac: memory unknown; pass --memory-gib to fill the fit column\n")
 
     def row(model: dict[str, Any]) -> str:
         marker = "★" if model.get("focus") else " "
         fit = str(model.get("memory_fit", "unknown")).replace("_", " ")
+        floor = model.get("memory_floor_gib")
+        if model.get("memory_fit_basis") == "memory_floor" and isinstance(
+            floor, (int, float)
+        ):
+            if (
+                fit == "does not fit"
+                and isinstance(memory_gib, (int, float))
+                and memory_gib >= floor
+                and isinstance(budget, (int, float))
+            ):
+                fit += " (GPU limit)"
+            else:
+                fit += f" ({floor:g} GB+ profile)"
         estimate = model.get("estimated_memory_gib")
         memory = f"~{estimate} GB" if isinstance(estimate, int) else "?"
         return (
@@ -207,7 +257,10 @@ def _print_plan(value: dict[str, Any]) -> None:
         print(f"Cases:    {len(cases)} (run in this order)")
         for case in cases:
             print(f"  {describe_case(case)}")
-    print(f"Memory:   {_memory_line(model, value.get('memory_gib'))}")
+    memory_line = _memory_line(
+        model, value.get("memory_gib"), value.get("memory_budget_gib")
+    )
+    print(f"Memory:   {memory_line}")
     cached = value.get("model_cached")
     if cached is True:
         print("Download: already in the local Hugging Face cache; nothing to fetch")
@@ -362,7 +415,14 @@ def benchmark_command(args) -> int:
             if memory_gib is None:
                 memory_gib = host_memory_gib()
                 memory_source = "host"
-            value = benchmark_catalog(memory_gib=memory_gib)
+            value = benchmark_catalog(
+                memory_gib=memory_gib,
+                recommended_working_set_bytes=(
+                    mlx_recommended_working_set_bytes()
+                    if memory_source == "host"
+                    else None
+                ),
+            )
             # ``memory_gib`` is what the fit column was computed against;
             # ``memory_source`` says whether that is this Mac's probed
             # unified memory or a planning value the user typed.
@@ -372,6 +432,7 @@ def benchmark_command(args) -> int:
             value = plan_for_alias(
                 args.benchmark_model,
                 memory_gib=host_memory_gib(),
+                recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
                 check_cache=True,
             )
         elif action == "run":
@@ -404,14 +465,50 @@ def benchmark_command(args) -> int:
                 event_sink = _tagged_event_to_stderr
             else:
                 progress_sink = None
-            value = run_local(
-                args.benchmark_model,
-                archive=archive,
-                inherit_process_group=getattr(args, "inherit_process_group", False),
-                progress=progress_sink,
-                events=event_sink,
-                acceleration=acceleration,
-            )
+            received_signal = signal.SIGINT
+
+            def cancel_on_sigterm(signum, frame):
+                nonlocal received_signal
+                received_signal = signum
+                raise KeyboardInterrupt
+
+            main_thread = threading.current_thread() is threading.main_thread()
+            previous_handler = None
+            if main_thread:
+                previous_handler = signal.signal(signal.SIGTERM, cancel_on_sigterm)
+            try:
+                try:
+                    value = run_local(
+                        args.benchmark_model,
+                        archive=archive,
+                        inherit_process_group=getattr(
+                            args, "inherit_process_group", False
+                        ),
+                        progress=progress_sink,
+                        events=event_sink,
+                        acceleration=acceleration,
+                    )
+                finally:
+                    if main_thread:
+                        signal.signal(signal.SIGTERM, previous_handler)
+            except KeyboardInterrupt:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "error": "benchmark cancelled",
+                                "cancelled": True,
+                            },
+                            sort_keys=True,
+                        ),
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "Benchmark cancelled; benchmark processes were stopped.",
+                        file=sys.stderr,
+                    )
+                return 128 + received_signal
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))
             value = {

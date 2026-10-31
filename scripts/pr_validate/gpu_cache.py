@@ -65,6 +65,91 @@ def _installed_fingerprint() -> str:
     return hashlib.sha256("\n".join(packages).encode()).hexdigest()
 
 
+def model_fingerprint(model_id: str, cache_dir: Path | None = None) -> dict:
+    """Identify the loaded files without modifying the Hub cache."""
+    from rapid_mlx.model_aliases import (
+        resolve_hub_model,
+        resolve_model,
+        resolve_revision,
+        resolve_subfolder,
+    )
+
+    resolved = resolve_model(model_id)
+    repo_id = resolve_hub_model(model_id)
+    revision = None
+    repo_cache = None
+    if Path(resolved).is_dir():
+        root = Path(resolved)
+    else:
+        if cache_dir is None:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache_dir = Path(HF_HUB_CACHE)
+        repo_cache = cache_dir / f"models--{repo_id.replace('/', '--')}"
+        revision = resolve_revision(model_id)
+        if revision is None:
+            revision = (repo_cache / "refs" / "main").read_text().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError("invalid snapshot revision")
+        root = repo_cache / "snapshots" / revision
+        subfolder = resolve_subfolder(model_id)
+        if subfolder:
+            root = root / subfolder
+    if not root.is_dir():
+        raise ValueError("model directory unavailable")
+
+    entries = []
+
+    def onerror(exc):
+        raise exc
+
+    for directory, dirs, files in os.walk(root, onerror=onerror, followlinks=False):
+        base = Path(directory)
+        if any((base / name).is_symlink() for name in dirs):
+            raise ValueError("linked model directory")
+        for name in files:
+            path = base / name
+            if path.is_symlink():
+                if not path.resolve(strict=True).is_file():
+                    raise ValueError("invalid model link")
+                link = Path(os.path.abspath(path.parent / os.readlink(path)))
+                if repo_cache is not None and link.parent == repo_cache / "blobs":
+                    stat = path.stat()
+                    identity = [
+                        "blob",
+                        link.name,
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ino,
+                        stat.st_ctime_ns,
+                    ]
+                else:
+                    stat = path.stat()
+                    identity = [
+                        "file",
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ino,
+                        stat.st_ctime_ns,
+                    ]
+            else:
+                stat = path.stat()
+                if not path.is_file():
+                    raise ValueError("invalid model file")
+                identity = [
+                    "file",
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ino,
+                    stat.st_ctime_ns,
+                ]
+            entries.append((path.relative_to(root).as_posix(), identity))
+    if not entries:
+        raise ValueError("empty model directory")
+    digest = hashlib.sha256(json.dumps(sorted(entries)).encode()).hexdigest()
+    return {"repo_id": repo_id, "revision": revision, "sha256": digest}
+
+
 def cache_key(ctx) -> str | None:
     head_sha = getattr(ctx, "head_sha", "") or ""
     base_sha = getattr(ctx, "base_sha", "") or ""
@@ -93,10 +178,37 @@ def cache_key(ctx) -> str | None:
         _log(ctx, f"GPU cache disabled: {exc}")
         return None
     # The clean checkout commit covers in-tree scripts and baselines; the
-    # interpreter, host and installed packages cover inputs outside the tree.
+    # interpreter, host, packages and model weights cover inputs outside the tree.
     # PR/base identity, registry, step and RAM override complete the run config.
+    from .steps.stress_e2e_bench import _selected_choices
+
+    try:
+        _, choices = _selected_choices()
+        if not choices:
+            raise ValueError("no selected models")
+    except Exception:  # noqa: BLE001
+        _log(ctx, "GPU cache disabled: model weights not resolvable (selection)")
+        return None
+    models = []
+    for choice in choices:
+        try:
+            fingerprint = model_fingerprint(choice.model_id)
+        except Exception:  # noqa: BLE001
+            _log(
+                ctx,
+                f"GPU cache disabled: model weights not resolvable ({choice.model_id})",
+            )
+            return None
+        models.append(
+            {
+                "family": choice.family,
+                "model_id": choice.model_id,
+                "fingerprint": fingerprint,
+            }
+        )
     data = {
-        "schema": 1,
+        "schema": 2,
+        "models": models,
         "head_sha": head_sha,
         "base_sha": base_sha,
         "repo_head": head,

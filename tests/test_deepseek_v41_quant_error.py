@@ -183,6 +183,8 @@ def test_zero_energy_probes_fail_closed():
 
 
 def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch):
+    monkeypatch.setenv("VECLIB_MAXIMUM_THREADS", "")
+    monkeypatch.delenv("VECLIB_MAXIMUM_THREADS", raising=False)
     tiny_source(tmp_path / "source")
     args = [
         "quant-error",
@@ -223,6 +225,8 @@ def test_partial_quantization_resume_and_provenance_guard(tmp_path, monkeypatch)
 
 
 def test_empty_expert_range_does_not_write_output_or_inventory(tmp_path, monkeypatch):
+    monkeypatch.setenv("VECLIB_MAXIMUM_THREADS", "")
+    monkeypatch.delenv("VECLIB_MAXIMUM_THREADS", raising=False)
     pytest.importorskip("mlx.core")
 
     tiny_source(tmp_path / "source")

@@ -223,6 +223,8 @@ def draft_allocation(bits=None):
 def test_allocator_cli_prices_selected_draft_even_with_old_inventory(
     draft_source, tmp_path, monkeypatch, bits
 ):
+    monkeypatch.setenv("VECLIB_MAXIMUM_THREADS", "")
+    monkeypatch.delenv("VECLIB_MAXIMUM_THREADS", raising=False)
     from scripts import deepseek_v41_expert_quant_error as quant
     from scripts import deepseek_v41_rd_allocate as allocator
 

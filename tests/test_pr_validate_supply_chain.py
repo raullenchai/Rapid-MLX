@@ -80,7 +80,7 @@ index 1111111..2222222 100644
 +++ b/.github/workflows/ci.yml
 @@ -80 +80 @@
 -            runs-on: ubuntu-latest
-+            runs-on: macos-14
++            runs-on: macos-15
 @@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
@@ -94,7 +94,7 @@ index 1111111..2222222 100644
 +++ b/.github/workflows/ci.yml
 @@ -80 +80 @@
 -            runs-on: ubuntu-latest
-+            runs-on: macos-14
++            runs-on: macos-15
 """
 
 # A "roster-only" diff that ALSO removes a line whose content begins with

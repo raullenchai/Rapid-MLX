@@ -19,15 +19,24 @@ _REAL_PROBE = preflight._mlx_recommended_working_set_bytes
 def offline_preflight(monkeypatch):
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
     monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
-    monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda *a, **k: pytest.fail("network lookup")
-    )
+    calls = []
+
+    def reject(name):
+        def lookup(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            raise RuntimeError("network lookup")
+
+        return lookup
+
+    monkeypatch.setattr("huggingface_hub.model_info", reject("model_info"))
     monkeypatch.setattr(
         "rapid_mlx._download_gate.estimate_repo_size_bytes",
-        lambda *a, **k: pytest.fail("network size lookup"),
+        reject("estimate_repo_size_bytes"),
     )
     with patch.object(preflight, "_emit_rejection") as emit:
+        emit.network_calls = calls
         yield emit
+    assert not calls, f"Unexpected network lookups: {calls!r}"
 
 
 def run(alias, ram, monkeypatch, **overrides):
@@ -215,3 +224,63 @@ def test_fitting_pick_searches_lower_tiers():
         fitting_pick(current.floor_gb, budget, exclude=expected.upper())
         == tiers[0].picks[0].alias
     )
+
+
+def test_met_floor_refuses_when_recommendation_lookup_fails(monkeypatch, capsys):
+    with (
+        patch.object(
+            preflight, "_mlx_recommended_working_set_bytes", return_value=12 * GIB
+        ),
+        patch(
+            "rapid_mlx.recommendations.recommendation_footprint_gb",
+            side_effect=RuntimeError,
+        ),
+        pytest.raises(SystemExit),
+    ):
+        run("qwen3-coder-30b-4bit", 24, monkeypatch)
+    assert "Nothing was downloaded" in capsys.readouterr().err
+
+
+def test_catalog_fit_uses_measured_footprint_when_weights_lookup_fails():
+    with (
+        patch("rapid_mlx.model_sizes.size_bytes", side_effect=RuntimeError),
+        patch("rapid_mlx.recommendations.recommendation_footprint_gb", return_value=20),
+    ):
+        result = preflight.catalog_memory_fit(
+            "qwen3-coder-30b-4bit",
+            ram_bytes=8 * GIB,
+            recommended_working_set_bytes=6 * GIB,
+        )
+    assert result.fits is False
+    assert result.fit_basis == "gpu_budget"
+    assert result.estimate_source == "curated_footprint"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_catalog_fit_unknown_profile(monkeypatch, raises):
+    if raises:
+
+        def fail(_alias):
+            raise RuntimeError("profile lookup failed")
+
+        monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", fail)
+
+    result = preflight.catalog_memory_fit(
+        "unknown-alias", ram_bytes=8 * GIB, recommended_working_set_bytes=6 * GIB
+    )
+    assert result.estimate_bytes is None
+    assert result.fits is None
+    assert result.fit_basis == "unknown"
+
+
+def test_offline_guard_records_swallowed_lookup(offline_preflight):
+    from huggingface_hub import model_info
+
+    try:
+        model_info("example", revision="main")
+    except Exception:
+        pass
+    assert offline_preflight.network_calls == [
+        ("model_info", ("example",), {"revision": "main"})
+    ]
+    offline_preflight.network_calls.clear()

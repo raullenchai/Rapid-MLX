@@ -261,8 +261,10 @@ def test_run_refreshes_config_when_server_is_available():
     )
 
 
-def test_specific_python_suite_runs_with_script_semantics():
+def test_specific_python_suite_runs_with_script_semantics(monkeypatch):
     """SDK suites guarded by ``__main__`` must execute, not import as no-ops."""
+    monkeypatch.setenv("RAPID_MLX_BASE_URL", "")
+    monkeypatch.delenv("RAPID_MLX_BASE_URL", raising=False)
     profile = _make_profile("pydanticai", "env")
     runner = AgentTestRunner(profile, model_id="test-model")
 

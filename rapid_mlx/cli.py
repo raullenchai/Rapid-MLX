@@ -2048,7 +2048,7 @@ def _resolve_mtp_depth_for_model(
     return requested
 
 
-def _check_alias_min_memory(user_typed: str) -> None:
+def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
     """Apply the alias-level unified-memory warning or hard admission floor.
 
     codex #1069 round 3 [NIT #3]: fires alongside (and before) the
@@ -2106,24 +2106,23 @@ def _check_alias_min_memory(user_typed: str) -> None:
         )
         raise SystemExit(1)
 
-    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    if stream is None:
+        stream = sys.stdout
+    is_tty = stream.isatty() and "NO_COLOR" not in os.environ
     YELLOW = "\x1b[33m" if is_tty else ""
     BOLD = "\x1b[1m" if is_tty else ""
     RESET = "\x1b[0m" if is_tty else ""
     print(
-        f"\n{YELLOW}{BOLD}⚠  Ultra-only alias '{user_typed}' declares a "
-        f"{floor_gb:.0f} GB unified-memory floor, but this Mac reports "
-        f"{total_ram_gb:.1f} GB.{RESET}"
+        f"\n{YELLOW}{BOLD}⚠  '{user_typed}' needs a Mac with at least "
+        f"{floor_gb:.0f} GB of unified memory; this Mac has "
+        f"{total_ram_gb:.1f} GB.{RESET}",
+        file=stream,
     )
     print(
-        f"{YELLOW}   The model weights are large enough to OOM the Metal "
-        "allocator (or kernel-panic on macOS < 15.2, issue #324) before "
-        f"the first token generates.{RESET}"
-    )
-    print(
-        f"{YELLOW}   Recommended: pick a Tier-1 alias sized for this "
-        "machine (`rapid-mlx models` for the full list). "
-        f"Proceeding anyway…{RESET}\n"
+        f"{YELLOW}   It will likely run out of memory and be stopped by macOS. "
+        "Pick a smaller model (`rapid-mlx models`) — proceeding anyway…"
+        f"{RESET}\n",
+        file=stream,
     )
 
 
@@ -6885,8 +6884,9 @@ def serve_command(args):
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
-    if _serve_profile is not None and getattr(
-        _serve_profile, "enforce_min_memory", False
+    if _serve_profile is not None and (
+        _serve_profile.modality == "image-gen"
+        or getattr(_serve_profile, "enforce_min_memory", False)
     ):
         _check_alias_min_memory(
             getattr(args, "_original_alias", None) or getattr(args, "model", "")
@@ -8496,9 +8496,9 @@ def serve_command(args):
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
-    # "your Mac is too small for this Ultra-only alias" hint before we
-    # start a 166 GB download.
-    _check_alias_min_memory(args.model)
+    # memory floor warning before downloading the model.
+    if _serve_profile is None or _serve_profile.modality != "image-gen":
+        _check_alias_min_memory(args.model)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
@@ -15265,33 +15265,64 @@ def upgrade_command(args):
     """Detect install method and (optionally) run the right upgrade command."""
     import subprocess
 
-    from rapid_mlx._version_check import (
-        _installed_version,
-        _parse_version,
-        detect_install_method,
-        get_latest_version,
-    )
+    from rapid_mlx import _version_check as vc
 
-    current = _installed_version() or "dev"
+    current = vc._installed_version() or "dev"
     print()
     print(f"  Current:  rapid-mlx {current}")
 
-    latest = get_latest_version(force_refresh=True)
-    if latest is None:
+    info = vc.detect_install_method()
+    release = vc.get_release_info(force_refresh=True, need_brew=info.method == "brew")
+    if release is None:
         print("  Latest:   (could not reach GitHub — check your network)\n")
         sys.exit(1)
+    latest = release.latest
     print(f"  Latest:   rapid-mlx {latest}")
 
-    cur = _parse_version(current)
-    lat = _parse_version(latest)
+    cur = vc._parse_version(current)
+    lat = vc._parse_version(latest)
     if cur is not None and lat is not None and cur >= lat:
         print("\n  ✓ Already up to date.\n")
         return
 
-    info = detect_install_method()
+    block = vc._upgrade_block(current, release, info)
+    if block == "brew_lag":
+        print(
+            f"  rapid-mlx {latest} is released, but Homebrew has not published it yet (formula: {release.brew_stable})."
+        )
+        print("  Run `brew upgrade rapid-mlx` once it appears — usually within a day.")
+        if getattr(args, "dry_run", False):
+            return
+        sys.exit(1)
+    target = latest
+    stable = vc._parse_version(release.brew_stable) if release.brew_stable else None
+    if (
+        info.method == "brew"
+        and stable is not None
+        and lat is not None
+        and stable < lat
+    ):
+        target = release.brew_stable
+        print(
+            f"  Homebrew offers {target} now; {latest} will follow once the formula is updated."
+        )
     print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
     print(f"  Command:  {info.upgrade_command}")
     print()
+
+    if block == "python":
+        print(
+            f"  rapid-mlx {latest} requires Python {release.requires_python}; this install runs Python {sys.version_info.major}.{sys.version_info.minor} ({sys.executable})."
+        )
+        print(
+            f"  `{info.upgrade_command}` cannot install {latest} on this Python. To move to {latest}:"
+        )
+        for line in vc.python_upgrade_instructions(info, release.requires_python):
+            print(f"  {line}")
+        if getattr(args, "dry_run", False):
+            return
+        if info.method not in {"pip", "uv", "pipx"}:
+            sys.exit(1)
 
     if info.method == "unknown":
         print(
@@ -15326,25 +15357,80 @@ def upgrade_command(args):
         print("  Skipped — run the command above when ready.\n")
         return
 
+    def run_upgrade():
+        """Run the selected command and probe the installed version on success."""
+        try:
+            # Use argv form so paths cannot be interpreted as shell syntax.
+            result = subprocess.run(info.upgrade_argv, check=False)
+        except FileNotFoundError as exc:
+            missing = exc.filename or info.upgrade_argv[0]
+            print(
+                f"\n  Upgrade command not found: {missing}\n"
+                f"  Reinstall {info.method} or run the command above manually.\n"
+            )
+            return 1, None
+        except KeyboardInterrupt:
+            print("\n  Interrupted.\n")
+            sys.exit(130)
+        print()
+        if result.returncode:
+            return result.returncode, None
+        return 0, vc.installed_version_in_fresh_process(info)
+
     print()
-    try:
-        # Use argv form (shell=False) so paths with spaces in
-        # ``sys.executable`` (or any other argv entry) can't be reinterpreted
-        # as shell separators. install.sh's pipe is wrapped as ``bash -c``
-        # in upgrade_argv, so we still get the pipe semantics it needs.
-        result = subprocess.run(info.upgrade_argv, check=False)
-    except FileNotFoundError as exc:
-        missing = exc.filename or info.upgrade_argv[0]
+    returncode, verified = run_upgrade()
+    if block == "python":
+        if returncode:
+            print("  Upgrade command failed.")
+            sys.exit(returncode)
+        parsed_verified = vc._parse_version(verified) if verified else None
+        if parsed_verified is None or cur is None:
+            print(
+                "  Could not confirm the installed version; run `rapid-mlx --version` to check."
+            )
+            sys.exit(1)
+        if parsed_verified > cur:
+            print(
+                f"  ✓ rapid-mlx is now {verified} — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. "
+                f"{latest} needs Python {release.requires_python}; follow the steps above to move to it."
+            )
+            sys.exit(0)
+        print("  This Python already has the newest release it can run.")
+        sys.exit(1)
+    if returncode:
+        sys.exit(returncode)
+    if verified is None:
         print(
-            f"\n  Upgrade command not found: {missing}\n"
-            f"  Reinstall {info.method} or run the command above manually.\n"
+            "  Could not confirm the installed version; run `rapid-mlx --version` to check."
         )
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n  Interrupted.\n")
-        sys.exit(130)
-    print()
-    sys.exit(result.returncode)
+    elif (
+        vc._parse_version(target) is not None
+        and vc._parse_version(verified) is not None
+        and vc._parse_version(verified) >= vc._parse_version(target)
+    ):
+        print(f"  ✓ rapid-mlx is now {verified}.")
+    else:
+        print(
+            f"  ✗ The upgrade command finished, but rapid-mlx is still {verified} (latest is {target})."
+        )
+        if info.method == "brew":
+            print(
+                f"  Homebrew may not offer {target} yet. Run `brew update && brew upgrade rapid-mlx`, or try again later."
+            )
+        else:
+            print(
+                "  Your package index or a version pin may be holding it back. Check the output above."
+            )
+            if release.requires_python and not vc._python_supports(
+                release.requires_python
+            ):
+                for line in vc.python_upgrade_instructions(
+                    info, release.requires_python
+                ):
+                    print(f"  {line}")
+        sys.exit(1)
+    sys.exit(0)
 
 
 # The community Discord invite — the same one the README badge and

@@ -400,7 +400,7 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
 def test_scheduler_step_marks_internal_failure_retryable_without_leaking_details(
     caplog,
 ) -> None:
-    """A runtime batch failure is an observable, retryable lifecycle error."""
+    """A runtime batch failure is an observable, retryable engine error."""
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     request = MLLMRequest(request_id="runtime-failure", prompt="hello")
     scheduler.requests = {request.request_id: request}
@@ -429,7 +429,7 @@ def test_scheduler_step_marks_internal_failure_retryable_without_leaking_details
     assert terminal.error == (
         "MLLM inference was interrupted by a transient engine error; retry the request"
     )
-    assert terminal.error_kind == "lifecycle"
+    assert terminal.error_kind == "engine_aborted"
     assert "/Users/example" not in terminal.error
     assert "RuntimeError" in caplog.text
     assert request.request_id in caplog.text

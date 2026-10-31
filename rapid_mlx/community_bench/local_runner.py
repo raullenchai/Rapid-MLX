@@ -659,7 +659,9 @@ def _run_image(
     progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
     from rapid_mlx.bench._server import serve
+    from rapid_mlx.cli import _check_alias_min_memory
 
+    _check_alias_min_memory(alias, stream=sys.stderr)
     workload = registered_workload("image_generation")
     case = workload["cases"][0]
     payload = {

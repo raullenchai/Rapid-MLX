@@ -2244,7 +2244,7 @@ def test_deepseek_deferred_route_failure_is_counted_when_not_retried(monkeypatch
         ("chat template error in content block 2", 400, "template_error"),
         ("Failed to process image in content block 1", 400, "media_input_invalid"),
         # no 400 predicate matches -> the abort category is still recorded
-        ("Metal: out of memory", None, "insufficient_memory"),
+        ("Metal: out of memory", 503, "insufficient_memory"),
     ],
 )
 def test_nonstream_failure_class_follows_the_responses_route_order(

@@ -494,6 +494,8 @@ def test_glm_preflight_and_listen_fd_gate(monkeypatch, capsys) -> None:
 
 @pytest.fixture
 def glm_loader_runtime(monkeypatch):
+    monkeypatch.setenv("RAPID_TEST_TF_GLM", "")
+    monkeypatch.delenv("RAPID_TEST_TF_GLM", raising=False)
     from rapid_mlx.speculative import tensorfold_glm53 as adapter
 
     seen = {}
