@@ -2319,7 +2319,9 @@ def section_updates(
                 release = vc.get_release_info(
                     need_brew=getattr(info, "method", None) == "brew"
                 )
-            if release is not None and release.latest == latest:
+            if release is not None and release.latest != latest:
+                release = None
+            if release is not None:
                 block = vc._upgrade_block(cur, release, info)
         except Exception:  # noqa: BLE001 — version notices fail open
             release = None

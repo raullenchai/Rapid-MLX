@@ -4264,6 +4264,22 @@ def test_update_homebrew_reports_available_formula_version():
     assert "brew_stable=1.0.1" in row.detail
 
 
+def test_update_homebrew_ignores_mismatched_release_metadata():
+    from rapid_mlx import _version_check as vc
+
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+    release = vc.ReleaseInfo("1.0.2", None, "1.0.0")
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.1",
+        fetch_release=lambda need_brew: release,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 1.0.1" in row.label
+
+
 def test_update_python_floor_reports_block():
     from rapid_mlx import _version_check as vc
 
