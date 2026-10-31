@@ -158,14 +158,109 @@ class LocalBenchmarkError(RuntimeError):
         self.saved = saved
 
 
+_abandoned_native_worker = False
+
+
+def abandoned_native_worker() -> bool:
+    return _abandoned_native_worker
+
+
+def _cancelling() -> bool:
+    return isinstance(
+        sys.exc_info()[1],
+        (
+            KeyboardInterrupt,
+            SystemExit,
+            BenchmarkCancelledError,
+            asyncio.CancelledError,
+        ),
+    )
+
+
+class _OutstandingFutures:
+    """Futures that have not finished yet; finished ones are released."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: set[concurrent.futures.Future] = set()
+        self._initializing = 0
+
+    def wrap_initializer(self, initializer):
+        """Count workers still inside the executor initializer.
+
+        Their futures can be cancelled while queued, yet joining the executor
+        would still wait for the initializer to return.
+        """
+        if initializer is None:
+            return None
+
+        def run(*args):
+            with self._lock:
+                self._initializing += 1
+            try:
+                return initializer(*args)
+            finally:
+                with self._lock:
+                    self._initializing -= 1
+
+        return run
+
+    def track(self, future: concurrent.futures.Future) -> concurrent.futures.Future:
+        with self._lock:
+            self._pending.add(future)
+        future.add_done_callback(self._discard)
+        return future
+
+    def _discard(self, future: concurrent.futures.Future) -> None:
+        with self._lock:
+            self._pending.discard(future)
+
+    def any_outstanding(self) -> bool:
+        """True while submitted work or a worker initializer has not finished."""
+        with self._lock:
+            if self._initializing:
+                return True
+            pending = list(self._pending)
+        return any(not future.done() for future in pending)
+
+
+class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
+    def __init__(self, *args, initializer=None, initargs=(), **kwargs):
+        self.futures = _OutstandingFutures()
+        super().__init__(
+            *args,
+            initializer=self.futures.wrap_initializer(initializer),
+            initargs=initargs,
+            **kwargs,
+        )
+
+    def submit(self, *args, **kwargs):
+        return self.futures.track(super().submit(*args, **kwargs))
+
+    def join_workers(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` for worker threads; True when all exited."""
+        deadline = time.monotonic() + timeout
+        for thread in list(self._threads):
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in list(self._threads))
+
+
 class BenchmarkCancelledError(RuntimeError):
     """The local runtime reported a terminal user/system cancellation."""
 
 
+class VideoArtifactTransportError(RuntimeError):
+    """The local server connection failed while downloading a video artifact."""
+
+
 def _failure_code(error: Exception) -> str:
-    message = str(error).lower()
+    from rapid_mlx.bench._server import ServerExitedError
+
+    message = str(error).split("\n--- server log tail ---", 1)[0].lower()
     if isinstance(error, BenchmarkCancelledError):
         return "user_cancelled"
+    if isinstance(error, ServerExitedError):
+        return "runtime_error"
     if (
         isinstance(error, MemoryError)
         or "out of memory" in message
@@ -471,6 +566,8 @@ def _run_detached_worker(
         # worker is reaped no watchdog exists, so closing is inert and never
         # signals a reused pid or group.
         lifeline_sender.close()
+    if status == "transport":
+        raise VideoArtifactTransportError(str(payload))
     if status != "ok":
         raise RuntimeError(str(payload))
     return payload
@@ -541,13 +638,24 @@ def _video_download_worker(
             os.unlink(destination_path)
         except OSError:
             pass
-        message = (
-            str(exc)
-            if isinstance(exc, RuntimeError)
-            else "video artifact download failed"
-        )
+        status = "error"
+        if isinstance(
+            exc,
+            (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ),
+        ):
+            status, message = "transport", str(exc).partition("\n")[0][:300]
+        elif isinstance(exc, requests.exceptions.HTTPError):
+            code = exc.response.status_code if exc.response is not None else None
+            message = f"video artifact download failed with HTTP {code}"
+        elif isinstance(exc, RuntimeError):
+            message = str(exc)
+        else:
+            message = "video artifact download failed"
         try:
-            sender.send(("error", message))
+            sender.send((status, message))
         except (BrokenPipeError, EOFError, OSError):
             pass
     finally:
@@ -827,14 +935,24 @@ def _run_video(
             raise RuntimeError(
                 "video benchmark artifact metadata does not match the registered workload"
             )
-        _validated_video_artifact(
-            server["base_url"],
-            str(job["id"]),
-            width=case["width"],
-            height=case["height"],
-            frames=case["frames"],
-            fps=case["fps_milli"] / 1000,
-        )
+        try:
+            _validated_video_artifact(
+                server["base_url"],
+                str(job["id"]),
+                width=case["width"],
+                height=case["height"],
+                frames=case["frames"],
+                fps=case["fps_milli"] / 1000,
+            )
+        except VideoArtifactTransportError as exc:
+            exit_error = server.get("exit_error")
+            error = exit_error() if callable(exit_error) else None
+            if error is not None:
+                raise error from exc
+            raise RuntimeError(
+                "video artifact download from the local model server failed without "
+                f"a response while the server is still running: {exc}"
+            ) from exc
         # Still inside ``serve``: the model is resident, so this reflects
         # the state the measurement was produced under.
         _record_conditions_after()
@@ -1217,12 +1335,16 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         self._requests = {}
         self._active = {}
         self.timed_out = False
+        self._futures = _OutstandingFutures()
+
+    def _submit(self, *args):
+        return self._futures.track(self._handle.executor.submit(*args))
 
     async def abort_request(self, request_id):
         self._requests.pop(request_id, None)
         iterator = self._active.pop(request_id, None)
         if iterator is not None:
-            future = self._handle.executor.submit(iterator.close)
+            future = self._submit(iterator.close)
             future.add_done_callback(
                 lambda done: None if done.cancelled() else done.exception()
             )
@@ -1232,11 +1354,8 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
 
         prompt, sampling = self._requests.pop(request_id)
         loop = asyncio.get_running_loop()
-        iterator = await loop.run_in_executor(
-            self._handle.executor,
-            self._handle.token_stream,
-            prompt,
-            sampling.max_tokens,
+        iterator = await asyncio.wrap_future(
+            self._submit(self._handle.token_stream, prompt, sampling.max_tokens)
         )
         self._active[request_id] = iterator
         deadline = None if timeout is None else loop.time() + timeout
@@ -1246,8 +1365,8 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
                 remaining = None if deadline is None else deadline - loop.time()
                 if remaining is not None and remaining <= 0:
                     raise asyncio.TimeoutError
-                future = loop.run_in_executor(
-                    self._handle.executor, _next_generation_chunk, iterator
+                future = asyncio.wrap_future(
+                    self._submit(_next_generation_chunk, iterator)
                 )
                 has_chunk, chunk = (
                     await asyncio.wait_for(future, remaining)
@@ -1377,7 +1496,14 @@ async def _measure_dedicated(
                 )
         return measurements, context, identity, language
     finally:
-        handle.close(wait=adapter is None or not adapter.timed_out)
+        global _abandoned_native_worker
+        cancelling = _cancelling()
+        abandon = (
+            cancelling and adapter is not None and adapter._futures.any_outstanding()
+        )
+        if abandon:
+            _abandoned_native_worker = True
+        handle.close(wait=not abandon and (adapter is None or not adapter.timed_out))
 
 
 def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
@@ -1666,7 +1792,7 @@ async def _text_measurements(
                 resolve_product_paths,
             )
 
-            executor = concurrent.futures.ThreadPoolExecutor(
+            executor = _TrackingExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
                 initializer=_init_mlx_step_thread,
@@ -1754,7 +1880,7 @@ async def _text_measurements(
             serving_engine, tokenizer = await start_serving_engine()
             loaded_source, model = "", None
         else:
-            executor = concurrent.futures.ThreadPoolExecutor(
+            executor = _TrackingExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
                 initializer=_init_mlx_step_thread,
@@ -1923,16 +2049,18 @@ async def _text_measurements(
                         exc_info=True,
                     )
         finally:
-            # ThreadPoolExecutor workers are non-daemon and Python joins them
-            # again during interpreter shutdown. Leaving this executor live can
-            # make the CLI appear finished while its process (and Desktop memory
-            # lease) remains stuck. AsyncEngineCore has exited at this point, so
-            # cancel work that never started and synchronously reap the owned
-            # worker. The Desktop's outer CLI process group remains the hard
-            # cancellation boundary for native MLX calls that cannot be
-            # interrupted in-process.
             if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
+                global _abandoned_native_worker
+                if _cancelling():
+                    # Never join on cancellation: a worker may be inside a
+                    # native load or the initializer. Give idle workers a
+                    # moment to exit; any still alive are abandoned and the
+                    # CLI exits without waiting for them.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    if not executor.join_workers(timeout=1.0):
+                        _abandoned_native_worker = True
+                else:
+                    executor.shutdown(wait=True, cancel_futures=True)
 
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []
@@ -2048,6 +2176,9 @@ def run_local(
     per-round throughput, time estimate). It is never given the result and
     nothing is written to stdout here, so ``--json`` callers stay clean.
     """
+
+    global _abandoned_native_worker
+    _abandoned_native_worker = False
 
     if inherit_process_group and not _is_dedicated_process_group_leader():
         raise LocalBenchmarkError(

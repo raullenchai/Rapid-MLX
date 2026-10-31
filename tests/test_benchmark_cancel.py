@@ -7,6 +7,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -227,11 +228,45 @@ time.sleep(30)
         proc.stdout.close()
 
 
-def test_terminate_already_reaped_leader_does_not_signal(monkeypatch):
-    signals = []
-    monkeypatch.setattr(_server.os, "killpg", lambda *args: signals.append(args))
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+def test_terminate_already_reaped_leader_kills_child():
+    script = """
+import subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+print(child.pid, flush=True)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, start_new_session=True
+    )
+    try:
+        child_pid = int(proc.stdout.readline())
+        proc.wait(timeout=5)
+        _server._terminate(proc, grace_s=2)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, "child was not reaped"
+            time.sleep(0.05)
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_terminate_already_reaped_leader_empty_group(monkeypatch):
+    def missing(*args):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_server.os, "killpg", missing)
+    started = time.monotonic()
     _server._terminate(SimpleNamespace(pid=1234, returncode=0))
-    assert signals == []
+    assert time.monotonic() - started < 1
 
 
 def test_terminate_reaps_leader_when_initial_group_signal_fails(monkeypatch):
@@ -383,7 +418,7 @@ def test_cli_interrupt(monkeypatch, capsys):
 
 
 def test_cli_sigterm_restores_handler(monkeypatch, capsys):
-    previous = signal.getsignal(signal.SIGTERM)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     def terminate(*args, **kwargs):
         os.kill(os.getpid(), signal.SIGTERM)
@@ -392,7 +427,7 @@ def test_cli_sigterm_restores_handler(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_local", terminate)
     monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     assert cli.benchmark_command(args()) == 143
-    assert signal.getsignal(signal.SIGTERM) == previous
+    assert all(signal.getsignal(sig) == handler for sig, handler in previous.items())
     assert "Traceback" not in capsys.readouterr().err
 
 
@@ -409,3 +444,152 @@ def test_cli_interrupt_json(monkeypatch, capsys):
         "error": "benchmark cancelled",
         "cancelled": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("sig", "baseline"),
+    [(signal.SIGINT, True), (signal.SIGTERM, True), (signal.SIGINT, False)],
+)
+def test_cli_cancels_blocked_text_load(tmp_path, sig, baseline):
+    probe = subprocess.run(
+        [sys.executable, "-c", "import mlx.core"], capture_output=True, check=False
+    )
+    if probe.returncode:
+        pytest.skip("MLX cannot load in this environment")
+    script = r"""
+import os, sys, threading
+from rapid_mlx.community_bench import local_runner, workspace
+from rapid_mlx import cli
+import rapid_mlx.utils.tokenizer as tokenizer
+
+def block(*args, **kwargs):
+    print("LOADING", file=sys.__stdout__, flush=True)
+    threading.Event().wait()
+
+local_runner.collect = lambda: (None, None)
+local_runner.run_conditions = lambda: None
+local_runner.resolve_provenance = lambda: None
+local_runner.model_is_cached = lambda *args: True
+local_runner._ensure_model_downloaded = lambda *args: None
+workspace.benchmark_runtime_readiness = lambda *args: {"status": "ready"}
+tokenizer.load_model_with_fallback = block
+if os.environ["TEST_BASELINE"] == "0":
+    import rapid_mlx.server as server
+    server.load_model = block
+sys.argv = ["rapid-mlx", "benchmark", "run", "lfm2.5-2.6b-4bit"]
+if os.environ["TEST_BASELINE"] == "1":
+    sys.argv.append("--baseline")
+cli.main()
+"""
+    env = os.environ.copy()
+    env.update(
+        RAPID_MLX_HOME=str(tmp_path),
+        XDG_STATE_HOME=str(tmp_path),
+        RAPID_MLX_TELEMETRY="0",
+        DO_NOT_TRACK="1",
+        TEST_BASELINE="1" if baseline else "0",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    try:
+        ready, _, _ = select.select([proc.stdout], [], [], 30)
+        assert ready, "loader did not start"
+        assert proc.stdout.readline().strip() == "LOADING"
+        proc.send_signal(sig)
+        assert proc.wait(timeout=10) == 128 + sig
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
+
+
+def test_outstanding_futures_include_worker_blocked_in_initializer():
+    from rapid_mlx.community_bench import local_runner
+
+    release = threading.Event()
+    executor = local_runner._TrackingExecutor(
+        max_workers=1, initializer=lambda: release.wait(5)
+    )
+    try:
+        executor.submit(lambda: None)
+        # The worker is still inside the initializer: nothing is "running",
+        # yet joining the executor would block.
+        assert executor.futures.any_outstanding()
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+    assert not executor.futures.any_outstanding()
+
+
+def test_finished_futures_are_released():
+    from rapid_mlx.community_bench import local_runner
+
+    executor = local_runner._TrackingExecutor(max_workers=1)
+    try:
+        for _ in range(50):
+            executor.submit(lambda: object()).result()
+        # result() can return just before the done callback discards the
+        # future, so wait briefly for the last discard.
+        deadline = time.monotonic() + 5
+        while executor.futures._pending:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_cancelled_queued_future_with_worker_in_initializer_is_outstanding():
+    from rapid_mlx.community_bench import local_runner
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def initializer():
+        entered.set()
+        release.wait(5)
+
+    executor = local_runner._TrackingExecutor(max_workers=1, initializer=initializer)
+    try:
+        future = executor.submit(lambda: None)
+        assert entered.wait(5)
+        # Cancellation of the queued work (as asyncio does for a cancelled
+        # run_in_executor await) must not hide the worker that is still
+        # initializing; joining it now would block.
+        future.cancel()
+        assert executor.futures.any_outstanding()
+        executor.shutdown(wait=False, cancel_futures=True)
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while executor.futures.any_outstanding():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
+def test_join_workers_reports_worker_still_blocked():
+    from rapid_mlx.community_bench import local_runner
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def initializer():
+        entered.set()
+        release.wait(5)
+
+    executor = local_runner._TrackingExecutor(max_workers=1, initializer=initializer)
+    try:
+        future = executor.submit(lambda: None)
+        assert entered.wait(5)
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        started = time.monotonic()
+        assert executor.join_workers(timeout=0.2) is False
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()
+    assert executor.join_workers(timeout=5) is True
