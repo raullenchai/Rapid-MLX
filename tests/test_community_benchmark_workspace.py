@@ -362,6 +362,41 @@ def test_gpu_budget_plan_wording(fit):
     )
 
 
+def test_non_weights_profile_explanation_for_plan_and_catalog(capsys):
+    model = {
+        "alias": "curated",
+        "task_type": "image_generation",
+        "focus": True,
+        "estimated_memory_gb": 37,
+        "memory_estimate_source": "curated_footprint",
+        "memory_fit": "fits",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 32,
+    }
+    line = community_cli._memory_line(model, 36, 28)
+    assert "the tested profile decides the fit, not this estimate" in line
+    assert "weight-size" not in line and "weight size" not in line
+
+    weights_model = {
+        **model,
+        "alias": "weights",
+        "memory_estimate_source": "weights_estimate",
+    }
+    catalog = {
+        "memory_gib": 36,
+        "memory_budget_gib": 28,
+        "models": [weights_model, model],
+    }
+    community_cli._print_catalog(catalog, show_all=True)
+    output = capsys.readouterr().out
+    assert output.count("fits (32 GB+ profile)*") == 2
+    footnote = next(line for line in output.splitlines() if line.startswith("* Fit"))
+    assert footnote == (
+        "* Fit comes from the model's tested memory profile; the size estimate shown is not used for this model."
+    )
+    assert "weight-size" not in footnote and "weight size" not in footnote
+
+
 def test_catalog_and_plan_use_same_raw_estimate_and_profile_explanation(capsys):
     model = {
         "alias": "example",

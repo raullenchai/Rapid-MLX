@@ -177,11 +177,14 @@ def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str
             return f"{line}; does NOT fit this Mac (weights exceed the GPU limit of about {budget_text})"
         verdict = "fits" if fit == "fits" else "does NOT fit"
         qualification = "qualified for Macs" if fit == "fits" else "requires a Mac"
-        explanation = (
-            " — for this model the tested profile decides the fit, not the weight-size estimate"
-            if _profile_over_budget(model, budget_gib)
-            else ""
-        )
+        explanation = ""
+        if _profile_over_budget(model, budget_gib):
+            estimate_label = (
+                "the weight-size estimate"
+                if model.get("memory_estimate_source") == "weights_estimate"
+                else "this estimate"
+            )
+            explanation = f" — for this model the tested profile decides the fit, not {estimate_label}"
         return (
             f"{line}; {verdict} this Mac "
             f"(profile {qualification} with {floor:g} GB or more{explanation})"
@@ -215,10 +218,9 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
     else:
         print("This Mac: memory unknown; pass --memory-gib to fill the fit column\n")
 
-    starred = False
+    starred_sources: set[Any] = set()
 
     def row(model: dict[str, Any]) -> str:
-        nonlocal starred
         marker = "★" if model.get("focus") else " "
         fit = str(model.get("memory_fit", "unknown")).replace("_", " ")
         floor = model.get("memory_floor_gib")
@@ -236,7 +238,7 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
                 fit += f" ({floor:g} GB+ profile)"
                 if _profile_over_budget(model, budget):
                     fit += "*"
-                    starred = True
+                    starred_sources.add(model.get("memory_estimate_source"))
         estimate = _estimate_text(model)
         memory = f"~{estimate}" if estimate is not None else "?"
         downloaded = "  downloaded" if model.get("model_cached") is True else ""
@@ -281,10 +283,15 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
             f"\n{len(rest)} more models have a registered protocol "
             f"({verdict}); list them with rapid-mlx benchmark catalog --all"
         )
-    if starred:
-        print(
-            "\n* Fit comes from the model's tested memory profile; the size estimate is computed from weight size and is not used for this model."
-        )
+    if starred_sources:
+        if starred_sources == {"weights_estimate"}:
+            print(
+                "\n* Fit comes from the model's tested memory profile; the size estimate is computed from weight size and is not used for this model."
+            )
+        else:
+            print(
+                "\n* Fit comes from the model's tested memory profile; the size estimate shown is not used for this model."
+            )
     print("\nRun: rapid-mlx benchmark run <model>")
 
 
