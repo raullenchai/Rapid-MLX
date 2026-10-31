@@ -1286,6 +1286,8 @@ def _ready_lane_rows(cfg, ep, audio_entry):
         )
 
     model = ep.model or ""
+    if audio_entry and audio_entry.notes != "local folder":
+        model = audio_entry.hf_id
     if audio_entry and audio_entry.type == "stt":
         return [
             (
@@ -1329,6 +1331,13 @@ def _ready_lane_rows(cfg, ep, audio_entry):
             )
         return rows
     if image:
+        if getattr(_engine, "supports_generation", True) is False:
+            return [
+                (
+                    "Edit",
+                    f"curl {url('/images/edits')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=Add a red hat')} -F image=@input.png",
+                )
+            ]
         return [
             (
                 "Generate",
@@ -1337,10 +1346,15 @@ def _ready_lane_rows(cfg, ep, audio_entry):
                 ),
             )
         ]
+    video_fields = ""
+    if getattr(_engine, "requires_input_reference", False):
+        video_fields += " -F input_reference=@start.png"
+    if getattr(_engine, "video_family", "") == "cogvideox-fun":
+        video_fields += " -F seconds=1 -F size=672x384"
     return [
         (
             "Generate",
-            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}",
+            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}{video_fields}",
         )
     ]
 
