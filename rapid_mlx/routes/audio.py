@@ -1781,13 +1781,15 @@ async def _run_stt_request(
             )
             _note_served_stt_engine(_stt_engine)
 
-        if result.duration is None:
+        if result.duration is None or getattr(result, "duration_from_segments", False):
             if response_format in {"verbose_json", "srt", "vtt"}:
                 from ..audio import stt as _stt_mod
 
                 decode = getattr(_stt_mod, "_decoded_audio_duration", None)
                 if decode is not None:
-                    result.duration = await run_to_completion(decode, engine_path)
+                    decoded_duration = await run_to_completion(decode, engine_path)
+                    if decoded_duration is not None:
+                        result.duration = decoded_duration
             if result.duration is None:
                 for segment in reversed(result.segments or []):
                     end = (

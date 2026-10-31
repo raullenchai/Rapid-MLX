@@ -169,6 +169,7 @@ class TranscriptionResult:
     language: str | None = None
     duration: float | None = None
     segments: list | None = None
+    duration_from_segments: bool = False
 
 
 @dataclass
@@ -1033,11 +1034,26 @@ class STTEngine:
                 for seg in segments:
                     _shift_segment_time(seg, trim.offset_seconds)
 
+            duration = source_duration
+            duration_from_segments = False
+            if duration is None:
+                for segment in reversed(segments or []):
+                    end = (
+                        segment.get("end")
+                        if isinstance(segment, dict)
+                        else getattr(segment, "end", None)
+                    )
+                    if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
+                        duration = end
+                        duration_from_segments = True
+                        break
+
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),
                 language=detected_lang,
-                duration=source_duration,
+                duration=duration,
                 segments=segments,
+                duration_from_segments=duration_from_segments,
             )
         except Exception as e:
             logger.error(f"Transcription failed: {e}")

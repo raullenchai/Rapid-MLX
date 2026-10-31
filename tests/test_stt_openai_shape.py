@@ -151,7 +151,7 @@ def test_garbage_upload_reports_supported_formats(client, monkeypatch):
     assert "Supported formats:" in message and "aiff" in message
 
 
-def test_non_whisper_duration_does_not_fall_back_to_segments(tmp_path, monkeypatch):
+def test_non_whisper_duration_falls_back_to_segments(tmp_path, monkeypatch):
     from mlx_audio.stt import utils
 
     from rapid_mlx.audio import stt
@@ -169,10 +169,12 @@ def test_non_whisper_duration_does_not_fall_back_to_segments(tmp_path, monkeypat
     engine._loaded = True
     engine.model = SimpleNamespace(
         generate=lambda *a, **kw: SimpleNamespace(
-            text="hello", language="en", segments=[{"end": 1.25}]
+            text="hello", language="en", segments=[{"end": 1.0}]
         )
     )
-    assert engine.transcribe(path).duration is None
+    result = engine.transcribe(path)
+    assert result.duration == 1.0
+    assert result.duration_from_segments is True
 
 
 @pytest.mark.parametrize("no_speech", [False, True])
@@ -347,8 +349,9 @@ def test_json_duration_falls_back_to_segment_without_decoding(client, monkeypatc
         "transcribe",
         lambda self, audio_path, **kwargs: stt.TranscriptionResult(
             text="hello",
-            duration=stt._audio_duration_seconds(audio_path, allow_decode=False),
-            segments=[{"end": 1.25}],
+            duration=1.0,
+            segments=[{"end": 1.0}],
+            duration_from_segments=True,
         ),
         raising=False,
     )
@@ -363,7 +366,40 @@ def test_json_duration_falls_back_to_segment_without_decoding(client, monkeypatc
         files={"file": ("tone.webm", b"audio", "audio/webm")},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["duration"] == 1.25
+    assert response.json()["duration"] == 1.0
+
+
+@pytest.mark.parametrize("decoded_duration", [2.5, None])
+def test_verbose_duration_refines_segment_fallback(
+    client, monkeypatch, decoded_duration
+):
+    from rapid_mlx.audio import stt
+
+    monkeypatch.setattr(
+        stt.STTEngine,
+        "transcribe",
+        lambda *args, **kwargs: stt.TranscriptionResult(
+            text="hello",
+            duration=1.0,
+            segments=[{"end": 1.0}],
+            duration_from_segments=True,
+        ),
+        raising=False,
+    )
+    calls = []
+    monkeypatch.setattr(
+        stt,
+        "_decoded_audio_duration",
+        lambda path: calls.append(path) or decoded_duration,
+    )
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "whisper-large-v3", "response_format": "verbose_json"},
+        files={"file": ("tone.webm", b"audio", "audio/webm")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["duration"] == (decoded_duration or 1.0)
+    assert len(calls) == 1
 
 
 def test_aiff_expansion_limit_cleans_up(client, monkeypatch):
