@@ -711,6 +711,7 @@ struct ContentView: View {
                     section = .chat
                 },
                 server: server,
+                catalogEntries: catalogEntries,
                 hasActiveModelWork: hasActiveModelWork
             )
             // v1.0: the rail paints an explicit warm surface rather than

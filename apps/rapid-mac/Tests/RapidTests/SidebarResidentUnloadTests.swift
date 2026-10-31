@@ -5,6 +5,25 @@ import Testing
 @Suite("Sidebar resident unload")
 struct SidebarResidentUnloadTests {
     @MainActor
+    @Test("Audio lane names use catalog aliases and a short fallback")
+    func audioLaneNames() {
+        let whisper = ModelEntry(alias: "whisper-base", hfRepo: "mlx-community/whisper-base-mlx", sizeOnDisk: nil, cached: true)
+        let speech = ModelEntry(alias: "kokoro", hfRepo: "example/speech", sizeOnDisk: nil, cached: true)
+        #expect(SidebarView.audioLaneDisplayName(model: "MLX-COMMUNITY/WHISPER-BASE-MLX", lane: "stt", catalog: [whisper]) == "Whisper Base")
+        #expect(SidebarView.audioLaneDisplayName(model: "WHISPER-BASE", lane: "stt", catalog: [whisper]) == "Whisper Base")
+        #expect(SidebarView.audioLaneDisplayName(model: "EXAMPLE/SPEECH", lane: "tts", catalog: [speech]) == "kokoro")
+        #expect(SidebarView.audioLaneDisplayName(model: "other/unknown", lane: "stt", catalog: []) == "unknown")
+        #expect(SidebarView.audioLaneDisplayName(model: nil, lane: "tts", catalog: []) == "TTS")
+    }
+
+    @Test("Memory accessibility value spells out both quantities")
+    func memoryAccessibilityValue() {
+        let gib = UInt64(1) << 30
+        #expect(SidebarView.memoryAccessibilityValue(usedBytes: 6 * gib, limitBytes: 14 * gib) == "6 GB of 14 GB used")
+        #expect(SidebarView.memoryAccessibilityValue(usedBytes: 6 * gib, limitBytes: 0) == "6 GB used")
+    }
+
+    @MainActor
     private final class UnloadProbe {
         var calls = 0
     }

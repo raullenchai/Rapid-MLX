@@ -156,6 +156,7 @@ struct SidebarView: View {
     /// Optional in isolated snapshot fixtures; the shipping ContentView passes
     /// it so residency and the enforced memory ceiling remain visible globally.
     var server: ServerManager? = nil
+    var catalogEntries: [ModelEntry] = []
     /// True while any model-backed surface is doing user-visible work. The
     /// unload control must not offer to tear down the shared runtime merely
     /// because the active work is outside Chat.
@@ -839,6 +840,9 @@ struct SidebarView: View {
                     )
                     .controlSize(.mini)
                     .tint(RapidTheme.brandAmber)
+                    .accessibilityLabel("Model memory")
+                    .accessibilityValue(Self.memoryAccessibilityValue(usedBytes: snapshot.memoryUsedBytes, limitBytes: snapshot.memoryLimitBytes))
+                    .accessibilityIdentifier("Sidebar.Residency.Memory")
                 } else {
                     Spacer(minLength: 0)
                 }
@@ -873,7 +877,7 @@ struct SidebarView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 12)
-                    Text(lane.model ?? lane.lane.uppercased())
+                    Text(Self.audioLaneDisplayName(model: lane.model, lane: lane.lane, catalog: catalogEntries))
                         .font(RapidFont.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1037,6 +1041,25 @@ struct SidebarView: View {
         return modelCount == 1
             ? String(localized: "Unload model and free \(freed)")
             : String(localized: "Unload all models and free \(freed)")
+    }
+
+    static func audioLaneDisplayName(model: String?, lane: String, catalog: [ModelEntry]) -> String {
+        guard let model, !model.isEmpty else { return lane.uppercased() }
+        guard let entry = catalog.first(where: {
+            $0.alias.caseInsensitiveCompare(model) == .orderedSame ||
+            $0.hfRepo?.caseInsensitiveCompare(model) == .orderedSame
+        }) else { return model.split(separator: "/").last.map(String.init) ?? model }
+        if lane.lowercased() == "stt" {
+            return AudioViewModel.transcriptionDetails(alias: entry.alias, family: entry.audioFamily).displayName
+        }
+        return entry.alias
+    }
+
+    nonisolated static func memoryAccessibilityValue(usedBytes: UInt64, limitBytes: UInt64) -> String {
+        let used = formatBytes(usedBytes)
+        guard limitBytes > 0 else { return String(localized: "\(used) used") }
+        let limit = formatBytes(limitBytes)
+        return String(localized: "\(used) of \(limit) used")
     }
 
     nonisolated static func memorySummary(usedBytes: UInt64, limitBytes: UInt64) -> String {

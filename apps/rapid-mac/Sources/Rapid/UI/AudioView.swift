@@ -355,6 +355,7 @@ struct AudioView: View {
             ) {
                 HStack(spacing: RapidTheme.Space.md) {
                     Slider(value: $viewModel.speed, in: 0.5...2, step: 0.05)
+                        .accessibilityLabel("Speed")
                         .accessibilityIdentifier("Audio.Speech.Speed")
                     Text(viewModel.speed.formatted(.number.precision(.fractionLength(2))) + "x")
                         .font(.rapid(size: 12, weight: .medium, design: .monospaced))

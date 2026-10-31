@@ -133,12 +133,13 @@ struct SettingsModelManagementPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             header
+            capabilityTabs
+            controlsRow
+            crossTabHints
             modelsFolderSection
             storageOverviewSection
             preferencesSection
             downloadEndpointSection
-            capabilityTabs
-            controlsRow
             if capability == .chat {
                 if showRecommendedSection {
                     recommendedSection
@@ -614,6 +615,23 @@ struct SettingsModelManagementPanel: View {
                 accessibilityLabel: String(localized: "Filter")
             )
             .accessibilityIdentifier("Settings.ModelManagement.Filter")
+        }
+    }
+
+    @ViewBuilder
+    private var crossTabHints: some View {
+        if visibleEntries.isEmpty {
+            let matches = ModelCacheActions.crossTabMatches(
+                in: catalog, kinds: availableKinds, excluding: capability,
+                filterMode: filterMode, query: query
+            )
+            ForEach(matches, id: \.kind) { match in
+                Button(String(localized: "\(match.count) matches in \(match.kind.tabLabel) →")) {
+                    capability = match.kind
+                }
+                .buttonStyle(.rapidTertiary)
+                .accessibilityIdentifier("Settings.ModelManagement.CrossTabMatch.\(match.kind.rawValue)")
+            }
         }
     }
 
@@ -1154,28 +1172,11 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private func listSection(_ entries: [ModelEntry]) -> some View {
         if entries.isEmpty {
-            let matches = ModelCacheActions.crossTabMatches(
-                in: catalog, kinds: availableKinds, excluding: capability,
-                filterMode: filterMode, query: query
-            )
-            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                if matches.isEmpty {
-                    Text(noMatchesCopy)
-                } else {
-                    Text(String(localized: "No \(capability.tabLabel) match \"\(query)\"."))
-                    ForEach(matches, id: \.kind) { match in
-                        Button(String(localized: "\(match.count) matches in \(match.kind.tabLabel) →")) {
-                            capability = match.kind
-                        }
-                        .buttonStyle(.rapidTertiary)
-                        .accessibilityIdentifier("Settings.ModelManagement.CrossTabMatch.\(match.kind.rawValue)")
-                    }
-                }
-            }
-            .font(RapidFont.body)
-            .foregroundStyle(RapidTheme.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, RapidTheme.Space.md)
+            Text(noMatchesCopy)
+                .font(RapidFont.body)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, RapidTheme.Space.md)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.alias) { idx, entry in

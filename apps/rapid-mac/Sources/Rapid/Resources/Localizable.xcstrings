@@ -233,6 +233,16 @@
         }
       }
     },
+    "Model download progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型下载进度"
+          }
+        }
+      }
+    },
     "No models can be shared from this Mac right now." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3231,6 +3241,16 @@
         }
       }
     },
+    "%@ used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已使用 %@"
+          }
+        }
+      }
+    },
     "%@ was downloaded by another app. Rapid can't remove it — delete it where it was installed." : {
       "localizations" : {
         "zh-Hans" : {
@@ -4805,6 +4825,26 @@
         }
       }
     },
+    "Dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写"
+          }
+        }
+      }
+    },
+    "Dictation model download progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写模型下载进度"
+          }
+        }
+      }
+    },
     "Dictations you make will show up here." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5447,6 +5487,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "反馈"
+          }
+        }
+      }
+    },
+    "%@ of %@ used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已使用 %@，共 %@"
           }
         }
       }
@@ -11968,6 +12018,16 @@
         }
       }
     },
+    "Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 在这台 Mac 上记录的连接时段。这不是 QuickSilver 结算记录。"
+          }
+        }
+      }
+    },
     "Continue with %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13284,6 +13344,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "模型标识符"
+          }
+        }
+      }
+    },
+    "Model memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型内存"
           }
         }
       }
@@ -15668,6 +15738,16 @@
         }
       }
     },
+    "Speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "速度"
+          }
+        }
+      }
+    },
     "Stage %1$@ of %2$d" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16414,6 +16494,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频时长"
+          }
+        }
+      }
+    },
+    "Video generation progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频生成进度"
           }
         }
       }
