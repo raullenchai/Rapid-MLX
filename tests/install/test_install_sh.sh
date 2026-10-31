@@ -313,7 +313,7 @@ EOF
     mkdir -p "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info" "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info"
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.6.3\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-only-pkg\nVersion: 1.0\n' > "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info/METADATA"
-    check "rejects extra with incompatible base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" ""
+    check "keeps extra when a shared base dependency drifted" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio"
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.5.9\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
     check "selects extra with compatible base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio"
     cp "$WORK/extras-metadata" "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"

@@ -288,7 +288,10 @@ INSTALL_DIR="$1" PRESERVED_EXTRAS=chat TARGET=stable
 run_install_command() {
     if [ "$1" = "$INSTALL_DIR/bin/python" ]; then echo 1.0; else "$@"; fi
 }
-pip_stub() { echo "WARNING: transformers 5.16.0 does not provide the extra 'tokenizers'" >&2; }
+pip_stub() {
+    printf '%s\n' "$*" >> "$INSTALL_DIR/pip-calls"
+    echo "WARNING: transformers 5.16.0 does not provide the extra 'tokenizers'" >&2
+}
 INSTALLER=(pip_stub)
 reinstall_preserved_extras
 """,
@@ -298,6 +301,7 @@ reinstall_preserved_extras
     )
     assert result.returncode == 0
     assert result.stderr == ""
+    assert "rapid-mlx[chat]==1.0" in (tmp_path / "pip-calls").read_text()
 
 
 def test_reinstall_extras_uses_uv_metadata(tmp_path):
