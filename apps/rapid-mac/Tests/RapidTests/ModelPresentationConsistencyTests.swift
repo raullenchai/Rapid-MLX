@@ -111,6 +111,16 @@ struct ModelPresentationConsistencyTests {
         #expect(result.count == 2)
         #expect(result.map(\.alias) == ["whisper-large-v3", "whisper-small"])
     }
+
+    @Test func audioDeduplicationKeepsDistinctSubfolders() {
+        let subfolders: [String] = ["a", "b"]
+        let rows = subfolders.map {
+            ModelEntry(alias: "audio-\($0)", hfRepo: "org/audio", sizeOnDisk: nil,
+                       cached: true, kind: .audio, sourceSubfolder: $0)
+        }
+        #expect(AudioViewModel.stablyDeduplicatedTranscriptionModels(rows).map(\.alias) == ["audio-a", "audio-b"])
+        #expect(AudioViewModel.deduplicatedTranscriptionModels(rows).map(\.alias) == ["audio-a", "audio-b"])
+    }
     @Test func cachedHeadlineCountsAllChooserRows() {
         func entry(_ alias: String) -> ModelEntry {
             ModelEntry(alias: alias, hfRepo: "org/\(alias)", sizeOnDisk: nil, cached: true)
