@@ -533,7 +533,12 @@ def test_finished_futures_are_released():
     try:
         for _ in range(50):
             executor.submit(lambda: object()).result()
-        assert not executor.futures._pending
+        # result() can return just before the done callback discards the
+        # future, so wait briefly for the last discard.
+        deadline = time.monotonic() + 5
+        while executor.futures._pending:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
     finally:
         executor.shutdown(wait=True)
 
