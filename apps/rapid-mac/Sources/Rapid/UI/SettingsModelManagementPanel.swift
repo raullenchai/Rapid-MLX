@@ -941,7 +941,7 @@ struct SettingsModelManagementPanel: View {
     /// is only a fallback because it underestimates some repos (Qwen3 ASR 0.6B
     /// 5-bit: ~0.3 GB versus 787,276,896 bytes).
     nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
-        if let size = entry.size?.displayText { return size }
+        if let size = entry.displayedModelSize?.displayText { return size }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
         return DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: fp.weightsGB * Double(1 << 30)))

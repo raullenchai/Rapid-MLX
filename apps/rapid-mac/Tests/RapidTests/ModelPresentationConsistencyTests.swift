@@ -18,6 +18,24 @@ struct ModelPresentationConsistencyTests {
         #expect(QuickstartView.cachedRowSecondaryText(for: choice) == entry.alias)
     }
 
+    @Test func variantNamesAndCatalogUniqueness() throws {
+        #expect(ModelDisplayName.name(for: "qwen3-4b-thinking-2507-4bit") == "Qwen 3 · 4B · Thinking 2507")
+        #expect(ModelDisplayName.name(for: "qwen3-4b-instruct-2507-4bit") == "Qwen 3 · 4B · Instruct 2507")
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("rapid_mlx/aliases.json")
+        let entries = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: [String: Any]])
+        var names: [String: (String, String)] = [:]
+        for alias in entries.keys.sorted() {
+            guard let repo = entries[alias]?["hf_path"] as? String else { continue }
+            let name = ModelDisplayName.name(for: alias)
+            if let previous = names[name], previous.1 != repo {
+                Issue.record("Name collision: \(previous.0) and \(alias) → \(name)")
+            } else { names[name] = (alias, repo) }
+        }
+    }
+
     @Test func downloadSizeAcrossSurfacesAndMerge() throws {
         let alias = "qwen3.8-27b-4bit"
         let bytes: Int64 = 16_320_413_916

@@ -62,6 +62,14 @@ struct CommunityBenchmarkPickerTests {
         )
     }
 
+    @Test("Uncached picker uses catalog download size")
+    func uncachedCatalogSize() throws {
+        let entry = ModelEntry(alias: "qwen3.8-27b-4bit", hfRepo: "org/model", sizeOnDisk: nil,
+                               cached: false, downloadSizeBytes: 16_320_413_916)
+        let model = try #require(CommunityBenchmarkModel.models(from: [entry]).first)
+        #expect(CommunityBenchmarkPicker.downloadStatus(model, downloadSizeGB: nil).detail == "16.32 GB")
+    }
+
     // MARK: - Counting
 
     @Test("With no query the count is the live catalogue total")
