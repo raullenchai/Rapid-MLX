@@ -1434,8 +1434,7 @@ def _serve_retrieval_only_mode(args) -> None:
     print()
     sys.stdout.flush()
 
-    # The default ready banner advertises chat endpoints and a primary model.
-    _run_uvicorn(app, args, uvicorn_log_level, on_server_accepting=lambda: None)
+    _run_uvicorn(app, args, uvicorn_log_level)
     _hard_exit_after_serve()
 
 
@@ -4561,8 +4560,9 @@ def _resolve_dflash_launch_or_exit(args):
     except DFlashUnavailable as e:
         print(f"\n  Error: {e}\n")
         sys.exit(1)
-    for _warning in _assessment.warnings:
-        print(f"\n  ⚠ Experimental DFlash: {_warning}.\n")
+    if _assessment.warnings:
+        warnings = "; ".join(dict.fromkeys(_assessment.warnings))
+        print(f"\n  ⚠ Experimental DFlash: {warnings}.\n")
     args._dflash_profile = _profile
     args._dflash_drafter_repo = _drafter
     args._dflash_experimental = _assessment.recommendation != "verified"
@@ -4817,8 +4817,9 @@ def _preflight_ddtree_or_exit(args):
     except DDTreeUnavailable as e:
         print(f"\n  Error: {e}\n")
         sys.exit(1)
-    for warning in assessment.warnings:
-        print(f"\n  ⚠ Experimental DDTree: {warning}.\n")
+    if assessment.warnings:
+        warnings = "; ".join(dict.fromkeys(assessment.warnings))
+        print(f"\n  ⚠ Experimental DDTree: {warnings}.\n")
     if not have_runtime():
         from rapid_mlx.speculative.ddtree.runtime import DDTREE_INSTALL_COMMAND
 

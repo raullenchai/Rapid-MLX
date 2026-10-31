@@ -2618,7 +2618,8 @@ def load_dflash_runtime(
                 "no speedup or may be slower than autoregressive decoding."
             )
         if not registry_verified_pair:
-            logger.warning(
+            log = logger.debug if experimental_opt_in else logger.warning
+            log(
                 "Experimental DFlash: this 4-bit target/drafter pair has not "
                 "been performance-validated by Rapid-MLX and may be slower"
             )

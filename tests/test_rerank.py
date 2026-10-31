@@ -1808,7 +1808,12 @@ def test_retrieval_only_mode_loads_both_models(monkeypatch):
         "_load_rerank_model_or_exit",
         lambda args, fn: events.append(("rerank", fn is stub_server.load_rerank_model)),
     )
-    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_k: events.append("run"))
+
+    def run_uvicorn(*_args, **kwargs):
+        assert kwargs.get("on_server_accepting") is None
+        events.append("run")
+
+    monkeypatch.setattr(cli, "_run_uvicorn", run_uvicorn)
     monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     args = types.SimpleNamespace(
         embedding_model="embed",
@@ -2258,3 +2263,17 @@ def test_local_jina_positive_checked_load(tmp_path, monkeypatch):
     monkeypatch.setattr(mlx_lm.utils, "load_model", load)
     monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", load_tokenizer)
     assert _load_jina(str(tmp_path)) == (model, tokenizer)
+
+
+def test_jina_family_display_label_identifies_version():
+    from rapid_mlx.rerank import FAMILIES, _family_display_label
+
+    family = FAMILIES["jina3"]
+    assert (
+        _family_display_label(family, "jinaai/jina-reranker-v3.5-mlx")
+        == "jina-reranker-v3.5"
+    )
+    assert (
+        _family_display_label(family, "mlx-community/jina-reranker-v3-4bit-mxfp4")
+        == "jina-reranker-v3"
+    )

@@ -215,3 +215,33 @@ def test_messages_stream_tool_enum_violation_emits_error_event():
     # message_delta still fires with end_turn so the SSE protocol closes
     # cleanly (no half-open stream).
     assert '"stop_reason": "end_turn"' in raw
+
+
+def test_messages_invalid_tool_name_uses_anthropic_field():
+    client = _make_client(_ToolCallEngine([]))
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "a" * 129, "input_schema": {"type": "object"}}],
+        },
+    )
+    assert response.status_code == 400, response.text
+    message = response.json()["detail"]
+    assert "tools[0].name must be a non-empty string of 1-128 characters" in message
+    assert "function.name" not in message
+
+
+def test_openai_tool_name_error_unchanged():
+    from pydantic import ValidationError
+
+    from rapid_mlx.api.models import ToolDefinition
+
+    with pytest.raises(ValidationError) as exc:
+        ToolDefinition(function={"name": "a" * 65})
+    assert (
+        exc.value.errors()[0]["msg"]
+        == "Value error, function.name must be a non-empty string of 1-64 characters matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec)."
+    )

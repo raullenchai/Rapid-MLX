@@ -1142,6 +1142,8 @@ class ToolDefinition(BaseModel):
     _name_pattern: ClassVar[re.Pattern] = _FUNCTION_NAME_PATTERN
     _name_max_length: ClassVar[int] = 64
     _name_spec: ClassVar[str] = "OpenAI spec"
+    _name_field: ClassVar[str] = "function.name"
+    _params_field: ClassVar[str] = "function.parameters"
 
     type: str = "function"
     # R10-H6: ``function`` is optional at the wire level so the
@@ -1217,7 +1219,7 @@ class ToolDefinition(BaseModel):
             # rule; the operator log captures the literal value if
             # needed.
             raise ValueError(
-                f"function.name must be a non-empty string of 1-{self._name_max_length} characters "
+                f"{self._name_field} must be a non-empty string of 1-{self._name_max_length} characters "
                 f"matching ^[a-zA-Z0-9_-]{{1,{self._name_max_length}}}$ "
                 f"(per {self._name_spec})."
             )
@@ -1247,7 +1249,7 @@ class ToolDefinition(BaseModel):
             cap = resolve_max_tool_schema_depth()
             if cap > 0 and json_nesting_depth_exceeds(params, cap):
                 raise ValueError(
-                    f"function.parameters JSON nesting depth exceeds the "
+                    f"{self._params_field} JSON nesting depth exceeds the "
                     f"{cap}-level server cap (set via "
                     "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH)."
                 )
@@ -1260,6 +1262,8 @@ class AnthropicToolDefinition(ToolDefinition):
     _name_pattern: ClassVar[re.Pattern] = _ANTHROPIC_TOOL_NAME_PATTERN
     _name_max_length: ClassVar[int] = MAX_TOOL_NAME_LENGTH
     _name_spec: ClassVar[str] = "Anthropic Messages API"
+    _name_field: ClassVar[str] = "name"
+    _params_field: ClassVar[str] = "input_schema"
 
 
 # =============================================================================

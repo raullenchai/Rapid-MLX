@@ -397,3 +397,26 @@ def test_experimental_pair_without_drafter_names_declared_drafter() -> None:
     joined = " ".join(result.reasons)
     assert "requires an explicit drafter" in joined
     assert repr(profile.dflash_draft_model) in joined
+
+
+def test_cli_combines_experimental_warnings(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from rapid_mlx.cli import _resolve_dflash_launch_or_exit
+    from rapid_mlx.speculative import dflash
+    from rapid_mlx.speculative.dflash import eligibility
+
+    monkeypatch.setattr(
+        eligibility,
+        "report",
+        lambda *a, **k: SimpleNamespace(
+            warnings=["first warning", "second warning", "first warning"],
+            recommendation="experimental",
+        ),
+    )
+    monkeypatch.setattr(dflash, "check", lambda *a, **k: None)
+    _resolve_dflash_launch_or_exit(SimpleNamespace(model="unknown/model"))
+    out = capsys.readouterr().out
+    assert out.count("Experimental DFlash") == 1
+    assert out.count("first warning") == 1
+    assert "second warning" in out

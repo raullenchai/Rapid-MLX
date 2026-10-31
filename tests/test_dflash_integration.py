@@ -294,7 +294,7 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
     monkeypatch.setattr(
         "rapid_mlx._uvicorn._run_server", lambda *_args, **_kwargs: None
     )
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("DEBUG"):
         srv.run_dflash_server(
             main_model_repo="user/target-4bit",
             drafter_repo="user/drafter",
@@ -308,7 +308,11 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
             uvicorn_log_level="error",
         )
 
-    assert "has not been performance-validated" in caplog.text
+    assert any(
+        "has not been performance-validated" in record.message
+        and record.levelname == "DEBUG"
+        for record in caplog.records
+    )
 
 
 def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:

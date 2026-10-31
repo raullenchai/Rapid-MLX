@@ -569,7 +569,11 @@ class RerankEngine:
                 "remove --rerank-prompt"
             )
 
-        logger.info("Loading rerank model: %s (%s)", self.model_name, family.label)
+        logger.info(
+            "Loading rerank model: %s (%s)",
+            self.model_name,
+            _family_display_label(family, self.model_name),
+        )
         start = time.perf_counter()
         # Untyped config.json value, validated by _resolve_max_length.
         model_max: Any
@@ -1100,3 +1104,9 @@ class RerankEngine:
         return RerankScores(
             scores=scores, prompt_tokens=sum(len(ids) for ids in sequences)
         )
+
+
+def _family_display_label(family: RerankFamily, model_name: str) -> str:
+    if family.family_id == "jina3" and "v3.5" in model_name.lower():
+        return "jina-reranker-v3.5"
+    return family.label
