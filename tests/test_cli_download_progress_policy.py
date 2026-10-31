@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI startup applies download progress policy before command dispatch."""
 
+import json
 import os
+import subprocess
 import sys
 from types import ModuleType
 
@@ -98,17 +100,64 @@ def test_startup_respects_overrides(
     assert os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == expected
 
 
-def test_startup_sets_inheritable_policy_without_importing_hub(
-    monkeypatch, cli_environment
-):
-    monkeypatch.delitem(sys.modules, "huggingface_hub", raising=False)
+def test_startup_sets_inheritable_policy_without_importing_hub(tmp_path):
+    script = """
+import json
+import os
+import sys
+from rapid_mlx import cli
 
-    def dispatch(args):
-        assert "huggingface_hub" not in sys.modules
-        assert os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "1"
+def hub_loaded():
+    return any(m == "huggingface_hub" or m.startswith("huggingface_hub.") for m in sys.modules)
 
-    monkeypatch.setattr(cli, "chat_command", dispatch)
-    monkeypatch.setattr(
-        sys, "argv", ["rapid-mlx", "chat", "mlx-community/Qwen3-0.6B-4bit"]
-    )
+assert not hub_loaded()
+
+from rapid_mlx import _hf_logging
+
+original_quiet = _hf_logging.quiet_hf_progress_bars_off_terminal
+loaded_at_policy = []
+
+def quiet():
+    if not loaded_at_policy:
+        loaded_at_policy.append(hub_loaded())
+    return original_quiet()
+
+_hf_logging.quiet_hf_progress_bars_off_terminal = quiet
+
+def dispatch(args):
+    loaded = hub_loaded()
+    bars_disabled = None
+    if loaded:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        bars_disabled = are_progress_bars_disabled()
+    print(json.dumps({"env": os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS"), "hub_loaded": loaded, "bars_disabled": bars_disabled, "loaded_at_policy": loaded_at_policy}))
+
+cli.chat_command = dispatch
+sys.argv = ["rapid-mlx", "chat", "mlx-community/Qwen3-0.6B-4bit"]
+try:
     cli.main()
+except SystemExit:
+    pass
+"""
+    env = os.environ.copy()
+    env.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+    env.pop("RAPID_MLX_PROCESS_ROLE", None)
+    env.update(
+        RAPID_MLX_TELEMETRY="0",
+        DO_NOT_TRACK="1",
+        HOME=str(tmp_path),
+        RAPID_MLX_STATE_DIR=str(tmp_path),
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    observed = json.loads(result.stdout)
+    assert observed["env"] == "1"
+    assert observed["loaded_at_policy"] == [False]
+    if observed["hub_loaded"]:
+        assert observed["bars_disabled"] is True
