@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 def _remote_code_consent_error(exc: Exception) -> HTTPException | None:
     """Find consent refusals in a bounded exception chain."""
-    current = exc
-    seen = set()
+    current: BaseException | None = exc
+    seen: set[int] = set()
     for _ in range(6):
         if current is None:
             break
