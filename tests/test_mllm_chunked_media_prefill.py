@@ -186,6 +186,30 @@ def test_chunked_media_metadata_and_last_token(monkeypatch):
     ]
 
 
+def test_cooperative_prefill_remove_stops_remaining_chunks(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.processor = SimpleNamespace(tokenizer=object())
+    gen._stats = SimpleNamespace(prompt_tokens=0, prompt_time=0.0)
+    gen.active_batch = None
+    gen.cooperative_prefill = True
+    gen.completion_batch_size = 1
+    gen._pending_prefill = None
+    req = request()
+    gen.unprocessed_requests = [req]
+    monkeypatch.setattr(gen, "_preprocess_request", lambda req: None)
+    monkeypatch.setattr(gen, "_lookup_exact_text_prefix", lambda req: [Cache()])
+
+    assert gen._next_unlocked() == []
+    assert len(gen.language_model.calls) == 1
+    assert gen._next_unlocked() == []
+    assert len(gen.language_model.calls) == 2
+    gen.remove([req.uid])
+    assert gen._pending_prefill is None
+    assert req not in gen.unprocessed_requests
+    assert gen._next_unlocked() == []
+    assert len(gen.language_model.calls) == 2
+
+
 def test_chunked_media_respects_budget_below_prefill_step(monkeypatch):
     gen = generator(monkeypatch)
     gen.prefill_step_size = 16
@@ -351,3 +375,14 @@ def test_store_prefix_and_suffix_are_chunked(monkeypatch):
     assert gen.model.embeddings == [10]
     assert [call[0] for call in gen.language_model.calls] == [4, 4, 1, 1]
     assert suffix == [(4, 10), (4, 14), (2, 18)]
+
+
+def test_chunked_media_prefill_yields_between_chunks(monkeypatch):
+    gen = generator(monkeypatch)
+    steps = gen._vision_encoding_steps(request(), [Cache()])
+    next(steps)
+    assert len(gen.language_model.calls) == 1
+    next(steps)
+    assert len(gen.language_model.calls) == 2
+    steps.close()
+    assert len(gen.language_model.calls) == 2
