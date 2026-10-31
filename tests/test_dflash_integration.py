@@ -1859,10 +1859,101 @@ def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
         for choice in payload.get("choices", [])
         if choice.get("delta", {}).get("tool_calls")
     ]
+    for payload in payloads:
+        for choice in payload.get("choices", []):
+            delta = choice["delta"]
+            if delta.get("tool_calls") and not delta.get("content"):
+                assert "content" in delta and delta["content"] is None
     assert tool_deltas[0][0]["function"]["name"] == "get_weather"
     assert '"city": "Paris"' in tool_deltas[0][0]["function"]["arguments"]
     assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
     assert "<tool_call>" not in body
+
+
+@_skip_without_mlx_vlm
+def test_chat_completions_streams_reasoning_and_tool_calls(monkeypatch) -> None:
+    import json
+
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+    from fastapi.testclient import TestClient
+    from openai.types.chat import ChatCompletionChunk
+
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    monkeypatch.setattr(
+        mlx_vlm.prompt_utils, "apply_chat_template", lambda *a, **k: "prompt"
+    )
+
+    def _stream(*args, **kwargs):
+        for index, text in enumerate(
+            (
+                "<think>plan</think>",
+                '<tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>',
+            ),
+            start=1,
+        ):
+            yield SimpleNamespace(
+                text=text, token=index, prompt_tokens=8, generation_tokens=index
+            )
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", _stream)
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(), kind="dflash", drafter_repo="test-drafter"
+        ),
+        served_model_name="test-model",
+        default_max_tokens=512,
+        cors_origins=["*"],
+        tool_call_parser="hermes",
+        reasoning_parser_name="qwen3",
+    )
+    with TestClient(app, base_url="http://127.0.0.1").stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather in Paris?"}],
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+    ) as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes()).decode()
+
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: {")
+    ]
+    reasoning_deltas = []
+    tool_deltas = []
+    for payload in payloads:
+        chunk = ChatCompletionChunk.model_validate(payload)
+        delta = payload["choices"][0]["delta"]
+        if delta.get("reasoning_content") and not delta.get("tool_calls"):
+            reasoning_deltas.append(delta)
+            assert delta["content"] == ""
+        if delta.get("tool_calls"):
+            tool_deltas.append(delta)
+            assert "content" in delta and delta["content"] is None
+            assert chunk.choices[0].delta.content is None
+    assert reasoning_deltas
+    assert tool_deltas
 
 
 def test_chat_completions_rejects_empty_messages() -> None:
