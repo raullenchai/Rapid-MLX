@@ -17,9 +17,18 @@ can actually understand.
 
 ## [Unreleased]
 
-### Changed
+## [1.0.1] — 2026-10-30
 
-- The anonymous first-run funnel now says why a model download or the first engine start failed, as one cause from a fixed list (plus the download source). No error text, paths, or model names are sent. (#5401)
+Desktop improves Speech to Text settings, adds new speech models and fixes settings papercuts.
+
+### Desktop
+
+- **Speech to Text settings**: download other speech models in place; sizes use one format and match Model Management; model names are no longer truncated and download progress is steadier. ([#5374](https://github.com/raullenchai/Rapid-MLX/pull/5374), [#5377](https://github.com/raullenchai/Rapid-MLX/pull/5377))
+- **New speech models**: Granite Speech, FireRedASR2 and Nemotron ASR appear in Speech to Text. ([#5381](https://github.com/raullenchai/Rapid-MLX/pull/5381))
+- **Settings**: the "Release model when idle" row is no longer clipped, and model search points to matches on other tabs. ([#5374](https://github.com/raullenchai/Rapid-MLX/pull/5374))
+- **Share Compute Credits** is fully translated in Simplified Chinese. ([#5371](https://github.com/raullenchai/Rapid-MLX/pull/5371))
+- **First-run diagnostics**: the anonymous first-run funnel now says why a model download or the first engine start failed, as one cause from a fixed list (plus the download source). No error text, paths, or model names are sent. ([#5404](https://github.com/raullenchai/Rapid-MLX/pull/5404))
+- **Faster start from an external model folder**: Qwen3.8-27B models with a built-in MTP head no longer re-download their weights. ([#5396](https://github.com/raullenchai/Rapid-MLX/pull/5396))
 
 ## [1.0.0] — 2026-10-29
 
@@ -4544,7 +4553,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...HEAD
+[1.0.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...rapid-mac-v1.0.1
 [1.0.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v1.0.0
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
