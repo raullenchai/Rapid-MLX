@@ -67,19 +67,45 @@ def test_installer_recommends_a_command_that_works_on_a_base_install():
 
 
 def test_installer_labels_every_web_ui_mention_with_its_extra():
-    """EVERY echo line naming rapid-mlx-chat must carry the prerequisite on
-    that same line — one unlabeled mention anywhere is the papercut back."""
-    web_lines = [ln for ln in _chat_echo_lines() if "rapid-mlx-chat" in ln]
+    """Web UI hints require an install instruction or an importability guard."""
+    lines = _quickstart_block().splitlines()
+    web_lines = [
+        (i, ln)
+        for i, ln in enumerate(lines)
+        if ln.strip().startswith("echo") and "rapid-mlx-chat" in ln
+    ]
     assert web_lines, (
         "the quick-start no longer mentions rapid-mlx-chat at all — the web "
         "UI must stay discoverable, labeled with its prerequisite"
     )
-    for ln in web_lines:
-        assert "rapid-mlx[chat]" in ln, (
-            "web-UI mention without its [chat]-extra prerequisite on the same "
-            f"line: {ln!r}"
-        )
-        assert "${INSTALL_DIR}/bin/python -m pip install" in ln
+    for i, ln in web_lines:
+        if "rapid-mlx[chat]" in ln:
+            assert "${INSTALL_DIR}/bin/python -m pip install" in ln
+            continue
+
+        preceding = next((line for line in reversed(lines[:i]) if line.strip()), "")
+        assert (
+            preceding.strip().startswith("if ") and 'find_spec("gradio")' in preceding
+        ), f"unlabeled web-UI mention without a gradio guard: {ln!r}"
+        indent = preceding[: len(preceding) - len(preceding.lstrip())]
+        branch = []
+        in_else = False
+        for line in lines[i + 1 :]:
+            if line == f"{indent}fi":
+                break
+            if line == f"{indent}else":
+                in_else = True
+            elif in_else:
+                branch.append(line)
+        else:
+            pytest.fail(f"gradio guard has no closing fi: {preceding!r}")
+        assert in_else and any(
+            line.strip().startswith("echo")
+            and "rapid-mlx-chat" in line
+            and "rapid-mlx[chat]" in line
+            and "${INSTALL_DIR}/bin/python -m pip install" in line
+            for line in branch
+        ), f"gradio guard has no labeled web-UI hint in its else branch: {ln!r}"
 
 
 # ------------------------------------------------------- gradio_app fallback

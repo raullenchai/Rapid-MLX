@@ -300,6 +300,23 @@ if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/
     mkdir -p "$SITE/rmlx_fixture_incompatible-0.6.3.dist-info"
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-incompatible\nVersion: 0.6.3\n' > "$SITE/rmlx_fixture_incompatible-0.6.3.dist-info/METADATA"
     check "rejects extras with incompatible installed versions" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
+
+    cp "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" "$WORK/extras-metadata"
+    cat > "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: rapid-mlx
+Version: 1.0.0
+Requires-Dist: rmlx-fixture-audio-base>=0.5
+Requires-Dist: rmlx-fixture-audio-base<0.6; extra == "audio"
+Requires-Dist: rmlx-fixture-audio-only-pkg; extra == "audio"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info" "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.6.3\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-only-pkg\nVersion: 1.0\n' > "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info/METADATA"
+    check "rejects extra with incompatible base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" ""
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.5.9\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
+    check "selects extra with compatible base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio"
+    cp "$WORK/extras-metadata" "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"
 fi
 if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null; then
     cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'

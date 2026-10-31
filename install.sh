@@ -207,7 +207,7 @@ for extra, requirements in extras.items():
     distinct = [(name, req) for name, req in requirements if name not in base]
     if (extra not in {"dev", "test", "all"} and not extra.startswith("ci-") and distinct
             and all(name in installed and (req is None or req.specifier.contains(installed[name], prereleases=True))
-                    for name, req in distinct)):
+                    for name, req in requirements)):
         selected.append(extra)
 if selected:
     print(",".join(sorted(selected)))
