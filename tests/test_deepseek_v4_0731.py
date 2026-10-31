@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from rapid_mlx.model_aliases import list_profiles
 from rapid_mlx.tool_parsers import ToolParserManager
 from rapid_mlx.utils.chat_template import apply_chat_template
@@ -593,3 +595,27 @@ def test_hf_added_token_metadata_is_normalized():
     }
     assert _special_token_text(token, "<s>") == "<｜begin▁of▁sentence｜>"
     assert _special_token_text(None, "<unk>") == "<unk>"
+
+
+@pytest.mark.parametrize("parser_name", ["deepseek_v4_0731", "deepseek_v4_flash"])
+def test_dsml_parser_ignores_invokes_outside_envelopes(parser_name):
+    parser = ToolParserManager.get_tool_parser(parser_name)(None)
+
+    def invoke(path):
+        return (
+            '<｜DSML｜invoke name="delete_file">'
+            f'<｜DSML｜parameter name="path" string="true">{path}'
+            "</｜DSML｜parameter></｜DSML｜invoke>"
+        )
+
+    output = (
+        invoke("keep.txt")
+        + " No, keep that file. "
+        + "<｜DSML｜tool_calls>"
+        + invoke("temporary.txt")
+        + "</｜DSML｜tool_calls>"
+    )
+    result = parser.extract_tool_calls(output)
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["name"] == "delete_file"
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"path": "temporary.txt"}
