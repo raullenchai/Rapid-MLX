@@ -828,6 +828,8 @@ def launcher_interpreter(first_line: str, second_line: str) -> str | None:
             r"^'''exec' (?:'([^']+)'|\"([^\"]+)\"|(\S+)) \"\$0\" \"\$@\"",
             second_line,
         )
+        if match and match.group(2) and any(c in match.group(2) for c in "$`\\"):
+            return None
         return (
             next((group for group in match.groups() if group), None) if match else None
         )
