@@ -673,7 +673,7 @@ def _audio_duration_seconds(
                 return duration
     except Exception:  # noqa: BLE001
         pass
-    if not allow_decode or not os.path.isfile(audio_path):
+    if not allow_decode:
         return None
     return _decoded_audio_duration(audio_path)
 
