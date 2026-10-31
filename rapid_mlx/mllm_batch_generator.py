@@ -1973,6 +1973,17 @@ class MLLMBatchGenerator:
             return None
         return self._vision_token_count(input_ids) if chunked else input_ids.size
 
+    def _media_prefill_chunk_tokens(self) -> int:
+        """Keep media chunks within the per-request vision prefill budget.
+
+        Every prompt admitted over the budget can be chunked, and each chunk
+        stays within it.
+        """
+        chunk = effective_mllm_prefill_chunk(self.prefill_step_size)
+        budget = getattr(self, "vision_prefill_token_budget", 0)
+        budget = int(budget) if isinstance(budget, int) and budget > 0 else chunk
+        return max(1, min(chunk, budget))
+
     def _chunked_media_lm_prefill(self, input_ids, cache, kwargs):
         emb = self.model.get_input_embeddings(
             input_ids,
@@ -1998,7 +2009,7 @@ class MLLMBatchGenerator:
             }
         )
         inputs_embeds = emb.inputs_embeds
-        chunk = effective_mllm_prefill_chunk(self.prefill_step_size)
+        chunk = self._media_prefill_chunk_tokens()
         for start in range(0, input_ids.shape[1] - 1, chunk):
             end = min(start + chunk, input_ids.shape[1] - 1)
             self.language_model(
@@ -2019,11 +2030,7 @@ class MLLMBatchGenerator:
         )
 
     def _media_chunked_suffix_forward(self, ids, cache, delta, chunked):
-        chunk = (
-            effective_mllm_prefill_chunk(self.prefill_step_size)
-            if chunked
-            else ids.shape[1]
-        )
+        chunk = self._media_prefill_chunk_tokens() if chunked else ids.shape[1]
         for start in range(0, ids.shape[1], chunk):
             if start:
                 mx.eval([c.state for c in cache])
@@ -4149,9 +4156,7 @@ class MLLMBatchGenerator:
         published = False
         self._media_mrope_save()
         try:
-            if chunked and boundary > effective_mllm_prefill_chunk(
-                self.prefill_step_size
-            ):
+            if chunked and boundary > self._media_prefill_chunk_tokens():
                 self._chunked_media_lm_prefill(
                     input_ids[:, :boundary], cache, prefix_kwargs
                 )
@@ -4480,7 +4485,7 @@ class MLLMBatchGenerator:
             # forward, which is the media cold path with no snapshot.
             chunked = (
                 request.pixel_values is not None
-                and prompt_length > chunk
+                and prompt_length > self._media_prefill_chunk_tokens()
                 and self._media_prefill_chunkable(request, cache)
             )
             if (

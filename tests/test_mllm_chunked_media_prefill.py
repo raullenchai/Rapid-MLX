@@ -73,6 +73,7 @@ def generator(monkeypatch):
     gen.model = Model()
     gen.language_model = LanguageModel()
     gen.prefill_step_size = 4
+    gen.vision_prefill_token_budget = 8192
     monkeypatch.setattr(gen, "_media_boundary_plan", lambda *args: None)
     monkeypatch.setattr(mx, "eval", lambda *args: None)
     monkeypatch.setattr(mx, "clear_cache", lambda: None)
@@ -120,6 +121,31 @@ def test_chunked_media_metadata_and_last_token(monkeypatch):
         False,
         False,
     ]
+
+
+def test_chunked_media_respects_budget_below_prefill_step(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.prefill_step_size = 16
+    gen.vision_prefill_token_budget = 4
+    req = request(11)
+    req.chunked_media_prefill = True
+
+    run(gen, req, [Cache()])
+
+    assert gen.model.embeddings == [11]
+    assert [call[0] for call in gen.language_model.calls] == [4, 4, 2, 1]
+    assert all(
+        call[0] <= gen.vision_prefill_token_budget for call in gen.language_model.calls
+    )
+
+
+@pytest.mark.parametrize("budget", [16, 0, -1])
+def test_media_prefill_chunk_uses_effective_chunk_for_large_or_nonpositive_budget(
+    monkeypatch, budget
+):
+    gen = generator(monkeypatch)
+    gen.vision_prefill_token_budget = budget
+    assert gen._media_prefill_chunk_tokens() == 4
 
 
 def test_chunked_media_with_arrays_cache(monkeypatch):
