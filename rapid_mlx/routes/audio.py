@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import wave
+import weakref
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -1582,13 +1583,16 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-_aiff_transcode_semaphore = threading.BoundedSemaphore(1)
+_aiff_transcode_semaphores = weakref.WeakKeyDictionary()
 
 
-def _transcode_aiff_serialized(source: str, destination: str) -> None:
-    """Hold the slot until the worker has finished, even on cancellation."""
-    with _aiff_transcode_semaphore:
-        _transcode_aiff_to_wav(source, destination)
+def _get_aiff_transcode_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    semaphore = _aiff_transcode_semaphores.get(loop)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(1)
+        _aiff_transcode_semaphores[loop] = semaphore
+    return semaphore
 
 
 def _transcode_aiff_to_wav(source: str, destination: str) -> None:
@@ -1642,7 +1646,8 @@ async def _prepare_audio_for_engine(source: str, temp_paths: list[str]) -> str:
         return source
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav:
         temp_paths.append(wav.name)
-    await run_to_completion(_transcode_aiff_serialized, source, wav.name)
+    async with _get_aiff_transcode_semaphore():
+        await run_to_completion(_transcode_aiff_to_wav, source, wav.name)
     return wav.name
 
 
@@ -1775,6 +1780,30 @@ async def _run_stt_request(
                 **transcribe_kwargs,
             )
             _note_served_stt_engine(_stt_engine)
+
+        if result.duration is None:
+            if response_format in {"verbose_json", "srt", "vtt"}:
+                from ..audio import stt as _stt_mod
+
+                decode = getattr(_stt_mod, "_decoded_audio_duration", None)
+                if decode is not None:
+                    result.duration = await run_to_completion(decode, engine_path)
+            if result.duration is None:
+                for segment in reversed(result.segments or []):
+                    end = (
+                        segment.get("end")
+                        if isinstance(segment, dict)
+                        else getattr(segment, "end", None)
+                    )
+                    if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
+                        result.duration = end
+                        break
+            if result.duration is None and response_format == "json":
+                from ..audio import stt as _stt_mod
+
+                decode = getattr(_stt_mod, "_decoded_audio_duration", None)
+                if decode is not None:
+                    result.duration = await run_to_completion(decode, engine_path)
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually

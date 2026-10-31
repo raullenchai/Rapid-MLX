@@ -251,7 +251,8 @@ def test_concurrent_aiff_transcodes_do_not_overlap(tmp_path, monkeypatch):
 
     try:
         asyncio.run(prepare())
-        assert calls == 2
+        asyncio.run(prepare())
+        assert calls == 4
         assert max_active == 1
     finally:
         audio._cleanup_temp_audio(*temp_paths)

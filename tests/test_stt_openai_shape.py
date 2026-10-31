@@ -151,9 +151,7 @@ def test_garbage_upload_reports_supported_formats(client, monkeypatch):
     assert "Supported formats:" in message and "aiff" in message
 
 
-def test_non_whisper_duration_falls_back_to_segments_when_decode_fails(
-    tmp_path, monkeypatch
-):
+def test_non_whisper_duration_does_not_fall_back_to_segments(tmp_path, monkeypatch):
     from mlx_audio.stt import utils
 
     from rapid_mlx.audio import stt
@@ -174,13 +172,11 @@ def test_non_whisper_duration_falls_back_to_segments_when_decode_fails(
             text="hello", language="en", segments=[{"end": 1.25}]
         )
     )
-    assert engine.transcribe(path).duration == 1.25
+    assert engine.transcribe(path).duration is None
 
 
 @pytest.mark.parametrize("no_speech", [False, True])
-def test_decoded_duration_precedes_segments_and_vad_return(
-    tmp_path, monkeypatch, no_speech
-):
+def test_decoded_duration_only_for_whisper_tail_check(tmp_path, monkeypatch, no_speech):
     from rapid_mlx.audio import stt
 
     path = tmp_path / "unknown.audio"
@@ -209,7 +205,7 @@ def test_decoded_duration_precedes_segments_and_vad_return(
         )
         engine.model.generate = lambda *a, **kw: pytest.fail("backend must not run")
     result = engine.transcribe(path)
-    assert result.duration == 2.5
+    assert result.duration == (None if no_speech else 2.5)
     assert calls == [False]
     if no_speech:
         assert result.segments == []
@@ -251,13 +247,12 @@ def test_duration_ffprobe_uses_local_file_protocol(monkeypatch):
     ]
 
 
-def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypatch):
+def test_non_whisper_duration_does_not_decode(tmp_path, monkeypatch):
     import wave
 
     from mlx_audio.stt import utils
 
     from rapid_mlx.audio import stt
-    from rapid_mlx.routes.audio import _build_verbose_json_body
 
     path = tmp_path / "unknown.audio"
     path.write_bytes(b"audio")
@@ -269,7 +264,7 @@ def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypat
     monkeypatch.setattr(sf, "info", fail_probe)
     monkeypatch.setattr(stt.shutil, "which", lambda _: None)
     monkeypatch.setattr(
-        utils, "load_audio", lambda _: np.zeros(int(2.5 * stt._VAD_SAMPLE_RATE))
+        utils, "load_audio", lambda _: pytest.fail("unexpected duration decode")
     )
     engine = stt.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
     engine._loaded = True
@@ -277,10 +272,98 @@ def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypat
         generate=lambda *a, **kw: SimpleNamespace(text="hello", language="en")
     )
     result = engine.transcribe(path)
-    assert result.duration == 2.5
-    body = _build_verbose_json_body(result)
-    assert body["duration"] == 2.5
-    assert body["segments"][0]["end"] == 2.5
+    assert result.duration is None
+
+
+@pytest.mark.parametrize("endpoint", ["transcriptions", "translations"])
+@pytest.mark.parametrize(
+    "response_format", ["verbose_json", "json", "srt", "vtt", "text"]
+)
+def test_route_decodes_duration_only_when_needed(
+    client, monkeypatch, endpoint, response_format
+):
+    from rapid_mlx.audio import stt
+
+    paths = []
+    decoded = []
+
+    def transcribe(self, audio_path, language=None, task="transcribe"):
+        paths.append(audio_path)
+        return stt.TranscriptionResult(
+            text="hello",
+            duration=stt._audio_duration_seconds(audio_path, allow_decode=False),
+            segments=[],
+        )
+
+    def decode(path):
+        assert os.path.exists(path)
+        decoded.append(path)
+        return 2.5
+
+    monkeypatch.setattr(stt.STTEngine, "transcribe", transcribe, raising=False)
+    monkeypatch.setattr(stt, "_audio_duration_seconds", lambda *args, **kwargs: None)
+    monkeypatch.setattr(stt, "_decoded_audio_duration", decode)
+    response = client.post(
+        f"/v1/audio/{endpoint}",
+        data={"model": "whisper-large-v3", "response_format": response_format},
+        files={"file": ("tone.webm", b"audio", "audio/webm")},
+    )
+    assert response.status_code == 200, response.text
+    assert len(paths) == 1
+    assert decoded == ([] if response_format == "text" else paths)
+    if response_format in {"verbose_json", "json"}:
+        assert response.json()["duration"] == 2.5
+    elif response_format in {"srt", "vtt"}:
+        assert "00:00:02" in response.text
+
+
+def test_route_duration_falls_back_to_last_finite_positive_segment(client, monkeypatch):
+    from rapid_mlx.audio import stt
+
+    monkeypatch.setattr(
+        stt.STTEngine,
+        "transcribe",
+        lambda *args, **kwargs: stt.TranscriptionResult(
+            text="hello", segments=[{"end": 1.25}, {"end": float("nan")}]
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(stt, "_decoded_audio_duration", lambda _: None)
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "whisper-large-v3", "response_format": "verbose_json"},
+        files={"file": ("tone.webm", b"audio", "audio/webm")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["duration"] == 1.25
+
+
+def test_json_duration_falls_back_to_segment_without_decoding(client, monkeypatch):
+    from rapid_mlx.audio import stt
+
+    monkeypatch.setattr(stt, "_audio_duration_seconds", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        stt.STTEngine,
+        "transcribe",
+        lambda self, audio_path, **kwargs: stt.TranscriptionResult(
+            text="hello",
+            duration=stt._audio_duration_seconds(audio_path, allow_decode=False),
+            segments=[{"end": 1.25}],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        stt,
+        "_decoded_audio_duration",
+        lambda _: pytest.fail("unexpected duration decode"),
+    )
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "whisper-large-v3", "response_format": "json"},
+        files={"file": ("tone.webm", b"audio", "audio/webm")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["duration"] == 1.25
 
 
 def test_aiff_expansion_limit_cleans_up(client, monkeypatch):

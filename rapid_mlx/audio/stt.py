@@ -903,8 +903,6 @@ class STTEngine:
 
         audio_path = str(audio_path)
         source_duration = _audio_duration_seconds(audio_path, allow_decode=False)
-        if source_duration is None:
-            source_duration = _decoded_audio_duration(audio_path)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
@@ -1011,6 +1009,8 @@ class STTEngine:
                 if trim is not None and not trim.skipped and trim.has_speech:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
                 else:
+                    if source_duration is None:
+                        source_duration = _decoded_audio_duration(audio_path)
                     input_duration = source_duration
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
@@ -1033,18 +1033,10 @@ class STTEngine:
                 for seg in segments:
                     _shift_segment_time(seg, trim.offset_seconds)
 
-            # Calculate duration from segments if available
-            duration = source_duration
-            if duration is None and segments:
-                for segment in reversed(segments):
-                    end = _segment_value(segment, "end")
-                    if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
-                        duration = end
-                        break
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),
                 language=detected_lang,
-                duration=duration,
+                duration=source_duration,
                 segments=segments,
             )
         except Exception as e:
