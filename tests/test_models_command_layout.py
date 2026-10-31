@@ -361,3 +361,24 @@ def test_filters_do_not_silently_noop_on_other_views(capsys, other_flag, filter_
         models_command(SimpleNamespace(**args))
     assert exc.value.code == 2
     assert "cannot be combined" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "modality,section",
+    [
+        ("audio", "Audio models"),
+        ("video-gen", "Video models"),
+        ("image-gen", "Image models"),
+    ],
+)
+def test_non_text_modality_omits_text_table(capsys, modality, section):
+    out = _capture(capsys, modality=modality)
+    assert section in out
+    assert "Spec-Decode" not in out
+    assert "Spec tiers" not in out
+
+
+def test_text_modality_keeps_text_table(capsys):
+    out = _capture(capsys, modality="text")
+    assert "Spec-Decode" in out
+    assert "Spec tiers" in out

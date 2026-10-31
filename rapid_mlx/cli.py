@@ -11049,104 +11049,108 @@ def models_command(args):
             shown += len(audio_entries)
     print(f"  {title} ({shown} aliases)")
 
-    # Alias width is computed from the actual registry so new long names
-    # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
-    # rest of their row out of column alignment. 24 is the historical
-    # floor — never shrink below it so short rows still feel padded.
-    # Other widths sized to fit values currently in aliases.json:
-    # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
-    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7, preset 8.
-    alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
-    # Size ("438.3 GiB" is the widest current value) comes right after the
-    # alias so the "how big before I pull?" answer is the first thing a user
-    # sees next to the name (issue #1286). Values come from the checked-in
-    # model_sizes.json manifest — no per-invocation HuggingFace round-trip.
-    # Tools and Reasoning carry parser keys whose length is unbounded
-    # (``deepseek_r1_distill`` is 19 chars, wider than the old fixed 12).
-    # Size them to the data like the alias column so a long value never
-    # overflows and shifts every field to its right out of the header's
-    # columns (#1999). Preset is last, so its long ``MTP@…`` values can
-    # overrun harmlessly and stay unbounded.
-    tools_width = max(
-        16, max((len(p.tool_call_parser or "—") for p in profiles.values()), default=0)
-    )
-    reasoning_width = max(
-        12,
-        max((len(p.reasoning_parser or "—") for p in profiles.values()), default=0),
-    )
-    cols = (
-        ("Alias", alias_width),
-        ("Size", 10),
-        ("Tools", tools_width),
-        ("Reasoning", reasoning_width),
-        ("Spec-Decode", 10),
-        ("Suffix Tier", 11),
-        ("DFlash", 9),
-        ("DDTree", 9),
-        ("Preset", 8),
-    )
-    width = sum(w for _, w in cols) + len(cols) - 1
-    sep = "  " + "─" * width
-    header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
-    print(sep)
-    print(header)
-    print(sep)
-
-    from .spec_decode.capability import assess_method
-
-    for alias in sorted(profiles.keys()):
-        p = profiles[alias]
-        tools = p.tool_call_parser or "—"
-        reasoning = p.reasoning_parser or "—"
-        if getattr(p, "supports_native_mtp", False):
-            spec = "✓ MTP"
-            tier = "n/a"
-            preset = f"MTP@native@{p.mtp_speculative_tokens}"
-        elif p.mtp_draft_model:
-            spec = "✓ MTP"
-            tier = "n/a"
-            preset = f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}"
-        elif p.is_hybrid:
-            # Hybrid models cannot use spec-decode or suffix-decode regardless
-            # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
-            spec = "✗ hybrid"
-            tier = "n/a"
-        else:
-            spec = "✓" if p.supports_spec_decode else "✗"
-            tier = p.suffix_decoding_tier
-            preset = "Suffix" if p.supports_spec_decode else "—"
-        if (
-            p.is_hybrid
-            and not p.mtp_draft_model
-            and not getattr(p, "supports_native_mtp", False)
-        ):
-            preset = "—"
-
-        # DFlash column — eligible aliases show ✓, everything else "—" so
-        # the visual scan immediately surfaces what supports it. We don't
-        # re-run the eligibility gate here (which would also check that
-        # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
-        # registry column is pure declarative state.
-        def _tier_mark(profile, method: str) -> str:
-            assessment = assess_method(profile, method)
-            if assessment.recommendation == "verified":
-                return "verified"
-            if assessment.recommendation == "incompatible":
-                return "✗"
-            return "exp"
-
-        dflash = _tier_mark(p, "dflash")
-        ddtree = _tier_mark(p, "ddtree")
-        size = format_size(p.hf_path)
-        row = (
-            f"  {alias:<{alias_width}} {size:<10} {tools:<{tools_width}} "
-            f"{reasoning:<{reasoning_width}} "
-            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
+    if not modality or modality == "text":
+        # Alias width is computed from the actual registry so new long names
+        # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
+        # rest of their row out of column alignment. 24 is the historical
+        # floor — never shrink below it so short rows still feel padded.
+        # Other widths sized to fit values currently in aliases.json:
+        # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
+        # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7, preset 8.
+        alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
+        # Size ("438.3 GiB" is the widest current value) comes right after the
+        # alias so the "how big before I pull?" answer is the first thing a user
+        # sees next to the name (issue #1286). Values come from the checked-in
+        # model_sizes.json manifest — no per-invocation HuggingFace round-trip.
+        # Tools and Reasoning carry parser keys whose length is unbounded
+        # (``deepseek_r1_distill`` is 19 chars, wider than the old fixed 12).
+        # Size them to the data like the alias column so a long value never
+        # overflows and shifts every field to its right out of the header's
+        # columns (#1999). Preset is last, so its long ``MTP@…`` values can
+        # overrun harmlessly and stay unbounded.
+        tools_width = max(
+            16,
+            max((len(p.tool_call_parser or "—") for p in profiles.values()), default=0),
         )
-        print(row)
+        reasoning_width = max(
+            12,
+            max((len(p.reasoning_parser or "—") for p in profiles.values()), default=0),
+        )
+        cols = (
+            ("Alias", alias_width),
+            ("Size", 10),
+            ("Tools", tools_width),
+            ("Reasoning", reasoning_width),
+            ("Spec-Decode", 10),
+            ("Suffix Tier", 11),
+            ("DFlash", 9),
+            ("DDTree", 9),
+            ("Preset", 8),
+        )
+        width = sum(w for _, w in cols) + len(cols) - 1
+        sep = "  " + "─" * width
+        header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
+        print(sep)
+        print(header)
+        print(sep)
 
-    print(sep)
-    print("  Spec tiers: verified = curated; exp = explicit opt-in; ✗ = incompatible")
+        from .spec_decode.capability import assess_method
+
+        for alias in sorted(profiles.keys()):
+            p = profiles[alias]
+            tools = p.tool_call_parser or "—"
+            reasoning = p.reasoning_parser or "—"
+            if getattr(p, "supports_native_mtp", False):
+                spec = "✓ MTP"
+                tier = "n/a"
+                preset = f"MTP@native@{p.mtp_speculative_tokens}"
+            elif p.mtp_draft_model:
+                spec = "✓ MTP"
+                tier = "n/a"
+                preset = f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}"
+            elif p.is_hybrid:
+                # Hybrid models cannot use spec-decode or suffix-decode regardless
+                # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
+                spec = "✗ hybrid"
+                tier = "n/a"
+            else:
+                spec = "✓" if p.supports_spec_decode else "✗"
+                tier = p.suffix_decoding_tier
+                preset = "Suffix" if p.supports_spec_decode else "—"
+            if (
+                p.is_hybrid
+                and not p.mtp_draft_model
+                and not getattr(p, "supports_native_mtp", False)
+            ):
+                preset = "—"
+
+            # DFlash column — eligible aliases show ✓, everything else "—" so
+            # the visual scan immediately surfaces what supports it. We don't
+            # re-run the eligibility gate here (which would also check that
+            # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
+            # registry column is pure declarative state.
+            def _tier_mark(profile, method: str) -> str:
+                assessment = assess_method(profile, method)
+                if assessment.recommendation == "verified":
+                    return "verified"
+                if assessment.recommendation == "incompatible":
+                    return "✗"
+                return "exp"
+
+            dflash = _tier_mark(p, "dflash")
+            ddtree = _tier_mark(p, "ddtree")
+            size = format_size(p.hf_path)
+            row = (
+                f"  {alias:<{alias_width}} {size:<10} {tools:<{tools_width}} "
+                f"{reasoning:<{reasoning_width}} "
+                f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
+            )
+            print(row)
+
+        print(sep)
+        print(
+            "  Spec tiers: verified = curated; exp = explicit opt-in; ✗ = incompatible"
+        )
 
     # R10-C1: audio alias section. Pre-R10 ``rapid-mlx models`` listed
     # zero audio aliases because they don't live in ``aliases.json``
@@ -15927,6 +15931,12 @@ def main():
 
     silence_hf_unauthenticated_warning()
     quiet_transport_loggers("INFO")
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure) and not sys.stdout.isatty():
+        try:
+            reconfigure(line_buffering=True)
+        except (ValueError, OSError, AttributeError):
+            pass
     parser = build_parser()
     _version = _resolve_cli_version()
     # The subcommand help printer below needs the subparsers action;

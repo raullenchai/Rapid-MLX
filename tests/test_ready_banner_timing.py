@@ -358,3 +358,103 @@ def test_onboarding_shown_event_only_for_visible_once_tip(
     assert events == (["shown"] if visible else [])
     assert capsys.readouterr().out.count("Next:") == int(visible)
     assert (tmp_path / "state" / "first_serve_success").exists()
+
+
+@pytest.mark.parametrize(
+    "model,label,path",
+    [
+        ("whisper-base", "Transcribe", "/audio/transcriptions"),
+        ("kokoro", "Speak", "/audio/speech"),
+    ],
+)
+def test_audio_ready_banner_has_lane_command(monkeypatch, capsys, model, label, path):
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", model)
+    monkeypatch.setattr(cfg, "model_name", model)
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert label in out and path in out
+    assert "launch codex" not in out and "Anthropic:" not in out
+
+
+def test_audio_ready_banner_resolves_model_with_opaque_served_alias(
+    monkeypatch, capsys
+):
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", "gateway-stt")
+    monkeypatch.setattr(cfg, "model_name", "mlx-community/whisper-base-mlx")
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Transcribe" in out and "/audio/transcriptions" in out
+    assert "model=gateway-stt" in out
+    assert "launch codex" not in out
+
+
+def test_stt_ready_banner_hints_at_configured_api_key(monkeypatch, capsys):
+    cfg = get_config()
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", "whisper-base")
+    monkeypatch.setattr(cfg, "model_name", "whisper-base")
+    monkeypatch.setattr(cfg, "api_key", "sk-test")
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "  Auth: authenticated connections require RAPID_MLX_API_KEY." in out
+    assert "    export RAPID_MLX_API_KEY='<server-api-key>'" in out
+    assert (
+        'curl http://127.0.0.1:18732/v1/audio/transcriptions -H "Authorization: Bearer $RAPID_MLX_API_KEY"'
+        in out
+    )
+    assert "sk-test" not in out
+
+
+def test_retrieval_ready_banner_has_lane_commands(monkeypatch, capsys):
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "embedding_engine", object())
+    monkeypatch.setattr(cfg, "rerank_engine", object())
+    monkeypatch.setattr(cfg, "embedding_model_locked", "embed-model")
+    monkeypatch.setattr(cfg, "rerank_model_locked", "rank-model")
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Embeddings" in out and "/embeddings" in out
+    assert "Rerank" in out and "/rerank" in out
+    assert "launch codex" not in out and "Anthropic:" not in out
+
+
+@pytest.mark.parametrize(
+    "flag,path",
+    [
+        ("is_image_gen", "/images/generations"),
+        ("is_video_gen", "/videos"),
+    ],
+)
+def test_generation_ready_banner_has_authenticated_lane_command(
+    monkeypatch, capsys, flag, path
+):
+    from types import SimpleNamespace
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", "model's name")
+    monkeypatch.setattr(cfg, "model_name", "model's name")
+    monkeypatch.setattr(cfg, "api_key", "secret")
+    monkeypatch.setattr(server, "_engine", SimpleNamespace(**{flag: True}))
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Generate" in out and path in out
+    assert "Authorization: Bearer $RAPID_MLX_API_KEY" in out
+    assert "secret" not in out
+    assert "launch codex" not in out and "Anthropic:" not in out
