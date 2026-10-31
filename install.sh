@@ -116,7 +116,10 @@ import re
 try:
     from packaging.requirements import Requirement
 except ImportError:
-    Requirement = None
+    try:
+        from pip._vendor.packaging.requirements import Requirement
+    except ImportError:
+        Requirement = None
 
 def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()

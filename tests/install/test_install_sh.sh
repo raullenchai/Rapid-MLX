@@ -281,8 +281,22 @@ EOF
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-foo\nVersion: 1.0\n' > "$SITE/rmlx_fixture_foo-1.0.dist-info/METADATA"
     printf 'Metadata-Version: 2.1\nName: rmlx-fixture-bar\nVersion: 1.0\n' > "$SITE/rmlx_fixture_bar-1.0.dist-info/METADATA"
     check "evaluates Python-gated extras with packaging" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat,gated"
+    extras_with_gated="audio,chat,gated,vendored"
 else
     printf '  SKIP Python-gated extras: packaging is not importable\n'
+    extras_with_gated="audio,chat,vendored"
+fi
+if "$REAL_PYTHON" -I -c 'from pip._vendor.packaging.requirements import Requirement' 2>/dev/null; then
+    cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Requires-Dist: rmlx-fixture-vendor; python_version >= "3.0" and extra == "vendored"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_vendor-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-vendor\nVersion: 1.0\n' > "$SITE/rmlx_fixture_vendor-1.0.dist-info/METADATA"
+    printf 'raise ImportError("packaging intentionally unavailable")\n' > "$SITE/packaging.py"
+    check "evaluates Python-gated extras with pip vendored packaging" "$(installed_extras_of_venv "$EXTRAS_VENV")" "$extras_with_gated"
+    rm "$SITE/packaging.py"
+else
+    printf '  SKIP Python-gated extras: pip vendored packaging is not importable\n'
 fi
 cat > "$EXTRAS_VENV/bin/python" <<'EOF'
 #!/bin/bash
