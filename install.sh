@@ -428,7 +428,7 @@ validate_target() {
 }
 
 uv_config_absent() {
-    local dir config_dir result config_dirs=${XDG_CONFIG_DIRS:-}
+    local dir config_dir config_dirs=${XDG_CONFIG_DIRS:-}
     [ -z "${UV_CONFIG_FILE+x}" ] && [ -z "${UV_NO_CONFIG+x}" ] || return 1
     for config_dir in "${XDG_CONFIG_HOME:-$HOME/.config}" /etc "${config_dirs//:/$'\n'}"; do
         while IFS= read -r dir; do
@@ -440,12 +440,13 @@ uv_config_absent() {
     while :; do
         [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
         if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
-            if grep -Eq "^[[:space:]]*(\[{1,2}[[:space:]]*tool[[:space:]]*\.[[:space:]]*(\"uv\"|'uv'|uv)[[:space:]]*[].]|tool[[:space:]]*\.[[:space:]]*(\"uv\"|'uv'|uv)[[:space:]]*[.=])" "$dir/pyproject.toml" 2>/dev/null; then
-                return 1
-            else
-                result=$?
-                [ "$result" -eq 1 ] || return 1
-            fi
+            "$INSTALL_DIR/bin/python" -I -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    doc = tomllib.load(f)
+tool = doc.get("tool")
+sys.exit(not ("tool" not in doc or isinstance(tool, dict) and "uv" not in tool))
+' "$dir/pyproject.toml" </dev/null 2>/dev/null || return 1
         fi
         [ "$dir" = / ] && break
         dir=${dir%/*}

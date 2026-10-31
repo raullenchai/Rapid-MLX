@@ -261,13 +261,19 @@ run_package_command uv pip install
         ("[ tool . uv ]\n", False),
         ('[[ tool . "uv" . index ]]\n', False),
         ('tool.uv.index = "example"\n', False),
+        ('[tool]\nuv = { index-url = "https://example.invalid/simple" }\n', False),
+        ("[tool.uv\n", False),
         ("[tool.ruff]\n", True),
     ],
 )
 def test_uv_pyproject_spellings(tmp_path, content, absent):
     (tmp_path / "pyproject.toml").write_text(content)
+    bin_dir = tmp_path / "install" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python").symlink_to(sys.executable)
     result = run_bash(
-        "uv_config_absent",
+        'INSTALL_DIR="$1"; uv_config_absent',
+        tmp_path / "install",
         env={"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_CONFIG_DIRS": ""},
         cwd=tmp_path,
         capture_output=True,
