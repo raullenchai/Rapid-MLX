@@ -125,21 +125,18 @@ async def health():
         )
     elif engine is None:
         model_type = "llm"
-        try:
-            from ..audio.registry import resolve_audio_alias
+        from ..audio.registry import resolve_audio_alias
 
-            entry = next(
-                (
-                    entry
-                    for name in (cfg.model_alias, cfg.model_name, cfg.model_path)
-                    if (entry := resolve_audio_alias(name)) is not None
-                ),
-                None,
-            )
-            if entry is not None and entry.type in ("stt", "tts"):
-                model_type = entry.type
-        except Exception:
-            pass
+        entry = next(
+            (
+                entry
+                for name in (cfg.model_alias, cfg.model_name, cfg.model_path)
+                if (entry := resolve_audio_alias(name)) is not None
+            ),
+            None,
+        )
+        if entry is not None and entry.type in ("stt", "tts"):
+            model_type = entry.type
     else:
         model_type = "llm"
 
