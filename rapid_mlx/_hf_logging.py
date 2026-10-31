@@ -166,13 +166,20 @@ def quiet_transport_loggers(level_name: str) -> None:
 
 
 def quiet_hf_progress_bars_off_terminal() -> None:
-    """Disable Hub bars for redirected human output before workers start."""
+    """Disable redirected Hub bars early, including in child processes.
+
+    Preserve explicit settings, terminal output and Desktop sidecar progress.
+    Avoid importing the Hub solely to configure a future import.
+    """
     if "HF_HUB_DISABLE_PROGRESS_BARS" in os.environ:
         return
     try:
         from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
 
         if sys.stderr.isatty() or is_desktop_sidecar():
+            return
+        if "huggingface_hub" not in sys.modules:
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
             return
         from huggingface_hub.utils import disable_progress_bars
 

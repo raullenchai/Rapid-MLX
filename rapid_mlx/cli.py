@@ -15989,9 +15989,14 @@ def _capture_start_failures(func: Callable):
 
 @_capture_start_failures
 def main():
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
     silence_hf_unauthenticated_warning()
+    quiet_hf_progress_bars_off_terminal()
     quiet_transport_loggers("INFO")
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure) and not sys.stdout.isatty():
