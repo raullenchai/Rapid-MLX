@@ -159,7 +159,7 @@ def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys)
 
     warning = capsys.readouterr().out
     assert FLUX2_KLEIN_BF16_REPO in warning
-    assert "32 GB unified-memory floor" in warning
+    assert "32 GB of unified memory" in warning
 
 
 @pytest.mark.requires_mlx

@@ -273,10 +273,10 @@ family default shown below.
 <!-- image-model-matrix:start -->
 | Alias | Best fit | Modes | Download | Minimum unified memory | Default steps |
 | --- | --- | --- | ---: | ---: | ---: |
-| `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 12 GB | 4 |
+| `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 16 GB | 4 |
 | `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
 | `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
-| `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 16 GB | 4 |
+| `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 32 GB | 4 |
 | `sdxl-base` | SDXL compatibility | Generate | 6.5 GiB | 16 GB | 30 |
 | `flux2-klein-4b-bf16` | Explicit full-precision Klein path | Generate + edit | 14.9 GiB | 32 GB | 4 |
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
