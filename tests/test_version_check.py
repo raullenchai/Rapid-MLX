@@ -20,6 +20,20 @@ import pytest
 
 from rapid_mlx import _version_check as vc
 
+
+@pytest.fixture(autouse=True)
+def no_real_network_or_cache(monkeypatch, tmp_path):
+    import urllib.error
+
+    monkeypatch.setattr(vc, "_cache_path", lambda: tmp_path / "version_check.json")
+    monkeypatch.setattr(vc, "_prompt_floor_announced", None)
+
+    def offline(*args, **kwargs):
+        raise urllib.error.URLError("network disabled in tests")
+
+    monkeypatch.setattr(vc.urllib.request, "urlopen", offline)
+
+
 # --- _parse_version ---------------------------------------------------
 
 INF = float("inf")
@@ -711,6 +725,37 @@ def test_active_scripts_symlink_must_target_active_interpreter(tmp_path, monkeyp
     assert vc._launcher_belongs_to_running_install(str(launcher)) is True
 
 
+@pytest.mark.parametrize("shell", ["#!/bin/sh", "#!/bin/sh -"])
+@pytest.mark.parametrize("quoted", [True, False])
+def test_macos_pipx_trampoline_ownership(tmp_path, monkeypatch, shell, quoted):
+    home = tmp_path / "home"
+    venv = home / "Library" / "Application Support" / "pipx" / "venvs" / "rapid-mlx"
+    launcher = venv / "bin" / "rapid-mlx"
+    launcher.parent.mkdir(parents=True)
+    (venv / "pipx_metadata.json").write_text("managed")
+    python = launcher.parent / "python" if quoted else tmp_path / "python"
+    interpreter = f"'{python}'" if quoted else str(python)
+    launcher.write_text(f"{shell}\n'''exec' {interpreter} \"$0\" \"$@\"\n' '''\n")
+    monkeypatch.setattr(vc.sys, "executable", str(python))
+    monkeypatch.setattr(vc.sys, "platform", "darwin")
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: str(launcher))
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _name: MagicMock(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    for name in ("PIPX_HOME", "PIPX_GLOBAL_HOME", "UV_TOOL_DIR", "XDG_DATA_HOME"):
+        monkeypatch.delenv(name, raising=False)
+
+    info = vc.detect_install_method()
+    assert info.method == "pipx"
+    assert info.upgrade_argv == ["pipx", "upgrade", "rapid-mlx"]
+
+    monkeypatch.setattr(vc.sys, "executable", str(tmp_path / "different-python"))
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+
 def test_launcher_ownership_fails_closed_without_distribution(monkeypatch) -> None:
     monkeypatch.setattr(
         vc,
@@ -1266,3 +1311,162 @@ def test_install_sh_without_pip_uses_available_installer(tmp_path, monkeypatch, 
     import shlex
 
     assert shlex.split(info.upgrade_command) == expected
+
+
+@pytest.mark.parametrize(
+    "spec,version,expected",
+    [
+        (">=3.12", (3, 11, 9), False),
+        (">=3.12", (3, 12, 0), True),
+        ("garbage", (3, 11, 0), True),
+        (None, (3, 11, 0), True),
+    ],
+)
+def test_python_supports(spec, version, expected):
+    assert vc._python_supports(spec, version) is expected
+
+
+@pytest.mark.parametrize(
+    "fetch,body,expected",
+    [
+        ("python", {"info": {"requires_python": ">=3.12"}}, ">=3.12"),
+        ("python", {"info": {"requires_python": "x" * 201}}, None),
+        ("brew", {"versions": {"stable": "1.0.1"}}, "1.0.1"),
+        ("brew", {"versions": {"stable": "bad"}}, None),
+        ("brew", {}, None),
+    ],
+)
+def test_metadata_fetches(monkeypatch, fetch, body, expected):
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = json.dumps(body).encode()
+    opener = MagicMock(return_value=response)
+    monkeypatch.setattr(vc.urllib.request, "urlopen", opener)
+    result = (
+        vc._fetch_requires_python("1.0.1")
+        if fetch == "python"
+        else vc._fetch_brew_formula_version()
+    )
+    assert result == expected
+    request = opener.call_args.args[0]
+    assert request.get_header("User-agent") == vc.USER_AGENT
+    assert opener.call_args.kwargs["timeout"] == vc.NETWORK_TIMEOUT_SECONDS
+
+
+def test_metadata_fetches_fail_open(monkeypatch):
+    assert vc._fetch_requires_python("1.0.1") is None
+    assert vc._fetch_brew_formula_version() is None
+    monkeypatch.setattr(
+        vc.urllib.request,
+        "urlopen",
+        lambda *a, **k: pytest.fail("invalid version reached network"),
+    )
+    assert vc._fetch_requires_python("../bad") is None
+
+
+def test_cache_optional_fields(monkeypatch):
+    vc._write_cache("1.0.1", ">=3.12", "1.0.0")
+    assert vc._read_cache()["requires_python"] == ">=3.12"
+    assert vc._read_cache()["brew_stable"] == "1.0.0"
+    vc._cache_path().write_text(
+        json.dumps({"latest": "1.0.1", "requires_python": [], "brew_stable": "bad"})
+    )
+    cache = vc._read_cache()
+    assert cache == {"latest": "1.0.1"}
+    monkeypatch.setattr(
+        vc,
+        "_fetch_requires_python",
+        lambda version: pytest.fail("cache hit refetched spec"),
+    )
+    monkeypatch.setattr(vc, "_fetch_brew_formula_version", lambda: "1.0.1")
+    release = vc.get_release_info(need_brew=True)
+    assert release.requires_python is None
+    assert release.brew_stable == "1.0.1"
+    assert vc._read_cache()["brew_stable"] == "1.0.1"
+
+
+@pytest.mark.parametrize(
+    "method,spec,brew,expected",
+    [
+        ("pip", ">=3.12", None, "requires Python >=3.12"),
+        ("brew", None, "1.0.0", None),
+        ("brew", None, "1.0.1", "latest 1.0.1"),
+    ],
+)
+def test_eligibility_warning(monkeypatch, method, spec, brew, expected):
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda *a, **kw: vc.ReleaseInfo("1.0.2", spec, brew)
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    notice = vc.staleness_warning()
+    if expected is None:
+        assert notice is None
+    else:
+        assert expected in notice
+        if spec:
+            assert "run `rapid-mlx upgrade`" not in notice
+
+
+@pytest.mark.parametrize("method,block", [("pip", "python"), ("brew", "brew_lag")])
+def test_prompt_blocks_unavailable_upgrade(
+    monkeypatch, interactive, capsys, method, block
+):
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(vc.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda *a, **kw: vc.ReleaseInfo("1.0.1", ">=3.12", "1.0.0"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    with patch("builtins.input") as inp, patch("subprocess.run") as run:
+        assert not vc.prompt_upgrade_if_available()
+    inp.assert_not_called()
+    run.assert_not_called()
+    output = capsys.readouterr().err
+    assert ("requires Python" in output) == (block == "python")
+    if block == "python":
+        assert vc.print_staleness_warning_if_any(allow_non_tty=True) == "1.0.1"
+        assert capsys.readouterr().err == ""
+
+
+def test_fresh_process_version_uses_launcher(monkeypatch):
+    info = vc.InstallInfo("uv", "upgrade", ["upgrade"], "/tools/rapid-mlx")
+    monkeypatch.setattr(vc.os, "access", lambda *args: True)
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(
+            returncode=0, stdout="noise rapid-mlx 1.0.0\nrapid-mlx 1.0.1\n"
+        ),
+    ) as run:
+        assert vc.installed_version_in_fresh_process(info) == "1.0.1"
+    run.assert_called_once_with(
+        ["/tools/rapid-mlx", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_fresh_process_version_falls_back_to_python(monkeypatch):
+    info = vc.InstallInfo("pip", "upgrade", ["upgrade"])
+    with patch(
+        "subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="1.0.1\n")
+    ) as run:
+        assert vc.installed_version_in_fresh_process(info) == "1.0.1"
+    assert run.call_args.args[0][0:3] == [vc.sys.executable, "-I", "-c"]
+    with patch("subprocess.run", side_effect=OSError):
+        assert vc.installed_version_in_fresh_process(info) is None

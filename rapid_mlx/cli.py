@@ -15212,33 +15212,47 @@ def upgrade_command(args):
     """Detect install method and (optionally) run the right upgrade command."""
     import subprocess
 
-    from rapid_mlx._version_check import (
-        _installed_version,
-        _parse_version,
-        detect_install_method,
-        get_latest_version,
-    )
+    from rapid_mlx import _version_check as vc
 
-    current = _installed_version() or "dev"
+    current = vc._installed_version() or "dev"
     print()
     print(f"  Current:  rapid-mlx {current}")
 
-    latest = get_latest_version(force_refresh=True)
-    if latest is None:
+    info = vc.detect_install_method()
+    release = vc.get_release_info(force_refresh=True, need_brew=info.method == "brew")
+    if release is None:
         print("  Latest:   (could not reach GitHub — check your network)\n")
         sys.exit(1)
+    latest = release.latest
     print(f"  Latest:   rapid-mlx {latest}")
 
-    cur = _parse_version(current)
-    lat = _parse_version(latest)
+    cur = vc._parse_version(current)
+    lat = vc._parse_version(latest)
     if cur is not None and lat is not None and cur >= lat:
         print("\n  ✓ Already up to date.\n")
         return
 
-    info = detect_install_method()
+    block = vc._upgrade_block(current, release, info)
+    if block == "brew_lag":
+        print(
+            f"  rapid-mlx {latest} is released, but Homebrew has not published it yet (formula: {release.brew_stable})."
+        )
+        print("  Run `brew upgrade rapid-mlx` once it appears — usually within a day.")
+        return
     print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
     print(f"  Command:  {info.upgrade_command}")
     print()
+
+    if block == "python":
+        print(
+            f"  rapid-mlx {latest} requires Python {release.requires_python}; this install runs Python {sys.version_info.major}.{sys.version_info.minor} ({sys.executable})."
+        )
+        print(f"  `{info.upgrade_command}` would leave you on {current}. To upgrade:")
+        for line in vc.python_upgrade_instructions(info, release.requires_python):
+            print(f"  {line}")
+        if getattr(args, "dry_run", False):
+            return
+        sys.exit(1)
 
     if info.method == "unknown":
         print(
@@ -15291,7 +15305,38 @@ def upgrade_command(args):
         print("\n  Interrupted.\n")
         sys.exit(130)
     print()
-    sys.exit(result.returncode)
+    if result.returncode:
+        sys.exit(result.returncode)
+    verified = vc.installed_version_in_fresh_process(info)
+    if verified is None:
+        print("  Could not confirm the installed version; run `rapid-mlx --version`.")
+    elif (
+        lat is not None
+        and vc._parse_version(verified) is not None
+        and vc._parse_version(verified) >= lat
+    ):
+        print(f"  ✓ rapid-mlx is now {verified}.")
+    else:
+        print(
+            f"  ✗ The upgrade command finished, but rapid-mlx is still {verified} (latest is {latest})."
+        )
+        if info.method == "brew":
+            print(
+                f"  Homebrew may not offer {latest} yet. Run `brew update && brew upgrade rapid-mlx`, or try again later."
+            )
+        else:
+            print(
+                "  Your package index or a version pin may be holding it back. Check the output above."
+            )
+            if release.requires_python and not vc._python_supports(
+                release.requires_python
+            ):
+                for line in vc.python_upgrade_instructions(
+                    info, release.requires_python
+                ):
+                    print(f"  {line}")
+        sys.exit(1)
+    sys.exit(0)
 
 
 # The community Discord invite — the same one the README badge and

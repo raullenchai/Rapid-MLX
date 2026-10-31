@@ -34,6 +34,12 @@ Behaviour matrix:
   installed = 0.7.0, latest = 0.6.16 (dev ahead)
     → silent (don't nag developers running their own builds)
 
+  latest requires a newer Python
+    → explain how to move the install to a supported interpreter
+
+  Homebrew formula has not advanced
+    → silent until Homebrew offers a newer version
+
   no network / cache miss / GitHub 5xx
     → silent (fail-closed)
 """
@@ -87,6 +93,7 @@ _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 # dev builds compare exactly as before. Attached ``rc`` is handled below.
 _DOTTED_SUFFIX_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)\.\S+$")
 _RC_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)rc(\d+)$")
+_prompt_floor_announced: str | None = None
 
 
 def _cache_path() -> Path:
@@ -174,18 +181,31 @@ def _read_cache() -> dict | None:
             and isinstance(data.get("latest"), str)
             and _CACHED_VERSION_RE.fullmatch(data["latest"])
         ):
+            spec = data.get("requires_python")
+            if not isinstance(spec, str) or not spec or len(spec) > 200:
+                data.pop("requires_python", None)
+            brew = data.get("brew_stable")
+            if not isinstance(brew, str) or not _CACHED_VERSION_RE.fullmatch(brew):
+                data.pop("brew_stable", None)
             return data
         return None
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def _write_cache(latest: str) -> None:
+def _write_cache(
+    latest: str, requires_python: str | None = None, brew_stable: str | None = None
+) -> None:
     p = _cache_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("w") as f:
-            json.dump({"latest": latest, "ts": int(time.time())}, f)
+            data = {"latest": latest, "ts": int(time.time())}
+            if requires_python is not None:
+                data["requires_python"] = requires_python
+            if brew_stable is not None:
+                data["brew_stable"] = brew_stable
+            json.dump(data, f)
     except OSError:
         # Cache write failure is non-fatal — we'll just refetch next time.
         pass
@@ -277,6 +297,107 @@ def _fetch_latest() -> str | None:
         return None
 
 
+def _fetch_requires_python(version: str) -> str | None:
+    if not _CACHED_VERSION_RE.fullmatch(version):
+        return None
+    try:
+        req = urllib.request.Request(
+            f"https://pypi.org/pypi/rapid-mlx/{version}/json",
+            headers={"User-Agent": USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read())
+        info = data.get("info") if isinstance(data, dict) else None
+        spec = info.get("requires_python") if isinstance(info, dict) else None
+        return spec if isinstance(spec, str) and spec and len(spec) <= 200 else None
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        http.client.HTTPException,
+    ):
+        return None
+
+
+def _fetch_brew_formula_version() -> str | None:
+    try:
+        req = urllib.request.Request(
+            "https://formulae.brew.sh/api/formula/rapid-mlx.json",
+            headers={"User-Agent": USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read())
+        versions = data.get("versions") if isinstance(data, dict) else None
+        stable = versions.get("stable") if isinstance(versions, dict) else None
+        return (
+            stable
+            if isinstance(stable, str) and _CACHED_VERSION_RE.fullmatch(stable)
+            else None
+        )
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        http.client.HTTPException,
+    ):
+        return None
+
+
+def _python_supports(
+    requires_python: str | None, version_info=sys.version_info
+) -> bool:
+    if not requires_python:
+        return True
+    try:
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    except ImportError:
+        return True
+    try:
+        return SpecifierSet(requires_python).contains(
+            ".".join(str(part) for part in version_info[:3]), prereleases=True
+        )
+    except InvalidSpecifier:
+        return True
+
+
+class ReleaseInfo:
+    __slots__ = ("latest", "requires_python", "brew_stable")
+
+    def __init__(
+        self,
+        latest: str,
+        requires_python: str | None = None,
+        brew_stable: str | None = None,
+    ):
+        self.latest = latest
+        self.requires_python = requires_python
+        self.brew_stable = brew_stable
+
+
+def get_release_info(
+    force_refresh: bool = False, *, need_brew: bool = False
+) -> ReleaseInfo | None:
+    cached = None if force_refresh else _read_cache()
+    if cached is not None:
+        latest = cached["latest"]
+        spec = cached.get("requires_python")
+        brew = cached.get("brew_stable")
+        if need_brew and brew is None:
+            brew = _fetch_brew_formula_version()
+            if brew is not None:
+                _write_cache(latest, spec, brew)
+        return ReleaseInfo(latest, spec, brew)
+    latest = _fetch_latest()
+    if latest is None:
+        return None
+    spec = _fetch_requires_python(latest)
+    brew = _fetch_brew_formula_version() if need_brew else None
+    _write_cache(latest, spec, brew)
+    return ReleaseInfo(latest, spec, brew)
+
+
 def _installed_version() -> str | None:
     try:
         return pkg_version("rapid-mlx")
@@ -285,21 +406,9 @@ def _installed_version() -> str | None:
 
 
 def get_latest_version(force_refresh: bool = False) -> str | None:
-    """Return the latest GitHub release version, or None.
-
-    Cache-first to keep the CLI snappy. ``force_refresh=True`` is for
-    tests; production code path always tries cache.
-    """
-    if not force_refresh:
-        cached = _read_cache()
-        if cached is not None:
-            v = cached.get("latest")
-            if isinstance(v, str):
-                return v
-    latest = _fetch_latest()
-    if latest is not None:
-        _write_cache(latest)
-    return latest
+    """Return the latest GitHub release version, or None."""
+    release = get_release_info(force_refresh)
+    return release.latest if release else None
 
 
 def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
@@ -308,7 +417,7 @@ def staleness_warning(*, allow_non_tty: bool = False) -> str | None:
     None when no warning is warranted (current/ahead, or check disabled).
     """
     versions = _staleness_warning_versions(allow_non_tty=allow_non_tty)
-    return format_staleness_warning(*versions) if versions else None
+    return _format_available_warning(*versions) if versions else None
 
 
 def _staleness_warning_versions(*, allow_non_tty: bool) -> tuple[str, str] | None:
@@ -342,6 +451,17 @@ def _staleness_warning_versions(*, allow_non_tty: bool) -> tuple[str, str] | Non
     if latest <= installed:
         return None
 
+    try:
+        info = detect_install_method()
+        release = get_release_info(need_brew=info.method == "brew")
+        if release and release.latest == latest_str:
+            block = _upgrade_block(installed_str, release, info)
+            if block == "brew_lag":
+                return None
+            if info.method == "brew" and release.brew_stable:
+                latest_str = release.brew_stable
+    except Exception:  # noqa: BLE001 — version notices fail open
+        pass
     return installed_str, latest_str
 
 
@@ -364,7 +484,9 @@ def print_staleness_warning_if_any(*, allow_non_tty: bool = False) -> str | None
     try:
         versions = _staleness_warning_versions(allow_non_tty=allow_non_tty)
         if versions:
-            print(format_staleness_warning(*versions), file=sys.stderr)
+            if versions[1] == _prompt_floor_announced:
+                return versions[1]
+            print(_format_available_warning(*versions), file=sys.stderr)
             return versions[1]
     except Exception:  # noqa: BLE001 — never break the CLI
         pass
@@ -389,6 +511,7 @@ def prompt_upgrade_if_available() -> bool:
     interactive opt-in is safer than the silent banner's automatic
     cross-minor restraint.
     """
+    global _prompt_floor_announced
     try:
         if _disabled():
             return False
@@ -425,6 +548,23 @@ def prompt_upgrade_if_available() -> bool:
         import subprocess
 
         info = detect_install_method()
+        release = get_release_info(need_brew=info.method == "brew")
+        if release and release.latest == latest_str:
+            block = _upgrade_block(installed_str, release, info)
+            if block == "python":
+                if _prompt_floor_announced != latest_str:
+                    print(
+                        format_python_floor_warning(
+                            installed_str, latest_str, release.requires_python, info
+                        ),
+                        file=sys.stderr,
+                    )
+                    _prompt_floor_announced = latest_str
+                return False
+            if block == "brew_lag":
+                return False
+            if info.method == "brew" and release.brew_stable:
+                latest_str = release.brew_stable
         print(
             f"\nA newer rapid-mlx is available: {latest_str} "
             f"(current: {installed_str})."
@@ -500,6 +640,107 @@ class InstallInfo:
         self.binary_path = binary_path
 
 
+def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list[str]:
+    bounds = re.findall(r"(?:^|,)\s*>=\s*(\d+)\.(\d+)", requires_python)
+    minor = (
+        ".".join(min(bounds, key=lambda p: (int(p[0]), int(p[1]))))
+        if bounds
+        else "3.12"
+    )
+    installer = "curl -fsSL https://rapidmlx.com/install.sh | bash"
+    if info.method == "brew":
+        return ["brew upgrade rapid-mlx"]
+    if info.method == "install_sh":
+        return [
+            installer,
+            f"It rebuilds ~/.rapid-mlx on Python {minor}; your settings and downloaded models are kept.",
+        ]
+    if info.method == "uv":
+        return [f"uv tool upgrade --python {minor} rapid-mlx"]
+    if info.method == "pipx":
+        return [
+            f"Install Python {minor} first, e.g. `brew install python@{minor}`",
+            f"pipx reinstall --python python{minor} rapid-mlx",
+        ]
+    if info.method == "unknown" and info.upgrade_command.startswith("sudo pipx "):
+        return [f"sudo pipx reinstall --global --python python{minor} rapid-mlx"]
+    return [
+        f"Install Python {minor} or newer (e.g. `brew install python@{minor}`), then reinstall Rapid-MLX with it, e.g. in a new environment:",
+        f"python{minor} -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx",
+        f"or use the one-line installer: `{installer}`",
+    ]
+
+
+def _upgrade_block(
+    installed: str, release: ReleaseInfo, info: InstallInfo
+) -> str | None:
+    if info.method != "brew" and not _python_supports(release.requires_python):
+        return "python"
+    if info.method == "brew" and release.brew_stable:
+        current, stable = _parse_version(installed), _parse_version(release.brew_stable)
+        if current is not None and stable is not None and stable <= current:
+            return "brew_lag"
+    return None
+
+
+def format_python_floor_warning(
+    installed: str, latest: str, requires_python: str, info: InstallInfo
+) -> str:
+    del installed
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    lines = [
+        f"⚠ rapid-mlx {latest} requires Python {requires_python}; this install runs Python {version}, so `rapid-mlx upgrade` cannot move it."
+    ]
+    lines.extend(
+        f"  {line}" for line in python_upgrade_instructions(info, requires_python)
+    )
+    return "\n".join(lines)
+
+
+def _format_available_warning(installed: str, latest: str) -> str:
+    try:
+        info = detect_install_method()
+        release = get_release_info(need_brew=info.method == "brew")
+        if (
+            release
+            and release.latest == latest
+            and _upgrade_block(installed, release, info) == "python"
+        ):
+            return format_python_floor_warning(
+                installed, latest, release.requires_python, info
+            )
+    except Exception:  # noqa: BLE001 — version notices fail open
+        pass
+    return format_staleness_warning(installed, latest)
+
+
+def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
+    import subprocess
+
+    if info.binary_path and os.access(info.binary_path, os.X_OK):
+        argv = [info.binary_path, "--version"]
+        pattern = r"\brapid-mlx\s+(\d+\.\d+\.\d+(?:rc\d+|\.[^\s]+)?)"
+    else:
+        argv = [
+            sys.executable,
+            "-I",
+            "-c",
+            "import importlib.metadata as m; print(m.version('rapid-mlx'))",
+        ]
+        pattern = r"^\s*(\S+)\s*$"
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=60, check=False
+        )
+        if result.returncode:
+            return None
+        matches = re.findall(pattern, result.stdout, re.MULTILINE)
+        version = matches[-1] if matches else None
+        return version if version and _parse_version(version) is not None else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def _launcher_belongs_to_running_install(binary: str) -> bool:
     """Prove that a PATH launcher is owned by this interpreter's install.
 
@@ -517,12 +758,21 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
 
     resolved = Path(os.path.realpath(binary))
     try:
-        first_line = resolved.open("rb").readline(4096).decode("utf-8", "replace")
+        with resolved.open("rb") as launcher:
+            first_line = launcher.readline(4096).decode("utf-8", "replace")
+            second_line = launcher.readline(4096).decode("utf-8", "replace")
     except OSError:
         return False
     if not first_line.startswith("#!"):
         return False
-    shebang = first_line[2:].strip().split(maxsplit=1)[0]
+    if re.fullmatch(r"#!/bin/sh(?:\s+-)?\s*", first_line):
+        match = re.match(r"^'''exec' (?:'([^']+)'|(\S+)) \"\$0\" \"\$@\"", second_line)
+        if not match:
+            return False
+        shebang = match.group(1) or match.group(2)
+    else:
+        parts = first_line[2:].strip().split(maxsplit=1)
+        shebang = parts[0] if parts else ""
     return bool(shebang) and Path(os.path.realpath(shebang)) == Path(
         os.path.realpath(sys.executable)
     )

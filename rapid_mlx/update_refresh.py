@@ -76,14 +76,34 @@ def _refresh():
     installed = vc._installed_version() or ""
     current, candidate = vc._parse_version(installed), vc._parse_version(latest)
     available = current is not None and candidate is not None and candidate > current
+    notice = vc.format_staleness_warning(installed, latest)
+    announced = latest
+    if available:
+        try:
+            info = vc.detect_install_method()
+            release = vc.get_release_info(need_brew=info.method == "brew")
+            if release and release.latest == latest:
+                block = vc._upgrade_block(installed, release, info)
+                if block == "brew_lag":
+                    available = False
+                elif block == "python":
+                    notice = vc.format_python_floor_warning(
+                        installed, latest, release.requires_python, info
+                    )
+                elif info.method == "brew" and release.brew_stable:
+                    announced = release.brew_stable
+                    notice = vc.format_staleness_warning(installed, announced)
+        except Exception:  # noqa: BLE001 — notices fail open
+            pass
     with _lock:
-        unseen = latest not in _seen_versions
-        _seen_versions.add(latest)
+        unseen = announced not in _seen_versions
+        if available:
+            _seen_versions.add(announced)
         _latest, _available = latest, available
         if available and unseen:
             _notice_printed = True
     if available and unseen:
-        print(vc.format_staleness_warning(installed, latest), file=sys.stderr)
+        print(notice, file=sys.stderr)
 
 
 def notice_printed() -> bool:

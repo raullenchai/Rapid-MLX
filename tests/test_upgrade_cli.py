@@ -19,7 +19,12 @@ from rapid_mlx.cli import upgrade_command
 
 def _stub_brew_with_upgrade_available(monkeypatch):
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -84,7 +89,11 @@ def test_missing_manager_command_exits_cleanly(
 ):
     """A removed manager must produce an actionable error, not a traceback."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -112,7 +121,11 @@ def test_missing_manager_command_exits_cleanly(
 def test_global_pipx_prints_manual_command_without_executing(monkeypatch, capsys):
     """Global pipx needs sudo, so the CLI must never execute its empty argv."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -138,7 +151,11 @@ def test_dry_run_returns_silently_when_already_up_to_date(monkeypatch, capsys):
     install method. --dry-run should not change that — still a clean
     return, no subprocess."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.4")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     args = SimpleNamespace(yes=False, dry_run=True)
     with patch("subprocess.run") as run:
         upgrade_command(args)
@@ -186,3 +203,87 @@ def test_update_alias_accepts_upgrade_flags():
     """The alias shares the parser, so `-y`/`--dry-run` parse identically."""
     proc = _cli_help_stdout("update", "-y", "--dry-run", "--help")
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize(
+    "method,guidance",
+    [
+        ("pip", "python3.12 -m venv"),
+        ("install_sh", "curl -fsSL https://rapidmlx.com/install.sh | bash"),
+        ("uv", "uv tool upgrade --python 3.12 rapid-mlx"),
+        ("pipx", "pipx reinstall --python python3.12 rapid-mlx"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_python_floor_prevents_upgrade(monkeypatch, capsys, method, guidance, dry_run):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.1", ">=3.12")
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade cmd", ["upgrade"]),
+    )
+    with patch("subprocess.run") as run:
+        if dry_run:
+            upgrade_command(SimpleNamespace(yes=True, dry_run=True))
+        else:
+            with pytest.raises(SystemExit) as exc:
+                upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+            assert exc.value.code == 1
+        run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "requires Python >=3.12" in out
+    assert guidance in out
+
+
+@pytest.mark.parametrize(
+    "method,verified,code,expected",
+    [
+        ("pip", "1.0.0", 1, "still 1.0.0"),
+        ("pip", "1.0.1", 0, "now 1.0.1"),
+        ("brew", "1.0.0", 1, "brew update && brew upgrade rapid-mlx"),
+        ("pip", None, 0, "Could not confirm"),
+    ],
+)
+def test_upgrade_verifies_result(monkeypatch, capsys, method, verified, code, expected):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.1", brew_stable="1.0.1"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: verified)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_called_once()
+    assert exc.value.code == code
+    assert expected in capsys.readouterr().out
+
+
+def test_brew_lag_does_not_run(monkeypatch, capsys):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.1", brew_stable="1.0.0"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade rapid-mlx", ["brew"]),
+    )
+    with patch("subprocess.run") as run:
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_not_called()
+    assert "Homebrew has not published it yet" in capsys.readouterr().out

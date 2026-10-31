@@ -24,6 +24,15 @@ def isolated(monkeypatch):
     monkeypatch.setattr(refresh, "_lock", refresh.threading.Lock())
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
     monkeypatch.setattr(vc, "get_latest_version", Mock(return_value="1.1.0"))
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: (
+            vc.ReleaseInfo(vc.get_latest_version.return_value)
+            if isinstance(vc.get_latest_version.return_value, str)
+            else None
+        ),
+    )
     monkeypatch.setattr(refresh.threading, "Thread", Mock())
 
 
@@ -239,3 +248,35 @@ def test_audio_serve_passes_announced_version(monkeypatch):
         cli._serve_audio_mode(args, entry)
     vc.print_staleness_warning_if_any.assert_called_once_with(allow_non_tty=True)
     start.assert_called_once_with(announced="1.1.0")
+
+
+@pytest.mark.parametrize(
+    "method,available,notice",
+    [
+        ("brew", False, ""),
+        ("pip", True, "requires Python >=3.12"),
+    ],
+)
+def test_refresh_respects_upgrade_blocks(
+    monkeypatch, capsys, method, available, notice
+):
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.1.0", ">=3.12", "1.0.0")
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    refresh.start()
+    refresh._refresh()
+    assert refresh.snapshot()["update_available"] is available
+    output = capsys.readouterr().err
+    assert notice in output
+    if not available:
+        assert output == ""
+    else:
+        assert "run `rapid-mlx upgrade`" not in output
+        refresh._refresh()
+        assert capsys.readouterr().err == ""
