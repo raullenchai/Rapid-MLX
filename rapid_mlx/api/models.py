@@ -2155,18 +2155,8 @@ class AssistantMessage(BaseModel):
         we can put the field back regardless of how the parent was
         dumped.
 
-        D-MISSING-CONTENT-KEY (r12-7, 0.8.14): switched the
-        fill-in value from ``None`` (→ JSON ``null``) to the empty
-        string ``""``. Both are spec-legal per the OpenAI canonical
-        shape (``content: "" | string | null | array``), but ``""`` is
-        what OpenAI's production API actually returns for the
-        finish_reason="stop" + empty-completion case AND it preserves
-        the wire-level ``string`` type discriminator so Swift Codable
-        decodes cleanly into ``String`` (a ``null`` would force
-        callers to model the field as ``String?``). Tool-call-only
-        assistant messages now also serialize as
-        ``{"role":"assistant","tool_calls":[...],"content":""}`` —
-        same canonical shape OpenAI emits for tool-call turns.
+        Tool-call-only messages use ``content: null``. Empty messages
+        without tool calls retain the empty-string fill-in.
 
         r10-B R10-C2 — emit ONLY ``reasoning_content``. r7-A R7-H2
         had additionally surfaced a duplicate ``reasoning`` alias as a
@@ -2178,11 +2168,9 @@ class AssistantMessage(BaseModel):
         ``reasoning`` key on chat-completion messages.
         """
         d = handler(self)
-        # OpenAI contract: ``content`` is always present. Prefer ``""``
-        # over ``null`` per D-MISSING-CONTENT-KEY (matches OpenAI's
-        # production envelope; null is spec-legal but less common and
-        # forces strongly-typed clients into an Optional/Nullable shape).
-        if "content" not in d:
+        if self.tool_calls and not self.content:
+            d["content"] = None
+        elif "content" not in d:
             d["content"] = ""
         return d
 
@@ -3431,23 +3419,9 @@ class ChatCompletionChunkDelta(BaseModel):
         terminal chunk (the standard OpenAI SDK pattern; see the
         non-stream counterpart on ``AssistantMessage``).
 
-        Mirror the OpenAI on-the-wire shape: surface ``content: ""``
-        on any delta that carries ``reasoning_content`` (or
-        ``tool_calls``) but no visible content, so the field is
-        addressable on every reasoning-bearing delta — including the
-        final one. Normal pure-content / pure-role / empty deltas keep
-        their current minimal shape, so the per-token streaming budget
-        is unchanged for non-reasoning paths.
-
-        D-MISSING-CONTENT-KEY (r12-7, 0.8.14): the fill-in value was
-        flipped from ``None`` to ``""`` for parity with the
-        non-streaming ``AssistantMessage`` serializer. When the
-        OpenAI streaming SDK reduces deltas into a final-state
-        message (the canonical ``ChatCompletion`` aggregator pattern),
-        the resulting ``message.content`` is a string, not a
-        sometimes-None sometimes-string union — so strongly-typed
-        Swift / Rust clients decoding the aggregated message keep
-        their happy path.
+        Tool-call deltas without visible content use ``content: null``;
+        reasoning-only deltas retain the empty-string fill-in. Pure content,
+        role-only, and empty deltas keep their existing shape.
 
         r10-B R10-C2 — emit ONLY ``reasoning_content`` on the wire.
         r7-A R7-H2 had also emitted a duplicate ``reasoning`` alias
@@ -3459,7 +3433,9 @@ class ChatCompletionChunkDelta(BaseModel):
         only — there is no ``reasoning`` key on chat-completion deltas.
         """
         d = handler(self)
-        if "content" not in d and ("reasoning_content" in d or "tool_calls" in d):
+        if self.tool_calls and not self.content:
+            d["content"] = None
+        elif "content" not in d and ("reasoning_content" in d or "tool_calls" in d):
             d["content"] = ""
         return d
 
