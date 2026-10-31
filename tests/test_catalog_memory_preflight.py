@@ -215,3 +215,33 @@ def test_fitting_pick_searches_lower_tiers():
         fitting_pick(current.floor_gb, budget, exclude=expected.upper())
         == tiers[0].picks[0].alias
     )
+
+
+def test_met_floor_refuses_when_recommendation_lookup_fails(monkeypatch, capsys):
+    with (
+        patch.object(
+            preflight, "_mlx_recommended_working_set_bytes", return_value=12 * GIB
+        ),
+        patch(
+            "rapid_mlx.recommendations.recommendation_footprint_gb",
+            side_effect=RuntimeError,
+        ),
+        pytest.raises(SystemExit),
+    ):
+        run("qwen3-coder-30b-4bit", 24, monkeypatch)
+    assert "Nothing was downloaded" in capsys.readouterr().err
+
+
+def test_catalog_fit_uses_measured_footprint_when_weights_lookup_fails():
+    with (
+        patch("rapid_mlx.model_sizes.size_bytes", side_effect=RuntimeError),
+        patch("rapid_mlx.recommendations.recommendation_footprint_gb", return_value=20),
+    ):
+        result = preflight.catalog_memory_fit(
+            "qwen3-coder-30b-4bit",
+            ram_bytes=8 * GIB,
+            recommended_working_set_bytes=6 * GIB,
+        )
+    assert result.fits is False
+    assert result.fit_basis == "gpu_budget"
+    assert result.estimate_source == "curated_footprint"

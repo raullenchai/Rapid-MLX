@@ -370,6 +370,21 @@ def test_floor_based_plan_curated_working_set_wording(fit):
     )
 
 
+def test_floor_qualified_gpu_limit_wording(capsys):
+    alias = "qwen3-coder-30b-4bit"
+    catalog = benchmark_catalog(memory_gib=24, recommended_working_set_bytes=12 << 30)
+    catalog.update(memory_gib=24, memory_source="host")
+    model = next(m for m in catalog["models"] if m["alias"] == alias)
+    assert model["memory_fit_basis"] == "memory_floor"
+    assert model["memory_fit"] == "does_not_fit"
+    community_cli._print_catalog(catalog, show_all=True)
+    row = next(line for line in capsys.readouterr().out.splitlines() if alias in line)
+    assert "does not fit (GPU limit)" in row
+    assert "does NOT fit this Mac (weights exceed the GPU limit of about 12 GB)" in (
+        community_cli._memory_line(model, 24, 12)
+    )
+
+
 @pytest.mark.catalog_memory_preflight
 def test_real_metal_limit_matches_serve(monkeypatch, capsys):
     from rapid_mlx.byom import preflight

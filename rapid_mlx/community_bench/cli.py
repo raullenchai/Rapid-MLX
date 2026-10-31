@@ -123,6 +123,14 @@ def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str
     if model.get("memory_fit_basis") == "memory_floor" and isinstance(
         floor, (int, float)
     ):
+        if (
+            fit == "does_not_fit"
+            and isinstance(memory_gib, (int, float))
+            and memory_gib >= floor
+            and isinstance(budget_gib, (int, float))
+        ):
+            budget_text = _gb(int(budget_gib * (1 << 30)))
+            return f"{line}; does NOT fit this Mac (weights exceed the GPU limit of about {budget_text})"
         verdict = "fits" if fit == "fits" else "does NOT fit"
         qualification = "qualified for Macs" if fit == "fits" else "requires a Mac"
         return (
@@ -165,7 +173,15 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
         if model.get("memory_fit_basis") == "memory_floor" and isinstance(
             floor, (int, float)
         ):
-            fit += f" ({floor:g} GB+ profile)"
+            if (
+                fit == "does not fit"
+                and isinstance(memory_gib, (int, float))
+                and memory_gib >= floor
+                and isinstance(budget, (int, float))
+            ):
+                fit += " (GPU limit)"
+            else:
+                fit += f" ({floor:g} GB+ profile)"
         estimate = model.get("estimated_memory_gib")
         memory = f"~{estimate} GB" if isinstance(estimate, int) else "?"
         return (

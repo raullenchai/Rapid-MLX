@@ -921,8 +921,14 @@ def catalog_memory_fit(
         if profile is None:
             return unknown
         budget = _working_set_budget(ram_bytes, recommended_working_set_bytes)
-        measured = recommendation_footprint_gb(alias)
-        weights = size_bytes(profile.hf_path)
+        try:
+            measured = recommendation_footprint_gb(alias)
+        except Exception:
+            measured = None
+        try:
+            weights = size_bytes(profile.hf_path)
+        except Exception:
+            weights = None
         if measured is not None:
             estimate, source = int(measured * _GIB), "curated_footprint"
         elif weights is not None:
