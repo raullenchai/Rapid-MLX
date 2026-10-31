@@ -2,6 +2,17 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Acceleration" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加速"
+          }
+        }
+      }
+    },
     "%@ credits" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11712,6 +11723,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此版本中不提供社区比较。"
+          }
+        }
+      }
+    },
+    "Comparison statistics not available" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "比较统计数据不可用"
           }
         }
       }

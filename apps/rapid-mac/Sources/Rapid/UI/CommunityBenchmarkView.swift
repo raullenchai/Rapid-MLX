@@ -240,9 +240,11 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         ].filter { !$0.models.isEmpty }
     }
 
-    static func reconciledSelection(current: String, models: [Self]) -> String {
+    static func reconciledSelection(current: String, models: [Self], preferred: String? = nil) -> String {
         if models.contains(where: { $0.entry.alias == current }) { return current }
-        return models.first?.entry.alias ?? ""
+        if let preferred, models.contains(where: { $0.entry.alias == preferred }) { return preferred }
+        return models.first(where: { $0.task == .textGeneration })?.entry.alias
+            ?? models.first?.entry.alias ?? ""
     }
 
     static func resolvedCatalog(
@@ -564,16 +566,35 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         /// text runs. Image/video tasks carry no `language` block.
         struct Task: Decodable {
             struct Language: Decodable {
-                struct SpeculativeDecoding: Decodable { let method: String? }
+                struct SpeculativeDecoding: Decodable {
+                    let method: String?
+                    let maxDraftTokens: Int?
+                    let assistantSource: String?
+                    enum CodingKeys: String, CodingKey {
+                        case method
+                        case maxDraftTokens = "max_draft_tokens"
+                        case assistantSource = "assistant_source"
+                    }
+                }
+                struct AccelerationRuntime: Decodable { let kind: String?; let algorithm: String? }
+                struct PFlash: Decodable { let mode: String? }
                 struct KVCache: Decodable {
                     let mode: String?
                     let dtype: String?
+                    let scheme: String?
                 }
+                let runtime: AccelerationRuntime?
+                let prefixCacheEnabled: Bool?
+                let prefillChunkSize: Int?
+                let pflash: PFlash?
                 let speculativeDecoding: SpeculativeDecoding?
                 let kvCache: KVCache?
                 let prefillBackend: String?
 
                 enum CodingKeys: String, CodingKey {
+                    case runtime, pflash
+                    case prefixCacheEnabled = "prefix_cache_enabled"
+                    case prefillChunkSize = "prefill_chunk_size"
                     case speculativeDecoding = "speculative_decoding"
                     case kvCache = "kv_cache"
                     case prefillBackend = "prefill_backend"
@@ -1599,6 +1620,7 @@ enum CommunityBenchmarkCommand {
 /// spawn, progress parsing, result decoding, publish payload — is unchanged.
 struct CommunityBenchmarkView: View {
     let catalog: [ModelEntry]
+    var preferredAlias: String? = nil
     let binary: URL?
     let prepareServer: () async throws -> UUID
     let releaseServer: (UUID) -> Void
@@ -1794,7 +1816,9 @@ struct CommunityBenchmarkView: View {
         }
         .task {
             await refreshProductCatalog()
-            if selectedAlias.isEmpty { selectedAlias = models.first?.entry.alias ?? "" }
+            selectedAlias = CommunityBenchmarkModel.reconciledSelection(
+                current: selectedAlias, models: models, preferred: preferredAlias
+            )
             await refreshBenchmarkCatalog()
             await refreshResults()
             await refreshCommunity()
@@ -2531,7 +2555,7 @@ struct CommunityBenchmarkView: View {
         productCatalog = entries
         selectedAlias = CommunityBenchmarkModel.reconciledSelection(
             current: selectedAlias,
-            models: models
+            models: models, preferred: preferredAlias
         )
     }
 
@@ -2563,7 +2587,7 @@ struct CommunityBenchmarkView: View {
             benchmarkMetadata = metadata
             selectedAlias = CommunityBenchmarkModel.reconciledSelection(
                 current: selectedAlias,
-                models: models
+                models: models, preferred: preferredAlias
             )
         } catch {
             benchmarkCLIAvailable = false

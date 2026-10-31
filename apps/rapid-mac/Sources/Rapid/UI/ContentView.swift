@@ -1378,6 +1378,7 @@ struct ContentView: View {
             if communityBenchmarkEnabled {
                 CommunityBenchmarkView(
                     catalog: catalogEntries,
+                    preferredAlias: server.servingAlias ?? ServerManager.lastServedAlias(),
                     binary: server.binaryPath,
                     prepareServer: {
                         try await server.prepareForCommunityBenchmark()
