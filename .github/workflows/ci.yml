@@ -623,6 +623,8 @@ jobs:
             tests/test_no_mllm_flag.py \
             tests/test_audio_music_route.py \
             tests/test_stt_vad_pretrim.py \
+            tests/test_stt_openai_shape.py \
+            tests/test_stt_impossible_tail.py \
             tests/test_stt_code_consent.py \
             tests/test_tts_checkpoint_security.py \
             tests/test_sam_audio_security.py \
