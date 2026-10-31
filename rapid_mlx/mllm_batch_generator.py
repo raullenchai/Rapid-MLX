@@ -2001,9 +2001,7 @@ class MLLMBatchGenerator:
             except StopIteration as done:
                 return done.value
 
-    def _chunked_media_lm_prefill_steps(
-        self, input_ids, cache, kwargs
-    ) -> Generator[None, None, Any]:
+    def _chunked_media_lm_prefill_steps(self, input_ids, cache, kwargs):
         emb = self.model.get_input_embeddings(
             input_ids,
             kwargs.get("pixel_values"),
@@ -2054,9 +2052,7 @@ class MLLMBatchGenerator:
             self._media_chunked_suffix_forward_steps(ids, cache, delta, chunked)
         )
 
-    def _media_chunked_suffix_forward_steps(
-        self, ids, cache, delta, chunked
-    ) -> Generator[None, None, Any]:
+    def _media_chunked_suffix_forward_steps(self, ids, cache, delta, chunked):
         chunk = self._media_prefill_chunk_tokens() if chunked else ids.shape[1]
         for start in range(0, ids.shape[1], chunk):
             if start:
@@ -2674,9 +2670,7 @@ class MLLMBatchGenerator:
             return self._chunked_media_lm_prefill(input_ids, cache, kwargs)
         return self.model(input_ids, cache=cache, **kwargs)
 
-    def _media_cold_redo_steps(
-        self, input_ids, cache, kwargs, chunked=False
-    ) -> Generator[None, None, Any]:
+    def _media_cold_redo_steps(self, input_ids, cache, kwargs, chunked=False):
         if not chunked:
             return self._media_cold_redo(input_ids, cache, kwargs)
 
@@ -5023,7 +5017,7 @@ class MLLMBatchGenerator:
         prompt_processing = False
         batch = self.active_batch
         num_active = len(batch) if batch else 0
-        if num_active:
+        if batch is not None and num_active:
             self._step_uids = frozenset(batch.uids)
 
         # Only start a new batch when there is no active batch generating.
