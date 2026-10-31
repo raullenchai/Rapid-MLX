@@ -227,11 +227,45 @@ time.sleep(30)
         proc.stdout.close()
 
 
-def test_terminate_already_reaped_leader_does_not_signal(monkeypatch):
-    signals = []
-    monkeypatch.setattr(_server.os, "killpg", lambda *args: signals.append(args))
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+def test_terminate_already_reaped_leader_kills_child():
+    script = """
+import subprocess, sys
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+print(child.pid, flush=True)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, start_new_session=True
+    )
+    try:
+        child_pid = int(proc.stdout.readline())
+        proc.wait(timeout=5)
+        _server._terminate(proc, grace_s=2)
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, "child was not reaped"
+            time.sleep(0.05)
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_terminate_already_reaped_leader_empty_group(monkeypatch):
+    def missing(*args):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_server.os, "killpg", missing)
+    started = time.monotonic()
     _server._terminate(SimpleNamespace(pid=1234, returncode=0))
-    assert signals == []
+    assert time.monotonic() - started < 1
 
 
 def test_terminate_reaps_leader_when_initial_group_signal_fails(monkeypatch):

@@ -162,10 +162,18 @@ class BenchmarkCancelledError(RuntimeError):
     """The local runtime reported a terminal user/system cancellation."""
 
 
+class VideoArtifactTransportError(RuntimeError):
+    """The local server connection failed while downloading a video artifact."""
+
+
 def _failure_code(error: Exception) -> str:
-    message = str(error).lower()
+    from rapid_mlx.bench._server import ServerExitedError
+
+    message = str(error).split("\n--- server log tail ---", 1)[0].lower()
     if isinstance(error, BenchmarkCancelledError):
         return "user_cancelled"
+    if isinstance(error, ServerExitedError):
+        return "runtime_error"
     if (
         isinstance(error, MemoryError)
         or "out of memory" in message
@@ -471,6 +479,8 @@ def _run_detached_worker(
         # worker is reaped no watchdog exists, so closing is inert and never
         # signals a reused pid or group.
         lifeline_sender.close()
+    if status == "transport":
+        raise VideoArtifactTransportError(str(payload))
     if status != "ok":
         raise RuntimeError(str(payload))
     return payload
@@ -541,13 +551,24 @@ def _video_download_worker(
             os.unlink(destination_path)
         except OSError:
             pass
-        message = (
-            str(exc)
-            if isinstance(exc, RuntimeError)
-            else "video artifact download failed"
-        )
+        status = "error"
+        if isinstance(
+            exc,
+            (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+            ),
+        ):
+            status, message = "transport", str(exc).partition("\n")[0][:300]
+        elif isinstance(exc, requests.exceptions.HTTPError):
+            code = exc.response.status_code if exc.response is not None else None
+            message = f"video artifact download failed with HTTP {code}"
+        elif isinstance(exc, RuntimeError):
+            message = str(exc)
+        else:
+            message = "video artifact download failed"
         try:
-            sender.send(("error", message))
+            sender.send((status, message))
         except (BrokenPipeError, EOFError, OSError):
             pass
     finally:
@@ -827,14 +848,24 @@ def _run_video(
             raise RuntimeError(
                 "video benchmark artifact metadata does not match the registered workload"
             )
-        _validated_video_artifact(
-            server["base_url"],
-            str(job["id"]),
-            width=case["width"],
-            height=case["height"],
-            frames=case["frames"],
-            fps=case["fps_milli"] / 1000,
-        )
+        try:
+            _validated_video_artifact(
+                server["base_url"],
+                str(job["id"]),
+                width=case["width"],
+                height=case["height"],
+                frames=case["frames"],
+                fps=case["fps_milli"] / 1000,
+            )
+        except VideoArtifactTransportError as exc:
+            exit_error = server.get("exit_error")
+            error = exit_error() if callable(exit_error) else None
+            if error is not None:
+                raise error from exc
+            raise RuntimeError(
+                "video artifact download from the local model server failed without "
+                f"a response while the server is still running: {exc}"
+            ) from exc
         # Still inside ``serve``: the model is resident, so this reflects
         # the state the measurement was produced under.
         _record_conditions_after()

@@ -6,6 +6,7 @@ import base64
 import builtins
 import contextlib
 import hashlib
+import http.server
 import io
 import json
 import math
@@ -4372,6 +4373,124 @@ def test_failure_codes_classify_without_leaking_text(
     error: Exception, code: str
 ) -> None:
     assert local_runner._failure_code(error) == code
+
+
+def test_server_exit_log_tail_does_not_determine_failure_code(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text("Request timeout: 1800.0s\n")
+    error = _server.describe_server_exit(
+        SimpleNamespace(poll=lambda: -9), log, wait_s=0
+    )
+    assert local_runner._failure_code(error) == "runtime_error"
+    assert local_runner._failure_code(TimeoutError()) == "timeout"
+    assert local_runner._failure_code(MemoryError()) == "runtime_oom"
+    assert (
+        local_runner._failure_code(
+            RuntimeError("failure\n--- server log tail ---\ntimeout")
+        )
+        == "runtime_error"
+    )
+
+
+def test_archived_server_exit_with_timeout_in_log_is_runtime_error(
+    monkeypatch, tmp_path
+):
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    log = tmp_path / "server.log"
+    log.write_text("Request timeout: 1800.0s\n")
+    error = _server.describe_server_exit(
+        SimpleNamespace(poll=lambda: -9), log, wait_s=0
+    )
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(local_runner, "_run_image", fail)
+    archive = LocalRunArchive(tmp_path / "archive")
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-image", archive=archive)
+    assert archive.list()[0]["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
+
+
+@pytest.mark.parametrize("partial_body", [False, True])
+def test_video_download_connection_failures_are_transport_errors(
+    tmp_path, partial_body
+):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if partial_body:
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"short")
+            self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(local_runner.VideoArtifactTransportError):
+            local_runner._download_video_artifact(
+                f"http://127.0.0.1:{server.server_port}",
+                "job-1",
+                str(tmp_path / "video.mp4"),
+                timeout_s=10,
+            )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_video_download_transport_error_reports_server_exit(monkeypatch):
+    error = _server.ServerExitedError(
+        "The local model server stopped unexpectedly (killed by SIGKILL).",
+        -9,
+        "SIGKILL",
+        "",
+    )
+
+    @contextlib.contextmanager
+    def serve(*args, **kwargs):
+        yield {"base_url": "http://local/v1", "exit_error": lambda: error}
+
+    case = registered_workload("video_generation")["cases"][0]
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": "queued"}),
+    )
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: _Response(
+            {
+                "id": "job-1",
+                "status": "completed",
+                "size": f"{case['width']}x{case['height']}",
+                "frames": case["frames"],
+                "fps": case["fps_milli"] // 1000,
+            }
+        ),
+    )
+    monkeypatch.setattr(local_runner.time, "sleep", lambda _: None)
+
+    def fail(*args, **kwargs):
+        raise local_runner.VideoArtifactTransportError("connection closed")
+
+    monkeypatch.setattr(local_runner, "_download_video_artifact", fail)
+    with pytest.raises(_server.ServerExitedError) as caught:
+        local_runner._run_video("example-video")
+    assert caught.value is error
 
 
 @pytest.mark.parametrize("received", [0, 1])
