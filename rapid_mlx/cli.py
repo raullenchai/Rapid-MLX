@@ -7014,8 +7014,18 @@ def serve_command(args):
     # through unchanged — text/vision/embedding models never see this
     # probe.
     from .audio.probe import is_audio_model_alias, require_audio_or_exit
+    from .audio.registry import (
+        register_served_local_audio_entry,
+        resolve_local_audio_folder,
+    )
 
-    if is_audio_model_alias(getattr(args, "model", None)):
+    local_audio_entry = resolve_local_audio_folder(getattr(args, "model", None))
+    if local_audio_entry is not None:
+        register_served_local_audio_entry(local_audio_entry, args.model)
+        args._original_alias = args.model
+    if local_audio_entry is not None or is_audio_model_alias(
+        getattr(args, "model", None)
+    ):
         _run_optional_runtime_guard(
             require_audio_or_exit,
             args.model,
@@ -7094,7 +7104,9 @@ def serve_command(args):
     # ``_ensure_model_downloaded``, the text loader, pflash, parser
     # detection, etc.) and return. Everything below this block remains
     # untouched for the text path so text-model boot does NOT regress.
-    audio_entry = _resolve_audio_model_for_serve(getattr(args, "model", None))
+    audio_entry = local_audio_entry or _resolve_audio_model_for_serve(
+        getattr(args, "model", None)
+    )
     if audio_entry is not None:
         # Stamp the alias hop so /v1/models, telemetry, and the banner
         # all show the same name pair. ``_original_alias`` is set by
@@ -7117,14 +7129,16 @@ def serve_command(args):
         # Whisper ``weights.npz`` probe). The offline-refusal decision uses the
         # tri-state ``is False`` so a probe fault (``None``) does not refuse.
         if (
-            _offline_hub_mode_active()
+            not os.path.isdir(audio_entry.hf_id)
+            and _offline_hub_mode_active()
             and _cache_runnability(audio_entry.hf_id) is False
         ):
             _refuse_offline_uncached(audio_entry.hf_id)
         from rapid_mlx import model_downloads
 
         if (
-            model_downloads.disabled()
+            not os.path.isdir(audio_entry.hf_id)
+            and model_downloads.disabled()
             and _cache_runnability(audio_entry.hf_id) is not True
         ):
             _refuse_model_download(audio_entry.hf_id)
@@ -8171,7 +8185,9 @@ def serve_command(args):
     # ``turboquant_scheduler_kwargs`` helper is the shared invariant
     # (#969) — ``python -m rapid_mlx.server`` calls the same helper so
     # the two entrypoints can't drift.
-    from .turboquant import turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs  # noqa: F401
+    from .turboquant import (
+        turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs,  # noqa: F401
+    )
 
     kv_cache_decision, _kv_quant_explicit = resolve_serve_kv_cache(
         args,
@@ -16232,6 +16248,14 @@ def main():
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(2) from None
 
+    from .audio.registry import resolve_local_audio_folder
+
+    _local_audio = (
+        resolve_local_audio_folder(getattr(args, "model", None))
+        if getattr(args, "command", None) == "serve"
+        else None
+    )
+
     # Resolve model aliases before dispatch.
     #
     # The doctor subcommand is exempt for historical reasons (and as a
@@ -16247,6 +16271,7 @@ def main():
     if (
         hasattr(args, "model")
         and args.model
+        and _local_audio is None
         and getattr(args, "command", None) not in ("doctor", "service", "system-one")
     ):
         from rapid_mlx.local_model_path import (
@@ -16468,7 +16493,7 @@ def main():
     # big for this Mac) stops BEFORE the size gate and any download. Silent for
     # cached and unreadable models; uncached catalog text models also receive a
     # memory-fit check. See rapid_mlx/byom/preflight.py.
-    if getattr(args, "command", None) in ("serve", "pull"):
+    if getattr(args, "command", None) in ("serve", "pull") and _local_audio is None:
         from rapid_mlx.byom.preflight import run_cli_preflight
 
         run_cli_preflight(args, spinner_factory=_StatusSpinner)

@@ -135,9 +135,8 @@ _VAD_LOAD_LOCK = threading.Lock()
 # if the model is Whisper and ``_processor`` is None, manually attach a
 # ``WhisperProcessor`` loaded from the OpenAI counterpart repo (which
 # ships every processor file the tokenizer wrapper needs). The fallback
-# is keyed off the mlx-community alias so unknown repos still get an
-# attempt at ``openai/whisper-large-v3`` (the v3 tokenizer matches all
-# v3 mlx variants because the language vocabulary is identical).
+# is keyed off the mlx-community alias, with model dimensions selecting
+# a compatible processor for unknown repos and local folders.
 #
 # This is the smallest possible fix that doesn't require uploading
 # processor files to the mlx-community side or pinning a specific
@@ -155,6 +154,27 @@ _WHISPER_PROCESSOR_SOURCE_MAP: dict[str, str] = {
     "mlx-community/whisper-tiny-mlx": "openai/whisper-tiny",
 }
 _DEFAULT_WHISPER_PROCESSOR_FALLBACK = "openai/whisper-large-v3"
+
+
+def _whisper_processor_source(
+    model_name: str, n_mels: int | None, n_vocab: int | None
+) -> str:
+    """Choose processor assets compatible with the loaded Whisper model."""
+    folder = Path(model_name).expanduser()
+    if (folder / "preprocessor_config.json").is_file() and (
+        (folder / "tokenizer.json").is_file()
+        or ((folder / "vocab.json").is_file() and (folder / "merges.txt").is_file())
+    ):
+        return model_name
+    if model_name in _WHISPER_PROCESSOR_SOURCE_MAP:
+        return _WHISPER_PROCESSOR_SOURCE_MAP[model_name]
+    if n_mels == 128:
+        return "openai/whisper-large-v3"
+    if n_mels == 80 and n_vocab == 51865:
+        return "openai/whisper-base"
+    if n_mels == 80 and n_vocab == 51864:
+        return "openai/whisper-base.en"
+    return _DEFAULT_WHISPER_PROCESSOR_FALLBACK
 
 
 @dataclass
@@ -616,7 +636,12 @@ class STTEngine:
         # attribute. Gate on a positive Whisper id check so the patch
         # only fires for actual Whisper backends — non-Whisper engines
         # surface their own load-time errors unmodified.
-        self._is_whisper = "whisper" in model_name.lower()
+        from .registry import resolve_audio_alias
+
+        entry = resolve_audio_alias(model_name)
+        self._is_whisper = "whisper" in model_name.lower() or (
+            entry is not None and entry.type == "stt" and entry.family == "whisper"
+        )
         # Forced-alignment models (Qwen3-ForcedAligner) take audio + the
         # KNOWN transcript and return per-character timings. They use a
         # different call surface (``generate(audio, text, language)``) and
@@ -653,7 +678,8 @@ class STTEngine:
 
         from .. import model_downloads
 
-        model_downloads.require_local(self.model_name)
+        if not Path(self.model_name).expanduser().is_dir():
+            model_downloads.require_local(self.model_name)
         try:
             from mlx_audio.stt.utils import load_model
 
@@ -661,9 +687,14 @@ class STTEngine:
             from ..model_metadata import resolve_pinned_cached_snapshot
             from ..utils.model_file_guard import checked_stt_loader
 
-            model_path = self.model_name
+            model_path: str | Path = self.model_name
             load_options = {}
-            if resolve_revision(model_path) is not None:
+            if Path(model_path).expanduser().is_dir():
+                model_path = Path(model_path).expanduser()
+            if (
+                not isinstance(model_path, Path)
+                and resolve_revision(model_path) is not None
+            ):
                 from mlx_audio.utils import DEFAULT_ALLOW_PATTERNS, get_model_name_parts
 
                 load_options["model_name_parts"] = get_model_name_parts(self.model_name)
@@ -745,11 +776,12 @@ class STTEngine:
         if getattr(self.model, "_processor", None) is not None:
             return
 
-        # Pick the OpenAI counterpart by exact alias match, then fall
-        # back to the v3-large processor (vocab is identical for every
-        # v3 variant; this is the most permissive fallback).
-        processor_source = _WHISPER_PROCESSOR_SOURCE_MAP.get(
-            self.model_name, _DEFAULT_WHISPER_PROCESSOR_FALLBACK
+        # Exact aliases take precedence; local folders need compatible dimensions.
+        dims = getattr(self.model, "dims", None)
+        processor_source = _whisper_processor_source(
+            self.model_name,
+            getattr(dims, "n_mels", None),
+            getattr(dims, "n_vocab", None),
         )
         try:
             from transformers import WhisperProcessor

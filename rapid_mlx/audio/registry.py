@@ -119,6 +119,7 @@ _HF_ID_INDEX: dict[str, str] = {}
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
 _RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
 _REGISTRY_LOCK = threading.Lock()
+_LOCAL_AUDIO_ENTRIES: dict[str, AudioAliasEntry] = {}
 
 
 def _revision(entry: dict) -> str | None:
@@ -346,6 +347,95 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
     return entries
 
 
+def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:
+    """Recognize a local audio folder from config metadata or its name."""
+    try:
+        if not os.path.isdir(path):
+            return None
+        with open(os.path.join(path, "config.json"), "rb") as config_file:
+            if os.fstat(config_file.fileno()).st_size > 1024 * 1024:
+                return None
+            data = config_file.read(1024 * 1024)
+        config = json.loads(data)
+        if not isinstance(config, dict):
+            return None
+        families = {
+            e.family.lower().replace("_", "-"): e for e in _load_registry().values()
+        }
+        model_type = config.get("model_type")
+        template = (
+            families.get(model_type.lower().replace("_", "-"))
+            if isinstance(model_type, str)
+            else None
+        )
+        matches = [template] if template else []
+        if not matches:
+            architectures = config.get("architectures")
+            if not isinstance(architectures, list):
+                architectures = []
+            if not isinstance(model_type, str):
+                architectures = [*architectures, config.get("architecture")]
+            matches = [
+                entry
+                for family, entry in families.items()
+                if any(
+                    isinstance(arch, str)
+                    and re.sub(r"[-_.]", "", arch.lower()).startswith(
+                        family.replace("-", "")
+                    )
+                    for arch in architectures
+                )
+            ]
+        if not matches and "model_type" not in config:
+            tokens = re.split(
+                r"[-_. ]+", os.path.basename(os.path.normpath(path)).lower()
+            )
+            matches = [
+                entry
+                for family, entry in families.items()
+                for parts in [family.split("-")]
+                if any(
+                    tokens[i : i + len(parts)] == parts
+                    for i in range(len(tokens) - len(parts) + 1)
+                )
+            ]
+        if len(matches) != 1:
+            return None
+        template = matches[0]
+        real_path = os.path.realpath(path)
+        alias = (
+            re.sub(
+                r"[^a-z0-9._-]", "-", os.path.basename(os.path.normpath(path)).lower()
+            ).strip(".-_")
+            or "local-audio"
+        )
+        return AudioAliasEntry(
+            alias=alias,
+            type=template.type,
+            hf_id=real_path,
+            family=template.family,
+            default_voice=template.default_voice,
+            languages=template.languages,
+            notes="local folder",
+        )
+    except Exception:
+        return None
+
+
+def register_served_local_audio_entry(
+    entry: AudioAliasEntry, path: str | None = None
+) -> None:
+    """Register the served folder for this process only."""
+    catalog = _load_registry()
+    if entry.alias.lower() not in catalog:
+        _LOCAL_AUDIO_ENTRIES[entry.alias.lower()] = entry
+    _LOCAL_AUDIO_ENTRIES[entry.hf_id] = entry
+    if path:
+        if path.lower() not in catalog:
+            _LOCAL_AUDIO_ENTRIES[path] = entry
+        _LOCAL_AUDIO_ENTRIES[os.path.abspath(path)] = entry
+
+
 def resolve_audio_alias(name: str | None) -> AudioAliasEntry | None:
     """Return the registry entry for ``name``, or ``None`` if not audio.
 
@@ -367,6 +457,9 @@ def resolve_audio_alias(name: str | None) -> AudioAliasEntry | None:
     """
     if not isinstance(name, str) or not name:
         return None
+    local = _LOCAL_AUDIO_ENTRIES.get(name) or _LOCAL_AUDIO_ENTRIES.get(name.lower())
+    if local is not None:
+        return local
     registry = _load_registry()
     lc = name.lower()
     # Short-alias direct hit.
