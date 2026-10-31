@@ -255,6 +255,42 @@ def test_transformers_base_config_mismatch_context(caplog):
     assert logger.filters == original_filters
 
 
+def test_tts_security_loader_suppresses_base_config_mismatch(
+    tmp_path, monkeypatch, caplog
+):
+    import sys
+    import types
+
+    from rapid_mlx.audio import tts, voxcpm_security
+
+    (tmp_path / "audiovae.pth").touch()
+    model = object()
+    message = (
+        "You are using a model of type `voxcpm2` to instantiate a model of type ``. "
+        "This is not supported for all configurations of models and can yield errors."
+    )
+    logger = logging.getLogger("transformers.configuration_utils")
+
+    def load_checkpoint(_path):
+        logger.warning(message)
+        return model
+
+    generate = types.ModuleType("mlx_audio.tts.generate")
+    generate.load_model = lambda _path: pytest.fail("unexpected loader")
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", generate)
+    monkeypatch.setattr(tts, "_resolve_safe_tts_checkpoint", lambda _name: tmp_path)
+    monkeypatch.setattr(tts.TTSEngine, "_detect_family", lambda _self, _name: "voxcpm")
+    monkeypatch.setattr(voxcpm_security, "load_voxcpm_checkpoint", load_checkpoint)
+    engine = tts.TTSEngine(str(tmp_path))
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        engine.load()
+        assert message not in caplog.messages
+        assert engine.model is model
+        load_checkpoint(tmp_path)
+        assert message in caplog.messages
+
+
 def test_transformers_context_nested_exception_cleanup():
     from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
 
