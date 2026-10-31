@@ -265,7 +265,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Raw bytes from a machine-readable source; sizeOnDisk retains display or legacy text.
     var sizeBytes: Int64? = nil
 
-    var size: ModelSize? { sizeBytes.map(ModelSize.bytes) ?? ModelSize.legacy(sizeOnDisk) }
+    var size: ModelSize? {
+        if let sizeBytes, sizeBytes > 0 { return .bytes(sizeBytes) }
+        return ModelSize.legacy(sizeOnDisk)
+    }
     /// True for a model another MLX runtime downloaded, found outside the
     /// hub cache (#1718).
     ///

@@ -50,6 +50,52 @@ struct DownloadProgressTests {
         #expect(eta == "02:09")
     }
 
+    @Test("tqdm fallback converts binary prefixes before formatting")
+    func tqdmBinaryFallback() {
+        let progress = DownloadProgress()
+        progress.ingest("model.safetensors:  28%|██▊       | 1.20G/4.30G [01:28<02:09, 12.3MB/s]")
+        let done = DownloadProgress.formatBytes(Int64(1.20 * Double(1 << 30)))
+        let total = DownloadProgress.formatBytes(Int64(4.30 * Double(1 << 30)))
+        let speed = DownloadProgress.formatSpeed(bytesPerSecond: Double(Int64(12.3 * Double(1 << 20))))
+        #expect(progress.progressSubtitle?.contains("\(done)/\(total)") == true)
+        #expect(progress.progressSubtitle?.contains(speed) == true)
+    }
+
+    @Test("tqdm fallback formats unitless decimal bytes")
+    func tqdmUnitlessDecimalFallback() {
+        let progress = DownloadProgress()
+        progress.ingest("model.safetensors:  0%|          | 0.00/4.20G [00:00<?, ?it/s]")
+        let done = DownloadProgress.formatBytes(0)
+        let total = DownloadProgress.formatBytes(Int64(4.20 * Double(1 << 30)))
+        #expect(progress.progressSubtitle?.contains("(\(done)/\(total))") == true)
+    }
+
+    @Test("memory formatter uses system memory units and clamps negatives")
+    func formatMemory() {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        formatter.allowsNonnumericFormatting = false
+        for bytes: Int64 in [-1, 0, 16 * (1 << 30)] {
+            #expect(DownloadProgress.formatMemory(bytes) == formatter.string(fromByteCount: max(0, bytes)))
+        }
+        #expect(DownloadProgress.formatMemory(0) == formatter.string(fromByteCount: 0))
+        #expect(DownloadProgress.formatMemory(-1) == formatter.string(fromByteCount: 0))
+    }
+
+    @Test("Floating-point byte estimates saturate safely for display")
+    func floatingPointByteFormatting() {
+        for value in [Double.infinity, .nan, -1.0] {
+            let bytes = DownloadProgress.bytes(fromDouble: value)
+            #expect(bytes == 0)
+            #expect(DownloadProgress.formatBytes(bytes) == DownloadProgress.formatBytes(0))
+            #expect(DownloadProgress.formatMemory(bytes) == DownloadProgress.formatMemory(0))
+        }
+        let bytes = DownloadProgress.bytes(fromDouble: 1e30)
+        #expect(bytes == Int64.max)
+        #expect(!DownloadProgress.formatBytes(bytes).isEmpty)
+        #expect(!DownloadProgress.formatMemory(bytes).isEmpty)
+    }
+
     /// #150 root-cause regression. ``huggingface_hub`` ≥0.20 ships its
     /// per-file tqdm with `unit_divisor=1024`, which renders bytes as
     /// IEC-suffixed `2.10GiB/5.13GiB` (and speed as `23.4MiB/s`)
@@ -594,7 +640,7 @@ struct DownloadProgressTests {
         progress.ingest("  [bytes] 1500/1000")
         #expect(progress.progressFraction == nil)
         #expect(progress.totalBytes == nil)
-        #expect(progress.progressSubtitle == "1.5 KB downloaded")
+        #expect(progress.progressSubtitle == "\(DownloadProgress.formatBytes(1500)) downloaded")
     }
 
     @Test("An estimate smaller than observed bytes is not shown as a contradictory total (#1550)")
@@ -606,7 +652,7 @@ struct DownloadProgressTests {
 
         #expect(progress.totalBytes == nil)
         #expect(progress.progressFraction == nil)
-        #expect(progress.progressSubtitle == "633 MB downloaded")
+        #expect(progress.progressSubtitle == "\(DownloadProgress.formatBytes(663_748_608)) downloaded")
     }
 
     @Test("ServerManager log-suppression classifier matches plain + ANSI heartbeats")
@@ -770,15 +816,12 @@ struct DownloadProgressTests {
         // can never appear next to a still-moving GB counter.
         #expect(DownloadProgress.formatSpeed(bytesPerSecond: 0) == "< 1 KB/s")
         #expect(DownloadProgress.formatSpeed(bytesPerSecond: 512) == "< 1 KB/s")
-        // ≥ 1 KB/s but below 100 → 1-decimal precision (matches `formatBytes`).
-        #expect(DownloadProgress.formatSpeed(bytesPerSecond: 1024) == "1.0 KB/s")
-        #expect(DownloadProgress.formatSpeed(bytesPerSecond: 683 * 1024) == "683 KB/s")
-        // MB/s and GB/s switch points.
-        let oneMB = 1024.0 * 1024.0
-        #expect(DownloadProgress.formatSpeed(bytesPerSecond: oneMB) == "1.0 MB/s")
-        #expect(DownloadProgress.formatSpeed(bytesPerSecond: 23.4 * oneMB) == "23.4 MB/s")
-        let oneGB = 1024.0 * 1024.0 * 1024.0
-        #expect(DownloadProgress.formatSpeed(bytesPerSecond: 1.5 * oneGB) == "1.5 GB/s")
+        #expect(DownloadProgress.formatSpeed(bytesPerSecond: 999) == "< 1 KB/s")
+        let rates: [Double] = [1_000, 1024, 683 * 1024, 1_048_576, 23.4 * 1_048_576, 1.5 * 1_073_741_824]
+        for rate in rates {
+            let expected = ByteCountFormatter.string(fromByteCount: Int64(rate), countStyle: .file) + "/s"
+            #expect(DownloadProgress.formatSpeed(bytesPerSecond: rate) == expected)
+        }
     }
 
     /// ETA cliffs map onto Chrome's "less than a minute" / "N min" /
@@ -836,7 +879,7 @@ struct DownloadProgressTests {
         let t0 = Date(timeIntervalSince1970: 8_000_000)
         progress.applyDiskObservation(bytes: 750_000, at: t0)
         let subtitle = progress.progressSubtitle ?? ""
-        #expect(subtitle == "732 KB downloaded")
+        #expect(subtitle == "\(ByteCountFormatter.string(fromByteCount: 750_000, countStyle: .file)) downloaded")
         #expect(subtitle.contains("/s") == false)
     }
 
@@ -861,7 +904,7 @@ struct DownloadProgressTests {
         progress.applyDiskObservation(bytes: 30 * 1024 * 1024, at: t0.addingTimeInterval(4.0))
         progress.applyDiskObservation(bytes: 40 * 1024 * 1024, at: t0.addingTimeInterval(8.0))
         let stable = progress.progressSubtitle ?? ""
-        #expect(stable.contains("40.0 MB / 100 MB"))
+        #expect(stable.contains("\(ByteCountFormatter.string(fromByteCount: 40 * 1024 * 1024, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: 100 * 1024 * 1024, countStyle: .file))"))
         #expect(stable.contains("40%"))
         #expect(stable.contains("left"))
         #expect(progress.etaText != nil)

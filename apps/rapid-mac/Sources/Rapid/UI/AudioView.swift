@@ -79,7 +79,7 @@ struct AudioView: View {
             alias: selectedAlias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedEntry?.cached,
-            sizeText: selectedEntry?.sizeOnDisk,
+            sizeText: selectedEntry?.size?.displayText,
             download: download,
             loading: isLoading ? .init(
                 alias: selectedAlias,
@@ -113,7 +113,7 @@ struct AudioView: View {
             serverState: server.readinessState(for: selectedAlias),
             alias: selectedAlias,
             cacheState: cacheState,
-            sizeText: selectedEntry?.sizeOnDisk,
+            sizeText: selectedEntry?.size?.displayText,
             progress: progress,
             failure: server.residentLoadFailure(for: selectedAlias).map {
                 .init(message: $0.message, alias: $0.alias)
@@ -404,7 +404,7 @@ struct AudioView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 Text("Speech ready")
                     .font(RapidFont.body)
-                Text(ByteCountFormatter.string(fromByteCount: Int64(audio.data.count), countStyle: .file))
+                Text(DownloadProgress.formatBytes(Int64(audio.data.count)))
                     .font(RapidFont.caption)
                     .foregroundStyle(.secondary)
             }
@@ -546,7 +546,7 @@ struct AudioView: View {
             _ = downloads.startDownload(
                 alias: alias,
                 hfPath: entry.hfRepo,
-                totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+                totalBytes: entry.size?.byteCount
             )
         case .start(let alias), .retry(let alias):
             Task { await loadAudioModel(alias) }
@@ -599,7 +599,7 @@ struct AudioView: View {
                     _ = downloads.startDownload(
                         alias: alias,
                         hfPath: currentEntry.hfRepo,
-                        totalBytes: ModelCacheActions.parseSizeBytes(currentEntry.sizeOnDisk)
+                        totalBytes: currentEntry.size?.byteCount
                     )
                 }
                 await downloads.awaitDownloadSettlement(alias: alias)

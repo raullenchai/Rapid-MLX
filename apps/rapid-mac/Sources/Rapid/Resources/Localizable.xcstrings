@@ -2,6 +2,86 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%@ download." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载大小：%@。"
+          }
+        }
+      }
+    },
+    "needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %@"
+          }
+        }
+      }
+    },
+    "Needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %@"
+          }
+        }
+      }
+    },
+    " · needs ~%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · 大约需要 %@"
+          }
+        }
+      }
+    },
+    "Estimated to need about %@; this Mac has %@ available for models. You can download it, but starting it may fail or destabilize the Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计需要约 %1$@；这台 Mac 有 %2$@ 可供模型使用。你可以下载，但启动可能失败或导致 Mac 不稳定。"
+          }
+        }
+      }
+    },
+    ". Not fit for this Mac. Needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "。不适合这台 Mac。大约需要 %@"
+          }
+        }
+      }
+    },
+    "Estimated need ≈ %@; your Mac has about %@ available for the model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计需要约 %1$@；你的 Mac 有约 %2$@ 可供模型使用。"
+          }
+        }
+      }
+    },
+    "Estimated footprint exceeds your Mac's usable RAM (%@)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计内存占用超过你的 Mac 可用的内存（%@）。"
+          }
+        }
+      }
+    },
     "Acceleration" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17397,13 +17477,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Needs at least %1$d GB unified memory; this Mac has %2$d GB."
+            "value" : "Needs at least %1$@ unified memory; this Mac has %2$d GB."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "至少需要 %1$d GB 统一内存；这台 Mac 有 %2$d GB。"
+            "value" : "至少需要 %1$@ 统一内存；这台 Mac 有 %2$d GB。"
           }
         }
       }

@@ -129,7 +129,7 @@ struct AtomicModelCatalogTests {
         #expect(entries.map(\.alias) == ["chat", "image", "video", "tts", "stt"])
         #expect(entries.first { $0.alias == "chat" }?.kind == .chat)
         #expect(entries.first { $0.alias == "chat" }?.sizeBytes == 1_073_741_824)
-        #expect(entries.first { $0.alias == "chat" }?.sizeOnDisk == "1.0 GB")
+        #expect(entries.first { $0.alias == "chat" }?.sizeOnDisk == DownloadProgress.formatBytes(1_073_741_824))
         #expect(entries.first { $0.alias == "image" }?.kind == .image)
         #expect(entries.first { $0.alias == "video" }?.kind == .video)
         #expect(entries.first { $0.alias == "tts" }?.kind == .audio)
@@ -716,7 +716,7 @@ struct AtomicModelCatalogTests {
             ]
         )
         #expect(merged.first { $0.alias == "chat-sibling" }?.cached == true)
-        #expect(merged.first { $0.alias == "chat-sibling" }?.sizeOnDisk == "1 GiB")
+        #expect(merged.first { $0.alias == "chat-sibling" }?.sizeOnDisk == DownloadProgress.formatBytes(1_073_741_824))
         #expect(merged.first {
             $0.alias == "chat-sibling"
         }?.speculativeDecodingPreset?.method == .suffix)

@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: entry.sizeBytes ?? ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+            totalBytes: entry.size?.byteCount
         )
     }
 

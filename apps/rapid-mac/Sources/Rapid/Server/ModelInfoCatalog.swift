@@ -56,7 +56,7 @@ struct ModelInfo: Equatable, Sendable {
     /// "~3.4 GB" / "—" if params unknown.
     var ramLabel: String {
         guard paramsBillions != nil else { return "—" }
-        return String(format: "~%.1f GB", approxRAMGB)
+        return "~\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: approxRAMGB * Double(1 << 30))))"
     }
 }
 

@@ -90,6 +90,8 @@ struct ShareComputeRedesignTests {
         // ModelSizing derives a figure from the alias; the exact number is its
         // business, but a 35B model must produce SOMETHING to warn the user with.
         #expect((model.estimatedDownloadBytes ?? 0) > 0)
+        let weights = ModelSizing.estimate(alias: model.model.alias).weightsGB
+        #expect(model.estimatedDownloadBytes == Int64(weights * Double(1 << 30)))
     }
 
     // MARK: - Storage eligibility

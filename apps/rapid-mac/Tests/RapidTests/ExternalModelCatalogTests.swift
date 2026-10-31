@@ -79,7 +79,7 @@ struct ExternalModelCatalogTests {
         #expect(entries[0].alias == "qwen3.5-4b-4bit")
         #expect(entries[0].cached)
         #expect(entries[0].isExternal)
-        #expect(entries[0].sizeOnDisk == "2.3 GiB")
+        #expect(entries[0].sizeOnDisk == DownloadProgress.formatBytes(Int64(2.3 * Double(1 << 30))))
     }
 
     @Test("One external repo is consumed by only one available alias")

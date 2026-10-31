@@ -528,6 +528,7 @@ final class ImageGenViewModel {
             estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: selected.alias,
                 sizeText: selected.sizeOnDisk,
+                sizeBytes: selected.sizeBytes,
                 minimumMemoryGB: selected.minimumMemoryGB
             )
         )

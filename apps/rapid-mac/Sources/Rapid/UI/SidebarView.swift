@@ -1074,7 +1074,7 @@ struct SidebarView: View {
     }
 
     nonisolated private static func formatBytes(_ bytes: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .memory)
+        DownloadProgress.formatMemory(Int64(clamping: bytes))
     }
 
     // MARK: - Accessibility identifiers
