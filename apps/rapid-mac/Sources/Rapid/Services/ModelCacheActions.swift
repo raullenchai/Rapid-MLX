@@ -496,7 +496,10 @@ enum ModelCacheActions {
         for entry in entries where entry.cached {
             cachedCount += 1
             if let bytes = entry.size?.byteCount {
-                total += bytes
+                if total != Int64.max {
+                    let (sum, overflow) = total.addingReportingOverflow(bytes)
+                    total = overflow ? Int64.max : sum
+                }
                 anyParsed = true
             } else {
                 missing += 1

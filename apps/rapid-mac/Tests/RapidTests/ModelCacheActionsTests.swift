@@ -347,6 +347,16 @@ struct ModelCacheActionsTests {
         #expect(usage.totalBytes == 2_147_483_648)
     }
 
+    @Test("aggregateOnDiskBytes: saturates on overflow")
+    func aggregateOverflow() {
+        let entries = [
+            ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: nil, cached: true, sizeBytes: Int64.max),
+            ModelEntry(alias: "b", hfRepo: nil, sizeOnDisk: nil, cached: true, sizeBytes: 1),
+        ]
+        let usage = ModelCacheActions.aggregateOnDiskBytes(entries)
+        #expect(usage.totalBytes == Int64.max)
+    }
+
     @Test("aggregateOnDiskBytes: nil totalBytes when no entry has a parseable size")
     func aggregateUnparseable() {
         let entries = [
