@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from email.parser import Parser
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -55,6 +55,9 @@ from rapid_mlx.runtime.base_runtime import (
     is_homebrew_interpreter,
     runtime_install_spec,
 )
+
+if TYPE_CHECKING:
+    from rapid_mlx._version_check import InstallInfo, ReleaseInfo
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -2259,7 +2262,7 @@ def section_updates(
     *,
     installed: Callable[[], str | None] | None = None,
     fetch_latest: Callable[[], str | None] | None = None,
-    fetch_release: Callable[[bool], object | None] | None = None,
+    fetch_release: Callable[[bool], ReleaseInfo | None] | None = None,
     install_info: object | None = None,
 ) -> Section:
     """Is the installed rapid-mlx the latest release?
@@ -2310,7 +2313,7 @@ def section_updates(
     elif pl > pc:
         info = install_info if install_info is not None else vc.detect_install_method()
         cmd = getattr(info, "upgrade_command", None) or "rapid-mlx upgrade"
-        release = None
+        release: ReleaseInfo | None = None
         block = None
         try:
             if fetch_release is not None:
@@ -2322,7 +2325,7 @@ def section_updates(
             if release is not None and release.latest != latest:
                 release = None
             if release is not None:
-                block = vc._upgrade_block(cur, release, info)
+                block = vc._upgrade_block(cur, release, cast("InstallInfo", info))
         except Exception:  # noqa: BLE001 — version notices fail open
             release = None
             block = None
@@ -2333,12 +2336,15 @@ def section_updates(
                 CheckStatus.OK,
                 detail=(
                     f"installed={cur} latest={latest} "
-                    f"brew_stable={release.brew_stable} method=brew"
+                    f"brew_stable={cast('ReleaseInfo', release).brew_stable} method=brew"
                 ),
             )
         elif block == "python":
             text = vc.format_python_floor_warning(
-                cur, latest, release.requires_python, info
+                cur,
+                latest,
+                cast(str, cast("ReleaseInfo", release).requires_python),
+                cast("InstallInfo", info),
             )
             lines = text.splitlines()
             s.add(
