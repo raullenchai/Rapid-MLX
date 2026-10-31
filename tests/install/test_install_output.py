@@ -283,7 +283,7 @@ def test_uv_pyproject_spellings(tmp_path, content, absent):
 
 def test_reinstall_extras_filters_pip_warning(tmp_path):
     result = run_bash(
-        '''
+        """
 INSTALL_DIR="$1" PRESERVED_EXTRAS=chat TARGET=stable
 run_install_command() {
     if [ "$1" = "$INSTALL_DIR/bin/python" ]; then echo 1.0; else "$@"; fi
@@ -291,8 +291,10 @@ run_install_command() {
 pip_stub() { echo "WARNING: transformers 5.16.0 does not provide the extra 'tokenizers'" >&2; }
 INSTALLER=(pip_stub)
 reinstall_preserved_extras
-''',
-        tmp_path, capture_output=True, text=True,
+""",
+        tmp_path,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0
     assert result.stderr == ""
@@ -300,7 +302,7 @@ reinstall_preserved_extras
 
 def test_reinstall_extras_uses_uv_metadata(tmp_path):
     result = run_bash(
-        '''
+        """
 unset UV_CONFIG_FILE UV_NO_CONFIG XDG_CONFIG_DIRS
 export XDG_CONFIG_HOME="$1/config"
 cd "$1"
@@ -311,8 +313,10 @@ run_install_command() {
 uv() { cat "$UV_CONFIG_FILE"; }
 INSTALLER=(uv pip install)
 reinstall_preserved_extras
-''',
-        tmp_path, capture_output=True, text=True,
+""",
+        tmp_path,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0
     assert 'name = "mlx-video-with-audio"' in result.stdout
@@ -327,7 +331,9 @@ def test_quick_start_chat_hint(tmp_path, available):
     python.chmod(0o755)
     result = run_bash(
         'INSTALL_DIR="$1"; RECOMMENDED_MODEL=model RECOMMENDED_FLAGS= RAM_GB=16; print_quick_start_commands',
-        tmp_path, capture_output=True, text=True,
+        tmp_path,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0
     line = next(line for line in result.stdout.splitlines() if "rapid-mlx-chat" in line)
@@ -336,17 +342,25 @@ def test_quick_start_chat_hint(tmp_path, available):
 
 def test_reusable_standalone_takes_precedence(tmp_path):
     source = SCRIPT.read_text()
-    flow = source[source.index('PYTHON="$(select_python || true)"'):source.index('\ndim "Python:', source.index('PYTHON="$(select_python || true)"'))]
+    flow = source[
+        source.index('PYTHON="$(select_python || true)"') : source.index(
+            '\ndim "Python:', source.index('PYTHON="$(select_python || true)"')
+        )
+    ]
     result = run_bash(
-        '''
+        """
 select_python() { return 1; }
 standalone_python_reusable() { return 0; }
 brew() { echo unexpected-brew; return 1; }
 install_standalone_python() { echo unexpected-download; return 1; }
 eval "$2"
 printf 'selected=%s\\n' "$PYTHON"
-''',
-        tmp_path, flow, env={"HOME": str(tmp_path)}, capture_output=True, text=True,
+""",
+        tmp_path,
+        flow,
+        env={"HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0
     assert "Using Python 3.12.13 from ~/.rapid-mlx-python" in result.stdout

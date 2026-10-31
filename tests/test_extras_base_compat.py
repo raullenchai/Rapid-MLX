@@ -10,7 +10,9 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-PROJECT = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"]
+PROJECT = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())[
+    "project"
+]
 BASE = [Requirement(item) for item in PROJECT["dependencies"]]
 
 
@@ -30,7 +32,9 @@ def _base_closure():
             requirements = metadata.requires(name) or []
         except metadata.PackageNotFoundError:
             continue
-        pending.extend(req.name for item in requirements if _active(req := Requirement(item)))
+        pending.extend(
+            req.name for item in requirements if _active(req := Requirement(item))
+        )
     return names
 
 
@@ -65,7 +69,13 @@ def test_extra_does_not_narrow_base(extra, req):
     message = f"extra {extra}, package {name}: base {base.specifier if base else '<undeclared>'}, extra {req.specifier}"
     assert base is not None, message
     upper = SpecifierSet(
-        ",".join(str(s) for s in req.specifier if s.operator in {"<", "<=", "==", "===", "~="})
+        ",".join(
+            str(s)
+            for s in req.specifier
+            if s.operator in {"<", "<=", "==", "===", "~="}
+        )
     )
     for version in _probes(base.specifier, req.specifier):
-        assert version not in base.specifier or version in upper, f"{message}; version {version}"
+        assert version not in base.specifier or version in upper, (
+            f"{message}; version {version}"
+        )
