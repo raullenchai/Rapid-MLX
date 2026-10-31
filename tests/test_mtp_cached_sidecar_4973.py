@@ -88,7 +88,7 @@ def test_missing_sidecar_starts_plain_decode_without_fetch(
     assert args._speculative_config is None
     assert args.mtp_sidecar is None
     guidance = capsys.readouterr().err
-    assert f"rapid-mlx pull {ALIAS}" in guidance
+    assert f"rapid-mlx pull {ALIAS}" not in guidance
     assert f"rapid-mlx pull {profile.mtp_draft_model}" in guidance
 
 
