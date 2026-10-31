@@ -948,6 +948,11 @@ def catalog_memory_fit(
             weights = size_bytes(profile.hf_path)
         except Exception:
             weights = None
+        resident = (
+            int(profile.resident_memory_gb * _GIB)
+            if profile.modality == "text" and profile.resident_memory_gb is not None
+            else None
+        )
         image_estimate = None
         if profile.modality in ("image", "image-gen", "video-gen"):
             image_estimate = measured_image_estimate_bytes(alias)
@@ -959,6 +964,8 @@ def catalog_memory_fit(
                 estimate, source = curated, "curated_footprint"
             else:
                 estimate, source = image_estimate, "measured_peak"
+        elif resident is not None:
+            estimate, source = resident, "curated_footprint"
         elif measured is not None:
             estimate, source = int(measured * _GIB), "curated_footprint"
         elif weights is not None:
@@ -973,7 +980,11 @@ def catalog_memory_fit(
         if _enforced_memory_floor(profile, ram_bytes):
             fits, basis = False, "memory_floor"
         elif floor is not None and ram_bytes is not None and ram_bytes >= floor * _GIB:
-            footprint = weights if profile.modality == "text" else estimate
+            footprint = (
+                (resident if resident is not None else weights)
+                if profile.modality == "text"
+                else estimate
+            )
             fits = not (
                 recommended_working_set_bytes is not None
                 and footprint is not None
@@ -1035,7 +1046,11 @@ def catalog_memory_refusal(
         if not ram_bytes or not result.budget_bytes:
             return None
         footprint = (
-            size_bytes(profile.hf_path)
+            (
+                int(profile.resident_memory_gb * _GIB)
+                if profile.resident_memory_gb is not None
+                else size_bytes(profile.hf_path)
+            )
             if result.fit_basis == "memory_floor" and profile.modality == "text"
             else result.estimate_bytes
         )

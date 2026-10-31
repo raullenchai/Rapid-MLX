@@ -86,6 +86,33 @@ def test_fitting_models_pass(alias, ram, monkeypatch):
     run(alias, ram, monkeypatch)
 
 
+def test_deepseek_v41_resident_memory_admission(monkeypatch, capsys):
+    alias = "deepseek-v41-flash-1017"
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: int(222.72 * GIB)
+    )
+    run(alias, 256, monkeypatch)
+    fit = preflight.catalog_memory_fit(
+        alias, ram_bytes=256 * GIB, recommended_working_set_bytes=int(222.72 * GIB)
+    )
+    assert (fit.estimate_bytes, fit.estimate_source, fit.fits) == (
+        204 * GIB,
+        "curated_footprint",
+        True,
+    )
+
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 192 * GIB
+    )
+    with pytest.raises(SystemExit):
+        run(alias, 256, monkeypatch)
+    assert f"needs ~{preflight._gb(204 * GIB)} of GPU memory" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit):
+        run(alias, 128, monkeypatch)
+    assert "at least 224 GB" in capsys.readouterr().err
+
+
 def test_bonsai_alias_and_repo_are_refused_identically(monkeypatch):
     alias = "bonsai-27b-2bit"
     repo = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"

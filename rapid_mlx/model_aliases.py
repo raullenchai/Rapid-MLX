@@ -227,6 +227,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
             "min_memory_gb",
+            "resident_memory_gb",
             "enforce_min_memory",
             "vision_min_memory_gb",
             "experimental",
@@ -546,6 +547,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         return float(raw)
 
     min_memory_gb = _optional_positive_number("min_memory_gb")
+    resident_memory_gb = _optional_positive_number("resident_memory_gb")
     vision_min_memory_gb = _optional_positive_number("vision_min_memory_gb")
     raw_sampling = value.get("recommended_sampling")
     recommended_sampling: tuple[tuple[str, float], ...] | None
@@ -816,6 +818,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         pflash_keep_ratio=pflash_keep_ratio,
         turboquant_tier=turboquant_tier,
         min_memory_gb=min_memory_gb,
+        resident_memory_gb=resident_memory_gb,
         enforce_min_memory=_strict_bool("enforce_min_memory", False),
         vision_min_memory_gb=vision_min_memory_gb,
         experimental=_strict_bool("experimental", False),

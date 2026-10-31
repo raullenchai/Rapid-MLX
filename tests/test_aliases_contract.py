@@ -97,6 +97,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "ddtree_speculative_tokens",
         "ddtree_tree_budget",
         "min_memory_gb",
+        "resident_memory_gb",
         "enforce_min_memory",
         "vision_min_memory_gb",
         "experimental",
@@ -123,6 +124,17 @@ def _raw_aliases() -> dict[str, dict | str]:
 def _alias_ids() -> list[str]:
     """Stable alias name list for ``parametrize`` IDs."""
     return sorted(_raw_aliases().keys())
+
+
+def test_resident_memory_alias_contract():
+    from rapid_mlx.model_aliases import _coerce
+
+    profile = _coerce("example", {"hf_path": "org/model", "resident_memory_gb": 204})
+    assert profile.resident_memory_gb == 204.0
+    assert _coerce("example", {"hf_path": "org/model"}).resident_memory_gb is None
+    for invalid in (0, -1, True, "204"):
+        with pytest.raises(ValueError, match="resident_memory_gb"):
+            _coerce("example", {"hf_path": "org/model", "resident_memory_gb": invalid})
 
 
 def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:

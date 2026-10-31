@@ -771,6 +771,7 @@
     "mtp_default_enabled": false,
     "default_max_tokens": 4096,
     "min_memory_gb": 224,
+    "resident_memory_gb": 204,
     "enforce_min_memory": true,
     "experimental": true,
     "recommended_sampling": {
