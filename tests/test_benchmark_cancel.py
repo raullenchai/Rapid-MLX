@@ -70,8 +70,8 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     read_fd, write_fd = os.pipe()
 
     def write(fd, data):
-        if fd == write_fd:
-            writes.append(data)
+        if threading.current_thread().name == "rapid-mlx-bench-log-echo":
+            writes.append((fd, data))
         return real_write(fd, data)
 
     monkeypatch.setattr(_server.os, "write", write)
@@ -82,7 +82,8 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         ):
             assert select.select([read_fd], [], [], 3)[0]
             assert b"ENGINE-DEBUG-LINE\n" in os.read(read_fd, 4096)
-        assert any(b"ENGINE-DEBUG-LINE\n" in data for data in writes)
+        assert any(b"ENGINE-DEBUG-LINE\n" in data for _, data in writes)
+        assert all(fd != write_fd for fd, _ in writes)
     finally:
         os.close(read_fd)
 
@@ -109,7 +110,7 @@ def test_serve_drains_child_log_after_stop(monkeypatch):
     received = bytearray()
 
     def slow_write(fd, data):
-        if fd == write_fd:
+        if threading.current_thread().name == "rapid-mlx-bench-log-echo":
             if not started.is_set():
                 started.set()
                 time.sleep(0.3)
@@ -138,6 +139,55 @@ def test_serve_drains_child_log_after_stop(monkeypatch):
         )
     finally:
         reader.join(timeout=3)
+        os.close(read_fd)
+
+
+def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
+    real_dup = os.dup
+    real_write = os.write
+    duplicated = []
+    writes = []
+    times = iter([0.0, 0.0, 0.0, 2.0])
+
+    class DeferredThread:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            self.target()
+
+    def dup(fd):
+        duplicated.append(real_dup(fd))
+        return duplicated[-1]
+
+    def write(fd, data):
+        writes.append((fd, data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(_server.subprocess, "Popen", lambda *args, **kwargs: object())
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    monkeypatch.setattr(_server, "_terminate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(_server.os, "dup", dup)
+    monkeypatch.setattr(_server.os, "write", write)
+    monkeypatch.setattr(_server.time, "monotonic", lambda: next(times, 2.0))
+    monkeypatch.setattr(_server.select, "select", lambda r, w, x, timeout: ([], w, []))
+    log_path = tmp_path / "server.log"
+    read_fd, write_fd = os.pipe()
+    try:
+        with os.fdopen(write_fd, "w") as output:
+            with _server.serve("fake", log_path=log_path, echo_log=output):
+                log_path.write_bytes(b"backlog")
+            assert writes == []
+            assert len(duplicated) == 1 and duplicated[0] != write_fd
+            with pytest.raises(OSError):
+                os.fstat(duplicated[0])
+            assert real_write(write_fd, b"usable") == 6
+            assert os.read(read_fd, 6) == b"usable"
+    finally:
         os.close(read_fd)
 
 

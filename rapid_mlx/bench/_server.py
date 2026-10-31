@@ -197,9 +197,15 @@ def serve(
             except (OSError, ValueError):
                 pass
 
+            if log_path is not None:
+                echo_source = log_path
+            else:
+                assert tmp_log is not None
+                echo_source = tmp_log
+
             def echo_output() -> None:
                 try:
-                    fd = echo_log.fileno()
+                    fd = os.dup(echo_log.fileno())
                 except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
                     fd = None
 
@@ -218,6 +224,11 @@ def serve(
                                 while True:
                                     if stop_echo.is_set():
                                         start_drain()
+                                    if (
+                                        drain_deadline is not None
+                                        and time.monotonic() >= drain_deadline
+                                    ):
+                                        return False
                                     if drain_deadline is None:
                                         timeout = 0.2
                                     else:
@@ -225,6 +236,11 @@ def serve(
                                         timeout = max(0.0, min(0.2, remaining))
                                     writable = select.select([], [fd], [], timeout)[1]
                                     if writable:
+                                        if (
+                                            drain_deadline is not None
+                                            and time.monotonic() >= drain_deadline
+                                        ):
+                                            return False
                                         break
                                     if (
                                         drain_deadline is not None
@@ -242,34 +258,37 @@ def serve(
                             return False
                         return True
 
-                    with open(log_path or tmp_log, "rb") as reader:
-                        while not stop_echo.is_set():
-                            position = reader.tell()
-                            line = reader.readline()
-                            if line.endswith(b"\n"):
-                                if not write_bytes(line):
-                                    return
-                            else:
-                                reader.seek(position)
-                                stop_echo.wait(0.2)
-                        start_drain()
-                        write_bytes(reader.read())
-                    return
+                    try:
+                        with open(echo_source, "rb") as reader:
+                            while not stop_echo.is_set():
+                                position = reader.tell()
+                                line = reader.readline()
+                                if line.endswith(b"\n"):
+                                    if not write_bytes(line):
+                                        return
+                                else:
+                                    reader.seek(position)
+                                    stop_echo.wait(0.2)
+                            start_drain()
+                            write_bytes(reader.read())
+                        return
+                    finally:
+                        os.close(fd)
 
-                with open(log_path or tmp_log, errors="replace") as reader:
+                with open(echo_source, errors="replace") as text_reader:
                     while not stop_echo.is_set():
-                        position = reader.tell()
-                        line = reader.readline()
-                        if line.endswith("\n"):
+                        position = text_reader.tell()
+                        text_line = text_reader.readline()
+                        if text_line.endswith("\n"):
                             try:
-                                echo_log.write(line)
+                                echo_log.write(text_line)
                                 echo_log.flush()
                             except (OSError, ValueError):
                                 return
                         else:
-                            reader.seek(position)
+                            text_reader.seek(position)
                             stop_echo.wait(0.2)
-                    remaining = reader.read()
+                    remaining = text_reader.read()
                     if remaining:
                         try:
                             echo_log.write(remaining)
