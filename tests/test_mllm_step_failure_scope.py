@@ -95,3 +95,18 @@ def test_fatal_failure_classifies_only_step_requests_as_oom():
         a.request_id: "insufficient_memory",
         b.request_id: "engine_aborted",
     }
+
+
+@pytest.mark.parametrize("has_method", [False, True])
+def test_fatal_failure_without_step_scope_classifies_all_requests(has_method):
+    scheduler, _, a, b, _ = setup()
+    scheduler.batch_generator = MagicMock(
+        spec=["close", "failed_step_uids"] if has_method else ["close"]
+    )
+    if has_method:
+        scheduler.batch_generator.failed_step_uids.return_value = None
+    output = scheduler._fail_all_inflight(MemoryError())
+    assert {o.request_id: o.error_kind for o in output.outputs} == {
+        a.request_id: "insufficient_memory",
+        b.request_id: "insufficient_memory",
+    }

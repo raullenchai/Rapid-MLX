@@ -168,6 +168,59 @@ def test_chunked_cold_redo_rebuilds_cache_and_delegates(monkeypatch):
     prefill.assert_called_once_with(ids, cache, kwargs)
 
 
+def test_chunked_cold_redo_steps_rebuilds_cache_and_yields(monkeypatch):
+    from unittest.mock import Mock
+
+    import mlx_lm.models.cache as cache_module
+
+    gen = generator(monkeypatch)
+    rebuilt = Cache()
+    make_cache = Mock(return_value=[rebuilt])
+    monkeypatch.setattr(cache_module, "make_prompt_cache", make_cache)
+    req = request()
+    cache = [Cache()]
+    steps = gen._media_cold_redo_steps(
+        req.input_ids, cache, {"pixel_values": req.pixel_values}, chunked=True
+    )
+    next(steps)
+    make_cache.assert_called_once_with(gen.language_model)
+    assert cache == [rebuilt]
+    assert [call[0] for call in gen.language_model.calls] == [4]
+    next(steps)
+    assert [call[0] for call in gen.language_model.calls] == [4, 4]
+    list(steps)
+    assert [call[0] for call in gen.language_model.calls] == [4, 4, 2, 1]
+
+
+def test_synchronous_chunked_media_prefill_drains_steps(monkeypatch):
+    gen = generator(monkeypatch)
+    req = request()
+    output = gen._chunked_media_lm_prefill(
+        req.input_ids, [Cache()], {"pixel_values": req.pixel_values}
+    )
+    assert output.shape == (1, 1, 2)
+    assert [call[0] for call in gen.language_model.calls] == [4, 4, 2, 1]
+
+
+def test_synchronous_chunked_suffix_drains_steps(monkeypatch):
+    gen = generator(monkeypatch)
+    calls = []
+    sentinel = object()
+
+    def forward(ids, cache, delta):
+        calls.append((ids.shape[1], cache, delta))
+        return sentinel
+
+    monkeypatch.setattr(gen, "_media_suffix_forward", forward)
+    cache = [Cache()]
+    delta = object()
+    assert (
+        gen._media_chunked_suffix_forward(request().input_ids, cache, delta, True)
+        is sentinel
+    )
+    assert calls == [(4, cache, delta), (4, cache, delta), (3, cache, delta)]
+
+
 def test_chunked_media_metadata_and_last_token(monkeypatch):
     gen = generator(monkeypatch)
     run(gen, request(), [Cache()])
