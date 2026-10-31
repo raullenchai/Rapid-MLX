@@ -19,6 +19,7 @@ import wave
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +52,7 @@ def _scoped_snapshot_download(module):
         had_original = hasattr(module, "snapshot_download")
         original = getattr(module, "snapshot_download", None)
 
+        @wraps(model_downloads.snapshot_download)
         def resolve_snapshot(repo_id, **kwargs):
             local = Path(repo_id).expanduser()
             if local.is_dir():

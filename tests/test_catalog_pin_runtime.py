@@ -148,7 +148,10 @@ def test_kokoro_implicit_assets_use_pin_gate(monkeypatch, tmp_path):
     class _Model:
         def generate(self, **kwargs):
             # Voices are fetched lazily on generate(), under the pin adapter.
-            assert pipeline.snapshot_download is model_downloads.snapshot_download
+            assert (
+                getattr(pipeline.snapshot_download, "__wrapped__", None)
+                is model_downloads.snapshot_download
+            )
             assert voice_loader.load_single_voice("af_heart") is marker
             yield _Result()
 
@@ -290,7 +293,8 @@ def test_kokoro_scope_covers_only_first_result(monkeypatch):
     assert tts._SNAPSHOT_DOWNLOAD_LOCK.acquire(blocking=False)
     tts._SNAPSHOT_DOWNLOAD_LOCK.release()
     assert list(stream) == [2]
-    assert seen == [model_downloads.snapshot_download, original]
+    assert getattr(seen[0], "__wrapped__", None) is model_downloads.snapshot_download
+    assert seen[1] is original
 
 
 def test_scoped_download_removes_attribute_it_added():
@@ -335,7 +339,8 @@ def test_kokoro_generate_results_scopes_backend_pipeline(monkeypatch):
     engine.model = Model()
     engine._model_family = "kokoro"
     assert list(engine._generate_results({})) == ["chunk"]
-    assert seen == [model_downloads.snapshot_download]
+    assert len(seen) == 1
+    assert getattr(seen[0], "__wrapped__", None) is model_downloads.snapshot_download
     assert pipeline.snapshot_download is original
 
 

@@ -302,13 +302,9 @@ def test_local_snapshot_voices(tmp_path, monkeypatch):
     assert _list_snapshot_voices(str(tmp_path)) == ["a", "b"]
 
 
-def test_local_snapshot_adapter_and_whisper_processor(tmp_path, monkeypatch):
+def test_local_snapshot_adapter_skips_hub(tmp_path, monkeypatch):
     from rapid_mlx import model_downloads
-    from rapid_mlx.audio.stt import _whisper_processor_source
-    from rapid_mlx.audio.tts import (
-        _resolve_indextts_snapshot,
-        _scoped_snapshot_download,
-    )
+    from rapid_mlx.audio.tts import _scoped_snapshot_download
 
     monkeypatch.setattr(
         model_downloads,
@@ -319,6 +315,12 @@ def test_local_snapshot_adapter_and_whisper_processor(tmp_path, monkeypatch):
     with _scoped_snapshot_download(module):
         assert module.snapshot_download(repo_id=str(tmp_path)) == str(tmp_path)
     assert module.snapshot_download is None
+
+
+def test_local_snapshot_and_whisper_processor(tmp_path):
+    from rapid_mlx.audio.stt import _whisper_processor_source
+    from rapid_mlx.audio.tts import _resolve_indextts_snapshot
+
     assert _resolve_indextts_snapshot(str(tmp_path)) == tmp_path
     assert _whisper_processor_source(str(tmp_path), 80, 51865) == "openai/whisper-base"
     (tmp_path / "preprocessor_config.json").write_text("{}")
