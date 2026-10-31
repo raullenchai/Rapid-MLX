@@ -649,7 +649,7 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
     STANDALONE_DIR="$WORK/standalone" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
     download() { printf '%s\n' "$TMP_TAR" >> "$WORK/downloads"; printf archive; }
     shasum() { echo 'hash  archive'; }
-    tar() { mkdir -p "$STANDALONE_DIR/bin"; make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64; }
+    tar() { mkdir -p "$4/bin"; make_py "$4/bin/python3" 3.12.12 arm64; }
     install_standalone_python >/dev/null || exit 1
     touch "$STANDALONE_DIR/stale"
     install_standalone_python >/dev/null || exit 1
@@ -664,13 +664,36 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
     make_py "$STANDALONE_DIR/bin/python3" 3.12.13 arm64
     download() { touch "$WORK/reuse-downloaded"; }
     shasum() { echo 'hash archive'; }
-    tar() { mkdir -p "$STANDALONE_DIR/bin"; make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64; }
+    tar() { mkdir -p "$4/bin"; make_py "$4/bin/python3" 3.12.12 arm64; }
     install_standalone_python >/dev/null || exit 1
     [ ! -e "$WORK/reuse-downloaded" ] || exit 1
     make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64
     install_standalone_python >/dev/null || exit 1
     [ -e "$WORK/reuse-downloaded" ]
 ) && ok "standalone reuses matching Python and downloads mismatched version" || bad "standalone reuses matching Python and downloads mismatched version"
+(
+    STANDALONE_DIR="$WORK/validation-failure" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
+    mkdir -p "$STANDALONE_DIR"
+    touch "$STANDALONE_DIR/marker"
+    download() { printf archive; }
+    shasum() { echo 'hash archive'; }
+    tar() { mkdir -p "$4/bin"; printf '#!/bin/bash\nexit 1\n' > "$4/bin/python3"; chmod +x "$4/bin/python3"; }
+    if install_standalone_python >"$WORK/validation-output" 2>&1; then exit 1; fi
+    [ -f "$STANDALONE_DIR/marker" ] || exit 1
+    grep -q 'Failed to install standalone Python\.' "$WORK/validation-output" || exit 1
+    for path in "$STANDALONE_DIR".new.* "$STANDALONE_DIR".old.*; do [ ! -e "$path" ] || exit 1; done
+) && ok "failed staged Python validation preserves the existing runtime" || bad "failed staged Python validation preserves the existing runtime"
+(
+    STANDALONE_DIR="$WORK/replacement" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
+    mkdir -p "$STANDALONE_DIR"
+    touch "$STANDALONE_DIR/marker"
+    download() { printf archive; }
+    shasum() { echo 'hash archive'; }
+    tar() { mkdir -p "$4/bin"; make_py "$4/bin/python3" 3.12.13 arm64; touch "$4/new-marker"; }
+    install_standalone_python >/dev/null || exit 1
+    [ ! -e "$STANDALONE_DIR/marker" ] && [ -f "$STANDALONE_DIR/new-marker" ] && [ -x "$STANDALONE_DIR/bin/python3" ] || exit 1
+    for path in "$STANDALONE_DIR".new.* "$STANDALONE_DIR".old.*; do [ ! -e "$path" ] || exit 1; done
+) && ok "validated standalone Python replaces the existing runtime without leftovers" || bad "validated standalone Python replaces the existing runtime without leftovers"
 (
     HOME="$WORK/hints-home" RAPID_INSTALL_LAUNCH_DAEMONS_DIR="$WORK/daemons"
     mkdir -p "$HOME/Library/LaunchAgents" "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR"

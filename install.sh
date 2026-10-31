@@ -544,7 +544,8 @@ install_standalone_python() (
     # download fails closed instead of silently installing.
     TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rapidmlx-py.XXXXXX")"
     TMP_TAR="$TMP_DIR/python.tar.gz"
-    trap 'rm -rf "$TMP_DIR"' EXIT
+    STAGING_DIR=""
+    trap 'rm -rf "$TMP_DIR"; [ -z "$STAGING_DIR" ] || rm -rf "$STAGING_DIR"' EXIT
     download "$PY_URL" > "$TMP_TAR"
     ACTUAL="$(shasum -a 256 "$TMP_TAR" | awk '{print $1}')"
     if [ "$ACTUAL" != "$PY_SHA256" ]; then
@@ -555,15 +556,27 @@ install_standalone_python() (
         exit 1
     fi
     dim "SHA256 verified."
-    rm -rf "$STANDALONE_DIR"
-    mkdir -p "$STANDALONE_DIR"
-    tar xzf "$TMP_TAR" -C "$STANDALONE_DIR" --strip-components=1
-    PYTHON="${STANDALONE_DIR}/bin/python3"
+    STAGING_DIR="$(mktemp -d "${STANDALONE_DIR}.new.XXXXXX")" || exit 1
+    tar xzf "$TMP_TAR" -C "$STAGING_DIR" --strip-components=1 || exit 1
+    PYTHON="${STAGING_DIR}/bin/python3"
     if ! run_install_command "$PYTHON" --version >/dev/null 2>&1; then
         err "Failed to install standalone Python."
         dim "Please install Python 3.12 or 3.13 from https://www.python.org/downloads/"
         exit 1
     fi
+    OLD_DIR="${STANDALONE_DIR}.old.$$"
+    if [ -e "$STANDALONE_DIR" ]; then
+        mv "$STANDALONE_DIR" "$OLD_DIR" || exit 1
+    fi
+    if ! mv "$STAGING_DIR" "$STANDALONE_DIR"; then
+        if [ -e "$OLD_DIR" ]; then
+            mv "$OLD_DIR" "$STANDALONE_DIR"
+        fi
+        exit 1
+    fi
+    STAGING_DIR=""
+    rm -rf "$OLD_DIR"
+    PYTHON="${STANDALONE_DIR}/bin/python3"
     ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
 )
 
