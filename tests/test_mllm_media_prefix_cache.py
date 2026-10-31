@@ -756,8 +756,7 @@ class TestPlanGates:
         assert plan is not None and plan[0] == "store"
         assert plan[2] == 192
 
-    def test_alignment_below_placeholder_fails_closed(self):
-        # Flooring must never push the boundary onto a placeholder.
+    def test_alignment_below_placeholder_falls_back_to_unaligned_boundary(self):
         gen = _stub_generator()
         ids = _full_ids(200)
         ids[193] = _PLACEHOLDER_ID  # aligned boundary 192 < 193
@@ -766,6 +765,19 @@ class TestPlanGates:
             pixel_values=mx.zeros((1, 2)),
             prefix_boundary=192,
             max_tokens=8,
+        )
+        plan = gen._media_boundary_plan(req, _ids(ids), _kv_leaves())
+        assert plan is not None and plan[0] == "store" and plan[2] == 196
+        assert gen._media_boundary_misses == 0
+
+    def test_unaligned_boundary_on_placeholder_fails_closed(self):
+        gen = _stub_generator()
+        ids = _full_ids(200)
+        ids[196] = _PLACEHOLDER_ID
+        req = _make_request(
+            prompt="a" * 196,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=192,
         )
         assert gen._media_boundary_plan(req, _ids(ids), _kv_leaves()) is None
         assert gen._media_boundary_misses == 1
@@ -961,6 +973,29 @@ class TestStorePath:
         assert entry.cache_bytes > 0
         assert gen._media_boundary_stores == 1
         assert out is not None
+
+    def test_short_post_image_question_repeat_resumes(self):
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 296,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=292,
+        )
+        full_ids = _full_ids(300)
+        full_ids[40:266] = [_PLACEHOLDER_ID] * 226
+        ids = _ids(full_ids)
+        gen.language_model._rope_deltas = mx.array([3])
+
+        stores_before = gen._media_boundary_stores
+        gen._media_forward(req, ids, _kv_leaves(), {"pixel_values": req.pixel_values})
+        assert gen._media_boundary_stores == stores_before + 1
+        assert gen.model.calls == [(full_ids[0], 296, True), (296, 300, False)]
+
+        hits_before = gen._media_boundary_hits
+        gen._media_forward(req, ids, _kv_leaves(), {"pixel_values": req.pixel_values})
+        assert gen._media_boundary_hits == hits_before + 1
+        assert gen.model.calls[2:] == [(296, 300, False)]
+        assert req.cached_tokens == 296
 
     def test_clone_failure_redoes_a_cold_full_forward(self, monkeypatch):
         import rapid_mlx.models.mlx_vlm_vendored.apc_adapters as apc_adapters
