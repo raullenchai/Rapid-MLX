@@ -1026,7 +1026,7 @@ def detect_install_method() -> InstallInfo:
     package_file = Path(os.path.realpath(rapid_mlx.__file__))
     is_user = sys.prefix == sys.base_prefix and user_site in package_file.parents
     argv = [sys.executable, "-m", "pip", "install"]
-    if sys.prefix == sys.base_prefix and _externally_managed():
+    if is_user and _externally_managed():
         argv.append("--break-system-packages")
     if is_user:
         argv.append("--user")

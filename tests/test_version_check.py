@@ -1804,9 +1804,9 @@ def test_pip_externally_managed_marker(tmp_path, monkeypatch, marker, venv, user
     )
     monkeypatch.setattr("shutil.which", lambda _: None)
     argv = vc.detect_install_method().upgrade_argv
-    assert ("--break-system-packages" in argv) == (marker and not venv)
+    assert ("--break-system-packages" in argv) == (marker and user and not venv)
     assert ("--user" in argv) == (user and not venv)
-    if marker and not venv:
+    if marker and user and not venv:
         assert argv[argv.index("install") + 1] == "--break-system-packages"
 
 
