@@ -1225,33 +1225,34 @@ def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fall
         return result
 
     monkeypatch.setattr(lr, "_engine_scheduler", scheduler)
+
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.tokenizer = object()
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        sys.modules["rapid_mlx.engine.batched"], "BatchedEngine", Engine
+    )
+    monkeypatch.setattr(
+        lr, "_uses_serving_benchmark_engine", lambda target: not fallback
+    )
     if fallback:
-
-        class Engine:
-            def __init__(self, *args, **kwargs):
-                self.tokenizer = object()
-
-            async def start(self):
-                pass
-
-            async def stop(self):
-                pass
-
-        sys.modules["rapid_mlx.engine.batched"].BatchedEngine = Engine
 
         def fail(*args, **kwargs):
             raise ValueError("Model type unsupported_arch not supported.")
 
-        sys.modules["rapid_mlx.utils.tokenizer"].load_model_with_fallback = fail
-        request = AccelerationRequest(baseline=True)
-    else:
-        request = AccelerationRequest()
+        monkeypatch.setattr(
+            sys.modules["rapid_mlx.utils.tokenizer"], "load_model_with_fallback", fail
+        )
+    request = AccelerationRequest(baseline=True)
     _, _, identity, language = asyncio.run(
         lr._text_measurements("org/model", acceleration=request)
     )
     primary = next(c for c in identity["components"] if c["role"] == "primary")
     assert primary["source"]["resolved_revision"] == pinned_revision
-    if not fallback:
-        spec = language["speculative_decoding"]
-        assert spec["assistant_source"] == "embedded_head"
-        assert "draft_model_identity_digest" not in spec

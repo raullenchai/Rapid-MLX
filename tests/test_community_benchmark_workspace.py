@@ -5415,6 +5415,22 @@ def test_text_measurements_reports_model_load_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The load/download stage is the longest silent part of a run."""
+    from rapid_mlx import model_metadata
+
+    def unexpected_pinned_resolver(*args, **kwargs):
+        pytest.fail("a direct loader pair must not resolve a pinned snapshot")
+
+    monkeypatch.setattr(
+        model_metadata, "resolve_pinned_cached_snapshot", unexpected_pinned_resolver
+    )
+    identity_snapshots = []
+    original_identity = local_runner.unresolved_model_identity
+
+    def capture_identity(*args, **kwargs):
+        identity_snapshots.append(kwargs.get("snapshot_path"))
+        return original_identity(*args, **kwargs)
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", capture_identity)
     lines: list[str] = []
     cases = registered_workload("text_generation")["cases"]
 
@@ -5498,6 +5514,7 @@ def test_text_measurements_reports_model_load_stage(
         )
     )
     assert context == 4096
+    assert identity_snapshots == [None]
     assert _language["speculative_decoding"] == {"method": "none"}
     assert _language["kv_cache"] == {"mode": "unknown", "dtype": "unknown"}
     assert _language["prefill_chunk_size"] == 2048

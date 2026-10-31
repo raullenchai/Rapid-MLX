@@ -1608,6 +1608,7 @@ async def _text_measurements(
     workload = registered_workload("text_generation")
     executor = None
     serving_engine = None
+    started_serving_engine = False
     mtp_source: str | None = None
     language = None
     try:
@@ -1750,6 +1751,7 @@ async def _text_measurements(
             loaded_source, model = "", None
         elif use_serving_engine:
             serving_engine, tokenizer = await start_serving_engine()
+            started_serving_engine = True
             loaded_source, model = "", None
         else:
             executor = concurrent.futures.ThreadPoolExecutor(
@@ -1767,6 +1769,7 @@ async def _text_measurements(
                 executor.shutdown(wait=False, cancel_futures=True)
                 executor = None
                 serving_engine, tokenizer = await start_serving_engine()
+                started_serving_engine = True
                 loaded_source, model = "", None
             else:
                 # ``return_source`` appends the concrete checkpoint source; a
@@ -1774,7 +1777,7 @@ async def _text_measurements(
                 model, tokenizer = loaded[0], loaded[1]
                 loaded_source = loaded[2] if len(loaded) > 2 else ""
         _stage_finished(progress, load_started, "Model loaded")
-        if not loaded_source:
+        if started_serving_engine and not loaded_source:
             # The serving loaders do not retain their resolved checkpoint path.
             # Reuse their offline catalog-pin resolver, never refs/main or a
             # download, when the loader did not return a concrete source.
