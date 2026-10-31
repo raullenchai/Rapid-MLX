@@ -966,7 +966,7 @@ final class DownloadManager {
             return "There isn't enough disk space for this model. Free space, then retry to resume."
         }
         if value.contains("gated") || value.contains("hf auth login")
-            || (source == .huggingFace && (value.contains("401") || value.contains("403"))) {
+            || (source == .huggingFace && FailureDiagnoser.hasDownloadAuthSignal(value)) {
             return "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry."
         }
         if FailureDiagnoser.downloadFailureKind(raw: value, usingMirror: source == .mirror) == .downloadSourceUnavailable {

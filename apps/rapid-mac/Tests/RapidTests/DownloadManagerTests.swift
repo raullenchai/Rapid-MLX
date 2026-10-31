@@ -14,6 +14,22 @@ import Testing
 @MainActor
 @Suite("DownloadManager — state machine + cancellation")
 struct DownloadManagerTests {
+    @Test func downloadAuthSignalsDoNotMatchByteCounts() {
+        let unreachable = DownloadManager.classifyPullFailure(
+            tailLines: [
+                "Downloading model-00001-of-00004.safetensors 4013 MB",
+                "Error: could not reach Hugging Face for 'x/y'.",
+            ], source: .huggingFace
+        )
+        #expect(unreachable.kind == .downloadSourceUnavailable)
+        #expect(unreachable.message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+
+        let forbidden = DownloadManager.classifyPullFailure(
+            tailLines: ["403 Client Error: Forbidden"], source: .huggingFace
+        )
+        #expect(forbidden.kind == .downloadFailed)
+        #expect(forbidden.message == "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry.")
+    }
     private func waitUntil(
         deadline: Date,
         predicate: () -> Bool

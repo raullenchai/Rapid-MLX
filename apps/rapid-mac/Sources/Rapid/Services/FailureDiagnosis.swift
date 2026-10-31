@@ -494,13 +494,20 @@ enum FailureDiagnoser {
         return .toolFailed
     }
 
+    nonisolated static func hasDownloadAuthSignal(_ value: String) -> Bool {
+        containsAny(value.lowercased(), [
+            "401 client error", "403 client error", "status 401", "status 403",
+            "http 401", "http 403", "error 401", "error 403", "unauthorized", "forbidden",
+        ])
+    }
+
     nonisolated static func downloadFailureKind(
         raw: String,
         usingMirror: Bool
     ) -> FailureDiagnosis.Kind {
         let value = raw.lowercased()
         if containsAny(value, ["no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login"])
-            || (!usingMirror && containsAny(value, ["401", "403"])) {
+            || (!usingMirror && hasDownloadAuthSignal(value)) {
             return .downloadFailed
         }
         guard usingMirror else {
