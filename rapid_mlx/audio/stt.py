@@ -536,7 +536,7 @@ def _audio_duration_seconds(
     try:
         # Last resort for compressed formats: use the same decoder mlx-audio
         # itself accepts.  This allocates a waveform only when cheap metadata
-        # probes failed and Whisper actually returned timestamped segments.
+        # probes failed and no other usable duration is available.
         from mlx_audio.stt.utils import load_audio  # noqa: PLC0415
 
         waveform = load_audio(audio_path)
@@ -995,6 +995,7 @@ class STTEngine:
             # segments whose timestamps make them impossible for the actual
             # input; this avoids language/content heuristics and preserves
             # legitimate repetition inside the recording.
+            decoded_duration = False
             if self._is_whisper:
                 if trim is not None and not trim.skipped and trim.has_speech:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
@@ -1002,6 +1003,8 @@ class STTEngine:
                     input_duration = source_duration
                     if input_duration is None:
                         input_duration = _audio_duration_seconds(audio_path)
+                        decoded_duration = True
+                        source_duration = input_duration
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
                     segments,
@@ -1026,9 +1029,13 @@ class STTEngine:
             # Calculate duration from segments if available
             duration = source_duration
             if duration is None and segments:
-                last_seg = segments[-1] if segments else None
-                if last_seg:
-                    duration = _segment_value(last_seg, "end")
+                for segment in reversed(segments):
+                    end = _segment_value(segment, "end")
+                    if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
+                        duration = end
+                        break
+            if duration is None and not decoded_duration:
+                duration = _audio_duration_seconds(audio_path, allow_decode=True)
 
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),

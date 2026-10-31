@@ -185,6 +185,12 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
     client, paths, expected = upload_client
     expected.update(payload=b"converted wav", suffix=".wav")
     source_paths = []
+    alignment_calls = []
+    align = audio._align_blocking
+
+    def capture_alignment(model, path, text, language):
+        alignment_calls.append((model, Path(path), text))
+        return align(model, path, text, language)
 
     def transcode(source, destination):
         source_paths.append(Path(source))
@@ -193,6 +199,7 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
         Path(destination).write_bytes(expected["payload"])
 
     monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
+    monkeypatch.setattr(audio, "_align_blocking", capture_alignment)
     response = client.post(
         "/v1/audio/transcriptions",
         files={"file": ("audio.aiff", b"original aiff", "audio/aiff")},
@@ -200,5 +207,7 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
     )
     assert response.status_code == 200, response.text
     assert len(paths) == len(source_paths) == 1
+    assert alignment_calls == [("aligner", paths[0], "hello")]
+    assert paths[0].suffix == ".wav"
     assert not paths[0].exists()
     assert not source_paths[0].exists()

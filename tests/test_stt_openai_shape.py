@@ -174,6 +174,38 @@ def test_non_whisper_duration_does_not_decode_when_probes_fail(tmp_path, monkeyp
     assert engine.transcribe(path).duration == 1.25
 
 
+def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypatch):
+    import wave
+
+    from mlx_audio.stt import utils
+
+    from rapid_mlx.audio import stt
+    from rapid_mlx.routes.audio import _build_verbose_json_body
+
+    path = tmp_path / "unknown.audio"
+    path.write_bytes(b"audio")
+
+    def fail_probe(*args, **kwargs):
+        raise ValueError("metadata unavailable")
+
+    monkeypatch.setattr(wave, "open", fail_probe)
+    monkeypatch.setattr(sf, "info", fail_probe)
+    monkeypatch.setattr(stt.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        utils, "load_audio", lambda _: np.zeros(int(2.5 * stt._VAD_SAMPLE_RATE))
+    )
+    engine = stt.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
+    engine._loaded = True
+    engine.model = SimpleNamespace(
+        generate=lambda *a, **kw: SimpleNamespace(text="hello", language="en")
+    )
+    result = engine.transcribe(path)
+    assert result.duration == 2.5
+    body = _build_verbose_json_body(result)
+    assert body["duration"] == 2.5
+    assert body["segments"][0]["end"] == 2.5
+
+
 def test_aiff_expansion_limit_cleans_up(client, monkeypatch):
     from pathlib import Path
 
