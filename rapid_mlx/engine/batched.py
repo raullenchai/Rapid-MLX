@@ -2071,7 +2071,7 @@ class BatchedEngine(BaseEngine):
             completion_batch_size,
         )
         if arrays_cache_compat:
-            logger.warning(
+            logger.info(
                 "Model '%s' uses ArraysCache; enabling serialized hybrid MLLM "
                 "compatibility (one active media request; qualified text requests "
                 "may use the shared-weight text scheduler).",

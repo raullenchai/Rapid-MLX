@@ -284,6 +284,7 @@ def test_cli_serve_draft_alias_fails_fast_at_resolve(monkeypatch, capsys):
     assert caught.value.code == 1
     stderr = capsys.readouterr().err
     assert "draft checkpoint" in stderr
+    assert "Serve '" in stderr
     assert "qwen3.6-35b-4bit" in stderr
     assert emitted and emitted[0][1] == "qwen3.6-35b-mtp-4bit"
     assert emitted[0][2].get("failure_stage") == "resolve"

@@ -242,6 +242,13 @@ def _read_log_tail(log_path: Path | None, max_lines: int) -> str:
     return "".join(lines[-max_lines:]).strip()
 
 
+def _signal_name(number: int) -> str:
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return f"signal {number}"
+
+
 def describe_server_exit(
     proc: subprocess.Popen, log_path: Path | None, *, wait_s: float
 ) -> ServerExitedError | None:
@@ -254,10 +261,7 @@ def describe_server_exit(
         time.sleep(min(0.05, remaining))
     signal_name = None
     if rc < 0:
-        try:
-            signal_name = signal.Signals(-rc).name
-        except ValueError:
-            signal_name = f"signal {-rc}"
+        signal_name = _signal_name(-rc)
         message = (
             f"The local model server stopped unexpectedly (killed by {signal_name})."
         )
@@ -288,10 +292,20 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise ServerStartFailed(
-                f"server exited with code {proc.returncode} before becoming healthy"
-            )
+        if (rc := proc.poll()) is not None:
+            if rc < 0:
+                name = _signal_name(-rc)
+                label = f"{name} (signal {-rc})" if name != f"signal {-rc}" else name
+                message = f"The local model server was killed by {label} while loading the model."
+                if name == "SIGKILL":
+                    message += (
+                        " On macOS this usually means the Mac ran out of memory."
+                        " Try a smaller model (for example a lower-bit quantization),"
+                        " or close other memory-heavy apps and retry."
+                    )
+            else:
+                message = f"The local model server exited with code {rc} while loading the model."
+            raise ServerStartFailed(message)
         try:
             with urllib.request.urlopen(health_url, timeout=2) as resp:  # noqa: S310
                 if resp.status == 200:

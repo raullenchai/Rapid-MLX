@@ -121,17 +121,44 @@ def _local_time(timestamp: Any) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M local")
 
 
+def _estimate_bytes(model: dict[str, Any]) -> int | None:
+    estimate = model.get("estimated_memory_bytes")
+    if isinstance(estimate, int):
+        return estimate
+    if "estimated_memory_bytes" not in model:
+        estimate = model.get("estimated_memory_gb")
+        if isinstance(estimate, (int, float)):
+            return int(estimate * (1 << 30))
+    return None
+
+
+def _estimate_text(model: dict[str, Any]) -> str | None:
+    estimate = _estimate_bytes(model)
+    return _gb(estimate) if estimate is not None else None
+
+
+def _profile_over_budget(model: dict[str, Any], budget_gib: Any) -> bool:
+    estimate = _estimate_bytes(model)
+    return (
+        model.get("memory_fit_basis") == "memory_floor"
+        and model.get("memory_fit") == "fits"
+        and estimate is not None
+        and isinstance(budget_gib, (int, float))
+        and estimate > budget_gib * (1 << 30)
+    )
+
+
 def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str:
-    estimate = model.get("estimated_memory_gb")
+    estimate = _estimate_text(model)
     fit = model.get("memory_fit")
-    if not isinstance(estimate, (int, float)):
+    if estimate is None:
         if fit not in ("fits", "does_not_fit"):
             return "unknown (no estimate for this model)"
         line = "no working-set estimate"
     else:
-        line = f"~{_gb(int(estimate * (1 << 30)))} working set"
+        line = f"~{estimate} working set"
     if (
-        isinstance(estimate, (int, float))
+        estimate is not None
         and model.get("memory_estimate_source") == "weights_estimate"
     ):
         line += " (estimated from weight size)"
@@ -141,7 +168,7 @@ def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str
     ):
         if (
             fit == "does_not_fit"
-            and isinstance(estimate, (int, float))
+            and estimate is not None
             and isinstance(memory_gib, (int, float))
             and memory_gib >= floor
             and isinstance(budget_gib, (int, float))
@@ -150,9 +177,17 @@ def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str
             return f"{line}; does NOT fit this Mac (weights exceed the GPU limit of about {budget_text})"
         verdict = "fits" if fit == "fits" else "does NOT fit"
         qualification = "qualified for Macs" if fit == "fits" else "requires a Mac"
+        explanation = ""
+        if _profile_over_budget(model, budget_gib):
+            estimate_label = (
+                "the weight-size estimate"
+                if model.get("memory_estimate_source") == "weights_estimate"
+                else "this estimate"
+            )
+            explanation = f" — for this model the tested profile decides the fit, not {estimate_label}"
         return (
             f"{line}; {verdict} this Mac "
-            f"(profile {qualification} with {floor:g} GB or more)"
+            f"(profile {qualification} with {floor:g} GB or more{explanation})"
         )
     if isinstance(memory_gib, int) and fit in ("fits", "does_not_fit"):
         verdict = "fits" if fit == "fits" else "does NOT fit"
@@ -183,6 +218,8 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
     else:
         print("This Mac: memory unknown; pass --memory-gib to fill the fit column\n")
 
+    starred_sources: set[Any] = set()
+
     def row(model: dict[str, Any]) -> str:
         marker = "★" if model.get("focus") else " "
         fit = str(model.get("memory_fit", "unknown")).replace("_", " ")
@@ -199,11 +236,15 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
                 fit += " (GPU limit)"
             else:
                 fit += f" ({floor:g} GB+ profile)"
-        estimate = model.get("estimated_memory_gib")
-        memory = f"~{estimate} GB" if isinstance(estimate, int) else "?"
+                if _profile_over_budget(model, budget):
+                    fit += "*"
+                    starred_sources.add(model.get("memory_estimate_source"))
+        estimate = _estimate_text(model)
+        memory = f"~{estimate}" if estimate is not None else "?"
+        downloaded = "  downloaded" if model.get("model_cached") is True else ""
         return (
             f" {marker} {model['alias']:<32} {model['task_type']:<18} "
-            f"{memory:>7}  {fit}"
+            f"{memory:>7}  {fit}{downloaded}"
         )
 
     # Recommended = focus models verified to fit this Mac. With no memory
@@ -242,6 +283,15 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
             f"\n{len(rest)} more models have a registered protocol "
             f"({verdict}); list them with rapid-mlx benchmark catalog --all"
         )
+    if starred_sources:
+        if starred_sources == {"weights_estimate"}:
+            print(
+                "\n* Fit comes from the model's tested memory profile; the size estimate is computed from weight size and is not used for this model."
+            )
+        else:
+            print(
+                "\n* Fit comes from the model's tested memory profile; the size estimate shown is not used for this model."
+            )
     print("\nRun: rapid-mlx benchmark run <model>")
 
 
@@ -378,8 +428,9 @@ def summarize_measurements(run: dict[str, Any]) -> list[str]:
 def _print_failure(args, exc: Exception) -> int:
     run = exc.run if isinstance(exc, LocalBenchmarkError) else None
     saved = exc.saved if isinstance(exc, LocalBenchmarkError) else False
+    message = str(exc).removeprefix("error: ")
     if args.json:
-        payload = {"error": str(exc), "saved": saved}
+        payload = {"error": message, "saved": saved}
         # A refusal is a decision, not a malfunction. Flagged so a GUI can say
         # so in a calm voice instead of presenting it as a crash.
         if isinstance(exc, PublicationRefused):
@@ -392,16 +443,16 @@ def _print_failure(args, exc: Exception) -> int:
         )
     elif saved and run is not None:
         print(
-            f"Benchmark failed; local outcome saved as {run['run_id']}: {exc}",
+            f"Benchmark failed; local outcome saved as {run['run_id']}: {message}",
             file=sys.stderr,
         )
     elif run is not None:
         print(
-            f"Benchmark failed; local outcome could not be saved: {exc}",
+            f"Benchmark failed; local outcome could not be saved: {message}",
             file=sys.stderr,
         )
     else:
-        print(f"Benchmark command failed: {exc}", file=sys.stderr)
+        print(f"Benchmark command failed: {message}", file=sys.stderr)
     return 1
 
 
@@ -422,6 +473,7 @@ def benchmark_command(args) -> int:
                 memory_source = "host"
             value = benchmark_catalog(
                 memory_gib=memory_gib,
+                check_cache=True,
                 recommended_working_set_bytes=(
                     mlx_recommended_working_set_bytes()
                     if memory_source == "host"

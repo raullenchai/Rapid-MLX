@@ -324,8 +324,9 @@ def test_catalog_uses_curated_working_set_and_video_floor():
     [
         (
             32,
-            "fits (32 GB+ profile)",
-            "fits this Mac (profile qualified for Macs with 32 GB or more)",
+            "fits (32 GB+ profile)*",
+            "fits this Mac (profile qualified for Macs with 32 GB or more — for this "
+            "model the tested profile decides the fit, not the weight-size estimate)",
         ),
         (
             24,
@@ -359,6 +360,105 @@ def test_gpu_budget_plan_wording(fit):
     assert community_cli._memory_line(model, 16, 12) == (
         f"~6.0 GB working set; {verdict} this Mac (GPU can use about 12 GB of 16 GB)"
     )
+
+
+def test_non_weights_profile_explanation_for_plan_and_catalog(capsys):
+    model = {
+        "alias": "curated",
+        "task_type": "image_generation",
+        "focus": True,
+        "estimated_memory_gb": 37,
+        "memory_estimate_source": "curated_footprint",
+        "memory_fit": "fits",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 32,
+    }
+    line = community_cli._memory_line(model, 36, 28)
+    assert "the tested profile decides the fit, not this estimate" in line
+    assert "weight-size" not in line and "weight size" not in line
+
+    weights_model = {
+        **model,
+        "alias": "weights",
+        "memory_estimate_source": "weights_estimate",
+    }
+    catalog = {
+        "memory_gib": 36,
+        "memory_budget_gib": 28,
+        "models": [weights_model, model],
+    }
+    community_cli._print_catalog(catalog, show_all=True)
+    output = capsys.readouterr().out
+    assert output.count("fits (32 GB+ profile)*") == 2
+    footnote = next(line for line in output.splitlines() if line.startswith("* Fit"))
+    assert footnote == (
+        "* Fit comes from the model's tested memory profile; the size estimate shown is not used for this model."
+    )
+    assert "weight-size" not in footnote and "weight size" not in footnote
+
+
+def test_catalog_and_plan_use_same_raw_estimate_and_profile_explanation(capsys):
+    model = {
+        "alias": "example",
+        "task_type": "image_generation",
+        "focus": True,
+        "estimated_memory_bytes": 40015654594,
+        "estimated_memory_gb": 37.3,
+        "memory_estimate_source": "weights_estimate",
+        "memory_fit": "fits",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 32,
+    }
+    line = community_cli._memory_line(model, 36, 28)
+    assert line == (
+        "~37 GB working set (estimated from weight size); fits this Mac "
+        "(profile qualified for Macs with 32 GB or more — for this model "
+        "the tested profile decides the fit, not the weight-size estimate)"
+    )
+    catalog = {"memory_gib": 36, "memory_budget_gib": 28, "models": [model]}
+    community_cli._print_catalog(catalog, show_all=False)
+    output = capsys.readouterr().out
+    assert "~37 GB  fits (32 GB+ profile)*" in output
+    assert (
+        "* Fit comes from the model's tested memory profile; the size estimate is computed from weight size and is not used for this model."
+        in output
+    )
+    model["focus"] = False
+    community_cli._print_catalog(catalog, show_all=False)
+    assert "* Fit comes" not in capsys.readouterr().out
+    community_cli._print_catalog(catalog, show_all=True)
+    assert "* Fit comes" in capsys.readouterr().out
+    model["memory_fit"] = "does_not_fit"
+    community_cli._print_catalog(catalog, show_all=True)
+    assert "* Fit comes" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cached", [True, False, None])
+def test_catalog_downloaded_marker(cached, capsys):
+    model = {
+        "alias": "example",
+        "task_type": "text_generation",
+        "focus": True,
+        "memory_fit": "fits",
+        "estimated_memory_gb": 6,
+        "model_cached": cached,
+    }
+    community_cli._print_catalog({"memory_gib": 16, "models": [model]}, show_all=False)
+    assert ("  downloaded" in capsys.readouterr().out) is (cached is True)
+
+
+def test_catalog_cache_probe_is_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "rapid_mlx.community_bench.workspace.model_is_cached",
+        lambda repo: calls.append(repo) or True,
+    )
+    default = benchmark_catalog()["models"]
+    assert default and all("model_cached" not in model for model in default)
+    assert not calls
+    checked = benchmark_catalog(check_cache=True)["models"]
+    assert all(model["model_cached"] is True for model in checked)
+    assert len(calls) == len(checked)
 
 
 @pytest.mark.parametrize("fit", ["fits", "does_not_fit"])
@@ -513,7 +613,8 @@ def test_plan_rejects_draft_only_model() -> None:
     with pytest.raises(DraftModelNotServableError) as error:
         plan_for_alias("qwen3.6-35b-mtp-4bit")
     assert "draft checkpoint" in str(error.value)
-    assert "Serve '" in str(error.value)
+    assert "Benchmark '" in str(error.value)
+    assert "Serve '" not in str(error.value)
 
 
 def test_run_local_rejects_draft_before_loading_or_archiving(
@@ -3422,6 +3523,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "text_generation",
                     "memory_fit": "does_not_fit",
                     "estimated_memory_gib": 64,
+                    "estimated_memory_gb": 64,
                     "focus": True,
                 },
                 {
@@ -3429,6 +3531,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "text_generation",
                     "memory_fit": "fits",
                     "estimated_memory_gib": 6,
+                    "estimated_memory_gb": 6,
                     "focus": True,
                 },
                 {
@@ -3436,6 +3539,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "image_generation",
                     "memory_fit": "fits",
                     "estimated_memory_gib": 4,
+                    "estimated_memory_gb": 4,
                     "focus": False,
                 },
                 {
@@ -3468,7 +3572,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     # long tail is summarised, not dumped, unless --all is passed.
     assert "Recommended" in out
     assert "★ focus-model" in out
-    assert "~6 GB  fits" in out
+    assert "~6.0 GB  fits" in out
     assert "big-focus-model" not in out
     # Memory is known, so a focus model with no estimate is not a verified
     # fit and must not be recommended as one.
@@ -3557,17 +3661,26 @@ def test_cli_catalog_defaults_memory_to_this_mac(
     )
 
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": 48, "recommended_working_set_bytes": None}
+    assert seen == {
+        "memory_gib": 48,
+        "recommended_working_set_bytes": None,
+        "check_cache": True,
+    }
     assert "This Mac: 48 GB unified memory" in capsys.readouterr().out
 
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: None)
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": None, "recommended_working_set_bytes": None}
+    assert seen == {
+        "memory_gib": None,
+        "recommended_working_set_bytes": None,
+        "check_cache": True,
+    }
     assert "memory unknown; pass --memory-gib" in capsys.readouterr().out
 
     args_json = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=True)
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
     assert community_cli.benchmark_command(args_json) == 0
+    assert seen["check_cache"] is True
     payload = json.loads(capsys.readouterr().out)
     assert (payload["memory_gib"], payload["memory_source"]) == (48, "host")
 

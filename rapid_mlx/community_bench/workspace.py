@@ -129,7 +129,10 @@ def _primary_task(task_types: list[str]) -> str | None:
 
 
 def benchmark_catalog(
-    *, memory_gib: int | None = None, recommended_working_set_bytes: int | None = None
+    *,
+    memory_gib: int | None = None,
+    recommended_working_set_bytes: int | None = None,
+    check_cache: bool = False,
 ) -> dict[str, Any]:
     """Project the atomic catalog into the model-first benchmark picker."""
 
@@ -184,6 +187,7 @@ def benchmark_catalog(
                 "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
+                "estimated_memory_bytes": result.estimate_bytes,
                 "estimated_memory_gb": round(result.estimate_bytes / (1 << 30), 1)
                 if result.estimate_bytes is not None
                 else None,
@@ -196,6 +200,8 @@ def benchmark_catalog(
                 "runtime": benchmark_runtime_readiness(alias["alias"], task),
             }
         )
+        if check_cache:
+            entries[-1]["model_cached"] = model_is_cached(entries[-1]["repo_id"])
     entries.sort(key=lambda item: (not item["focus"], item["alias"]))
     return {
         "schema_version": 1,
@@ -274,7 +280,7 @@ def plan_for_alias(
     filesystem and never downloads anything.
     """
 
-    raise_if_draft_only_model(alias_name)
+    raise_if_draft_only_model(alias_name, action="Benchmark")
     catalog = benchmark_catalog(
         memory_gib=memory_gib,
         recommended_working_set_bytes=recommended_working_set_bytes,

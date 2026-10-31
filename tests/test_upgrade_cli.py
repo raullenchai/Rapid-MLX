@@ -442,3 +442,22 @@ def test_upgrade_routes_through_runner(monkeypatch):
         upgrade_command(SimpleNamespace(yes=True, dry_run=False))
     run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"])
     assert exc.value.code == 0
+
+
+@pytest.mark.parametrize(
+    ("method", "binary", "label"),
+    [("install_sh", "/some/bin/rapid-mlx", "one-line installer"), ("pip", None, "pip")],
+)
+def test_upgrade_install_display(monkeypatch, capsys, method, binary, label):
+    import sys
+
+    _stub_brew_with_upgrade_available(monkeypatch)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"], binary),
+    )
+    upgrade_command(SimpleNamespace(yes=False, dry_run=True))
+    out = capsys.readouterr().out
+    assert f"  Install:  {label} ({binary or sys.executable})" in out
+    assert "unknown path" not in out

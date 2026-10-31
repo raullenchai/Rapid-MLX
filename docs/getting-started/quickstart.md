@@ -13,12 +13,13 @@ See the [agent guides](https://rapidmlx.com/docs/agents/).
 
 ## Interactive Chat
 
-The shortest path to talking to a model — `chat` spawns its own server,
-downloads the model on first run (~3 GB for the default `qwen3.5-4b-4bit`), and
-drops you into a REPL.
+The shortest path to talking to a model — `chat` spawns its own server and
+drops you into a REPL. It uses a chat model already on this Mac, preferring the
+`qwen3.5-4b-4bit` starter if present, otherwise the best fit for this Mac's
+memory. If none is downloaded yet, it downloads the starter (~3.1 GB).
 
 ```bash
-rapid-mlx chat                  # defaults to qwen3.5-4b-4bit
+rapid-mlx chat                  # uses a local chat model, or downloads the starter
 rapid-mlx chat qwen3.5-9b-4bit       # a larger model (~6 GB)
 rapid-mlx chat --think          # surface chain-of-thought reasoning
 ```

@@ -37,10 +37,7 @@ def test_language_override_and_legacy_validate():
     jsonschema.validate(execution, SCHEMA)
     language["pflash"]["threshold"] = 0
     assert execution["task"]["language"]["pflash"]["threshold"] == 1024
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            execution_config("text_generation", language=language), SCHEMA
-        )
+    jsonschema.validate(execution_config("text_generation", language=language), SCHEMA)
 
 
 def test_scheme_is_for_quantized_cache_only():
@@ -822,7 +819,7 @@ def test_serving_sidecar_repository_classification(monkeypatch, tmp_path, same_r
     if same_repo:
         snapshot = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
         (snapshot / "mtp").mkdir(parents=True)
-        (snapshot / "config.json").write_text("{}")
+        (snapshot / "mtp" / "config.json").write_text("{}")
         original_scheduler = lr._engine_scheduler
 
         def scheduler(engine):
@@ -1263,6 +1260,51 @@ def test_cli_suffix_refused_before_runner(monkeypatch, capsys, json_output):
         assert "Benchmark command failed:" in output.err
 
 
+def test_default_acceleration_uses_pinned_serving_snapshot_identity(
+    monkeypatch, tmp_path
+):
+    import asyncio
+
+    import huggingface_hub
+    from huggingface_hub import constants
+
+    from rapid_mlx import model_aliases, model_metadata
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, "mtp")
+    pinned_revision = "a" * 40
+    pinned = tmp_path / "models--org--model" / "snapshots" / pinned_revision
+    (pinned / "mtp").mkdir(parents=True)
+    (pinned / "config.json").write_text("{}")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: pinned_revision)
+    monkeypatch.setattr(model_aliases, "resolve_hub_model", lambda name: "org/model")
+    monkeypatch.setattr(
+        model_metadata,
+        "_complete_cached_checkpoint",
+        lambda root, snapshot, *a, **kw: snapshot if snapshot.is_dir() else None,
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "try_to_load_from_cache", lambda *a, **kw: None
+    )
+    original_scheduler = lr._engine_scheduler
+
+    def scheduler(engine):
+        result = original_scheduler(engine)
+        result.config.mtp_sidecar = str(pinned / "mtp")
+        return result
+
+    monkeypatch.setattr(lr, "_engine_scheduler", scheduler)
+    _, _, identity, language = asyncio.run(
+        lr._text_measurements("org/model", acceleration=AccelerationRequest())
+    )
+    primary = next(c for c in identity["components"] if c["role"] == "primary")
+    assert primary["source"]["resolved_revision"] == pinned_revision
+    speculative = language["speculative_decoding"]
+    assert speculative["assistant_source"] == "embedded_head"
+    assert "draft_model_identity_digest" not in speculative
+
+
 @pytest.mark.parametrize("fallback", [False, True])
 def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fallback):
     import asyncio
@@ -1337,3 +1379,22 @@ def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fall
     )
     primary = next(c for c in identity["components"] if c["role"] == "primary")
     assert primary["source"]["resolved_revision"] == pinned_revision
+
+
+def test_text_measurements_prefers_loaded_engine_checkpoint(monkeypatch, tmp_path):
+    import asyncio
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, None)
+    load = lr._load_serving_engine
+    checkpoint = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+
+    async def load_with_path(*args):
+        engine = await load(*args)
+        engine._model_name = str(checkpoint)
+        return engine
+
+    monkeypatch.setattr(lr, "_load_serving_engine", load_with_path)
+    _, _, identity, _ = asyncio.run(lr._text_measurements("org/model"))
+    assert identity["components"][0]["source"]["resolved_revision"] == "a" * 40

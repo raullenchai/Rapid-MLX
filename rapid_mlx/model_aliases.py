@@ -1033,7 +1033,7 @@ class DraftModelNotServableError(ValueError):
     """Raised when a spec-decode draft checkpoint is served as a primary."""
 
 
-def draft_only_conflict(model_ref: object) -> str | None:
+def draft_only_conflict(model_ref: object, *, action: str = "Serve") -> str | None:
     """Explain why a catalog checkpoint cannot be served standalone, or None.
 
     A draft-only checkpoint is derived from the catalog itself: its ``hf_path``
@@ -1079,14 +1079,14 @@ def draft_only_conflict(model_ref: object) -> str | None:
         return None
     return (
         f"{model_ref!r} is a speculative-decoding draft checkpoint, not a "
-        f"standalone model. Serve {bases[0]!r} instead — it uses this draft "
+        f"standalone model. {action} {bases[0]!r} instead — it uses this draft "
         "automatically for multi-token prediction."
     )
 
 
-def raise_if_draft_only_model(model_ref: object) -> None:
+def raise_if_draft_only_model(model_ref: object, *, action: str = "Serve") -> None:
     """Refuse a draft-only checkpoint before any download or engine load."""
-    conflict = draft_only_conflict(model_ref)
+    conflict = draft_only_conflict(model_ref, action=action)
     if conflict is not None:
         raise DraftModelNotServableError(conflict)
 

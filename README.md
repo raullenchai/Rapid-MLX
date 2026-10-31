@@ -181,7 +181,7 @@ or read the [protocol and privacy details](https://github.com/raullenchai/Rapid-
 rapid-mlx chat
 ```
 
-A complete cached chat model that fits this Mac starts without another download. Otherwise Rapid-MLX selects a starter model and downloads its weights before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
+With no model named, `rapid-mlx chat` uses a chat model already on this Mac — the `qwen3.5-4b-4bit` starter if present, otherwise the best fit for this Mac's memory — without another download. If none is downloaded yet, it downloads the `qwen3.5-4b-4bit` starter (~3.1 GB) before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
 
 **2. Or serve it for use from other apps:**
 
