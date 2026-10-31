@@ -4905,7 +4905,7 @@ struct QuickstartView: View {
             )
             enterRecovery(
                 kind: kind,
-                message: QuickstartView.friendlyFailureMessage(raw: message),
+                message: kind == .downloadSourceUnavailable ? message : QuickstartView.friendlyFailureMessage(raw: message),
                 origin: .download
             )
         }

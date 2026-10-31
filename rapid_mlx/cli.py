@@ -65,6 +65,8 @@ from rapid_mlx.runtime.optional_runtime import (
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+_DOWNLOAD_DISK_HEADROOM = 0.10
+
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
 DEFAULT_SYSTEM_ONE_PORT = 8700
@@ -1748,7 +1750,7 @@ def _check_disk_space(
         available_bytes = stat.f_bavail * stat.f_frsize
 
         # ~10% headroom for temp files during xet_get / move-into-place.
-        required_bytes = int(model_size_bytes * 1.1)
+        required_bytes = int(model_size_bytes * (1 + _DOWNLOAD_DISK_HEADROOM))
         if available_bytes >= required_bytes:
             return
 
@@ -1760,7 +1762,10 @@ def _check_disk_space(
         print("  Error: Insufficient disk space for download.")
         print(f"    Download size: {model_size_gb:>7.1f} GB")
         print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
-        print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
+        print(
+            f"    Need to free:  {need_to_free_gb:>7.1f} GB  "
+            f"(includes {_DOWNLOAD_DISK_HEADROOM:.0%} working space for the download)"
+        )
         print()
         print("  Suggestions:")
         print("    - Free disk space, or set HF_HOME to a drive with more room")

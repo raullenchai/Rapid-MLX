@@ -498,8 +498,11 @@ enum FailureDiagnoser {
         raw: String,
         usingMirror: Bool
     ) -> FailureDiagnosis.Kind {
-        guard usingMirror else { return .downloadFailed }
         let value = raw.lowercased()
+        guard usingMirror else {
+            return containsAny(value, hfUnreachableSignals)
+                ? .downloadSourceUnavailable : .downloadFailed
+        }
         let mirrorSignals = offlineSignals + [
             "mirror", "models.rapidmlx.com", "cloudflare", "bad gateway",
             "service unavailable", "gateway timeout", "status 502", "status 503", "status 504",
@@ -663,6 +666,12 @@ enum FailureDiagnoser {
     nonisolated private static func containsAny(_ value: String, _ signals: [String]) -> Bool {
         signals.contains(where: value.contains)
     }
+
+    nonisolated private static let hfUnreachableSignals = [
+        "could not reach hugging face", "could not resolve host", "cannot find host", "cannot connect",
+        "connection refused", "name resolution", "nodename nor servname", "name or service not known",
+        "network is unreachable", "not connected to the internet",
+    ]
 
     nonisolated private static let offlineSignals = [
         "not connected to the internet", "network is unreachable", "network connection was lost",

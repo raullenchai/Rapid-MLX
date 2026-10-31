@@ -284,6 +284,29 @@ struct DownloadManagerTests {
         }
     }
 
+    @Test("The complete stderr tail reaches the job failure classification")
+    func unreachableSourceFullTail() {
+        let mgr = DownloadManager()
+        let alias = "smollm3-3b-4bit"
+        _ = mgr._testingSeedJob(alias: alias, source: .huggingFace, retryAttempt: 3)
+        for line in [
+            "Download interrupted, retrying (1/3)",
+            "Download interrupted, retrying (2/3)",
+            "Error: could not reach Hugging Face for 'mlx-community/SmolLM3-3B-4bit'.",
+            "Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "You can also serve an already-cached model.",
+            "Retry: rapid-mlx pull smollm3-3b-4bit",
+        ] { mgr._testingIngestStderr(alias: alias, line: line) }
+        mgr._testingFinish(alias: alias, status: 1, reason: .exit)
+        let job = mgr.job(for: alias)
+        #expect(job?.failureKind == .downloadSourceUnavailable)
+        if case .failed(let message) = job?.status {
+            #expect(message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+        } else {
+            Issue.record("Expected a failed pull")
+        }
+    }
+
     @Test("CLI disk and network copy survives stderr tail and reaches job status")
     func cliFailureCopyReachesJobStatus() {
         for (line, source, expected) in [
@@ -519,6 +542,28 @@ struct DownloadManagerTests {
 
 @Suite("Download failure guidance")
 struct DownloadFailureGuidanceTests {
+    @Test func fullTailClassification() {
+        let lines = [
+            "Download interrupted, retrying (1/3)",
+            "Download interrupted, retrying (2/3)",
+            "Error: could not reach Hugging Face for 'mlx-community/SmolLM3-3B-4bit'.",
+            "Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "You can also serve an already-cached model.",
+            "Retry: rapid-mlx pull smollm3-3b-4bit",
+        ]
+        let hf = DownloadManager.classifyPullFailure(tailLines: lines, source: .huggingFace)
+        #expect(hf.kind == .downloadSourceUnavailable)
+        #expect(hf.message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+        let mirror = DownloadManager.classifyPullFailure(tailLines: ["mirror gateway timeout"], source: .mirror)
+        #expect(mirror.kind == .downloadSourceUnavailable)
+        #expect(mirror.message == "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry.")
+        let other = DownloadManager.classifyPullFailure(tailLines: ["checksum mismatch"], source: .huggingFace)
+        #expect(other.kind == .downloadFailed)
+        #expect(other.message == "The model download didn't finish. Retry to resume it.")
+        #expect(DownloadManager.classifyPullFailure(tailLines: ["connection refused"], source: .huggingFace).kind == .downloadSourceUnavailable)
+        #expect(DownloadManager.classifyPullFailure(tailLines: ["Read timed out"], source: .huggingFace).kind == .downloadFailed)
+    }
+
     @Test func specificCauses() {
         #expect(DownloadManager.pullFailureMessage(
             raw: "OSError: [Errno 28] No space left on device", source: .huggingFace
@@ -531,7 +576,7 @@ struct DownloadFailureGuidanceTests {
         ).contains("hf auth login"))
         #expect(DownloadManager.pullFailureMessage(
             raw: "mirror gateway timeout", source: .mirror
-        ).contains("Switch to Hugging Face"))
+        ).contains("Switch source"))
         #expect(DownloadManager.pullFailureMessage(
             raw: "connection reset", source: .huggingFace
         ).contains("network"))
@@ -547,6 +592,23 @@ struct DownloadFailureGuidanceTests {
 @MainActor
 @Suite("DownloadStrip — phase caption formatting")
 struct DownloadStripCaptionTests {
+
+    @Test func completedDetails() {
+        let cases: [(ModelSelectionPurpose?, String)] = [
+            (.chat, "Downloaded — choose it in the model picker to start"),
+            (.speechToText, "Downloaded — ready in Audio › Speech to Text"),
+            (.textToSpeech, "Downloaded — ready in Audio › Text to Speech"),
+            (.imageGeneration, "Downloaded — ready in Images"),
+            (.imageEditing, "Downloaded — ready in Images"),
+            (.textToVideo, "Downloaded — ready in Video"),
+            (.imageToVideo, "Downloaded — ready in Video"),
+            (nil, "Downloaded"),
+        ]
+        for (lane, expected) in cases {
+            #expect(DownloadStrip.completedDetail(lane: lane, isStarting: false) == expected)
+            #expect(DownloadStrip.completedDetail(lane: lane, isStarting: true) == "Downloaded — starting…")
+        }
+    }
 
     @Test("A completed resident job is removed while its row is hidden")
     @MainActor

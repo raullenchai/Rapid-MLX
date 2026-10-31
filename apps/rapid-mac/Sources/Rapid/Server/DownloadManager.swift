@@ -873,7 +873,7 @@ final class DownloadManager {
         case .exit:
             if scheduleAutomaticRetry(
                 job: job, alias: alias,
-                transient: Self.isTransientDownloadError((stderrTails[alias] ?? []).joined(separator: " "))
+                transient: Self.isTransientDownloadError((stderrTails[alias] ?? []).joined(separator: " — "))
             ) { return }
             recordFailure(job: job, alias: alias, signal: false)
         case .uncaughtSignal:
@@ -936,28 +936,27 @@ final class DownloadManager {
         // "rapid-mlx" name, HTTP codes, Python stack frames). Log it
         // for support, but NEVER surface it to the user — they get a
         // plain, actionable message instead.
-        let tail = (stderrTails[alias] ?? [])
-            .filter { !$0.isEmpty }
-            .suffix(3)
-            .joined(separator: " — ")
-        if !tail.isEmpty {
-            print("[download] \(alias) failed: \(tail)")
+        let lines = (stderrTails[alias] ?? []).filter { !$0.isEmpty }
+        let tail = lines.joined(separator: " — ")
+        let logTail = lines.suffix(3).joined(separator: " — ")
+        if !logTail.isEmpty {
+            print("[download] \(alias) failed: \(logTail)")
         }
-        let kind = signal
-            ? FailureDiagnosis.Kind.downloadFailed
-            : FailureDiagnoser.downloadFailureKind(
-                raw: tail,
-                usingMirror: job.source == .mirror
-            )
+        let classification = Self.classifyPullFailure(tailLines: lines, source: job.source)
+        let kind = signal ? FailureDiagnosis.Kind.downloadFailed : classification.kind
         job.failureKind = kind
         job.failureCause = signal ? .other : FailureDiagnoser.downloadFailureCause(raw: tail, kind: kind)
-        if signal {
-            job.status = .failed(message: "The model download was interrupted. Retry to resume it.")
-        } else {
-            job.status = .failed(message: Self.pullFailureMessage(
-                raw: tail, source: job.source
-            ))
-        }
+        job.status = .failed(message: signal
+            ? "The model download was interrupted. Retry to resume it."
+            : classification.message)
+    }
+
+    nonisolated static func classifyPullFailure(
+        tailLines: [String], source: DownloadSource
+    ) -> (kind: FailureDiagnosis.Kind, message: String) {
+        let raw = tailLines.joined(separator: " — ")
+        return (FailureDiagnoser.downloadFailureKind(raw: raw, usingMirror: source == .mirror),
+                pullFailureMessage(raw: raw, source: source))
     }
 
     nonisolated static func pullFailureMessage(raw: String, source: DownloadSource) -> String {
@@ -970,11 +969,11 @@ final class DownloadManager {
             || (source == .huggingFace && (value.contains("401") || value.contains("403"))) {
             return "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry."
         }
-        if source == .mirror && !value.contains("could not reach hugging face")
-            && FailureDiagnoser.downloadFailureKind(
-            raw: value, usingMirror: true
-        ) == .downloadSourceUnavailable {
-            return "The mirror could not be reached. Switch to Hugging Face or retry to resume."
+        if FailureDiagnoser.downloadFailureKind(raw: value, usingMirror: source == .mirror) == .downloadSourceUnavailable {
+            if source == .mirror {
+                return "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry."
+            }
+            return "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry."
         }
         if Self.isTransientDownloadError(value)
             || value.contains("could not reach hugging face") {

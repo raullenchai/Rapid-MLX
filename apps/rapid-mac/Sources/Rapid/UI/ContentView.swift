@@ -791,6 +791,15 @@ struct ContentView: View {
                     if server.residency.contains(alias) { return true }
                     if case .ready(let readyAlias) = server.state { return readyAlias == alias }
                     return false
+                },
+                lane: { alias in
+                    guard let entry = catalogEntries.first(where: { $0.alias == alias }) else { return nil }
+                    return ModelSelectionPurpose.allCases.first(where: { $0.accepts(entry) })
+                },
+                isStarting: { alias in
+                    if case .starting(let startingAlias) = server.state, startingAlias == alias { return true }
+                    return autoStartPendingDownload?.alias == alias
+                        || (quickstartVisible && quickstart.selection.alias == alias)
                 }
             )
             if showLogs {
