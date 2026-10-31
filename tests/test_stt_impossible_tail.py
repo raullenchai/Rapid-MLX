@@ -93,5 +93,36 @@ def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
     monkeypatch.setattr(stt.subprocess, "run", run)
     monkeypatch.setattr(utils, "load_audio", lambda _: pytest.fail("unexpected decode"))
     assert stt._audio_duration_seconds(str(path)) == 2.75
-    assert calls[0][0][-1] == "file:" + os.path.abspath(path)
+    assert calls[0][0] == [
+        "/usr/bin/ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        "-protocol_whitelist",
+        "file",
+        "file:" + os.path.abspath(path),
+    ]
     assert calls[0][1]["timeout"] == 5
+
+
+def test_ffprobe_unavailable_duration_returns_none(monkeypatch, tmp_path):
+    import soundfile
+
+    from rapid_mlx.audio import stt
+
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"not a wav")
+    monkeypatch.setattr(
+        soundfile, "info", lambda _: (_ for _ in ()).throw(RuntimeError())
+    )
+    monkeypatch.setattr(stt.shutil, "which", lambda _: "/usr/bin/ffprobe")
+    monkeypatch.setattr(
+        stt.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="N/A")
+    )
+
+    assert stt._audio_duration_seconds(str(path), allow_decode=False) is None

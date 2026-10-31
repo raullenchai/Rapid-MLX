@@ -2,6 +2,7 @@
 """Regression coverage for input duration, verbose segments and AIFF uploads."""
 
 import io
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -234,9 +235,20 @@ def test_duration_ffprobe_uses_local_file_protocol(monkeypatch):
     monkeypatch.setattr(stt.subprocess, "run", run)
 
     assert stt._audio_duration_seconds("-upload") == 1.5
-    index = captured.index("-protocol_whitelist")
-    assert captured[index + 1] == "file"
-    assert captured[-1].startswith("file:/")
+    assert captured == [
+        "/usr/bin/ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        "-protocol_whitelist",
+        "file",
+        "file:" + os.path.abspath("-upload"),
+    ]
 
 
 def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypatch):
