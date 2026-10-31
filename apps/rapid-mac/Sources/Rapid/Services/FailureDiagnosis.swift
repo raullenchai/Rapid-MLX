@@ -506,7 +506,10 @@ enum FailureDiagnoser {
         usingMirror: Bool
     ) -> FailureDiagnosis.Kind {
         let value = raw.lowercased()
-        if containsAny(value, ["no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login"])
+        if containsAny(value, [
+            "no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login",
+            "sha256 mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt",
+        ])
             || (!usingMirror && hasDownloadAuthSignal(value)) {
             return .downloadFailed
         }

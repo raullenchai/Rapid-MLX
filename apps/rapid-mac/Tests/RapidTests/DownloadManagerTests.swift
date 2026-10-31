@@ -581,6 +581,13 @@ struct DownloadFailureGuidanceTests {
     }
 
     @Test func terminalFailureAndMirrorHuggingFaceUnreachable() {
+        let unprefixedChecksum = DownloadManager.classifyPullFailure(
+            tailLines: ["Download interrupted (Connection refused), retrying", "sha256 mismatch for model.safetensors"],
+            source: .huggingFace
+        )
+        #expect(unprefixedChecksum.kind == .downloadFailed)
+        #expect(unprefixedChecksum.message != "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+
         let checksum = DownloadManager.classifyPullFailure(
             tailLines: ["Download interrupted (Connection refused), retrying", "Error: sha256 mismatch for model.safetensors"],
             source: .huggingFace
