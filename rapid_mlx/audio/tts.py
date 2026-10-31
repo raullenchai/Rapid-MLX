@@ -719,13 +719,6 @@ class TTSEngine:
 
     def load(self) -> None:
         """Load the TTS model."""
-        try:
-            from .._hf_logging import silence_transformers_base_config_mismatch
-
-            silence_transformers_base_config_mismatch()
-        except Exception:
-            pass  # Logging setup must never prevent a model load.
-
         if self._loaded:
             return
 
@@ -775,7 +768,10 @@ class TTSEngine:
                 with _scoped_snapshot_download(kokoro_pipeline):
                     self.model = load_model(model_path)
             else:
-                self.model = load_model(model_path)
+                from .._hf_logging import suppress_transformers_base_config_mismatch
+
+                with suppress_transformers_base_config_mismatch("voxcpm2"):
+                    self.model = load_model(model_path)
             if self._model_family == "moss_tts_nano":
                 from .registry import runtime_assets_for
 

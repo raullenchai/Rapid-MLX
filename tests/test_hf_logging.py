@@ -232,20 +232,55 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
             logger.filters = filters
 
 
-def test_transformers_base_config_mismatch_filter_and_install():
-    from rapid_mlx._hf_logging import silence_transformers_base_config_mismatch
+def test_transformers_base_config_mismatch_context(caplog):
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
 
     logger = logging.getLogger("transformers.configuration_utils")
-    saved = list(logger.filters)
-    try:
-        logger.filters = []
-        silence_transformers_base_config_mismatch()
-        silence_transformers_base_config_mismatch()
-        assert len(logger.filters) == 1
-        filt = logger.filters[0]
-        msg = "You are using a model of type `voxcpm2` to instantiate a model of type ``. This may be expected."
-        assert not filt.filter(_record(msg))
-        assert filt.filter(_record(msg.replace("type ``.", "type `llama`.")))
-        assert filt.filter(_record(msg, level=logging.ERROR))
-    finally:
-        logger.filters = saved
+    original_filters = list(logger.filters)
+    msg = "You are using a model of type `%s` to instantiate a model of type `%s`."
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        with suppress_transformers_base_config_mismatch("voxcpm2"):
+            logger.warning(msg, "voxcpm2", "")
+            logger.warning(msg, "other", "")
+            logger.warning(msg, "voxcpm2", "llama")
+            logger.error(msg, "voxcpm2", "")
+        logger.warning(msg, "voxcpm2", "")
+
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.WARNING, msg % ("other", "")),
+        (logging.WARNING, msg % ("voxcpm2", "llama")),
+        (logging.ERROR, msg % ("voxcpm2", "")),
+        (logging.WARNING, msg % ("voxcpm2", "")),
+    ]
+    assert logger.filters == original_filters
+
+
+def test_transformers_context_nested_exception_cleanup():
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    original_filters = list(logger.filters)
+    with suppress_transformers_base_config_mismatch("voxcpm2"):
+        outer_filters = list(logger.filters)
+        with (
+            pytest.raises(ValueError),
+            suppress_transformers_base_config_mismatch("voxcpm2"),
+        ):
+            assert len(logger.filters) == len(original_filters) + 2
+            raise ValueError("test cleanup")
+        assert logger.filters == outer_filters
+        assert logger.filters[-1].filter(_record("%d", "abc"))
+    assert logger.filters == original_filters
+
+
+def test_transformers_model_type_is_escaped():
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    with suppress_transformers_base_config_mismatch("vox.cpm"):
+        filt = logger.filters[-1]
+        msg = (
+            "You are using a model of type `voxxcpm` to instantiate a model of type ``."
+        )
+        assert filt.filter(_record(msg))
+        assert not filt.filter(_record(msg.replace("voxxcpm", "vox.cpm")))

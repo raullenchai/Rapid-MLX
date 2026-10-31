@@ -49,6 +49,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from contextlib import contextmanager
 
 # The logger huggingface_hub's ``_warn_on_warning_headers`` emits from:
 # ``logging.get_logger(__name__)`` where ``__name__`` is this module.
@@ -124,33 +125,35 @@ def silence_hf_unauthenticated_warning() -> None:
         logger.addFilter(filt)
 
 
-_TRANSFORMERS_FILTER_TAG = "_rapid_mlx_base_config_mismatch_filter"
-_BASE_CONFIG_MISMATCH = re.compile(
-    r"You are using a model of type \S+ to instantiate a model of type ``\."
-)
-
-
 class _DropTransformersBaseConfigMismatch(logging.Filter):
-    """Hide only the warning for the empty base-config target type."""
+    """Hide the empty base-config target warning for one model type."""
+
+    def __init__(self, model_type: str) -> None:
+        super().__init__()
+        self._pattern = re.compile(
+            rf"You are using a model of type `{re.escape(model_type)}` "
+            r"to instantiate a model of type ``\."
+        )
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno != logging.WARNING:
             return True
         try:
-            return _BASE_CONFIG_MISMATCH.search(record.getMessage()) is None
+            return self._pattern.search(record.getMessage()) is None
         except Exception:
             return True
 
 
-def silence_transformers_base_config_mismatch() -> None:
-    """Install the narrow filter on the logger that emits the warning."""
+@contextmanager
+def suppress_transformers_base_config_mismatch(model_type: str):
+    """Suppress the base-config warning when voxcpm2 AutoTokenizer falls back."""
     logger = logging.getLogger("transformers.configuration_utils")
-    with _INSTALL_LOCK:
-        if any(getattr(f, _TRANSFORMERS_FILTER_TAG, False) for f in logger.filters):
-            return
-        filt = _DropTransformersBaseConfigMismatch()
-        setattr(filt, _TRANSFORMERS_FILTER_TAG, True)
-        logger.addFilter(filt)
+    filt = _DropTransformersBaseConfigMismatch(model_type)
+    logger.addFilter(filt)
+    try:
+        yield
+    finally:
+        logger.removeFilter(filt)
 
 
 def quiet_transport_loggers(level_name: str) -> None:
