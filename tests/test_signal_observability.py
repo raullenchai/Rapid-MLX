@@ -2012,6 +2012,69 @@ def test_sigterm_leaves_no_empty_crash_file(tmp_path):
     assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt")) == []
 
 
+def test_uvicorn_capture_signals_clean_exit_keeps_crash_sink(monkeypatch):
+    import uvicorn
+
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    releases = []
+    monkeypatch.setattr(
+        so, "release_crash_file_after_clean_shutdown", lambda: releases.append(True)
+    )
+    server = AcceptingConnectionsServer(uvicorn.Config("example:app"))
+    server._captured_signals = []
+
+    with server.capture_signals():
+        pass
+
+    assert releases == []
+
+
+def test_uvicorn_capture_signals_releases_crash_sink_before_reraise(monkeypatch):
+    import uvicorn
+
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    events = []
+    monkeypatch.setattr(
+        so, "release_crash_file_after_clean_shutdown", lambda: events.append("release")
+    )
+    monkeypatch.setattr(signal, "raise_signal", lambda signum: events.append(signum))
+    server = AcceptingConnectionsServer(uvicorn.Config("example:app"))
+    server._captured_signals = []
+
+    with server.capture_signals():
+        server._captured_signals.append(signal.SIGTERM)
+
+    assert events == ["release", signal.SIGTERM]
+
+
+def test_uvicorn_capture_signals_background_thread_keeps_crash_sink(monkeypatch):
+    import uvicorn
+
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    releases = []
+    monkeypatch.setattr(
+        so, "release_crash_file_after_clean_shutdown", lambda: releases.append(True)
+    )
+    server = AcceptingConnectionsServer(uvicorn.Config("example:app"))
+    server._captured_signals = [signal.SIGTERM]
+
+    def run():
+        with server.capture_signals():
+            pass
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+
+    assert releases == []
+
+
 def test_uvicorn_sigterm_leaves_no_empty_crash_file(tmp_path):
     program = textwrap.dedent(
         """

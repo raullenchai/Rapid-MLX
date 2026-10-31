@@ -9,6 +9,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
@@ -89,11 +90,15 @@ class AcceptingConnectionsServer(uvicorn.Server):
                 try:
                     yield
                 finally:
-                    from rapid_mlx._signal_observability import (
-                        release_crash_file_after_clean_shutdown,
-                    )
+                    if (
+                        threading.current_thread() is threading.main_thread()
+                        and getattr(self, "_captured_signals", None)
+                    ):
+                        from rapid_mlx._signal_observability import (
+                            release_crash_file_after_clean_shutdown,
+                        )
 
-                    release_crash_file_after_clean_shutdown()
+                        release_crash_file_after_clean_shutdown()
 
     def __init__(
         self,
