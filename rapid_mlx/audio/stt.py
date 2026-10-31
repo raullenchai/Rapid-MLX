@@ -683,7 +683,7 @@ class STTEngine:
             from ..model_metadata import resolve_pinned_cached_snapshot
             from ..utils.model_file_guard import checked_stt_loader
 
-            model_path = self.model_name
+            model_path: str | Path = self.model_name
             load_options = {}
             if Path(model_path).expanduser().is_dir():
                 model_path = Path(model_path).expanduser()
