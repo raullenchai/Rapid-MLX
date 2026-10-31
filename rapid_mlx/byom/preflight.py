@@ -902,20 +902,39 @@ class CatalogMemoryFit:
     floor_gib: float | None
 
 
+def _enforced_memory_floor(profile: Any, ram_bytes: int | None) -> bool:
+    floor = profile.min_memory_gb
+    return bool(
+        getattr(profile, "enforce_min_memory", False)
+        and floor is not None
+        and ram_bytes is not None
+        and ram_bytes < floor * _GIB
+    )
+
+
+@dataclass(frozen=True)
+class MemoryRefusal:
+    kind: str
+    floor_gb: float | None
+    ram_bytes: int | None
+    footprint_bytes: int | None
+    budget_bytes: int | None
+
+
 def catalog_memory_fit(
     alias: str, *, ram_bytes: int | None, recommended_working_set_bytes: int | None
 ) -> CatalogMemoryFit:
     """Estimate catalog memory and apply serve's fit rules without I/O.
 
-    For non-text models, serve has no GPU preflight beyond the whole-machine
-    alias floor; when that floor or RAM is unknown, compare the estimate to
-    the working-set budget instead. Errors produce an unknown result.
+    Apply the same memory rules to serve and benchmark. Errors produce an
+    unknown result.
     """
     unknown = CatalogMemoryFit(None, "unknown", None, None, None, "unknown", None)
     try:
         from rapid_mlx.model_aliases import resolve_profile
         from rapid_mlx.model_sizes import size_bytes
         from rapid_mlx.recommendations import recommendation_footprint_gb
+        from rapid_mlx.runtime.resident_models import measured_image_estimate_bytes
 
         profile = resolve_profile(alias)
         if profile is None:
@@ -929,7 +948,18 @@ def catalog_memory_fit(
             weights = size_bytes(profile.hf_path)
         except Exception:
             weights = None
-        if measured is not None:
+        image_estimate = None
+        if profile.modality in ("image", "image-gen", "video-gen"):
+            image_estimate = measured_image_estimate_bytes(alias)
+            if image_estimate is None:
+                image_estimate = measured_image_estimate_bytes(profile.hf_path)
+        if image_estimate is not None:
+            curated = int(measured * _GIB) if measured is not None else None
+            if curated is not None and curated > image_estimate:
+                estimate, source = curated, "curated_footprint"
+            else:
+                estimate, source = image_estimate, "measured_peak"
+        elif measured is not None:
             estimate, source = int(measured * _GIB), "curated_footprint"
         elif weights is not None:
             estimate = int(
@@ -940,22 +970,19 @@ def catalog_memory_fit(
             estimate, source = None, "unknown"
         floor = profile.min_memory_gb
         fits: bool | None
-        if profile.modality != "text" and floor is not None and ram_bytes is not None:
-            fits = ram_bytes >= floor * _GIB
-            basis = "memory_floor"
-        elif (
-            profile.modality == "text"
-            and floor is not None
-            and ram_bytes is not None
-            and ram_bytes >= floor * _GIB
-        ):
+        if _enforced_memory_floor(profile, ram_bytes):
+            fits, basis = False, "memory_floor"
+        elif floor is not None and ram_bytes is not None and ram_bytes >= floor * _GIB:
+            footprint = weights if profile.modality == "text" else estimate
             fits = not (
                 recommended_working_set_bytes is not None
-                and weights is not None
+                and footprint is not None
                 and budget is not None
-                and weights > budget
+                and footprint > budget
             )
             basis = "memory_floor"
+        elif profile.modality != "text" and floor is not None and ram_bytes is not None:
+            fits, basis = False, "memory_floor"
         else:
             fits = (
                 estimate <= budget
@@ -968,6 +995,63 @@ def catalog_memory_fit(
         return unknown
 
 
+def catalog_memory_refusal(
+    alias: str,
+    *,
+    ram_bytes: int | None,
+    recommended_working_set_bytes: int | None,
+    cached: bool,
+) -> MemoryRefusal | None:
+    """Return serve's catalog admission decision, without probing the host."""
+    try:
+        from rapid_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_sizes import size_bytes
+
+        profile = resolve_profile(alias)
+        if profile is None:
+            return None
+        if _enforced_memory_floor(profile, ram_bytes):
+            return MemoryRefusal(
+                "memory_floor", profile.min_memory_gb, ram_bytes, None, None
+            )
+        if cached:
+            return None
+        result = catalog_memory_fit(
+            alias,
+            ram_bytes=ram_bytes,
+            recommended_working_set_bytes=recommended_working_set_bytes,
+        )
+        if result.fits is not False:
+            return None
+        if (
+            result.fit_basis == "memory_floor"
+            and result.floor_gib is not None
+            and ram_bytes is not None
+            and ram_bytes < result.floor_gib * _GIB
+        ):
+            return MemoryRefusal(
+                "memory_floor", result.floor_gib, ram_bytes, None, None
+            )
+        if not ram_bytes or not result.budget_bytes:
+            return None
+        footprint = (
+            size_bytes(profile.hf_path)
+            if result.fit_basis == "memory_floor" and profile.modality == "text"
+            else result.estimate_bytes
+        )
+        if footprint is None:
+            return None
+        return MemoryRefusal(
+            "gpu_budget",
+            profile.min_memory_gb,
+            ram_bytes,
+            footprint,
+            result.budget_bytes,
+        )
+    except Exception:
+        return None
+
+
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
@@ -977,49 +1061,53 @@ def _check_catalog_memory_fit(args: Any) -> None:
             or os.path.exists(args.model)
         ):
             return
-        from rapid_mlx._download_gate import is_repo_cached
+        from rapid_mlx.cli import _cache_runnability
         from rapid_mlx.model_aliases import resolve_profile
-        from rapid_mlx.model_sizes import size_bytes
         from rapid_mlx.recommendations import fitting_pick
 
         alias = getattr(args, "_original_alias", None) or args.model
         profile = resolve_profile(alias)
-        if (
-            profile is None
-            or profile.modality != "text"
-            or is_repo_cached(profile.hf_path)
-        ):
+        if profile is None:
             return
+        cached = _cache_runnability(profile.hf_path) is True
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
-        result = catalog_memory_fit(
+        result = catalog_memory_refusal(
             alias,
             ram_bytes=ram,
             recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+            cached=cached,
         )
-        budget = result.budget_bytes
-        if result.fits is not False or not ram or not budget:
+        if result is None:
             return
-        footprint = (
-            size_bytes(profile.hf_path)
-            if result.fit_basis == "memory_floor"
-            else result.estimate_bytes
-        )
-        if footprint is None:
+        budget = result.budget_bytes or _working_set_budget(ram, None)
+        footprint = result.footprint_bytes
+        if ram is None or (
+            result.kind != "memory_floor" and (footprint is None or budget is None)
+        ):
             return
     except Exception:
         return
 
     try:
-        pick = fitting_pick(ram / _GIB, budget / _GIB, exclude=alias)
+        pick = (
+            fitting_pick(ram / _GIB, budget / _GIB, exclude=alias) if budget else None
+        )
     except Exception:
         pick = None
 
-    print(
-        f"\n  ✗ {alias} needs ~{_gb(footprint)} of GPU memory; "
-        f"this Mac's GPU can use about {_gb(budget)} of its {_gb(ram)}.",
-        file=sys.stderr,
-    )
+    if result.kind == "memory_floor":
+        print(
+            f"\n  ✗ {alias} needs a Mac with at least {result.floor_gb:g} GB "
+            f"of unified memory; this Mac has {_gb(ram)}.",
+            file=sys.stderr,
+        )
+    elif footprint is not None and budget is not None:
+        print(
+            f"\n  ✗ {alias} needs ~{_gb(footprint)} of GPU memory; "
+            f"this Mac's GPU can use about {_gb(budget)} of its {_gb(ram)}.",
+            file=sys.stderr,
+        )
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
         print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)

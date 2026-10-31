@@ -1382,3 +1382,48 @@ def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fall
     )
     primary = next(c for c in identity["components"] if c["role"] == "primary")
     assert primary["source"]["resolved_revision"] == pinned_revision
+
+
+def test_memory_refusal_precedes_acceleration_preflight(monkeypatch, capsys):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli, local_runner
+
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(local_runner, "mlx_recommended_working_set_bytes", lambda: None)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.8-27b-tensorfold",
+            "--speculative-config",
+            '{"method":"dflash","backend":"tensorfold"}',
+        ]
+    )
+    assert cli.benchmark_command(args) == 1
+    output = capsys.readouterr().err
+    assert "48 GB" in output
+    assert "runtime" not in output.lower()
+
+
+def test_dflash_preflight_requires_drafter(monkeypatch):
+    from rapid_mlx.community_bench.acceleration import (
+        AccelerationConfigError,
+        AccelerationRequest,
+        preflight_benchmark_acceleration,
+    )
+
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.eligibility.have_runtime", lambda: True
+    )
+    request = AccelerationRequest(
+        overrides={"speculative_config": '{"method":"dflash"}'}
+    )
+    with pytest.raises(AccelerationConfigError, match="(?i)draft"):
+        preflight_benchmark_acceleration("qwen3.5-4b-4bit", request)
+
+
+def test_benchmark_host_memory_fixture():
+    from rapid_mlx.community_bench import local_runner
+
+    assert local_runner.physical_ram_bytes() == 1 << 40
+    assert local_runner.mlx_recommended_working_set_bytes() is None
