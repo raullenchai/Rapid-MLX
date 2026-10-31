@@ -527,10 +527,12 @@ def validate_http_request(
             "video_max_frames",
             "reasoning_effort",
             "parallel_tool_calls",
-            "tool_choice",
         )
         if getattr(request, name, None) not in (None, {})
     )
+    tool_choice = getattr(request, "tool_choice", None)
+    if tool_choice is not None and not (supports_tools and tool_choice == "auto"):
+        unsupported.append("tool_choice")
     if (
         not supports_reasoning_budget
         and getattr(request, "reasoning_max_tokens", None) is not None
