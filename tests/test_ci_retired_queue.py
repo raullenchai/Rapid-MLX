@@ -60,6 +60,7 @@ ENGINE = (
     "test-matrix",
     "linux-coverage",
     "test-apple-silicon",
+    "test-apple-silicon-mac-only",
     "changed-lines-coverage",
     "l1-smoke",
 )
