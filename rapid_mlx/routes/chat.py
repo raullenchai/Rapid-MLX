@@ -82,7 +82,7 @@ from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
-    inference_aborted_error_payload,
+    inference_aborted_http_exception,
     is_batch_cap_error,
     is_chat_template_error,
     is_media_input_error,
@@ -4124,10 +4124,7 @@ def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
     up and a smaller request may succeed (#353). The user-facing ``message`` is
     a fixed, safe string per code — never ``str(exc)`` — so no internals leak.
     """
-    return HTTPException(
-        status_code=503,
-        detail={"error": inference_aborted_error_payload(exc)},
-    )
+    return inference_aborted_http_exception(exc)
 
 
 async def _preflight_mllm_chat_stream(

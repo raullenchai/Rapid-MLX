@@ -1046,6 +1046,17 @@ async def create_anthropic_message(
                     e, abort_first=False
                 ),
             )
+            from ..request import (
+                InferenceAbortedError,
+                inference_aborted_error_code,
+                inference_aborted_http_exception,
+            )
+
+            if (
+                isinstance(e, InferenceAbortedError)
+                and inference_aborted_error_code(e) == "insufficient_memory"
+            ):
+                raise inference_aborted_http_exception(e) from e
             _context_error = context_overflow_from_client_error(e)
             if _context_error is not None:
                 raise _context_error from e

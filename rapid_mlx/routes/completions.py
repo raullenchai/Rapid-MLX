@@ -784,6 +784,17 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             result="failed",
             error_class=_telemetry_inference.classify_inference_failure(exc),
         )
+        from ..request import (
+            InferenceAbortedError,
+            inference_aborted_error_code,
+            inference_aborted_http_exception,
+        )
+
+        if (
+            isinstance(exc, InferenceAbortedError)
+            and inference_aborted_error_code(exc) == "insufficient_memory"
+        ):
+            raise inference_aborted_http_exception(exc) from exc
         raise
     finally:
         _release_route_ownership(
