@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import soundfile as sf
+
+sf = pytest.importorskip("soundfile")
 
 pytestmark = pytest.mark.requires_mlx
 
