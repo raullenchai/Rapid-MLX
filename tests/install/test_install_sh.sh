@@ -31,6 +31,22 @@ trap 'rm -rf "$WORK"' EXIT
 SYS_PATH="$PATH"   # keep coreutils for setup
 REAL_PYTHON="$(command -v python3)"
 
+# Box widths are measured after stripping terminal color codes.
+for box_version in 'rapid-mlx 1.0.1rc3' '123456789012345678901234567890123456789012345678901234567890'; do
+    for box_color in plain color; do
+        if [ "$box_color" = color ]; then GREEN='\033[32m' RESET='\033[0m'; else GREEN='' RESET=''; fi
+        if print_success_box 'Rapid-MLX installed!' "Version: $box_version" 'RAM: 64 GB (16+ GB)' |
+            "$REAL_PYTHON" -c 'import re, sys
+lines = [re.sub(r"\x1b\[[0-9;]*m", "", line.rstrip("\n")) for line in sys.stdin]
+sys.exit(0 if len(lines) == 5 and len({len(line) for line in lines}) == 1 else 1)'; then
+            ok "success box aligns for ${#box_version}-character version ($box_color)"
+        else
+            bad "success box aligns for ${#box_version}-character version ($box_color)"
+        fi
+    done
+done
+GREEN='' RESET=''
+
 # A fake python that reports a given "python X.Y" version and machine arch.
 make_py() {   # make_py <path> <ver e.g. 3.12> <arch e.g. arm64>
     local path="$1" ver="$2" arch="$3"
@@ -239,6 +255,7 @@ Metadata-Version: 2.1
 Name: rapid-mlx
 Version: 1.0.0
 Requires-Dist: rmlx-fixture-mlx>=0.1
+Requires-Dist: rmlx-fixture-vlm
 Requires-Dist: rmlx-fixture-gradio>=4; extra == "chat"
 Requires-Dist: rmlx-fixture-pytz; extra == "chat"
 Requires-Dist: rmlx-fixture-mlx-audio>=0.5; platform_system == 'Darwin' and extra == "audio"
@@ -247,12 +264,17 @@ Requires-Dist: rmlx-fixture-mflux; extra == "image"
 Requires-Dist: rmlx-fixture-mlx-video; python_version >= "3.11" and extra == "video"
 Requires-Dist: rmlx-fixture-pytest; extra == "dev"
 EOF
-for dist in mlx gradio pytz mlx-audio soundfile pytest; do
+for dist in mlx gradio pytz mlx-audio soundfile pytest vlm; do
     fixture="rmlx-fixture-$dist"
     dist_dir="${fixture//-/_}-1.0.dist-info"
     mkdir -p "$SITE/$dist_dir"
-    printf 'Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n' "$fixture" > "$SITE/$dist_dir/METADATA"
+    printf 'Metadata-Version: 2.1\nName: %s\nVersion: 5.0\n' "$fixture" > "$SITE/$dist_dir/METADATA"
 done
+printf 'Requires-Dist: rmlx-fixture-audiolib\n' >> "$SITE/rmlx_fixture_vlm-1.0.dist-info/METADATA"
+mkdir -p "$SITE/rmlx_fixture_audiolib-0.5.9.dist-info"
+printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audiolib\nVersion: 0.5.9\n' > "$SITE/rmlx_fixture_audiolib-0.5.9.dist-info/METADATA"
+printf 'Requires-Dist: rmlx-fixture-audiolib<0.6; extra == "audio-desktop"\n' >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"
+check "ignores extra satisfied only by transitive base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
 check "detects installed optional features" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
 mkdir -p "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info"
 cat > "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info/METADATA" <<'EOF'
@@ -271,7 +293,31 @@ check "ignores conflicting metadata in the current directory" \
     reinstall_preserved_extras >/dev/null
     [ "$(cat "$WORK/isolated-spec")" = 'rapid-mlx[audio,chat]==1.0.0' ]
 ) && ok "reinstall ignores conflicting current-directory version" || bad "reinstall ignores conflicting current-directory version"
-check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I)"
+check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I -I)"
+if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null ||
+   "$REAL_PYTHON" -I -c 'from pip._vendor.packaging.requirements import Requirement' 2>/dev/null; then
+    printf 'Requires-Dist: rmlx-fixture-incompatible<0.6; extra == "incompatible"\n' >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"
+    mkdir -p "$SITE/rmlx_fixture_incompatible-0.6.3.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-incompatible\nVersion: 0.6.3\n' > "$SITE/rmlx_fixture_incompatible-0.6.3.dist-info/METADATA"
+    check "rejects extras with incompatible installed versions" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
+
+    cp "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" "$WORK/extras-metadata"
+    cat > "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: rapid-mlx
+Version: 1.0.0
+Requires-Dist: rmlx-fixture-audio-base>=0.5
+Requires-Dist: rmlx-fixture-audio-base<0.6; extra == "audio"
+Requires-Dist: rmlx-fixture-audio-only-pkg; extra == "audio"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info" "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.6.3\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-only-pkg\nVersion: 1.0\n' > "$SITE/rmlx_fixture_audio_only_pkg-1.0.dist-info/METADATA"
+    check "keeps extra when a shared base dependency drifted" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-audio-base\nVersion: 0.5.9\n' > "$SITE/rmlx_fixture_audio_base-0.6.3.dist-info/METADATA"
+    check "selects extra with compatible base dependency" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio"
+    cp "$WORK/extras-metadata" "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"
+fi
 if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null; then
     cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
 Requires-Dist: rmlx-fixture-foo; python_version >= "3.0" and extra == "gated"
@@ -650,7 +696,9 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
     download() { printf '%s\n' "$TMP_TAR" >> "$WORK/downloads"; printf archive; }
     shasum() { echo 'hash  archive'; }
     tar() { mkdir -p "$4/bin"; make_py "$4/bin/python3" 3.12.12 arm64; }
-    install_standalone_python >/dev/null || exit 1
+    output="$(install_standalone_python)" || exit 1
+    case "$output" in *"Installed Python 3.12.12.0"*) : ;; *) exit 1 ;; esac
+    case "$output" in *"Python Python"*) exit 1 ;; esac
     touch "$STANDALONE_DIR/stale"
     install_standalone_python >/dev/null || exit 1
     [ "$(wc -l < "$WORK/downloads" | tr -d ' ')" = 2 ] || exit 1
@@ -661,6 +709,10 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
 (
     STANDALONE_DIR="$WORK/reuse" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
     mkdir -p "$STANDALONE_DIR/bin"
+    make_py "$STANDALONE_DIR/bin/python3" 3.12.13 arm64
+    standalone_python_reusable || exit 1
+    make_py "$STANDALONE_DIR/bin/python3" 3.12.13 x86_64
+    if standalone_python_reusable; then exit 1; fi
     make_py "$STANDALONE_DIR/bin/python3" 3.12.13 arm64
     download() { touch "$WORK/reuse-downloaded"; }
     shasum() { echo 'hash archive'; }
