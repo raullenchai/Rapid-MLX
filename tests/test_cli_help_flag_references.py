@@ -68,7 +68,7 @@ def unknown_flags(text, local_flags, all_parsers):
             words = words[1:]
         contexts.append((span.start(), span.end(), command_flags(words)))
     for invocation in COMMAND.finditer(text):
-        end = re.search(r"\. |\n", text[invocation.end() :])
+        end = re.search(r"[,;:.] | \(| — |\n", text[invocation.end() :])
         end = invocation.end() + end.start() if end else len(text)
         contexts.append(
             (invocation.end(), end, command_flags(text[invocation.end() : end].split()))
@@ -94,6 +94,11 @@ def test_qualified_flag_context_is_limited_to_each_occurrence():
     assert unknown_flags(
         "Use `serve --port 8000`. Also --port.", set(), all_parsers
     ) == {"--port"}
+    assert unknown_flags(
+        "Use rapid-mlx serve --port 8000, then set --host on this command.",
+        set(),
+        all_parsers,
+    ) == {"--host"}
     assert not unknown_flags("rapid-mlx models --cached", set(), all_parsers)
 
 
