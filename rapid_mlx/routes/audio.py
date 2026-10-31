@@ -1582,6 +1582,15 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
+_aiff_transcode_semaphore = threading.BoundedSemaphore(1)
+
+
+def _transcode_aiff_serialized(source: str, destination: str) -> None:
+    """Hold the slot until the worker has finished, even on cancellation."""
+    with _aiff_transcode_semaphore:
+        _transcode_aiff_to_wav(source, destination)
+
+
 def _transcode_aiff_to_wav(source: str, destination: str) -> None:
     """Convert AIFF to a bounded PCM WAV before passing it to mlx-audio."""
     import soundfile as sf
@@ -1633,7 +1642,7 @@ async def _prepare_audio_for_engine(source: str, temp_paths: list[str]) -> str:
         return source
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav:
         temp_paths.append(wav.name)
-    await run_to_completion(_transcode_aiff_to_wav, source, wav.name)
+    await run_to_completion(_transcode_aiff_serialized, source, wav.name)
     return wav.name
 
 

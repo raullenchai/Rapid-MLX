@@ -4,6 +4,8 @@
 import asyncio
 import io
 import sys
+import threading
+import time
 import types
 import wave
 from pathlib import Path
@@ -213,6 +215,46 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
     assert paths[0].suffix == ".wav"
     assert not paths[0].exists()
     assert not source_paths[0].exists()
+
+
+def test_concurrent_aiff_transcodes_do_not_overlap(tmp_path, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    sources = [tmp_path / f"{i}.aiff" for i in range(2)]
+    for source in sources:
+        source.write_bytes(b"FORM\x00\x00\x00\x04AIFF")
+    active = 0
+    max_active = 0
+    calls = 0
+    lock = threading.Lock()
+
+    def transcode(source, destination):
+        nonlocal active, max_active, calls
+        with lock:
+            active += 1
+            calls += 1
+            max_active = max(max_active, active)
+        time.sleep(0.1)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
+    temp_paths = []
+
+    async def prepare():
+        await asyncio.gather(
+            *(
+                audio._prepare_audio_for_engine(str(source), temp_paths)
+                for source in sources
+            )
+        )
+
+    try:
+        asyncio.run(prepare())
+        assert calls == 2
+        assert max_active == 1
+    finally:
+        audio._cleanup_temp_audio(*temp_paths)
 
 
 def test_wav_named_aiff_passes_through(upload_client, monkeypatch):
