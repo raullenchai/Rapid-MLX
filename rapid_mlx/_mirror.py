@@ -270,6 +270,9 @@ class _ProgressTracker:
         self._machine = not self._is_tty and _desktop_progress_protocol()
         self._human = not self._is_tty and not self._machine
         self._human_last_time = time.monotonic() if self._human else 0.0
+        if self._human:
+            self._last_emit = self._human_last_time
+        self._human_due_bucket = 0  # guarded by _lock
         self._human_last_done = 0
         self._human_last_bucket = 0
         self._human_last_line = None
@@ -287,7 +290,17 @@ class _ProgressTracker:
             if self._total <= 0:
                 return
             now = time.monotonic()
-            if self._human or now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
+            if self._human:
+                bucket = min(
+                    int(min(self._done, self._total) * 100 / self._total) // 10, 9
+                )
+                if bucket > self._human_due_bucket:
+                    self._human_due_bucket = bucket
+                    do_emit = True
+                if now - self._last_emit >= 30:
+                    self._last_emit = now
+                    do_emit = True
+            elif now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
                 self._last_emit = now
                 do_emit = True
         # Render OUTSIDE the counter lock (codex #1259): a slow / backpressured
