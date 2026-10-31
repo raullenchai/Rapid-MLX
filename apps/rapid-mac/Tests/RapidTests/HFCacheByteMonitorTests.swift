@@ -208,7 +208,7 @@ struct HFCacheByteMonitorTests {
         progress.applyDiskObservation(bytes: 3_000_000)
         #expect(progress.totalBytes == nil)
         #expect(progress.progressFraction == nil)
-        #expect(progress.progressSubtitle == "2.9 MB downloaded")
+        #expect(progress.progressSubtitle == "\(DownloadProgress.formatBytes(3_000_000)) downloaded")
     }
 
     @Test("progressFraction nil for idle / preparing / warmingUp without disk observation")
@@ -223,25 +223,25 @@ struct HFCacheByteMonitorTests {
 
     // MARK: - progressSubtitle priority order
 
-    @Test("progressSubtitle: bytes + total → 'X.X / Y.Y GB · Z%' (the desired UX)")
+    @Test("progressSubtitle: system-formatted bytes and total with percent")
     func progressSubtitleBytesAndTotal() {
         let progress = DownloadProgress()
         progress.setTotalBytes(Int64(6.8 * 1024 * 1024 * 1024))
         progress.applyDiskObservation(bytes: Int64(1.2 * 1024 * 1024 * 1024))
         let subtitle = progress.progressSubtitle ?? ""
-        #expect(subtitle.contains("1.2 GB"))
-        #expect(subtitle.contains("6.8 GB"))
+        #expect(subtitle.contains(DownloadProgress.formatBytes(Int64(1.2 * 1024 * 1024 * 1024))))
+        #expect(subtitle.contains(DownloadProgress.formatBytes(Int64(6.8 * 1024 * 1024 * 1024))))
         #expect(subtitle.contains("·"))
         // 1.2 / 6.8 ≈ 17.6% → either "17%" or "18%" depending on rounding.
         #expect(subtitle.contains("17%") || subtitle.contains("18%"))
     }
 
-    @Test("progressSubtitle: bytes only → 'X.X GB downloaded'")
+    @Test("progressSubtitle: system-formatted bytes downloaded")
     func progressSubtitleBytesOnly() {
         let progress = DownloadProgress()
         progress.applyDiskObservation(bytes: Int64(1.2 * 1024 * 1024 * 1024))
         let subtitle = progress.progressSubtitle ?? ""
-        #expect(subtitle.contains("1.2 GB"))
+        #expect(subtitle.contains(DownloadProgress.formatBytes(Int64(1.2 * 1024 * 1024 * 1024))))
         #expect(subtitle.contains("downloaded"))
     }
 
@@ -265,29 +265,32 @@ struct HFCacheByteMonitorTests {
 
     // MARK: - formatBytes contract
 
-    @Test("formatBytes: sub-100 of any unit gets 1 decimal place")
+    @Test("formatBytes uses system file style for GB and MB counts")
     func formatBytesOneDecimal() {
         let oneGiB = Int64(1.2 * 1024 * 1024 * 1024)
-        #expect(DownloadProgress.formatBytes(oneGiB) == "1.2 GB")
+        #expect(DownloadProgress.formatBytes(oneGiB) == ByteCountFormatter.string(fromByteCount: oneGiB, countStyle: .file))
         let fourMB = Int64(4.7 * 1024 * 1024)
-        #expect(DownloadProgress.formatBytes(fourMB) == "4.7 MB")
+        #expect(DownloadProgress.formatBytes(fourMB) == ByteCountFormatter.string(fromByteCount: fourMB, countStyle: .file))
     }
 
-    @Test("formatBytes: ≥100 of any unit drops the decimal — '250 MB' not '250.4 MB'")
+    @Test("formatBytes uses system file style for large MB counts")
     func formatBytesNoDecimalForLarge() {
         let twoFiftyMB = Int64(250.4 * 1024 * 1024)
-        #expect(DownloadProgress.formatBytes(twoFiftyMB) == "250 MB")
+        #expect(DownloadProgress.formatBytes(twoFiftyMB) == ByteCountFormatter.string(fromByteCount: twoFiftyMB, countStyle: .file))
     }
 
-    @Test("formatBytes: sub-KB stays in B")
+    @Test("formatBytes uses system file style for small counts")
     func formatBytesBytes() {
-        #expect(DownloadProgress.formatBytes(123) == "123 B")
+        #expect(DownloadProgress.formatBytes(123) == ByteCountFormatter.string(fromByteCount: 123, countStyle: .file))
     }
 
-    @Test("formatBytes: negative / zero → '0 B', not garbage")
+    @Test("formatBytes clamps negative values and renders zero as 0 bytes")
     func formatBytesDefensive() {
-        #expect(DownloadProgress.formatBytes(0) == "0 B")
-        #expect(DownloadProgress.formatBytes(-1) == "0 B")
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        #expect(DownloadProgress.formatBytes(0) == formatter.string(fromByteCount: 0))
+        #expect(DownloadProgress.formatBytes(-1) == formatter.string(fromByteCount: 0))
     }
 
     // MARK: - DownloadManager.estimateTotalBytes

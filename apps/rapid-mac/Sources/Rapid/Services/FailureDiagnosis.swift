@@ -297,7 +297,7 @@ enum FailureDiagnoser {
             if let modelAlias,
                ModelSizing.estimate(alias: modelAlias).paramsBillions != nil {
                 let required = ModelSizing.estimate(alias: modelAlias).totalGB
-                message = "This model needs about \(formatGB(required)) GB free. Free up memory or choose a smaller model."
+                message = "This model needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: ceil(required * 10) / 10 * Double(1 << 30)))) free. Free up memory or choose a smaller model."
             } else {
                 message = "This model needs more free memory. Free up memory or choose a smaller model."
             }
@@ -702,9 +702,5 @@ enum FailureDiagnoser {
         "model name isn't valid", "model files",
     ]
 
-    nonisolated private static func formatGB(_ value: Double) -> String {
-        let rounded = ceil(value * 10) / 10
-        if rounded.rounded() == rounded { return String(Int(rounded)) }
-        return String(format: "%.1f", rounded)
-    }
+
 }

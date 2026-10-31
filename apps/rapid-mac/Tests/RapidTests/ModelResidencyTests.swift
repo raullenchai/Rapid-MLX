@@ -823,9 +823,9 @@ struct ModelResidencyTests {
         )
 
         let message = projection.rejectionMessage(alias: "qwen3.8-27b-4bit")
-        #expect(message?.contains("release about 6 GB") == true)
-        #expect(message?.contains("26 GB") == true)
-        #expect(message?.contains("24 GB model-memory budget") == true)
+        #expect(message?.contains("release about \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))") == true)
+        #expect(message?.contains(DownloadProgress.formatMemory(Int64(26) * (1 << 30))) == true)
+        #expect(message?.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget") == true)
         #expect(message?.contains("close some apps") == false)
     }
 
@@ -956,9 +956,16 @@ struct ModelResidencyTests {
             Issue.record("Expected the typed 507 to remain a rejected resident load")
             return
         }
-        #expect(message.contains("release about 6 GB"))
-        #expect(message.contains("26 GB"))
-        #expect(message.contains("24 GB model-memory budget"))
+        #expect(message.contains("release about \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))"))
+        #expect(message.contains(DownloadProgress.formatMemory(Int64(26) * (1 << 30))))
+        #expect(message.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget"))
+    }
+
+    @Test func imageResidencyUsesNumericSizeBeforeDisplayText() {
+        let bytes: Int64 = 20 * (1 << 30)
+        let entry = ModelEntry(alias: "image-model", hfRepo: nil, sizeOnDisk: "about one gig", cached: true, sizeBytes: bytes)
+        let estimate = ModelSizing.imageResidentEstimateGB(alias: entry.alias, sizeText: entry.sizeOnDisk, sizeBytes: entry.sizeBytes)
+        #expect(estimate == Double(bytes) / Double(1 << 30) * 1.25 + 0.5)
     }
 
     @Test("Image residency estimate uses catalog bytes plus runtime margin")
@@ -968,6 +975,13 @@ struct ModelResidencyTests {
             sizeText: "5.5 GiB"
         )
         #expect(abs(estimate - 7.375) < 0.001)
+        #expect(estimate > ModelSizing.residentEstimateGB(alias: "z-image-turbo"))
+    }
+
+    @Test("Image residency estimate falls back to size text for zero bytes")
+    func imageEstimateFallsBackForZeroBytes() {
+        let estimate = ModelSizing.residentEstimateGB(alias: "z-image-turbo", sizeText: "20 GB", sizeBytes: 0)
+        #expect(estimate == ModelSizing.residentEstimateGB(alias: "z-image-turbo", sizeText: "20 GB", sizeBytes: nil))
         #expect(estimate > ModelSizing.residentEstimateGB(alias: "z-image-turbo"))
     }
 

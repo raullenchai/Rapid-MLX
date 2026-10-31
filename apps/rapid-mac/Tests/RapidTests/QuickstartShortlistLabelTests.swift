@@ -47,7 +47,7 @@ struct QuickstartShortlistLabelTests {
             cached: entry(choice.alias),
             recommendedForPhysicalRAMGB: nil
         )
-        #expect(cached == "19.03 GiB")
+        #expect(cached == ModelSize.legacy("19.03 GiB")?.displayText)
         #expect(cached != download)
     }
 
@@ -65,7 +65,7 @@ struct QuickstartShortlistLabelTests {
             recommendedForPhysicalRAMGB: ram
         )
         // Being on disk changes what it costs, not how capable it is.
-        #expect(cached == "19.03 GiB · \(pick.capabilityPct)% capability")
+        #expect(cached == "\(ModelSize.legacy("19.03 GiB")!.displayText) · \(pick.capabilityPct)% capability")
     }
 
     @Test("Setup labels the capability score exactly as the model picker does")

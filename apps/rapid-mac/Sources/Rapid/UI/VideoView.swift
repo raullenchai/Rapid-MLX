@@ -284,6 +284,7 @@ struct VideoView: View {
         VStack(spacing: RapidTheme.Space.md) {
             if job.status == .queued || job.status == .inProgress || viewModel.isLoadingPreview {
                 ProgressView(value: Double(job.progress), total: 100)
+                    .accessibilityLabel("Video generation progress")
                     .frame(maxWidth: 300)
             } else {
                 Image(systemName: job.status == .failed ? "exclamationmark.triangle" : "film")
@@ -537,7 +538,7 @@ struct VideoView: View {
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
         guard let minimum = model.minimumMemoryGB else { return model.alias }
-        return "\(model.alias) · \(Int(minimum.rounded())) GB"
+        return "\(model.alias) · \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimum * Double(1 << 30))))"
     }
 
     private var referenceControls: some View {
@@ -576,10 +577,7 @@ struct VideoView: View {
     }
 
     private var referenceLimitText: String {
-        ByteCountFormatter.string(
-            fromByteCount: Int64(viewModel.referenceMaximumBytes),
-            countStyle: .file
-        )
+        DownloadProgress.formatBytes(Int64(viewModel.referenceMaximumBytes))
     }
 
     private var acceptedReferenceContentTypes: [UTType] {

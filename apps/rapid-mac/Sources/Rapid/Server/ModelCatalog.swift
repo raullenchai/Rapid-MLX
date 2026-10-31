@@ -265,7 +265,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Raw bytes from a machine-readable source; sizeOnDisk retains display or legacy text.
     var sizeBytes: Int64? = nil
 
-    var size: ModelSize? { sizeBytes.map(ModelSize.bytes) ?? ModelSize.legacy(sizeOnDisk) }
+    var size: ModelSize? {
+        if let sizeBytes, sizeBytes > 0 { return .bytes(sizeBytes) }
+        return ModelSize.legacy(sizeOnDisk)
+    }
     /// True for a model another MLX runtime downloaded, found outside the
     /// hub cache (#1718).
     ///
@@ -1769,10 +1772,8 @@ enum ModelCatalog {
             uniquingKeysWith: { first, _ in first }
         )
         let json = await modelsJSON
-        if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
-            return mergeAtomicAndCached(
-                atomic: atomic, cached: cached, excluded: []
-            ).filter { $0.supports(.audio) }
+        if json.succeeded, let entries = atomicAudioEntries(json.stdout, cached: cached) {
+            return entries
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseAudioRows(modelsOut).filter {
@@ -1795,6 +1796,15 @@ enum ModelCatalog {
                 audioFamily: row.family
             )
         }
+    }
+
+    static func atomicAudioEntries(
+        _ output: String, cached: [CachedModelInventoryEntry]
+    ) -> [ModelEntry]? {
+        guard let atomic = parseAtomicModelEntriesJSON(output) else { return nil }
+        return mergeAtomicAndCached(
+            atomic: atomic, cached: cached, excluded: []
+        ).filter { $0.supports(.audio) }
     }
 
     /// Video aliases for the experimental Video surface. This intentionally uses

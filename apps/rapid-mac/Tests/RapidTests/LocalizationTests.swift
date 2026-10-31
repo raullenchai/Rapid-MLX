@@ -468,7 +468,7 @@ struct LocalizationTests {
         #expect(String(localized: "Finding video models…", bundle: enBundle) == "Finding video models…")
         #expect(String(localized: "Balanced capacity and memory use", bundle: enBundle) == "Balanced capacity and memory use")
         #expect(ExperimentalSurfaceCopy.videoProgress(42, bundle: zhBundle) == "生成中 · 42%")
-        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: zhBundle) == "至少需要 48 GB 统一内存；这台 Mac 有 32 GB。")
+        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: zhBundle) == "至少需要 \(DownloadProgress.formatMemory(Int64(48) * (1 << 30))) 统一内存；这台 Mac 有 32 GB。")
         #expect(ExperimentalSurfaceCopy.benchmarkRounds(5, bundle: zhBundle) == "5 轮")
         #expect(ExperimentalSurfaceCopy.cuaStep(2, instruction: "点击继续", bundle: zhBundle) == "第 2 步：点击继续")
         #expect(ExperimentalSurfaceCopy.cuaStepFinished(2, bundle: zhBundle) == "第 2 步已完成")
@@ -479,7 +479,7 @@ struct LocalizationTests {
         #expect(ExperimentalSurfaceCopy.cuaTargetsUnavailable(message: "未找到", hint: " 请检查窗口。", bundle: zhBundle) == "Rapid 找不到此任务所需的应用：未找到 请检查窗口。")
         #expect(ExperimentalSurfaceCopy.cuaTargetsUnavailable(error: "连接失败", bundle: zhBundle) == "Rapid 找不到此任务所需的应用：连接失败 请重试。")
         #expect(ExperimentalSurfaceCopy.videoProgress(42, bundle: enBundle) == "Generating · 42%")
-        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least 48 GB unified memory; this Mac has 32 GB.")
+        #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least \(DownloadProgress.formatMemory(Int64(48) * (1 << 30))) unified memory; this Mac has 32 GB.")
     }
 
     @Test("Share Compute Credits captions resolve against the compiled zh-Hans table")

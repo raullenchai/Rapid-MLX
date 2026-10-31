@@ -139,7 +139,9 @@ def test_serve_9b_without_eligible_cached_config_uses_plain_decode(
         else "mtp_num_hidden_layers <= 0 (MTP weights stripped at convert time)"
     )
     assert capsys.readouterr().err == (
-        f"Automatic MTP skipped: {reason}; using plain decode.\n"
+        ""
+        if hf_config is None
+        else f"Automatic MTP skipped: {reason}; using plain decode.\n"
     )
 
 

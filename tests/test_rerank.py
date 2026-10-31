@@ -1073,6 +1073,66 @@ def _tiny_jina_config():
     }
 
 
+@pytest.mark.parametrize("mode", ["v35", "v3", "derived", "full"])
+def test_jina_checkpoint_limits(monkeypatch, caplog, mode):
+    from rapid_mlx import model_downloads, rerank
+
+    config = _tiny_jina_config()
+    config.update(
+        architectures=["JinaForRanking"],
+        max_position_embeddings=131072,
+        sliding_window=1024,
+    )
+    if mode == "v3":
+        config["use_sliding_window"] = False
+    elif mode == "derived":
+        del config["layer_types"]
+        config["max_window_layers"] = 1
+    elif mode == "full":
+        config["layer_types"] = ["full_attention"] * 3
+    monkeypatch.setattr(model_downloads, "require_local", lambda _: None)
+    monkeypatch.setattr(rerank, "_read_model_config", lambda _: config)
+    monkeypatch.setattr(
+        rerank, "_load_jina", lambda _: (_FakeJina(), _MarkerTokenizer())
+    )
+
+    engine = rerank.RerankEngine("fake/checkpoint")
+    engine.load()
+    v35 = mode in ("v35", "derived")
+    assert engine.max_length == (8192 if v35 else 2048)
+    assert engine.family.max_query_tokens == (1024 if v35 else 512)
+    if not v35:
+        return
+    engine.score("q" * 900, ["a" * 3000])
+    assert engine.num_truncations == 0
+    assert "Rerank truncation" not in caplog.text
+    assert engine._truncate_listwise("a" * 9000, engine.max_length, 0) == (
+        "a" * 8192,
+        8192,
+        True,
+    )
+    engine.score("q", ["a" * 9000])
+    assert engine.num_truncations == 1
+    assert "Rerank truncation" in caplog.text
+    engine.overflow_policy = "error"
+    engine.score("q" * 900, ["a"])
+    with pytest.raises(rerank.RerankDocumentTooLongError) as exc:
+        engine.score("q", ["a" * 9000])
+    assert exc.value.allowed_tokens == 8192
+    with pytest.raises(rerank.RerankInputTooLongError):
+        engine.score("q" * 1025, ["a"])
+
+    explicit = rerank.RerankEngine("fake/checkpoint", max_length=4096)
+    explicit.load()
+    assert explicit.max_length == 4096
+    config["max_position_embeddings"] = 3000
+    explicit.load()
+    assert explicit.max_length == 3000
+    auto = rerank.RerankEngine("fake/checkpoint")
+    auto.load()
+    assert auto.max_length == 3000
+
+
 def _manual_jina_backbone(backbone, ids, windows):
     import mlx.core as mx
 
@@ -1175,6 +1235,13 @@ def test_jina_v35_parity():
             range(len(reference)), key=reference.__getitem__
         )
         assert diff <= 0.01
+
+    document = "hello " * 4000
+    token_count = len(engine._tokenizer.encode(document, add_special_tokens=False))
+    assert 2048 < token_count <= 8192
+    before = engine.num_truncations
+    engine.score("hello", [document])
+    assert engine.num_truncations == before == 0
 
 
 @pytest.mark.parametrize("separate_projector", [False, True])

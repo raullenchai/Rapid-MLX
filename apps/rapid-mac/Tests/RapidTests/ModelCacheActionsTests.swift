@@ -17,6 +17,14 @@ struct ModelCacheActionsTests {
         ModelEntry(alias: alias, hfRepo: repo, sizeOnDisk: size, cached: cached)
     }
 
+    @Test func numericSizeOverridesUnparseableDisplay() {
+        let entry = ModelEntry(alias: "model", hfRepo: nil, sizeOnDisk: "about one gig", cached: true, sizeBytes: 1_070_000_000)
+        let usage = ModelCacheActions.aggregateOnDiskBytes([entry])
+        #expect(usage.totalBytes == 1_070_000_000)
+        #expect(usage.missingSizeCount == 0)
+        #expect(ModelCacheActions.largestManagedEntry([entry])?.alias == entry.alias)
+    }
+
     // MARK: - Status badge
 
     @Test("status badge: inUse wins over cached when serving matches")
@@ -330,6 +338,23 @@ struct ModelCacheActionsTests {
         #expect(usage.cachedCount == 2)
         #expect(usage.totalBytes == 3_000_000_000)
         #expect(usage.missingSizeCount == 0)
+    }
+
+    @Test("aggregateOnDiskBytes: falls back to legacy size for zero bytes")
+    func aggregateZeroNumericSize() {
+        let entry = ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: "2.0 GiB", cached: true, sizeBytes: 0)
+        let usage = ModelCacheActions.aggregateOnDiskBytes([entry])
+        #expect(usage.totalBytes == 2_147_483_648)
+    }
+
+    @Test("aggregateOnDiskBytes: saturates on overflow")
+    func aggregateOverflow() {
+        let entries = [
+            ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: nil, cached: true, sizeBytes: Int64.max),
+            ModelEntry(alias: "b", hfRepo: nil, sizeOnDisk: nil, cached: true, sizeBytes: 1),
+        ]
+        let usage = ModelCacheActions.aggregateOnDiskBytes(entries)
+        #expect(usage.totalBytes == Int64.max)
     }
 
     @Test("aggregateOnDiskBytes: nil totalBytes when no entry has a parseable size")
