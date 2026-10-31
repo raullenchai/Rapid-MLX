@@ -2050,6 +2050,10 @@ def refuse_if_memory_does_not_fit(alias: str, repo_id: str) -> None:
         cached=model_is_cached(repo_id) is True,
     )
     if refusal is not None:
+        ram_bytes = refusal.ram_bytes
+        ram_gb = (
+            f"{ram_bytes / (1 << 30):.1f} GB" if ram_bytes is not None else "unknown"
+        )
         if refusal.kind == "memory_floor":
             from rapid_mlx.model_aliases import resolve_profile
 
@@ -2057,19 +2061,26 @@ def refuse_if_memory_does_not_fit(alias: str, repo_id: str) -> None:
             if profile is not None and not profile.enforce_min_memory:
                 raise ValueError(
                     f"{alias} needs a Mac with at least {refusal.floor_gb:g} GB of "
-                    f"unified memory; this Mac has {refusal.ram_bytes / (1 << 30):.1f} GB. "
+                    f"unified memory; this Mac has {ram_gb}. "
                     "Nothing was downloaded."
                 )
             raise ValueError(
                 f"{alias} requires at least {refusal.floor_gb:.0f} GB of unified memory; "
-                f"this Mac reports {refusal.ram_bytes / (1 << 30):.1f} GB. "
+                f"this Mac reports {ram_gb}. "
                 "Nothing was downloaded."
             )
+        footprint_bytes = refusal.footprint_bytes
+        budget_bytes = refusal.budget_bytes
+        if footprint_bytes is None or budget_bytes is None:
+            raise ValueError(
+                f"{alias} does not fit this Mac's GPU memory. Nothing was downloaded. "
+                "Pick a model that fits: rapid-mlx benchmark catalog"
+            )
         raise ValueError(
-            f"{alias} needs ~{_gb(refusal.footprint_bytes)} of GPU memory; "
-            f"this Mac's GPU can use about {_gb(refusal.budget_bytes)} of its "
-            f"{_gb(refusal.ram_bytes)}. Nothing was downloaded. "
-            "Pick a model that fits: rapid-mlx benchmark catalog"
+            f"{alias} needs ~{_gb(footprint_bytes)} of GPU memory; "
+            f"this Mac's GPU can use about {_gb(budget_bytes)} of its "
+            f"{_gb(ram_bytes) if ram_bytes is not None else 'unknown'}. "
+            "Nothing was downloaded. Pick a model that fits: rapid-mlx benchmark catalog"
         )
 
 

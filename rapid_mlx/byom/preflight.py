@@ -1080,6 +1080,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
             return
         budget = result.budget_bytes or _working_set_budget(ram, None)
         footprint = result.footprint_bytes
+        if ram is None or (
+            result.kind != "memory_floor" and (footprint is None or budget is None)
+        ):
+            return
     except Exception:
         return
 
@@ -1096,7 +1100,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
             f"of unified memory; this Mac has {_gb(ram)}.",
             file=sys.stderr,
         )
-    else:
+    elif footprint is not None and budget is not None:
         print(
             f"\n  ✗ {alias} needs ~{_gb(footprint)} of GPU memory; "
             f"this Mac's GPU can use about {_gb(budget)} of its {_gb(ram)}.",
