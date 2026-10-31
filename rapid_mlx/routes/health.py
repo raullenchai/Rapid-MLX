@@ -123,6 +123,20 @@ async def health():
             )
             if lane is not None
         )
+    elif engine is None:
+        model_type = "llm"
+        from ..audio.registry import resolve_audio_alias
+
+        entry = next(
+            (
+                entry
+                for name in (cfg.model_alias, cfg.model_name, cfg.model_path)
+                if (entry := resolve_audio_alias(name)) is not None
+            ),
+            None,
+        )
+        if entry is not None and entry.type in ("stt", "tts"):
+            model_type = entry.type
     else:
         model_type = "llm"
 
@@ -148,7 +162,10 @@ async def health():
         "model_name": model_name,
         **({"models": retrieval_models} if retrieval_models is not None else {}),
         "model_type": model_type,
-        "engine_type": engine_stats.get("engine_type", "unknown"),
+        "engine_type": engine_stats.get(
+            "engine_type",
+            "audio" if engine is None and model_type in ("stt", "tts") else "unknown",
+        ),
         "mcp": mcp_info,
         "model_lifecycle": primary_status,
     }
