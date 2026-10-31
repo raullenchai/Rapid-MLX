@@ -213,6 +213,31 @@ def test_decoded_duration_precedes_segments_and_vad_return(
         assert result.segments == []
 
 
+def test_duration_ffprobe_uses_local_file_protocol(monkeypatch):
+    import wave
+
+    from rapid_mlx.audio import stt
+
+    def fail_probe(*args, **kwargs):
+        raise ValueError("metadata unavailable")
+
+    captured = []
+
+    def run(argv, **kwargs):
+        captured.extend(argv)
+        return SimpleNamespace(stdout="1.5")
+
+    monkeypatch.setattr(wave, "open", fail_probe)
+    monkeypatch.setattr(sf, "info", fail_probe)
+    monkeypatch.setattr(stt.shutil, "which", lambda _: "/usr/bin/ffprobe")
+    monkeypatch.setattr(stt.subprocess, "run", run)
+
+    assert stt._audio_duration_seconds("-upload") == 1.5
+    index = captured.index("-protocol_whitelist")
+    assert captured[index + 1] == "file"
+    assert captured[-1].startswith("file:/")
+
+
 def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypatch):
     import wave
 

@@ -11,6 +11,7 @@ Supports:
 
 import logging
 import math
+import os
 import shutil
 import subprocess
 import threading
@@ -519,7 +520,9 @@ def _audio_duration_seconds(
                     "format=duration",
                     "-of",
                     "default=noprint_wrappers=1:nokey=1",
-                    audio_path,
+                    "-protocol_whitelist",
+                    "file",
+                    "file:" + os.path.abspath(audio_path),
                 ],
                 capture_output=True,
                 text=True,
