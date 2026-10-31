@@ -7,6 +7,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import signal
 import socket
 import sys
 import threading
@@ -17,6 +18,11 @@ from typing import Any
 import uvicorn
 from uvicorn.main import STARTUP_FAILURE
 from uvicorn.supervisors import ChangeReload, Multiprocess
+
+try:
+    from uvicorn.server import HANDLED_SIGNALS
+except ImportError:
+    HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 ServerAcceptingCallback = Callable[[], None]
 logger = logging.getLogger(__name__)
@@ -86,13 +92,18 @@ class AcceptingConnectionsServer(uvicorn.Server):
 
         @contextmanager
         def capture_signals(self):
+            original_handlers = (
+                {sig: signal.getsignal(sig) for sig in HANDLED_SIGNALS}
+                if threading.current_thread() is threading.main_thread()
+                else {}
+            )
             with super().capture_signals():
                 try:
                     yield
                 finally:
-                    if (
-                        threading.current_thread() is threading.main_thread()
-                        and getattr(self, "_captured_signals", None)
+                    if any(
+                        original_handlers.get(sig) == signal.SIG_DFL
+                        for sig in getattr(self, "_captured_signals", ())
                     ):
                         from rapid_mlx._signal_observability import (
                             release_crash_file_after_clean_shutdown,

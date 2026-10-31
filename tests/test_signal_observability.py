@@ -2042,6 +2042,14 @@ def test_uvicorn_capture_signals_releases_crash_sink_before_reraise(monkeypatch)
         so, "release_crash_file_after_clean_shutdown", lambda: events.append("release")
     )
     monkeypatch.setattr(signal, "raise_signal", lambda signum: events.append(signum))
+    original_getsignal = signal.getsignal
+    monkeypatch.setattr(
+        signal,
+        "getsignal",
+        lambda sig: (
+            signal.SIG_DFL if sig == signal.SIGTERM else original_getsignal(sig)
+        ),
+    )
     server = AcceptingConnectionsServer(uvicorn.Config("example:app"))
     server._captured_signals = []
 
@@ -2049,6 +2057,33 @@ def test_uvicorn_capture_signals_releases_crash_sink_before_reraise(monkeypatch)
         server._captured_signals.append(signal.SIGTERM)
 
     assert events == ["release", signal.SIGTERM]
+
+
+def test_uvicorn_capture_signals_callable_handler_keeps_crash_sink(monkeypatch):
+    import uvicorn
+
+    from rapid_mlx import _signal_observability as so
+    from rapid_mlx._uvicorn import AcceptingConnectionsServer
+
+    events = []
+    monkeypatch.setattr(
+        so, "release_crash_file_after_clean_shutdown", lambda: events.append("release")
+    )
+    monkeypatch.setattr(signal, "raise_signal", lambda signum: events.append(signum))
+    original_getsignal = signal.getsignal
+    handler = lambda _signum, _frame: None
+    monkeypatch.setattr(
+        signal,
+        "getsignal",
+        lambda sig: handler if sig == signal.SIGTERM else original_getsignal(sig),
+    )
+    server = AcceptingConnectionsServer(uvicorn.Config("example:app"))
+    server._captured_signals = []
+
+    with server.capture_signals():
+        server._captured_signals.append(signal.SIGTERM)
+
+    assert events == [signal.SIGTERM]
 
 
 def test_uvicorn_capture_signals_background_thread_keeps_crash_sink(monkeypatch):
