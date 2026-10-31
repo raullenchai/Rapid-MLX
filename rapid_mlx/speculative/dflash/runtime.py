@@ -41,6 +41,7 @@ class DFlashRuntime:
     target_revision: str | None = None
     drafter_revision: str | None = None
     algorithm: str = "dflash"
+    drafter_path: str | None = None
 
     def reset_accept_lens(self) -> None:
         """Clear the per-round acceptance counters between requests so
@@ -148,4 +149,5 @@ def load_runtime(
         target_revision=target_revision,
         drafter_revision=drafter_revision,
         algorithm=algorithm,
+        drafter_path=load_source if drafter_revision is not None else None,
     )

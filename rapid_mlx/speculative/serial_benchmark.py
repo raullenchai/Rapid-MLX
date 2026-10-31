@@ -193,9 +193,8 @@ def dflash_runtime_handle(
             "max_draft_tokens": count,
             "draft_repo": runtime.drafter_repo,
             "draft_revision": runtime.drafter_revision,
-            "draft_path": cached_snapshot_path(
-                runtime.drafter_repo, runtime.drafter_revision
-            ),
+            "draft_path": getattr(runtime, "drafter_path", None)
+            or cached_snapshot_path(runtime.drafter_repo, runtime.drafter_revision),
             "algorithm": runtime.algorithm,
             "backend": "mlx_vlm",
         },
@@ -219,9 +218,8 @@ def native_mtp_runtime_handle(
             "max_draft_tokens": count,
             "draft_repo": runtime.drafter_repo,
             "draft_revision": runtime.drafter_revision,
-            "draft_path": cached_snapshot_path(
-                runtime.drafter_repo, runtime.drafter_revision
-            ),
+            "draft_path": getattr(runtime, "drafter_path", None)
+            or cached_snapshot_path(runtime.drafter_repo, runtime.drafter_revision),
             "algorithm": runtime.algorithm,
             "backend": "mlx_vlm",
         },

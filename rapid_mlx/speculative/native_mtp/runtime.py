@@ -93,6 +93,7 @@ class NativeMTPRuntime:
     model_type: str = "qwen3_5_mtp"
     kind: str = "mtp"
     algorithm: str = "mtp"
+    drafter_path: str | None = None
 
     def reset_accept_lens(self) -> None:
         for name in ("accept_lens", "draft_lens"):
@@ -170,6 +171,7 @@ def load_runtime(
         drafter_revision=drafter_revision,
         block_size=block_size,
         model_type=expected_model_type,
+        drafter_path=source,
     )
 
 

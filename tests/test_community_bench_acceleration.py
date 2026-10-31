@@ -864,7 +864,8 @@ def test_sidecar_bare_repo_revision(monkeypatch):
     monkeypatch.setattr(lr, "unresolved_model_identity", identity)
     revision = None
     with pytest.raises(
-        lr.AccelerationConfigError, match="Cannot resolve MTP sidecar snapshot revision"
+        lr.AccelerationConfigError,
+        match="Cannot resolve speculative sidecar snapshot revision",
     ):
         lr._sidecar_identity("org/draft")
     revision = "a" * 40
