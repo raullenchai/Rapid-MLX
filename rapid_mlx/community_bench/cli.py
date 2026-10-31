@@ -112,11 +112,11 @@ def _local_time(timestamp: Any) -> str:
 
 
 def _memory_line(model: dict[str, Any], memory_gib: Any, budget_gib: Any) -> str:
-    estimate = model.get("estimated_memory_gib")
+    estimate = model.get("estimated_memory_gb")
     fit = model.get("memory_fit")
-    if not isinstance(estimate, int):
+    if not isinstance(estimate, (int, float)):
         return "unknown (no estimate for this model)"
-    line = f"~{_gb(estimate * (1 << 30))} working set"
+    line = f"~{_gb(int(estimate * (1 << 30)))} working set"
     if model.get("memory_estimate_source") == "weights_estimate":
         line += " (estimated from weight size)"
     floor = model.get("memory_floor_gib")

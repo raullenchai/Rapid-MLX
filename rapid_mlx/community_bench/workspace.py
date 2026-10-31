@@ -184,6 +184,9 @@ def benchmark_catalog(
                 "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
+                "estimated_memory_gb": round(result.estimate_bytes / (1 << 30), 1)
+                if result.estimate_bytes is not None
+                else None,
                 "memory_estimate_source": result.estimate_source,
                 "memory_fit": fit,
                 "memory_fit_basis": result.fit_basis,

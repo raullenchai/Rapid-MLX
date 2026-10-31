@@ -355,6 +355,7 @@ def test_floor_based_catalog_and_plan_wording(
 def test_floor_based_plan_curated_working_set_wording(fit):
     model = {
         "estimated_memory_gib": 6,
+        "estimated_memory_gb": 6.0,
         "memory_estimate_source": "curated_footprint",
         "memory_fit_basis": "memory_floor",
         "memory_floor_gib": 16,
@@ -3544,6 +3545,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
                 "protocol_id": "rapid-community-speed",
                 "estimated_memory_gib": 6,
                 "memory_estimate_source": "weights_estimate",
+                "estimated_memory_gb": 6.0,
                 "memory_fit": "fits",
                 "runtime": runtime_readiness,
             },
@@ -3609,6 +3611,26 @@ def test_cli_plan_prints_protocol_and_local_storage(
     assert "Runtime:  unknown" in capsys.readouterr().out
 
 
+def test_cli_plan_uses_decimal_curated_footprint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "rapid_mlx.recommendations.recommendation_footprint_gb", lambda _: 6.1
+    )
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 32)
+    args = SimpleNamespace(
+        benchmark_action="plan", benchmark_model="qwen3.5-4b-4bit", json=False
+    )
+
+    models = benchmark_catalog(memory_gib=32)["models"]
+    entry = next(item for item in models if item["alias"] == args.benchmark_model)
+    assert entry["estimated_memory_gib"] == 7
+    assert entry["estimated_memory_gb"] == 6.1
+    assert community_cli.benchmark_command(args) == 0
+    assert "Memory:   ~6.1 GB working set" in capsys.readouterr().out
+
+
 def test_cli_plan_memory_and_download_lines_cover_every_verdict(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -3619,6 +3641,7 @@ def test_cli_plan_memory_and_download_lines_cover_every_verdict(
             "task_type": "image_generation",
             "protocol_id": "rapid-image-speed",
             "estimated_memory_gib": 64,
+            "estimated_memory_gb": 64.0,
             "memory_estimate_source": "profile_minimum",
             "memory_fit": "does_not_fit",
         },
@@ -3637,6 +3660,7 @@ def test_cli_plan_memory_and_download_lines_cover_every_verdict(
     assert "Cases:" not in out
 
     plan["model"]["estimated_memory_gib"] = None
+    plan["model"]["estimated_memory_gb"] = None
     plan["model"]["memory_fit"] = "unknown"
     del plan["memory_gib"]
     plan["model_cached"] = None  # probe was inconclusive: say so, do not guess
