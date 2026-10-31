@@ -1618,8 +1618,54 @@ def test_run_vision_encoding_injects_vision_cache_for_image_request():
 
     gen._run_vision_encoding(request, cache=None)
 
-    assert model.last_call_kwargs.get("_image_key") == "deadbeef"
+    assert model.last_call_kwargs.get("_image_key").startswith("deadbeef#")
     assert model.last_call_kwargs.get("vision_cache") is gen._vision_feature_cache
+
+
+def test_vision_feature_key_tracks_effective_geometry():
+    model = _VisionCacheModel()
+    gen = MLLMBatchGenerator(model=model, processor=object())
+    gen._vision_feature_cache = object()
+
+    def run(cap, grid, shape):
+        request = _make_vision_request(
+            pixel_values=mx.zeros(shape), vision_feature_key="same-frames"
+        )
+        request.media_pixel_cap = cap
+        request.image_grid_thw = mx.array([grid])
+        gen._run_vision_encoding(request, cache=None)
+        return model.last_call_kwargs["_image_key"]
+
+    large = run(1024 * 28 * 28, [1, 32, 32], (1, 3, 32, 32))
+    assert large == run(1024 * 28 * 28, [1, 32, 32], (1, 3, 32, 32))
+    assert large != run(512 * 28 * 28, [1, 22, 22], (1, 3, 22, 22))
+
+
+def test_vision_feature_key_geometry_fields_and_invalid_keys():
+    gen = MLLMBatchGenerator(model=_VisionCacheModel(), processor=object())
+    request = _make_vision_request(
+        pixel_values=mx.zeros((1, 3, 4, 4)), vision_feature_key="image"
+    )
+    original = gen._vision_feature_cache_key(request)
+    gen.vision_min_pixels = 128
+    assert gen._vision_feature_cache_key(request) != original
+    gen.vision_min_pixels = 0
+    request.image_grid_thw = [[1, 2, 3]]
+    assert gen._vision_feature_cache_key(request) != original
+    request.image_grid_thw = None
+    for name in ("video_grid_thw", "spatial_shapes", "image_sizes"):
+        request.extra_kwargs = {name: [[1, 2]]}
+        assert gen._vision_feature_cache_key(request) != original
+        first = gen._vision_feature_cache_key(request)
+        request.extra_kwargs = {name: [[1, 3]]}
+        assert gen._vision_feature_cache_key(request) != first
+        request.extra_kwargs = {name: mx.array([[1, 22, 22]])}
+        first = gen._vision_feature_cache_key(request)
+        request.extra_kwargs = {name: mx.array([[1, 32, 32]])}
+        assert gen._vision_feature_cache_key(request) != first
+    for key in (None, "", 123):
+        request.vision_feature_key = key
+        assert gen._vision_feature_cache_key(request) is None
 
 
 def test_run_vision_encoding_no_vision_cache_for_text_only():
