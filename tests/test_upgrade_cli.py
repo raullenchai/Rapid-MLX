@@ -434,6 +434,16 @@ def test_upgrade_interrupt_exits_130(monkeypatch, capsys):
     assert "Interrupted." in capsys.readouterr().out
 
 
+def test_upgrade_routes_through_runner(monkeypatch):
+    _stub_brew_with_upgrade_available(monkeypatch)
+    run = MagicMock(return_value=0)
+    monkeypatch.setattr("rapid_mlx._upgrade_runner.run_upgrade_command", run)
+    with pytest.raises(SystemExit) as exc:
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"])
+    assert exc.value.code == 0
+
+
 @pytest.mark.parametrize(
     ("method", "binary", "label"),
     [("install_sh", "/some/bin/rapid-mlx", "one-line installer"), ("pip", None, "pip")],
