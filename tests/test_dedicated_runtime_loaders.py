@@ -324,6 +324,20 @@ def test_cached_snapshot_paths(monkeypatch, tmp_path):
     assert cached_snapshot_path("org/model", "rev") == str(snapshot)
 
 
+def test_cached_snapshot_resolves_named_revision(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    cache = tmp_path / "models--org--model"
+    (cache / "refs").mkdir(parents=True)
+    (cache / "refs" / "main").write_text("abc123\n")
+    snapshot = cache / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    assert cached_snapshot_path("org/model", "main") == str(snapshot)
+
+
 def test_dflash_unknown_profile_refusal(monkeypatch):
     from rapid_mlx import cli, model_aliases
     from rapid_mlx.speculative import dflash

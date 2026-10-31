@@ -101,6 +101,10 @@ def pinned_cached_snapshot(repo: str, revision: str | None = None) -> str | None
             revision = (cache / "refs" / "main").read_text().strip()
         except OSError:
             return None
+    if ".." not in revision and not Path(revision).is_absolute():
+        ref = cache / "refs" / revision
+        if ref.is_file():
+            revision = ref.read_text().strip()
     snapshot = cache / "snapshots" / revision
     return str(snapshot) if revision and snapshot.is_dir() else None
 
