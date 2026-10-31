@@ -46,6 +46,46 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     assert "ENGINE-DEBUG-LINE" not in capsys.readouterr().err
 
 
+def test_serve_echoes_child_log_to_pipe(monkeypatch):
+    real_popen = subprocess.Popen
+    real_write = os.write
+    writes = []
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    read_fd, write_fd = os.pipe()
+
+    def write(fd, data):
+        if fd == write_fd:
+            writes.append(data)
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_server.os, "write", write)
+    try:
+        with (
+            os.fdopen(write_fd, "w") as output,
+            _server.serve("fake", echo_log=output),
+        ):
+            assert select.select([read_fd], [], [], 3)[0]
+            assert b"ENGINE-DEBUG-LINE\n" in os.read(read_fd, 4096)
+        assert any(b"ENGINE-DEBUG-LINE\n" in data for data in writes)
+    finally:
+        os.close(read_fd)
+
+
 def test_serve_teardown_with_blocked_echo(monkeypatch):
     real_popen = subprocess.Popen
     script = """

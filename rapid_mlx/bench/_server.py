@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import os
 import signal
 import socket
@@ -190,8 +191,41 @@ def serve(
     echo_thread = None
     try:
         if echo_log is not None:
+            try:
+                echo_log.flush()
+            except (OSError, ValueError):
+                pass
 
             def echo_output() -> None:
+                try:
+                    fd = echo_log.fileno()
+                except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+                    fd = None
+
+                if fd is not None:
+
+                    def write_bytes(data: bytes) -> bool:
+                        try:
+                            written = 0
+                            while written < len(data):
+                                written += os.write(fd, data[written:])
+                        except OSError:
+                            return False
+                        return True
+
+                    with open(log_path or tmp_log, "rb") as reader:
+                        while not stop_echo.is_set():
+                            position = reader.tell()
+                            line = reader.readline()
+                            if line.endswith(b"\n"):
+                                if not write_bytes(line):
+                                    return
+                            else:
+                                reader.seek(position)
+                                stop_echo.wait(0.2)
+                        write_bytes(reader.read())
+                    return
+
                 with open(log_path or tmp_log, errors="replace") as reader:
                     while not stop_echo.is_set():
                         position = reader.tell()
