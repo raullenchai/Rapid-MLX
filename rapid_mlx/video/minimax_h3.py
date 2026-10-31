@@ -254,8 +254,27 @@ class MiniMaxH3VideoEngine:
                 extra={"drop_adaln_weights": False},
             )
             output_path.unlink(missing_ok=True)
-            generate_video(self._model, request, output_path=output_path)
+            result = generate_video(self._model, request)
             progress()
+            import numpy as np
+
+            from .encoding import encode_rgb_video
+
+            frames = np.array(result.frames)
+            if frames.ndim == 5 and frames.shape[0] == 1:
+                frames = frames[0]
+            if np.issubdtype(frames.dtype, np.floating):
+                frames = np.rint(np.clip(frames, 0.0, 1.0) * 255)
+            frames = np.ascontiguousarray(np.clip(frames, 0, 255).astype(np.uint8))
+            encode_rgb_video(
+                frames,
+                output_path,
+                int(round(result.fps or fps)),
+                audio=None
+                if result.audio is None
+                else np.array(result.audio, dtype=np.float32),
+                sampling_rate=result.sampling_rate,
+            )
             if not output_path.is_file() or not output_path.stat().st_size:
                 raise MiniMaxH3BackendError(
                     "MiniMax-H3 generation completed without an MP4 output"

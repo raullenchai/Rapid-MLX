@@ -1,6 +1,9 @@
 import fnmatch
+import shutil
+import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -14,9 +17,16 @@ from rapid_mlx.video.minimax_h3 import (
 )
 from rapid_mlx.video.minimax_h3 import _merge_turbo_lora as real_merge_turbo_lora
 
+# Tests that exercise the real MLX runtime and/or the real encoder.
+_REAL_RUNTIME_TESTS = {
+    "test_generation_encodes_with_ffmpeg_binary_when_path_has_no_ffmpeg"
+}
+
 
 @pytest.fixture(autouse=True)
-def fake_mlx_cache(monkeypatch):
+def fake_mlx_cache(monkeypatch, request):
+    if request.node.originalname in _REAL_RUNTIME_TESTS:
+        return
     # Existing generation tests must not import the real MLX runtime.
     mlx = ModuleType("mlx")
     core = ModuleType("mlx.core")
@@ -25,10 +35,22 @@ def fake_mlx_cache(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
     from rapid_mlx import _mirror
-    from rapid_mlx.video import minimax_h3
+    from rapid_mlx.video import encoding, minimax_h3
 
+    if request.node.originalname != "test_invalid_audio_is_rejected":
+        monkeypatch.setattr(
+            encoding,
+            "encode_rgb_video",
+            lambda frames, output_path, fps, **kwargs: output_path.write_bytes(b"mp4"),
+        )
     monkeypatch.setattr(_mirror, "pinned_snapshot_download", lambda *a, **k: "/fake")
     monkeypatch.setattr(minimax_h3, "_merge_turbo_lora", lambda *a: None)
+
+
+def fake_result():
+    return SimpleNamespace(
+        frames=[[[[[0.5, 0.5, 0.5]]]]], fps=24, audio=None, sampling_rate=None
+    )
 
 
 def fake_pipeline():
@@ -71,9 +93,9 @@ def test_generation_loads_once_and_maps_workflows(monkeypatch, tmp_path):
         calls.append(("load", path, workflow))
         return SimpleNamespace(workflow=workflow, pipeline=fake_pipeline())
 
-    def generate(model, request, *, output_path):
+    def generate(model, request):
         calls.append((model.workflow, request))
-        output_path.write_bytes(b"mp4")
+        return fake_result()
 
     module.VideoGenerationRequest = Request
     module.generate_video = generate
@@ -99,6 +121,107 @@ def test_generation_loads_once_and_maps_workflows(monkeypatch, tmp_path):
     engine.stop()
     with pytest.raises(MiniMaxH3BackendError, match="cancelled"):
         engine.generate(**args)
+
+
+def test_generation_encodes_with_ffmpeg_binary_when_path_has_no_ffmpeg(
+    monkeypatch, tmp_path
+):
+    ffmpeg = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+    if not Path(ffmpeg).is_file() or not Path("/usr/bin/afconvert").is_file():
+        pytest.skip("ffmpeg or afconvert unavailable")
+    ffmpeg = str(Path(ffmpeg).resolve())
+    encoders = subprocess.run(
+        [ffmpeg, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "h264_videotoolbox" not in encoders.stdout:
+        pytest.skip("VideoToolbox encoder unavailable")
+    monkeypatch.setenv("FFMPEG_BINARY", ffmpeg)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert shutil.which("ffmpeg") is None
+
+    import numpy as np
+
+    mx = pytest.importorskip("mlx.core", exc_type=ImportError)
+    module = pytest.importorskip("mlx_vlm.generate", exc_type=ImportError)
+    from mlx_vlm.generate.video_generation import VideoGenerationResult
+
+    from rapid_mlx import _mirror
+    from rapid_mlx.video import minimax_h3
+
+    monkeypatch.setattr(
+        _mirror, "pinned_snapshot_download", lambda *a, **k: str(tmp_path)
+    )
+    monkeypatch.setattr(minimax_h3, "_merge_turbo_lora", lambda *a: None)
+
+    def generate(request):
+        samples = 0.2 * np.sin(2 * np.pi * 440 * np.arange(24000) / 48000)
+        return VideoGenerationResult(
+            frames=mx.array(np.zeros((1, 12, 64, 96, 3), dtype=np.float32)),
+            audio=mx.array(np.stack([samples, samples]).astype(np.float32)),
+            fps=24.0,
+            sampling_rate=48000,
+            seed=request.seed,
+            width=96,
+            height=64,
+            num_frames=12,
+            steps=9,
+            model="h3",
+            family="minimax_h3",
+            workflow="t2va",
+        )
+
+    monkeypatch.setattr(
+        module,
+        "load_video_generation_model",
+        lambda path, workflow: SimpleNamespace(
+            workflow=workflow, pipeline=fake_pipeline(), generate=generate
+        ),
+    )
+    engine = MiniMaxH3VideoEngine(str(tmp_path))
+    output = tmp_path / "out.mp4"
+    try:
+        engine.generate(
+            prompt="t",
+            output_path=output,
+            width=768,
+            height=512,
+            num_frames=124,
+            fps=24,
+            seed=7,
+            image=None,
+        )
+    finally:
+        engine.stop()
+    assert output.is_file() and output.stat().st_size > 0
+    probe = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(output)], capture_output=True, text=True
+    )
+    assert "Video: h264" in probe.stderr
+    assert "Audio: aac" in probe.stderr
+
+
+@pytest.mark.parametrize(
+    "audio,rate",
+    [([0.0], None), ([], 48000), ([[float("nan")]], 48000), ([[0.0]] * 9, 48000)],
+)
+def test_invalid_audio_is_rejected(monkeypatch, tmp_path, audio, rate):
+    import numpy as np
+
+    from rapid_mlx.runtime import video_lane
+    from rapid_mlx.video.encoding import VideoEncodingError, encode_rgb_video
+
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
+    with pytest.raises(VideoEncodingError):
+        encode_rgb_video(
+            np.zeros((1, 2, 2, 3), dtype=np.uint8),
+            tmp_path / "out.mp4",
+            24,
+            audio=audio,
+            sampling_rate=rate,
+        )
 
 
 def test_runtime_failure_is_mapped(monkeypatch, tmp_path):
@@ -184,9 +307,9 @@ def test_load_and_generation_share_one_thread(monkeypatch, tmp_path):
         threads.append(threading.current_thread().name)
         return SimpleNamespace(workflow=workflow, pipeline=fake_pipeline())
 
-    def generate(model, request, *, output_path):
+    def generate(model, request):
         threads.append(threading.current_thread().name)
-        output_path.write_bytes(b"mp4")
+        return fake_result()
 
     module.VideoGenerationRequest = Request
     module.generate_video = generate
@@ -232,10 +355,10 @@ def test_stop_cancels_queued_job_with_backend_error(monkeypatch, tmp_path):
     )
     running, release = threading.Event(), threading.Event()
 
-    def generate_video(model, request, output_path):
+    def generate_video(model, request):
         running.set()
         release.wait(5)
-        output_path.write_bytes(b"mp4")
+        return fake_result()
 
     module.generate_video = generate_video
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
@@ -439,7 +562,10 @@ def test_backend_validation_and_missing_output(monkeypatch, tmp_path):
     module.load_video_generation_model = lambda *a, **k: SimpleNamespace(
         pipeline=fake_pipeline()
     )
-    module.generate_video = lambda *a, **k: None
+    module.generate_video = lambda *a, **k: fake_result()
+    from rapid_mlx.video import encoding
+
+    monkeypatch.setattr(encoding, "encode_rgb_video", lambda *a, **k: None)
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
     cache_calls = []
     mlx = ModuleType("mlx")
@@ -592,9 +718,8 @@ def test_turbo_load_recipe(monkeypatch, tmp_path):
         pipeline=pipeline
     )
     module.VideoGenerationRequest = lambda **kw: SimpleNamespace(**kw)
-    module.generate_video = lambda model, request, output_path: (
-        calls.append(("request", request)),
-        output_path.write_bytes(b"x"),
+    module.generate_video = lambda model, request: (
+        calls.append(("request", request)) or fake_result()
     )
     monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
     engine = MiniMaxH3VideoEngine(str(tmp_path))

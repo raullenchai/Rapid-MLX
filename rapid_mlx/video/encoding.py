@@ -6,7 +6,11 @@ import os
 import subprocess
 import tempfile
 import threading
+import wave
+from contextlib import ExitStack
 from pathlib import Path
+
+_AFCONVERT = "/usr/bin/afconvert"
 
 
 class VideoEncodingError(RuntimeError):
@@ -14,9 +18,15 @@ class VideoEncodingError(RuntimeError):
 
 
 def _ffmpeg_command(
-    ffmpeg: str, *, width: int, height: int, fps: int, output_path: Path
+    ffmpeg: str,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    output_path: Path,
+    audio_path: Path | None = None,
 ) -> list[str]:
-    return [
+    command = [
         ffmpeg,
         "-hide_banner",
         "-loglevel",
@@ -32,18 +42,30 @@ def _ffmpeg_command(
         str(fps),
         "-i",
         "pipe:0",
-        "-an",
+    ]
+    if audio_path is None:
+        command += ["-an"]
+    else:
+        command += ["-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0"]
+    command += [
         "-c:v",
         "h264_videotoolbox",
         "-pix_fmt",
         "yuv420p",
+    ]
+    if audio_path is not None:
+        command += ["-c:a", "copy", "-shortest"]
+    command += [
         "-movflags",
         "+faststart",
         str(output_path),
     ]
+    return command
 
 
-def encode_rgb_video(frames, output_path: str | Path, fps: int) -> None:
+def encode_rgb_video(
+    frames, output_path: str | Path, fps: int, *, audio=None, sampling_rate=None
+) -> None:
     """Atomically encode ``[frames, height, width, rgb]`` uint8 pixels.
 
     Frames are streamed one at a time so a long generation does not allocate
@@ -71,7 +93,64 @@ def encode_rgb_video(frames, output_path: str | Path, fps: int) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     process: subprocess.Popen | None = None
-    with tempfile.TemporaryFile() as stderr_file:
+    with ExitStack() as stack:
+        audio_path = None
+        if audio is not None:
+            if sampling_rate is None or not sampling_rate > 0:
+                raise VideoEncodingError("audio sampling rate must be positive")
+            try:
+                samples = np.asarray(audio, dtype=np.float32)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise VideoEncodingError("invalid audio samples") from exc
+            if samples.ndim == 3 and samples.shape[0] == 1:
+                samples = samples[0]
+            if samples.ndim == 1:
+                samples = samples[None, :]
+            if (
+                samples.ndim != 2
+                or not 1 <= samples.shape[0] <= 8
+                or samples.shape[1] == 0
+                or not np.isfinite(samples).all()
+            ):
+                raise VideoEncodingError("invalid audio samples")
+            if not os.path.isfile(_AFCONVERT) or not os.access(_AFCONVERT, os.X_OK):
+                raise VideoEncodingError("AAC audio encoder (afconvert) is unavailable")
+            directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+            wav_path, audio_path = directory / "audio.wav", directory / "audio.m4a"
+            with wave.open(str(wav_path), "wb") as wav:
+                wav.setnchannels(samples.shape[0])
+                wav.setsampwidth(2)
+                wav.setframerate(sampling_rate)
+                wav.writeframes(
+                    (np.clip(samples, -1, 1).T * 32767).astype("<i2").tobytes()
+                )
+            try:
+                subprocess.run(
+                    [
+                        _AFCONVERT,
+                        "-f",
+                        "mp4f",
+                        "-d",
+                        "aac",
+                        "-b",
+                        "192000",
+                        str(wav_path),
+                        str(audio_path),
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                )
+            except (
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+                OSError,
+            ) as exc:
+                raise VideoEncodingError(
+                    f"audio encoding failed: {type(exc).__name__}"
+                ) from exc
+        stderr_file = stack.enter_context(tempfile.TemporaryFile())
         try:
             handle = tempfile.NamedTemporaryFile(
                 dir=destination.parent,
@@ -89,6 +168,7 @@ def encode_rgb_video(frames, output_path: str | Path, fps: int) -> None:
                     height=height,
                     fps=fps,
                     output_path=temporary,
+                    audio_path=audio_path,
                 ),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
