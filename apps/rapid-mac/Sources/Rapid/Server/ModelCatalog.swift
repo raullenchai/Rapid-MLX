@@ -102,7 +102,7 @@ enum VideoModelCapability: String, Codable, Sendable, Hashable {
 /// different request shapes. Every picker asks this policy for its rows so an
 /// alias cannot become selectable merely because it was present in a broader
 /// catalog response.
-enum ModelSelectionPurpose: Sendable, Hashable {
+enum ModelSelectionPurpose: Sendable, Hashable, CaseIterable {
     case chat
     case imageGeneration
     case imageEditing

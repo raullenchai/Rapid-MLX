@@ -65,6 +65,8 @@ from rapid_mlx.runtime.optional_runtime import (
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+_DOWNLOAD_DISK_HEADROOM = 0.10
+
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
 DEFAULT_SYSTEM_ONE_PORT = 8700
@@ -1747,7 +1749,7 @@ def _check_disk_space(
         available_bytes = stat.f_bavail * stat.f_frsize
 
         # ~10% headroom for temp files during xet_get / move-into-place.
-        required_bytes = int(model_size_bytes * 1.1)
+        required_bytes = int(model_size_bytes * (1 + _DOWNLOAD_DISK_HEADROOM))
         if available_bytes >= required_bytes:
             return
 
@@ -1755,25 +1757,33 @@ def _check_disk_space(
         available_gb = available_bytes / (1024**3)
         need_to_free_gb = (required_bytes - available_bytes) / (1024**3)
 
-        print()
-        print("  Error: Insufficient disk space for download.")
-        print(f"    Download size: {model_size_gb:>7.1f} GB")
-        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
-        print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
-        print()
-        print("  Suggestions:")
-        print("    - Free disk space, or set HF_HOME to a drive with more room")
-        print("    - Pick a smaller variant: rapid-mlx models")
+        print(file=sys.stderr)
+        print("  Error: Insufficient disk space for download.", file=sys.stderr)
+        print(f"    Download size: {model_size_gb:>7.1f} GB", file=sys.stderr)
+        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})", file=sys.stderr)
+        print(
+            f"    Need to free:  {need_to_free_gb:>7.1f} GB  "
+            f"(includes {_DOWNLOAD_DISK_HEADROOM:.0%} working space for the download)",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print("  Suggestions:", file=sys.stderr)
+        print(
+            "    - Free disk space, or set HF_HOME to a drive with more room",
+            file=sys.stderr,
+        )
+        print("    - Pick a smaller variant: rapid-mlx models", file=sys.stderr)
         if not force:
             print(
                 "    - Bypass this check (download will likely fail mid-way): "
-                "--force-disk-check"
+                "--force-disk-check",
+                file=sys.stderr,
             )
-            print()
+            print(file=sys.stderr)
             sys.exit(1)
         # ``force=True``: warn loudly, let the user proceed at their own risk.
-        print("  --force-disk-check set — proceeding anyway.")
-        print()
+        print("  --force-disk-check set — proceeding anyway.", file=sys.stderr)
+        print(file=sys.stderr)
     except SystemExit:
         raise
     except Exception:
@@ -11806,19 +11816,24 @@ def _pull_repository(
             )
         )
     except ValueError as e:
-        print(f"\n  Error: {e}")
+        print(f"\n  Error: {e}", file=sys.stderr)
         sys.exit(1)
     except VariantNotFoundError as e:
         shown = getattr(args, "_original_alias", repo_id)
-        print(f"\n  Error: '{shown}' has no '{e.requested}' variant.")
+        print(f"\n  Error: '{shown}' has no '{e.requested}' variant.", file=sys.stderr)
         if e.available:
-            print("  Available variant folder(s): " + ", ".join(e.available) + ".")
+            print(
+                "  Available variant folder(s): " + ", ".join(e.available) + ".",
+                file=sys.stderr,
+            )
         else:
             print(
-                "  The repo exposes no variant folders — it is a single-variant repo."
+                "  The repo exposes no variant folders — it is a single-variant repo.",
+                file=sys.stderr,
             )
         print(
-            "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector."
+            "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector.",
+            file=sys.stderr,
         )
         sys.exit(1)
     except Exception as exc:
@@ -12072,7 +12087,8 @@ def _pull_repository(
         shown = getattr(args, "_original_alias", repo_id)
         print(
             f"\n  Error: '{shown}' is not a valid HuggingFace repo id "
-            "(expected ``namespace/name``)."
+            "(expected ``namespace/name``).",
+            file=sys.stderr,
         )
         _print_unknown_model_help(
             shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
@@ -12099,7 +12115,9 @@ def _pull_repository(
         )
         if is_404:
             shown = getattr(args, "_original_alias", repo_id)
-            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
+            print(
+                f"\n  Error: Model '{shown}' not found on HuggingFace.", file=sys.stderr
+            )
             print(_hub_not_found_hint(shown), end="")
             print(
                 "  Use an exact `namespace/repository-name` ID, for example "
@@ -12324,11 +12342,15 @@ def pull_command(args):
             prepare_runtime_requirement(requirement)
         except AudioRuntimePreparationError as exc:
             shown = getattr(args, "_original_alias", primary_repo)
-            print(f"\n  Error: Could not prepare audio runtime for '{shown}'.")
-            print(f"  {exc}")
+            print(
+                f"\n  Error: Could not prepare audio runtime for '{shown}'.",
+                file=sys.stderr,
+            )
+            print(f"  {exc}", file=sys.stderr)
             print(
                 "  Install 'rapid-mlx[audio]' in this environment, then rerun "
-                f"'rapid-mlx pull {shown}'."
+                f"'rapid-mlx pull {shown}'.",
+                file=sys.stderr,
             )
             sys.exit(1)
     global _pending_model_pull_event
@@ -16423,7 +16445,8 @@ def main():
                 # suggestions instead of letting the request hit
                 # HuggingFace and 404 with a 30-line stack trace.
                 print(
-                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path.",
+                    file=sys.stderr if args.command == "pull" else sys.stdout,
                 )
                 _print_unknown_model_help(
                     args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
