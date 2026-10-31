@@ -280,6 +280,17 @@ class CUAService:
             for r in self._runs.values()
         ]
 
+    def active_run_count(self) -> int:
+        active_ids = {
+            run_id
+            for run_id, run in self._runs.items()
+            if run.status in {"running", "awaiting_approval"}
+        }
+        active_ids.update(
+            run_id for run_id, task in self._tasks.items() if not task.done()
+        )
+        return len(active_ids)
+
     def get(self, run_id: str) -> CUAServiceRun:
         run = self._runs.get(run_id)
         if run is None:
