@@ -371,6 +371,51 @@ def test_floor_based_plan_curated_working_set_wording(fit):
     )
 
 
+@pytest.mark.parametrize(
+    ("fit", "ram", "catalog_verdict", "plan_verdict"),
+    [
+        (
+            "fits",
+            16,
+            "fits (16 GB+ profile)",
+            "fits this Mac (profile qualified for Macs with 16 GB or more)",
+        ),
+        (
+            "does_not_fit",
+            8,
+            "does not fit (16 GB+ profile)",
+            "does NOT fit this Mac (profile requires a Mac with 16 GB or more)",
+        ),
+    ],
+)
+def test_floor_verdict_without_working_set_estimate(
+    fit, ram, catalog_verdict, plan_verdict, capsys
+):
+    model = {
+        "alias": "floor-only",
+        "task_type": "text_generation",
+        "estimated_memory_gib": None,
+        "estimated_memory_gb": None,
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 16,
+        "memory_fit": fit,
+    }
+    assert community_cli._memory_line(model, ram, None) == (
+        f"no working-set estimate; {plan_verdict}"
+    )
+    community_cli._print_catalog({"memory_gib": ram, "models": [model]}, show_all=True)
+    row = next(
+        line for line in capsys.readouterr().out.splitlines() if "floor-only" in line
+    )
+    assert f"?  {catalog_verdict}" in row
+
+
+def test_missing_estimate_and_unknown_verdict():
+    assert community_cli._memory_line({"memory_fit": "unknown"}, 16, None) == (
+        "unknown (no estimate for this model)"
+    )
+
+
 def test_floor_qualified_gpu_limit_wording(capsys):
     alias = "qwen3-coder-30b-4bit"
     catalog = benchmark_catalog(memory_gib=24, recommended_working_set_bytes=12 << 30)
