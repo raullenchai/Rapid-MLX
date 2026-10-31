@@ -37,6 +37,27 @@ err()   { printf "  ${STDERR_RED}%s${STDERR_RESET}\n" "$*" >&2; }
 dim()   { printf "  ${DIM}%s${RESET}\n" "$*"; }
 dim_err() { printf "  ${STDERR_DIM}%s${STDERR_RESET}\n" "$*" >&2; }
 
+print_success_box() {
+    local text width=37 padding first=true i
+    for text in "$@"; do
+        if [ $((${#text} + 4)) -gt "$width" ]; then width=$((${#text} + 4)); fi
+    done
+    printf '  ╭'
+    for ((i = 0; i < width; i++)); do printf '─'; done
+    printf '╮\n'
+    for text in "$@"; do
+        padding=$((width - ${#text} - 2))
+        printf '  │  '
+        if [ "$first" = true ]; then printf '%b' "$GREEN"; fi
+        printf '%s' "$text"
+        if [ "$first" = true ]; then printf '%b' "$RESET"; first=false; fi
+        printf '%*s│\n' "$padding" ''
+    done
+    printf '  ╰'
+    for ((i = 0; i < width; i++)); do printf '─'; done
+    printf '╯\n'
+}
+
 # With curl | bash, stdin is installer source, not input for child commands.
 # Keep terminal input available for interactive runs; internal data pipelines
 # (such as the cache JSON reader) must keep their own explicit stdin.
@@ -133,7 +154,7 @@ def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
 requirements = metadata.distribution("rapid-mlx").requires or []
-installed = {normalize(d.metadata["Name"]) for d in metadata.distributions() if d.metadata.get("Name")}
+installed = {normalize(d.metadata["Name"]): d.version for d in metadata.distributions() if d.metadata.get("Name")}
 base = set()
 extras = {}
 for requirement in requirements:
@@ -156,13 +177,37 @@ for requirement in requirements:
             continue
     name = normalize(name.group())
     if extra:
-        extras.setdefault(normalize(extra.group(1)), set()).add(name)
+        extras.setdefault(normalize(extra.group(1)), []).append((name, req if Requirement is not None else None))
     else:
         base.add(name)
+pending = list(base)
+while pending:
+    name = pending.pop()
+    try:
+        dependencies = metadata.requires(name) or []
+    except metadata.PackageNotFoundError:
+        continue
+    for dependency in dependencies:
+        match = re.match(r"[A-Za-z0-9._-]+", dependency)
+        if not match:
+            continue
+        if Requirement is not None:
+            try:
+                req = Requirement(dependency)
+                if req.marker and not req.marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:
+                continue
+        child = normalize(match.group())
+        if child not in base:
+            base.add(child)
+            pending.append(child)
 selected = []
-for extra, names in extras.items():
-    distinct = names - base
-    if extra not in {"dev", "test", "all"} and not extra.startswith("ci-") and distinct and distinct <= installed:
+for extra, requirements in extras.items():
+    distinct = [(name, req) for name, req in requirements if name not in base]
+    if (extra not in {"dev", "test", "all"} and not extra.startswith("ci-") and distinct
+            and all(name in installed and (req is None or req.specifier.contains(installed[name], prereleases=True))
+                    for name, req in distinct)):
         selected.append(extra)
 if selected:
     print(",".join(sorted(selected)))
@@ -466,7 +511,11 @@ print_quick_start_commands() {
     echo "    # Launch checks the agent's model needs against your Mac RAM; small Macs may need more memory."
     echo "    # Run the same command tomorrow; add --remove to delete Rapid's profile."
     echo ""
-    echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/python -m pip install 'rapid-mlx[chat]')"
+    if "$INSTALL_DIR/bin/python" -I -c 'import importlib.util,sys; sys.exit(importlib.util.find_spec("gradio") is None)' </dev/null; then
+        echo "    rapid-mlx-chat    # web UI"
+    else
+        echo "    rapid-mlx-chat    # web UI (first: ${INSTALL_DIR}/bin/python -m pip install 'rapid-mlx[chat]')"
+    fi
     echo ""
     dim "Measured speeds on Macs like this one:"
     echo ""
@@ -592,17 +641,21 @@ reinstall_preserved_extras() {
         spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}]"
     fi
     info "Reinstalling optional features: $PRESERVED_EXTRAS"
-    if { [ "$TARGET" != latest ] && [ -z "$version" ]; } || ! run_install_command "${INSTALLER[@]}" "$spec"; then
+    if { [ "$TARGET" != latest ] && [ -z "$version" ]; } || ! run_package_command "${INSTALLER[@]}" "$spec"; then
         warn "Could not reinstall optional features ($PRESERVED_EXTRAS)."
         dim "Install them later with: $INSTALL_DIR/bin/python -m pip install '$spec'"
     fi
     return 0
 }
 
-install_standalone_python() (
-    if [ -x "$STANDALONE_DIR/bin/python3" ] &&
+standalone_python_reusable() {
+    [ -x "$STANDALONE_DIR/bin/python3" ] &&
        [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || true)" = "$PY_VERSION" ] &&
-       [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import platform; print(platform.machine())' 2>/dev/null || true)" = arm64 ]; then
+       [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import platform; print(platform.machine())' 2>/dev/null || true)" = arm64 ]
+}
+
+install_standalone_python() (
+    if standalone_python_reusable; then
         dim "Reusing Python $PY_VERSION in ~/.rapid-mlx-python"
         return 0
     fi
@@ -647,7 +700,7 @@ install_standalone_python() (
     STAGING_DIR=""
     rm -rf "$OLD_DIR"
     PYTHON="${STANDALONE_DIR}/bin/python3"
-    ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
+    ok "Installed $(run_install_command "$PYTHON" --version 2>&1)"
 )
 
 restart_service_hints() {
@@ -734,38 +787,44 @@ dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
 
 PYTHON="$(select_python || true)"
 
+STANDALONE_DIR="${HOME}/.rapid-mlx-python"
+PY_VERSION="3.12.13"
+# Pin to a FIXED release tag (not the moving "latest" API) so the
+# tarball we fetch is a stable, reviewable artifact. The tag below is
+# the concrete build this line ships against; bump it deliberately.
+PY_BUILD="20260408"
+PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD}/cpython-${PY_VERSION}+${PY_BUILD}-aarch64-apple-darwin-install_only.tar.gz"
+# Publisher SHA256SUMS, reviewed and pinned with the release rather
+# than downloaded beside the artifact. Fetching both bytes and digest
+# from the same compromised release would not add a trust boundary.
+PY_SHA256="6000d09545602d3704bdff943f37663b3148b7c1a3a8a1fcc6c1ebd505a3cfc3"
+
 if [ -z "$PYTHON" ]; then
-    echo ""
-    warn "Python 3.12 or 3.13 not found. Installing Python 3.12 automatically..."
-    if command -v brew >/dev/null 2>&1; then
-        info "Installing Python 3.12 via Homebrew..."
-        run_install_command brew install python@3.12
-        # Resolve the formula's OWN keg path, not the bare name and not the
-        # Homebrew root: python@3.12 is keg-only, so `$(brew --prefix)/bin` may
-        # not carry python3.12, while a bare `python3.12` could still hit the
-        # x86_64 build earlier on PATH (the reason we got here) and fail the
-        # arch check below. The lookup is best-effort (|| true) so it can't abort
-        # the install under set -e; fall back to the name if the keg path is gone.
-        keg="$(run_install_command brew --prefix python@3.12 2>/dev/null || true)"
-        if [ -n "$keg" ] && [ -x "$keg/bin/python3.12" ]; then
-            PYTHON="$keg/bin/python3.12"
-        else
-            PYTHON="python3.12"
-        fi
-    else
-        STANDALONE_DIR="${HOME}/.rapid-mlx-python"
-        PY_VERSION="3.12.13"
-        # Pin to a FIXED release tag (not the moving "latest" API) so the
-        # tarball we fetch is a stable, reviewable artifact. The tag below is
-        # the concrete build this line ships against; bump it deliberately.
-        PY_BUILD="20260408"
-        PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD}/cpython-${PY_VERSION}+${PY_BUILD}-aarch64-apple-darwin-install_only.tar.gz"
-        # Publisher SHA256SUMS, reviewed and pinned with the release rather
-        # than downloaded beside the artifact. Fetching both bytes and digest
-        # from the same compromised release would not add a trust boundary.
-        PY_SHA256="6000d09545602d3704bdff943f37663b3148b7c1a3a8a1fcc6c1ebd505a3cfc3"
-        install_standalone_python
+    if standalone_python_reusable; then
+        dim "Using Python $PY_VERSION from ~/.rapid-mlx-python"
         PYTHON="${STANDALONE_DIR}/bin/python3"
+    else
+        echo ""
+        warn "Python 3.12 or 3.13 not found. Installing Python 3.12 automatically..."
+        if command -v brew >/dev/null 2>&1; then
+            info "Installing Python 3.12 via Homebrew..."
+            run_install_command brew install python@3.12
+            # Resolve the formula's OWN keg path, not the bare name and not the
+            # Homebrew root: python@3.12 is keg-only, so `$(brew --prefix)/bin` may
+            # not carry python3.12, while a bare `python3.12` could still hit the
+            # x86_64 build earlier on PATH (the reason we got here) and fail the
+            # arch check below. The lookup is best-effort (|| true) so it can't abort
+            # the install under set -e; fall back to the name if the keg path is gone.
+            keg="$(run_install_command brew --prefix python@3.12 2>/dev/null || true)"
+            if [ -n "$keg" ] && [ -x "$keg/bin/python3.12" ]; then
+                PYTHON="$keg/bin/python3.12"
+            else
+                PYTHON="python3.12"
+            fi
+        else
+            install_standalone_python
+            PYTHON="${STANDALONE_DIR}/bin/python3"
+        fi
     fi
 fi
 
@@ -870,11 +929,7 @@ fi
 VERSION=$(run_install_command "$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null || echo "unknown")
 
 echo ""
-echo "  ╭─────────────────────────────────────╮"
-printf "  │  ${GREEN}Rapid-MLX installed!${RESET}                │\n"
-printf "  │  Version: %-25s│\n" "$VERSION"
-printf "  │  RAM: %-29s│\n" "${RAM_GB} GB ($RAM_TIER)"
-echo "  ╰─────────────────────────────────────╯"
+print_success_box "Rapid-MLX installed!" "Version: $VERSION" "RAM: ${RAM_GB} GB ($RAM_TIER)"
 echo ""
 print_quick_start_commands
 echo ""
