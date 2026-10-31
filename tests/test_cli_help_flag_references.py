@@ -7,7 +7,7 @@ from rapid_mlx.cli_parser import build_parser
 from rapid_mlx.cua.cli import build_parser as build_cua_parser
 
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]*[a-z0-9]")
-COMMAND = re.compile(r"\brapid-mlx\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)")
+COMMAND = re.compile(r"\brapid-mlx[ \t]+")
 CODE = re.compile(r"`+([^`]+)`+")
 CHIP = re.compile(r"\bM[1-5]\b")
 
@@ -28,14 +28,10 @@ def parsers(root):
                 for name, child in action.choices.items():
                     yield from walk(child, path + (name,))
 
-    result = dict(walk(root, ()))
+    result = list(walk(root, ()))
     # CUA dispatches to a separate parser after the top-level remainder.
-    result.update(
-        {
-            ("cua",) + path: parser
-            for path, parser in walk(build_cua_parser(), ())
-            if path
-        }
+    result.extend(
+        (("cua",) + path, parser) for path, parser in walk(build_cua_parser(), ())
     )
     return result
 
@@ -54,41 +50,71 @@ def texts(parser):
         yield "group description", group.description
 
 
-def qualified_flags(text, all_parsers):
-    # Commands may be written as full invocations or as backtick examples.
-    candidates = [match.group(1).split() for match in COMMAND.finditer(text)]
-    for span in CODE.findall(text):
-        words = span.split()
-        if words and words[0] == "rapid-mlx":
-            words = words[1:]
-        candidates.append(words)
-    result = set()
-    for words in candidates:
+def unknown_flags(text, local_flags, all_parsers):
+    def command_flags(words):
         path = ()
         for word in words:
             if path + (word,) not in all_parsers:
                 break
             path += (word,)
-        if path:
-            result.update(owned(all_parsers[path]))
-    return result
+        if not path:
+            return set()
+        return set().union(*(owned(p) for p in all_parsers[path]))
+
+    contexts = []
+    for span in CODE.finditer(text):
+        words = span.group(1).split()
+        if words and words[0] == "rapid-mlx":
+            words = words[1:]
+        contexts.append((span.start(), span.end(), command_flags(words)))
+    for invocation in COMMAND.finditer(text):
+        end = re.search(r"\. |\n", text[invocation.end() :])
+        end = invocation.end() + end.start() if end else len(text)
+        contexts.append(
+            (invocation.end(), end, command_flags(text[invocation.end() : end].split()))
+        )
+    return {
+        match.group()
+        for match in FLAG.finditer(text)
+        if match.group() not in local_flags
+        and not any(
+            start <= match.start() < end and match.group() in flags
+            for start, end, flags in contexts
+        )
+    }
+
+
+def test_qualified_flag_context_is_limited_to_each_occurrence():
+    all_parsers = {}
+    for path, parser in parsers(build_parser()):
+        all_parsers.setdefault(path, []).append(parser)
+    assert unknown_flags(
+        "Use `rapid-mlx serve --port 8000`. Also --bogus.", set(), all_parsers
+    ) == {"--bogus"}
+    assert unknown_flags(
+        "Use `serve --port 8000`. Also --port.", set(), all_parsers
+    ) == {"--port"}
+    assert not unknown_flags("rapid-mlx models --cached", set(), all_parsers)
 
 
 def test_help_flag_references_belong_to_the_relevant_command():
-    all_parsers = parsers(build_parser())
+    entries = parsers(build_parser())
+    all_parsers = {}
+    for path, parser in entries:
+        all_parsers.setdefault(path, []).append(parser)
     errors = []
     seen = set()
-    for path, parser in all_parsers.items():
+    for path, parser in entries:
         if id(parser) in seen:
             continue
         seen.add(id(parser))
         for location, text in texts(parser):
             if not isinstance(text, str) or text == argparse.SUPPRESS:
                 continue
-            allowed = owned(parser) | qualified_flags(text, all_parsers)
+            allowed = owned(parser)
             if location in PASSTHROUGH.get(path, set()):
-                allowed |= owned(all_parsers[("serve",)])
-            unknown = set(FLAG.findall(text)) - allowed
+                allowed |= owned(all_parsers[("serve",)][0])
+            unknown = unknown_flags(text, allowed, all_parsers)
             if unknown:
                 errors.append(
                     f"{' '.join(path) or '<root>'} {location}: {sorted(unknown)}"
@@ -97,8 +123,9 @@ def test_help_flag_references_belong_to_the_relevant_command():
 
 
 def test_benchmark_and_share_help_regressions():
-    all_parsers = parsers(build_parser())
-    for path, parser in all_parsers.items():
+    entries = parsers(build_parser())
+    all_parsers = dict(entries)
+    for path, parser in entries:
         if path and path[0] == "benchmark":
             for location, text in texts(parser):
                 if isinstance(text, str) and text != argparse.SUPPRESS:
