@@ -366,3 +366,23 @@ def test_bootstrap_configures_progress_bars(monkeypatch):
     monkeypatch.setattr(root, "setLevel", lambda level: None)
     cli._configure_bootstrap_logging("INFO")
     assert calls == [True]
+
+
+def test_non_terminal_disables_hf_progress_bars(monkeypatch):
+    import sys
+
+    from huggingface_hub.utils import are_progress_bars_disabled
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    quiet_hf_progress_bars_off_terminal()
+    assert are_progress_bars_disabled() is True
+
+
+def test_hf_progress_bars_restored_after_previous_test():
+    from huggingface_hub.utils import are_progress_bars_disabled
+
+    assert are_progress_bars_disabled() is False
