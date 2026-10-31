@@ -2259,6 +2259,7 @@ def section_updates(
     *,
     installed: Callable[[], str | None] | None = None,
     fetch_latest: Callable[[], str | None] | None = None,
+    fetch_release: Callable[[bool], object | None] | None = None,
     install_info: object | None = None,
 ) -> Section:
     """Is the installed rapid-mlx the latest release?
@@ -2309,13 +2310,57 @@ def section_updates(
     elif pl > pc:
         info = install_info if install_info is not None else vc.detect_install_method()
         cmd = getattr(info, "upgrade_command", None) or "rapid-mlx upgrade"
-        s.add(
-            f"update available: {latest} (installed {cur}) — run `{cmd}`",
-            CheckStatus.WARN,
-            detail=(
+        release = None
+        block = None
+        try:
+            if fetch_release is not None:
+                release = fetch_release(getattr(info, "method", None) == "brew")
+            elif fetch_latest is None:
+                release = vc.get_release_info(
+                    need_brew=getattr(info, "method", None) == "brew"
+                )
+            if release is not None and release.latest == latest:
+                block = vc._upgrade_block(cur, release, info)
+        except Exception:  # noqa: BLE001 — version notices fail open
+            release = None
+            block = None
+        if block == "brew_lag":
+            s.add(
+                f"rapid-mlx {cur} is the newest version Homebrew offers "
+                f"(release {latest} is not in the formula yet)",
+                CheckStatus.OK,
+                detail=(
+                    f"installed={cur} latest={latest} "
+                    f"brew_stable={release.brew_stable} method=brew"
+                ),
+            )
+        elif block == "python":
+            text = vc.format_python_floor_warning(
+                cur, latest, release.requires_python, info
+            )
+            lines = text.splitlines()
+            s.add(
+                lines[0].lstrip("⚠ ").strip(),
+                CheckStatus.WARN,
+                detail="\n".join(line.strip() for line in lines[1:]),
+            )
+        else:
+            brew_stable = (
+                getattr(release, "brew_stable", None)
+                if getattr(info, "method", None) == "brew"
+                else None
+            )
+            available = brew_stable or latest
+            detail = (
                 f"installed={cur} latest={latest} method={getattr(info, 'method', '?')}"
-            ),
-        )
+            )
+            if brew_stable:
+                detail += f" brew_stable={brew_stable}"
+            s.add(
+                f"update available: {available} (installed {cur}) — run `{cmd}`",
+                CheckStatus.WARN,
+                detail=detail,
+            )
     else:
         s.add(
             f"rapid-mlx {cur} is up to date",
