@@ -312,18 +312,16 @@ def test_stream_default_import_zero_and_criteria_methods(monkeypatch):
 
 
 def test_cached_snapshot_paths(monkeypatch, tmp_path):
-    from rapid_mlx import model_downloads
+    from huggingface_hub import constants
+
     from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
 
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
     assert cached_snapshot_path(str(tmp_path), None) == str(tmp_path.resolve())
-    monkeypatch.setattr(model_downloads, "snapshot_download", lambda *a, **k: "/cached")
-    assert cached_snapshot_path("org/model", "rev") == "/cached"
-
-    def missing(*args, **kwargs):
-        raise OSError("missing")
-
-    monkeypatch.setattr(model_downloads, "snapshot_download", missing)
     assert cached_snapshot_path("org/model", "rev") is None
+    snapshot = tmp_path / "models--org--model" / "snapshots" / "rev"
+    snapshot.mkdir(parents=True)
+    assert cached_snapshot_path("org/model", "rev") == str(snapshot)
 
 
 def test_dflash_unknown_profile_refusal(monkeypatch):
