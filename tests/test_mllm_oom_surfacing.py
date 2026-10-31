@@ -7,9 +7,12 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
-from rapid_mlx.request import ClientRequestError, InferenceAbortedError
-from tests.test_chat_route_vlm_image import (
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler  # noqa: E402
+from rapid_mlx.request import ClientRequestError, InferenceAbortedError  # noqa: E402
+from tests.test_chat_route_vlm_image import (  # noqa: E402
     _make_client_with_envelope,
     _StubMLLMEngine,
     _StubOOMFailureEngine,
