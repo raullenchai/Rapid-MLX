@@ -151,5 +151,6 @@ def quiet_hf_progress_bars_off_terminal() -> None:
         from huggingface_hub.utils import disable_progress_bars
 
         disable_progress_bars()
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     except Exception:
         pass

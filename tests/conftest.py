@@ -77,18 +77,21 @@ def _aaa_env_leak_guard(request):
 @pytest.fixture(autouse=True)
 def _restore_hf_progress_bar_states():
     """Keep Hugging Face's process-global progress settings test-local."""
+    env_before = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
     try:
         tqdm_module = importlib.import_module("huggingface_hub.utils.tqdm")
         states = getattr(tqdm_module, "progress_bar_states", None)
     except ImportError:
         states = None
-    if states is None:
-        yield
-        return
-    before = dict(states)
+    before = dict(states) if states is not None else None
     yield
-    states.clear()
-    states.update(before)
+    if states is not None:
+        states.clear()
+        states.update(before)
+    if env_before is None:
+        os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+    else:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = env_before
 
 
 @pytest.fixture(autouse=True)
