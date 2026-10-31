@@ -14,6 +14,21 @@ import Testing
 @MainActor
 @Suite("DownloadManager — state machine + cancellation")
 struct DownloadManagerTests {
+    @Test func startingDownloadRequiresAnActiveMatchingStart() {
+        func starting(_ alias: String = "model", server: String? = nil, visible: Bool = true,
+                      selected: String = "model", phase: QuickstartCoordinator.Phase) -> Bool {
+            ContentView.isStartingDownload(alias: alias, serverStartingAlias: server,
+                quickstartVisible: visible, quickstartAlias: selected, quickstartPhase: phase)
+        }
+        #expect(starting(server: "model", visible: false, phase: .idle))
+        #expect(starting(phase: .starting))
+        #expect(starting(phase: .downloading))
+        #expect(!starting(phase: .failed(message: "Failed", origin: .start)))
+        #expect(!starting(phase: .idle))
+        #expect(!starting("other", server: "model", phase: .starting))
+        #expect(!starting(visible: false, phase: .starting))
+    }
+
     @Test func downloadAuthSignalsDoNotMatchByteCounts() {
         let unreachable = DownloadManager.classifyPullFailure(
             tailLines: [
