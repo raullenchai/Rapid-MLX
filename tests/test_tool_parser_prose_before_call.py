@@ -40,3 +40,26 @@ def test_prose_before_call(parser_name, wire_label, text, expected, mode, reques
     assert content.lstrip().startswith("Working on it.")
     assert OPENERS[parser_name] not in content
     assert len(calls) == len(expected)
+
+
+@pytest.mark.parametrize(
+    "parser_name,closed",
+    [
+        ("deepseek_v4_0731", "<｜DSML｜tool_calls></｜DSML｜tool_calls>"),
+        ("qwen3_xml", "<tool_call>not a call</tool_call>"),
+        (
+            "qwen3_xml",
+            '<tool_call>{"name": "f", "arguments": {}}</tool_call>'
+            "<tool_call>not a call</tool_call>",
+        ),
+    ],
+)
+def test_prose_kept_when_closed_block_has_no_call(parser_name, closed):
+    from rapid_mlx.tool_parsers import ToolParserManager
+
+    parser = ToolParserManager.get_tool_parser(parser_name)(None)
+    previous = PROSE + closed[:-1]
+    delta = parser.extract_tool_calls_streaming(
+        previous, previous + closed[-1], closed[-1]
+    )
+    assert not (delta or {}).get("tool_calls")
