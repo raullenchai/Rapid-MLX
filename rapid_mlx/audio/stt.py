@@ -10,6 +10,10 @@ Supports:
 """
 
 import logging
+import math
+import os
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +189,7 @@ class TranscriptionResult:
     language: str | None = None
     duration: float | None = None
     segments: list | None = None
+    duration_from_segments: bool = False
 
 
 @dataclass
@@ -211,6 +216,7 @@ class _VADTrimResult:
     waveform: Any = None  # mx.array | np.ndarray, mono @ 16 kHz
     offset_seconds: float = 0.0
     sample_rate: int = _VAD_SAMPLE_RATE
+    source_duration: float | None = None
 
 
 def _vad_pretrim_disabled_by_env() -> bool:
@@ -323,10 +329,16 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
             from mlx_audio.stt.utils import load_audio  # noqa: PLC0415
 
             fallback_waveform = load_audio(audio_path)
+            source_duration = fallback_waveform.shape[-1] / _VAD_SAMPLE_RATE
             if getattr(fallback_waveform, "shape", (0,))[-1] == 0:
-                return _VADTrimResult(skipped=False, has_speech=False)
+                return _VADTrimResult(
+                    skipped=False, has_speech=False, source_duration=source_duration
+                )
             if not _rms_above_floor(fallback_waveform, _VAD_NO_SPEECH_RMS_FLOOR):
-                return _VADTrimResult(skipped=False, has_speech=False)
+                return _VADTrimResult(
+                    skipped=False, has_speech=False, source_duration=source_duration
+                )
+            return _VADTrimResult(skipped=True, source_duration=source_duration)
         except Exception:  # noqa: BLE001
             pass
         return _VADTrimResult(skipped=True)
@@ -349,9 +361,12 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         )
         return _VADTrimResult(skipped=True)
 
+    source_duration = waveform.shape[-1] / _VAD_SAMPLE_RATE
     if getattr(waveform, "shape", (0,))[-1] == 0:
         # Empty audio → no speech by definition.
-        return _VADTrimResult(skipped=False, has_speech=False)
+        return _VADTrimResult(
+            skipped=False, has_speech=False, source_duration=source_duration
+        )
 
     try:
         speech_ts = vad.get_speech_timestamps(
@@ -367,7 +382,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
             audio_path,
             e,
         )
-        return _VADTrimResult(skipped=True)
+        return _VADTrimResult(skipped=True, source_duration=source_duration)
 
     if not speech_ts:
         # Codex r2 BLOCKING #1: VAD false-negative defence. Silero at
@@ -385,8 +400,10 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
                 "against a Silero false negative on quiet speech.",
                 _VAD_NO_SPEECH_RMS_FLOOR,
             )
-            return _VADTrimResult(skipped=True)
-        return _VADTrimResult(skipped=False, has_speech=False)
+            return _VADTrimResult(skipped=True, source_duration=source_duration)
+        return _VADTrimResult(
+            skipped=False, has_speech=False, source_duration=source_duration
+        )
 
     # Codex r1 BLOCKING: extract the span defensively. Upstream Silero
     # today always emits ``{"start": float, "end": float}`` dicts (see
@@ -396,7 +413,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
     # key. A ``KeyError`` / ``TypeError`` here would escape the helper's
     # "never raises" contract and 500 the request before Whisper's own
     # fallback runs. Wrap + fall back to ``skipped=True``.
-    total_seconds = waveform.shape[-1] / _VAD_SAMPLE_RATE
+    total_seconds = source_duration
     try:
         first_start = float(speech_ts[0]["start"])
         last_end = float(speech_ts[-1]["end"])
@@ -407,7 +424,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
             speech_ts,
             e,
         )
-        return _VADTrimResult(skipped=True)
+        return _VADTrimResult(skipped=True, source_duration=source_duration)
 
     start_s = max(0.0, first_start - _VAD_TRIM_PAD_SECONDS)
     end_s = min(total_seconds, last_end + _VAD_TRIM_PAD_SECONDS)
@@ -415,7 +432,9 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         # Degenerate span (shouldn't happen with valid VAD output, but
         # be defensive). Treat as no speech to avoid pushing a zero-
         # length array into Whisper.
-        return _VADTrimResult(skipped=False, has_speech=False)
+        return _VADTrimResult(
+            skipped=False, has_speech=False, source_duration=source_duration
+        )
 
     start_sample = int(round(start_s * _VAD_SAMPLE_RATE))
     end_sample = int(round(end_s * _VAD_SAMPLE_RATE))
@@ -427,6 +446,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         waveform=trimmed,
         offset_seconds=start_s,
         sample_rate=_VAD_SAMPLE_RATE,
+        source_duration=source_duration,
     )
 
 
@@ -504,7 +524,9 @@ def _segment_value(segment: Any, key: str) -> Any:
     return getattr(segment, key, None)
 
 
-def _audio_duration_seconds(audio_path: str) -> float | None:
+def _audio_duration_seconds(
+    audio_path: str, *, allow_decode: bool = True
+) -> float | None:
     """Read the source duration without decoding the whole file again."""
     try:
         import wave  # noqa: PLC0415
@@ -523,9 +545,44 @@ def _audio_duration_seconds(audio_path: str) -> float | None:
     except Exception:  # noqa: BLE001
         pass
     try:
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    "-protocol_whitelist",
+                    "file",
+                    "file:" + os.path.abspath(audio_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+            duration = float(result.stdout.strip())
+            if math.isfinite(duration) and duration >= 0:
+                return duration
+    except Exception:  # noqa: BLE001
+        pass
+    if not allow_decode:
+        return None
+    return _decoded_audio_duration(audio_path)
+
+
+def _decoded_audio_duration(audio_path: str) -> float | None:
+    """Determine duration using the decoder as a last resort."""
+    try:
         # Last resort for compressed formats: use the same decoder mlx-audio
         # itself accepts.  This allocates a waveform only when cheap metadata
-        # probes failed and Whisper actually returned timestamped segments.
+        # probes failed and no other usable duration is available.
         from mlx_audio.stt.utils import load_audio  # noqa: PLC0415
 
         waveform = load_audio(audio_path)
@@ -893,6 +950,7 @@ class STTEngine:
             self.load()
 
         audio_path = str(audio_path)
+        source_duration = _audio_duration_seconds(audio_path, allow_decode=False)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
@@ -908,6 +966,8 @@ class STTEngine:
         trim: _VADTrimResult | None = None
         if self._is_whisper and self._enable_vad_pretrim:
             trim = _maybe_vad_trim(audio_path)
+            if source_duration is None and trim.source_duration is not None:
+                source_duration = trim.source_duration
             if not trim.skipped and not trim.has_speech:
                 logger.debug(
                     "VAD pre-trim: no speech detected in %r; returning "
@@ -917,7 +977,7 @@ class STTEngine:
                 return TranscriptionResult(
                     text="",
                     language=None,
-                    duration=0.0,
+                    duration=source_duration,
                     segments=[],
                 )
 
@@ -999,7 +1059,9 @@ class STTEngine:
                 if trim is not None and not trim.skipped and trim.has_speech:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
                 else:
-                    input_duration = _audio_duration_seconds(audio_path)
+                    if source_duration is None:
+                        source_duration = _decoded_audio_duration(audio_path)
+                    input_duration = source_duration
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
                     segments,
@@ -1021,18 +1083,26 @@ class STTEngine:
                 for seg in segments:
                     _shift_segment_time(seg, trim.offset_seconds)
 
-            # Calculate duration from segments if available
-            duration = None
-            if segments:
-                last_seg = segments[-1] if segments else None
-                if last_seg:
-                    duration = _segment_value(last_seg, "end")
+            duration = source_duration
+            duration_from_segments = False
+            if duration is None:
+                for segment in reversed(segments or []):
+                    end = (
+                        segment.get("end")
+                        if isinstance(segment, dict)
+                        else getattr(segment, "end", None)
+                    )
+                    if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
+                        duration = end
+                        duration_from_segments = True
+                        break
 
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),
                 language=detected_lang,
                 duration=duration,
                 segments=segments,
+                duration_from_segments=duration_from_segments,
             )
         except Exception as e:
             logger.error(f"Transcription failed: {e}")

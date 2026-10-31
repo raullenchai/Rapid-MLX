@@ -2,8 +2,12 @@
 """Upload container hints must survive the route's temporary-file boundary."""
 
 import asyncio
+import io
 import sys
+import threading
+import time
 import types
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,3 +181,102 @@ def test_ffmpeg_server_misconfiguration_is_not_a_client_decode_error(message):
     from rapid_mlx.routes.audio import _is_decode_error
 
     assert not _is_decode_error(RuntimeError(message))
+
+
+def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    client, paths, expected = upload_client
+    expected.update(payload=b"converted wav", suffix=".wav")
+    source_paths = []
+    alignment_calls = []
+    align = audio._align_blocking
+
+    def capture_alignment(model, path, text, language):
+        alignment_calls.append((model, Path(path), text))
+        return align(model, path, text, language)
+
+    def transcode(source, destination):
+        source_paths.append(Path(source))
+        assert source_paths[0].suffix == ".aiff"
+        assert source_paths[0].read_bytes() == b"FORM\x00\x00\x00\x04AIFF"
+        Path(destination).write_bytes(expected["payload"])
+
+    monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
+    monkeypatch.setattr(audio, "_align_blocking", capture_alignment)
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("audio.aiff", b"FORM\x00\x00\x00\x04AIFF", "audio/aiff")},
+        data={"model": "aligner", "text": "hello"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(paths) == len(source_paths) == 1
+    assert alignment_calls == [("aligner", paths[0], "hello")]
+    assert paths[0].suffix == ".wav"
+    assert not paths[0].exists()
+    assert not source_paths[0].exists()
+
+
+def test_concurrent_aiff_transcodes_do_not_overlap(tmp_path, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    sources = [tmp_path / f"{i}.aiff" for i in range(2)]
+    for source in sources:
+        source.write_bytes(b"FORM\x00\x00\x00\x04AIFF")
+    active = 0
+    max_active = 0
+    calls = 0
+    lock = threading.Lock()
+
+    def transcode(source, destination):
+        nonlocal active, max_active, calls
+        with lock:
+            active += 1
+            calls += 1
+            max_active = max(max_active, active)
+        time.sleep(0.1)
+        with lock:
+            active -= 1
+
+    monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
+    temp_paths = []
+
+    async def prepare():
+        await asyncio.gather(
+            *(
+                audio._prepare_audio_for_engine(str(source), temp_paths)
+                for source in sources
+            )
+        )
+
+    try:
+        asyncio.run(prepare())
+        asyncio.run(prepare())
+        assert calls == 4
+        assert max_active == 1
+    finally:
+        audio._cleanup_temp_audio(*temp_paths)
+
+
+def test_wav_named_aiff_passes_through(upload_client, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    client, paths, expected = upload_client
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as wav:
+        wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\x00\x00" * 16)
+    expected.update(payload=stream.getvalue(), suffix=".aiff")
+    monkeypatch.setattr(
+        audio,
+        "_transcode_aiff_to_wav",
+        lambda *args: pytest.fail("unexpected transcode"),
+    )
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("x.aiff", expected["payload"], "audio/aiff")},
+        data={"model": "whisper-small"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(paths) == 1
+    assert not paths[0].exists()
