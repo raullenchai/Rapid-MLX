@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from types import SimpleNamespace
 
-import mlx.core as mx
 import pytest
 
-from rapid_mlx.mllm_batch_generator import (
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx  # noqa: E402
+
+from rapid_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
     _prefill_cap_violation,
 )
-from rapid_mlx.request import ClientRequestError
+from rapid_mlx.request import ClientRequestError  # noqa: E402
 
 
 class Cache:
