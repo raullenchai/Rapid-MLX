@@ -11,6 +11,10 @@ break the CLI on an offline laptop.
 from __future__ import annotations
 
 import json
+import os
+import site
+import subprocess
+import sys
 import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
@@ -1582,6 +1586,70 @@ def test_fresh_process_version_falls_back_to_python(monkeypatch):
     assert run.call_args.args[0][0:3] == [vc.sys.executable, "-I", "-c"]
     with patch("subprocess.run", side_effect=OSError):
         assert vc.installed_version_in_fresh_process(info) is None
+
+
+@pytest.mark.parametrize(
+    "prefix,base_prefix,enabled,expected_paths",
+    [
+        ("/base", "/base", True, ["/user/site"]),
+        ("/venv", "/base", True, []),
+        ("/base", "/base", False, []),
+    ],
+)
+def test_fresh_process_user_site_conditions(
+    monkeypatch, prefix, base_prefix, enabled, expected_paths
+):
+    monkeypatch.setattr(sys, "prefix", prefix)
+    monkeypatch.setattr(sys, "base_prefix", base_prefix)
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", enabled)
+    monkeypatch.setattr(site, "getusersitepackages", lambda: "/user/site")
+    info = vc.InstallInfo("pip", "upgrade", ["upgrade"])
+    with patch(
+        "subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="\n")
+    ) as run:
+        assert vc.installed_version_in_fresh_process(info) is None
+    assert run.call_args.args[0][4:] == expected_paths
+
+
+def test_fresh_process_finds_user_site_without_launcher(tmp_path):
+    base_python = os.path.realpath(getattr(sys, "_base_executable", sys.executable))
+    env = os.environ.copy()
+    env.update(
+        PYTHONUSERBASE=str(tmp_path / "ub"), PATH="/usr/bin:/bin", HOME=str(tmp_path)
+    )
+    env.pop("PYTHONPATH", None)
+    is_base = subprocess.run(
+        [base_python, "-c", "import sys; print(sys.prefix == sys.base_prefix)"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if is_base.stdout.strip() != "True":
+        pytest.skip("base interpreter is a virtual environment")
+    result = subprocess.run(
+        [base_python, "-c", "import site; print(site.getusersitepackages())"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    dist_info = Path(result.stdout.strip()) / "rapid_mlx-9.9.9.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 9.9.9\n"
+    )
+    paths = [str(Path(__file__).resolve().parents[1]), *site.getsitepackages()]
+    script = (
+        f"import sys; sys.path[:0] = {paths!r}; "
+        "from rapid_mlx._version_check import InstallInfo, installed_version_in_fresh_process; "
+        "print(installed_version_in_fresh_process(InstallInfo("
+        "method='pip', upgrade_command='x', upgrade_argv=['x'], binary_path=None)))"
+    )
+    result = subprocess.run(
+        [base_python, "-c", script], env=env, capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "9.9.9"
 
 
 def test_python_supports_without_packaging(monkeypatch):

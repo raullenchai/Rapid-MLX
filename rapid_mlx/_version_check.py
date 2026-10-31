@@ -814,11 +814,19 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
         argv = [info.binary_path, "--version"]
         pattern = r"\brapid-mlx\s+(\d+\.\d+\.\d+(?:rc\d+|\.[^\s]+)?)"
     else:
+        import site
+
+        extra_paths = []
+        if sys.prefix == sys.base_prefix and site.ENABLE_USER_SITE:
+            extra_paths.append(site.getusersitepackages())
         argv = [
             sys.executable,
             "-I",
             "-c",
-            "import importlib.metadata as m; print(m.version('rapid-mlx'))",
+            "import sys, importlib.metadata as m; "
+            "d = next(m.distributions(name='rapid-mlx', path=sys.argv[1:] + sys.path), None); "
+            "print(d.version if d else '')",
+            *extra_paths,
         ]
         pattern = r"^\s*(\S+)\s*$"
     try:
