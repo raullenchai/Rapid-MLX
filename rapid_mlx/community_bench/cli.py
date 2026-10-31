@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import signal
 import statistics
 import sys
+import threading
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -441,14 +443,50 @@ def benchmark_command(args) -> int:
                 event_sink = _tagged_event_to_stderr
             else:
                 progress_sink = None
-            value = run_local(
-                args.benchmark_model,
-                archive=archive,
-                inherit_process_group=getattr(args, "inherit_process_group", False),
-                progress=progress_sink,
-                events=event_sink,
-                acceleration=request_from_args(args),
-            )
+            received_signal = signal.SIGINT
+
+            def cancel_on_sigterm(signum, frame):
+                nonlocal received_signal
+                received_signal = signum
+                raise KeyboardInterrupt
+
+            main_thread = threading.current_thread() is threading.main_thread()
+            previous_handler = None
+            if main_thread:
+                previous_handler = signal.signal(signal.SIGTERM, cancel_on_sigterm)
+            try:
+                try:
+                    value = run_local(
+                        args.benchmark_model,
+                        archive=archive,
+                        inherit_process_group=getattr(
+                            args, "inherit_process_group", False
+                        ),
+                        progress=progress_sink,
+                        events=event_sink,
+                        acceleration=request_from_args(args),
+                    )
+                finally:
+                    if main_thread:
+                        signal.signal(signal.SIGTERM, previous_handler)
+            except KeyboardInterrupt:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "error": "benchmark cancelled",
+                                "cancelled": True,
+                            },
+                            sort_keys=True,
+                        ),
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "Benchmark cancelled; benchmark processes were stopped.",
+                        file=sys.stderr,
+                    )
+                return 128 + received_signal
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))
             value = {

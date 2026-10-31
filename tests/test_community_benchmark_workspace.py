@@ -4149,6 +4149,7 @@ def test_bench_server_terminate_escalates_group_signals(
 
     class Proc:
         pid = 4242
+        returncode = None
 
         def poll(self):
             return None
@@ -4156,12 +4157,19 @@ def test_bench_server_terminate_escalates_group_signals(
         def wait(self, timeout):
             if signals == [(4242, signal.SIGTERM)]:
                 raise subprocess.TimeoutExpired(cmd="serve", timeout=timeout)
+            self.returncode = 0
             return 0
 
     monkeypatch.setattr(_server.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(
-        _server.os, "killpg", lambda pgid, sig: signals.append((pgid, sig))
-    )
+
+    def killpg(pgid, sig):
+        if sig == 0:
+            if (pgid, signal.SIGKILL) in signals:
+                raise ProcessLookupError
+            return
+        signals.append((pgid, sig))
+
+    monkeypatch.setattr(_server.os, "killpg", killpg)
 
     _server._terminate(Proc(), isolated_process_group=True)
 

@@ -23,6 +23,7 @@ is unchanged byte-for-byte from the original except:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import signal
@@ -100,7 +101,7 @@ def serve(
     the complete tree; ordinary CLI callers retain the isolated default.
 
     On exit, SIGTERM the whole process group; escalate to SIGKILL after
-    10s. ``log_path`` if provided receives the server's combined
+    2s on cancellation or 10s otherwise. ``log_path`` receives the server's combined
     stdout/stderr.
     """
     if port is None:
@@ -206,10 +207,27 @@ def serve(
             "exit_error": exit_error,
         }
     finally:
-        _terminate(proc, isolated_process_group=isolate_process_group)
-        log_fh.close()
-        if tmp_log is not None:
-            tmp_log.unlink(missing_ok=True)
+        from ..community_bench.local_runner import BenchmarkCancelledError
+
+        cancelled = isinstance(
+            sys.exc_info()[1],
+            (
+                KeyboardInterrupt,
+                SystemExit,
+                BenchmarkCancelledError,
+                asyncio.CancelledError,
+            ),
+        )
+        try:
+            _terminate(
+                proc,
+                isolated_process_group=isolate_process_group,
+                grace_s=2 if cancelled else 10,
+            )
+        finally:
+            log_fh.close()
+            if tmp_log is not None:
+                tmp_log.unlink(missing_ok=True)
 
 
 def _read_log_tail(log_path: Path | None, max_lines: int) -> str:
@@ -285,27 +303,64 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
     )
 
 
-def _terminate(proc: subprocess.Popen, *, isolated_process_group: bool = True) -> None:
+def _terminate(
+    proc: subprocess.Popen, *, isolated_process_group: bool = True, grace_s: float = 10
+) -> None:
     """Best-effort clean teardown of a server process group."""
-    if proc.poll() is not None:
+    isolated = isolated_process_group and sys.platform != "win32"
+    if (isolated and proc.returncode is not None) or (
+        not isolated and proc.poll() is not None
+    ):
         return
+    # serve() starts an isolated server with setsid(), making its PID the PGID.
+    pgid: int = proc.pid
+    interrupted = False
+    escalate = False
     try:
-        if isolated_process_group and sys.platform != "win32":
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        if isolated:
+            deadline = time.monotonic() + grace_s
+            os.killpg(pgid, signal.SIGTERM)
         else:
             proc.terminate()
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        try:
-            if isolated_process_group and sys.platform != "win32":
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            else:
-                proc.kill()
-            proc.wait(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            pass
+        proc.wait(timeout=max(0, deadline - time.monotonic()) if isolated else grace_s)
+        if isolated:
+            while True:
+                try:
+                    os.killpg(pgid, 0)
+                except (ProcessLookupError, PermissionError):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    escalate = True
+                    break
+                time.sleep(min(0.05, remaining))
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        escalate = True
     except (ProcessLookupError, PermissionError):
         pass
+    if escalate:
+        for _ in range(3):
+            try:
+                if isolated:
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                break
+            except KeyboardInterrupt:
+                interrupted = True
+            except (ProcessLookupError, PermissionError):
+                break
+    while proc.returncode is None:
+        try:
+            proc.wait(timeout=5)
+            break
+        except KeyboardInterrupt:
+            interrupted = True
+        except (ProcessLookupError, PermissionError, subprocess.TimeoutExpired):
+            break
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 __all__ = ["serve", "find_free_port", "ServerStartFailed", "ServerExitedError"]
