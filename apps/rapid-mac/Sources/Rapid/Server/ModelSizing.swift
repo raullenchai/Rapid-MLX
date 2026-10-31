@@ -140,7 +140,7 @@ enum ModelSizing {
     /// modest runtime margin and keep the ordinary model estimate as a floor.
     static func residentEstimateGB(alias: String, sizeText: String? = nil, sizeBytes: Int64? = nil) -> Double {
         let heuristic = estimate(alias: alias).totalGB
-        guard let bytes = sizeBytes ?? ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
+        guard let bytes = sizeBytes.flatMap({ $0 > 0 ? $0 : nil }) ?? ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
         else { return heuristic }
         let diskGiB = Double(bytes) / Double(UInt64(1) << 30)
         return max(heuristic, diskGiB * 1.25 + 0.5)

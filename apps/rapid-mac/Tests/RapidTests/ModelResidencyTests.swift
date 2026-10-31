@@ -978,6 +978,13 @@ struct ModelResidencyTests {
         #expect(estimate > ModelSizing.residentEstimateGB(alias: "z-image-turbo"))
     }
 
+    @Test("Image residency estimate falls back to size text for zero bytes")
+    func imageEstimateFallsBackForZeroBytes() {
+        let estimate = ModelSizing.residentEstimateGB(alias: "z-image-turbo", sizeText: "20 GB", sizeBytes: 0)
+        #expect(estimate == ModelSizing.residentEstimateGB(alias: "z-image-turbo", sizeText: "20 GB", sizeBytes: nil))
+        #expect(estimate > ModelSizing.residentEstimateGB(alias: "z-image-turbo"))
+    }
+
     @Test("Image residency estimate honors the catalog hardware floor")
     func imageEstimateHonorsCatalogFloor() {
         let estimate = ModelSizing.imageResidentEstimateGB(
