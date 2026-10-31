@@ -2867,7 +2867,7 @@ def load_model(
         from .runtime.image_lane import ImageEngine, require_image_runtime_or_exit
 
         _image_hf_path = _profile.hf_path if _profile is not None else model_name
-        # Preflight the optional image stack (Python ≥3.11 + mflux) BEFORE
+        # Preflight the optional image stack (mflux) BEFORE
         # advertising a ready server, so a missing runtime fails at startup with
         # an actionable diagnostic instead of a generic HTTP 500 on first request.
         require_image_runtime_or_exit(_image_hf_path)

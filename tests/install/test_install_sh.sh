@@ -13,7 +13,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-INSTALL_SH="$REPO_ROOT/install.sh"
+INSTALL_SH="${INSTALL_SH:-$REPO_ROOT/install.sh}"
 
 # Load install.sh's functions without running the installer. Do this BEFORE
 # defining the harness helpers below: install.sh also defines ok()/warn()/dim(),
@@ -643,6 +643,45 @@ refresh_starter_from_installed_cache
 check "failed cache scan with valid partial JSON falls back to RAM baseline" \
     "$RECOMMENDED_MODEL" "qwen3.5-4b-4bit"
 INSTALL_DIR="$OLD_INSTALL_DIR"
+
+# Standalone downloads use separate temporary directories and clean up.
+(
+    STANDALONE_DIR="$WORK/standalone" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
+    download() { printf '%s\n' "$TMP_TAR" >> "$WORK/downloads"; printf archive; }
+    shasum() { echo 'hash  archive'; }
+    tar() { mkdir -p "$STANDALONE_DIR/bin"; make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64; }
+    install_standalone_python >/dev/null || exit 1
+    touch "$STANDALONE_DIR/stale"
+    install_standalone_python >/dev/null || exit 1
+    [ "$(wc -l < "$WORK/downloads" | tr -d ' ')" = 2 ] || exit 1
+    [ "$(sort -u "$WORK/downloads" | wc -l | tr -d ' ')" = 2 ] || exit 1
+    [ ! -e "$STANDALONE_DIR/stale" ] || exit 1
+    for path in "$WORK"/rapidmlx-py.*; do [ ! -e "$path" ] || exit 1; done
+) && ok "standalone downloads use distinct cleaned directories and replace stale files" || bad "standalone downloads use distinct cleaned directories and replace stale files"
+(
+    STANDALONE_DIR="$WORK/reuse" PY_VERSION=3.12.13 PY_BUILD=test PY_URL=test PY_SHA256=hash TMPDIR="$WORK"
+    mkdir -p "$STANDALONE_DIR/bin"
+    make_py "$STANDALONE_DIR/bin/python3" 3.12.13 arm64
+    download() { touch "$WORK/reuse-downloaded"; }
+    shasum() { echo 'hash archive'; }
+    tar() { mkdir -p "$STANDALONE_DIR/bin"; make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64; }
+    install_standalone_python >/dev/null || exit 1
+    [ ! -e "$WORK/reuse-downloaded" ] || exit 1
+    make_py "$STANDALONE_DIR/bin/python3" 3.12.12 arm64
+    install_standalone_python >/dev/null || exit 1
+    [ -e "$WORK/reuse-downloaded" ]
+) && ok "standalone reuses matching Python and downloads mismatched version" || bad "standalone reuses matching Python and downloads mismatched version"
+(
+    HOME="$WORK/hints-home" RAPID_INSTALL_LAUNCH_DAEMONS_DIR="$WORK/daemons"
+    mkdir -p "$HOME/Library/LaunchAgents" "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR"
+    [ -z "$(restart_service_hints upgrade)" ] || exit 1
+    touch "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR/com.rapidmlx.server.plist" "$HOME/Library/LaunchAgents/com.quicksilver.node.abc.plist"
+    [ -z "$(restart_service_hints create)" ] || exit 1
+    for action in upgrade rebuild; do
+        output="$(restart_service_hints "$action")"
+        case "$output" in *'Background services still run the previous version until restarted:'*'sudo rapid-mlx service restart'*'launchctl kickstart -k gui/$(id -u)/com.quicksilver.node.abc'*) ;; *) exit 1 ;; esac
+    done
+) && ok "service hints only follow upgrades and rebuilds with existing services" || bad "service hints only follow upgrades and rebuilds with existing services"
 
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"

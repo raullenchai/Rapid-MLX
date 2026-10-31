@@ -77,7 +77,7 @@ def public_ip(value: str) -> bool:
 async def resolve_public(url: str) -> tuple[httpx.URL, str]:
     target = validate_url(url)
     try:
-        async with asyncio.timeout(min(TIMEOUT, 8.0)):  # type: ignore[attr-defined]  # Python 3.11-only harness.
+        async with asyncio.timeout(min(TIMEOUT, 8.0)):
             addresses = await asyncio.get_running_loop().getaddrinfo(
                 target.host,
                 target.port or (443 if target.scheme == "https" else 80),

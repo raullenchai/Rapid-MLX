@@ -168,8 +168,8 @@ the exact gate definitions, so a CI-definition change changes the hash.
 
 Environment knobs (all optional): `TRAIN_GATES_PYTHON` (the control
 interpreter — it only needs `pyyaml`; every gate builds its own fresh venv from
-it, so use a **python3.11** to match the hosted coverage union, which is
-3.11-only — any other version prints a warning); `TRAIN_GATES_APPLE_VENV` /
+it, so use a **python3.12** to match the hosted coverage union, which is
+3.12-only — other supported versions print a warning, and interpreters below 3.12 are rejected); `TRAIN_GATES_APPLE_VENV` /
 `TRAIN_GATES_ALLOW_APPLE_INSTALL=1` / `TRAIN_GATES_SKIP_APPLE=1` for the Apple
 gate; `TRAIN_GATES_SKIP_SWIFT=1` for the Desktop gate. Transient coverage
 artifacts and the per-gate venvs live in one `TMPDIR` run directory (never the

@@ -529,6 +529,63 @@ reinstall_preserved_extras() {
     return 0
 }
 
+install_standalone_python() (
+    if [ -x "$STANDALONE_DIR/bin/python3" ] &&
+       [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || true)" = "$PY_VERSION" ] &&
+       [ "$(run_install_command "$STANDALONE_DIR/bin/python3" -c 'import platform; print(platform.machine())' 2>/dev/null || true)" = arm64 ]; then
+        dim "Reusing Python $PY_VERSION in ~/.rapid-mlx-python"
+        return 0
+    fi
+    info "Downloading Python ${PY_VERSION} (build ${PY_BUILD}) + verifying SHA256..."
+    # Verify the tarball against the publisher-published SHA256SUMS for this
+    # exact release BEFORE anything is extracted. A curl|bash install trusts
+    # the transport (HTTPS) for integrity; verifying the checksum removes the
+    # "trust whatever bytes came back" gap so a tampered / mis-served
+    # download fails closed instead of silently installing.
+    TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rapidmlx-py.XXXXXX")"
+    TMP_TAR="$TMP_DIR/python.tar.gz"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+    download "$PY_URL" > "$TMP_TAR"
+    ACTUAL="$(shasum -a 256 "$TMP_TAR" | awk '{print $1}')"
+    if [ "$ACTUAL" != "$PY_SHA256" ]; then
+        err "SHA256 mismatch for Python standalone tarball."
+        dim "Expected $PY_SHA256"
+        dim "Got      $ACTUAL"
+        dim "Refusing to extract an unverified runtime."
+        exit 1
+    fi
+    dim "SHA256 verified."
+    rm -rf "$STANDALONE_DIR"
+    mkdir -p "$STANDALONE_DIR"
+    tar xzf "$TMP_TAR" -C "$STANDALONE_DIR" --strip-components=1
+    PYTHON="${STANDALONE_DIR}/bin/python3"
+    if ! run_install_command "$PYTHON" --version >/dev/null 2>&1; then
+        err "Failed to install standalone Python."
+        dim "Please install Python 3.12 or 3.13 from https://www.python.org/downloads/"
+        exit 1
+    fi
+    ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
+)
+
+restart_service_hints() {
+    [ "$1" != create ] || return 0
+    local daemon="${RAPID_INSTALL_LAUNCH_DAEMONS_DIR:-/Library/LaunchDaemons}/com.rapidmlx.server.plist" agent found=0
+    if [ -f "$daemon" ]; then
+        warn "Background services still run the previous version until restarted:"
+        found=1
+        dim 'sudo rapid-mlx service restart'
+    fi
+    for agent in "$HOME"/Library/LaunchAgents/com.quicksilver.node.*.plist; do
+        [ -f "$agent" ] || continue
+        if [ "$found" = 0 ]; then
+            warn "Background services still run the previous version until restarted:"
+            found=1
+        fi
+        agent="${agent##*/}"
+        dim 'launchctl kickstart -k gui/$(id -u)/'"${agent%.plist}"
+    done
+}
+
 # When sourced by the test harness we only want the definitions above, not the
 # installer itself. `return` succeeds only in a sourced context; the `|| exit 0`
 # keeps an accidental `RAPID_INSTALL_LIB=1 bash install.sh` from erroring out.
@@ -624,36 +681,8 @@ if [ -z "$PYTHON" ]; then
         # than downloaded beside the artifact. Fetching both bytes and digest
         # from the same compromised release would not add a trust boundary.
         PY_SHA256="6000d09545602d3704bdff943f37663b3148b7c1a3a8a1fcc6c1ebd505a3cfc3"
-        info "Downloading Python ${PY_VERSION} (build ${PY_BUILD}) + verifying SHA256..."
-        mkdir -p "$STANDALONE_DIR"
-        # Verify the tarball against the publisher-published SHA256SUMS for this
-        # exact release BEFORE anything is extracted. A curl|bash install trusts
-        # the transport (HTTPS) for integrity; verifying the checksum removes the
-        # "trust whatever bytes came back" gap so a tampered / mis-served
-        # download fails closed instead of silently installing.
-        TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/rapidmlx-py.XXXXXX.tar.gz")"
-        trap 'rm -f "$TMP_TAR"' EXIT
-        download "$PY_URL" > "$TMP_TAR"
-        ACTUAL="$(shasum -a 256 "$TMP_TAR" | awk '{print $1}')"
-        if [ "$ACTUAL" != "$PY_SHA256" ]; then
-            err "SHA256 mismatch for Python standalone tarball."
-            dim "Expected $PY_SHA256"
-            dim "Got      $ACTUAL"
-            dim "Refusing to extract an unverified runtime."
-            rm -f "$TMP_TAR"
-            exit 1
-        fi
-        dim "SHA256 verified."
-        tar xzf "$TMP_TAR" -C "$STANDALONE_DIR" --strip-components=1
-        rm -f "$TMP_TAR"
-        trap - EXIT
+        install_standalone_python
         PYTHON="${STANDALONE_DIR}/bin/python3"
-        if ! run_install_command "$PYTHON" --version >/dev/null 2>&1; then
-            err "Failed to install standalone Python."
-            dim "Please install Python 3.12 or 3.13 from https://www.python.org/downloads/"
-            exit 1
-        fi
-        ok "Installed Python $(run_install_command "$PYTHON" --version 2>&1)"
     fi
 fi
 
@@ -689,7 +718,8 @@ echo ""
 recover_interrupted_rebuild
 # The directory doubles as shared state, so create-vs-upgrade turns on whether a
 # COMPATIBLE venv exists (plan_venv_action), not on whether the dir exists.
-dispatch_venv "$(plan_venv_action "$INSTALL_DIR")"
+INSTALL_ACTION="$(plan_venv_action "$INSTALL_DIR")"
+dispatch_venv "$INSTALL_ACTION"
 
 # Use uv for resolution + parallel downloads when available — typically 3-10x
 # faster than pip on a fresh install. Falls back to the venv's pip.
@@ -709,6 +739,7 @@ fi
 install_package
 finish_rebuild
 reinstall_preserved_extras
+restart_service_hints "$INSTALL_ACTION"
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and
 # falls back to the RAM baseline; never scrape the human table or cache paths.
