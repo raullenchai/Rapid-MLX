@@ -204,29 +204,33 @@ def serve(
                     fd = None
 
                 if fd is not None:
+                    drain_deadline: float | None = None
 
-                    def write_bytes(data: bytes, deadline: float | None = None) -> bool:
+                    def start_drain() -> None:
+                        nonlocal drain_deadline
+                        if drain_deadline is None:
+                            drain_deadline = time.monotonic() + 1.0
+
+                    def write_bytes(data: bytes) -> bool:
                         try:
                             written = 0
                             while written < len(data):
                                 while True:
-                                    if deadline is None:
-                                        if stop_echo.is_set():
-                                            return False
+                                    if stop_echo.is_set():
+                                        start_drain()
+                                    if drain_deadline is None:
                                         timeout = 0.2
                                     else:
-                                        remaining = deadline - time.monotonic()
-                                        if remaining <= 0:
-                                            return False
-                                        timeout = min(0.2, remaining)
-                                    try:
-                                        writable = select.select([], [fd], [], timeout)[
-                                            1
-                                        ]
-                                    except (OSError, ValueError):
-                                        break
+                                        remaining = drain_deadline - time.monotonic()
+                                        timeout = max(0.0, min(0.2, remaining))
+                                    writable = select.select([], [fd], [], timeout)[1]
                                     if writable:
                                         break
+                                    if (
+                                        drain_deadline is not None
+                                        and time.monotonic() >= drain_deadline
+                                    ):
+                                        return False
                                 chunk = data[
                                     written : written + getattr(select, "PIPE_BUF", 512)
                                 ]
@@ -248,7 +252,8 @@ def serve(
                             else:
                                 reader.seek(position)
                                 stop_echo.wait(0.2)
-                        write_bytes(reader.read(), deadline=time.monotonic() + 1.0)
+                        start_drain()
+                        write_bytes(reader.read())
                     return
 
                 with open(log_path or tmp_log, errors="replace") as reader:

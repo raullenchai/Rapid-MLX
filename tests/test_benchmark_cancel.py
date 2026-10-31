@@ -87,6 +87,60 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         os.close(read_fd)
 
 
+def test_serve_drains_child_log_after_stop(monkeypatch):
+    real_popen = subprocess.Popen
+    real_write = os.write
+    started = threading.Event()
+    child = None
+    expected = (
+        b"".join(f"line {i:03d} ".encode() + b"x" * 80 + b"\n" for i in range(100))
+        + b"partial last line"
+    )
+    script = f"import sys; sys.stdout.buffer.write({expected!r}); sys.stdout.flush()"
+
+    def popen(cmd, **kwargs):
+        nonlocal child
+        child = real_popen([sys.executable, "-c", script], **kwargs)
+        return child
+
+    monkeypatch.setattr(_server.subprocess, "Popen", popen)
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    read_fd, write_fd = os.pipe()
+    received = bytearray()
+
+    def slow_write(fd, data):
+        if fd == write_fd:
+            if not started.is_set():
+                started.set()
+                time.sleep(0.3)
+            return real_write(fd, data[:16])
+        return real_write(fd, data)
+
+    def read_output():
+        while chunk := os.read(read_fd, 4096):
+            received.extend(chunk)
+
+    monkeypatch.setattr(_server.os, "write", slow_write)
+    reader = threading.Thread(target=read_output)
+    reader.start()
+    try:
+        with (
+            os.fdopen(write_fd, "w") as output,
+            _server.serve("fake", echo_log=output),
+        ):
+            assert started.wait(3)
+            assert child.wait(timeout=3) == 0
+        reader.join(timeout=3)
+        assert not reader.is_alive()
+        assert bytes(received) == expected
+        assert not any(
+            t.name == "rapid-mlx-bench-log-echo" for t in threading.enumerate()
+        )
+    finally:
+        reader.join(timeout=3)
+        os.close(read_fd)
+
+
 def test_serve_stops_echo_when_pipe_is_full(monkeypatch):
     real_popen = subprocess.Popen
     script = """
