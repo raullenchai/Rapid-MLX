@@ -17,7 +17,7 @@ def test_flux_schnell_alias_is_generation_only_mflux_model():
     assert profile is not None
     assert profile.hf_path == REPO
     assert profile.modality == "image-gen"
-    assert profile.min_memory_gb == 16
+    assert profile.min_memory_gb == 32
 
     engine = ImageGenerationEngine(profile.hf_path)
     assert engine.family == "flux-schnell"
@@ -32,4 +32,4 @@ def test_flux_schnell_weights_are_revision_pinned():
     assert list_profiles()["flux-schnell"].hf_path == REPO
     assert IMAGE_MODEL_REVISIONS[REPO] == REVISION
     assert size_bytes(REPO) == 9_613_052_559
-    assert estimate_model_bytes("flux-schnell") == int(9.5 * 1024**3)
+    assert estimate_model_bytes("flux-schnell") == int(21.4 * 1024**3)

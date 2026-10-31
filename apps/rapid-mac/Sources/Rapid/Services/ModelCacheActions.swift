@@ -165,12 +165,12 @@ enum ModelCacheActions {
         isServing: Bool = false
     ) -> DeletionConfirmation {
         let title: String
-        if let size = entry.sizeOnDisk {
+        if let size = entry.size?.displayText {
             title = String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
         } else {
             title = String(localized: "Delete \"\(entry.alias)\"?")
         }
-        let suffix = entry.sizeOnDisk.map { String(localized: " Frees \($0).") } ?? ""
+        let suffix = entry.size.map { $0.displayText }.map { String(localized: " Frees \($0).") } ?? ""
         let stopPrefix = isServing ? String(localized: "Stops the currently serving model first. ") : ""
         let message = stopPrefix
             + String(localized: "Removes this model from your Mac. You can download it again later by selecting it.")
@@ -188,9 +188,9 @@ enum ModelCacheActions {
     static func successMessage(alias: String, freedBytes: Int64?, fallbackSize: String?) -> String {
         let freedLabel: String
         if let bytes = freedBytes, bytes > 0 {
-            freedLabel = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+            freedLabel = DownloadProgress.formatBytes(bytes)
         } else if let fallback = fallbackSize {
-            freedLabel = fallback
+            freedLabel = ModelSize.legacy(fallback)?.displayText ?? fallback
         } else {
             freedLabel = ""
         }
@@ -417,8 +417,8 @@ enum ModelCacheActions {
             return entries.sorted { $0.alias.localizedStandardCompare($1.alias) == .orderedAscending }
         case .sizeDescending:
             return entries.sorted { lhs, rhs in
-                let lhsBytes = parseSizeBytes(lhs.sizeOnDisk) ?? -1
-                let rhsBytes = parseSizeBytes(rhs.sizeOnDisk) ?? -1
+                let lhsBytes = lhs.size?.byteCount ?? -1
+                let rhsBytes = rhs.size?.byteCount ?? -1
                 if lhsBytes != rhsBytes { return lhsBytes > rhsBytes }
                 return lhs.alias.localizedStandardCompare(rhs.alias) == .orderedAscending
             }
@@ -426,11 +426,11 @@ enum ModelCacheActions {
     }
 
     /// Disk-usage footer aggregation. Walks the cached entries,
-    /// parses each ``sizeOnDisk`` string back into bytes, and
+    /// uses numeric sizes with a legacy-text fallback, and
     /// returns a ``(count, bytes, missingSizeCount)`` triple.
     ///
     /// codex r2 P3 (#210): ``missingSizeCount`` is the number of
-    /// cached entries whose ``sizeOnDisk`` was nil / unparseable.
+    /// cached entries with no numeric or parseable legacy size.
     /// When that's > 0 the footer ADDS a ``(+N unmeasured)``
     /// suffix instead of silently pretending the byte total
     /// represents every cached model — a partial sum dressed as
@@ -447,10 +447,10 @@ enum ModelCacheActions {
     /// total and cleanup signal contradict its own delete surface (#1818).
     static func largestManagedEntry(_ entries: [ModelEntry]) -> ModelEntry? {
         entries
-            .filter { $0.cached && !$0.isExternal && parseSizeBytes($0.sizeOnDisk) != nil }
+            .filter { $0.cached && !$0.isExternal && $0.size?.byteCount != nil }
             .max {
-                let lhs = parseSizeBytes($0.sizeOnDisk) ?? 0
-                let rhs = parseSizeBytes($1.sizeOnDisk) ?? 0
+                let lhs = $0.size?.byteCount ?? 0
+                let rhs = $1.size?.byteCount ?? 0
                 if lhs != rhs { return lhs < rhs }
                 return $0.alias.localizedStandardCompare($1.alias) == .orderedDescending
             }
@@ -458,11 +458,11 @@ enum ModelCacheActions {
 
     static func storageSummary(usage: DiskUsage, freeBytes: Int64?) -> String {
         let used = usage.totalBytes.map {
-            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+            DownloadProgress.formatBytes($0)
         } ?? String(localized: "size unavailable")
         let models = modelCountLabel(usage.cachedCount)
         guard let freeBytes else { return "\(used) · \(models)" }
-        let free = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
+        let free = DownloadProgress.formatBytes(freeBytes)
         return String(localized: "\(used) · \(models) · \(free) free")
     }
 
@@ -495,8 +495,11 @@ enum ModelCacheActions {
         var missing = 0
         for entry in entries where entry.cached {
             cachedCount += 1
-            if let bytes = parseSizeBytes(entry.sizeOnDisk) {
-                total += bytes
+            if let bytes = entry.size?.byteCount {
+                if total != Int64.max {
+                    let (sum, overflow) = total.addingReportingOverflow(bytes)
+                    total = overflow ? Int64.max : sum
+                }
                 anyParsed = true
             } else {
                 missing += 1
@@ -526,7 +529,7 @@ enum ModelCacheActions {
             return String(localized: " (+\(usage.missingSizeCount) unmeasured)")
         }()
         if let bytes = usage.totalBytes {
-            let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+            let size = DownloadProgress.formatBytes(bytes)
             return String(localized: "Total: \(size) across \(label)\(unmeasuredSuffix)")
         }
         return String(localized: "Total: \(label)\(unmeasuredSuffix)")
@@ -542,41 +545,7 @@ enum ModelCacheActions {
     /// format drift gracefully (parse failure → row sorts last,
     /// footer falls back to count-only).
     static func parseSizeBytes(_ raw: String?) -> Int64? {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return nil
-        }
-        // Strip the trailing " GB" / " GiB" / " MB" / etc. Accept
-        // both decimal (GB) and binary (GiB) units — rapid-mlx
-        // currently emits decimal but a future format change to
-        // binary shouldn't silently zero the footer.
-        let lower = raw.lowercased()
-        let units: [(String, Double)] = [
-            ("tib", 1024 * 1024 * 1024 * 1024),
-            ("gib", 1024 * 1024 * 1024),
-            ("mib", 1024 * 1024),
-            ("kib", 1024),
-            ("tb", 1_000_000_000_000),
-            ("gb", 1_000_000_000),
-            ("mb", 1_000_000),
-            ("kb", 1_000),
-            ("t", 1_000_000_000_000),
-            ("g", 1_000_000_000),
-            ("m", 1_000_000),
-            ("k", 1_000),
-            ("b", 1),
-        ]
-        for (suffix, multiplier) in units {
-            if lower.hasSuffix(suffix) {
-                let numPart = lower.dropLast(suffix.count).trimmingCharacters(in: .whitespaces)
-                if let value = Double(numPart) {
-                    return Int64(value * multiplier)
-                }
-                return nil
-            }
-        }
-        // Bare number with no unit — treat as bytes.
-        if let bytes = Int64(lower) { return bytes }
-        return nil
+        ModelSize.parseBytes(raw)
     }
 
     // MARK: - Family / quant chip labels

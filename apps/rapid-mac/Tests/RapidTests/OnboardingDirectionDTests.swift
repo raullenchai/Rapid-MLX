@@ -537,12 +537,13 @@ struct OnboardingDirectionDTests {
         #expect(columns.count == Self.tradeUps.count)
         #expect(columns.filter(\.isPicked).count == 1, "exactly one column is the pick")
         #expect(columns.last?.isPicked == true)
-        for column in columns {
+        for (column, choice) in zip(columns, Self.tradeUps) {
             #expect(!column.download.isEmpty)
-            #expect(column.memory.hasPrefix("≈") || column.memory == "Unknown")
-            // Model estimates keep a decimal: 5.9 vs 6 is the comparison.
-            #expect(column.memory == "Unknown" || column.memory.contains("."),
-                    "a footprint estimate must not be rounded to a whole GB")
+            let footprint = ModelSizing.estimate(alias: choice.alias)
+            let memory = footprint.totalGB > 0
+                ? "≈ \(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30))))"
+                : "Unknown"
+            #expect(column.memory == memory)
             #expect(["Comfortable", "Tight", "Won't fit"].contains(column.fit))
         }
     }
@@ -815,7 +816,7 @@ struct OnboardingDirectionDTests {
         job.progress.applyDiskObservation(bytes: 633 * 1024 * 1024)
 
         #expect(job.progress.totalBytes == nil)
-        #expect(QuickstartView.subjectBytesLine(job: job) == "633 MB downloaded")
+        #expect(QuickstartView.subjectBytesLine(job: job) == "\(ByteCountFormatter.string(fromByteCount: 633 * 1024 * 1024, countStyle: .file)) downloaded")
         #expect(QuickstartView.downloadLifecycleName(progress: job.progress) == "DOWNLOADING")
     }
 
@@ -957,8 +958,8 @@ struct OnboardingDirectionDTests {
         )
         let review = try #require(rows.first { $0.identifier == "Quickstart.Review.Memory" })
 
-        #expect(card.hasPrefix("20 GB"))
-        #expect(review.value == "≈ 20.0 GB of 32 GB")
+        #expect(card.hasPrefix(DownloadProgress.formatMemory(Int64(pick.footprintGB * Double(1 << 30)))))
+        #expect(review.value == "≈ \(DownloadProgress.formatMemory(Int64(20 * (1 << 30)))) of 32 GB")
         #expect(ModelSizing.estimate(alias: pick.alias).totalGB == 20)
     }
 
@@ -1009,17 +1010,16 @@ struct OnboardingDirectionDTests {
                 "nothing is being spent, so there is no cost to frame")
     }
 
-    @Test("Memory figures round in exactly one place")
+    @Test("Memory figures use the system memory style")
     func memoryFiguresShareOneFormatter() {
         // The catalogue row and the Review table both quote this Mac's memory.
-        // If they rounded separately they could disagree by a gibibyte on the
-        // same screen.
-        #expect(QuickstartView.wholeGB(32.0) == "32 GB")
-        #expect(QuickstartView.wholeGB(8.7) == "9 GB")
-        // …and a model estimate does not.
-        #expect(QuickstartView.preciseGB(8.7) == "8.7 GB")
-        #expect(QuickstartView.preciseGB(5.94) == "5.9 GB")
-        #expect(QuickstartView.wholeGB(0.4) == "0 GB")
+        // Both use the same system memory formatter.
+        #expect(QuickstartView.wholeGB(32.0) == DownloadProgress.formatMemory(Int64(32) * (1 << 30)))
+        #expect(QuickstartView.wholeGB(8.7) == DownloadProgress.formatMemory(Int64(8.7 * Double(1 << 30))))
+        // Model estimates use the same style.
+        #expect(QuickstartView.preciseGB(8.7) == DownloadProgress.formatMemory(Int64(8.7 * Double(1 << 30))))
+        #expect(QuickstartView.preciseGB(5.94) == ByteCountFormatter.string(fromByteCount: Int64(5.94 * Double(1 << 30)), countStyle: .memory))
+        #expect(QuickstartView.wholeGB(0.4) == DownloadProgress.formatMemory(Int64(0.4 * Double(1 << 30))))
     }
 
     // MARK: - Failure presentation

@@ -394,7 +394,7 @@ def _request_sampler(
     return sampler
 
 
-def _prefill_cap_violation(requests, prefill_step_size: int):
+def _prefill_cap_violation(requests, prefill_step_size: int, vision_token_count=None):
     """Return the "exceeds the per-batch cap" error message when a batch of
     requests violates the per-batch prefill cap, else ``None``.
 
@@ -404,7 +404,9 @@ def _prefill_cap_violation(requests, prefill_step_size: int):
     Text-only requests (``_is_text_only_request``) are prefilled in chunks
     and do not contribute vision tokens, so only vision-bearing requests
     count toward the cap, and their aggregate token count is compared
-    against ``prefill_step_size × num_vision`` (#1848). A batch with no
+    against ``prefill_step_size × num_vision`` (#1848). Chunkable media
+    requests contribute only their vision placeholder count; other media
+    requests contribute their total prompt length. A batch with no
     vision requests can never violate the cap.
 
     The returned string MUST keep the ``exceeds the per-batch cap`` phrase:
@@ -422,7 +424,16 @@ def _prefill_cap_violation(requests, prefill_step_size: int):
         return None
     num_vision = len(vision_requests)
     vision_tokens = sum(
-        r.input_ids.size if r.input_ids is not None else 1 for r in vision_requests
+        (
+            vision_token_count(r.input_ids)
+            if getattr(r, "chunked_media_prefill", False)
+            and vision_token_count is not None
+            and r.input_ids is not None
+            else r.input_ids.size
+            if r.input_ids is not None
+            else 1
+        )
+        for r in vision_requests
     )
     max_batch_tokens = prefill_step_size * num_vision
     if vision_tokens > max_batch_tokens:
@@ -430,9 +441,9 @@ def _prefill_cap_violation(requests, prefill_step_size: int):
             f"Vision-request prompt tokens ({vision_tokens}) exceeds the "
             f"per-batch cap ({max_batch_tokens} = vision token budget "
             f"{prefill_step_size} × {num_vision} vision request(s)). "
-            f"For image inputs, downscale the image; for text inputs, "
-            f"shorten the prompt or restart the server with "
-            f"--prefill-step-size set higher."
+            "For image inputs, downscale the image or send fewer images; for text, "
+            "shorten the prompt. The per-request vision budget is set by "
+            "--vision-prefill-token-budget."
         )
     return None
 
@@ -485,6 +496,8 @@ class MLLMBatchRequest:
     attention_mask: mx.array | None = None
     image_grid_thw: mx.array | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    chunked_media_prefill: bool = False
 
     # Generation state
     num_tokens: int = 0  # Tokens generated so far
@@ -805,11 +818,18 @@ _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 # Model families qualified for the split media boundary, by ``config.model_type``.
 # Structural gates (rope-deltas consumption, cloneable leaves, singleton turn)
 # prove a model *can* be split; only qualification proves the split is
-# *correct* for it — the 64-token alignment is tuned to this family's hybrid
-# recurrent scan, and position/MRoPE handling differs per family. Everything
+# *correct* for it. Dense qwen3_5 shares the hybrid GatedDeltaNet + full-attention
+# layout, MRoPE rope-deltas contract, and 64-token scan tile with the qualified
+# MoE variant. Position/MRoPE handling differs per family. Everything
 # else stays on the cold single forward until it is qualified on real
 # hardware (the design note's non-goal: no unqualified families ship).
-_MEDIA_QUALIFIED_MODEL_TYPES = frozenset({"qwen3_5_moe", "qwen3_5_moe_text"})
+_CHUNKED_MEDIA_PREFILL_MODEL_TYPES = frozenset(
+    {"qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe"}
+)
+
+_MEDIA_QUALIFIED_MODEL_TYPES = frozenset(
+    {"qwen3_5_moe", "qwen3_5_moe_text", "qwen3_5", "qwen3_5_text"}
+)
 
 _MEDIA_ROPE_MISSING = object()
 
@@ -858,6 +878,9 @@ def _is_type_checking(test: ast.AST) -> bool:
 # verification, never structurally.
 _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
     {
+        # qwen3_5/language.py LanguageModel.__call__ pops rope_deltas into
+        # self._rope_deltas for MRoPE positions; the MoE subclass inherits it.
+        ("mlx_vlm.models.qwen3_5.language", "LanguageModel"),
         # mlx_vlm/models/qwen3_5_moe/language.py, LanguageModel.__call__:
         # pops ``rope_deltas`` from **kwargs and folds it into the MRoPE
         # position offsets (``delta = (offsets + rope_deltas...)``).
@@ -866,6 +889,9 @@ _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
 )
 _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS = frozenset(
     {
+        # qwen3_5_moe/qwen3_5_moe.py Model subclasses this dense Model and
+        # inherits its __call__ unchanged.
+        ("mlx_vlm.models.qwen3_5.qwen3_5", "Model"),
         # mlx_vlm/models/qwen3_5_moe/qwen3_5_moe.py, Model: the Qwen3VL
         # wrapper recomputes/merges ``rope_deltas`` through
         # InputEmbeddingsFeatures and forwards it to the consuming LM.
@@ -1844,9 +1870,8 @@ class MLLMBatchGenerator:
 
         Structural gates prove a model can be split; this gate proves the
         split is known-correct for it — the boundary alignment and MRoPE
-        transaction were qualified on exactly one family (Qwen3.6 hybrid,
-        ``config.model_type`` ``qwen3_5_moe``/``qwen3_5_moe_text``), and
-        the design note ships no unqualified families. Any other model —
+        transaction are qualified for the dense and MoE Qwen3.5 hybrid
+        variants, and the design note ships no unqualified families. Any other model —
         or one without a resolvable ``model_type`` — stays on the cold
         single forward. Memoized per model-class pair like the other
         structural probes.
@@ -1864,6 +1889,164 @@ class MLLMBatchGenerator:
                 break
         self._media_family_probe = (key, result)
         return result
+
+    def _media_prefill_static_chunkable(
+        self, request, *, attention_mask=None, extra_kwargs=None
+    ) -> bool:
+        targets = (self.model, self.language_model)
+
+        def policy_enabled():
+            candidates = (self.model,)
+            if self.language_model is not self.model:
+                candidates += (self.language_model,)
+            try:
+                enabled = True
+                for candidate in candidates:
+                    policy = getattr(candidate, "chunked_prefill_policy", None)
+                    if callable(policy):
+                        try:
+                            result = policy(
+                                input_ids=None,
+                                inputs_embeds=None,
+                                prompt_cache=None,
+                                draft_model=None,
+                                draft_kind=None,
+                                prefill_kwargs={},
+                            )
+                            policy_allows = bool(getattr(result, "enabled", result))
+                        except Exception:
+                            policy_allows = False
+                        enabled = policy_allows and enabled
+                return enabled and not any(
+                    getattr(candidate, "no_chunked_prefill", False)
+                    for candidate in candidates
+                )
+            except Exception:
+                return False
+
+        return (
+            any(
+                getattr(getattr(t, "config", None), "model_type", None)
+                in _CHUNKED_MEDIA_PREFILL_MODEL_TYPES
+                for t in targets
+            )
+            and policy_enabled()
+            and not getattr(self, "_is_gemma3_vlm", False)
+            and not getattr(self, "_is_gemma4_unified_vlm", False)
+            and not request.videos
+            and not (request.extra_kwargs if extra_kwargs is None else extra_kwargs)
+            and _attention_mask_is_droppable(attention_mask)
+            and callable(getattr(self.model, "get_input_embeddings", None))
+        )
+
+    def _media_prefill_chunkable(self, request, cache) -> bool:
+        def fresh(leaf):
+            missing = object()
+            empty = getattr(leaf, "empty", missing)
+            if empty is not missing:
+                try:
+                    return bool(empty())
+                except Exception:
+                    return False
+            if isinstance(leaf, (list, tuple)):
+                return all(fresh(item) for item in leaf)
+            children = getattr(leaf, "caches", None)
+            if isinstance(children, (list, tuple)):
+                return all(fresh(item) for item in children)
+            return getattr(leaf, "offset", None) == 0
+
+        # Full-prompt position metadata is sliced using a scalar cache offset;
+        # per-row batched offsets disable that slicing, so only B=1 can chunk.
+        shape = getattr(request.input_ids, "shape", None)
+        return (
+            shape is not None
+            and len(shape) == 2
+            and shape[0] == 1
+            and cache is not None
+            and fresh(cache)
+            and self._media_prefill_static_chunkable(
+                request, attention_mask=request.attention_mask
+            )
+        )
+
+    def _vision_token_count(self, input_ids) -> int:
+        ids = self._media_placeholder_token_ids()
+        if not ids:
+            size: int = input_ids.size
+            return size
+        return sum(int((input_ids == token_id).sum().item()) for token_id in set(ids))
+
+    def _media_budget_token_count(self, input_ids, chunked):
+        if input_ids is None:
+            return None
+        return self._vision_token_count(input_ids) if chunked else input_ids.size
+
+    def _media_prefill_chunk_tokens(self) -> int:
+        """Keep media chunks within the per-request vision prefill budget.
+
+        Every prompt admitted over the budget can be chunked, and each chunk
+        stays within it.
+        """
+        chunk = effective_mllm_prefill_chunk(self.prefill_step_size)
+        budget = getattr(self, "vision_prefill_token_budget", 0)
+        budget = int(budget) if isinstance(budget, int) and budget > 0 else chunk
+        return max(1, min(chunk, budget))
+
+    def _chunked_media_lm_prefill(self, input_ids, cache, kwargs):
+        emb = self.model.get_input_embeddings(
+            input_ids,
+            kwargs.get("pixel_values"),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("pixel_values", "attention_mask")
+            },
+            mask=None,
+        )
+        lm_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k
+            not in ("attention_mask", "vision_cache", "_image_key", "logits_to_keep")
+        }
+        lm_kwargs.update(
+            {
+                k: v
+                for k, v in emb.to_dict().items()
+                if k != "inputs_embeds" and v is not None
+            }
+        )
+        inputs_embeds = emb.inputs_embeds
+        chunk = self._media_prefill_chunk_tokens()
+        for start in range(0, input_ids.shape[1] - 1, chunk):
+            end = min(start + chunk, input_ids.shape[1] - 1)
+            self.language_model(
+                input_ids[:, start:end],
+                inputs_embeds=inputs_embeds[:, start:end],
+                cache=cache,
+                **lm_kwargs,
+            )
+            lm_kwargs.pop("pixel_values", None)
+            mx.eval([c.state for c in cache])
+            mx.clear_cache()
+        lm_kwargs.pop("pixel_values", None)
+        return self.language_model(
+            input_ids[:, -1:],
+            inputs_embeds=inputs_embeds[:, -1:],
+            cache=cache,
+            **lm_kwargs,
+        )
+
+    def _media_chunked_suffix_forward(self, ids, cache, delta, chunked):
+        chunk = self._media_prefill_chunk_tokens() if chunked else ids.shape[1]
+        for start in range(0, ids.shape[1], chunk):
+            if start:
+                mx.eval([c.state for c in cache])
+                mx.clear_cache()
+            output = self._media_suffix_forward(
+                ids[:, start : start + chunk], cache, delta
+            )
+        return output
 
     @staticmethod
     def _media_live_tree(src: str) -> tuple[list[ast.AST], ast.Module] | None:
@@ -2446,7 +2629,11 @@ class MLLMBatchGenerator:
                 move_to_end(digest)
 
     def _media_cold_redo(
-        self, input_ids: Any, cache: list[Any], kwargs: dict[str, Any]
+        self,
+        input_ids: Any,
+        cache: list[Any],
+        kwargs: dict[str, Any],
+        chunked: bool = False,
     ) -> Any:
         """One cold full forward on a rebuilt fresh cache.
 
@@ -2459,6 +2646,8 @@ class MLLMBatchGenerator:
         from mlx_lm.models.cache import make_prompt_cache
 
         cache[:] = make_prompt_cache(self.language_model)
+        if chunked:
+            return self._chunked_media_lm_prefill(input_ids, cache, kwargs)
         return self.model(input_ids, cache=cache, **kwargs)
 
     def _media_discard_boundary(
@@ -3634,6 +3823,11 @@ class MLLMBatchGenerator:
             request.attention_mask = cached_pixels.attention_mask
             request.image_grid_thw = cached_pixels.image_grid_thw
             request.extra_kwargs = dict(cached_pixels.extra_kwargs)
+            # The effective cap is part of the media digest identity.
+            request.media_pixel_cap = int(cached_pixels.media_pixel_cap or 0)
+            request.chunked_media_prefill = self._media_prefill_static_chunkable(
+                request, attention_mask=request.attention_mask
+            )
 
             logger.debug(
                 f"Pixel cache HIT for request {request.request_id}: "
@@ -3778,7 +3972,24 @@ class MLLMBatchGenerator:
                             prompts=request.prompt,
                             image_token_index=image_token_index,
                         )
-                token_count = getattr(inputs.get("input_ids"), "size", None)
+                request.chunked_media_prefill = self._media_prefill_static_chunkable(
+                    request,
+                    attention_mask=inputs.get("attention_mask"),
+                    extra_kwargs={
+                        k: v
+                        for k, v in inputs.items()
+                        if k
+                        not in (
+                            "input_ids",
+                            "pixel_values",
+                            "attention_mask",
+                            "image_grid_thw",
+                        )
+                    },
+                )
+                token_count = self._media_budget_token_count(
+                    inputs.get("input_ids"), request.chunked_media_prefill
+                )
                 if (
                     not pixel_cap
                     or not isinstance(token_count, int)
@@ -3791,7 +4002,6 @@ class MLLMBatchGenerator:
                 if reduced_cap < patch_unit**2:
                     break
                 pixel_cap = reduced_cap
-            token_count = getattr(inputs.get("input_ids"), "size", None)
             if isinstance(token_count, int) and (
                 token_count > self.vision_prefill_token_budget
             ):
@@ -3841,6 +4051,7 @@ class MLLMBatchGenerator:
                 image_grid_thw=request.image_grid_thw,
                 extra_kwargs=request.extra_kwargs,
                 processing_time=processing_time,
+                media_pixel_cap=request.media_pixel_cap,
             )
 
         self._stats.num_images_processed += len(all_images)
@@ -3858,6 +4069,7 @@ class MLLMBatchGenerator:
         input_ids: Any,
         cache: list[Any],
         kwargs: dict[str, Any],
+        chunked: bool = False,
     ) -> Any:
         """The media single forward, with boundary store/resume when eligible.
 
@@ -3872,7 +4084,11 @@ class MLLMBatchGenerator:
         """
         plan = self._media_boundary_plan(request, input_ids, cache)
         if plan is None:
-            return self.model(input_ids, cache=cache, **kwargs)
+            return (
+                self._chunked_media_lm_prefill(input_ids, cache, kwargs)
+                if chunked
+                else self.model(input_ids, cache=cache, **kwargs)
+            )
         action, entry, boundary, generation, digest = plan
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
         if action == "resume":
@@ -3892,7 +4108,11 @@ class MLLMBatchGenerator:
                 # failed — degrade to a counted cold miss instead of an
                 # impossible resume.
                 self._media_boundary_misses += 1
-                return self.model(input_ids, cache=cache, **kwargs)
+                return (
+                    self._chunked_media_lm_prefill(input_ids, cache, kwargs)
+                    if chunked
+                    else self.model(input_ids, cache=cache, **kwargs)
+                )
             # Validate the generation and install the snapshot in one
             # critical section: a clear_prefix_cache landing between the
             # plan and here must not have its emptied store revived by a
@@ -3903,11 +4123,15 @@ class MLLMBatchGenerator:
                     cache[:] = cloned
             if stale:
                 self._media_boundary_misses += 1
-                return self.model(input_ids, cache=cache, **kwargs)
+                return (
+                    self._chunked_media_lm_prefill(input_ids, cache, kwargs)
+                    if chunked
+                    else self.model(input_ids, cache=cache, **kwargs)
+                )
             try:
                 self._media_mrope_install(entry.rope_delta)
-                output = self._media_suffix_forward(
-                    input_ids[:, boundary:], cache, entry.rope_delta
+                output = self._media_chunked_suffix_forward(
+                    input_ids[:, boundary:], cache, entry.rope_delta, chunked
                 )
             except _MediaSplitUnsupportedError:
                 # The installed snapshot is fine but the suffix path is not
@@ -3915,7 +4139,11 @@ class MLLMBatchGenerator:
                 # one cold full forward on a rebuilt fresh cache.
                 self._media_mrope_restore()
                 self._media_boundary_misses += 1
-                return self._media_cold_redo(input_ids, cache, kwargs)
+                return (
+                    self._media_cold_redo(input_ids, cache, kwargs, True)
+                    if chunked
+                    else self._media_cold_redo(input_ids, cache, kwargs)
+                )
             except BaseException:
                 # The installed delta is model-global state: a failing
                 # or cancelled suffix forward must not leave it behind for
@@ -3939,7 +4167,12 @@ class MLLMBatchGenerator:
         published = False
         self._media_mrope_save()
         try:
-            self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
+            if chunked and boundary > self._media_prefill_chunk_tokens():
+                self._chunked_media_lm_prefill(
+                    input_ids[:, :boundary], cache, prefix_kwargs
+                )
+            else:
+                self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
             rope_delta = getattr(self.language_model, "_rope_deltas", None)
             mx.eval([c.state for c in cache])
             stored = self._media_store(
@@ -3960,12 +4193,16 @@ class MLLMBatchGenerator:
                 # plan gate takes.
                 self._media_boundary_misses += 1
                 self._media_mrope_restore()
-                return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+                return (
+                    self._media_cold_redo(input_ids, cache, prefix_kwargs, True)
+                    if chunked
+                    else self._media_cold_redo(input_ids, cache, prefix_kwargs)
+                )
             published = True
             # Snapshot published: continue the suffix on the same live cache
             # with the delta this forward already installed on the model.
-            return self._media_suffix_forward(
-                input_ids[:, boundary:], cache, rope_delta
+            return self._media_chunked_suffix_forward(
+                input_ids[:, boundary:], cache, rope_delta, chunked
             )
         except _MediaSplitUnsupportedError:
             # The suffix path the probes picked cannot serve this request.
@@ -3975,7 +4212,11 @@ class MLLMBatchGenerator:
             if published:
                 self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
-            return self._media_cold_redo(input_ids, cache, prefix_kwargs)
+            return (
+                self._media_cold_redo(input_ids, cache, prefix_kwargs, True)
+                if chunked
+                else self._media_cold_redo(input_ids, cache, prefix_kwargs)
+            )
         except BaseException:
             # Same model-global-state contract: the save transaction spans
             # the whole request, so a failing or cancelled store/suffix forward
@@ -4093,9 +4334,8 @@ class MLLMBatchGenerator:
         # sampled token matches the single forward (verified end-to-end: same
         # argmax on a 20k-token gemma-4 prompt); it is not bit-identical
         # because splitting the attention reductions can reorder float ops.
-        # Scope is deliberately text-only: with images, pixel features must
-        # stay aligned with their placeholder tokens in a single vision-merge
-        # forward, and image prompts are bounded by the per-batch cap anyway.
+        # This branch handles text-only requests. Qualified image requests
+        # merge vision features once and chunk their language prefill below.
         # The split also needs a real KV cache to carry prefix state across
         # forwards; unit-test call sites pass ``cache=None`` and keep the
         # single forward, which is the only correct behavior there.
@@ -4254,11 +4494,29 @@ class MLLMBatchGenerator:
             # The media plan gates on live cache leaves; a None cache (the
             # unit-test call sites) keeps the exact historical single
             # forward, which is the media cold path with no snapshot.
-            output = (
-                self._media_forward(request, input_ids, cache, kwargs)
-                if cache is not None
-                else self.model(input_ids, cache=cache, **kwargs)
+            chunked = (
+                request.pixel_values is not None
+                and prompt_length > self._media_prefill_chunk_tokens()
+                and self._media_prefill_chunkable(request, cache)
             )
+            budget = getattr(self, "vision_prefill_token_budget", 0)
+            if (
+                request.chunked_media_prefill
+                and request.pixel_values is not None
+                and not chunked
+                and isinstance(budget, int)
+                and budget > 0
+                and prompt_length > budget
+            ):
+                raise ClientRequestError(_prefill_cap_violation([request], budget))
+            if chunked and cache is not None:
+                output = self._media_forward(
+                    request, input_ids, cache, kwargs, chunked=True
+                )
+            elif cache is not None:
+                output = self._media_forward(request, input_ids, cache, kwargs)
+            else:
+                output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
         # Release preprocessed vision inputs now that they have been encoded
@@ -4377,7 +4635,9 @@ class MLLMBatchGenerator:
         # vision-encoding path and do not contribute vision tokens, so they
         # are exempt from the cap (#1848) — a >8k text-only prompt must not
         # be rejected just because ``prefill_step_size`` defaults to 8192.
-        _cap_help = _prefill_cap_violation(requests, self.vision_prefill_token_budget)
+        _cap_help = _prefill_cap_violation(
+            requests, self.vision_prefill_token_budget, self._vision_token_count
+        )
         if _cap_help is not None:
             raise ClientRequestError(_cap_help)
 

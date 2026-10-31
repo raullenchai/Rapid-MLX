@@ -19,7 +19,12 @@ from rapid_mlx.cli import upgrade_command
 
 def _stub_brew_with_upgrade_available(monkeypatch):
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -84,7 +89,11 @@ def test_missing_manager_command_exits_cleanly(
 ):
     """A removed manager must produce an actionable error, not a traceback."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -112,7 +121,11 @@ def test_missing_manager_command_exits_cleanly(
 def test_global_pipx_prints_manual_command_without_executing(monkeypatch, capsys):
     """Global pipx needs sudo, so the CLI must never execute its empty argv."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.3")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     monkeypatch.setattr(
         vc,
         "detect_install_method",
@@ -138,7 +151,11 @@ def test_dry_run_returns_silently_when_already_up_to_date(monkeypatch, capsys):
     install method. --dry-run should not change that — still a clean
     return, no subprocess."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.9.4")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.9.4")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda force_refresh=False, need_brew=False: vc.ReleaseInfo("0.9.4"),
+    )
     args = SimpleNamespace(yes=False, dry_run=True)
     with patch("subprocess.run") as run:
         upgrade_command(args)
@@ -186,3 +203,234 @@ def test_update_alias_accepts_upgrade_flags():
     """The alias shares the parser, so `-y`/`--dry-run` parse identically."""
     proc = _cli_help_stdout("update", "-y", "--dry-run", "--help")
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize(
+    "method,guidance",
+    [
+        ("pip", "python3.12 -m venv"),
+        ("install_sh", "curl -fsSL https://rapidmlx.com/install.sh | bash"),
+        ("uv", "uv tool upgrade --python 3.12 rapid-mlx"),
+        ("pipx", "pipx reinstall --python python3.12 rapid-mlx"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_python_floor_guidance(monkeypatch, capsys, method, guidance, dry_run):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.1", ">=3.12")
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade cmd", ["upgrade"]),
+    )
+    with patch("subprocess.run", return_value=MagicMock(returncode=1)) as run:
+        if dry_run:
+            upgrade_command(SimpleNamespace(yes=True, dry_run=True))
+        else:
+            with pytest.raises(SystemExit) as exc:
+                upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+            assert exc.value.code == 1
+        if dry_run or method == "install_sh":
+            run.assert_not_called()
+        else:
+            run.assert_called_once_with(["upgrade"], check=False)
+    out = capsys.readouterr().out
+    assert "requires Python >=3.12" in out
+    assert "`upgrade cmd` cannot install 1.0.1 on this Python. To move to 1.0.1:" in out
+    assert guidance in out
+
+
+@pytest.mark.parametrize(
+    "method,verified,code,expected",
+    [
+        ("pip", "1.0.0", 1, "still 1.0.0"),
+        ("pip", "1.0.1", 0, "now 1.0.1"),
+        ("brew", "1.0.0", 1, "brew update && brew upgrade rapid-mlx"),
+        (
+            "pip",
+            None,
+            1,
+            "Could not confirm the installed version; run `rapid-mlx --version` to check.",
+        ),
+    ],
+)
+def test_upgrade_verifies_result(monkeypatch, capsys, method, verified, code, expected):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.1", brew_stable="1.0.1"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: verified)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_called_once()
+    assert exc.value.code == code
+    assert expected in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_brew_lag_does_not_run(monkeypatch, capsys, dry_run):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.1", brew_stable="1.0.0"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade rapid-mlx", ["brew"]),
+    )
+    with patch("subprocess.run") as run:
+        if dry_run:
+            upgrade_command(SimpleNamespace(yes=True, dry_run=True))
+        else:
+            with pytest.raises(SystemExit) as exc:
+                upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+            assert exc.value.code == 1
+    run.assert_not_called()
+    assert "Homebrew has not published it yet" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verified,code", [("1.0.1", 0), ("1.0.0", 1)])
+def test_brew_upgrade_targets_formula_version(monkeypatch, capsys, verified, code):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.2", brew_stable="1.0.1"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade rapid-mlx", ["brew"]),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: verified)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == code
+    out = capsys.readouterr().out
+    assert (
+        "Homebrew offers 1.0.1 now; 1.0.2 will follow once the formula is updated."
+        in out
+    )
+    if code:
+        assert "(latest is 1.0.1)" in out
+
+
+def test_upgrade_propagates_command_failure(monkeypatch):
+    _stub_brew_with_upgrade_available(monkeypatch)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=7)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 7
+
+
+def test_upgrade_reports_python_guidance_if_floor_changes(monkeypatch, capsys):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.1", ">=3.12")
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("uv", "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "_python_supports", MagicMock(side_effect=[True, False]))
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: "1.0.0")
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 1
+    assert "uv tool upgrade --python 3.12 rapid-mlx" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("method", ["pip", "uv", "pipx"])
+@pytest.mark.parametrize("verified,code", [("1.0.1", 0), ("1.0.0", 1), (None, 1)])
+def test_python_floor_tries_compatible_upgrade(
+    monkeypatch, capsys, method, verified, code
+):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.2", ">=3.12")
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: verified)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)) as run,
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_called_once_with(["upgrade"], check=False)
+    assert exc.value.code == code
+    out = capsys.readouterr().out
+    if code == 0:
+        import sys
+
+        assert (
+            f"  ✓ rapid-mlx is now 1.0.1 — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. 1.0.2 needs Python >=3.12; follow the steps above to move to it."
+            in out
+        )
+    elif verified is None:
+        assert "Could not confirm the installed version" in out
+        assert "This Python already has the newest release it can run." not in out
+    else:
+        assert "This Python already has the newest release it can run." in out
+
+
+@pytest.mark.parametrize("method", ["pip", "uv", "pipx"])
+def test_python_floor_upgrade_failure(monkeypatch, capsys, method):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.2", ">=3.12")
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=7)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 7
+    out = capsys.readouterr().out
+    assert "Upgrade command failed" in out
+    assert "This Python already has the newest release it can run." not in out
+
+
+def test_upgrade_interrupt_exits_130(monkeypatch, capsys):
+    _stub_brew_with_upgrade_available(monkeypatch)
+    with (
+        patch("subprocess.run", side_effect=KeyboardInterrupt),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 130
+    assert "Interrupted." in capsys.readouterr().out

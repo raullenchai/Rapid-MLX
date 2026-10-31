@@ -85,7 +85,7 @@ The request surface has no reliable per-session identity, and entries are tens t
 * **Cancellation/error.** The MRoPE transaction (§2) restores prior model state on every non-success exit of the split prefill, and the just-published boundary entry is discarded with it. The transaction deliberately spans decode — the installed delta is live model state the request's own decode reads — and the next `_process_prompts` prefill restores it before computing its own, covering success, error, and decode-time cancellation in one place. A decode-time cancellation never invalidates a published boundary: the snapshot is the fully evaluated prompt prefix (strict token_ids, detached clones), which stays correct for the same conversation however generation ended. Mid-generation cancellation recovery is re-qualified by the harness lifecycle scenario.
 * **Rollback lever.** A config flag mirroring `mllm_singleton_fastpath` (`scheduler.py:601`, CLI `--mllm-singleton-fastpath`, generator check `:917-922`): `auto` (default) / `off`. `off` disables lookup *and* store, so a rolled-back build behaves byte-for-byte like today's lane.
 * **Image cold path stays the fallback.** The projected-vision-feature cache and pixel cache work unchanged; a media-prefix miss falls through to exactly the current warm-image path, so the PR only adds reuse on top.
-* **Qualified families only.** Structural gates prove a model *can* be split (rope-deltas consumption, cloneable leaves, singleton turn); a family allowlist proves the split is *known-correct* for it. `_media_family_qualified` matches `config.model_type` against `_MEDIA_QUALIFIED_MODEL_TYPES` (`qwen3_5_moe`/`qwen3_5_moe_text` — the qualified Qwen3.6 hybrid) and fails closed for every other family or any model without a resolvable type: the 64-token boundary alignment is tuned to this family's recurrent scan, and position/MRoPE handling differs per family. New families ship only after their own hardware qualification.
+* **Qualified families only.** Structural gates prove a model *can* be split (rope-deltas consumption, cloneable leaves, singleton turn); a family allowlist proves the split is *known-correct* for it. `_media_family_qualified` matches `config.model_type` against `_MEDIA_QUALIFIED_MODEL_TYPES`: `qwen3_5_moe`/`qwen3_5_moe_text` (Qwen3.6 MoE hybrid) and `qwen3_5`/`qwen3_5_text` (dense Qwen3.5/Qwen3.6 hybrid). It fails closed for other families or an unresolvable type. The rope-deltas contract allowlists also include the dense classes `mlx_vlm.models.qwen3_5.language.LanguageModel` and `mlx_vlm.models.qwen3_5.qwen3_5.Model`; the MoE classes subclass them and override only `__init__`/`sanitize`, so consumption and plumbing use the same inherited `__call__`. The 64-token boundary alignment is tuned to this hybrid recurrent scan, and position/MRoPE handling differs per family. New families ship only after their own hardware qualification.
 
 ### 6. Integration points
 
@@ -95,7 +95,7 @@ The request surface has no reliable per-session identity, and entries are tens t
 
 ## Non-goals
 
-* No families beyond the qualified Qwen3.6 hybrid serialized lane; dense Qwen results are not a gate for this PR.
+* No families beyond the qualified Qwen3.5/Qwen3.6 hybrid serialized lane (dense and MoE).
 * No MTP and no draft/target interaction (a later MTP spike may *reuse* the request-owned position transaction, but nothing here anticipates it).
 * No processor/cache-ownership refactor and no loader replacement — the lane keeps its mlx-vlm processor and cache leaf classes.
 * No native-text-engine path; text-only traffic routed to the shared-weight native text engine (#3400) is out of scope, as in the singleton PR.
@@ -112,6 +112,20 @@ Harness: `scripts/bench_qwen36_media_prefix.py` (tracked, ported and hardened fr
 * **Absolute-value gate:** a real long-document or multi-image case with ≥1 s absolute turn-two TTFT saving (the synthetic 2,296-token spike run cleared a preliminary 1.046 s signal but does not satisfy this gate).
 * Where outputs are not byte-identical: first-divergence margin analysis plus task-quality checks. Any incorrect deterministic answer, any entry without byte accounting, or any un-restored position state is a hard no-go.
 * Real-model runs follow the manual qualification-machine contract (Mac Studio M3 Ultra, offline resolution, recorded environment); CI validates harness schema and deterministic contract paths only.
+
+## Dense qualification record (2026-10-30)
+
+Environment: Apple M3 Ultra 256 GB, mlx 0.32.4, mlx-vlm 0.7.2, base `e77554c89`, `python -m scripts.bench_qwen36_media_prefix --pairs 2`, mlx-community 4-bit checkpoints, `HF_HUB_OFFLINE=1`.
+
+| checkpoint | within-phase deterministic | stores/hits (auto) | resume coverage | warm-turn regressions | cross-phase exact (conv, turns) | checker-failing turn slots cold -> resume |
+| --- | --- | --- | --- | --- | --- | --- |
+| Qwen3.6-27B (dense, model_type qwen3_5) | yes | 40/40 | 1.0 | none | 14/20, 50/60 | 20 -> 18 (resume set is a strict subset of cold) |
+| Qwen3.5-9B (dense) | yes | 40/40 | 1.0 | none | 12/20, 48/60 | 37 -> 37 (2 new, 2 fixed; all near-tie phrasing, e.g. a one-line answer that drops an anchor term or exceeds max_words by a few words) |
+| Qwen3.6-35B-A3B (shipped MoE, control) | yes | 40/40 | 1.0 | none | 10/20, 44/60 | 6 -> 7 (3 new, 2 fixed) |
+
+The “semantic checkers pass in both phases” gate no longer holds on this stack for any family, including the shipped MoE control. Failing slots are mostly cold-phase (turn-0 OCR slips such as reading a product name wrong, missing a manifest anchor phrase, and long-description structural limits) and are independent of the cache. The manifest anchors were tuned on recorded MoE outputs from an earlier stack. Dense was qualified on the paired delta: every structural, engagement, determinism, and latency gate passes, and the cache introduces no more checker regressions than the shipped family on the same stack; the 27B dense resume set is strictly better than its cold set. Re-baselining the manifest checkers for the current stack is follow-up work and is not part of this change.
+
+**Repeat-request finding (fixed in the same change).** The pixel-cache hit path returned before stamping `media_pixel_cap`, while the miss path stamps the effective cap and the media digest folds it in. The first request for an image stored under cap=N and every later identical request looked up under cap=0, so a byte-identical repeat never resumed (only the third request hit, against the entry the second request had stored). The pixel cache entry now carries the cap and the hit path restores it. Live repro on Qwen3.5-9B, 7,868-token prompt with 3 images, same request sent three times: on `main` (dense not qualified) TTFT 10.33 s / 7.98 s with nothing cached; with the dense allowlist but before this fix 8.26 s / 6.73 s / 0.15 s (cached 0/0/7,808); after the fix 8.37 s / 0.15 s / 0.15 s (cached 0/7,808/7,808), identical answers.
 
 ## Cross-phase float divergence (as-built finding)
 

@@ -38,6 +38,17 @@ struct CommunityBenchmarkResultView: View {
             resultHeader
             Divider()
             metricsRow
+            if let acceleration = CommunityBenchmarkAcceleration.summary(result.execution.task?.language) {
+                Divider()
+                HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.md) {
+                    Text("Acceleration").font(RapidFont.secondary)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                    Text(acceleration).font(RapidFont.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(RapidTheme.Space.xl)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Divider()
             comparisonArea
             if !isPublished {

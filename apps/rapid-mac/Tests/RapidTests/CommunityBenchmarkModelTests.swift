@@ -6,6 +6,18 @@ import Testing
 @MainActor
 @Suite("Community Benchmark model-first projection")
 struct CommunityBenchmarkModelTests {
+    @Test("Selection preserves current, prefers serving, then text")
+    func reconciledSelectionPreference() {
+        let image = ModelEntry(alias: "a-image", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.imageGeneration], operationModes: [.textToImage])
+        let chat = ModelEntry(alias: "z-chat", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.textGeneration])
+        let models = CommunityBenchmarkModel.models(from: [image, chat])
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: image.alias, models: models, preferred: chat.alias) == image.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: chat.alias) == chat.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "missing", models: models, preferred: "missing") == chat.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: CommunityBenchmarkModel.models(from: [image])) == image.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: []) == "")
+    }
+
     @Test("Atomic tasks select a protocol without modality tabs")
     func atomicTaskProjection() throws {
         let image = ModelEntry(

@@ -70,6 +70,7 @@ class PixelCacheEntry:
     image_grid_thw: mx.array | None
     extra_kwargs: dict[str, Any]
     processing_time: float = 0.0
+    media_pixel_cap: int = 0
 
 
 @dataclass
@@ -232,6 +233,7 @@ class VisionEmbeddingCache:
         image_grid_thw: mx.array | None = None,
         extra_kwargs: dict[str, Any] | None = None,
         processing_time: float = 0.0,
+        media_pixel_cap: int = 0,
     ) -> None:
         """Store pixel values in cache."""
         if not self.enabled or not images:
@@ -254,6 +256,7 @@ class VisionEmbeddingCache:
             # own its mapping so repeat images retain modality/position IDs.
             extra_kwargs=dict(extra_kwargs or {}),
             processing_time=processing_time,
+            media_pixel_cap=media_pixel_cap,
         )
         self._pixel_cache[key] = entry
         self.stats.total_images_processed += len(images)

@@ -82,7 +82,7 @@ from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..request import (
     ClientRequestError,
     InferenceAbortedError,
-    inference_aborted_error_payload,
+    inference_aborted_http_exception,
     is_batch_cap_error,
     is_chat_template_error,
     is_media_input_error,
@@ -184,7 +184,8 @@ def _new_stream_request_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex}"
 
 
-_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Shared output guard: accept the longest tool name admitted by any route.
+_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 router = APIRouter()
 
@@ -4124,10 +4125,7 @@ def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
     up and a smaller request may succeed (#353). The user-facing ``message`` is
     a fixed, safe string per code — never ``str(exc)`` — so no internals leak.
     """
-    return HTTPException(
-        status_code=503,
-        detail={"error": inference_aborted_error_payload(exc)},
-    )
+    return inference_aborted_http_exception(exc)
 
 
 async def _preflight_mllm_chat_stream(

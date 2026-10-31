@@ -4667,6 +4667,69 @@ async def _disconnect_guard(
                     _sse_type = "internal_error"
                     _sse_message = "Internal error during streaming"
                     _sse_code = None
+                if isinstance(exc, InferenceAbortedError):
+                    abort_path = getattr(
+                        getattr(raw_request, "url", None), "path", None
+                    )
+                    if abort_path == "/v1/messages":
+                        event = {
+                            "type": "error",
+                            "error": {
+                                "type": (
+                                    "overloaded_error"
+                                    if _sse_code == "insufficient_memory"
+                                    else "api_error"
+                                ),
+                                "message": _sse_message,
+                            },
+                        }
+                        yield f"event: error\ndata: {_json.dumps(event)}\n\n"
+                        if _sse_code == "model_replacement":
+                            finished_normally = True
+                        break
+                    elif abort_path == "/v1/responses":
+                        response_payload = {
+                            "id": f"resp_{uuid.uuid4().hex[:24]}",
+                            "object": "response",
+                            "created_at": int(_time.time()),
+                            "status": "failed",
+                            "model": get_config().model_name or "<custom>",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": {"cached_tokens": 0},
+                                "output_tokens_details": {"reasoning_tokens": 0},
+                            },
+                            "parallel_tool_calls": False,
+                            "tool_choice": "auto",
+                            "tools": [],
+                        }
+                        if response_state and isinstance(
+                            response_state.get("response"), dict
+                        ):
+                            response_payload.update(response_state["response"])
+                            response_payload["status"] = "failed"
+                        response_payload["error"] = {
+                            "code": _sse_code,
+                            "message": _sse_message,
+                        }
+                        response_event = {
+                            "type": "response.failed",
+                            "response": response_payload,
+                            "sequence_number": 0,
+                        }
+                        if response_state and isinstance(
+                            response_state.get("sequence_number"), list
+                        ):
+                            counter = response_state["sequence_number"]
+                            response_event["sequence_number"] = counter[0]
+                            counter[0] += 1
+                        yield f"event: response.failed\ndata: {_json.dumps(response_event)}\n\n"
+                        if _sse_code == "model_replacement":
+                            finished_normally = True
+                        break
                 error = {
                     "message": _sse_message,
                     "type": _sse_type,

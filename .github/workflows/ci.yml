@@ -583,6 +583,8 @@ jobs:
             tests/test_mllm_singleton_fastpath.py \
             tests/test_singleton_cache_fastpath.py \
             tests/test_mllm_media_prefix_cache.py \
+            tests/test_mllm_chunked_media_prefill.py \
+            tests/test_mllm_oom_surfacing.py \
             tests/test_mlx_vlm_vendored_apc_adapters.py \
             tests/test_mlx_vlm_vendored_apc_support.py \
             tests/test_mlx_vlm_vendored_inputs.py \

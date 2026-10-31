@@ -1445,13 +1445,13 @@ def test_per_batch_cap_fires_on_oversized_batch_with_actionable_message(
     assert "exceeds the per-batch cap" in msg, (
         f"cap error must keep the marker substring; got: {msg}"
     )
-    # Actionable levers — must call out image-downscale for VLM users.
+    # Recommend image downscaling and the vision budget, not the unsafe
+    # prefill-step-size advice.
     assert "downscale the image" in msg, (
         f"cap error must suggest image downscale; got: {msg}"
     )
-    assert "--prefill-step-size" in msg, (
-        f"cap error must mention --prefill-step-size for the text path; got: {msg}"
-    )
+    assert "--prefill-step-size" not in msg
+    assert "--vision-prefill-token-budget" in msg
 
 
 def test_per_batch_cap_does_not_fail_at_default_on_typical_screenshot(
@@ -1848,6 +1848,47 @@ def test_preprocess_request_no_key_for_unsupported_model(monkeypatch):
     )
     gen._preprocess_request(req)
     assert req.vision_feature_key is None
+
+
+def test_pixel_cache_hit_restores_media_digest_cap(monkeypatch):
+    import rapid_mlx.models.mlx_vlm_vendored.inputs as vlm_inputs
+
+    prepare = MagicMock(
+        return_value={
+            "input_ids": mx.array([1, 2, 3]),
+            "pixel_values": mx.zeros((1, 3, 4, 4)),
+        }
+    )
+    monkeypatch.setattr(vlm_inputs, "prepare_inputs", prepare)
+    gen = MLLMBatchGenerator(
+        model=_RecordingModel(), processor=object(), enable_vision_cache=True
+    )
+    gen.vision_max_pixels = 4096
+    monkeypatch.setattr(gen, "_should_stamp_media_content_key", lambda: True)
+    image = _png_data_uri((10, 20, 30))
+    cold = MLLMBatchRequest(uid=0, request_id="cold", prompt="p", images=[image])
+    warm = MLLMBatchRequest(uid=1, request_id="warm", prompt="p", images=[image])
+
+    gen._preprocess_request(cold)
+    gen._preprocess_request(warm)
+
+    assert prepare.call_count == 1
+    assert cold.media_pixel_cap == warm.media_pixel_cap == 4096
+    assert gen._media_identity_digest(cold) == gen._media_identity_digest(warm)
+
+
+def test_pixel_cache_round_trips_media_pixel_cap(tmp_path):
+    from rapid_mlx.vision_embedding_cache import VisionEmbeddingCache
+
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    cache = VisionEmbeddingCache()
+    pixels = mx.ones((1, 2, 4))
+    cache.set_pixel_cache(
+        [str(image)], "prompt", pixels, mx.array([1, 2]), media_pixel_cap=4096
+    )
+
+    assert cache.get_pixel_cache([str(image)], "prompt").media_pixel_cap == 4096
 
 
 # --------------------------------------------------------------------------- #

@@ -291,4 +291,16 @@ struct CommunityBenchmarkBranchTests {
         #expect(offline?.title == "Community data unavailable")
         #expect(offline?.body.contains("Running and publishing still work") == true)
     }
+    @Test("Bounded coverage and withheld comparison use consistent copy")
+    func boundedCoverageAndComparison() {
+        let branch = CommunityContributionBranch.strengthen(observationCount: 1, isAtLeast: true)
+        #expect(CommunityBenchmarkCopy.readyInvitation(branch: branch, scope: Self.scope).body.contains("at least 1 published result exists"))
+        #expect(CommunityBenchmarkCopy.publishInvitation(branch: branch, scope: Self.scope).body.contains("at least 1 published result exists"))
+        for reason in [CommunityUnavailableReason.boundedFeed, .ambiguousIdentity, .incompleteAggregate, .invalidCount] {
+            let placeholder = CommunityBenchmarkCopy.comparisonPlaceholder(branch: .unknown(.unavailable(reason)), scope: Self.scope)
+            #expect(placeholder?.title == "Comparison statistics not available")
+            #expect(placeholder?.body == reason.message)
+        }
+    }
+
 }

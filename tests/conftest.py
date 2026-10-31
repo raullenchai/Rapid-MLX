@@ -18,6 +18,60 @@ from pathlib import Path
 
 import pytest
 
+# Pytest updates PYTEST_CURRENT_TEST itself. The other names are set on first
+# import by cv2, mflux and rapid_mlx.benchmark, mlx_lm, mlx_vlm, mlx_audio,
+# mlx_video and torchvision; this was found by importing every installed package
+# in a fresh interpreter and diffing os.environ. On Linux, cv2 also sets the
+# QT_QPA_* names and rewrites an existing LD_LIBRARY_PATH. These names are always
+# restored but never reported because which test triggers the first import
+# depends on scheduling.
+_IMPORT_SIDE_EFFECT_ENV_VARS = frozenset(
+    {
+        "LD_LIBRARY_PATH",
+        "PYTEST_CURRENT_TEST",
+        "QT_QPA_FONTDIR",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "TOKENIZERS_PARALLELISM",
+        "TORCHINDUCTOR_CACHE_DIR",
+        "TRANSFORMERS_NO_ADVISORY_WARNINGS",
+        "TRANSFORMERS_VERBOSITY",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _aaa_env_leak_guard(request):
+    """Restore the environment after all function-scoped fixtures tear down."""
+    before = dict(os.environ)
+    yield
+    after = dict(os.environ)
+    before.pop("PYTEST_CURRENT_TEST", None)
+    after.pop("PYTEST_CURRENT_TEST", None)
+    added = sorted(after.keys() - before.keys())
+    removed = sorted(before.keys() - after.keys())
+    changed = sorted(
+        key for key in before.keys() & after.keys() if before[key] != after[key]
+    )
+    for key in added:
+        del os.environ[key]
+    for key in removed + changed:
+        os.environ[key] = before[key]
+    reported_added = [key for key in added if key not in _IMPORT_SIDE_EFFECT_ENV_VARS]
+    reported_removed = [
+        key for key in removed if key not in _IMPORT_SIDE_EFFECT_ENV_VARS
+    ]
+    reported_changed = [
+        key for key in changed if key not in _IMPORT_SIDE_EFFECT_ENV_VARS
+    ]
+    if (
+        reported_added or reported_removed or reported_changed
+    ) and not request.node.get_closest_marker("allow_env_leak"):
+        pytest.fail(
+            f"Environment leak: added={reported_added}, "
+            f"removed={reported_removed}, changed={reported_changed}",
+            pytrace=False,
+        )
+
 
 @pytest.fixture(autouse=True)
 def _disable_catalog_memory_preflight(request, monkeypatch):

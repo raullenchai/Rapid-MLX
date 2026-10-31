@@ -1136,7 +1136,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "``rapid-mlx serve``. Default: 120 (2/sec) — high enough for "
             "tool-using power users and Beam-mode parallel completions, "
             "low enough that a leaked share key can't burst-DoS the "
-            "publisher's M3. Set 0 to disable the cap entirely. "
+            "publisher's Mac. Set 0 to disable the cap entirely. "
             "(``--quicksilver`` mode leaves the cap off by default: "
             "pool metering is gateway-side.)"
         ),

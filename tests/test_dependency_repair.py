@@ -16,6 +16,8 @@ from rapid_mlx.runtime import optional_runtime
 
 @pytest.fixture
 def environment(monkeypatch):
+    monkeypatch.setenv("RAPID_MLX_DEPENDENCY_REPAIR_RETRIED", "")
+    monkeypatch.delenv("RAPID_MLX_DEPENDENCY_REPAIR_RETRIED", raising=False)
     monkeypatch.setattr(
         repair.metadata, "requires", lambda _: ["tiktoken>=0.5", "pyyaml>=6"]
     )

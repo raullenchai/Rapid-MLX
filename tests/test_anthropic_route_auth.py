@@ -256,7 +256,7 @@ def test_anthropic_engine_failure_emits_failed_inference(anthropic_client, monke
         # template 400, and telemetry must say template_error, not abort.
         ("chat template render aborted", 400, "template_error"),
         # No 400 predicate matches: the abort category is still recorded.
-        ("Metal: out of memory", None, "insufficient_memory"),
+        ("Metal: out of memory", 503, "insufficient_memory"),
     ],
 )
 def test_anthropic_failure_class_follows_the_route_order(
