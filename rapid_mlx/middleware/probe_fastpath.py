@@ -63,6 +63,7 @@ import logging
 from typing import Any
 
 from ..config import get_config
+from ..routes.retrieval_health import retrieval_model_ids
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +110,14 @@ def _build_healthz_payload() -> tuple[int, bytes]:
     diverge from the audited route.
     """
     cfg = get_config()
+    retrieval_models = retrieval_model_ids(cfg)
+    model_name = retrieval_models[0] if retrieval_models else cfg.model_name
     if cfg.draining:
         payload = {
             "status": "draining",
             "ready": False,
             "model_loaded": cfg.model_loaded,
-            "model_name": cfg.model_name,
+            "model_name": model_name,
         }
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         return 503, body
@@ -122,7 +125,7 @@ def _build_healthz_payload() -> tuple[int, bytes]:
         "status": "healthy",
         "ready": bool(cfg.ready),
         "model_loaded": cfg.model_loaded,
-        "model_name": cfg.model_name,
+        "model_name": model_name,
     }
     # ``separators`` strips whitespace — shaves a handful of bytes and
     # microseconds off the json.dumps call. The output is still valid
