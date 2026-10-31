@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import copy
+import importlib
 import importlib.util
 import ipaddress
 import os
@@ -71,6 +72,23 @@ def _aaa_env_leak_guard(request):
             f"removed={reported_removed}, changed={reported_changed}",
             pytrace=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _restore_hf_progress_bar_states():
+    """Keep Hugging Face's process-global progress settings test-local."""
+    try:
+        tqdm_module = importlib.import_module("huggingface_hub.utils.tqdm")
+        states = getattr(tqdm_module, "progress_bar_states", None)
+    except ImportError:
+        states = None
+    if states is None:
+        yield
+        return
+    before = dict(states)
+    yield
+    states.clear()
+    states.update(before)
 
 
 @pytest.fixture(autouse=True)
