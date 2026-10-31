@@ -19,16 +19,21 @@ VENV_BACKUP=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-BOLD='' DIM='' GREEN='' YELLOW='' RED='' RESET=''
+BOLD='' DIM='' GREEN='' YELLOW='' RESET=''
+STDERR_RED='' STDERR_DIM='' STDERR_RESET=''
 if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
-    BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' YELLOW='\033[33m' RED='\033[31m' RESET='\033[0m'
+    BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' YELLOW='\033[33m' RESET='\033[0m'
+fi
+if [ -t 2 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    STDERR_RED='\033[31m' STDERR_DIM='\033[2m' STDERR_RESET='\033[0m'
 fi
 
 info()  { printf "  ${BOLD}%s${RESET}\n" "$*"; }
 ok()    { printf "  ${GREEN}%s${RESET}\n" "$*"; }
 warn()  { printf "  ${YELLOW}%s${RESET}\n" "$*"; }
-err()   { printf "  ${RED}%s${RESET}\n" "$*" >&2; }
+err()   { printf "  ${STDERR_RED}%s${STDERR_RESET}\n" "$*" >&2; }
 dim()   { printf "  ${DIM}%s${RESET}\n" "$*"; }
+dim_err() { printf "  ${STDERR_DIM}%s${STDERR_RESET}\n" "$*" >&2; }
 
 # With curl | bash, stdin is installer source, not input for child commands.
 # Keep terminal input available for interactive runs; internal data pipelines
@@ -77,7 +82,7 @@ select_python() {
         [ "$minor" -le "$MAX_PYTHON_MINOR" ] || continue
         pyarch=$(run_install_command "$py" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
         if [ "$pyarch" != "arm64" ]; then
-            dim "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)" >&2
+            dim_err "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)"
             continue
         fi
         printf '%s\n' "$py"
@@ -435,7 +440,7 @@ uv_config_absent() {
     while :; do
         [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
         if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
-            if grep -Fq '[tool.uv' "$dir/pyproject.toml" 2>/dev/null; then
+            if grep -Eq "^[[:space:]]*(\[{1,2}[[:space:]]*tool[[:space:]]*\.[[:space:]]*(\"uv\"|'uv'|uv)[[:space:]]*[].]|tool[[:space:]]*\.[[:space:]]*(\"uv\"|'uv'|uv)[[:space:]]*[.=])" "$dir/pyproject.toml" 2>/dev/null; then
                 return 1
             else
                 result=$?

@@ -42,6 +42,38 @@ def test_no_colour_on_pipe(term):
     assert b"\x1b" not in result.stdout + result.stderr
 
 
+def test_stderr_colour_independent_of_stdout():
+    master, slave = pty.openpty()
+    try:
+        result = run_bash(
+            "err error; dim_err detail",
+            env={"TERM": "xterm", "NO_COLOR": ""},
+            stdout=slave,
+            stderr=subprocess.PIPE,
+        )
+        assert result.returncode == 0
+        assert b"\x1b" not in result.stderr
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_stderr_terminal_colour_with_stdout_captured():
+    master, slave = pty.openpty()
+    try:
+        result = run_bash(
+            "err error; dim_err detail",
+            env={"TERM": "xterm", "NO_COLOR": ""},
+            stdout=subprocess.PIPE,
+            stderr=slave,
+        )
+        assert result.returncode == 0
+        assert os.read(master, 4096).count(b"\x1b") == 4
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
 @pytest.mark.parametrize(
     "term,no_color,expected",
     [("xterm", "", True), ("dumb", "", False), ("xterm", "1", False), ("", "", False)],
@@ -219,3 +251,25 @@ run_package_command uv pip install
         result.stdout
         == f"{env.get('UV_CONFIG_FILE', 'unset')}|{env.get('UV_NO_CONFIG', 'unset')}|pip install\n"
     )
+
+
+@pytest.mark.parametrize(
+    "content,absent",
+    [
+        ('[tool."uv"]\n', False),
+        ("[tool.'uv']\n", False),
+        ("[ tool . uv ]\n", False),
+        ('[[ tool . "uv" . index ]]\n', False),
+        ('tool.uv.index = "example"\n', False),
+        ("[tool.ruff]\n", True),
+    ],
+)
+def test_uv_pyproject_spellings(tmp_path, content, absent):
+    (tmp_path / "pyproject.toml").write_text(content)
+    result = run_bash(
+        "uv_config_absent",
+        env={"XDG_CONFIG_HOME": str(tmp_path / "config"), "XDG_CONFIG_DIRS": ""},
+        cwd=tmp_path,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) == absent
