@@ -74,8 +74,6 @@ def test_wav_duration_does_not_require_optional_soundfile(tmp_path):
 
 
 def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
-    from mlx_audio.stt import utils
-
     from rapid_mlx.audio import stt
 
     path = tmp_path / "audio.m4a"
@@ -91,7 +89,14 @@ def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
         return SimpleNamespace(stdout="2.75\n")
 
     monkeypatch.setattr(stt.subprocess, "run", run)
-    monkeypatch.setattr(utils, "load_audio", lambda _: pytest.fail("unexpected decode"))
+    try:
+        from mlx_audio.stt import utils
+    except ImportError:  # no-MLX hosts cannot decode at all
+        utils = None
+    if utils is not None:
+        monkeypatch.setattr(
+            utils, "load_audio", lambda _: pytest.fail("unexpected decode")
+        )
     assert stt._audio_duration_seconds(str(path)) == 2.75
     assert calls[0][0] == [
         "/usr/bin/ffprobe",
