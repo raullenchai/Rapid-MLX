@@ -249,6 +249,13 @@ def test_t2_forced_prefix_deepseek_v31_inserts_envelope():
     assert out.endswith("<｜tool▁sep｜>")
 
 
+def test_t2_forced_prefix_deepseek_v31_accepts_128_character_name():
+    name = "x" * 128
+    out = _forced_tool_call_prefix("deepseek_v31", name)
+    assert out is not None
+    assert f"<｜tool▁call▁begin｜>{name}<｜tool▁sep｜>" in out
+
+
 def test_t2_forced_prefix_deepseek_rejects_unsafe_tool_names():
     """DeepSeek non-JSON envelope only supports conservative tool names."""
 
@@ -257,7 +264,7 @@ def test_t2_forced_prefix_deepseek_rejects_unsafe_tool_names():
         "bad\nname",
         'bad"quote',
         "bad.name",
-        "x" * 65,
+        "x" * 129,
         "bad<tool_call>",
     ):
         assert _forced_tool_call_prefix("deepseek_v31", name) is None
@@ -292,6 +299,14 @@ def test_t2_forced_prefix_deepseek_v3_emits_v3_shape():
     assert out.endswith("```json\n")
 
 
+def test_t2_forced_prefix_deepseek_v3_accepts_128_character_name():
+    name = "x" * 128
+    out = _forced_tool_call_prefix("deepseek_v3", name)
+    assert out is not None
+    assert f"<｜tool▁call▁begin｜>function<｜tool▁sep｜>{name}" in out
+    assert out.endswith("```json\n")
+
+
 def test_t2_forced_prefix_deepseek_v1_still_returns_none():
     """The V1 ``deepseek`` / ``deepseek_r1`` parsers' body shapes are
     not auto-detected. We intentionally did NOT add them to the
@@ -311,7 +326,7 @@ def test_t2_forced_prefix_deepseek_v3_rejects_unsafe_tool_names():
         "bad\nname",
         'bad"quote',
         "bad.name",
-        "x" * 65,
+        "x" * 129,
         "bad<tool_call>",
     ):
         assert _forced_tool_call_prefix("deepseek_v3", name) is None

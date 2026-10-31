@@ -13,7 +13,7 @@ import math
 import re
 import time
 import uuid
-from typing import Literal, SupportsFloat
+from typing import ClassVar, Literal, SupportsFloat
 
 from pydantic import (
     BaseModel,
@@ -1078,14 +1078,10 @@ class ToolCall(BaseModel):
     function: FunctionCall
 
 
-# F-035 / F-146: OpenAI function-name spec — non-empty, ≤64 chars,
-# ASCII alphanumerics + ``_`` + ``-``. Same regex Anthropic and OpenAI
-# publish in their tool-definition schemas. Defined at module scope so
-# the request-level validator below and any future direct
-# ``ToolDefinition`` consumers share one source of truth. A single
-# constraint covers the whole space the F-035 / F-146 fuzz exposed
-# (empty / emoji / 10000-char / shell-metachar names all rejected).
+# OpenAI and Anthropic share a charset but have different name length limits.
 _FUNCTION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_ANTHROPIC_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+MAX_TOOL_NAME_LENGTH = 128
 
 
 # R10-H6 (R9-H4 carry) — accepted ``type`` aliases for the Computer-Use
@@ -1142,6 +1138,10 @@ def _synthesize_computer_use_function(tool_data: dict) -> dict:
 
 class ToolDefinition(BaseModel):
     """Definition of a tool that can be called by the model."""
+
+    _name_pattern: ClassVar[re.Pattern] = _FUNCTION_NAME_PATTERN
+    _name_max_length: ClassVar[int] = 64
+    _name_spec: ClassVar[str] = "OpenAI spec"
 
     type: str = "function"
     # R10-H6: ``function`` is optional at the wire level so the
@@ -1207,7 +1207,7 @@ class ToolDefinition(BaseModel):
         if (
             name is None
             or not isinstance(name, str)
-            or not _FUNCTION_NAME_PATTERN.match(name)
+            or not self._name_pattern.fullmatch(name)
         ):
             # D-ENVELOPE-FIELD-LEAK sibling: do NOT embed ``{name!r}``
             # — the regex pattern accepts identifier-shaped bytes
@@ -1217,8 +1217,9 @@ class ToolDefinition(BaseModel):
             # rule; the operator log captures the literal value if
             # needed.
             raise ValueError(
-                "function.name must be a non-empty string of 1-64 characters "
-                "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec)."
+                f"function.name must be a non-empty string of 1-{self._name_max_length} characters "
+                f"matching ^[a-zA-Z0-9_-]{{1,{self._name_max_length}}}$ "
+                f"(per {self._name_spec})."
             )
         # D-TOOL-RECUR: reject a ``function.parameters`` (JSON Schema)
         # whose structural nesting exceeds ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``
@@ -1251,6 +1252,14 @@ class ToolDefinition(BaseModel):
                     "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH)."
                 )
         return self
+
+
+class AnthropicToolDefinition(ToolDefinition):
+    """Tool definition using the Anthropic Messages API name limit."""
+
+    _name_pattern: ClassVar[re.Pattern] = _ANTHROPIC_TOOL_NAME_PATTERN
+    _name_max_length: ClassVar[int] = MAX_TOOL_NAME_LENGTH
+    _name_spec: ClassVar[str] = "Anthropic Messages API"
 
 
 # =============================================================================
