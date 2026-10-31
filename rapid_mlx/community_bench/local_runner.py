@@ -681,6 +681,9 @@ def _run_image(
         alias,
         boot_timeout_s=600,
         isolate_process_group=isolate_process_group,
+        echo_log=sys.stderr
+        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+        else None,
     ) as server:
         _stage_finished(progress, boot_started, "Server ready")
         endpoint = f"{server['base_url']}/images/generations"
@@ -765,6 +768,9 @@ def _run_video(
         # delegates to a backend default that may change between releases.
         extra_env={"RAPID_MLX_WAN_STEPS": str(case["steps"])},
         isolate_process_group=isolate_process_group,
+        echo_log=sys.stderr
+        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+        else None,
     ) as server:
         _stage_finished(progress, boot_started, "Server ready")
         _report(progress, f"{case['case_id']:<16} round 1/1  generating...")

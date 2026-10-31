@@ -2463,6 +2463,26 @@ def test_inherit_process_group_verification_matches_real_topology(
     assert "model-that-does-not-exist" in dedicated
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_image_server_log_echo(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("RAPID_MLX_BENCH_SERVER_LOG_ECHO", "1")
+    else:
+        monkeypatch.delenv("RAPID_MLX_BENCH_SERVER_LOG_ECHO", raising=False)
+
+    class CapturedError(Exception):
+        pass
+
+    def serve(alias, **kwargs):
+        assert kwargs["echo_log"] is (sys.stderr if enabled else None)
+        raise CapturedError
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr("rapid_mlx.cli._check_alias_min_memory", lambda *a, **kw: None)
+    with pytest.raises(CapturedError):
+        local_runner._run_image("example-image")
+
+
 def test_run_local_stops_when_image_warmup_is_cancelled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Cancellation cleans up benchmark servers and reports a conventional exit."""
 
+import fcntl
+import io
 import json
 import os
 import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +19,316 @@ import pytest
 from rapid_mlx.bench import _server
 from rapid_mlx.community_bench import cli
 from rapid_mlx.community_bench.acceleration import AccelerationRequest
+
+
+@pytest.mark.parametrize("echo", [True, False])
+def test_serve_echoes_real_child_log(monkeypatch, echo, capsys):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    output = io.StringIO()
+    with _server.serve("fake", echo_log=output if echo else None):
+        pass
+    assert ("ENGINE-DEBUG-LINE" in output.getvalue()) is echo
+    assert "ENGINE-DEBUG-LINE" not in capsys.readouterr().err
+
+
+def test_serve_echoes_child_log_to_pipe(monkeypatch):
+    real_popen = subprocess.Popen
+    real_write = os.write
+    writes = []
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    read_fd, write_fd = os.pipe()
+
+    def write(fd, data):
+        if threading.current_thread().name == "rapid-mlx-bench-log-echo":
+            writes.append((fd, data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_server.os, "write", write)
+    try:
+        with (
+            os.fdopen(write_fd, "w") as output,
+            _server.serve("fake", echo_log=output),
+        ):
+            assert select.select([read_fd], [], [], 3)[0]
+            assert b"ENGINE-DEBUG-LINE\n" in os.read(read_fd, 4096)
+        assert any(b"ENGINE-DEBUG-LINE\n" in data for _, data in writes)
+        assert all(fd != write_fd for fd, _ in writes)
+    finally:
+        os.close(read_fd)
+
+
+def test_serve_drains_child_log_after_stop(monkeypatch):
+    real_popen = subprocess.Popen
+    real_write = os.write
+    started = threading.Event()
+    child = None
+    expected = (
+        b"".join(f"line {i:03d} ".encode() + b"x" * 80 + b"\n" for i in range(100))
+        + b"partial last line"
+    )
+    script = f"import sys; sys.stdout.buffer.write({expected!r}); sys.stdout.flush()"
+
+    def popen(cmd, **kwargs):
+        nonlocal child
+        child = real_popen([sys.executable, "-c", script], **kwargs)
+        return child
+
+    monkeypatch.setattr(_server.subprocess, "Popen", popen)
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    read_fd, write_fd = os.pipe()
+    received = bytearray()
+
+    def slow_write(fd, data):
+        if threading.current_thread().name == "rapid-mlx-bench-log-echo":
+            if not started.is_set():
+                started.set()
+                time.sleep(0.3)
+            return real_write(fd, data[:16])
+        return real_write(fd, data)
+
+    def read_output():
+        while chunk := os.read(read_fd, 4096):
+            received.extend(chunk)
+
+    monkeypatch.setattr(_server.os, "write", slow_write)
+    reader = threading.Thread(target=read_output)
+    reader.start()
+    try:
+        with (
+            os.fdopen(write_fd, "w") as output,
+            _server.serve("fake", echo_log=output),
+        ):
+            assert started.wait(3)
+            assert child.wait(timeout=3) == 0
+        reader.join(timeout=3)
+        assert not reader.is_alive()
+        assert bytes(received) == expected
+        assert not any(
+            t.name == "rapid-mlx-bench-log-echo" for t in threading.enumerate()
+        )
+    finally:
+        reader.join(timeout=3)
+        os.close(read_fd)
+
+
+def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
+    real_dup = os.dup
+    real_write = os.write
+    duplicated = []
+    writes = []
+    times = iter([0.0, 0.0, 0.0, 2.0])
+
+    class DeferredThread:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            self.target()
+
+    def dup(fd):
+        duplicated.append(real_dup(fd))
+        return duplicated[-1]
+
+    def write(fd, data):
+        writes.append((fd, data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(_server.subprocess, "Popen", lambda *args, **kwargs: object())
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    monkeypatch.setattr(_server, "_terminate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(_server.os, "dup", dup)
+    monkeypatch.setattr(_server.os, "write", write)
+    monkeypatch.setattr(_server.time, "monotonic", lambda: next(times, 2.0))
+    monkeypatch.setattr(_server.select, "select", lambda r, w, x, timeout: ([], w, []))
+    log_path = tmp_path / "server.log"
+    read_fd, write_fd = os.pipe()
+    try:
+        with os.fdopen(write_fd, "w") as output:
+            with _server.serve("fake", log_path=log_path, echo_log=output):
+                log_path.write_bytes(b"backlog")
+            assert writes == []
+            assert len(duplicated) == 1 and duplicated[0] != write_fd
+            with pytest.raises(OSError):
+                os.fstat(duplicated[0])
+            assert real_write(write_fd, b"usable") == 6
+            assert os.read(read_fd, 6) == b"usable"
+    finally:
+        os.close(read_fd)
+
+
+def test_serve_stops_echo_when_pipe_is_full(monkeypatch):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    read_fd, write_fd = os.pipe()
+    output = None
+    try:
+        flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        fcntl.fcntl(write_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            while True:
+                os.write(write_fd, b"x" * 4096)
+        except BlockingIOError:
+            pass
+        finally:
+            fcntl.fcntl(write_fd, fcntl.F_SETFL, flags)
+
+        output = os.fdopen(write_fd, "w")
+        with _server.serve("fake", echo_log=output):
+            echo_thread = next(
+                thread
+                for thread in threading.enumerate()
+                if getattr(getattr(thread, "_target", None), "__name__", "")
+                == "echo_output"
+            )
+            time.sleep(0.3)  # Let the echo attempt to write to the full pipe.
+            start = time.monotonic()
+        elapsed = time.monotonic() - start
+        echo_thread.join(timeout=3)
+        assert not echo_thread.is_alive(), "echo thread survived teardown"
+        assert not any(
+            thread.name == "rapid-mlx-bench-log-echo"
+            for thread in threading.enumerate()
+        )
+        assert elapsed < 6
+    finally:
+        os.close(read_fd)
+        if output is not None:
+            output.close()
+        else:
+            os.close(write_fd)
+
+
+def test_serve_teardown_with_blocked_echo(monkeypatch):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    monkeypatch.setattr(_server, "_ECHO_JOIN_TIMEOUT_S", 0.1, raising=False)
+    entered = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    class BlockingStream:
+        def write(self, text):
+            entered.set()
+            release.wait()
+
+        def flush(self):
+            pass
+
+    def run():
+        try:
+            with _server.serve("fake", echo_log=BlockingStream()):
+                assert entered.wait(3), "echo did not start"
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        worker.join(timeout=6)
+        assert not worker.is_alive(), "server teardown blocked on echo"
+        assert not errors
+    finally:
+        release.set()
+        worker.join(timeout=3)
+
+
+@pytest.mark.parametrize(
+    ("flag", "json_mode", "existing_level", "expected_level", "expected_echo"),
+    [
+        ("DEBUG", False, None, "DEBUG", "1"),
+        ("DEBUG", True, None, "DEBUG", None),
+        (None, False, None, "WARNING", None),
+        (None, False, "error", "ERROR", "1"),
+    ],
+)
+def test_cli_run_log_environment(
+    monkeypatch, flag, json_mode, existing_level, expected_level, expected_echo
+):
+    level_var = "RAPID_MLX_LOG_LEVEL"
+    echo_var = "RAPID_MLX_BENCH_SERVER_LOG_ECHO"
+    monkeypatch.delenv(level_var, raising=False)
+    if existing_level is not None:
+        monkeypatch.setenv(level_var, existing_level)
+    monkeypatch.setenv(echo_var, "previous")
+    observed = []
+
+    def run(*args, **kwargs):
+        observed.append((os.environ.get(level_var), os.environ.get(echo_var)))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_local", run)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
+    command_args = args(json_mode)
+    command_args.log_level = flag
+    assert cli.benchmark_command(command_args) == 130
+    assert observed == [(expected_level, expected_echo)]
+    assert os.environ.get(level_var) == existing_level
+    assert os.environ.get(echo_var) == "previous"
 
 
 def test_serve_interrupt_kills_unresponsive_group(monkeypatch, tmp_path):
