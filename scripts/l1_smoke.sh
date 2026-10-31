@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # L1 release-flow smoke — a SMALL-model GPU coherence + tool-call format check
-# for the FREE GitHub-hosted macos-14 runner. That runner has a real Metal GPU
+# for the FREE GitHub-hosted macos-15 runner. That runner has a real Metal GPU
 # (``mx.default_device()`` -> ``Device(gpu, 0)``), so MLX runs on the GPU there
 # for $0; its ~7GB RAM caps it at small models, not the 35B Studio (L2) tier.
 #

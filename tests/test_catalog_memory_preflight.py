@@ -19,15 +19,24 @@ _REAL_PROBE = preflight._mlx_recommended_working_set_bytes
 def offline_preflight(monkeypatch):
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
     monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
-    monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda *a, **k: pytest.fail("network lookup")
-    )
+    calls = []
+
+    def reject(name):
+        def lookup(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            raise RuntimeError("network lookup")
+
+        return lookup
+
+    monkeypatch.setattr("huggingface_hub.model_info", reject("model_info"))
     monkeypatch.setattr(
         "rapid_mlx._download_gate.estimate_repo_size_bytes",
-        lambda *a, **k: pytest.fail("network size lookup"),
+        reject("estimate_repo_size_bytes"),
     )
     with patch.object(preflight, "_emit_rejection") as emit:
+        emit.network_calls = calls
         yield emit
+    assert not calls, f"Unexpected network lookups: {calls!r}"
 
 
 def run(alias, ram, monkeypatch, **overrides):
@@ -262,3 +271,16 @@ def test_catalog_fit_unknown_profile(monkeypatch, raises):
     assert result.estimate_bytes is None
     assert result.fits is None
     assert result.fit_basis == "unknown"
+
+
+def test_offline_guard_records_swallowed_lookup(offline_preflight):
+    from huggingface_hub import model_info
+
+    try:
+        model_info("example", revision="main")
+    except Exception:
+        pass
+    assert offline_preflight.network_calls == [
+        ("model_info", ("example",), {"revision": "main"})
+    ]
+    offline_preflight.network_calls.clear()
