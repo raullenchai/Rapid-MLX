@@ -363,12 +363,30 @@ def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:
             e.family.lower().replace("_", "-"): e for e in _load_registry().values()
         }
         model_type = config.get("model_type")
-        if not isinstance(model_type, str):
-            model_type = config.get("architecture")
-        if isinstance(model_type, str):
-            template = families.get(model_type.lower().replace("_", "-"))
-            matches = [template] if template else []
-        else:
+        template = (
+            families.get(model_type.lower().replace("_", "-"))
+            if isinstance(model_type, str)
+            else None
+        )
+        matches = [template] if template else []
+        if not matches:
+            architectures = config.get("architectures")
+            if not isinstance(architectures, list):
+                architectures = []
+            if not isinstance(model_type, str):
+                architectures = [*architectures, config.get("architecture")]
+            matches = [
+                entry
+                for family, entry in families.items()
+                if any(
+                    isinstance(arch, str)
+                    and re.sub(r"[-_.]", "", arch.lower()).startswith(
+                        family.replace("-", "")
+                    )
+                    for arch in architectures
+                )
+            ]
+        if not matches and "model_type" not in config:
             tokens = re.split(
                 r"[-_. ]+", os.path.basename(os.path.normpath(path)).lower()
             )
@@ -408,10 +426,13 @@ def register_served_local_audio_entry(
     entry: AudioAliasEntry, path: str | None = None
 ) -> None:
     """Register the served folder for this process only."""
-    _LOCAL_AUDIO_ENTRIES[entry.alias.lower()] = entry
+    catalog = _load_registry()
+    if entry.alias.lower() not in catalog:
+        _LOCAL_AUDIO_ENTRIES[entry.alias.lower()] = entry
     _LOCAL_AUDIO_ENTRIES[entry.hf_id] = entry
     if path:
-        _LOCAL_AUDIO_ENTRIES[path] = entry
+        if path.lower() not in catalog:
+            _LOCAL_AUDIO_ENTRIES[path] = entry
         _LOCAL_AUDIO_ENTRIES[os.path.abspath(path)] = entry
 
 

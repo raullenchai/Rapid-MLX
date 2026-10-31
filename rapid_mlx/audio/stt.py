@@ -160,7 +160,11 @@ def _whisper_processor_source(
     model_name: str, n_mels: int | None, n_vocab: int | None
 ) -> str:
     """Choose processor assets compatible with the loaded Whisper model."""
-    if (Path(model_name).expanduser() / "preprocessor_config.json").is_file():
+    folder = Path(model_name).expanduser()
+    if (folder / "preprocessor_config.json").is_file() and (
+        (folder / "tokenizer.json").is_file()
+        or ((folder / "vocab.json").is_file() and (folder / "merges.txt").is_file())
+    ):
         return model_name
     if model_name in _WHISPER_PROCESSOR_SOURCE_MAP:
         return _WHISPER_PROCESSOR_SOURCE_MAP[model_name]

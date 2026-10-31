@@ -28,6 +28,15 @@ def test_whisper_processor_source(name, n_mels, n_vocab, expected):
     assert _whisper_processor_source(name, n_mels, n_vocab) == expected
 
 
+@pytest.mark.parametrize("assets", [("tokenizer.json",), ("vocab.json", "merges.txt")])
+def test_local_whisper_processor_requires_tokenizer_assets(tmp_path, assets):
+    (tmp_path / "preprocessor_config.json").touch()
+    assert _whisper_processor_source(str(tmp_path), 80, 51865) == "openai/whisper-base"
+    for asset in assets:
+        (tmp_path / asset).touch()
+    assert _whisper_processor_source(str(tmp_path), 80, 51865) == str(tmp_path)
+
+
 @pytest.mark.parametrize("disabled", [True, False])
 def test_local_whisper_processor_uses_model_dimensions(monkeypatch, tmp_path, disabled):
     import sys

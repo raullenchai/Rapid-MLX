@@ -36,6 +36,19 @@ def test_bad_config(tmp_path):
         ("Kokoro-82M-bf16", {"model_type": "qwen3"}, None),
         ("kokoro", {"model_type": "qwen3", "architecture": "kokoro"}, None),
         ("generic", {"model_type": "NEMOTRON-ASR"}, ("stt", "nemotron_asr")),
+        (
+            "generic",
+            {
+                "model_type": "unknown",
+                "architectures": ["WhisperForConditionalGeneration"],
+            },
+            ("stt", "whisper"),
+        ),
+        (
+            "whisper-model",
+            {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+            None,
+        ),
     ],
 )
 def test_local_folder_resolution_order(tmp_path, name, config, expected):
@@ -44,6 +57,19 @@ def test_local_folder_resolution_order(tmp_path, name, config, expected):
     (folder / "config.json").write_text(json.dumps(config))
     entry = registry.resolve_local_audio_folder(str(folder) + "/")
     assert ((entry.type, entry.family) if entry else None) == expected
+
+
+def test_local_folder_does_not_shadow_catalog_alias(tmp_path, monkeypatch):
+    folder = tmp_path / "Whisper-Large-V3"
+    folder.mkdir()
+    (folder / "config.json").write_text('{"model_type":"whisper"}')
+    monkeypatch.setattr(registry, "_LOCAL_AUDIO_ENTRIES", {})
+    catalog = registry.resolve_audio_alias("whisper-large-v3")
+    entry = registry.resolve_local_audio_folder(str(folder))
+    registry.register_served_local_audio_entry(entry, str(folder))
+    assert catalog is not None
+    assert registry.resolve_audio_alias("WHISPER-LARGE-V3") == catalog
+    assert registry.resolve_audio_alias(str(folder)) == entry
 
 
 def test_route_local_and_default(tmp_path, monkeypatch):
@@ -296,6 +322,8 @@ def test_local_snapshot_adapter_and_whisper_processor(tmp_path, monkeypatch):
     assert _resolve_indextts_snapshot(str(tmp_path)) == tmp_path
     assert _whisper_processor_source(str(tmp_path), 80, 51865) == "openai/whisper-base"
     (tmp_path / "preprocessor_config.json").write_text("{}")
+    assert _whisper_processor_source(str(tmp_path), 80, 51865) == "openai/whisper-base"
+    (tmp_path / "tokenizer.json").touch()
     assert _whisper_processor_source(str(tmp_path), 80, 51865) == str(tmp_path)
 
 
