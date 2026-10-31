@@ -149,13 +149,43 @@ def test_bare_repo_without_ref_fails_with_method_neutral_error(fake_cache):
 
 def test_native_mtp_pinned_sidecar_path(fake_cache, monkeypatch):
     from rapid_mlx.speculative import serial_benchmark
-    from rapid_mlx.speculative.native_mtp.runtime import NativeMTPRuntime
+    from rapid_mlx.speculative.native_mtp.runtime import load_runtime
 
     repo, revision = "example/mtp", "b" * 40
     snapshot = fake_cache(repo, revision)
-    runtime = NativeMTPRuntime(
-        object(), repo, "target", revision, 4, drafter_path=str(snapshot)
+    mlx_vlm = ModuleType("mlx_vlm")
+    mlx_vlm.__path__ = []
+    speculative = ModuleType("mlx_vlm.speculative")
+    speculative.__path__ = []
+    upstream_drafters = ModuleType("mlx_vlm.speculative.drafters")
+    utils = ModuleType("mlx_vlm.utils")
+    drafters = ModuleType("rapid_mlx.models.mlx_vlm_vendored.speculative.drafters")
+    mlx_vlm.speculative = speculative
+    mlx_vlm.utils = utils
+    speculative.drafters = upstream_drafters
+    for module in (mlx_vlm, speculative, upstream_drafters, utils, drafters):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    def get_model_path(requested_repo, *, revision):
+        assert (requested_repo, revision) == (repo, "b" * 40)
+        return snapshot
+
+    monkeypatch.setattr(utils, "get_model_path", get_model_path, raising=False)
+    monkeypatch.setattr(
+        drafters,
+        "load_drafter",
+        lambda source, kind: (
+            SimpleNamespace(
+                config=SimpleNamespace(model_type="qwen3_5_mtp", block_size=4)
+            ),
+            "mtp",
+        ),
+        raising=False,
     )
+    runtime = load_runtime(
+        repo, target_revision="t" * 40, drafter_revision=revision, block_size=4
+    )
+    assert runtime.drafter_path == str(snapshot)
     monkeypatch.setattr(serial_benchmark, "_runtime_handle", lambda *args: args[5])
     facts = serial_benchmark.native_mtp_runtime_handle(
         None, None, runtime, None, pair=None, target_path=None
