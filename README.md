@@ -367,7 +367,7 @@ compute per second of footage, not real time.
 
 The dependency commands below use the official `install.sh` environment. For Homebrew or another install method, follow [optional extras](https://rapidmlx.com/docs/extras.html).
 
-44 audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
+Audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
 OpenAI SDK works unchanged.
 
 ```bash
@@ -657,7 +657,7 @@ and newer Macs; Rapid does not silently swap checkpoint precision.
 The pinned `ornith-1.5-122b-a10b-4bit` alias offers the publisher’s 122B hybrid MoE checkpoint on Macs with at least 96 GB unified memory. Install the `[vision]` runtime for its checkpoint loader; this alias qualifies text chat, streaming, tools, and thinking controls. Its download is about 69.6 GB. See the [October 27 qualification record](docs/engineering/performance/2026-10-27-trending-models.md) for results and the two excluded candidates.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (216 text + 13 image + 10 video + 44 audio aliases, 283 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

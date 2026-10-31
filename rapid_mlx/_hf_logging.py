@@ -47,6 +47,7 @@ than once, even concurrently, adds exactly one filter.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 
 # The logger huggingface_hub's ``_warn_on_warning_headers`` emits from:
@@ -120,6 +121,35 @@ def silence_hf_unauthenticated_warning() -> None:
             return
         filt = _DropUnauthenticatedAdvisory()
         setattr(filt, _FILTER_TAG, True)
+        logger.addFilter(filt)
+
+
+_TRANSFORMERS_FILTER_TAG = "_rapid_mlx_base_config_mismatch_filter"
+_BASE_CONFIG_MISMATCH = re.compile(
+    r"You are using a model of type \S+ to instantiate a model of type ``\."
+)
+
+
+class _DropTransformersBaseConfigMismatch(logging.Filter):
+    """Hide only the warning for the empty base-config target type."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.WARNING:
+            return True
+        try:
+            return _BASE_CONFIG_MISMATCH.search(record.getMessage()) is None
+        except Exception:
+            return True
+
+
+def silence_transformers_base_config_mismatch() -> None:
+    """Install the narrow filter on the logger that emits the warning."""
+    logger = logging.getLogger("transformers.configuration_utils")
+    with _INSTALL_LOCK:
+        if any(getattr(f, _TRANSFORMERS_FILTER_TAG, False) for f in logger.filters):
+            return
+        filt = _DropTransformersBaseConfigMismatch()
+        setattr(filt, _TRANSFORMERS_FILTER_TAG, True)
         logger.addFilter(filt)
 
 

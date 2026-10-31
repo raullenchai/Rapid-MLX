@@ -230,3 +230,22 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
         for logger, (level, filters) in zip(loggers, saved):
             logger.setLevel(level)
             logger.filters = filters
+
+
+def test_transformers_base_config_mismatch_filter_and_install():
+    from rapid_mlx._hf_logging import silence_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    saved = list(logger.filters)
+    try:
+        logger.filters = []
+        silence_transformers_base_config_mismatch()
+        silence_transformers_base_config_mismatch()
+        assert len(logger.filters) == 1
+        filt = logger.filters[0]
+        msg = "You are using a model of type `voxcpm2` to instantiate a model of type ``. This may be expected."
+        assert not filt.filter(_record(msg))
+        assert filt.filter(_record(msg.replace("type ``.", "type `llama`.")))
+        assert filt.filter(_record(msg, level=logging.ERROR))
+    finally:
+        logger.filters = saved

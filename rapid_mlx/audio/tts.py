@@ -719,6 +719,13 @@ class TTSEngine:
 
     def load(self) -> None:
         """Load the TTS model."""
+        try:
+            from .._hf_logging import silence_transformers_base_config_mismatch
+
+            silence_transformers_base_config_mismatch()
+        except Exception:
+            pass  # Logging setup must never prevent a model load.
+
         if self._loaded:
             return
 
