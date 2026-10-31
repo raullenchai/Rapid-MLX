@@ -1716,6 +1716,7 @@ def test_user_pip_install_upgrade_and_python_instructions(tmp_path, monkeypatch)
 
     import rapid_mlx
 
+    monkeypatch.setattr(vc, "_externally_managed", lambda: False)
     user_site = tmp_path / "site-packages"
     monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
     monkeypatch.setattr(
@@ -1739,3 +1740,91 @@ def test_user_pip_install_upgrade_and_python_instructions(tmp_path, monkeypatch)
     assert all("--user" not in line for line in instructions)
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
     assert "--user" not in vc.detect_install_method().upgrade_argv
+
+
+@pytest.mark.parametrize(
+    ("method", "argv", "label"),
+    [
+        ("brew", [], "Homebrew"),
+        ("install_sh", [], "one-line installer"),
+        ("uv", [], "uv tool"),
+        ("pipx", [], "pipx"),
+        ("pip", [], "pip"),
+        ("pip", ["pip", "install", "--user"], "pip --user"),
+        ("other", [], "unknown"),
+    ],
+)
+def test_install_method_label(method, argv, label):
+    assert vc.install_method_label(vc.InstallInfo(method, "", argv)) == label
+
+
+def test_pip_python_upgrade_uses_versioned_environment():
+    instructions = vc.python_upgrade_instructions(
+        vc.InstallInfo("pip", "", []), ">=3.12"
+    )
+    assert instructions[1] == (
+        "python3.12 -m venv ~/.venvs/rapid-mlx-py312 && "
+        "~/.venvs/rapid-mlx-py312/bin/pip install rapid-mlx"
+    )
+    assert instructions[2] == (
+        "Add ~/.venvs/rapid-mlx-py312/bin to PATH (or call it directly); "
+        "remove the old environment only after the new one works."
+    )
+
+
+@pytest.mark.parametrize(
+    "marker,venv,user",
+    [
+        (True, False, True),
+        (True, False, False),
+        (False, False, True),
+        (True, True, True),
+    ],
+)
+def test_pip_externally_managed_marker(tmp_path, monkeypatch, marker, venv, user):
+    import site
+    import sysconfig
+
+    import rapid_mlx
+
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    if marker:
+        (stdlib / "EXTERNALLY-MANAGED").touch()
+    user_site = tmp_path / "site-packages"
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: str(stdlib))
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setattr(
+        rapid_mlx,
+        "__file__",
+        str((user_site if user else tmp_path) / "rapid_mlx" / "__init__.py"),
+    )
+    monkeypatch.setattr(
+        vc.sys, "prefix", str(tmp_path / "venv") if venv else vc.sys.base_prefix
+    )
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    argv = vc.detect_install_method().upgrade_argv
+    assert ("--break-system-packages" in argv) == (marker and not venv)
+    assert ("--user" in argv) == (user and not venv)
+    if marker and not venv:
+        assert argv[argv.index("install") + 1] == "--break-system-packages"
+
+
+def test_externally_managed_handles_oserror(monkeypatch):
+    def fail(_name):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(vc.sysconfig, "get_path", fail)
+    assert vc._externally_managed() is False
+
+
+def test_installation_docs_identify_running_python():
+    from pathlib import Path
+
+    text = (
+        Path(__file__).resolve().parents[1] / "docs/getting-started/installation.md"
+    ).read_text()
+    assert (
+        "Check `rapid-mlx --version`, then run `rapid-mlx doctor --only python`: its first check line (for example `✓ Python 3.11.9`) is the Python your install actually runs."
+        in text
+    )

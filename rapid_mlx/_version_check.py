@@ -51,6 +51,7 @@ import json
 import os
 import re
 import sys
+import sysconfig
 import time
 import urllib.error
 import urllib.parse
@@ -703,6 +704,18 @@ class InstallInfo:
         self.binary_path = binary_path
 
 
+def install_method_label(info: InstallInfo) -> str:
+    if info.method == "pip" and "--user" in info.upgrade_argv:
+        return "pip --user"
+    return {
+        "brew": "Homebrew",
+        "install_sh": "one-line installer",
+        "uv": "uv tool",
+        "pipx": "pipx",
+        "pip": "pip",
+    }.get(info.method, "unknown")
+
+
 def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list[str]:
     bounds = re.findall(r"(?:^|,)\s*(>=|>|==)\s*(\d+)\.(\d+)(\.\*)?", requires_python)
     versions = [
@@ -741,9 +754,11 @@ def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list
         ]
     if info.method == "unknown" and info.upgrade_command.startswith("sudo pipx "):
         return [f"sudo pipx reinstall --global --python python{minor} rapid-mlx"]
+    venv = f"~/.venvs/rapid-mlx-py{minor.replace('.', '')}"
     return [
         f"Install Python {minor} or newer (e.g. `brew install python@{minor}`), then reinstall Rapid-MLX with it, e.g. in a new environment:",
-        f"python{minor} -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx",
+        f"python{minor} -m venv {venv} && {venv}/bin/pip install rapid-mlx",
+        f"Add {venv}/bin to PATH (or call it directly); remove the old environment only after the new one works.",
         f"or use the one-line installer: `{installer}`",
     ]
 
@@ -854,6 +869,13 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
     return bool(shebang) and Path(os.path.realpath(shebang)) == Path(
         os.path.realpath(sys.executable)
     )
+
+
+def _externally_managed() -> bool:
+    try:
+        return (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").is_file()
+    except OSError:
+        return False
 
 
 def detect_install_method() -> InstallInfo:
@@ -1004,6 +1026,8 @@ def detect_install_method() -> InstallInfo:
     package_file = Path(os.path.realpath(rapid_mlx.__file__))
     is_user = sys.prefix == sys.base_prefix and user_site in package_file.parents
     argv = [sys.executable, "-m", "pip", "install"]
+    if sys.prefix == sys.base_prefix and _externally_managed():
+        argv.append("--break-system-packages")
     if is_user:
         argv.append("--user")
     argv.extend(["--upgrade", "rapid-mlx"])
