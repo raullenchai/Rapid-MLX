@@ -11,6 +11,7 @@ from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
 from rapid_mlx.request import ClientRequestError, InferenceAbortedError
 from tests.test_chat_route_vlm_image import (
     _make_client_with_envelope,
+    _StubMLLMEngine,
     _StubOOMFailureEngine,
     _StubStreamingOOMFailureEngine,
 )
@@ -113,24 +114,90 @@ def test_openai_sdk_does_not_retry_memory_response():
         reset_config()
 
 
-@pytest.mark.parametrize("path", ["/v1/messages", "/v1/responses", "/v1/completions"])
-def test_memory_abort_mapping_preserves_header(path):
-    from fastapi import FastAPI
+class _AbortEngine(_StubMLLMEngine):
+    def __init__(self, error_kind):
+        super().__init__()
+        self.error_kind = error_kind
+        self.calls = 0
+
+    async def generate(self, **kwargs):
+        self.calls += 1
+        raise InferenceAbortedError("inference aborted", error_kind=self.error_kind)
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        raise InferenceAbortedError("inference aborted", error_kind=self.error_kind)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/completions", {"prompt": "hello"}),
+        (
+            "/v1/messages",
+            {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 8},
+        ),
+        ("/v1/responses", {"input": "hello"}),
+    ],
+)
+def test_memory_abort_mapping_preserves_header(path, payload, monkeypatch):
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import anthropic, completions, responses
+
+    engine = _AbortEngine("insufficient_memory")
+    client = _make_client_with_envelope(engine)
+    for route in (anthropic, completions, responses):
+        client.app.include_router(route.router)
+        monkeypatch.setattr(route, "_check_admission_or_503", lambda _engine: None)
+
+    async def wait_for_engine(coro, _request, timeout):
+        return await coro
+
+    for route in (anthropic, completions, responses):
+        monkeypatch.setattr(route, "_wait_with_disconnect", wait_for_engine)
+
+    try:
+        with client:
+            response = client.post(
+                path,
+                json={"model": "qwen3-vl-8b-4bit", "stream": False, **payload},
+            )
+        assert engine.calls == 1
+        assert response.status_code == 503
+        assert response.headers["x-should-retry"] == "false"
+        body = response.json()
+        if path == "/v1/messages":
+            assert body["type"] == "error"
+        assert body["error"]["code"] == "insufficient_memory"
+        assert "memory" in body["error"]["message"].lower()
+    finally:
+        reset_config()
+
+
+def test_completions_engine_abort_does_not_disable_retries(monkeypatch):
     from fastapi.testclient import TestClient
 
-    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
-    from rapid_mlx.request import inference_aborted_http_exception
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import completions
 
-    app = FastAPI()
-    install_exception_handlers(app)
+    engine = _AbortEngine("engine_aborted")
+    client = _make_client_with_envelope(engine)
+    client.app.include_router(completions.router)
+    client = TestClient(client.app, raise_server_exceptions=False)
+    monkeypatch.setattr(completions, "_check_admission_or_503", lambda _engine: None)
 
-    @app.get(path)
-    def fail():
-        raise inference_aborted_http_exception(
-            InferenceAbortedError("sanitized", error_kind="insufficient_memory")
-        )
+    async def wait_for_engine(coro, _request, timeout):
+        return await coro
 
-    response = TestClient(app).get(path)
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "insufficient_memory"
-    assert response.headers["x-should-retry"] == "false"
+    monkeypatch.setattr(completions, "_wait_with_disconnect", wait_for_engine)
+    try:
+        with client:
+            response = client.post(
+                "/v1/completions",
+                json={"model": "qwen3-vl-8b-4bit", "prompt": "hello", "stream": False},
+            )
+        assert engine.calls == 1
+        assert response.status_code == 500
+        assert "x-should-retry" not in response.headers
+    finally:
+        reset_config()
