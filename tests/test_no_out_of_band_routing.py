@@ -153,6 +153,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Local-only archive location for reproducible benchmark records. It
         # changes storage placement, never model/task/parser selection.
         "RAPID_MLX_BENCHMARK_HOME",
+        # Set by `benchmark run` for the duration of the command when the user
+        # asked for a log level: echoes the benchmark server's log to stderr.
+        # It changes diagnostics output only, never model or lane selection.
+        "RAPID_MLX_BENCH_SERVER_LOG_ECHO",
         # Qualification-only destination for generated token-ID evidence.
         # It changes audit storage, never model, parser, or serving-lane choice.
         "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
