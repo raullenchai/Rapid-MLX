@@ -13,7 +13,7 @@ appear after a successful call (for example #1676's DeepSeek-R1 ``str + dict``
 500), while deliberately making no assertion about the small model's answer.
 
 Companion to ``evals/coherence_gate.py``; both are driven by
-``scripts/l1_smoke.sh`` on the free macos-14 L1 runner. Requires a
+``scripts/l1_smoke.sh`` on the free macos-15 L1 runner. Requires a
 ``rapid-mlx serve`` already listening — it does not boot one.
 
 Exit codes:

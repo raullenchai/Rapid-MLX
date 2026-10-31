@@ -4890,6 +4890,7 @@ def test_apply_mtp_cli_reconciliation_accepts_explicit_qwen4_k2(monkeypatch):
     from rapid_mlx.cli import _apply_mtp_cli_model_type_reconciliation
     from rapid_mlx.scheduler import SchedulerConfig
 
+    monkeypatch.setenv("RAPID_MLX_QSA_INDEXED_SPLITK", "")
     monkeypatch.delenv("RAPID_MLX_QSA_INDEXED_SPLITK", raising=False)
     sc = SchedulerConfig(spec_decode="mtp", mtp_max_k=2)
     _apply_mtp_cli_model_type_reconciliation(
