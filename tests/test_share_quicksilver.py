@@ -3588,6 +3588,64 @@ def test_install_service_uses_running_install_when_path_is_older(
     assert plistlib.loads(path.read_bytes())["ProgramArguments"][0] == str(launcher)
 
 
+def test_install_service_rejects_sibling_venv_launcher_sharing_base_python(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    for name in ("a", "b"):
+        subprocess.run(
+            [
+                sys._base_executable or sys.executable,
+                "-m",
+                "venv",
+                "--without-pip",
+                str(tmp_path / name),
+            ],
+            check=True,
+        )
+        launcher = tmp_path / name / "bin" / "rapid-mlx"
+        launcher.write_text(f"#!{launcher.parent / 'python'}\n")
+        launcher.chmod(0o755)
+    launcher = tmp_path / "b" / "bin" / "rapid-mlx"
+    monkeypatch.setattr(sys, "executable", str(launcher.parent / "python"))
+    monkeypatch.setattr(
+        qs.shutil, "which", lambda _: str(tmp_path / "a" / "bin" / "rapid-mlx")
+    )
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    qs.install_service(_make_args(), "qwen3.6-35b", "qwen3.6-35b")
+    path = Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    assert plistlib.loads(path.read_bytes())["ProgramArguments"][0] == str(launcher)
+
+
+def test_service_launcher_preserves_own_venv_launcher_symlink(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    subprocess.run(
+        [
+            sys._base_executable or sys.executable,
+            "-m",
+            "venv",
+            "--without-pip",
+            str(tmp_path / "b"),
+        ],
+        check=True,
+    )
+    launcher = tmp_path / "b" / "bin" / "rapid-mlx"
+    launcher.write_text(f"#!{launcher.parent / 'python'}\n")
+    launcher.chmod(0o755)
+    link = tmp_path / "bin" / "rapid-mlx"
+    link.parent.mkdir()
+    link.symlink_to(launcher)
+    monkeypatch.setattr(sys, "executable", str(launcher.parent / "python"))
+    monkeypatch.setattr(qs.shutil, "which", lambda _: str(link))
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    assert qs._service_launcher() == str(link)
+
+
 def test_service_launcher_preserves_matching_path_symlink(
     tmp_path, monkeypatch, launcher_distribution
 ):

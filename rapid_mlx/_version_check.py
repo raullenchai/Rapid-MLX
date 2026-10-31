@@ -655,8 +655,23 @@ def prompt_upgrade_if_available() -> bool:
             print("\n  Interrupted.\n")
             return False
         if result.returncode == 0:
-            print("\nUpgrade complete. Please re-run your command.\n")
-            return True
+            new = installed_version_in_fresh_process(info)
+            parsed_new = _parse_version(new) if new is not None else None
+            target = _parse_version(latest_str)
+            if parsed_new is not None and target is not None and parsed_new >= target:
+                print(
+                    f"\nUpgrade complete: rapid-mlx {new}. Please re-run your command.\n"
+                )
+                return True
+            if new is None:
+                print(
+                    f"\nThe upgrade command finished, but the installed version could not be verified; continuing with rapid-mlx {installed_str}. Check with `rapid-mlx --version`.\n"
+                )
+            else:
+                print(
+                    f"\nThe upgrade command finished, but rapid-mlx is still {new} (expected {latest_str}); continuing with rapid-mlx {installed_str}.\n"
+                )
+            return False
         # Failed upgrade: return False so the caller continues booting with
         # the current version rather than exiting silently. The user has
         # been shown the exit code and can retry manually if they care.
@@ -860,6 +875,26 @@ def launcher_interpreter(first_line: str, second_line: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _python_environment(path: str) -> str:
+    """Identify the venv containing an interpreter, or its resolved executable."""
+    try:
+        current = os.path.abspath(path)
+        for _ in range(40):
+            directory = os.path.realpath(os.path.dirname(current))
+            root = os.path.dirname(directory)
+            if os.path.isfile(os.path.join(root, "pyvenv.cfg")):
+                return os.path.normcase(root)
+            if not os.path.islink(current):
+                break
+            target = os.readlink(current)
+            if not os.path.isabs(target):
+                target = os.path.join(os.path.dirname(current), target)
+            current = os.path.abspath(target)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _launcher_belongs_to_running_install(binary: str) -> bool:
     """Prove that a PATH launcher is owned by this interpreter's install.
 
@@ -885,7 +920,7 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
     shebang = launcher_interpreter(first_line, second_line)
     if not shebang:
         return False
-    return Path(os.path.realpath(shebang)) == Path(os.path.realpath(sys.executable))
+    return _python_environment(shebang) == _python_environment(sys.executable)
 
 
 def _externally_managed() -> bool:
