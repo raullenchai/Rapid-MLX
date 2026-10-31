@@ -340,6 +340,13 @@ struct ModelCacheActionsTests {
         #expect(usage.missingSizeCount == 0)
     }
 
+    @Test("aggregateOnDiskBytes: falls back to legacy size for zero bytes")
+    func aggregateZeroNumericSize() {
+        let entry = ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: "2.0 GiB", cached: true, sizeBytes: 0)
+        let usage = ModelCacheActions.aggregateOnDiskBytes([entry])
+        #expect(usage.totalBytes == 2_147_483_648)
+    }
+
     @Test("aggregateOnDiskBytes: nil totalBytes when no entry has a parseable size")
     func aggregateUnparseable() {
         let entries = [

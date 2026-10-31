@@ -36,6 +36,13 @@ struct ModelSizeTests {
         #expect(ModelSize.parseBytes("1.234,5 MB", locale: german) == 1_234_500_000)
     }
 
+    @Test func nonPositiveNumericSizeFallsBackToLegacy() {
+        for bytes in [Int64(0), -1] {
+            let entry = ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: "2.0 GiB", cached: true, sizeBytes: bytes)
+            #expect(entry.size?.byteCount == 2_147_483_648)
+        }
+    }
+
     @Test func cachedInventoryAndMergePreserveBytes() throws {
         let payload = #"{"cached":[{"alias":"a","repo":"org/a","subfolder":null,"size_bytes":787276896,"state":"ok","external":false}]}"#
         let rows = try #require(ModelCatalog.parseCachedJSON(payload))
