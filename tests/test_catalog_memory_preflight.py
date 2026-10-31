@@ -319,7 +319,30 @@ def test_image_at_floor_refuses_when_weights_exceed_gpu_budget(monkeypatch):
         alias, ram_bytes=32 * GIB, recommended_working_set_bytes=8 * GIB, cached=False
     )
     assert refusal.kind == "gpu_budget"
-    assert refusal.footprint_bytes == weights
+    assert refusal.footprint_bytes == result.estimate_bytes
+
+
+def test_image_at_floor_refuses_when_admission_charge_exceeds_gpu_budget(monkeypatch):
+    alias = "flux-schnell"
+    estimate = 20 * GIB
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: 4 * GIB)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models.measured_image_estimate_bytes",
+        lambda _: estimate,
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.recommendations.recommendation_footprint_gb", lambda _: None
+    )
+    result = preflight.catalog_memory_fit(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB
+    )
+    assert result.estimate_bytes == estimate
+    assert result.fits is False
+    refusal = preflight.catalog_memory_refusal(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB, cached=False
+    )
+    assert refusal.kind == "gpu_budget"
+    assert refusal.footprint_bytes == estimate
 
 
 def test_image_below_floor_refusal():

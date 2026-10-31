@@ -971,11 +971,12 @@ def catalog_memory_fit(
         if _enforced_memory_floor(profile, ram_bytes):
             fits, basis = False, "memory_floor"
         elif floor is not None and ram_bytes is not None and ram_bytes >= floor * _GIB:
+            footprint = weights if profile.modality == "text" else estimate
             fits = not (
                 recommended_working_set_bytes is not None
-                and weights is not None
+                and footprint is not None
                 and budget is not None
-                and weights > budget
+                and footprint > budget
             )
             basis = "memory_floor"
         elif profile.modality != "text" and floor is not None and ram_bytes is not None:
@@ -1033,7 +1034,7 @@ def catalog_memory_refusal(
             return None
         footprint = (
             size_bytes(profile.hf_path)
-            if result.fit_basis == "memory_floor"
+            if result.fit_basis == "memory_floor" and profile.modality == "text"
             else result.estimate_bytes
         )
         if footprint is None:
