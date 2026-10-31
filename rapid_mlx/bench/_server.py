@@ -31,11 +31,13 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TextIO
 
 from ..doctor.runner import REPO_ROOT, python_executable
 
@@ -83,6 +85,7 @@ def serve(
     model_path: str | Path | None = None,
     extra_env: Mapping[str, str] | None = None,
     isolate_process_group: bool = True,
+    echo_log: TextIO | None = None,
 ):
     """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
 
@@ -182,7 +185,30 @@ def serve(
             tmp_log.unlink(missing_ok=True)
         raise
 
+    stop_echo = threading.Event()
+    echo_thread = None
     try:
+        if echo_log is not None:
+
+            def echo_output() -> None:
+                with open(log_path or tmp_log, errors="replace") as reader:
+                    while not stop_echo.is_set():
+                        position = reader.tell()
+                        line = reader.readline()
+                        if line.endswith("\n"):
+                            echo_log.write(line)
+                            echo_log.flush()
+                        else:
+                            reader.seek(position)
+                            stop_echo.wait(0.2)
+                    remaining = reader.read()
+                    if remaining:
+                        echo_log.write(remaining)
+                        echo_log.flush()
+
+            echo_thread = threading.Thread(target=echo_output, daemon=True)
+            echo_thread.start()
+
         try:
             _wait_for_health(health_url, proc, boot_timeout_s)
         except ServerStartFailed as exc:
@@ -225,9 +251,14 @@ def serve(
                 grace_s=2 if cancelled else 10,
             )
         finally:
-            log_fh.close()
-            if tmp_log is not None:
-                tmp_log.unlink(missing_ok=True)
+            try:
+                if echo_thread is not None:
+                    stop_echo.set()
+                    echo_thread.join()
+            finally:
+                log_fh.close()
+                if tmp_log is not None:
+                    tmp_log.unlink(missing_ok=True)
 
 
 def _read_log_tail(log_path: Path | None, max_lines: int) -> str:

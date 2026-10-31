@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Cancellation cleans up benchmark servers and reports a conventional exit."""
 
+import io
 import json
 import os
 import select
@@ -16,6 +17,66 @@ import pytest
 from rapid_mlx.bench import _server
 from rapid_mlx.community_bench import cli
 from rapid_mlx.community_bench.acceleration import AccelerationRequest
+
+
+@pytest.mark.parametrize("echo", [True, False])
+def test_serve_echoes_real_child_log(monkeypatch, echo, capsys):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    output = io.StringIO()
+    with _server.serve("fake", echo_log=output if echo else None):
+        pass
+    assert ("ENGINE-DEBUG-LINE" in output.getvalue()) is echo
+    assert "ENGINE-DEBUG-LINE" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flag", "json_mode", "existing_level", "expected_level", "expected_echo"),
+    [
+        ("DEBUG", False, None, "DEBUG", "1"),
+        ("DEBUG", True, None, "DEBUG", None),
+        (None, False, None, "WARNING", None),
+        (None, False, "error", "ERROR", "1"),
+    ],
+)
+def test_cli_run_log_environment(
+    monkeypatch, flag, json_mode, existing_level, expected_level, expected_echo
+):
+    level_var = "RAPID_MLX_LOG_LEVEL"
+    echo_var = "RAPID_MLX_BENCH_SERVER_LOG_ECHO"
+    monkeypatch.delenv(level_var, raising=False)
+    if existing_level is not None:
+        monkeypatch.setenv(level_var, existing_level)
+    monkeypatch.setenv(echo_var, "previous")
+    observed = []
+
+    def run(*args, **kwargs):
+        observed.append((os.environ.get(level_var), os.environ.get(echo_var)))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_local", run)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
+    command_args = args(json_mode)
+    command_args.log_level = flag
+    assert cli.benchmark_command(command_args) == 130
+    assert observed == [(expected_level, expected_echo)]
+    assert os.environ.get(level_var) == existing_level
+    assert os.environ.get(echo_var) == "previous"
 
 
 def test_serve_interrupt_kills_unresponsive_group(monkeypatch, tmp_path):
