@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from rapid_mlx.audio import tts
 from rapid_mlx.config import get_config
 from rapid_mlx.routes import audio
 
@@ -22,6 +23,22 @@ from rapid_mlx.routes import audio
 )
 def test_preset_mapping(model, voice, valid, expected):
     assert audio._map_openai_preset_voice(model, voice, valid) == expected
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected"),
+    [("alloy", "af_alloy"), ("echo", "am_echo"), ("fable", "bm_fable")],
+)
+def test_kokoro_preset_mapping_matches_cached_snapshot(monkeypatch, preset, expected):
+    assert tts.KOKORO_VOICES[0] == "af_heart"
+    assert len(set(tts.KOKORO_VOICES)) == 54
+    model = audio._resolve_tts_model("kokoro")
+    for snapshot_voices in ([], sorted(tts.KOKORO_VOICES)):
+        monkeypatch.setattr(
+            tts, "_list_snapshot_voices", lambda _, voices=snapshot_voices: voices
+        )
+        valid = audio._allowed_voices_for(model)
+        assert audio._map_openai_preset_voice(model, preset, valid) == expected
 
 
 def test_speech_route_maps_preset_to_single_voice(monkeypatch):
