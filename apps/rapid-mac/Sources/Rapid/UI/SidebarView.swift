@@ -157,6 +157,7 @@ struct SidebarView: View {
     /// it so residency and the enforced memory ceiling remain visible globally.
     var server: ServerManager? = nil
     var catalogEntries: [ModelEntry] = []
+    var audioCatalogEntries: [ModelEntry] = []
     /// True while any model-backed surface is doing user-visible work. The
     /// unload control must not offer to tear down the shared runtime merely
     /// because the active work is outside Chat.
@@ -870,7 +871,7 @@ struct SidebarView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 12)
-                    Text(Self.audioLaneDisplayName(model: lane.model, lane: lane.lane, catalog: catalogEntries))
+                    Text(Self.audioLaneDisplayName(model: lane.model, lane: lane.lane, catalog: audioCatalogEntries))
                         .font(RapidFont.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1038,10 +1039,16 @@ struct SidebarView: View {
 
     static func audioLaneDisplayName(model: String?, lane: String, catalog: [ModelEntry]) -> String {
         guard let model, !model.isEmpty else { return lane.uppercased() }
-        guard let entry = catalog.first(where: {
+        let basename = model.split(separator: "/").last.map(String.init) ?? model
+        let exactMatch = catalog.first {
             $0.alias.caseInsensitiveCompare(model) == .orderedSame ||
             $0.hfRepo?.caseInsensitiveCompare(model) == .orderedSame
-        }) else { return model.split(separator: "/").last.map(String.init) ?? model }
+        }
+        let basenameMatch = catalog.first { entry in
+            guard let repo = entry.hfRepo, let last = repo.split(separator: "/").last else { return false }
+            return String(last).caseInsensitiveCompare(basename) == .orderedSame
+        }
+        guard let entry = exactMatch ?? basenameMatch else { return basename }
         if lane.lowercased() == "stt" {
             return AudioViewModel.transcriptionDetails(alias: entry.alias, family: entry.audioFamily).displayName
         }
