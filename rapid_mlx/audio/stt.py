@@ -893,6 +893,8 @@ class STTEngine:
 
         audio_path = str(audio_path)
         source_duration = _audio_duration_seconds(audio_path, allow_decode=False)
+        if source_duration is None:
+            source_duration = _audio_duration_seconds(audio_path, allow_decode=True)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
@@ -995,16 +997,11 @@ class STTEngine:
             # segments whose timestamps make them impossible for the actual
             # input; this avoids language/content heuristics and preserves
             # legitimate repetition inside the recording.
-            decoded_duration = False
             if self._is_whisper:
                 if trim is not None and not trim.skipped and trim.has_speech:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
                 else:
                     input_duration = source_duration
-                    if input_duration is None:
-                        input_duration = _audio_duration_seconds(audio_path)
-                        decoded_duration = True
-                        source_duration = input_duration
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
                     segments,
@@ -1034,9 +1031,6 @@ class STTEngine:
                     if isinstance(end, (int, float)) and math.isfinite(end) and end > 0:
                         duration = end
                         break
-            if duration is None and not decoded_duration:
-                duration = _audio_duration_seconds(audio_path, allow_decode=True)
-
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),
                 language=detected_lang,

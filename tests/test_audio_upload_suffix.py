@@ -2,8 +2,10 @@
 """Upload container hints must survive the route's temporary-file boundary."""
 
 import asyncio
+import io
 import sys
 import types
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -195,14 +197,14 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
     def transcode(source, destination):
         source_paths.append(Path(source))
         assert source_paths[0].suffix == ".aiff"
-        assert source_paths[0].read_bytes() == b"original aiff"
+        assert source_paths[0].read_bytes() == b"FORM\x00\x00\x00\x04AIFF"
         Path(destination).write_bytes(expected["payload"])
 
     monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
     monkeypatch.setattr(audio, "_align_blocking", capture_alignment)
     response = client.post(
         "/v1/audio/transcriptions",
-        files={"file": ("audio.aiff", b"original aiff", "audio/aiff")},
+        files={"file": ("audio.aiff", b"FORM\x00\x00\x00\x04AIFF", "audio/aiff")},
         data={"model": "aligner", "text": "hello"},
     )
     assert response.status_code == 200, response.text
@@ -211,3 +213,27 @@ def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkey
     assert paths[0].suffix == ".wav"
     assert not paths[0].exists()
     assert not source_paths[0].exists()
+
+
+def test_wav_named_aiff_passes_through(upload_client, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    client, paths, expected = upload_client
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as wav:
+        wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        wav.writeframes(b"\x00\x00" * 16)
+    expected.update(payload=stream.getvalue(), suffix=".aiff")
+    monkeypatch.setattr(
+        audio,
+        "_transcode_aiff_to_wav",
+        lambda *args: pytest.fail("unexpected transcode"),
+    )
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("x.aiff", expected["payload"], "audio/aiff")},
+        data={"model": "whisper-small"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(paths) == 1
+    assert not paths[0].exists()

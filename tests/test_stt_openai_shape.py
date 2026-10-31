@@ -150,7 +150,9 @@ def test_garbage_upload_reports_supported_formats(client, monkeypatch):
     assert "Supported formats:" in message and "aiff" in message
 
 
-def test_non_whisper_duration_does_not_decode_when_probes_fail(tmp_path, monkeypatch):
+def test_non_whisper_duration_falls_back_to_segments_when_decode_fails(
+    tmp_path, monkeypatch
+):
     from mlx_audio.stt import utils
 
     from rapid_mlx.audio import stt
@@ -160,10 +162,10 @@ def test_non_whisper_duration_does_not_decode_when_probes_fail(tmp_path, monkeyp
     monkeypatch.setattr(sf, "info", lambda _: (_ for _ in ()).throw(ValueError()))
     monkeypatch.setattr(stt.shutil, "which", lambda _: None)
 
-    def unexpected_decode(_):
-        pytest.fail("duration probing must not decode audio on the request path")
+    def failed_decode(_):
+        raise ValueError("decode unavailable")
 
-    monkeypatch.setattr(utils, "load_audio", unexpected_decode)
+    monkeypatch.setattr(utils, "load_audio", failed_decode)
     engine = stt.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
     engine._loaded = True
     engine.model = SimpleNamespace(
@@ -172,6 +174,43 @@ def test_non_whisper_duration_does_not_decode_when_probes_fail(tmp_path, monkeyp
         )
     )
     assert engine.transcribe(path).duration == 1.25
+
+
+@pytest.mark.parametrize("no_speech", [False, True])
+def test_decoded_duration_precedes_segments_and_vad_return(
+    tmp_path, monkeypatch, no_speech
+):
+    from rapid_mlx.audio import stt
+
+    path = tmp_path / "unknown.audio"
+    path.write_bytes(b"audio")
+    calls = []
+
+    def duration_probe(path, *, allow_decode):
+        calls.append(allow_decode)
+        return 2.5 if allow_decode else None
+
+    monkeypatch.setattr(stt, "_audio_duration_seconds", duration_probe)
+    engine = stt.STTEngine("whisper-small")
+    engine._loaded = True
+    engine._enable_vad_pretrim = no_speech
+    engine.model = SimpleNamespace(
+        generate=lambda *a, **kw: SimpleNamespace(
+            text="hello", language="en", segments=[{"start": 0, "end": 1.0}]
+        )
+    )
+    if no_speech:
+        monkeypatch.setattr(
+            stt,
+            "_maybe_vad_trim",
+            lambda _: stt._VADTrimResult(skipped=False, has_speech=False),
+        )
+        engine.model.generate = lambda *a, **kw: pytest.fail("backend must not run")
+    result = engine.transcribe(path)
+    assert result.duration == 2.5
+    assert calls == [False, True]
+    if no_speech:
+        assert result.segments == []
 
 
 def test_non_whisper_duration_decodes_when_no_timed_segments(tmp_path, monkeypatch):
@@ -234,7 +273,7 @@ def test_aiff_expansion_limit_cleans_up(client, monkeypatch):
     response = client.post(
         "/v1/audio/transcriptions",
         data={"model": "whisper-large-v3"},
-        files={"file": ("compressed.aifc", b"small", "audio/aiff")},
+        files={"file": ("compressed.aifc", b"FORM\x00\x00\x00\x04AIFC", "audio/aiff")},
     )
     assert response.status_code == 413
     assert response.json()["detail"] == "Audio upload too large: exceeds 128 bytes"

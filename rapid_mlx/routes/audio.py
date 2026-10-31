@@ -1517,7 +1517,6 @@ _SUPPORTED_AUDIO_FORMATS = (
 _AUDIO_UPLOAD_SUFFIXES = frozenset(
     f".{name}" for name in (*_SUPPORTED_AUDIO_FORMATS, "m4b", "aif", "aifc")
 )
-_AIFF_SUFFIXES = frozenset({".aiff", ".aif", ".aifc"})
 _AUDIO_UPLOAD_MIME_SUFFIXES = {
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
@@ -1628,7 +1627,9 @@ def _cleanup_temp_audio(*paths: str | None) -> None:
 
 async def _prepare_audio_for_engine(source: str, temp_paths: list[str]) -> str:
     """Convert AIFF to WAV when needed and register it for cleanup."""
-    if os.path.splitext(source)[1].lower() not in _AIFF_SUFFIXES:
+    with open(source, "rb") as audio_file:
+        header = audio_file.read(12)
+    if header[:4] != b"FORM" or header[8:12] not in (b"AIFF", b"AIFC"):
         return source
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav:
         temp_paths.append(wav.name)
