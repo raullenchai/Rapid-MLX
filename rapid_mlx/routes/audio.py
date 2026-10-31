@@ -1130,7 +1130,8 @@ def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
         duration = _finite_or_none(getattr(result, "duration", None))
         if duration is not None and duration > 0:
             text = str(getattr(result, "text", "") or "").strip()
-            out = [(0.0, duration, text or " ".join(seg[2] for seg in out), None)]
+            source = out[0][3] if len(out) == 1 else None
+            out = [(0.0, duration, text or " ".join(seg[2] for seg in out), source)]
     if not out:
         duration = float(getattr(result, "duration", 0.0) or 0.0)
         text = str(getattr(result, "text", "") or "").strip()
