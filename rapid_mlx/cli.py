@@ -189,13 +189,13 @@ _SERVE_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 LOG_LEVEL_ENV_VAR = "RAPID_MLX_LOG_LEVEL"
 
 
-def _resolve_serve_log_level(flag_value: str | None) -> str:
-    """``--log-level`` wins, then ``RAPID_MLX_LOG_LEVEL``, then INFO."""
+def _resolve_serve_log_level(flag_value: str | None, default: str = "INFO") -> str:
+    """Resolve the flag, environment, and finally the caller's default."""
     if flag_value is not None:
         return flag_value
     raw = os.environ.get(LOG_LEVEL_ENV_VAR, "").strip()
     if not raw:
-        return "INFO"
+        return default
     level = raw.upper()
     if level not in _SERVE_LOG_LEVELS:
         print(

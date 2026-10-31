@@ -2308,6 +2308,13 @@ def _add_benchmark_parser(
         help="Print machine-readable JSON instead of the text summary",
     )
     community_run.add_argument(
+        "--log-level",
+        type=_log_level_choice,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="Engine log verbosity (default: WARNING, showing only the benchmark summary and warnings)",
+    )
+    community_run.add_argument(
         "--baseline",
         action="store_true",
         help="Measure with every acceleration off (the original Community Benchmark protocol)",

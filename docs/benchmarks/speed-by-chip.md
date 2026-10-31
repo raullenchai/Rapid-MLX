@@ -72,7 +72,9 @@ TensorFold profiles use the same serial runtime as serve. Select a DFlash drafte
 speculation with `--no-spec-decode` or all accelerations with `--baseline`.
 DDTree is refused because its non-streaming runtime cannot measure time to first
 token. Suffix decoding is refused because the workload repeats one prompt.
-Prefix cache remains off. The result records the effective configuration.
+Prefix cache remains off. The result records the effective configuration. Engine
+logs are hidden by default so the output shows only progress, warnings and the
+summary; add `--log-level INFO` (or set `RAPID_MLX_LOG_LEVEL`) to see them.
 
 With `--json`, stdout contains exactly one JSON document; progress goes to stderr.
 Results are stored under `$RAPID_MLX_HOME/benchmarks` when `RAPID_MLX_HOME` is

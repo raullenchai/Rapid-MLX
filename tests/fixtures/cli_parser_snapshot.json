@@ -1675,6 +1675,27 @@
            "type": null
           },
           {
+           "choices": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR"
+           ],
+           "class": "argparse._StoreAction",
+           "completer": null,
+           "const": null,
+           "default": null,
+           "dest": "log_level",
+           "help": "Engine log verbosity (default: WARNING, showing only the benchmark summary and warnings)",
+           "metavar": null,
+           "nargs": null,
+           "option_strings": [
+            "--log-level"
+           ],
+           "required": false,
+           "type": "rapid_mlx.cli_parser._log_level_choice"
+          },
+          {
            "class": "argparse._StoreTrueAction",
            "completer": null,
            "const": true,
@@ -1918,6 +1939,7 @@
            "dests": [
             "help",
             "json",
+            "log_level",
             "baseline",
             "progress",
             "inherit_process_group"

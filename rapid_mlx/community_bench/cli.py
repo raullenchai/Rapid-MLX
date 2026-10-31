@@ -399,6 +399,11 @@ def _print_failure(args, exc: Exception) -> int:
 
 def benchmark_command(args) -> int:
     action = args.benchmark_action
+    if action == "run":
+        from ..cli import _configure_bootstrap_logging, _resolve_serve_log_level
+
+        level = _resolve_serve_log_level(getattr(args, "log_level", None), "WARNING")
+        _configure_bootstrap_logging(level)
     archive = LocalRunArchive.default()
     try:
         if action == "catalog":
