@@ -518,13 +518,19 @@ def _resolve_stt_model(model: str | None) -> str:
 
     R-03: ``"default"`` is the OpenAI-spec placeholder LangChain /
     LlamaIndex / openai-python emit when the caller hasn't picked a
-    specific model id. Map it to :data:`DEFAULT_STT_ALIAS` so drop-in
-    OpenAI-SDK code works against ``/v1/audio/transcriptions`` —
+    specific model id. Use the served STT model when available, otherwise
+    :data:`DEFAULT_STT_ALIAS`. ``"whisper-1"`` also uses the served STT
+    model when available, and otherwise retains its normal alias mapping.
+    This lets drop-in OpenAI-SDK code work against ``/v1/audio/transcriptions`` —
     rejecting ``"default"`` here breaks every OpenAI tutorial without
     a manual ``model=`` argument.
     """
     if model is None or model == "default":
         return _served_stt_default() or STT_MODEL_ALIASES[DEFAULT_STT_ALIAS]
+    if model == "whisper-1":
+        served = _served_stt_default()
+        if served is not None:
+            return served
     if not isinstance(model, str) or not model:
         raise HTTPException(
             status_code=400,
@@ -649,8 +655,8 @@ def _reject_non_whisper_for_translation(
     from ..audio.registry import resolve_audio_alias
 
     target = (
-        _resolve_stt_model("default")
-        if model == "default"
+        _resolve_stt_model(model)
+        if model in ("default", "whisper-1")
         else (_served_local_request(model, "stt") or model)
     )
     entry = resolve_audio_alias(target)
@@ -731,8 +737,8 @@ def _reject_word_timestamps_for_non_whisper(
     from ..audio.registry import resolve_audio_alias
 
     target = (
-        _resolve_stt_model("default")
-        if model == "default"
+        _resolve_stt_model(model)
+        if model in ("default", "whisper-1")
         else (_served_local_request(model, "stt") or model)
     )
     entry = resolve_audio_alias(target)
@@ -3149,6 +3155,42 @@ def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
     return entry.default_voice
 
 
+_OPENAI_PRESET_VOICES = frozenset(
+    {
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "fable",
+        "nova",
+        "onyx",
+        "sage",
+        "shimmer",
+        "verse",
+        "marin",
+        "cedar",
+    }
+)
+
+
+def _map_openai_preset_voice(
+    model_name: str, voice: str, valid_voices: list[str]
+) -> str:
+    """Map an OpenAI preset to a matching model voice or the model default."""
+    preset = voice.lower()
+    if preset not in _OPENAI_PRESET_VOICES or voice in valid_voices:
+        return voice
+    for prefix in ("af", "am", "bf", "bm"):
+        candidate = f"{prefix}_{preset}"
+        if candidate in valid_voices:
+            return candidate
+    default = _resolve_default_voice_literal(model_name, "default")
+    if default == "default" and default not in valid_voices:
+        return voice
+    return default
+
+
 def _allowed_voices_for(model_name: str) -> list[str]:
     """Return the voice set the route should accept for ``model_name``.
 
@@ -3628,8 +3670,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 
             # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
             # model's known voice set BEFORE we load weights. Pre-fix an
-            # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
-            # ``nova`` / typo'd ``af_hart``) fell through to
+            # unknown name (such as typo'd ``af_hart``) fell through to
             # ``mlx_audio.load_safetensors`` which 500'd on the missing
             # ``voices/<name>.safetensors`` file. The 500 envelope hid the
             # actual cause from the operator log AND from the caller. The
@@ -3638,6 +3679,15 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             # the ``kokoro`` short alias — both go through the same model
             # family check.
             valid_voices = _allowed_voices_for(model_name)
+            mapped_voice = _map_openai_preset_voice(model_name, voice, valid_voices)
+            if mapped_voice != voice:
+                logger.info(
+                    "voice %r mapped to %r for model %r",
+                    voice,
+                    mapped_voice,
+                    model_name,
+                )
+            voice = mapped_voice
             # Qwen3-TTS matches speaker names case-INsensitively (its engine
             # lowercases before the ``spk_id`` lookup) and the upstream docs
             # mix case ("serena" vs "Serena"). Normalize a case-insensitive
