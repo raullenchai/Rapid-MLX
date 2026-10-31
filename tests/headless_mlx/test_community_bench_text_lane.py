@@ -925,22 +925,14 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
 
     archive = LocalRunArchive(tmp_path)
     shutdown_calls: list[tuple[bool, bool]] = []
-    executor_type = local_runner.concurrent.futures.ThreadPoolExecutor
+    executor_type = local_runner._TrackingExecutor
 
-    class RecordingExecutor:
-        def __init__(self, *args, **kwargs) -> None:
-            self.inner = executor_type(*args, **kwargs)
-
-        def submit(self, *args, **kwargs):
-            return self.inner.submit(*args, **kwargs)
-
+    class RecordingExecutor(executor_type):
         def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
             shutdown_calls.append((wait, cancel_futures))
-            self.inner.shutdown(wait=wait, cancel_futures=cancel_futures)
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr(
-        local_runner.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor
-    )
+    monkeypatch.setattr(local_runner, "_TrackingExecutor", RecordingExecutor)
     monkeypatch.setattr(
         local_runner,
         "plan_for_alias",
