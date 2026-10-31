@@ -23,6 +23,7 @@ def _active(req, extra=""):
 def _base_closure():
     pending = [req.name for req in BASE if _active(req)]
     names = set()
+    missing = set()
     while pending:
         name = canonicalize_name(pending.pop())
         if name in names:
@@ -31,9 +32,14 @@ def _base_closure():
         try:
             requirements = metadata.requires(name) or []
         except metadata.PackageNotFoundError:
+            missing.add(name)
             continue
         pending.extend(
             req.name for item in requirements if _active(req := Requirement(item))
+        )
+    if missing:
+        raise RuntimeError(
+            f"Missing distribution metadata for: {', '.join(sorted(missing))}"
         )
     return names
 
@@ -91,6 +97,10 @@ CASES = [
     and canonicalize_name(req.name) in CLOSURE
     and any(spec.operator in {"<", "<=", "==", "===", "~="} for spec in req.specifier)
 ]
+
+
+def test_cases_include_mlx_audio():
+    assert any(canonicalize_name(req.name) == "mlx-audio" for _, req in CASES)
 
 
 @pytest.mark.parametrize(("extra", "req"), CASES, ids=lambda value: str(value))
