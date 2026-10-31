@@ -474,8 +474,8 @@ class TestVoiceDefaultFallsBackToRegistry:
         )
 
     def test_invalid_voice_still_400s(self, monkeypatch):
-        """The fallback only fires for the literal ``"default"`` — every
-        other invalid voice (typo, drop-in OpenAI name) must still 400.
+        """The fallback only fires for the literal ``"default"`` and OpenAI
+        preset names — any other invalid voice (typo) must still 400.
         Pin so the F-3 hook doesn't silently relax the allowlist
         contract."""
         _install_fake_mlx_audio(monkeypatch)
@@ -487,7 +487,7 @@ class TestVoiceDefaultFallsBackToRegistry:
                 json={
                     "model": "kokoro",
                     "input": "Hi",
-                    "voice": "alloy",  # OpenAI default voice; not Kokoro
+                    "voice": "af_hart",  # Typo; only default and OpenAI presets fall back.
                     "response_format": "wav",
                 },
             )
