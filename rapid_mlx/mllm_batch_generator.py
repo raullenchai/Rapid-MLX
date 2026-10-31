@@ -1813,6 +1813,44 @@ class MLLMBatchGenerator:
         self._media_semantics_salt_cache = cached_salt
         return cached_salt
 
+    def _vision_feature_cache_key(self, request: MLLMBatchRequest) -> str | None:
+        key = request.vision_feature_key
+        if not key or not isinstance(key, str):
+            return None
+
+        def flatten(values):
+            if isinstance(values, (list, tuple)):
+                return tuple(item for value in values for item in flatten(value))
+            return (int(values),)
+
+        def geometry_value(value):
+            try:
+                return flatten(value.tolist() if hasattr(value, "tolist") else value)
+            except (TypeError, ValueError):
+                return tuple(value.shape) if hasattr(value, "shape") else repr(value)
+
+        grid = request.image_grid_thw
+        if grid is not None:
+            grid = flatten(grid.tolist() if hasattr(grid, "tolist") else grid)
+        pixel_values = request.pixel_values
+        geometry = (
+            int(request.media_pixel_cap or 0),
+            int(getattr(self, "vision_min_pixels", 0) or 0),
+            (
+                tuple(pixel_values.shape)
+                if pixel_values is not None and hasattr(pixel_values, "shape")
+                else None
+            ),
+            grid,
+            tuple(
+                (name, geometry_value(value))
+                for name in ("video_grid_thw", "spatial_shapes", "image_sizes")
+                if name in request.extra_kwargs
+                for value in (request.extra_kwargs[name],)
+            ),
+        )
+        return f"{key}#{geometry}"
+
     def _media_identity_digest(self, request: MLLMBatchRequest) -> str | None:
         """Cache key: ordered media content plus the semantic salt.
 
@@ -4289,18 +4327,23 @@ class MLLMBatchGenerator:
         # set when the model honours the contract (see ``__init__``) and the
         # request actually carries images; text-only prefill and the chunked
         # path (``pixel_values=None``) never see these kwargs. The features are
-        # image-only (prompt-independent), so the key is the image content
-        # hash, not the prompt. ``getattr`` keeps this callable on the
-        # minimally-constructed generators the chunked-prefill tests build via
+        # dependent on resize geometry, which can depend on prompt length, so
+        # the key combines image content and effective geometry. ``getattr``
+        # keeps this callable on the minimally-constructed generators built via
         # ``__new__`` (which set only model / language_model / prefill_step_size).
         feature_cache = getattr(self, "_vision_feature_cache", None)
+        feature_key = (
+            self._vision_feature_cache_key(request)
+            if feature_cache is not None and request.pixel_values is not None
+            else None
+        )
         if (
             feature_cache is not None
             and request.pixel_values is not None
-            and request.vision_feature_key is not None
+            and feature_key is not None
         ):
             kwargs["vision_cache"] = feature_cache
-            kwargs["_image_key"] = request.vision_feature_key
+            kwargs["_image_key"] = feature_key
 
         # Run the VLM forward pass with cache.
         # The VLM passes cache= through to self.language_model(),
