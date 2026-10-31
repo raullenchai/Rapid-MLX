@@ -2556,7 +2556,10 @@ flow_download_progress() {
     [[ "$observed" == 1 ]] \
         || die "overrun fixture never reached a truthful bytes-downloaded state"
     if jq -e --arg observed "$observed_size" --arg estimated "$estimated_size" \
-        '(.data.ui_elements | tostring) | contains($observed + " / " + $estimated)' \
+        'def size_re: gsub("(?<meta>[.\\[\\](){}*+?^$|\\\\])"; "\\" + .meta)
+                      | gsub(" "; "[[:space:]\u00a0]*");
+         ($observed | size_re) as $observed_re | ($estimated | size_re) as $estimated_re
+         | any(.data.ui_elements | .. | strings; test($observed_re + "[[:space:]]*/[[:space:]]*" + $estimated_re))' \
         "$OUT/downloading.json" >/dev/null; then
         die "download progress still shows observed bytes above its displayed total"
     fi
