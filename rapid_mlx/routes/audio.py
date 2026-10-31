@@ -1583,7 +1583,9 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-_aiff_transcode_semaphores = weakref.WeakKeyDictionary()
+_aiff_transcode_semaphores: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
 
 
 def _get_aiff_transcode_semaphore() -> asyncio.Semaphore:
