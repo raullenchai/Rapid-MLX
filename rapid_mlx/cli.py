@@ -15327,13 +15327,16 @@ def upgrade_command(args):
     print()
     returncode, verified = run_upgrade()
     if block == "python":
+        if returncode:
+            print("  Upgrade command failed.")
+            sys.exit(returncode)
         parsed_verified = vc._parse_version(verified) if verified else None
-        if (
-            returncode == 0
-            and cur is not None
-            and parsed_verified is not None
-            and parsed_verified > cur
-        ):
+        if parsed_verified is None or cur is None:
+            print(
+                "  Could not confirm the installed version; run `rapid-mlx --version` to check."
+            )
+            sys.exit(1)
+        if parsed_verified > cur:
             print(
                 f"  ✓ rapid-mlx is now {verified} — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. "
                 f"{latest} needs Python {release.requires_python}; follow the steps above to move to it."

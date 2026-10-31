@@ -395,8 +395,34 @@ def test_python_floor_tries_compatible_upgrade(
             f"  ✓ rapid-mlx is now 1.0.1 — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. 1.0.2 needs Python >=3.12; follow the steps above to move to it."
             in out
         )
+    elif verified is None:
+        assert "Could not confirm the installed version" in out
+        assert "This Python already has the newest release it can run." not in out
     else:
         assert "This Python already has the newest release it can run." in out
+
+
+@pytest.mark.parametrize("method", ["pip", "uv", "pipx"])
+def test_python_floor_upgrade_failure(monkeypatch, capsys, method):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.2", ">=3.12")
+    )
+    monkeypatch.setattr(vc, "_python_supports", lambda spec: False)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"]),
+    )
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=7)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 7
+    out = capsys.readouterr().out
+    assert "Upgrade command failed" in out
+    assert "This Python already has the newest release it can run." not in out
 
 
 def test_upgrade_interrupt_exits_130(monkeypatch, capsys):

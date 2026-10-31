@@ -1374,6 +1374,7 @@ def test_cache_optional_fields(monkeypatch):
                 "requires_python": [],
                 "brew_stable": "bad",
                 "requires_python_checked": "yes",
+                "requires_python_failed_at": True,
             }
         )
     )
@@ -1451,11 +1452,16 @@ def test_failed_python_metadata_is_retried(monkeypatch, fresh):
     if not fresh:
         assert original_ts == original_mtime == timestamp
 
+    assert vc.get_release_info(need_brew=True).requires_python is None
+    assert fetch.call_count == 1
+    failed_at = cache["requires_python_failed_at"]
+    monkeypatch.setattr(vc.time, "time", lambda: failed_at + 3600)
     assert vc.get_release_info(need_brew=True).requires_python == ">=3.12"
     assert fetch.call_count == 2
     cache = vc._read_cache()
     assert cache["requires_python_checked"] is True
     assert cache["requires_python"] == ">=3.12"
+    assert "requires_python_failed_at" not in cache
     assert cache["brew_stable"] == "1.0.0"
     assert cache["ts"] == original_ts
     assert path.stat().st_mtime == original_mtime
@@ -1465,9 +1471,14 @@ def test_failed_python_metadata_is_retried(monkeypatch, fresh):
     "spec,expected",
     [
         (">=3.10,>=3.12", "3.12"),
-        (">3.11", "3.12"),
+        (">3.11", "3.11"),
         ("==3.13.*", "3.13"),
-        ("<4", "3.12"),
+        ("<4", "3.10"),
+        (">3.11.1", "3.11"),
+        (">=3.13.0", "3.13"),
+        (">=3.12,!=3.12.*", "3.13"),
+        ("invalid", "3.12"),
+        (">=4", "3.12"),
     ],
 )
 def test_python_upgrade_instructions_highest_floor(spec, expected):
@@ -1655,3 +1666,37 @@ def test_shell_launcher_without_valid_trampoline_is_rejected(tmp_path, monkeypat
         lambda name: SimpleNamespace(entry_points=[SimpleNamespace(name="rapid-mlx")]),
     )
     assert vc._launcher_belongs_to_running_install(str(launcher)) is False
+
+
+def test_corrupt_cache_is_ignored():
+    vc._cache_path().write_text("{")
+    assert vc._read_cache() is None
+
+
+def test_unparseable_installed_version_has_no_staleness_warning(monkeypatch):
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "???")
+    assert vc.staleness_warning() is None
+
+
+@pytest.mark.parametrize("version", [None, "???"])
+def test_prompt_skips_missing_or_unparseable_version(monkeypatch, interactive, version):
+    monkeypatch.setattr(vc, "_installed_version", lambda: version)
+    assert vc.prompt_upgrade_if_available() is False
+
+
+def test_python_upgrade_instructions_without_packaging(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def no_packaging(name, *args, **kwargs):
+        if name == "packaging.specifiers":
+            raise ImportError("unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_packaging)
+    info = vc.InstallInfo("uv", "upgrade", ["upgrade"])
+    assert vc.python_upgrade_instructions(info, ">3.11.1") == [
+        "uv tool upgrade --python 3.12 rapid-mlx"
+    ]

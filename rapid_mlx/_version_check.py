@@ -189,6 +189,9 @@ def _read_cache() -> dict | None:
                 data.pop("brew_stable", None)
             if not isinstance(data.get("requires_python_checked"), bool):
                 data.pop("requires_python_checked", None)
+            failed_at = data.get("requires_python_failed_at")
+            if not isinstance(failed_at, int) or isinstance(failed_at, bool):
+                data.pop("requires_python_failed_at", None)
             return data
         return None
     except (OSError, json.JSONDecodeError):
@@ -201,6 +204,7 @@ def _write_cache(
     brew_stable: str | None = None,
     ts: int | float | None = None,
     requires_python_checked: bool = True,
+    requires_python_failed_at: int | None = None,
 ) -> None:
     p = _cache_path()
     try:
@@ -215,6 +219,8 @@ def _write_cache(
                 data["requires_python_checked"] = True
             if requires_python is not None:
                 data["requires_python"] = requires_python
+            if requires_python_failed_at is not None:
+                data["requires_python_failed_at"] = requires_python_failed_at
             if brew_stable is not None:
                 data["brew_stable"] = brew_stable
             json.dump(data, f)
@@ -402,13 +408,21 @@ def get_release_info(
         spec = cached.get("requires_python")
         brew = cached.get("brew_stable")
         checked = cached.get("requires_python_checked", False)
+        failed_at = cached.get("requires_python_failed_at")
         rewrite = False
-        if spec is None and not checked:
+        if (
+            spec is None
+            and not checked
+            and (failed_at is None or time.time() - failed_at >= 3600)
+        ):
             result = _fetch_requires_python(latest)
             if result is not _REQUIRES_PYTHON_FAILED:
                 spec = result
                 checked = True
-                rewrite = True
+                failed_at = None
+            else:
+                failed_at = int(time.time())
+            rewrite = True
         if need_brew and brew is None:
             brew = _fetch_brew_formula_version()
             if brew is not None:
@@ -420,7 +434,14 @@ def get_release_info(
                     ts = _cache_path().stat().st_mtime
                 except OSError:
                     return ReleaseInfo(latest, spec, brew)
-            _write_cache(latest, spec, brew, ts=ts, requires_python_checked=checked)
+            _write_cache(
+                latest,
+                spec,
+                brew,
+                ts=ts,
+                requires_python_checked=checked,
+                requires_python_failed_at=failed_at,
+            )
         return ReleaseInfo(latest, spec, brew)
     latest = _fetch_latest()
     if latest is None:
@@ -429,7 +450,13 @@ def get_release_info(
     checked = result is not _REQUIRES_PYTHON_FAILED
     spec = result if isinstance(result, str) else None
     brew = _fetch_brew_formula_version() if need_brew else None
-    _write_cache(latest, spec, brew, requires_python_checked=checked)
+    _write_cache(
+        latest,
+        spec,
+        brew,
+        requires_python_checked=checked,
+        requires_python_failed_at=None if checked else int(time.time()),
+    )
     return ReleaseInfo(latest, spec, brew)
 
 
@@ -684,6 +711,19 @@ def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list
         if op != "==" or wildcard
     ]
     minor = ".".join(map(str, max(versions))) if versions else "3.12"
+    try:
+        from packaging.specifiers import SpecifierSet
+
+        spec = SpecifierSet(requires_python)
+        for candidate in range(10, 31):
+            if any(
+                spec.contains(f"3.{candidate}.{patch}", prereleases=False)
+                for patch in range(31)
+            ):
+                minor = f"3.{candidate}"
+                break
+    except (ImportError, ValueError):
+        pass
     installer = "curl -fsSL https://rapidmlx.com/install.sh | bash"
     if info.method == "brew":
         return ["brew upgrade rapid-mlx"]
