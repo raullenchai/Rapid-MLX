@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from fastapi import HTTPException
+
     from .paged_cache import BlockTable
 
 
@@ -520,6 +522,19 @@ def inference_aborted_error_code(exc: BaseException) -> str:
     return classify_engine_abort(exc)
 
 
+def inference_aborted_http_exception(exc: BaseException) -> "HTTPException":
+    """Map an engine abort to a sanitized HTTP response."""
+    from fastapi import HTTPException
+
+    payload = inference_aborted_error_payload(exc)
+    headers = (
+        {"x-should-retry": "false"}
+        if payload["code"] == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY
+        else None
+    )
+    return HTTPException(status_code=503, detail={"error": payload}, headers=headers)
+
+
 def is_chat_template_error(exc: BaseException) -> bool:
     """True when a chat/prompt build failure is a chat-template error.
 
@@ -576,8 +591,8 @@ def inference_aborted_error_payload(exc: BaseException) -> dict:
         return lifecycle_cancel_error_payload()
     if code == ENGINE_ABORT_CODE_INSUFFICIENT_MEMORY:
         message = (
-            "The model ran out of memory during generation. "
-            "Free up memory or choose a smaller model."
+            "The model ran out of memory processing this request. Shorten the prompt, "
+            "send fewer or smaller images, free up memory, or choose a smaller model."
         )
     else:
         message = (
