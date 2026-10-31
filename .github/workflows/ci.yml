@@ -716,6 +716,8 @@ jobs:
             tests/test_kimi_tokenizer_security.py \
             tests/test_kimi_vlm_security.py \
             tests/test_mllm_model_file_consent.py \
+            tests/test_vlm_processor_consent.py \
+            tests/test_vlm_processor_inventory.py \
             tests/test_security_hardening.py \
             tests/test_chat_template_registry.py \
             tests/test_glm5_shardwise_load.py \
