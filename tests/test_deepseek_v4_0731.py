@@ -619,3 +619,11 @@ def test_dsml_parser_ignores_invokes_outside_envelopes(parser_name):
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0]["name"] == "delete_file"
     assert json.loads(result.tool_calls[0]["arguments"]) == {"path": "temporary.txt"}
+
+    # An unterminated final envelope is still read, as before.
+    unterminated = parser.extract_tool_calls(
+        "<｜DSML｜tool_calls>" + invoke("last.txt")
+    )
+    assert [json.loads(call["arguments"]) for call in unterminated.tool_calls] == [
+        {"path": "last.txt"}
+    ]
