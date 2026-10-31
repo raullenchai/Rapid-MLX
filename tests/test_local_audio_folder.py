@@ -26,6 +26,12 @@ def test_bad_config(tmp_path):
     assert registry.resolve_local_audio_folder(str(tmp_path)) is None
 
 
+@pytest.mark.parametrize("content", [b" " * (1024 * 1024 + 1), b"[]"])
+def test_local_config_rejects_oversize_or_non_object(tmp_path, content):
+    (tmp_path / "config.json").write_bytes(content)
+    assert registry.resolve_local_audio_folder(str(tmp_path)) is None
+
+
 @pytest.mark.parametrize(
     ("name", "config", "expected"),
     [
@@ -283,6 +289,114 @@ def test_local_stt_loader_skips_hub(tmp_path, monkeypatch):
     engine = STTEngine(str(tmp_path))
     engine.load()
     assert engine._loaded
+
+
+def test_local_indextts_loader_uses_scoped_hub_adapter(tmp_path, monkeypatch):
+    import sys
+
+    from rapid_mlx.audio import tts
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "tokenizer.model").touch()
+    (tmp_path / "model.safetensors").touch()
+    original_hub = object()
+    indextts = SimpleNamespace(huggingface_hub=original_hub)
+
+    class FakeModel:
+        def __init__(self, config):
+            self.tokenizer = indextts.huggingface_hub.hf_hub_download(
+                config["tokenizer_name"], "tokenizer.model"
+            )
+
+        def load_weights(self, weights, strict):
+            assert weights == [("weight", 1)]
+            assert strict is True
+
+        def parameters(self):
+            return {}
+
+        def eval(self):
+            pass
+
+    indextts.Model = FakeModel
+    core = SimpleNamespace(load=lambda path: {"weight": 1}, eval=lambda params: None)
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=core))
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    for name in ("mlx_audio", "mlx_audio.tts", "mlx_audio.tts.models"):
+        monkeypatch.setitem(sys.modules, name, SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "mlx_audio.tts.models.indextts", SimpleNamespace(indextts=indextts)
+    )
+    monkeypatch.setattr(
+        tts,
+        "_resolve_indextts_snapshot",
+        lambda *args: pytest.fail("snapshot resolved"),
+    )
+    model = tts._load_indextts_model(str(tmp_path))
+    assert model.tokenizer == str(tmp_path.resolve() / "tokenizer.model")
+    assert indextts.huggingface_hub is original_hub
+
+
+@pytest.mark.parametrize("model", [None, "whisper-large-v3"])
+def test_transcription_default_and_registered_word_timestamps(monkeypatch, model):
+    import sys
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.audio import probe, stt
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "model_alias", "not-an-audio-model")
+    monkeypatch.setattr(cfg, "model_name", "not-an-audio-model")
+    monkeypatch.setattr(cfg, "model_path", "not-an-audio-model")
+    monkeypatch.setattr(cfg, "api_key", None)
+    monkeypatch.setattr(registry, "_LOCAL_AUDIO_ENTRIES", {})
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    observed = []
+
+    class FakeEngine:
+        def __init__(self, model_name):
+            self.model_name = model_name
+            observed.append(model_name)
+
+        def load(self):
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            return SimpleNamespace(text="hi", segments=[], language="en", duration=0)
+
+    async def run_worker(role, model_name, phase, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def evict(lane):
+        pass
+
+    monkeypatch.setattr(stt, "STTEngine", FakeEngine)
+    monkeypatch.setattr("rapid_mlx.runtime.audio_worker.run_audio_mlx", run_worker)
+    monkeypatch.setattr(audio, "_evict_other_lane", evict)
+    monkeypatch.setattr(audio, "_note_served_stt_engine", lambda engine: None)
+    monkeypatch.setattr(audio, "_stt_engine", None)
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.server",
+        SimpleNamespace(_emit_audio_model_served_once=lambda *args: None),
+    )
+    app = FastAPI()
+    app.include_router(audio.router)
+    data = {"response_format": "verbose_json", "timestamp_granularities[]": "word"}
+    if model is not None:
+        data["model"] = model
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/transcriptions",
+            data=data,
+            files={"file": ("tone.wav", b"audio", "audio/wav")},
+        )
+    assert response.status_code == 200, response.text
+    assert observed == [audio.STT_MODEL_ALIASES["whisper-large-v3"]]
 
 
 def test_local_snapshot_voices(tmp_path, monkeypatch):
