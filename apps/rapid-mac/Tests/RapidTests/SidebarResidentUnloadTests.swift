@@ -24,6 +24,21 @@ struct SidebarResidentUnloadTests {
     }
 
     @MainActor
+    @Test("Memory meter exposes its spoken accessibility value")
+    func memoryMeterAccessibility() async throws {
+        let gib = UInt64(1) << 30
+        let used = 10 * gib
+        let limit = 32 * gib
+        let stage = GoldenStage(SidebarMemoryMeter(usedBytes: used, limitBytes: limit).frame(width: 200, height: 40))
+        let identifier = "Sidebar.Residency.Memory"
+        try await stage.waitForIdentifier(identifier)
+        #expect(stage.label(of: identifier) == "Model memory")
+        let description = stage.valueDescription(of: identifier)
+        #expect(description == SidebarView.memoryAccessibilityValue(usedBytes: used, limitBytes: limit))
+        #expect(description == "10 GB of 32 GB used")
+    }
+
+    @MainActor
     private final class UnloadProbe {
         var calls = 0
     }

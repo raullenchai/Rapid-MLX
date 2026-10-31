@@ -832,17 +832,10 @@ struct SidebarView: View {
 
             HStack(spacing: RapidTheme.Space.xs) {
                 if snapshot.memoryLimitBytes > 0 {
-                    ProgressView(
-                        value: min(
-                            1,
-                            Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes)
-                        )
+                    SidebarMemoryMeter(
+                        usedBytes: snapshot.memoryUsedBytes,
+                        limitBytes: snapshot.memoryLimitBytes
                     )
-                    .controlSize(.mini)
-                    .tint(RapidTheme.brandAmber)
-                    .accessibilityLabel("Model memory")
-                    .accessibilityValue(Self.memoryAccessibilityValue(usedBytes: snapshot.memoryUsedBytes, limitBytes: snapshot.memoryLimitBytes))
-                    .accessibilityIdentifier("Sidebar.Residency.Memory")
                 } else {
                     Spacer(minLength: 0)
                 }
@@ -1864,6 +1857,20 @@ struct SidebarView: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+struct SidebarMemoryMeter: View {
+    let usedBytes: UInt64
+    let limitBytes: UInt64
+
+    var body: some View {
+        ProgressView(value: min(1, Double(usedBytes) / Double(limitBytes)))
+            .controlSize(.mini)
+            .tint(RapidTheme.brandAmber)
+            .accessibilityLabel("Model memory")
+            .accessibilityValue(SidebarView.memoryAccessibilityValue(usedBytes: usedBytes, limitBytes: limitBytes))
+            .accessibilityIdentifier("Sidebar.Residency.Memory")
     }
 }
 
