@@ -74,7 +74,7 @@ Check `rapid-mlx --version` and `python3 --version`; for a pip install, check th
 - **One-line installer:** rerun `curl -fsSL https://rapidmlx.com/install.sh | bash`. It rebuilds `~/.rapid-mlx` using a supported Python (installing Python 3.12 if needed), reinstalls optional features it finds, and keeps settings, credentials, and working `~/.local/bin` symlinks.
 - **uv:** `uv tool upgrade --python 3.12 rapid-mlx`.
 - **pipx:** if `python3.12` is not found, install it first with `brew install python@3.12`, then run `pipx reinstall --python python3.12 rapid-mlx`.
-- **pip:** install Python 3.12 if needed (`brew install python@3.12`), then create a new virtual environment and install there: `python3.12 -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx`. Add its `bin` directory to `PATH` or call it directly. The old Python 3.10/3.11 environment can be removed afterwards.
+- **pip:** install Python 3.12 if needed (`brew install python@3.12`), then create a new virtual environment and install there: `python3.12 -m venv --clear ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx`. The `--clear` option replaces an older environment at that path. Add its `bin` directory to `PATH` or call it directly. The old Python 3.10/3.11 environment can be removed afterwards.
 - **Homebrew:** its formula has its own Python; run `brew upgrade rapid-mlx` once the formula is updated.
 - **Desktop:** the app bundles Python 3.12 and updates itself; no Python upgrade is needed.
 
