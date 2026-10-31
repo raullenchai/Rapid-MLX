@@ -1314,6 +1314,10 @@ async def _measure_dedicated(
         digest = None
         if draft:
             draft_repo, snapshot, subfolder, digest = _sidecar_identity(draft)
+            if handle.speculative.get("method") == "mtp" and _sidecar_in_target_repo(
+                identity, draft_repo, snapshot
+            ):
+                digest = None
             identity = _with_sidecar_identity(identity, draft_repo, snapshot, subfolder)
         elif handle.speculative.get("method") != "mtp":
             raise AccelerationConfigError("Cannot resolve draft snapshot revision")
@@ -1400,6 +1404,27 @@ def _text_speculative_execution(repo_id: str) -> dict[str, Any] | None:
             else mtp_model_identity_digest(artifact)
         ),
     }
+
+
+def _sidecar_in_target_repo(target_identity, sidecar_repo, sidecar_snapshot):
+    primary = next(
+        (
+            c
+            for c in target_identity.get("components", [])
+            if c.get("role") == "primary"
+        ),
+        {},
+    ).get("source", {})
+    repo = primary.get("repo_id")
+    revision = primary.get("resolved_revision")
+    if not isinstance(repo, str) or not isinstance(sidecar_repo, str) or not revision:
+        return False
+    if repo.lower() != sidecar_repo.lower():
+        return False
+    source = unresolved_model_identity(
+        sidecar_repo, "text_generation", snapshot_path=sidecar_snapshot
+    )["components"][0]["source"]
+    return revision == source.get("resolved_revision")
 
 
 def _with_sidecar_identity(primary, sidecar_repo, snapshot_path, subfolder=None):
@@ -1583,6 +1608,7 @@ async def _text_measurements(
     workload = registered_workload("text_generation")
     executor = None
     serving_engine = None
+    started_serving_engine = False
     mtp_source: str | None = None
     language = None
     try:
@@ -1725,6 +1751,7 @@ async def _text_measurements(
             loaded_source, model = "", None
         elif use_serving_engine:
             serving_engine, tokenizer = await start_serving_engine()
+            started_serving_engine = True
             loaded_source, model = "", None
         else:
             executor = concurrent.futures.ThreadPoolExecutor(
@@ -1742,6 +1769,7 @@ async def _text_measurements(
                 executor.shutdown(wait=False, cancel_futures=True)
                 executor = None
                 serving_engine, tokenizer = await start_serving_engine()
+                started_serving_engine = True
                 loaded_source, model = "", None
             else:
                 # ``return_source`` appends the concrete checkpoint source; a
@@ -1749,6 +1777,17 @@ async def _text_measurements(
                 model, tokenizer = loaded[0], loaded[1]
                 loaded_source = loaded[2] if len(loaded) > 2 else ""
         _stage_finished(progress, load_started, "Model loaded")
+        if started_serving_engine and not loaded_source:
+            # The serving loaders do not retain their resolved checkpoint path.
+            # Reuse their offline catalog-pin resolver, never refs/main or a
+            # download, when the loader did not return a concrete source.
+            from rapid_mlx.model_metadata import resolve_pinned_cached_snapshot
+
+            pinned = resolve_pinned_cached_snapshot(
+                model_name, checkpoint_subfolder=resolve_subfolder(model_name) or ""
+            )
+            if pinned is not None and pinned.is_dir():
+                loaded_source = str(pinned)
         # Identity of the checkpoint the loader just pinned, read now — before
         # minutes of measurement give another process time to move refs/main.
         loaded_identity = unresolved_model_identity(
@@ -1833,6 +1872,7 @@ async def _text_measurements(
                 else:
                     runtime_method = None
                     draft_digest = None
+                    mtp_head_in_target_repo = False
                     if acceleration.baseline and serving_engine is not None:
                         live_scheduler = _engine_scheduler(serving_engine)
                         if live_scheduler is not None:
@@ -1849,6 +1889,11 @@ async def _text_measurements(
                             sidecar_repo, snapshot, subfolder, draft_digest = (
                                 _sidecar_identity(scheduler.mtp_sidecar)
                             )
+                            mtp_head_in_target_repo = _sidecar_in_target_repo(
+                                loaded_identity, sidecar_repo, snapshot
+                            )
+                            if mtp_head_in_target_repo:
+                                draft_digest = None
                             loaded_identity = _with_sidecar_identity(
                                 loaded_identity, sidecar_repo, snapshot, subfolder
                             )
@@ -1858,6 +1903,7 @@ async def _text_measurements(
                         scheduler,
                         runtime_method=runtime_method,
                         draft_identity_digest=draft_digest,
+                        mtp_head_in_target_repo=mtp_head_in_target_repo,
                         context_length=context_length,
                         compute_dtype=compute_dtype,
                         live_kv_quant=(
