@@ -1147,6 +1147,54 @@ def _manual_jina_backbone(backbone, ids, windows):
     return backbone.norm(h)
 
 
+def test_jina_sliding_layers_match_full_mask_on_long_input():
+    import mlx.core as mx
+
+    from rapid_mlx import rerank
+
+    config = _tiny_jina_config()
+    mx.random.seed(42)
+    model_class, args_class = rerank._jina_model_classes(config)
+    model = model_class(args_class.from_dict(config))
+    ids = mx.array([list(range(23))])
+    actual = model.model(ids)
+    expected = _manual_jina_backbone(model.model, ids, [4, None, 4])
+    assert mx.allclose(actual, expected, atol=1e-5).item()
+
+
+def test_jina_long_block_never_builds_quadratic_mask(monkeypatch):
+    import mlx.core as mx
+    from mlx_lm.models import base
+
+    from rapid_mlx import rerank
+
+    mask_shapes = []
+    create_causal_mask = base.create_causal_mask
+    attention = mx.fast.scaled_dot_product_attention
+
+    def record_mask(mask):
+        if isinstance(mask, mx.array):
+            mask_shapes.append(mask.shape)
+
+    def causal_wrapper(*args, **kwargs):
+        mask = create_causal_mask(*args, **kwargs)
+        record_mask(mask)
+        return mask
+
+    def attention_wrapper(*args, **kwargs):
+        record_mask(kwargs.get("mask"))
+        return attention(*args, **kwargs)
+
+    monkeypatch.setattr(base, "create_causal_mask", causal_wrapper)
+    monkeypatch.setattr(mx.fast, "scaled_dot_product_attention", attention_wrapper)
+    config = _tiny_jina_config()
+    model_class, args_class = rerank._jina_model_classes(config)
+    model = model_class(args_class.from_dict(config))
+    mx.eval(model.model(mx.array([list(range(40))])))
+    assert mask_shapes
+    assert all(len(shape) < 2 or min(shape[-2:]) <= 8 for shape in mask_shapes)
+
+
 @pytest.mark.parametrize(
     ("mode", "windows"),
     [("hybrid", [4, None, 4]), ("disabled", [None] * 3), ("default", [None, 4, 4])],

@@ -413,19 +413,70 @@ def _jina_model_classes(config: dict, *, projector_path: Path | None = None):
     from mlx_lm.models.base import create_attention_mask
 
     windows = _jina_attention_windows(config)
+    block_mask = object()
+
+    class _BlockSlidingAttention(qwen3.Attention):
+        def __init__(self, args, window):
+            super().__init__(args)
+            self.window = window
+
+        def __call__(self, x, mask=None, cache=None):
+            if mask is not block_mask:
+                return super().__call__(x, mask, cache)
+
+            batch, length, _ = x.shape
+            queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+            queries = self.q_norm(
+                queries.reshape(batch, length, self.n_heads, -1)
+            ).transpose(0, 2, 1, 3)
+            keys = self.k_norm(
+                keys.reshape(batch, length, self.n_kv_heads, -1)
+            ).transpose(0, 2, 1, 3)
+            values = values.reshape(batch, length, self.n_kv_heads, -1).transpose(
+                0, 2, 1, 3
+            )
+            queries, keys = self.rope(queries), self.rope(keys)
+            outputs = []
+            for start in range(0, length, max(1, self.window)):
+                end = min(start + max(1, self.window), length)
+                key_start = max(0, start - self.window + 1)
+                q_pos = mx.arange(start, end)[:, None]
+                k_pos = mx.arange(key_start, end)[None, :]
+                mask_block = (q_pos >= k_pos) & (q_pos < k_pos + self.window)
+                outputs.append(
+                    mx.fast.scaled_dot_product_attention(
+                        queries[:, :, start:end, :],
+                        keys[:, :, key_start:end, :],
+                        values[:, :, key_start:end, :],
+                        scale=self.scale,
+                        mask=mask_block,
+                    )
+                )
+            output = mx.concatenate(outputs, axis=2)
+            output = output.transpose(0, 2, 1, 3).reshape(batch, length, -1)
+            return self.o_proj(output)
 
     class HybridQwen3Model(qwen3.Qwen3Model):
         # v3.5 interleaves full and sliding-window attention layers.
+        def __init__(self, args):
+            super().__init__(args)
+            for layer, window in zip(self.layers, windows):
+                if window is not None:
+                    layer.self_attn = _BlockSlidingAttention(args, window)
+
         def __call__(self, inputs, cache=None, input_embeddings=None):
             h = (
                 input_embeddings
                 if input_embeddings is not None
                 else self.embed_tokens(inputs)
             )
-            if cache is None:
+            no_cache = cache is None
+            if no_cache:
                 cache = [None] * len(self.layers)
             masks = {
-                w: create_attention_mask(h, cache[0], window_size=w)
+                w: block_mask
+                if no_cache and w is not None and h.shape[1] > w
+                else create_attention_mask(h, cache[0], window_size=w)
                 for w in set(windows)
             }
             for layer, c, w in zip(self.layers, cache, windows):
