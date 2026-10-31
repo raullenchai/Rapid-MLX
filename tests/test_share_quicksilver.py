@@ -3604,6 +3604,21 @@ def test_service_launcher_preserves_matching_path_symlink(
     assert qs._service_launcher() == str(link)
 
 
+def test_service_launcher_accepts_pip_trampoline(
+    tmp_path, monkeypatch, launcher_distribution
+):
+    launcher = tmp_path / "directory with space" / "rapid-mlx"
+    launcher.parent.mkdir()
+    launcher.write_text(
+        f"#!/bin/sh\n'''exec' \"{sys.executable}\" \"$0\" \"$@\"\n' '''\n"
+    )
+    monkeypatch.setattr(qs.shutil, "which", lambda _: str(launcher))
+    monkeypatch.setattr(
+        qs, "_launcher_belongs_to_running_install", _launcher_belongs_to_running_install
+    )
+    assert qs._service_launcher() == str(launcher)
+
+
 def test_service_launcher_reports_different_path_install(
     tmp_path, monkeypatch, launcher_distribution
 ):
