@@ -174,30 +174,50 @@ def test_memory_abort_mapping_preserves_header(path, payload, monkeypatch):
         reset_config()
 
 
-def test_completions_engine_abort_does_not_disable_retries(monkeypatch):
+@pytest.mark.parametrize(
+    ("path", "payload", "route_name"),
+    [
+        ("/v1/completions", {"prompt": "hello"}, "completions"),
+        (
+            "/v1/messages",
+            {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 8},
+            "anthropic",
+        ),
+        ("/v1/responses", {"input": "hello"}, "responses"),
+    ],
+)
+@pytest.mark.parametrize("error_kind", ["engine_aborted", "lifecycle"])
+def test_completions_engine_abort_does_not_disable_retries(
+    path, payload, route_name, error_kind, monkeypatch
+):
     from fastapi.testclient import TestClient
 
     from rapid_mlx.config import reset_config
-    from rapid_mlx.routes import completions
+    from rapid_mlx.routes import anthropic, completions, responses
 
-    engine = _AbortEngine("engine_aborted")
+    route = {
+        "anthropic": anthropic,
+        "completions": completions,
+        "responses": responses,
+    }[route_name]
+    engine = _AbortEngine(error_kind)
     client = _make_client_with_envelope(engine)
-    client.app.include_router(completions.router)
+    client.app.include_router(route.router)
     client = TestClient(client.app, raise_server_exceptions=False)
-    monkeypatch.setattr(completions, "_check_admission_or_503", lambda _engine: None)
+    monkeypatch.setattr(route, "_check_admission_or_503", lambda _engine: None)
 
     async def wait_for_engine(coro, _request, timeout):
         return await coro
 
-    monkeypatch.setattr(completions, "_wait_with_disconnect", wait_for_engine)
+    monkeypatch.setattr(route, "_wait_with_disconnect", wait_for_engine)
     try:
         with client:
             response = client.post(
-                "/v1/completions",
-                json={"model": "qwen3-vl-8b-4bit", "prompt": "hello", "stream": False},
+                path,
+                json={"model": "qwen3-vl-8b-4bit", "stream": False, **payload},
             )
         assert engine.calls == 1
-        assert response.status_code == 500
+        assert response.status_code == 503
         assert "x-should-retry" not in response.headers
     finally:
         reset_config()

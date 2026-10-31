@@ -1920,17 +1920,6 @@ async def _non_stream(
         ):
             error_class = "other"
         _record_nonstream_failure(engine, request, error_class)
-        from ..request import (
-            InferenceAbortedError,
-            inference_aborted_error_code,
-            inference_aborted_http_exception,
-        )
-
-        if (
-            isinstance(e, InferenceAbortedError)
-            and inference_aborted_error_code(e) == "insufficient_memory"
-        ):
-            raise inference_aborted_http_exception(e) from e
         _context_error = context_overflow_from_client_error(e)
         if _context_error is not None:
             raise _context_error from e
@@ -1947,6 +1936,13 @@ async def _non_stream(
         # error.
         if is_media_input_error(e) or is_batch_cap_error(e) or responses_input_400:
             raise HTTPException(status_code=400, detail=err_msg)
+        from ..request import (
+            InferenceAbortedError,
+            inference_aborted_http_exception,
+        )
+
+        if isinstance(e, InferenceAbortedError):
+            raise inference_aborted_http_exception(e) from e
         raise
 
     if output is None:
