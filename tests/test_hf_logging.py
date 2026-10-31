@@ -185,3 +185,48 @@ def test_install_targets_the_exact_emitting_logger(hf_http_logger):
     silence_hf_unauthenticated_warning()
     child = logging.getLogger(_HF_HTTP_LOGGER)
     assert any(getattr(f, "_rapid_mlx_hf_unauth_filter", False) for f in child.filters)
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug):
+    import sys
+
+    from rapid_mlx import cli
+
+    root = logging.getLogger()
+    names = ("httpx", "httpcore", "urllib3", "huggingface_hub", _HF_HTTP_LOGGER)
+    loggers = [logging.getLogger(name) for name in names]
+    saved = [(logger.level, list(logger.filters)) for logger in loggers]
+    old_level = root.level
+    handler = logging.StreamHandler(sys.stderr)
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    loggers[-1].filters = []
+
+    def serve(_args):
+        logging.getLogger("httpx").info("transport record")
+        logging.getLogger(_HF_HTTP_LOGGER).warning(_REAL_ADVISORY)
+
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setattr(cli, "serve_command", serve)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "qwen3.8-27b-4bit",
+            *(["--log-level", "debug"] if debug else []),
+        ],
+    )
+    try:
+        cli.main()
+        output = capsys.readouterr().err
+        assert ("transport record" in output) == debug
+        assert _REAL_ADVISORY not in output
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(old_level)
+        for logger, (level, filters) in zip(loggers, saved):
+            logger.setLevel(level)
+            logger.filters = filters
