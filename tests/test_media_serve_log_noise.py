@@ -79,6 +79,73 @@ def test_runtime_summary(media, capsys):
     )
 
 
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        (
+            {"use_paged_cache": True},
+            "Paged cache requested: block_size=32, max_blocks=128 "
+            "(validated at engine startup)\n",
+        ),
+        ({}, "Memory-aware cache: 512MB (index=radix)\n"),
+        (
+            {"cache_memory_mb": None},
+            "Memory-aware cache: 20% of RAM (index=radix)\n",
+        ),
+        (
+            {"kv_cache_turboquant": "k8v4"},
+            "Memory-aware cache: 512MB (index=radix)\n"
+            "TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
+            "group_size=64\n",
+        ),
+        (
+            {"kv_cache_turboquant": "mse", "kv_cache_turboquant_bits": 3},
+            "Memory-aware cache: 512MB (index=radix)\n"
+            "TurboQuant V-cache (mse): 3-bit, group_size=64 (K stays FP16)\n",
+        ),
+        (
+            {"kv_cache_turboquant": "mse"},
+            "Memory-aware cache: 512MB (index=radix)\n"
+            "TurboQuant V-cache (mse): auto-bit, group_size=64 (K stays FP16)\n",
+        ),
+        (
+            {"kv_cache_quantization": True},
+            "Memory-aware cache: 512MB (index=radix)\n"
+            "KV cache quantization: 4-bit, group_size=128\n",
+        ),
+    ],
+)
+def test_text_lane_runtime_summary_cache_options(
+    overrides, expected, monkeypatch, capsys
+):
+    from rapid_mlx import cli
+
+    args = SimpleNamespace(
+        stream_interval=3,
+        use_paged_cache=False,
+        paged_cache_block_size=32,
+        max_cache_blocks=128,
+        no_memory_aware_cache=False,
+        cache_memory_mb=512,
+        kv_cache_turboquant=None,
+        kv_cache_turboquant_bits=None,
+        kv_cache_turboquant_group_size=64,
+        kv_cache_quantization=False,
+        kv_cache_quantization_bits=4,
+        kv_cache_quantization_group_size=128,
+    )
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    if args.cache_memory_mb is None:
+        monkeypatch.setattr(cli, "_cache_memory_percent", lambda args: 0.2)
+
+    cli._print_text_lane_runtime_summary(args, True, False)
+    assert capsys.readouterr().out == "Stream interval: 3 tokens\n" + expected
+
+    cli._print_text_lane_runtime_summary(args, True, True)
+    assert capsys.readouterr().out == ""
+
+
 def test_media_engine_warmup_logs(caplog):
     from rapid_mlx.runtime.image_lane import ImageEngine
     from rapid_mlx.runtime.video_lane import VideoEngine
