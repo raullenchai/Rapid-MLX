@@ -16,6 +16,10 @@ from typing import Any
 from .._env import env_falsey, env_truthy
 
 
+class RemoteCodeConsentRequired(ValueError):  # noqa: N818
+    """Raised when a model needs repository code and the operator has not opted in."""
+
+
 def validate_local_model_file(
     model_name: str | Path, *, model_config: dict | None = None
 ) -> None:
@@ -115,7 +119,7 @@ def remote_code_enabled(requested: bool | None = None) -> bool:
 def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) -> None:
     """Guard upstream model_file imports, which ignore tokenizer trust flags."""
     if config.get("model_file") and not remote_code_enabled(trust_remote_code):
-        raise ValueError(
+        raise RemoteCodeConsentRequired(
             "Model declares model_file (executable Python). Loading is disabled "
             "by default. Review the repository code, then explicitly opt in with "
             "RAPID_MLX_TRUST_REMOTE_CODE=1 or trust_remote_code=True."
@@ -144,7 +148,7 @@ def validate_processor_code(model_path: str | Path) -> None:
             raise ValueError(f"{name} must contain an object")
         validate_model_code(config)
         if config.get("auto_map") and not remote_code_enabled():
-            raise ValueError(
+            raise RemoteCodeConsentRequired(
                 "Model processor declares auto_map (executable Python). "
                 "Review the repository code, then explicitly opt in with "
                 "RAPID_MLX_TRUST_REMOTE_CODE=1."
