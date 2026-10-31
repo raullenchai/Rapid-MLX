@@ -9,6 +9,22 @@ import sys
 from rapid_mlx import _mirror
 
 
+def test_human_emits_only_when_progress_is_due(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    monkeypatch.setattr(_mirror.time, "monotonic", lambda: 100.0)
+    tracker = _mirror._ProgressTracker(total=1000)
+    calls = []
+    monkeypatch.setattr(tracker, "_emit", lambda: calls.append(None))
+
+    for _ in range(50):
+        tracker.add(1)
+    assert len(calls) == 0
+
+    tracker.add(50)
+    assert len(calls) == 1
+
+
 def test_human_log_milestones(monkeypatch):
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     stream = io.StringIO()
