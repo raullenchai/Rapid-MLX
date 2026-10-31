@@ -384,6 +384,54 @@ struct DownloadManagerTests {
         }
     }
 
+    @Test("Complete stdout failures reach the exit diagnosis")
+    func stdoutFailureBlocks() {
+        let cases: [([String], DesktopFunnelReporter.DownloadFailureCause, String)] = [
+            ([
+                "",
+                "  Error: Insufficient disk space for download.",
+                "    Download size:    34.9 GB",
+                "    Free space:        1.8 GB  (/)",
+                "    Need to free:     36.6 GB  (includes 10% working space for the download)",
+                "",
+                "  Suggestions:",
+                "    - Free disk space, or set HF_HOME to a drive with more room",
+                "    - Pick a smaller variant: rapid-mlx models",
+                "    - Bypass this check (download will likely fail mid-way): --force-disk-check",
+                "",
+            ], .diskFull, "There isn't enough disk space for this model. Free space, then retry to resume."),
+            ([
+                "",
+                "  Error: Model 'x' not found on HuggingFace.",
+                "  See catalog aliases with `rapid-mlx models`.",
+                "  Use an exact `namespace/repository-name` ID, for example `mlx-community/Qwen3.5-9B-4bit`.",
+            ], .notFound, "This model wasn't found on Hugging Face. Check the model name, then try again."),
+        ]
+        for (lines, cause, message) in cases {
+            let mgr = DownloadManager()
+            let job = mgr._testingSeedJob(alias: "x", retryAttempt: 3)
+            for line in lines { mgr._testingIngestStderr(alias: "x", line: line, isStderr: false) }
+            mgr._testingFinish(alias: "x", status: 1, reason: .exit)
+            #expect(job.failureCause == cause)
+            #expect(job.status == .failed(message: message))
+        }
+    }
+
+    @Test("Mirror fallback preserves the full network failure block")
+    func mirrorFallbackNetworkFailure() {
+        let mgr = DownloadManager()
+        let job = mgr._testingSeedJob(alias: "x", source: .mirror, retryAttempt: 3)
+        for line in [
+            "  Error: could not reach Hugging Face for 'x'.",
+            "  Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "  You can also serve an already-cached model.",
+            "  Retry: rapid-mlx pull x",
+        ] { mgr._testingIngestStderr(alias: "x", line: line) }
+        mgr._testingFinish(alias: "x", status: 1, reason: .exit)
+        #expect(job.failureCause == .network)
+        #expect(job.status == .failed(message: "The network connection interrupted the download. Check your connection, then retry to resume."))
+    }
+
     @Test("Signal exit (SIGKILL) lands as failed with a 'signal' phrasing")
     func signalExitMessageDistinguishedFromExit() {
         let mgr = DownloadManager()
