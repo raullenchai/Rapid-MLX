@@ -514,12 +514,13 @@ enum FailureDiagnoser {
             return containsAny(value, hfUnreachableSignals)
                 ? .downloadSourceUnavailable : .downloadFailed
         }
-        if value.contains("could not reach hugging face") { return .downloadFailed }
-        let mirrorSignals = offlineSignals + [
+        let mirrorSignals = [
             "mirror", "models.rapidmlx.com", "cloudflare", "bad gateway",
             "service unavailable", "gateway timeout", "status 502", "status 503", "status 504",
         ]
-        return containsAny(value, mirrorSignals) ? .downloadSourceUnavailable : .downloadFailed
+        if containsAny(value, mirrorSignals) { return .downloadSourceUnavailable }
+        if value.contains("could not reach hugging face") { return .downloadFailed }
+        return containsAny(value, offlineSignals) ? .downloadSourceUnavailable : .downloadFailed
     }
 
     nonisolated static func downloadFailureCause(raw: String, kind: FailureDiagnosis.Kind) -> DesktopFunnelReporter.DownloadFailureCause {

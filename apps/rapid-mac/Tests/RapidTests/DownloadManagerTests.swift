@@ -581,6 +581,25 @@ struct DownloadFailureGuidanceTests {
     }
 
     @Test func terminalFailureAndMirrorHuggingFaceUnreachable() {
+        let checksum = DownloadManager.classifyPullFailure(
+            tailLines: ["Download interrupted (Connection refused), retrying", "Error: sha256 mismatch for model.safetensors"],
+            source: .huggingFace
+        )
+        #expect(checksum.kind == .downloadFailed)
+        #expect(checksum.message == "The model download didn't finish. Retry to resume it.")
+
+        let mirrorOutage = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face for x/y.", "Download interrupted, retrying", "Error: mirror models.rapidmlx.com returned 503 Service Unavailable"],
+            source: .mirror
+        )
+        #expect(mirrorOutage.kind == .downloadSourceUnavailable)
+        #expect(mirrorOutage.message == "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry.")
+        let mixedTerminal = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face; mirror models.rapidmlx.com returned 503 Service Unavailable"],
+            source: .mirror
+        )
+        #expect(mixedTerminal.kind == .downloadSourceUnavailable)
+
         let disk = DownloadManager.classifyPullFailure(
             tailLines: ["Connection refused", "No space left on device"], source: .huggingFace
         )

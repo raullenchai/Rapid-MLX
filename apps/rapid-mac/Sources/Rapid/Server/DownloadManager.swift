@@ -873,7 +873,7 @@ final class DownloadManager {
         case .exit:
             if scheduleAutomaticRetry(
                 job: job, alias: alias,
-                transient: Self.isTransientDownloadError((stderrTails[alias] ?? []).joined(separator: " — "))
+                transient: Self.isTransientDownloadError(Self.terminalPullFailure(stderrorLines: stderrTails[alias] ?? []))
             ) { return }
             recordFailure(job: job, alias: alias, signal: false)
         case .uncaughtSignal:
@@ -937,7 +937,7 @@ final class DownloadManager {
         // for support, but NEVER surface it to the user — they get a
         // plain, actionable message instead.
         let lines = (stderrTails[alias] ?? []).filter { !$0.isEmpty }
-        let tail = lines.joined(separator: " — ")
+        let tail = Self.terminalPullFailure(stderrorLines: lines)
         let logTail = lines.suffix(3).joined(separator: " — ")
         if !logTail.isEmpty {
             print("[download] \(alias) failed: \(logTail)")
@@ -954,9 +954,14 @@ final class DownloadManager {
     nonisolated static func classifyPullFailure(
         tailLines: [String], source: DownloadSource
     ) -> (kind: FailureDiagnosis.Kind, message: String) {
-        let raw = tailLines.joined(separator: " — ")
+        let raw = terminalPullFailure(stderrorLines: tailLines)
         return (FailureDiagnoser.downloadFailureKind(raw: raw, usingMirror: source == .mirror),
                 pullFailureMessage(raw: raw, source: source))
+    }
+
+    nonisolated private static func terminalPullFailure(stderrorLines: [String]) -> String {
+        let start = stderrorLines.lastIndex { $0.lowercased().contains("error:") } ?? stderrorLines.startIndex
+        return stderrorLines[start...].joined(separator: " — ")
     }
 
     nonisolated static func pullFailureMessage(raw: String, source: DownloadSource) -> String {
