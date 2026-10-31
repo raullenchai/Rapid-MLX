@@ -1490,6 +1490,31 @@ def catalog_alias_for(name: str) -> str | None:
     return None
 
 
+def catalog_identity(name: str) -> str | None:
+    """Resolve catalog, user alias, or Hugging Face cache spelling to an alias."""
+    try:
+        if alias := catalog_alias_for(name):
+            return alias
+        from .user_aliases import validated_user_aliases
+
+        profiles = _load()
+        users = validated_user_aliases(
+            {alias: profile.hf_path for alias, profile in profiles.items()},
+            user_alias_reserved_names(),
+        )
+        if target := users.get(name):
+            if alias := catalog_alias_for(target):
+                return alias
+        for segment in name.replace("\\", "/").split("/"):
+            if segment.startswith("models--"):
+                repo = segment[len("models--") :].replace("--", "/", 1)
+                if alias := catalog_alias_for(repo):
+                    return alias
+        return None
+    except Exception:
+        return None
+
+
 def _family_prefix(name: str) -> str:
     """Strip trailing size/quant tokens to get the model-family prefix.
 

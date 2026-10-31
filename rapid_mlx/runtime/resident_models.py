@@ -536,6 +536,18 @@ def _effective_replace_group(
 
 def measured_image_estimate_bytes(model_name: str) -> int | None:
     """Return the known image admission charge, if one matches."""
+    from ..model_aliases import catalog_identity, resolve_profile
+
+    alias = catalog_identity(model_name)
+    if alias is not None:
+        measured = _measured_image_estimate_for_spelling(alias)
+        if measured is not None:
+            return measured
+        return _measured_image_estimate_for_spelling(resolve_profile(alias).hf_path)
+    return _measured_image_estimate_for_spelling(model_name)
+
+
+def _measured_image_estimate_for_spelling(model_name: str) -> int | None:
     folded = model_name.casefold()
     if folded == "qwen-image":
         # The bare alias serves the same full-q4 Qwen Image 2.1 checkpoint as
@@ -616,7 +628,22 @@ def measured_image_estimate_bytes(model_name: str) -> int | None:
 
 def estimate_model_bytes(model_name: str) -> int:
     """Return a conservative admission charge, falling back to model heuristics."""
-    measured = measured_image_estimate_bytes(model_name)
+    from ..model_aliases import catalog_identity, resolve_profile
+
+    alias = catalog_identity(model_name)
+    if alias is not None:
+        measured = measured_image_estimate_bytes(alias)
+        if measured is not None:
+            return measured
+        return max(
+            _estimate_for_spelling(alias),
+            _estimate_for_spelling(resolve_profile(alias).hf_path),
+        )
+    return _estimate_for_spelling(model_name)
+
+
+def _estimate_for_spelling(model_name: str) -> int:
+    measured = _measured_image_estimate_for_spelling(model_name)
     if measured is not None:
         return measured
 

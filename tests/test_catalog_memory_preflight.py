@@ -86,6 +86,25 @@ def test_fitting_models_pass(alias, ram, monkeypatch):
     run(alias, ram, monkeypatch)
 
 
+def test_bonsai_alias_and_repo_are_refused_identically(monkeypatch):
+    alias = "bonsai-27b-2bit"
+    repo = "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+    fits = []
+    for name in (alias, repo):
+        fits.append(
+            preflight.catalog_memory_fit(
+                name, ram_bytes=16 * GIB, recommended_working_set_bytes=None
+            )
+        )
+        with pytest.raises(SystemExit) as exc:
+            run(name, 16, monkeypatch)
+        assert exc.value.code == 1
+    assert fits[0] == fits[1]
+    assert fits[0].fits is False
+    assert fits[0].estimate_bytes == 13 * GIB
+    assert fits[0].estimate_source == "curated_footprint"
+
+
 def test_refuses_when_fitting_pick_fails(monkeypatch, capsys):
     with (
         patch("rapid_mlx.recommendations.fitting_pick", side_effect=RuntimeError),
