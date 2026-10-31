@@ -99,6 +99,34 @@ def test_generation_cache_limit_stays_bounded_until_last_context_exits(monkeypat
     assert clears == [True]
 
 
+def test_bounded_cache_limit_ignores_initial_set_failure(monkeypatch):
+    from rapid_mlx import _mlx_cache_limit
+
+    calls = []
+
+    def fail_set_cache_limit(limit):
+        calls.append(limit)
+        raise RuntimeError("set cache limit failed")
+
+    mx = ModuleType("mlx.core")
+    mx.set_cache_limit = fail_set_cache_limit
+    mlx = ModuleType("mlx")
+    mlx.core = mx
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+
+    with _mlx_cache_limit.bounded_cache_limit(1024**3):
+        pass
+
+    assert calls == [0]
+    assert _mlx_cache_limit._bound is None
+    assert _mlx_cache_limit._bound_depth == 0
+
+    mx.set_cache_limit = lambda limit: calls.append(limit) or 7
+    assert _mlx_cache_limit.request_cache_limit(2 * 1024**3) == 7
+    assert calls[-1] == 2 * 1024**3
+
+
 def test_generation_cache_restores_limit_when_bound_fails(monkeypatch):
     from rapid_mlx.image.engine import _bounded_generation_cache
 

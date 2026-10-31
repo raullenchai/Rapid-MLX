@@ -19,7 +19,7 @@ def request_cache_limit(limit: int) -> int:
 
     with _lock:
         if _bound is None:
-            return mx.set_cache_limit(limit)
+            return int(mx.set_cache_limit(limit))
         previous = _requested if _requested is not None else _entry_limit
         _requested = limit
         mx.set_cache_limit(min(limit, _bound))
