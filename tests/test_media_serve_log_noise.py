@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.requires_mlx
 def test_mamba_noop_is_debug(monkeypatch, caplog):
     from rapid_mlx.utils import mamba_cache
 
@@ -17,6 +18,7 @@ def test_mamba_noop_is_debug(monkeypatch, caplog):
     assert record.levelno == logging.DEBUG
 
 
+@pytest.mark.requires_mlx
 def test_gdn_install_is_debug(monkeypatch, caplog):
     from mlx_lm.models import gated_delta
 
