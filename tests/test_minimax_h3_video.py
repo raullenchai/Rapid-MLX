@@ -216,9 +216,8 @@ def test_invalid_audio_is_rejected(monkeypatch, tmp_path, audio, rate, message):
     import numpy as np
 
     from rapid_mlx.runtime import video_lane
-    from rapid_mlx.video.encoding import VideoEncodingError, encode_rgb_video
-
     from rapid_mlx.video import encoding
+    from rapid_mlx.video.encoding import VideoEncodingError, encode_rgb_video
 
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
     # Validation must reject the audio before any subprocess is started.
