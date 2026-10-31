@@ -43,7 +43,7 @@ struct ComposerLoadStatusTests {
         #expect(s.phase == .downloading)
         #expect(s.progress == .determinate(0.594))
         #expect(s.percentText == "59%")
-        #expect(s.detail == "\(alias) · 1.7 GB of 2.9 GB")
+        #expect(s.detail == "\(alias) · \(DownloadProgress.formatBytes(gib * 17 / 10)) of \(DownloadProgress.formatBytes(gib * 29 / 10))")
         #expect(s.etaText == "< 1 min left")
     }
 
@@ -66,7 +66,7 @@ struct ComposerLoadStatusTests {
         let s = try #require(resolve(.starting(alias: alias), progress: progress).1)
         #expect(s.progress == .indeterminate)
         #expect(s.percentText == nil)
-        #expect(s.detail == "\(alias) · 2.9 GB downloaded")
+        #expect(s.detail == "\(alias) · \(DownloadProgress.formatBytes(gib * 29 / 10)) downloaded")
     }
 
     @Test("Before the disk is observed the slot names the model, never 0 B")
@@ -81,7 +81,7 @@ struct ComposerLoadStatusTests {
         let text = ComposerLoadStatus.bytesText(.init(
             activity: .downloading, bytesDownloaded: gib * 3, totalBytes: gib * 2
         ))
-        #expect(text == "3.0 GB downloaded")
+        #expect(text == "\(DownloadProgress.formatBytes(gib * 3)) downloaded")
     }
 
     @Test("Percent clamps and rounds")

@@ -2,6 +2,86 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%@ download." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载大小：%@。"
+          }
+        }
+      }
+    },
+    "needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %@"
+          }
+        }
+      }
+    },
+    "Needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %@"
+          }
+        }
+      }
+    },
+    " · needs ~%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · 大约需要 %@"
+          }
+        }
+      }
+    },
+    "Estimated to need about %@; this Mac has %@ available for models. You can download it, but starting it may fail or destabilize the Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计需要约 %1$@；这台 Mac 有 %2$@ 可供模型使用。你可以下载，但启动可能失败或导致 Mac 不稳定。"
+          }
+        }
+      }
+    },
+    ". Not fit for this Mac. Needs about %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "。不适合这台 Mac。大约需要 %@"
+          }
+        }
+      }
+    },
+    "Estimated need ≈ %@; your Mac has about %@ available for the model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计需要约 %1$@；你的 Mac 有约 %2$@ 可供模型使用。"
+          }
+        }
+      }
+    },
+    "Estimated footprint exceeds your Mac's usable RAM (%@)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计内存占用超过你的 Mac 可用的内存（%@）。"
+          }
+        }
+      }
+    },
     "Acceleration" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -229,6 +309,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "管理密钥…"
+          }
+        }
+      }
+    },
+    "Model download progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型下载进度"
           }
         }
       }
@@ -3231,6 +3321,16 @@
         }
       }
     },
+    "%@ used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已使用 %@"
+          }
+        }
+      }
+    },
     "%@ was downloaded by another app. Rapid can't remove it — delete it where it was installed." : {
       "localizations" : {
         "zh-Hans" : {
@@ -4805,6 +4905,26 @@
         }
       }
     },
+    "Dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写"
+          }
+        }
+      }
+    },
+    "Dictation model download progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写模型下载进度"
+          }
+        }
+      }
+    },
     "Dictations you make will show up here." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5447,6 +5567,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "反馈"
+          }
+        }
+      }
+    },
+    "%@ of %@ used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已使用 %@，共 %@"
           }
         }
       }
@@ -11597,6 +11727,16 @@
         }
       }
     },
+    "Checking runtime…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查运行时…"
+          }
+        }
+      }
+    },
     "Checking this Mac…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11964,6 +12104,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rapid 在这台 Mac 上记录的连接时段。这不是 QuickSilver 结算记录，也不与上方的结算窗口对应。"
+          }
+        }
+      }
+    },
+    "Connection periods Rapid recorded on this Mac. Not a QuickSilver settlement record." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 在这台 Mac 上记录的连接时段。这不是 QuickSilver 结算记录。"
           }
         }
       }
@@ -13028,6 +13178,16 @@
         }
       }
     },
+    "Looking for models this Mac can benchmark." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查找这台 Mac 可以跑分的模型。"
+          }
+        }
+      }
+    },
     "MAIN RESULT" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13284,6 +13444,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "模型标识符"
+          }
+        }
+      }
+    },
+    "Model memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型内存"
           }
         }
       }
@@ -15668,6 +15838,16 @@
         }
       }
     },
+    "Speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "速度"
+          }
+        }
+      }
+    },
     "Stage %1$@ of %2$d" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16414,6 +16594,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频时长"
+          }
+        }
+      }
+    },
+    "Video generation progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频生成进度"
           }
         }
       }
@@ -17307,13 +17497,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Needs at least %1$d GB unified memory; this Mac has %2$d GB."
+            "value" : "Needs at least %1$@ unified memory; this Mac has %2$d GB."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "至少需要 %1$d GB 统一内存；这台 Mac 有 %2$d GB。"
+            "value" : "至少需要 %1$@ 统一内存；这台 Mac 有 %2$d GB。"
           }
         }
       }

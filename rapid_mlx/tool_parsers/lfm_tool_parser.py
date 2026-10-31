@@ -53,13 +53,13 @@ _LFM_PARTIAL_START = re.compile(r"\[\s*(?:[A-Za-z_]\w*\s*\(?)?$", re.DOTALL)
 TEXT_CALL_START = re.compile(r"\[\s*Calling\s+tool\s*:", re.DOTALL)
 
 # Tool names in the text-format dialect follow the OpenAI function-name
-# charset (``api/models._FUNCTION_NAME_PATTERN``) plus ``.``, matching what
+# charset plus ``.``, up to the 128-character Messages API limit, matching what
 # the cross-format recovery parser accepts — NOT Python identifier rules.
 # ``my-tool`` and ``2fa`` are legal names a client may register, and the
 # streaming path has to hold their markup back for the same reason as any
 # other: otherwise the recovery path extracts the call at finalize while
 # the raw span has already streamed to the user.
-_TOOL_NAME = r"[A-Za-z0-9_.-]{1,64}"
+_TOOL_NAME = r"[A-Za-z0-9_.-]{1,128}"
 
 # ``[name({`` — the envelope with its ``Calling tool:`` prefix dropped.
 # The ``{`` is required so this can only claim the JSON-arguments dialect,

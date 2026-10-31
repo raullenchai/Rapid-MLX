@@ -555,6 +555,12 @@ struct ContentView: View {
         )) {
             await refreshCatalogSnapshot()
         }
+        // Resolve resident audio names even when the Audio tab has not been opened.
+        .task(id: "\(server.binaryPath?.path ?? "")|\(downloads.cacheGeneration)|\(!server.residency.audioLanes.isEmpty)") {
+            if !server.residency.audioLanes.isEmpty {
+                await audio.refreshCatalog()
+            }
+        }
         // The selected chat alias may be a secondary resident model rather
         // than the process-owning `servingAlias`. Fetch its exact live profile
         // whenever that selection becomes resident so photo admission follows
@@ -711,6 +717,8 @@ struct ContentView: View {
                     section = .chat
                 },
                 server: server,
+                catalogEntries: catalogEntries,
+                audioCatalogEntries: audio.audioModels,
                 hasActiveModelWork: hasActiveModelWork
             )
             // v1.0: the rail paints an explicit warm surface rather than
@@ -2126,7 +2134,7 @@ struct ContentView: View {
             let footprint = ModelSizing.estimate(alias: pending)
             let sizeText: String? = footprint.paramsBillions == nil
                 ? nil
-                : String(format: "~%.1f GB", footprint.weightsGB)
+                : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30)))
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
             return .noPrimaryLaunch

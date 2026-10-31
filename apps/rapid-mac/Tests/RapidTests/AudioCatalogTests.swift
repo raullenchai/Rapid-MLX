@@ -415,7 +415,7 @@ struct AudioCatalogTests {
         let qwen = try #require(entries.first { $0.alias == "qwen3-tts-4bit" })
 
         #expect(qwen.cached)
-        #expect(qwen.sizeOnDisk == "2.2 GiB")
+        #expect(qwen.sizeOnDisk == DownloadProgress.formatBytes(Int64(2.2 * Double(1 << 30))))
     }
 
     @Test("incomplete audio cache rows remain downloadable")
@@ -449,7 +449,7 @@ struct AudioCatalogTests {
         let qwen = try #require(entries.first { $0.alias == "qwen3-tts-4bit" })
 
         #expect(!qwen.cached)
-        #expect(qwen.sizeOnDisk == "2.2 GiB")
+        #expect(qwen.sizeOnDisk == DownloadProgress.formatBytes(Int64(2.2 * Double(1 << 30))))
         #expect(ModelPickerBar.cacheGlyph(cached: qwen.cached) == "icloud.and.arrow.down")
     }
 

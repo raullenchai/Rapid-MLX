@@ -5,17 +5,41 @@ import Testing
 @Suite("Model size")
 struct ModelSizeTests {
     @Test func byteFormatting() {
-        #expect(ModelSize.bytes(787_276_896).displayText == DownloadProgress.formatBytes(787_276_896))
-        #expect(ModelSize.bytes(787_276_896).displayText == "751 MB")
-        #expect(ModelSize.bytes(3_083_520_685).displayText == "2.9 GB")
+        let bytes: Int64 = 1_500_000_000
+        let expected = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        #expect(ModelSize.bytes(bytes).displayText == expected)
+        #expect(ModelSize.legacy("1.5 GB")?.displayText == expected)
+        #expect(DownloadProgress.formatBytes(bytes) == expected)
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        #expect(DownloadProgress.formatBytes(-1) == formatter.string(fromByteCount: 0))
     }
 
-    @Test func legacyTextIsNeverParsed() {
-        #expect(ModelSize.legacy(" 2.9 GiB ")?.displayText == "2.9 GiB")
-        #expect(ModelSize.legacy("1,010 MB")?.displayText == "1,010 MB")
-        #expect(ModelSize.legacy("1,010 MB")?.byteCount == nil)
+    @Test func legacyTextParsing() {
+        #expect(ModelSize.legacy("338.9 MiB")?.displayText == ModelSize.bytes(355_365_273).displayText)
+        let gibBytes = Int64(4.3 * Double(1 << 30))
+        #expect(ModelSize.legacy("4.3 GiB")?.displayText == ByteCountFormatter.string(fromByteCount: gibBytes, countStyle: .file))
+        #expect(ModelSize.legacy("1.5 GB")?.byteCount == 1_500_000_000)
+        #expect(ModelSize.parseBytes("1,010 MB") == nil)
+        #expect(ModelSize.legacy("about one gig")?.displayText == "about one gig")
+        #expect(ModelSize.legacy("about one gig")?.byteCount == nil)
         #expect(ModelSize.legacy("  ") == nil)
         #expect(ModelSize.legacy(nil) == nil)
+        #expect(ModelSize.legacy("1e99 GiB")?.byteCount == nil)
+    }
+
+    @Test func fixedFormatParsing() {
+        #expect(ModelSize.parseBytes("1,07 GB") == nil)
+        #expect(ModelSize.parseBytes("1.07\u{00a0}GB") == 1_070_000_000)
+        #expect(ModelSize.parseBytes("1.234,5 MB") == nil)
+    }
+
+    @Test func nonPositiveNumericSizeFallsBackToLegacy() {
+        for bytes in [Int64(0), -1] {
+            let entry = ModelEntry(alias: "a", hfRepo: nil, sizeOnDisk: "2.0 GiB", cached: true, sizeBytes: bytes)
+            #expect(entry.size?.byteCount == 2_147_483_648)
+        }
     }
 
     @Test func cachedInventoryAndMergePreserveBytes() throws {
@@ -42,10 +66,10 @@ struct ModelSizeTests {
 
     @Test func pickerAndSettingsUseCatalogSize() {
         let entry = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: "mlx-community/Qwen3-ASR-0.6B-5bit", sizeOnDisk: "751 MB", cached: false, sizeBytes: 787_276_896)
-        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == "751 MB")
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == ByteCountFormatter.string(fromByteCount: 787_276_896, countStyle: .file))
         #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == entry.size?.displayText)
         let legacy = ModelEntry(alias: "qwen3-asr-0.6b", hfRepo: nil, sizeOnDisk: "750.8 MiB", cached: false)
-        #expect(SettingsModelManagementPanel.downloadSizeLabel(legacy) == "750.8 MiB")
+        #expect(SettingsModelManagementPanel.downloadSizeLabel(legacy) == legacy.size?.displayText)
     }
 
     @Test @MainActor func readinessDisplayName() {

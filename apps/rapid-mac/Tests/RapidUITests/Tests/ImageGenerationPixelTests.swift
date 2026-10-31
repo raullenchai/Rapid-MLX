@@ -33,6 +33,27 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(policy.shouldClick(signature: "load-anyway", isEnabled: true))
     }
 
+    func testMemoryAndDictationAccessibility() throws {
+        let harness = try RapidUITestHarness(testName: "memory-dictation-ax", fakeSettings: [:])
+        activeHarness = harness
+        harness.launch()
+        harness.startModel()
+
+        let memory = harness.element("Sidebar.Residency.Memory")
+        XCTAssertTrue(memory.waitForExistence(timeout: 30))
+        XCTAssertEqual(memory.label, "Model memory")
+        // SidebarResidentUnloadTests covers the spoken text; XCUI cannot read AXValueDescription.
+        let fraction = (memory.value as? NSNumber)?.doubleValue
+        XCTAssertEqual(fraction ?? -1, 10.0 / 32.0, accuracy: 0.001)
+
+        let audio = harness.element("Sidebar.Audio")
+        XCTAssertTrue(audio.waitForExistence(timeout: 10))
+        audio.click()
+        let dictation = harness.element("Dictation.Enable")
+        XCTAssertTrue(dictation.waitForExistence(timeout: 20))
+        XCTAssertEqual(dictation.label, "Dictation")
+    }
+
     func testTwoImageRendersDrawDistinctThumbnailPixels() throws {
         continueAfterFailure = false
         let harness = try RapidUITestHarness(

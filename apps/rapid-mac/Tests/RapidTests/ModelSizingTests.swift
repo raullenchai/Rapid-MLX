@@ -214,9 +214,9 @@ struct ModelSizingTests {
         )
         #expect(w.title.contains("gemma-4-12b"))
         #expect(w.message.contains("121%"))
-        #expect(w.message.contains("accounts for about 6 GB released"))
+        #expect(w.message.contains("accounts for about \(DownloadProgress.formatMemory(Int64(6.3 * Double(1 << 30)))) released"))
         #expect(w.message.contains("more memory than this Mac has"))
-        #expect(w.message.contains("6 GB"))
+        #expect(w.message.contains(DownloadProgress.formatMemory(Int64(ceil(5.1) * Double(1 << 30)))))
         #expect(!w.message.contains("only about 9 GB is free"))
         #expect(w.confirmTitle.localizedCaseInsensitiveContains("anyway"))
     }

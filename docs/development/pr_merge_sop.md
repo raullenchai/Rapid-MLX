@@ -195,7 +195,7 @@ Output must be a non-empty Anthropic-shaped response, no `!!!!!!` token-id-0 cor
 gh pr view <PR#> --repo raullenchai/Rapid-MLX --json mergeable,mergeStateStatus,statusCheckRollup
 ```
 
-Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
+Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.12/3.13)`, `test-apple-silicon`, `tests`.
 
 **Final-snapshot rule (incident #1745).** The check list is evidence only for
 the exact commit and instant at which it was read. After the final push, fetch

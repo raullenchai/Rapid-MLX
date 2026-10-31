@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
+import rapid_mlx
 from rapid_mlx.bench import _server
 from rapid_mlx.catalog import rcj_digest
 from rapid_mlx.community_bench import (
@@ -1398,6 +1399,15 @@ def _text_run() -> dict:
         started_at=utc_now(),
         measurements=measurements,
     )
+
+
+def test_run_builder_imports_package_version() -> None:
+    assert run_builder.__version__ is rapid_mlx.__version__
+
+
+def test_run_collector_uses_builder_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_builder, "__version__", "9.9.9-test")
+    assert _text_run()["collector"]["version"] == "9.9.9-test"
 
 
 def test_archive_validates_then_writes_private_atomic_result(tmp_path: Path) -> None:
@@ -5405,6 +5415,22 @@ def test_text_measurements_reports_model_load_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The load/download stage is the longest silent part of a run."""
+    from rapid_mlx import model_metadata
+
+    def unexpected_pinned_resolver(*args, **kwargs):
+        pytest.fail("a direct loader pair must not resolve a pinned snapshot")
+
+    monkeypatch.setattr(
+        model_metadata, "resolve_pinned_cached_snapshot", unexpected_pinned_resolver
+    )
+    identity_snapshots = []
+    original_identity = local_runner.unresolved_model_identity
+
+    def capture_identity(*args, **kwargs):
+        identity_snapshots.append(kwargs.get("snapshot_path"))
+        return original_identity(*args, **kwargs)
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", capture_identity)
     lines: list[str] = []
     cases = registered_workload("text_generation")["cases"]
 
@@ -5488,6 +5514,7 @@ def test_text_measurements_reports_model_load_stage(
         )
     )
     assert context == 4096
+    assert identity_snapshots == [None]
     assert _language["speculative_decoding"] == {"method": "none"}
     assert _language["kv_cache"] == {"mode": "unknown", "dtype": "unknown"}
     assert _language["prefill_chunk_size"] == 2048

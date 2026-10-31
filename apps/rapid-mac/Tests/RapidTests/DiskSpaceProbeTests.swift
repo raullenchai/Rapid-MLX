@@ -294,39 +294,11 @@ struct DiskSpaceProbeTests {
 
     // MARK: - Banner copy helpers
 
-    @Test("formatBytesForBanner pins MB / GB boundary")
+    @Test("formatBytesForBanner uses file units and clamps negatives")
     func formatBytesForBannerBoundary() {
-        // Issue #357: < 1 GB must render as "N MB" (no decimals), not
-        // "0.X GB". Sticker-pin the exact displayed strings across the
-        // boundary so a future regression breaks loudly.
-        let mb: Int64 = 1024 * 1024
-        let gb: Int64 = 1024 * 1024 * 1024
-
-        // Sub-GB → MB branch
-        #expect(QuickstartView.formatBytesForBanner(0) == "0 MB")
-        #expect(QuickstartView.formatBytesForBanner(50 * mb) == "50 MB")
-        #expect(QuickstartView.formatBytesForBanner(999 * mb) == "999 MB")
-        // The exact pathology from the issue: 99 MB used to render
-        // as "0.1 GB" — now reads truthfully.
-        #expect(QuickstartView.formatBytesForBanner(99 * mb) == "99 MB")
-        // Codex r1 MINOR: one byte below the GB cutoff must NOT
-        // round up to "1024 MB" (which would cross the cutoff
-        // visually and reintroduce the rounding-up problem the GB
-        // branch already avoids). Floor-on-integer-division pins this.
-        #expect(QuickstartView.formatBytesForBanner(gb - 1) == "1023 MB")
-
-        // ≥ 1 GB → GB branch, one decimal
-        #expect(QuickstartView.formatBytesForBanner(gb) == "1.0 GB")
-        let oneAndAHalf = Int64(1.5 * Double(gb))
-        #expect(QuickstartView.formatBytesForBanner(oneAndAHalf) == "1.5 GB")
-        #expect(QuickstartView.formatBytesForBanner(100 * gb) == "100.0 GB")
-    }
-
-    @Test("formatBytesForBanner clamps negative inputs to 0")
-    func formatBytesForBannerClampsNegative() {
-        // Defensive: a future caller shouldn't pass < 0 but the
-        // display should never read "-2 MB" or "-2.0 GB".
-        #expect(QuickstartView.formatBytesForBanner(-1) == "0 MB")
+        for bytes: Int64 in [-1, 0, 50_000_000, 999_999_999, 1_000_000_000, 1_500_000_000] {
+            #expect(QuickstartView.formatBytesForBanner(bytes) == DownloadProgress.formatBytes(bytes))
+        }
     }
 
     @Test("lowDiskBannerBody mentions both numbers and the model name")
@@ -362,7 +334,7 @@ struct DiskSpaceProbeTests {
             requiredBytes: req,
             displayName: QuickstartCoordinator.defaultChoice.displayName
         )
-        #expect(body.contains("99 MB free"))
+        #expect(body.contains("\(DownloadProgress.formatBytes(free)) free"))
         // Negative-pin: must NOT render the buggy "0.1 GB free" string.
         #expect(!body.contains("0.1 GB free"))
     }

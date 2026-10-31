@@ -364,16 +364,19 @@ def test_health_probes_report_embedding_model_loaded(embeddings_only_config):
 
     full = asyncio.run(health.health())
     assert full["model_loaded"] is True
-    assert full["model_name"] is None
+    assert full["model_name"] == EMBED_ID
+    assert full["models"] == [EMBED_ID]
     assert full["model_type"] == "embedding"
-    assert asyncio.run(health.healthz())["model_loaded"] is True
+    healthz = asyncio.run(health.healthz())
+    assert healthz["model_loaded"] is True
+    assert healthz["model_name"] == EMBED_ID
     ready = asyncio.run(health.health_ready())
     assert ready["model_loaded"] is True
-    assert ready["model"] is None
+    assert ready["model"] == EMBED_ID
     status, body = _build_healthz_payload()
     assert status == 200
     assert json.loads(body)["model_loaded"] is True
-    assert json.loads(body)["model_name"] is None
+    assert json.loads(body)["model_name"] == EMBED_ID
 
 
 @pytest.mark.requires_mlx

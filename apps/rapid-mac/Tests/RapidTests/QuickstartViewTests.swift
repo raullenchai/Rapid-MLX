@@ -517,7 +517,7 @@ struct QuickstartViewSourceGrepTests {
     func lowMemoryChoiceUsesCuratedDownloadSize() {
         let choice = QuickstartCoordinator.lowMemoryChoice
         #expect(choice.downloadBytes == 663_397_140)
-        #expect(QuickstartView.sizeText(for: choice) == "~633 MB")
+        #expect(QuickstartView.sizeText(for: choice) == "~" + ByteCountFormatter.string(fromByteCount: choice.downloadBytes!, countStyle: .file))
         #expect(QuickstartView.sizeText(for: choice) != QuickstartView.sizeText(for: choice.alias))
     }
 
