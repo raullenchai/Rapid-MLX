@@ -42,7 +42,9 @@ final class ImageGenerationPixelTests: XCTestCase {
         let memory = harness.element("Sidebar.Residency.Memory")
         XCTAssertTrue(memory.waitForExistence(timeout: 30))
         XCTAssertEqual(memory.label, "Model memory")
-        XCTAssertEqual(memory.value as? String, "10 GB of 32 GB used")
+        // SidebarResidentUnloadTests covers the spoken text; XCUI cannot read AXValueDescription.
+        let fraction = (memory.value as? NSNumber)?.doubleValue
+        XCTAssertEqual(fraction ?? -1, 10.0 / 32.0, accuracy: 0.001)
 
         let audio = harness.element("Sidebar.Audio")
         XCTAssertTrue(audio.waitForExistence(timeout: 10))
