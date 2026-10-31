@@ -522,6 +522,59 @@ def test_image_catalog_excludes_incompatible_registered_workload() -> None:
     assert "flux2-klein-4b" in aliases
 
 
+def test_image_protocol_issue_ignores_engine_import_failure(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "rapid_mlx.image.engine", None)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+
+
+@pytest.mark.parametrize("failure_stage", ("construction", "validation"))
+def test_image_protocol_issue_ignores_unexpected_engine_errors(
+    monkeypatch, failure_stage
+) -> None:
+    from rapid_mlx.image import engine
+
+    calls = []
+
+    class FailingEngine:
+        def __init__(self, model):
+            calls.append("construction")
+            if failure_stage == "construction":
+                raise RuntimeError("construction failed")
+
+        def validate_request(self, **kwargs):
+            calls.append("validation")
+            raise RuntimeError("validation failed")
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", FailingEngine)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+    assert calls == (
+        ["construction"]
+        if failure_stage == "construction"
+        else ["construction", "validation"]
+    )
+
+
+def test_plan_rejects_excluded_image_without_protocol_issue(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workspace_module, "benchmark_catalog", lambda **kwargs: {"models": []}
+    )
+    calls = []
+    monkeypatch.setattr(
+        workspace_module,
+        "benchmark_protocol_issue",
+        lambda alias, task: calls.append((alias, task)),
+    )
+    with pytest.raises(ValueError, match="unknown or unsupported benchmark model"):
+        plan_for_alias("bonsai-image-4b-2bit")
+    assert calls == [("bonsai-image-4b-2bit", "image_generation")]
+
+
 def test_plan_rejects_incompatible_image_schedule() -> None:
     with pytest.raises(ValueError, match="4-step schedule"):
         plan_for_alias("bonsai-image-4b-2bit")
