@@ -564,6 +564,20 @@ struct DownloadFailureGuidanceTests {
         #expect(DownloadManager.classifyPullFailure(tailLines: ["Read timed out"], source: .huggingFace).kind == .downloadFailed)
     }
 
+    @Test func terminalFailureAndMirrorHuggingFaceUnreachable() {
+        let disk = DownloadManager.classifyPullFailure(
+            tailLines: ["Connection refused", "No space left on device"], source: .huggingFace
+        )
+        #expect(disk.kind == .downloadFailed)
+        #expect(disk.message == "There isn't enough disk space for this model. Free space, then retry to resume.")
+
+        let mirror = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face for 'x/y'."], source: .mirror
+        )
+        #expect(mirror.kind == .downloadFailed)
+        #expect(mirror.message == "The network connection interrupted the download. Check your connection, then retry to resume.")
+    }
+
     @Test func specificCauses() {
         #expect(DownloadManager.pullFailureMessage(
             raw: "OSError: [Errno 28] No space left on device", source: .huggingFace

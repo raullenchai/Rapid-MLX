@@ -902,7 +902,10 @@ def test_disk_check_keeps_the_prefix_when_the_cache_probe_throws(monkeypatch, ca
     with pytest.raises(SystemExit):
         cli._check_disk_space("mlx-community/LFM2.5-8B-A1B-MLX-4bit")
     need = (int(9_700_000_000 * 1.1) - (four_gb // 4096) * 4096) / (1024**3)
-    assert f"    Need to free:  {need:>7.1f} GB  (includes 10% working space for the download)" in capsys.readouterr().out
+    assert (
+        f"    Need to free:  {need:>7.1f} GB  (includes 10% working space for the download)"
+        in capsys.readouterr().out
+    )
 
 
 def test_completeness_is_checked_on_the_success_path_too(monkeypatch, tmp_path):

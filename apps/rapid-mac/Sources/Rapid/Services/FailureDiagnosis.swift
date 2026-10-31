@@ -499,10 +499,15 @@ enum FailureDiagnoser {
         usingMirror: Bool
     ) -> FailureDiagnosis.Kind {
         let value = raw.lowercased()
+        if containsAny(value, ["no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login"])
+            || (!usingMirror && containsAny(value, ["401", "403"])) {
+            return .downloadFailed
+        }
         guard usingMirror else {
             return containsAny(value, hfUnreachableSignals)
                 ? .downloadSourceUnavailable : .downloadFailed
         }
+        if value.contains("could not reach hugging face") { return .downloadFailed }
         let mirrorSignals = offlineSignals + [
             "mirror", "models.rapidmlx.com", "cloudflare", "bad gateway",
             "service unavailable", "gateway timeout", "status 502", "status 503", "status 504",
