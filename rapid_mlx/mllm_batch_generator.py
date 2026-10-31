@@ -2466,7 +2466,7 @@ class MLLMBatchGenerator:
         # resumes use the same split, keeping
         # repeats deterministic. A strict grid gate would leave short
         # post-image questions, the most common shape, uncached.
-        boundary = next(
+        store_boundary: int | None = next(
             (
                 candidate
                 for candidate in (aligned, raw)
@@ -2475,11 +2475,11 @@ class MLLMBatchGenerator:
             ),
             None,
         )
-        if boundary is None:
+        if store_boundary is None:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary, generation, digest)
+        return ("store", None, store_boundary, generation, digest)
 
     def _media_store(
         self,
