@@ -52,6 +52,7 @@ from fastapi.responses import StreamingResponse
 from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
+    ChatCompletionChunkDelta,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ModelInfo,
@@ -1786,13 +1787,13 @@ async def _stream_completion(
 
             if event.finish_reason is not None:
                 finish_reason = event.finish_reason
-            delta: dict[str, Any] = {}
-            if event.content:
-                delta["content"] = event.content
-            if event.reasoning:
-                delta["reasoning_content"] = event.reasoning
-            if event.tool_calls:
-                delta["tool_calls"] = event.tool_calls
+            if not (event.content or event.reasoning or event.tool_calls):
+                return
+            delta = ChatCompletionChunkDelta(
+                content=event.content or None,
+                reasoning_content=event.reasoning or None,
+                tool_calls=event.tool_calls or None,
+            ).model_dump(exclude_none=True)
             if not delta:
                 return
             piece = {
