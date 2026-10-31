@@ -536,3 +536,31 @@ def test_finished_futures_are_released():
         assert not executor.futures._pending
     finally:
         executor.shutdown(wait=True)
+
+
+def test_cancelled_queued_future_with_worker_in_initializer_is_outstanding():
+    from rapid_mlx.community_bench import local_runner
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def initializer():
+        entered.set()
+        release.wait(5)
+
+    executor = local_runner._TrackingExecutor(max_workers=1, initializer=initializer)
+    try:
+        future = executor.submit(lambda: None)
+        assert entered.wait(5)
+        # Cancellation of the queued work (as asyncio does for a cancelled
+        # run_in_executor await) must not hide the worker that is still
+        # initializing; joining it now would block.
+        future.cancel()
+        assert executor.futures.any_outstanding()
+        executor.shutdown(wait=False, cancel_futures=True)
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while executor.futures.any_outstanding():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)

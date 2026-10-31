@@ -183,6 +183,27 @@ class _OutstandingFutures:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: set[concurrent.futures.Future] = set()
+        self._initializing = 0
+
+    def wrap_initializer(self, initializer):
+        """Count workers still inside the executor initializer.
+
+        Their futures can be cancelled while queued, yet joining the executor
+        would still wait for the initializer to return.
+        """
+        if initializer is None:
+            return None
+
+        def run(*args):
+            with self._lock:
+                self._initializing += 1
+            try:
+                return initializer(*args)
+            finally:
+                with self._lock:
+                    self._initializing -= 1
+
+        return run
 
     def track(self, future: concurrent.futures.Future) -> concurrent.futures.Future:
         with self._lock:
@@ -195,21 +216,23 @@ class _OutstandingFutures:
             self._pending.discard(future)
 
     def any_outstanding(self) -> bool:
-        """True while any submitted work has not finished.
-
-        A future stays pending while its worker thread is still inside the
-        executor initializer, so "running" alone would miss a worker blocked
-        there; joining it would then hang cancellation.
-        """
+        """True while submitted work or a worker initializer has not finished."""
         with self._lock:
+            if self._initializing:
+                return True
             pending = list(self._pending)
         return any(not future.done() for future in pending)
 
 
 class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, initializer=None, initargs=(), **kwargs):
         self.futures = _OutstandingFutures()
+        super().__init__(
+            *args,
+            initializer=self.futures.wrap_initializer(initializer),
+            initargs=initargs,
+            **kwargs,
+        )
 
     def submit(self, *args, **kwargs):
         return self.futures.track(super().submit(*args, **kwargs))
