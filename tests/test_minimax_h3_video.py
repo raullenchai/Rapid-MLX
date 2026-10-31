@@ -49,7 +49,7 @@ def fake_mlx_cache(monkeypatch, request):
 
 def fake_result():
     return SimpleNamespace(
-        frames=[[[[0, 0, 0]]]], fps=24, audio=None, sampling_rate=None
+        frames=[[[[[0.5, 0.5, 0.5]]]]], fps=24, audio=None, sampling_rate=None
     )
 
 
