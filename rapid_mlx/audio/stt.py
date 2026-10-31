@@ -148,15 +148,6 @@ _VAD_LOAD_LOCK = threading.Lock()
 # upload ships processor files, the post_load_hook's own loader
 # succeeds first and ``_processor`` is already non-None on entry to
 # the patch helper below.
-_WHISPER_PROCESSOR_SOURCE_MAP: dict[str, str] = {
-    # mlx-community model id  →  openai counterpart that ships processor
-    "mlx-community/whisper-large-v3-mlx": "openai/whisper-large-v3",
-    "mlx-community/whisper-large-v3-turbo": "openai/whisper-large-v3-turbo",
-    "mlx-community/whisper-medium-mlx": "openai/whisper-medium",
-    "mlx-community/whisper-small-mlx": "openai/whisper-small",
-    "mlx-community/whisper-base-mlx": "openai/whisper-base",
-    "mlx-community/whisper-tiny-mlx": "openai/whisper-tiny",
-}
 _DEFAULT_WHISPER_PROCESSOR_FALLBACK = "openai/whisper-large-v3"
 
 
@@ -170,8 +161,11 @@ def _whisper_processor_source(
         or ((folder / "vocab.json").is_file() and (folder / "merges.txt").is_file())
     ):
         return model_name
-    if model_name in _WHISPER_PROCESSOR_SOURCE_MAP:
-        return _WHISPER_PROCESSOR_SOURCE_MAP[model_name]
+    from .registry import whisper_processor_asset
+
+    asset = whisper_processor_asset(model_name)
+    if asset is not None:
+        return asset.repo_id
     if n_mels == 128:
         return "openai/whisper-large-v3"
     if n_mels == 80 and n_vocab == 51865:
@@ -840,6 +834,14 @@ class STTEngine:
             getattr(dims, "n_mels", None),
             getattr(dims, "n_vocab", None),
         )
+        from .registry import whisper_processor_asset
+
+        asset = whisper_processor_asset(self.model_name)
+        revision_kwargs = (
+            {"revision": asset.revision}
+            if asset is not None and processor_source == asset.repo_id
+            else {}
+        )
         try:
             from transformers import WhisperProcessor
         except ImportError:
@@ -854,14 +856,16 @@ class STTEngine:
 
             try:
                 processor = WhisperProcessor.from_pretrained(
-                    processor_source, local_files_only=True
+                    processor_source, local_files_only=True, **revision_kwargs
                 )
             except OSError:
                 # Transformers reports missing local processor assets as OSError.
                 # Keep the existing online lookup only for a cache miss.
                 if model_downloads.disabled():
                     raise
-                processor = WhisperProcessor.from_pretrained(processor_source)
+                processor = WhisperProcessor.from_pretrained(
+                    processor_source, **revision_kwargs
+                )
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first

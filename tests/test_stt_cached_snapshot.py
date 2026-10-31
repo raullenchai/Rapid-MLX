@@ -183,12 +183,15 @@ def test_whisper_processor_local_first(monkeypatch, cached):
     engine.model = SimpleNamespace(_processor=None)
     engine._ensure_whisper_processor()
     assert engine.model._processor is processor
-    expected = [("openai/whisper-tiny", {"local_files_only": True})]
+    revision = "169d4a4341b33bc18d8881c4b69c2e104e1cc0af"
+    expected = [
+        ("openai/whisper-tiny", {"local_files_only": True, "revision": revision})
+    ]
     if cached:
         hub.assert_not_called()
     else:
-        expected.append(("openai/whisper-tiny", {}))
-        hub.assert_called_once_with("openai/whisper-tiny")
+        expected.append(("openai/whisper-tiny", {"revision": revision}))
+        hub.assert_called_once_with("openai/whisper-tiny", revision=revision)
     assert calls == expected
     engine._ensure_whisper_processor()
     assert calls == expected
@@ -210,7 +213,10 @@ def test_whisper_processor_failure_preserves_policy(monkeypatch, error, disabled
     engine.model = SimpleNamespace(_processor=None)
     engine._ensure_whisper_processor()
     assert engine.model._processor is None
-    assert loader.call_args_list[0].kwargs == {"local_files_only": True}
+    assert loader.call_args_list[0].kwargs == {
+        "local_files_only": True,
+        "revision": "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
+    }
     assert loader.call_count == (
         2 if isinstance(error, OSError) and not disabled else 1
     )

@@ -1,6 +1,33 @@
 {
   "_comment": "R10-C1 audio alias registry. Single source of truth for short alias -> HuggingFace repo id mapping. Every entry's hf_id has been verified resolvable on https://huggingface.co/api/models/<id> at registry-introduction time. Add new entries by hand, then run tests/test_audio_alias_registry.py::test_every_hf_id_resolves locally (network-gated) to confirm before merging.",
 
+  "_whisper_processors": {
+    "mlx-community/whisper-large-v3-mlx": {
+      "repo_id": "openai/whisper-large-v3",
+      "revision": "06f233fe06e710322aca913c1bc4249a0d71fce1"
+    },
+    "mlx-community/whisper-large-v3-turbo": {
+      "repo_id": "openai/whisper-large-v3-turbo",
+      "revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
+    },
+    "mlx-community/whisper-medium-mlx": {
+      "repo_id": "openai/whisper-medium",
+      "revision": "abdf7c39ab9d0397620ccaea8974cc764cd0953e"
+    },
+    "mlx-community/whisper-small-mlx": {
+      "repo_id": "openai/whisper-small",
+      "revision": "973afd24965f72e36ca33b3055d56a652f456b4d"
+    },
+    "mlx-community/whisper-base-mlx": {
+      "repo_id": "openai/whisper-base",
+      "revision": "e37978b90ca9030d5170a5c07aadb050351a65bb"
+    },
+    "mlx-community/whisper-tiny-mlx": {
+      "repo_id": "openai/whisper-tiny",
+      "revision": "169d4a4341b33bc18d8881c4b69c2e104e1cc0af"
+    }
+  },
+
   "_runtime_assets": {
     "kokoro": [
       {

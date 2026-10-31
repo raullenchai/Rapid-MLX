@@ -39,7 +39,9 @@ def test_kokoro_alias_and_hf_id_declare_voice_assets() -> None:
 
     assert registry.runtime_assets_for("kokoro") == expected
     assert registry.runtime_assets_for("mlx-community/Kokoro-82M-bf16") == expected
-    assert registry.runtime_assets_for("whisper-small") == ()
+    assert registry.whisper_processor_asset(
+        "mlx-community/whisper-small-mlx"
+    ) in registry.runtime_assets_for("whisper-small")
     assert registry.runtime_assets_for("not-an-audio-model") == ()
 
 
@@ -302,6 +304,7 @@ def test_runtime_asset_registry_rejects_malformed_metadata(
     monkeypatch.setattr(registry, "_REGISTRY", None)
     monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
     monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
+    monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
 
     with pytest.raises(ValueError, match=re.escape(error)):
         registry._load_registry()
@@ -357,6 +360,7 @@ def test_runtime_requirement_registry_rejects_malformed_metadata(
     monkeypatch.setattr(registry, "_REGISTRY", None)
     monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
     monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
+    monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
     monkeypatch.setattr(registry, "_RUNTIME_REQUIREMENTS", {})
 
     with pytest.raises(ValueError, match=re.escape(error)):
@@ -390,6 +394,7 @@ def test_concurrent_first_lookup_publishes_runtime_assets_atomically(
     monkeypatch.setattr(registry, "_REGISTRY", None)
     monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
     monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
+    monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
 
     first_is_parsing = threading.Event()
     release_first = threading.Event()
