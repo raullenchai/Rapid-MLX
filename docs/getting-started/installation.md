@@ -51,11 +51,15 @@ Upgrade later with `brew upgrade rapid-mlx`.
 ## Install with pip
 
 ```bash
-python3.12 -m pip install rapid-mlx
+python3.12 -m venv ~/.venvs/rapid-mlx
+~/.venvs/rapid-mlx/bin/pip install rapid-mlx
 ```
 
+Add `~/.venvs/rapid-mlx/bin` to your PATH or call the executable directly.
+
 If `python3 --version` reports 3.9 (macOS default), install a newer Python
-first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
+first: `brew install python@3.12`, then create a virtual environment and install
+there: `python3.12 -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx`.
 
 ### From source (for development)
 
@@ -69,12 +73,12 @@ Check `rapid-mlx --version` and `python3 --version`; for a pip install, check th
 
 - **One-line installer:** rerun `curl -fsSL https://rapidmlx.com/install.sh | bash`. It rebuilds `~/.rapid-mlx` using a supported Python (installing Python 3.12 if needed), reinstalls optional features it finds, and keeps settings, credentials, and working `~/.local/bin` symlinks.
 - **uv:** `uv tool upgrade --python 3.12 rapid-mlx`.
-- **pipx:** `pipx reinstall --python python3.12 rapid-mlx`.
-- **pip:** run `brew install python@3.12`, then `python3.12 -m pip install rapid-mlx` (or install into a new Python 3.12 virtual environment). The old Python 3.10/3.11 environment can be removed afterwards.
+- **pipx:** if `python3.12` is not found, install it first with `brew install python@3.12`, then run `pipx reinstall --python python3.12 rapid-mlx`.
+- **pip:** install Python 3.12 if needed (`brew install python@3.12`), then create a new virtual environment and install there: `python3.12 -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx`. Add its `bin` directory to `PATH` or call it directly. The old Python 3.10/3.11 environment can be removed afterwards.
 - **Homebrew:** its formula has its own Python; run `brew upgrade rapid-mlx` once the formula is updated.
 - **Desktop:** the app bundles Python 3.12 and updates itself; no Python upgrade is needed.
 
-Re-add any extras installed in a new pip, uv, or pipx environment, for example `python3.12 -m pip install 'rapid-mlx[audio]'`. Downloaded models remain in the Hugging Face cache and are not re-downloaded.
+Re-add any extras installed in a new pip, uv, or pipx environment, for example `~/.venvs/rapid-mlx/bin/pip install "rapid-mlx[audio]"`. Downloaded models remain in the Hugging Face cache and are not re-downloaded.
 
 **Symptoms:**
 
