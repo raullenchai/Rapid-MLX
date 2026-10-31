@@ -1097,8 +1097,17 @@ def test_jina_checkpoint_limits(monkeypatch, caplog, mode):
     )
 
     engine = rerank.RerankEngine("fake/checkpoint")
-    engine.load()
+    with caplog.at_level("INFO", logger="rapid_mlx.rerank"):
+        engine.load()
     v35 = mode in ("v35", "derived")
+    if v35:
+        assert engine.family.label == "jina-reranker-v3.5"
+        assert (
+            "Loading rerank model: fake/checkpoint (jina-reranker-v3.5)" in caplog.text
+        )
+    else:
+        assert engine.family.label == "jina-reranker-v3"
+        assert "(jina-reranker-v3)" in caplog.text
     assert engine.max_length == (8192 if v35 else 2048)
     assert engine.family.max_query_tokens == (1024 if v35 else 512)
     if not v35:
@@ -2263,17 +2272,3 @@ def test_local_jina_positive_checked_load(tmp_path, monkeypatch):
     monkeypatch.setattr(mlx_lm.utils, "load_model", load)
     monkeypatch.setattr(mlx_lm.utils, "load_tokenizer", load_tokenizer)
     assert _load_jina(str(tmp_path)) == (model, tokenizer)
-
-
-def test_jina_family_display_label_identifies_version():
-    from rapid_mlx.rerank import FAMILIES, _family_display_label
-
-    family = FAMILIES["jina3"]
-    assert (
-        _family_display_label(family, "jinaai/jina-reranker-v3.5-mlx")
-        == "jina-reranker-v3.5"
-    )
-    assert (
-        _family_display_label(family, "mlx-community/jina-reranker-v3-4bit-mxfp4")
-        == "jina-reranker-v3"
-    )
