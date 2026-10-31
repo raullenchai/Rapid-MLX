@@ -23,7 +23,7 @@ def request_cache_limit(limit: int) -> int:
         previous = _requested if _requested is not None else _entry_limit
         _requested = limit
         mx.set_cache_limit(min(limit, _bound))
-        return previous
+        return previous if previous is not None else limit
 
 
 @contextmanager
