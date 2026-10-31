@@ -822,12 +822,11 @@ class TestAdvisoryContract:
 
 class TestRegistration:
     def test_registered_at_end_of_checks(self):
-        from scripts.pr_validate.runner import STEPS
+        from scripts.pr_validate.runner import NIGHTLY_CHECK_STEPS, STEPS, stage_of
 
-        names = [s.name for s in STEPS]
-        assert "diff_coverage" in names
-        # Keep the advisory measurement after the other checks and before GPU.
-        assert names[-2:] == ["diff_coverage", "stress_e2e_bench"]
+        assert "diff_coverage" not in [s.name for s in STEPS]
+        assert "diff_coverage" in [s.name for s in NIGHTLY_CHECK_STEPS]
+        assert stage_of("diff_coverage") == "checks"
 
     def test_never_declared_as_gating(self):
         # A defensive pin on the advisory intent: the step opts into

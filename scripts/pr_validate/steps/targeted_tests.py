@@ -20,8 +20,7 @@ Selection heuristic — deliberately simple, grep-able:
    the step.
 
 We don't import-graph trace because pytest's collection cost dominates
-and the heuristic catches >90% of the cases that matter. The full unit
-suite (step 4) covers the rest for medium/high blast PRs.
+and the heuristic catches >90% of the cases that matter. Hosted CI covers the full unit suite.
 
 Negative control: when targeted tests fail on the PR branch, re-run
 the same set on a fresh ``git worktree`` of ``main``. Tests that fail
@@ -60,16 +59,13 @@ class TargetedTestsStep(Step):
             )
 
         # Cap the targeted set — if the diff is huge, prefer falling
-        # through to step 4 (full unit) rather than re-implementing it
-        # here. Otherwise we'd spend 30s collecting tests that step 4
-        # will then re-run from scratch.
+        # through to hosted CI rather than re-running the full suite here.
         if len(targets) > 25:
             return StepResult(
                 name=self.name,
                 status="skip",
                 summary=(
-                    f"too many test targets ({len(targets)}) — "
-                    f"deferring to full_unit step"
+                    f"too many test targets ({len(targets)}) — deferring to hosted CI"
                 ),
             )
 

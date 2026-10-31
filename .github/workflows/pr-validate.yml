@@ -116,10 +116,11 @@ jobs:
           #                        files on 3.12/3.13 without MLX.
           # Codex auto-skips for lack of ~/.codex/auth.json — no skip
           # entry needed.
-          PR_VALIDATE_SKIP_STEPS: stress_e2e_bench,full_unit
+          # mac_only_tests also requires MLX, unavailable on this runner.
+          PR_VALIDATE_SKIP_STEPS: stress_e2e_bench,full_unit,mac_only_tests
           # CI: fail-fast off so the scorecard shows every issue at
           # once, not just the first one. PR-reviewer sees full picture.
-          PR_VALIDATE_FAIL_FAST: ""
+          PR_VALIDATE_FAIL_FAST: "0"
         run: |
           set +e
           python -m scripts.pr_validate ${{ steps.prnum.outputs.pr }} \

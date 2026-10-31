@@ -336,14 +336,14 @@ def test_sdk_env_failure_stops_before_costly_tests_without_fail_fast(ctx):
     assert run_pipeline(123, steps=[MissingSDK(), Costly()], fail_fast=False) == 1
 
 
-def test_sdk_preflight_follows_supply_chain_and_precedes_full_unit():
+def test_sdk_preflight_follows_supply_chain_and_precedes_checks():
     from scripts.pr_validate.runner import STEPS
 
     names = [step.name for step in STEPS]
     assert (
         names.index("supply_chain")
         < names.index("sdk_env_check")
-        < names.index("full_unit")
+        < names.index("mac_only_tests")
     )
 
 

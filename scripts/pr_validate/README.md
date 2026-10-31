@@ -8,7 +8,7 @@ merge.
 
 ```bash
 # from the repo root
-python3.12 -m scripts.pr_validate <PR#>
+PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m scripts.pr_validate <N>
 
 # verbose mode (more progress logging on stderr)
 python3.12 -m scripts.pr_validate <PR#> -v
@@ -35,12 +35,17 @@ python3.12 -m scripts.pr_validate <PR#> --body-only
 # exit 0 = MERGE-SAFE, exit 1 = DO NOT MERGE
 ```
 
-A default run executes admit, review, checks, and gpu in order and prints one
-MERGE-SAFE / DO NOT MERGE verdict. `--stage X` runs only the selected stage;
-review, checks, and gpu first rerun the cheap admit stage for context and so
-the supply-chain scan precedes anything that may pip-install from the PR tree.
-`sdk_env_check` runs only with the gpu stage. `--stage` cannot be combined with
-`--body-only` or `--queue-on-success`. Fail-fast remains off by default.
+A default run executes admit, then review and checks in parallel, followed by
+gpu. Fail-fast is the default: a lane failure cancels the other lane, terminates
+its child processes, and prevents gpu from running. Use `--no-fail-fast` or
+`PR_VALIDATE_FAIL_FAST=0` to run everything for the full picture; `--fail-fast`
+is a compatibility no-op. Critical admit failures still stop the pipeline;
+blocking review findings also stop it unless
+`PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1` is set. Review infrastructure
+failures do not cancel checks, but still block the verdict. `--stage X` runs
+only the selected stage; review,
+checks, and gpu first rerun admit. `sdk_env_check` runs only with gpu.
+`--stage` cannot be combined with `--body-only` or `--queue-on-success`.
 
 ## Automatic queue handoff (maintainer opt-in)
 
@@ -92,16 +97,16 @@ an untrusted PR's execution environment.
 | review | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
 | checks | `lint` | when diff has .py | ~3s |
 | checks | `targeted_tests` | when diff has .py | 30s–3min |
-| checks | `full_unit` | blast ≥ medium | ~3 min (parallel; host-dependent) |
-| checks | `diff_coverage` | advisory, never gates | ~3 min |
+| checks | `mac_only_tests` | blast ≥ medium | varies |
+| checks | `hosted_ci` | exact-head hosted checks | varies |
+| checks | `full_unit` | nightly-only, blast ≥ medium | ~3 min (parallel; host-dependent) |
+| checks | `diff_coverage` | nightly-only, advisory, never gates | ~3 min |
 | gpu | `stress_e2e_bench` | blast == high | 5–10min |
 
 Scorecard rows are labelled with their stage.
 
-(The codex review goes near the front by design: get cheap critical
-thinking *before* spending 10 minutes on tests. The two cheapest
-description-quality gates run first so a bad title or empty body
-fails in under a second without burning the codex budget.)
+Review and checks run concurrently after admit. The default checks lane runs
+`lint`, `targeted_tests`, `mac_only_tests`, and `hosted_ci`.
 
 ## Shared GPU lock and gpu result cache
 
@@ -111,8 +116,8 @@ flock on `PR_VALIDATE_GPU_LOCK` (default `/tmp/harbor-prvalidate.lock`) and
 logs the wait and held time as `shared lock: acquired after Xs wait, held Ys`.
 The admit, review, and checks stages of different PRs run concurrently.
 
-Do not wrap the validator in `lockf`; run
-`python3.12 -m scripts.pr_validate <PR#>` directly. During transition, the gpu
+Run `PATH="$PWD/.venv/bin:$PATH" .venv/bin/python -m scripts.pr_validate <N>`
+directly; the gpu step takes the shared lock itself. During transition, the gpu
 stage uses the same file held by a legacy `lockf <file> python -m
 scripts.pr_validate ...` wrapper, so old wrapped runs and new runs still
 exclude each other on the GPU. If an ancestor calling process already holds
@@ -233,7 +238,7 @@ the gating list. The classification chooses which expensive steps run.
   / routes / pyproject.toml. Full battery.
 * **medium** — touches `rapid_mlx/` or `tests/` but not the high-blast
   list. Skips stress.
-* **low** — only docs / examples / README. Skips full_unit + stress.
+* **low** — only docs / examples / README. Skips mac-only tests and stress.
 
 ## Adding a step
 
@@ -339,15 +344,10 @@ missing. Once Codex is invoked, a timeout, auth/backend error, unusable
 binary, or any other unsuccessful exit fails closed: an unavailable
 review cannot produce a MERGE-SAFE verdict.
 
-By default, only a `codex_review` status of `fail` carrying `[BLOCKING]`
-findings stops the pipeline before tests: fix the blocking findings and
-re-push first. Later steps are not run or included in the scorecard.
-Codex infrastructure failures (timeout, auth/backend error, empty or
-malformed reply), `error`, and `skip` do not trigger this stop, so tests
-still provide signal; `fail` and `error` still block the verdict. Set
-`PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1` to run the remaining steps
-after `fail` as well; `--fail-fast` still stops on any `fail` or `error`
-regardless of this override.
+Review runs alongside checks. By default, failures trigger fail-fast
+cancellation; use `--no-fail-fast` or `PR_VALIDATE_FAIL_FAST=0` for the full
+picture. `PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1` controls the special
+blocking-review stop when fail-fast is disabled.
 
 Authentication: codex uses its own ChatGPT login at
 `~/.codex/auth.json`. No auth/API-key env var is read here; the repo is
@@ -448,7 +448,24 @@ filename) and runs them. **Negative control**: if any fail, re-runs
 the same set on a fresh `git worktree` of `main` to filter
 pre-existing flakes. Real regressions = fail.
 
-### `full_unit` (checks stage)
+### `mac_only_tests` (checks stage)
+
+For medium- and high-blast changes, runs test files containing MLX, macOS,
+network, or cache markers that are outside the hosted Apple test roster. It
+excludes integration, headless MLX, and event-loop tests.
+
+### `hosted_ci` (checks stage)
+
+Polls GitHub Actions check runs for the exact PR head. The `tests` aggregate
+must succeed, and any failed check fails the step. Runs are grouped by check
+suite and name. `PR_VALIDATE_HOSTED_CI_POLL_S` and
+`PR_VALIDATE_HOSTED_CI_TIMEOUT_S` set the polling interval and timeout;
+`PR_VALIDATE_NO_HOSTED_CI=1` opts out. The step skips inside GitHub Actions.
+
+### `full_unit` and `diff_coverage` (checks stage)
+
+These nightly-only steps run when enabled with `--local-full-suite` or
+`PR_VALIDATE_LOCAL_FULL_SUITE=1`. `diff_coverage` is advisory.
 
 `pytest tests/` minus integrations + event_loop. Gated on blast ≥
 medium (low-blast PRs can't break runtime). Runs in parallel by default with

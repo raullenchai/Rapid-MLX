@@ -14,6 +14,7 @@ regression there hits every request.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -111,6 +112,7 @@ class Context:
 
     # CLI flags / config knobs — keep small.
     verbose: bool = False
+    cancel_event: threading.Event | None = None
 
     def __post_init__(self) -> None:
         # Repo root = current working directory by convention. Validator
@@ -192,6 +194,7 @@ class Context:
 # inherit them as ambient state (#4984), and ``--queue-on-success`` refuses to
 # run when any of them is set.
 STEP_OPT_OUT_ENV_VARS = (
+    "PR_VALIDATE_NO_HOSTED_CI",
     "PR_VALIDATE_SKIP_DESC",
     "PR_VALIDATE_NO_STRESS",
     "PR_VALIDATE_NO_CODEX",
