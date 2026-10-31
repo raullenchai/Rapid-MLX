@@ -1668,6 +1668,28 @@ def test_vision_feature_key_geometry_fields_and_invalid_keys():
         assert gen._vision_feature_cache_key(request) is None
 
 
+def test_vision_feature_key_geometry_fallbacks():
+    gen = MLLMBatchGenerator(model=_VisionCacheModel(), processor=object())
+    request = _make_vision_request(
+        pixel_values=mx.zeros((1, 3, 4, 4)), vision_feature_key="image"
+    )
+    original = gen._vision_feature_cache_key(request)
+
+    class InvalidGeometry:
+        shape = (2, 3)
+
+        def tolist(self):
+            return ["x"]
+
+    for value, expected in (("abc", repr("abc")), (InvalidGeometry(), (2, 3))):
+        request.extra_kwargs = {"image_sizes": value}
+        key = gen._vision_feature_cache_key(request)
+        assert isinstance(key, str)
+        assert key.startswith(request.vision_feature_key + "#")
+        assert key != original
+        assert repr(("image_sizes", expected)) in key
+
+
 def test_run_vision_encoding_no_vision_cache_for_text_only():
     """A text-only request (no pixel_values, no key) never carries the cache
     kwargs even on a supported model."""
