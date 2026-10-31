@@ -21,7 +21,7 @@ struct ModelSizeTests {
         let gibBytes = Int64(4.3 * Double(1 << 30))
         #expect(ModelSize.legacy("4.3 GiB")?.displayText == ByteCountFormatter.string(fromByteCount: gibBytes, countStyle: .file))
         #expect(ModelSize.legacy("1.5 GB")?.byteCount == 1_500_000_000)
-        #expect(ModelSize.parseBytes("1,010 MB", locale: Locale(identifier: "en_US")) == nil)
+        #expect(ModelSize.parseBytes("1,010 MB") == nil)
         #expect(ModelSize.legacy("about one gig")?.displayText == "about one gig")
         #expect(ModelSize.legacy("about one gig")?.byteCount == nil)
         #expect(ModelSize.legacy("  ") == nil)
@@ -29,11 +29,10 @@ struct ModelSizeTests {
         #expect(ModelSize.legacy("1e99 GiB")?.byteCount == nil)
     }
 
-    @Test func localizedLegacyParsing() {
-        let german = Locale(identifier: "de_DE")
-        #expect(ModelSize.parseBytes("1,07 GB", locale: german) == 1_070_000_000)
-        #expect(ModelSize.parseBytes("1,07\u{00a0}GB", locale: german) == 1_070_000_000)
-        #expect(ModelSize.parseBytes("1.234,5 MB", locale: german) == 1_234_500_000)
+    @Test func fixedFormatParsing() {
+        #expect(ModelSize.parseBytes("1,07 GB") == nil)
+        #expect(ModelSize.parseBytes("1.07\u{00a0}GB") == 1_070_000_000)
+        #expect(ModelSize.parseBytes("1.234,5 MB") == nil)
     }
 
     @Test func nonPositiveNumericSizeFallsBackToLegacy() {
