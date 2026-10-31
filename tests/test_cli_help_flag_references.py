@@ -58,15 +58,16 @@ def unknown_flags(text, local_flags, all_parsers):
                 break
             path += (word,)
         if not path:
-            return set()
-        return set().union(*(owned(p) for p in all_parsers[path]))
+            return False, set()
+        return True, set().union(*(owned(p) for p in all_parsers[path]))
 
     contexts = []
     for span in CODE.finditer(text):
         words = span.group(1).split()
         if words and words[0] == "rapid-mlx":
             words = words[1:]
-        contexts.append((span.start(), span.end(), command_flags(words)))
+        qualified, flags = command_flags(words)
+        contexts.append((span.start(), span.end(), qualified, flags))
     for invocation in COMMAND.finditer(text):
         line_start = text.rfind("\n", 0, invocation.start()) + 1
         shell_line = not text[line_start : invocation.start()].strip()
@@ -87,7 +88,8 @@ def unknown_flags(text, local_flags, all_parsers):
                 line_end = len(text)
             comment = text.find(" #", invocation.end(), line_end)
             end = comment if comment != -1 else line_end
-            contexts.append((invocation.end(), end, command_flags(path)))
+            qualified, flags = command_flags(path)
+            contexts.append((invocation.end(), end, qualified, flags))
             continue
         expects_value = False
         while index < len(tokens):
@@ -103,16 +105,21 @@ def unknown_flags(text, local_flags, all_parsers):
             if word.endswith((",", ";", ":", ".", ")")):
                 break
             index += 1
-        contexts.append((invocation.end(), end, command_flags(path)))
-    return {
-        match.group()
-        for match in FLAG.finditer(text)
-        if match.group() not in local_flags
-        and not any(
-            start <= match.start() < end and match.group() in flags
-            for start, end, flags in contexts
-        )
-    }
+        qualified, flags = command_flags(path)
+        contexts.append((invocation.end(), end, qualified, flags))
+    unknown = set()
+    for match in FLAG.finditer(text):
+        qualified_flags = [
+            flags
+            for start, end, qualified, flags in contexts
+            if qualified and start <= match.start() < end
+        ]
+        if qualified_flags:
+            if not any(match.group() in flags for flags in qualified_flags):
+                unknown.add(match.group())
+        elif match.group() not in local_flags:
+            unknown.add(match.group())
+    return unknown
 
 
 def test_qualified_flag_context_is_limited_to_each_occurrence():
@@ -131,6 +138,13 @@ def test_qualified_flag_context_is_limited_to_each_occurrence():
         all_parsers,
     ) == {"--host"}
     assert not unknown_flags("rapid-mlx models --cached", set(), all_parsers)
+    assert unknown_flags("rapid-mlx models --host", {"--host"}, all_parsers) == {
+        "--host"
+    }
+    assert unknown_flags("`rapid-mlx models --host`", {"--host"}, all_parsers) == {
+        "--host"
+    }
+    assert not unknown_flags("rapid-mlx serve --host", {"--host"}, all_parsers)
     assert unknown_flags(
         "Use rapid-mlx serve --port 8000 and then use --host on this command",
         set(),
