@@ -321,3 +321,96 @@ def test_disconnect_guard_openai_memory_abort():
         "error": {key: expected[key] for key in ("message", "type", "code")}
     }
     assert chunks[-1] == "data: [DONE]\n\n"
+
+
+def _collect_guard_abort(path, error_kind, response_state=None):
+    import asyncio
+    from types import SimpleNamespace
+
+    from rapid_mlx.service.helpers import _disconnect_guard
+
+    async def source():
+        yield "data: started\n\n"
+        raise InferenceAbortedError("private detail", error_kind=error_kind)
+
+    async def is_disconnected():
+        return False
+
+    request = SimpleNamespace(
+        url=SimpleNamespace(path=path), is_disconnected=is_disconnected
+    )
+
+    async def collect():
+        return [
+            frame
+            async for frame in _disconnect_guard(
+                source(), request, keepalive_seconds=0, response_state=response_state
+            )
+        ]
+
+    return asyncio.run(collect())
+
+
+@pytest.mark.parametrize(
+    ("kind", "event_type"),
+    [
+        ("insufficient_memory", "overloaded_error"),
+        ("engine_aborted", "api_error"),
+        ("lifecycle", "api_error"),
+    ],
+)
+def test_disconnect_guard_anthropic_abort(kind, event_type):
+    import json
+
+    from rapid_mlx.request import inference_aborted_error_payload
+
+    frames = _collect_guard_abort("/v1/messages", kind)
+    assert frames[0] == "data: started\n\n"
+    assert len(frames) == 2
+    assert frames[1].startswith("event: error\ndata: ")
+    event = json.loads(frames[1].split("data: ", 1)[1])
+    message = (
+        "Request cancelled by model replacement"
+        if kind == "lifecycle"
+        else inference_aborted_error_payload(
+            InferenceAbortedError("private detail", error_kind=kind)
+        )["message"]
+    )
+    assert event == {"type": "error", "error": {"type": event_type, "message": message}}
+    assert "[DONE]" not in "".join(frames)
+
+
+@pytest.mark.parametrize("with_state", [True, False])
+def test_disconnect_guard_responses_abort(with_state):
+    import json
+
+    state = (
+        {"response": {"id": "resp_x", "model": "m"}, "sequence_number": [5]}
+        if with_state
+        else None
+    )
+    frames = _collect_guard_abort("/v1/responses", "insufficient_memory", state)
+    assert frames[0] == "data: started\n\n"
+    assert len(frames) == 2
+    assert frames[1].startswith("event: response.failed\ndata: ")
+    event = json.loads(frames[1].split("data: ", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["sequence_number"] == (5 if with_state else 0)
+    assert event["response"]["status"] == "failed"
+    assert event["response"]["error"]["code"] == "insufficient_memory"
+    if with_state:
+        assert event["response"]["id"] == "resp_x"
+        assert event["response"]["model"] == "m"
+        assert state["sequence_number"] == [6]
+    assert "[DONE]" not in "".join(frames)
+
+
+def test_disconnect_guard_responses_lifecycle_abort():
+    import json
+
+    frames = _collect_guard_abort("/v1/responses", "lifecycle")
+    assert len(frames) == 2
+    assert frames[1].startswith("event: response.failed\ndata: ")
+    event = json.loads(frames[1].split("data: ", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "model_replacement"

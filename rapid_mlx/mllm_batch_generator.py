@@ -4488,15 +4488,16 @@ class MLLMBatchGenerator:
                 and prompt_length > self._media_prefill_chunk_tokens()
                 and self._media_prefill_chunkable(request, cache)
             )
+            budget = getattr(self, "vision_prefill_token_budget", 0)
             if (
                 request.chunked_media_prefill
                 and request.pixel_values is not None
                 and not chunked
-                and prompt_length > self.vision_prefill_token_budget
+                and isinstance(budget, int)
+                and budget > 0
+                and prompt_length > budget
             ):
-                raise ClientRequestError(
-                    _prefill_cap_violation([request], self.vision_prefill_token_budget)
-                )
+                raise ClientRequestError(_prefill_cap_violation([request], budget))
             if chunked and cache is not None:
                 output = self._media_forward(
                     request, input_ids, cache, kwargs, chunked=True

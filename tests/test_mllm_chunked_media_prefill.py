@@ -105,6 +105,69 @@ def test_batched_media_input_is_not_chunkable(monkeypatch):
     assert not gen._media_prefill_chunkable(req, [Cache()])
 
 
+def test_policy_lookup_failure_is_not_chunkable(monkeypatch):
+    gen = generator(monkeypatch)
+
+    class BrokenPolicyModel(Model):
+        @property
+        def chunked_prefill_policy(self):
+            raise ValueError("policy lookup failed")
+
+    gen.model = BrokenPolicyModel()
+    assert not gen._media_prefill_static_chunkable(request())
+
+
+@pytest.mark.parametrize("offset, expected", [(0, True), (5, False)])
+def test_nested_cache_freshness(monkeypatch, offset, expected):
+    gen = generator(monkeypatch)
+    cache = [[SimpleNamespace(caches=[SimpleNamespace(offset=offset)])]]
+    assert gen._media_prefill_chunkable(request(), cache) is expected
+
+
+def test_cache_empty_failure_is_not_fresh(monkeypatch):
+    gen = generator(monkeypatch)
+
+    class BrokenCache:
+        def empty(self):
+            raise ValueError("cache failed")
+
+    assert not gen._media_prefill_chunkable(request(), [[BrokenCache()]])
+
+
+def test_media_budget_token_count_without_input_ids(monkeypatch):
+    gen = generator(monkeypatch)
+    assert MLLMBatchGenerator._media_budget_token_count(gen, None, True) is None
+
+
+def test_media_token_counts_without_placeholder_ids(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.model.config = SimpleNamespace(model_type="qwen3_5")
+    ids = mx.array([[1, 2, 3]])
+    assert gen._vision_token_count(ids) == ids.size
+    assert gen._media_budget_token_count(ids, False) == ids.size
+
+
+def test_chunked_cold_redo_rebuilds_cache_and_delegates(monkeypatch):
+    from unittest.mock import Mock
+
+    import mlx_lm.models.cache as cache_module
+
+    gen = generator(monkeypatch)
+    rebuilt = Cache()
+    make_cache = Mock(return_value=[rebuilt])
+    prefill = Mock(return_value="result")
+    monkeypatch.setattr(cache_module, "make_prompt_cache", make_cache)
+    monkeypatch.setattr(gen, "_chunked_media_lm_prefill", prefill)
+    ids = mx.array([[1, 2]])
+    cache = [Cache()]
+    kwargs = {"pixel_values": "pixels"}
+
+    assert gen._media_cold_redo(ids, cache, kwargs, chunked=True) == "result"
+    make_cache.assert_called_once_with(gen.language_model)
+    assert cache == [rebuilt]
+    prefill.assert_called_once_with(ids, cache, kwargs)
+
+
 def test_chunked_media_metadata_and_last_token(monkeypatch):
     gen = generator(monkeypatch)
     run(gen, request(), [Cache()])
@@ -167,6 +230,19 @@ def test_stale_cache_rechecks_total_prefill_budget_before_forward(monkeypatch):
     assert not gen.model.calls
     assert not gen.model.embeddings
     assert not gen.language_model.calls
+
+
+def test_nonchunkable_media_with_unset_budget_runs_single_forward(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.vision_prefill_token_budget = 0
+    req = request()
+    req.chunked_media_prefill = True
+    cache = Cache()
+    cache.offset = 1
+
+    run(gen, req, [cache])
+
+    assert gen.model.calls == [11]
 
 
 @pytest.mark.parametrize(
