@@ -658,6 +658,14 @@ def test_cli_acceleration_summary_and_json(monkeypatch, capsys):
     }
     monkeypatch.setattr(cli.LocalRunArchive, "default", lambda: object())
     monkeypatch.setattr(cli, "run_local", lambda alias, **kwargs: run)
+    monkeypatch.setattr(
+        cli,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {"task_type": "text_generation", "repo_id": "test/model"}
+        },
+    )
+    monkeypatch.setattr(cli, "preflight_benchmark_acceleration", lambda *args: None)
     monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     monkeypatch.setattr(cli, "summarize_measurements", lambda run: [])
     args = SimpleNamespace(benchmark_action="run", benchmark_model="x", json=False)
@@ -1096,3 +1104,33 @@ def test_mllm_lane_routing_with_headless_fake(monkeypatch, tmp_path, fastpath):
     assert language["speculative_decoding"] == {"method": "none"}
     assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
     assert capture["compute_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_suffix_refused_before_runner(monkeypatch, capsys, json_output):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+
+    def unexpected_runner(*args, **kwargs):
+        raise AssertionError("runner must not be reached")
+
+    monkeypatch.setattr(cli, "run_local", unexpected_runner)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.8-27b-4bit",
+            "--speculative-config",
+            '{"method":"suffix"}',
+        ]
+        + (["--json"] if json_output else [])
+    )
+    assert cli.benchmark_command(args) == 1
+    output = capsys.readouterr()
+    assert "Suffix decoding cannot be benchmarked" in output.err
+    assert "Benchmarking" not in output.out + output.err
+    assert "Loading" not in output.out + output.err
+    if json_output:
+        assert json.loads(output.err)["saved"] is False
+    else:
+        assert "Benchmark command failed:" in output.err

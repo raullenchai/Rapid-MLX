@@ -18,7 +18,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from rapid_mlx.api.models import (
@@ -71,12 +71,22 @@ def _build_app(
 
     if api_key is not None:
         get_config().api_key = api_key
-    from ...middleware.auth import verify_api_key
+    from ...middleware.auth import security, verify_api_key
     from ...middleware.exception_handlers import install_exception_handlers
+
+    async def verify_except_probes(request: Request, credentials=Depends(security)):
+        if (request.method, request.url.path) in {
+            ("GET", "/"),
+            ("HEAD", "/"),
+            ("GET", "/health"),
+            ("GET", "/health/ready"),
+        }:
+            return None
+        return await verify_api_key(request, credentials)
 
     app = FastAPI(
         title="Rapid-MLX (DDTree)",
-        dependencies=[Depends(verify_api_key)],
+        dependencies=[Depends(verify_except_probes)],
     )
 
     install_exception_handlers(app)
@@ -152,6 +162,10 @@ def _build_app(
             "ready": ready_runtime is not None,
             **({"error": error} if error is not None else {}),
         }
+
+    from ..health import install_health_probes
+
+    install_health_probes(app, served_model_name, healthz)
 
     @app.get("/v1/models")
     async def list_models() -> ModelsResponse:

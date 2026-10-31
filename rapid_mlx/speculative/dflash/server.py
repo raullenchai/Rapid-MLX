@@ -941,6 +941,10 @@ def _build_app(
             result.update(runtime_status_extra)
         return result
 
+    from ..health import install_health_probes
+
+    install_health_probes(app, served_model_name, healthz)
+
     @app.get(
         "/v1/models",
         dependencies=[Depends(_verify_api_key_with_bearer_challenge)],

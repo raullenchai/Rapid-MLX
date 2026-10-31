@@ -11,10 +11,18 @@ from typing import Any
 from urllib.parse import quote
 
 from ..leaderboard_links import run_url
-from .acceleration import acceleration_summary, request_from_args
+from .acceleration import (
+    acceleration_summary,
+    preflight_benchmark_acceleration,
+    request_from_args,
+)
 from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
-from .local_runner import LocalBenchmarkError, run_local
+from .local_runner import (
+    LocalBenchmarkError,
+    _is_deepseek_v41_benchmark_target,
+    run_local,
+)
 from .publication import PublicationRefused
 from .workspace import (
     LocalRunArchive,
@@ -372,6 +380,15 @@ def benchmark_command(args) -> int:
             # verbatim on a non-zero exit — UNLESS the caller opts in with
             # --progress, which streams RS-tagged progress the Desktop can tell
             # apart from that document and render as a live bar + ETA.
+            acceleration = request_from_args(args)
+            if not acceleration.baseline:
+                plan = plan_for_alias(args.benchmark_model)
+                if plan["model"][
+                    "task_type"
+                ] == "text_generation" and not _is_deepseek_v41_benchmark_target(
+                    plan["model"]["repo_id"]
+                ):
+                    preflight_benchmark_acceleration(args.benchmark_model, acceleration)
             event_sink = None
             if not args.json:
                 progress_sink = _progress_to_stderr
@@ -388,7 +405,7 @@ def benchmark_command(args) -> int:
                 inherit_process_group=getattr(args, "inherit_process_group", False),
                 progress=progress_sink,
                 events=event_sink,
-                acceleration=request_from_args(args),
+                acceleration=acceleration,
             )
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))

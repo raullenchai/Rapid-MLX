@@ -4315,3 +4315,50 @@ async def test_serial_lane_escaped_client_abort_is_cancelled(monkeypatch):
     assert snapshot.requests_cancelled == 1
     assert snapshot.requests_failed == 0
     assert snapshot.requests_succeeded == 0
+
+
+@pytest.mark.parametrize("api_key", [None, "secret"])
+def test_public_health_probes(api_key):
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.speculative.dflash.runtime import DFlashRuntime
+    from rapid_mlx.speculative.dflash.server import _build_app
+
+    reset_config()
+    try:
+        runtime = DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+        )
+        app = _build_app(
+            model=MagicMock(),
+            processor=MagicMock(),
+            runtime=runtime,
+            served_model_name="test-model",
+            default_max_tokens=64,
+            cors_origins=[],
+            api_key=api_key,
+        )
+        client = TestClient(app, base_url="http://127.0.0.1")
+        healthz = client.get("/healthz").json()
+        response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {
+            **healthz,
+            "status": "healthy",
+            "ready": True,
+            "state": "ready",
+            "model_loaded": True,
+            "model_name": "test-model",
+            "model_type": "llm",
+            "engine_type": healthz["engine"],
+        }
+        assert client.get("/health/ready").json() == {"status": "ok", "ready": True}
+        assert client.get("/").json() == {"status": "ok"}
+        assert client.head("/").status_code == 200
+    finally:
+        reset_config()
