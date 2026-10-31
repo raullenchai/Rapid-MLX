@@ -21,13 +21,21 @@ OLD_VENV_PYTHON=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-BOLD='\033[1m'  DIM='\033[2m'  GREEN='\033[32m'  YELLOW='\033[33m'  RED='\033[31m'  RESET='\033[0m'
+BOLD='' DIM='' GREEN='' YELLOW='' RESET=''
+STDERR_RED='' STDERR_DIM='' STDERR_RESET=''
+if [ -t 1 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' YELLOW='\033[33m' RESET='\033[0m'
+fi
+if [ -t 2 ] && [ -n "${TERM:-}" ] && [ "$TERM" != dumb ] && [ -z "${NO_COLOR:-}" ]; then
+    STDERR_RED='\033[31m' STDERR_DIM='\033[2m' STDERR_RESET='\033[0m'
+fi
 
 info()  { printf "  ${BOLD}%s${RESET}\n" "$*"; }
 ok()    { printf "  ${GREEN}%s${RESET}\n" "$*"; }
 warn()  { printf "  ${YELLOW}%s${RESET}\n" "$*"; }
-err()   { printf "  ${RED}%s${RESET}\n" "$*" >&2; }
+err()   { printf "  ${STDERR_RED}%s${STDERR_RESET}\n" "$*" >&2; }
 dim()   { printf "  ${DIM}%s${RESET}\n" "$*"; }
+dim_err() { printf "  ${STDERR_DIM}%s${STDERR_RESET}\n" "$*" >&2; }
 
 # With curl | bash, stdin is installer source, not input for child commands.
 # Keep terminal input available for interactive runs; internal data pipelines
@@ -76,7 +84,7 @@ select_python() {
         [ "$minor" -le "$MAX_PYTHON_MINOR" ] || continue
         pyarch=$(run_install_command "$py" -c 'import platform; print(platform.machine())' 2>/dev/null || echo "?")
         if [ "$pyarch" != "arm64" ]; then
-            dim "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)" >&2
+            dim_err "Skipping $py (${pyarch}; Rapid-MLX needs a native arm64 Python)"
             continue
         fi
         printf '%s\n' "$py"
@@ -486,10 +494,72 @@ validate_target() {
     esac
 }
 
+uv_config_absent() {
+    local dir config_dir config_dirs=${XDG_CONFIG_DIRS:-}
+    [ -z "${UV_CONFIG_FILE+x}" ] && [ -z "${UV_NO_CONFIG+x}" ] || return 1
+    for config_dir in "${XDG_CONFIG_HOME:-$HOME/.config}" /etc "${config_dirs//:/$'\n'}"; do
+        while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            [ ! -e "$dir/uv/uv.toml" ] && [ ! -L "$dir/uv/uv.toml" ] || return 1
+        done <<< "$config_dir"
+    done
+    dir=$PWD
+    while :; do
+        [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
+        if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
+            "$INSTALL_DIR/bin/python" -I -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    doc = tomllib.load(f)
+tool = doc.get("tool")
+sys.exit(not ("tool" not in doc or isinstance(tool, dict) and "uv" not in tool))
+' "$dir/pyproject.toml" </dev/null 2>/dev/null || return 1
+        fi
+        [ "$dir" = / ] && break
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir=/
+    done
+}
+
+# Preserve the installer status even when grep removes every stderr line.
+run_package_command() {
+    if [ "$1" = uv ]; then
+        # A subshell scopes the cleanup trap and leaves uv stderr untouched.
+        (
+            if uv_config_absent && tmpdir=$(mktemp -d 2>/dev/null); then
+                trap 'rm -rf "$tmpdir"' EXIT
+                if cat > "$tmpdir/uv.toml" <<'EOF'
+[[dependency-metadata]]
+name = "mlx-video-with-audio"
+version = "0.1.36"
+requires-dist = ["mlx>=0.22.0", "numpy", "safetensors", "huggingface_hub", "transformers", "tqdm",
+                 "opencv-python>=4.12.0.88", "Pillow>=10.3.0", "mlx-vlm", "soundfile>=0.12.0",
+                 "pytest; extra == \"dev\""]
+EOF
+                then
+                    UV_CONFIG_FILE="$tmpdir/uv.toml" run_install_command "$@"
+                else
+                    run_install_command "$@"
+                fi
+            else
+                run_install_command "$@"
+            fi
+        )
+        return $?
+    fi
+    local status
+    if run_install_command "$@" 2>&1 1>&3 | grep --line-buffered -Ev '^WARNING: transformers [^ ]+ does not provide the extra '\''tokenizers'\''$' >&2; then
+        status=${PIPESTATUS[0]}
+    else
+        status=${PIPESTATUS[0]}
+    fi 3>&1
+    return "$status"
+}
+
 install_package() {
     case "$TARGET" in
         stable)
-            run_install_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" || {
+            run_package_command "${UPGRADE_INSTALLER[@]}" "$PYPI_PACKAGE" || {
                 err "Package-index install failed; refusing to fall back to GitHub. Check the error above and retry."
                 return 1
             }
@@ -497,11 +567,11 @@ install_package() {
         latest)
             validate_target || return 1
             info "Installing reviewed Git commit ${RAPID_MLX_GIT_COMMIT}..."
-            run_install_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT}"
+            run_package_command "${FORCE_INSTALLER[@]}" "$PYPI_PACKAGE @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT}"
             ;;
         *)
             info "Installing version ${TARGET}..."
-            run_install_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" || {
+            run_package_command "${INSTALLER[@]}" "${PYPI_PACKAGE}==${TARGET}" || {
                 err "Requested version unavailable from the package index; refusing to change sources."
                 return 1
             }
