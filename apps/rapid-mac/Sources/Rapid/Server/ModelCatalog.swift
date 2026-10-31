@@ -264,6 +264,12 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     let cached: Bool
     /// Raw bytes from a machine-readable source; sizeOnDisk retains display or legacy text.
     var sizeBytes: Int64? = nil
+    var downloadSizeBytes: Int64? = nil
+
+    var displayedModelSize: ModelSize? {
+        if let downloadSizeBytes, downloadSizeBytes > 0 { return .bytes(downloadSizeBytes) }
+        return size
+    }
 
     var size: ModelSize? {
         if let sizeBytes, sizeBytes > 0 { return .bytes(sizeBytes) }
@@ -478,7 +484,8 @@ enum ModelCatalog {
             entries: [(String, String?)],
             excluded: Set<String>,
             speculative: [String: SpeculativeDecodingPreset],
-            profiles: [String: CatalogProfileCapability]
+            profiles: [String: CatalogProfileCapability],
+            atomic: [ModelEntry]
         ) =
             listAvailableWithExclusions(binary: binary)
         async let cachedTask: [CachedModelInventoryEntry] = listCached(
@@ -495,7 +502,8 @@ enum ModelCatalog {
         var entries = mergeAvailableAndCached(
             available: available,
             cached: cached,
-            excluded: excludedAliases
+            excluded: excludedAliases,
+            atomic: availableResult.atomic
         )
 
         // Repo-aware cached marking (issue #576): a bare alias like
@@ -627,6 +635,7 @@ enum ModelCatalog {
                 sizeOnDisk: hit.size?.displayText,
                 cached: true,
                 sizeBytes: hit.size?.byteCount,
+                downloadSizeBytes: entry.downloadSizeBytes,
                 isExternal: entry.isExternal,
                 kind: entry.kind,
                 audioCapability: entry.audioCapability,
@@ -718,6 +727,32 @@ enum ModelCatalog {
             cached: cached.map { ($0.0, $0.1, $0.2, ModelSize.legacy($0.3), nil, nil) },
             excluded: excluded
         )
+    }
+
+    static func mergeAvailableAndCached(
+        available: [(String, String?)],
+        cached: [CachedModelInventoryEntry],
+        excluded: Set<String>,
+        atomic: [ModelEntry]
+    ) -> [ModelEntry] {
+        carryDownloadSizes(
+            mergeAvailableAndCached(available: available, cached: cached, excluded: excluded),
+            atomic: atomic
+        )
+    }
+
+    private static func carryDownloadSizes(_ entries: [ModelEntry], atomic: [ModelEntry]) -> [ModelEntry] {
+        let byAlias = Dictionary(atomic.map { ($0.alias, $0) }, uniquingKeysWith: { first, _ in first })
+        let byArtifact = Dictionary(atomic.compactMap { entry -> (String, ModelEntry)? in
+            guard let key = artifactCacheKey(entry) else { return nil }
+            return (key, entry)
+        }, uniquingKeysWith: { first, _ in first })
+        return entries.map { entry in
+            var result = entry
+            let source = byAlias[entry.alias] ?? artifactCacheKey(entry).flatMap { byArtifact[$0] }
+            result.downloadSizeBytes = source?.downloadSizeBytes
+            return result
+        }
     }
 
     static func mergeAvailableAndCached(
@@ -859,11 +894,13 @@ enum ModelCatalog {
         entries: [(String, String?)],
         excluded: Set<String>,
         speculative: [String: SpeculativeDecodingPreset],
-        profiles: [String: CatalogProfileCapability]
+        profiles: [String: CatalogProfileCapability],
+        atomic: [ModelEntry]
     ) {
         let jsonResult = await runRapidMlxResult(binary: binary, args: ["models", "--json"])
         if jsonResult.succeeded, let parsed = parseAvailableJSON(jsonResult.stdout) {
-            return parsed
+            return (parsed.entries, parsed.excluded, parsed.speculative, parsed.profiles,
+                    parseAtomicModelEntriesJSON(jsonResult.stdout) ?? [])
         }
         // Compatibility with older external sidecars: keep their catalog but
         // leave provenance unknown, which deliberately disables eager MLLM.
@@ -872,7 +909,8 @@ enum ModelCatalog {
             parseAvailable(output),
             parseExcludedAliases(output),
             parseSpeculativeCapabilities(output),
-            [:]
+            [:],
+            []
         )
     }
 
@@ -1279,6 +1317,7 @@ enum ModelCatalog {
                 sizeOnDisk: model.size?.displayText,
                 cached: false,
                 sizeBytes: model.size?.byteCount,
+                downloadSizeBytes: model.size?.byteCount,
                 kind: kind,
                 audioCapability: audioCapability,
                 audioFamily: audioFamily,
@@ -1517,6 +1556,7 @@ enum ModelCatalog {
                 sizeOnDisk: size?.displayText,
                 cached: true,
                 sizeBytes: size?.byteCount,
+                downloadSizeBytes: entry.downloadSizeBytes,
                 isExternal: cachedHit == nil && siblingHit == nil
                     && unmappedRoot == nil && externalRepo != nil,
                 kind: entry.kind,
@@ -1535,14 +1575,15 @@ enum ModelCatalog {
             )
         }
 
-        for (alias, repo, _, size, _, _) in cached
+        for (alias, repo, subfolder, size, _, _) in cached
         where !alias.isEmpty
             && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
             && !excluded.contains(alias) {
             seenAliases.insert(alias)
             entries.append(ModelEntry(
-                alias: alias, hfRepo: repo, sizeOnDisk: size?.displayText, cached: true, sizeBytes: size?.byteCount
+                alias: alias, hfRepo: repo, sizeOnDisk: size?.displayText, cached: true, sizeBytes: size?.byteCount,
+                sourceSubfolder: subfolder
             ))
         }
         for (alias, repo, _, size, _, _) in cached where alias == "(external)" {
@@ -1561,9 +1602,12 @@ enum ModelCatalog {
                 isExternal: true
             ))
         }
-        return addingDiscoveredChat(
-            entries, cached: cached, excluded: excluded,
-            catalogAliases: Set(atomic.map(\.alias))
+        return carryDownloadSizes(
+            addingDiscoveredChat(
+                entries, cached: cached, excluded: excluded,
+                catalogAliases: Set(atomic.map(\.alias))
+            ),
+            atomic: atomic
         )
     }
 
@@ -1593,7 +1637,7 @@ enum ModelCatalog {
             result.removeAll { $0.alias == row.hfRepo && $0.hfRepo == row.hfRepo }
             result.append(ModelEntry(
                 alias: path, hfRepo: row.hfRepo, sizeOnDisk: row.size?.displayText, cached: true, sizeBytes: row.size?.byteCount,
-                isExternal: row.alias == "(external)"
+                isExternal: row.alias == "(external)", sourceSubfolder: row.subfolder
             ))
         }
         return result

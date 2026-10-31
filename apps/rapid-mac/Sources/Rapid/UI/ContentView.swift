@@ -2132,9 +2132,10 @@ struct ContentView: View {
             }
         case .promptDownload(let pending):
             let footprint = ModelSizing.estimate(alias: pending)
-            let sizeText: String? = footprint.paramsBillions == nil
-                ? nil
-                : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30)))
+            let sizeText: String? = catalogEntries.first { $0.alias == pending }?.displayedModelSize?.displayText
+                ?? (footprint.paramsBillions == nil
+                    ? nil
+                    : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30))))
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
             return .noPrimaryLaunch
