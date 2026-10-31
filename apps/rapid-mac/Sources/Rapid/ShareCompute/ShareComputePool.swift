@@ -26,16 +26,14 @@ struct ShareComputeLocalModel: Identifiable, Hashable, Sendable {
     /// Settings → Models so the two surfaces can never print different numbers
     /// for the same model.
     var onDiskSize: String? {
-        guard let raw = entry?.sizeOnDisk?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return nil }
-        return raw
+        entry?.size?.displayText
     }
 
     var estimatedDownloadBytes: Int64? {
         guard !isReady else { return nil }
         let footprint = ModelSizing.estimate(alias: model.alias)
         guard footprint.weightsGB > 0 else { return nil }
-        return Int64(footprint.weightsGB * Double(1 << 30))
+        return DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30))
     }
 
     /// Joins the pool catalog to the local catalog.
@@ -95,7 +93,7 @@ enum ShareComputeStorageEligibility: Equatable, Sendable {
     /// measured bytes.
     var label: String? {
         let formatter: (Int64) -> String = {
-            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+            DownloadProgress.formatBytes($0)
         }
         switch self {
         case .enoughSpace(let free):

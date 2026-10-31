@@ -55,7 +55,7 @@ def _seed_cache(tmp_path, monkeypatch, *, omit=None):
     )
 
 
-def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
+def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None, check_memory=False):
     """Run ``rapid-mlx serve flux2-klein-4b`` with the heavy boundaries stubbed.
 
     Only ever driven to the point where the gate refuses. Letting a serve run
@@ -76,7 +76,8 @@ def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_kw: None)
+    if not check_memory:
+        monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "rapid_mlx.runtime.image_lane.require_image_runtime_or_exit",
         lambda _name: None,
@@ -171,3 +172,20 @@ def test_bonsai_skips_unpinned_generic_prefetch(monkeypatch):
 
     assert excinfo.value.code == 1
     assert calls == []
+
+
+def test_serve_warns_before_image_download(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=12 * 1024**3)
+    )
+
+    def download(*args, **kwargs):
+        output = capsys.readouterr().out
+        assert "'flux2-klein-4b' needs a Mac with at least 16 GB" in output
+        assert "this Mac has 12.0 GB" in output
+        raise RuntimeError("download reached")
+
+    with pytest.raises(RuntimeError, match="download reached"):
+        _drive_serve(monkeypatch, download_hook=download, check_memory=True)

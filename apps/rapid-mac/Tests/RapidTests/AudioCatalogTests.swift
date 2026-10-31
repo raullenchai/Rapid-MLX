@@ -119,32 +119,53 @@ struct AudioCatalogTests {
         }
     }
 
-    @Test("presentation ranking cannot silently change the selected checkpoint")
+    @Test("recommended transcription model wins over a cached model")
     @MainActor
-    func transcriptionRecommendationDoesNotOverrideCachedSelectionOrder() {
+    func transcriptionRecommendationWinsOverCachedModel() {
         let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
         viewModel.audioModels = [
-            audioEntry(
-                alias: "qwen3-asr",
-                capability: .transcription,
-                family: "qwen3_asr",
-                cached: true
-            ),
-            audioEntry(
-                alias: "whisper-large-v3-turbo",
-                capability: .transcription,
-                family: "whisper",
-                cached: true
-            ),
+            audioEntry(alias: "firered-asr2", capability: .transcription, family: "fireredasr2", cached: true),
+            audioEntry(alias: "whisper-large-v3-turbo", capability: .transcription, family: "whisper"),
         ]
+        viewModel.resolveSelections()
+        #expect(viewModel.selectedTranscriptionAlias == "whisper-large-v3-turbo")
+    }
 
-        // The recommendation remains a presentation decision.
-        #expect(viewModel.transcriptionModels.first?.alias == "whisper-large-v3-turbo")
+    @Test("recommended transcription model wins when both models are cached")
+    @MainActor
+    func cachedTranscriptionRecommendationWins() {
+        let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
+        viewModel.audioModels = [
+            audioEntry(alias: "qwen3-asr", capability: .transcription, family: "qwen3_asr", cached: true),
+            audioEntry(alias: "whisper-large-v3-turbo", capability: .transcription, family: "whisper", cached: true),
+        ]
+        viewModel.resolveSelections()
+        #expect(viewModel.selectedTranscriptionAlias == "whisper-large-v3-turbo")
+    }
 
-        // Default selection retains the existing cached-first selection contract
-        // instead of treating visual rank as a request to swap checkpoints.
+    @Test("valid transcription selection is preserved")
+    @MainActor
+    func validTranscriptionSelectionIsPreserved() {
+        let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
+        viewModel.audioModels = [
+            audioEntry(alias: "qwen3-asr", capability: .transcription, family: "qwen3_asr", cached: true),
+            audioEntry(alias: "whisper-large-v3-turbo", capability: .transcription, family: "whisper"),
+        ]
+        viewModel.selectedTranscriptionAlias = "qwen3-asr"
         viewModel.resolveSelections()
         #expect(viewModel.selectedTranscriptionAlias == "qwen3-asr")
+    }
+
+    @Test("cached Whisper wins when no recommended model is available")
+    @MainActor
+    func cachedWhisperIsFallback() {
+        let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
+        viewModel.audioModels = [
+            audioEntry(alias: "firered-asr2", capability: .transcription, family: "fireredasr2", cached: true),
+            audioEntry(alias: "whisper-small", capability: .transcription, family: "whisper", cached: true),
+        ]
+        viewModel.resolveSelections()
+        #expect(viewModel.selectedTranscriptionAlias == "whisper-small")
     }
 
     @Test("runtime selection deduplicates aliases without presentation sorting")
@@ -177,7 +198,7 @@ struct AudioCatalogTests {
 
         viewModel.resolveSelections()
 
-        #expect(viewModel.selectedTranscriptionAlias == "qwen3-asr")
+        #expect(viewModel.selectedTranscriptionAlias == "whisper-large-v3-turbo")
         #expect(viewModel.transcriptionModels.map(\.alias) == [
             "whisper-large-v3-turbo",
             "qwen3-asr",
@@ -394,7 +415,7 @@ struct AudioCatalogTests {
         let qwen = try #require(entries.first { $0.alias == "qwen3-tts-4bit" })
 
         #expect(qwen.cached)
-        #expect(qwen.sizeOnDisk == "2.2 GiB")
+        #expect(qwen.sizeOnDisk == DownloadProgress.formatBytes(Int64(2.2 * Double(1 << 30))))
     }
 
     @Test("incomplete audio cache rows remain downloadable")
@@ -428,7 +449,7 @@ struct AudioCatalogTests {
         let qwen = try #require(entries.first { $0.alias == "qwen3-tts-4bit" })
 
         #expect(!qwen.cached)
-        #expect(qwen.sizeOnDisk == "2.2 GiB")
+        #expect(qwen.sizeOnDisk == DownloadProgress.formatBytes(Int64(2.2 * Double(1 << 30))))
         #expect(ModelPickerBar.cacheGlyph(cached: qwen.cached) == "icloud.and.arrow.down")
     }
 

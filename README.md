@@ -273,10 +273,10 @@ family default shown below.
 <!-- image-model-matrix:start -->
 | Alias | Best fit | Modes | Download | Minimum unified memory | Default steps |
 | --- | --- | --- | ---: | ---: | ---: |
-| `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 12 GB | 4 |
+| `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 16 GB | 4 |
 | `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
 | `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
-| `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 16 GB | 4 |
+| `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 32 GB | 4 |
 | `sdxl-base` | SDXL compatibility | Generate | 6.5 GiB | 16 GB | 30 |
 | `flux2-klein-4b-bf16` | Explicit full-precision Klein path | Generate + edit | 14.9 GiB | 32 GB | 4 |
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
@@ -683,7 +683,7 @@ Ships in homebrew-core since 0.10.12 — no tap, no trust prompt. Upgrade with `
 uv tool install rapid-mlx@latest
 ```
 
-Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade with `uv tool upgrade rapid-mlx`.
+Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade with `uv tool upgrade rapid-mlx`. On a Python 3.10/3.11 tool environment use `uv tool upgrade --python 3.12 rapid-mlx`.
 
 </details>
 
@@ -691,14 +691,17 @@ Don't have uv yet? `curl -LsSf https://astral.sh/uv/install.sh | sh`. Upgrade wi
 <summary><strong>pip</strong> — requires Python 3.12+ (macOS ships 3.9)</summary>
 
 ```bash
-python3.12 -m pip install rapid-mlx
+python3.12 -m venv ~/.venvs/rapid-mlx
+~/.venvs/rapid-mlx/bin/pip install rapid-mlx
 ```
 
-If `python3.12` is missing, use the official installer above or install Python 3.12 with Homebrew first. Upgrade a Python 3.12 installation with `python3.12 -m pip install -U rapid-mlx`.
+Add `~/.venvs/rapid-mlx/bin` to your PATH or call the executable directly.
+
+If `python3.12` is missing, use the official installer above or install Python 3.12 with Homebrew first. Upgrade with the pip of the environment that holds Rapid-MLX, e.g. `~/.venvs/rapid-mlx/bin/pip install -U rapid-mlx` for the environment above (an existing install made with an earlier Python 3.12 pip command upgrades with that same Python's pip). An install on Python 3.10/3.11 stays on 1.0.0 (`Requirement already satisfied`); reinstall it with Python 3.12 — see [Upgrading from Python 3.10 or 3.11](https://rapidmlx.com/docs/getting-started/installation.html#upgrading-from-python-310-or-311).
 
 Image-input / VLM models (Qwen-VL, Gemma 4, true multimodal) need no extra step — the vision runtime ships with the base install. See [Optional extras](https://rapidmlx.com/docs/extras.html) for audio and embeddings.
 
-For the complete feature set — chat, embeddings, audio, and System One on top of the base install — install the `[all]` extra: `python3.12 -m pip install 'rapid-mlx[all]'`. Audio alone is `python3.12 -m pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+For the complete feature set — chat, embeddings, audio, and System One on top of the base install — install the `[all]` extra: `~/.venvs/rapid-mlx/bin/pip install 'rapid-mlx[all]'`. Audio alone is `~/.venvs/rapid-mlx/bin/pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
 </details>
 

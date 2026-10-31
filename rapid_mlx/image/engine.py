@@ -46,6 +46,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .precision import (
@@ -75,6 +76,10 @@ _PROCESS_GENERATION_LOCK = threading.RLock()
 # Guards temporary patches of mflux's process-global Qwen-Image 2.1 weight
 # definition during model construction (see ``_build_model``).
 _QWEN21_DEFINITION_LOCK = threading.Lock()
+_GENERATION_CACHE_LOCK = threading.Lock()
+_GENERATION_CACHE_DEPTH = 0
+_GENERATION_CACHE_PREVIOUS = None
+_GENERATION_CACHE_BOUND = None
 
 # Default quantization for the on-load quantize path. 4-bit is the 32GB sweet
 # spot (FLUX.1-schnell ~9GB, Qwen-Image ~12GB resident at q4).
@@ -92,6 +97,58 @@ def _release_allocator_cache() -> None:
     except Exception:
         # Unit-test hosts and older optional MLX builds are valid here.
         pass
+
+
+@contextmanager
+def _bounded_generation_cache():
+    """Bound free buffers during a locked generation and restore the limit."""
+    global _GENERATION_CACHE_DEPTH, _GENERATION_CACHE_PREVIOUS, _GENERATION_CACHE_BOUND
+
+    mx = None
+    with _GENERATION_CACHE_LOCK:
+        try:
+            import mlx.core as mx
+
+            if _GENERATION_CACHE_DEPTH == 0:
+                # Zero is safe even when another runtime set a lower limit.
+                _GENERATION_CACHE_PREVIOUS = mx.set_cache_limit(0)
+                _GENERATION_CACHE_BOUND = min(_GENERATION_CACHE_PREVIOUS, 1024**3)
+                try:
+                    mx.set_cache_limit(_GENERATION_CACHE_BOUND)
+                except Exception:
+                    try:
+                        mx.set_cache_limit(_GENERATION_CACHE_PREVIOUS)
+                    except Exception:
+                        pass
+                    finally:
+                        _GENERATION_CACHE_PREVIOUS = None
+                        _GENERATION_CACHE_BOUND = None
+        except Exception:
+            pass  # MLX is optional on test and client hosts.
+        _GENERATION_CACHE_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _GENERATION_CACHE_LOCK:
+            _GENERATION_CACHE_DEPTH -= 1
+            if _GENERATION_CACHE_DEPTH == 0 and _GENERATION_CACHE_PREVIOUS is not None:
+                try:
+                    current = mx.set_cache_limit(_GENERATION_CACHE_PREVIOUS)
+                    # Preserve a newer limit set by another runtime.
+                    if current != _GENERATION_CACHE_BOUND:
+                        mx.set_cache_limit(current)
+                except Exception:
+                    pass
+                finally:
+                    _GENERATION_CACHE_PREVIOUS = None
+                    _GENERATION_CACHE_BOUND = None
+            if _GENERATION_CACHE_DEPTH == 0:
+                gc.collect()
+                if mx is not None:
+                    try:
+                        mx.clear_cache()
+                    except Exception:
+                        pass
 
 
 class ImageRuntimeError(RuntimeError):
@@ -1314,7 +1371,7 @@ class ImageGenerationEngine:
         input_paths = image_paths or []
         editing = bool(input_paths)
 
-        with self._lock:
+        with self._lock, _bounded_generation_cache():
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel
             # pressed during the (possibly multi-gigabyte) cold model load is
             # honored — its seq already matches this run — instead of being lost.

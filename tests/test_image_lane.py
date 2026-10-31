@@ -1626,3 +1626,50 @@ def test_image_adapter_emits_model_served_before_backend_failure(
         )
     served.assert_called_once()
     assert events == ["validated", "loaded", "model_served", "generate"]
+
+
+@pytest.mark.parametrize("initial", [8 * 1024**3, 0, 512 * 1024**2])
+@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_generation_bounds_and_restores_allocator_cache(
+    monkeypatch, initial, editing, fails
+):
+    import sys
+
+    state = {"limit": initial, "clears": 0}
+
+    def set_limit(value):
+        previous = state["limit"]
+        state["limit"] = value
+        return previous
+
+    def clear_cache():
+        state["clears"] += 1
+
+    core = types.ModuleType("mlx.core")
+    core.set_cache_limit = set_limit
+    core.clear_cache = clear_cache
+    mlx = types.ModuleType("mlx")
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+
+    class Model(_FakeModel):
+        def generate_image(self, **kwargs):
+            assert state["limit"] == min(initial, 1024**3)
+            if fails:
+                raise ValueError("pipeline failed")
+            return super().generate_image(**kwargs)
+
+    engine._model = Model()
+    kwargs = {"prompt": "a fox"}
+    if editing:
+        kwargs["image_paths"] = ["/tmp/in.png"]
+    if fails:
+        with pytest.raises(ImageRuntimeError, match="pipeline failed"):
+            engine.generate(**kwargs)
+    else:
+        engine.generate(**kwargs)
+    assert state["limit"] == initial
+    assert state["clears"] == 1

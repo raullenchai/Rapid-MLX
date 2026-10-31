@@ -160,7 +160,7 @@ let tiers = payload.tiers
 // Mirror SettingsModelManagementPanel.pickStatsLine / ModelPickerBar
 // tagline: a caveat replaces the capability %, speed leads, caveat trails.
 func pickStatsLine(_ pick: Pick) -> String {
-    var parts = [String(format: "%.1f GB", pick.footprintGB)]
+    var parts = [ByteCountFormatter.string(fromByteCount: Int64(pick.footprintGB * Double(1 << 30)), countStyle: .memory)]
     if let caveat = pick.caveat {
         if let tps = pick.tokensPerSec { parts.append("~\(Int(tps.rounded())) tok/s") }
         parts.append(caveat)
@@ -264,15 +264,15 @@ let smart8 = picks(forPhysicalRAMGB: 8)[0]
 check(picks(forPhysicalRAMGB: 8).count == 2, "8GB has smart + fast")
 check(smart8.caveat == "Not for coding", "8GB pick carries the coding caveat")
 check(tiers.flatMap(\.picks).allSatisfy { $0.tokensPerSec == nil }, "legacy speed projections are absent from every tier")
-check(pickStatsLine(smart8) == "3.0 GB · Not for coding", "8GB stats line omits unavailable speed")
+check(pickStatsLine(smart8) == "\(ByteCountFormatter.string(fromByteCount: Int64(smart8.footprintGB * Double(1 << 30)), countStyle: .memory)) · Not for coding", "8GB stats line omits unavailable speed")
 check(smart8.footprintGB < 4.0, "8GB pick must leave room for macOS on an 8GB machine")
 let fast96 = picks(forPhysicalRAMGB: 96)[1]
 check(fast96.caveat == nil, "96GB fast (qwen3.6-35b-4bit) is general-purpose — no caveat")
-check(pickStatsLine(fast96) == "20.0 GB · 87% capability", "general-purpose fast pick keeps its capability %")
+check(pickStatsLine(fast96) == "\(ByteCountFormatter.string(fromByteCount: Int64(fast96.footprintGB * Double(1 << 30)), countStyle: .memory)) · 87% capability", "general-purpose fast pick keeps its capability %")
 let smart16 = picks(forPhysicalRAMGB: 16)[0]
-check(pickStatsLine(smart16) == "6.0 GB · 78% capability", "16GB qwen4 keeps footprint and capability")
+check(pickStatsLine(smart16) == "\(ByteCountFormatter.string(fromByteCount: Int64(smart16.footprintGB * Double(1 << 30)), countStyle: .memory)) · 78% capability", "16GB qwen4 keeps footprint and capability")
 let smart96 = picks(forPhysicalRAMGB: 96)[0]
-check(pickStatsLine(smart96) == "20.0 GB · 92% capability", "96GB smart keeps footprint and capability")
+check(pickStatsLine(smart96) == "\(ByteCountFormatter.string(fromByteCount: Int64(smart96.footprintGB * Double(1 << 30)), countStyle: .memory)) · 92% capability", "96GB smart keeps footprint and capability")
 
 print("Launch flags travel with the recommendation, gated by RAM:")
 check(launchFlags(forAlias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8).isEmpty, "8GB lfm2.5-2.6b → no flags")

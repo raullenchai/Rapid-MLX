@@ -28,6 +28,7 @@ from .anthropic_models import (
     AnthropicUsage,
 )
 from .models import (
+    AnthropicToolDefinition,
     ChatCompletionRequest,
     ChatCompletionResponse,
     Message,
@@ -298,7 +299,7 @@ def anthropic_to_openai(
     )
 
     # Convert tools
-    tools = None
+    tools: list[ToolDefinition] | None = None
     if request.tools:
         tools = [_convert_tool(t) for t in request.tools]
 
@@ -866,14 +867,14 @@ def _convert_message(msg: AnthropicMessage) -> list[Message]:
     return messages
 
 
-def _convert_tool(tool: AnthropicToolDef) -> ToolDefinition:
+def _convert_tool(tool: AnthropicToolDef) -> AnthropicToolDefinition:
     """
     Convert an Anthropic tool definition to OpenAI format.
 
     Anthropic: {"name": "...", "description": "...", "input_schema": {...}}
     OpenAI: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
     """
-    return ToolDefinition(
+    return AnthropicToolDefinition(
         type="function",
         function={
             "name": tool.name,

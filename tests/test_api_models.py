@@ -1886,9 +1886,9 @@ class TestModelSerialization:
         # canonical "{role,content}" doublet.
         assert set(message.keys()) == {"role", "content"}
 
-    def test_assistant_message_tool_calls_only_emits_empty_content(self):
+    def test_assistant_message_tool_calls_only_emits_null_content(self):
         """D-MISSING-CONTENT-KEY (r12-7): tool-call-only assistant
-        messages serialize as ``{role,tool_calls,content:""}`` — the
+        messages serialize as ``{role,tool_calls,content:null}`` — the
         canonical OpenAI tool-call envelope. Without the explicit
         ``content`` key strict clients reject the message shape."""
         tc = ToolCall(
@@ -1899,7 +1899,7 @@ class TestModelSerialization:
         msg = AssistantMessage(content=None, tool_calls=[tc])
         data = json.loads(msg.model_dump_json(exclude_none=True))
         assert "content" in data
-        assert data["content"] == ""
+        assert data["content"] is None
         assert data["tool_calls"][0]["id"] == "call_1"
         assert data["role"] == "assistant"
 

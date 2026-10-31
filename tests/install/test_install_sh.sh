@@ -7,8 +7,8 @@
 # and every re-run then died on the upgrade path calling the missing pip.
 #
 # We source install.sh in library mode (RAPID_INSTALL_LIB=1) so only the
-# helper functions load, then drive them against fake interpreters. No network,
-# no real Python, no real install — runs on any host (macOS dev + Linux CI).
+# helper functions load, then drive them against fixture interpreters. No network
+# or real install is needed (macOS dev + Linux CI).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +29,7 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; printf '        want:
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 SYS_PATH="$PATH"   # keep coreutils for setup
+REAL_PYTHON="$(command -v python3)"
 
 # A fake python that reports a given "python X.Y" version and machine arch.
 make_py() {   # make_py <path> <ver e.g. 3.12> <arch e.g. arm64>
@@ -209,6 +210,7 @@ check "plan: an x86_64 venv is rebuilt" \
     create_venv() { CALLS="$CALLS create"; }
     upgrade_pip() { CALLS="$CALLS upgrade"; }
     stash_venv_entries() { CALLS="$CALLS stash"; }
+    installed_extras_of_venv() { printf "%s\n" "audio,chat"; }
     info() { :; }; warn() { :; }; dim() { :; }
     INSTALL_DIR="$WORK/dispatch"; mkdir -p "$INSTALL_DIR/bin"
     CALLS=""; dispatch_venv upgrade
@@ -217,8 +219,133 @@ check "plan: an x86_64 venv is rebuilt" \
     check "dispatch create -> only venv create" "$CALLS" " create"
     CALLS=""; dispatch_venv rebuild
     check "dispatch rebuild -> stash then create" "$CALLS" " stash create"
+    check "dispatch preserves extras" "$PRESERVED_EXTRAS" "audio,chat"
     [ "$FAIL" -eq 0 ]
 ) || bad "dispatch action wiring"
+
+# Metadata fixtures exercise the real stdlib parser without network access.
+EXTRAS_VENV="$WORK/extras"; SITE="$WORK/site"
+mkdir -p "$EXTRAS_VENV/bin" "$SITE/rapid_mlx-1.0.0.dist-info"
+cat > "$EXTRAS_VENV/bin/python" <<EOF
+#!/bin/bash
+printf '%s\n' "\$1" >> "$WORK/python-args"
+mode=()
+if [ "\$1" = -I ]; then mode=(-I); shift; fi
+exec "$REAL_PYTHON" "\${mode[@]}" -c 'import sys; sys.path.insert(1, sys.argv[1]); exec(sys.argv[2])' "$SITE" "\$2"
+EOF
+chmod +x "$EXTRAS_VENV/bin/python"
+cat > "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: rapid-mlx
+Version: 1.0.0
+Requires-Dist: rmlx-fixture-mlx>=0.1
+Requires-Dist: rmlx-fixture-gradio>=4; extra == "chat"
+Requires-Dist: rmlx-fixture-pytz; extra == "chat"
+Requires-Dist: rmlx-fixture-mlx-audio>=0.5; platform_system == 'Darwin' and extra == "audio"
+Requires-Dist: rmlx-fixture-soundfile; extra == "audio"
+Requires-Dist: rmlx-fixture-mflux; extra == "image"
+Requires-Dist: rmlx-fixture-mlx-video; python_version >= "3.11" and extra == "video"
+Requires-Dist: rmlx-fixture-pytest; extra == "dev"
+EOF
+for dist in mlx gradio pytz mlx-audio soundfile pytest; do
+    fixture="rmlx-fixture-$dist"
+    dist_dir="${fixture//-/_}-1.0.dist-info"
+    mkdir -p "$SITE/$dist_dir"
+    printf 'Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n' "$fixture" > "$SITE/$dist_dir/METADATA"
+done
+check "detects installed optional features" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
+mkdir -p "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info"
+cat > "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: rapid-mlx
+Version: 9.9.9
+Requires-Dist: rmlx-fixture-gradio; extra == "bogus"
+EOF
+check "ignores conflicting metadata in the current directory" \
+    "$(cd "$WORK/conflicting-cwd" && installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
+(
+    cd "$WORK/conflicting-cwd" || exit 1
+    INSTALL_DIR="$EXTRAS_VENV"; PRESERVED_EXTRAS="audio,chat"; TARGET=stable
+    recorder() { printf '%s\n' "$*" > "$WORK/isolated-spec"; }
+    INSTALLER=(recorder)
+    reinstall_preserved_extras >/dev/null
+    [ "$(cat "$WORK/isolated-spec")" = 'rapid-mlx[audio,chat]==1.0.0' ]
+) && ok "reinstall ignores conflicting current-directory version" || bad "reinstall ignores conflicting current-directory version"
+check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I)"
+if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null; then
+    cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Requires-Dist: rmlx-fixture-foo; python_version >= "3.0" and extra == "gated"
+Requires-Dist: rmlx-fixture-bar; python_version < "3.0" and extra == "never"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_foo-1.0.dist-info" "$SITE/rmlx_fixture_bar-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-foo\nVersion: 1.0\n' > "$SITE/rmlx_fixture_foo-1.0.dist-info/METADATA"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-bar\nVersion: 1.0\n' > "$SITE/rmlx_fixture_bar-1.0.dist-info/METADATA"
+    check "evaluates Python-gated extras with packaging" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat,gated"
+    extras_with_gated="audio,chat,gated,vendored"
+else
+    printf '  SKIP Python-gated extras: packaging is not importable\n'
+    extras_with_gated="audio,chat,vendored"
+fi
+if "$REAL_PYTHON" -I -c 'from pip._vendor.packaging.requirements import Requirement' 2>/dev/null; then
+    cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Requires-Dist: rmlx-fixture-vendor; python_version >= "3.0" and extra == "vendored"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_vendor-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-vendor\nVersion: 1.0\n' > "$SITE/rmlx_fixture_vendor-1.0.dist-info/METADATA"
+    printf 'raise ImportError("packaging intentionally unavailable")\n' > "$SITE/packaging.py"
+    check "evaluates Python-gated extras with pip vendored packaging" "$(installed_extras_of_venv "$EXTRAS_VENV")" "$extras_with_gated"
+    rm "$SITE/packaging.py"
+else
+    printf '  SKIP Python-gated extras: pip vendored packaging is not importable\n'
+fi
+cat > "$EXTRAS_VENV/bin/python" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+if result="$(installed_extras_of_venv "$EXTRAS_VENV")" && [ -z "$result" ]; then
+    ok "broken interpreter yields empty extras successfully"
+else
+    bad "broken interpreter yields empty extras successfully"
+fi
+
+(
+    INSTALL_DIR="$WORK/warning"; mkdir -p "$INSTALL_DIR/bin"
+    make_py "$INSTALL_DIR/bin/python" 3.11 arm64
+    installed_extras_of_venv() { :; }; stash_venv_entries() { :; }; create_venv() { :; }
+    output="$(dispatch_venv rebuild)"
+    case "$output" in *"uses Python 3.11"*) exit 0 ;; *) exit 1 ;; esac
+) && ok "rebuild explains unsupported Python" || bad "rebuild explains unsupported Python"
+
+(
+    INSTALL_DIR="$WORK/reinstall"; mkdir -p "$INSTALL_DIR/bin"
+    cat > "$INSTALL_DIR/bin/python" <<'EOF'
+#!/bin/bash
+printf '1.0.1\n'
+EOF
+    chmod +x "$INSTALL_DIR/bin/python"
+    recorder() { printf '%s\n' "$*" > "$WORK/recorded"; }
+    INSTALLER=(recorder); PRESERVED_EXTRAS="audio,chat"; TARGET=stable
+    reinstall_preserved_extras >/dev/null
+    [ "$(cat "$WORK/recorded")" = 'rapid-mlx[audio,chat]==1.0.1' ] || exit 1
+    recorder() { return 1; }
+    output="$(reinstall_preserved_extras)" || exit 1
+    case "$output" in *"Install them later with:"*) : ;; *) exit 1 ;; esac
+    rm "$WORK/recorded"
+    recorder() { touch "$WORK/recorded"; }
+    PRESERVED_EXTRAS=""; reinstall_preserved_extras
+    [ ! -e "$WORK/recorded" ]
+) && ok "reinstall pins version, tolerates failure, and skips empty extras" || bad "reinstall pins version, tolerates failure, and skips empty extras"
+
+(
+    INSTALL_DIR="$WORK/reinstall-missing-version"; mkdir -p "$INSTALL_DIR/bin"
+    printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/python"
+    chmod +x "$INSTALL_DIR/bin/python"
+    recorder() { touch "$WORK/unexpected-install"; }
+    INSTALLER=(recorder); PRESERVED_EXTRAS="audio,chat"; TARGET=stable
+    output="$(reinstall_preserved_extras)" || exit 1
+    [ ! -e "$WORK/unexpected-install" ] || exit 1
+    case "$output" in *"Install them later with: $INSTALL_DIR/bin/python -m pip install 'rapid-mlx[audio,chat]'"*) : ;; *) exit 1 ;; esac
+) && ok "missing version gives an unpinned reinstall hint" || bad "missing version gives an unpinned reinstall hint"
 
 # ── Transactional rebuilds preserve the old venv and shared state ───────────
 make_old_install() {

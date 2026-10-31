@@ -12,6 +12,7 @@ from .. import update_refresh
 from ..config import get_config
 from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
 from ..runtime.model_switching import ModelSwitchingError, primary_switching
+from .retrieval_health import retrieval_model_ids
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,11 @@ async def health():
     else:
         model_type = "llm"
 
+    model_name = cfg.model_name
+    retrieval_models = retrieval_model_ids(cfg)
+    if retrieval_models:
+        model_name = retrieval_models[0]
+
     return {
         **update_refresh.snapshot(),
         "status": "healthy",
@@ -139,7 +145,8 @@ async def health():
             else "loading"
         ),
         "model_loaded": model_loaded,
-        "model_name": cfg.model_name,
+        "model_name": model_name,
+        **({"models": retrieval_models} if retrieval_models is not None else {}),
         "model_type": model_type,
         "engine_type": engine_stats.get("engine_type", "unknown"),
         "mcp": mcp_info,
@@ -178,9 +185,10 @@ async def health_ready():
     status = lifecycle.snapshot() if lifecycle is not None else None
     if status is not None and status["state"] == "error":
         raise HTTPException(status_code=503, detail="model lifecycle error")
+    retrieval_models = retrieval_model_ids(cfg)
     return {
         "ready": True,
-        "model": cfg.model_name,
+        "model": retrieval_models[0] if retrieval_models else cfg.model_name,
         "state": status["state"] if status is not None else "ready",
         "model_loaded": (
             bool(status["model_loaded"]) if status is not None else cfg.model_loaded
@@ -225,6 +233,8 @@ async def healthz():
     close.
     """
     cfg = get_config()
+    retrieval_models = retrieval_model_ids(cfg)
+    model_name = retrieval_models[0] if retrieval_models else cfg.model_name
     lifecycle = cfg.primary_model_lifecycle
     lifecycle_status = lifecycle.snapshot() if lifecycle is not None else None
     model_loaded = (
@@ -243,14 +253,14 @@ async def healthz():
                 "status": "draining",
                 "ready": False,
                 "model_loaded": model_loaded,
-                "model_name": cfg.model_name,
+                "model_name": model_name,
             },
         )
     return {
         "status": "healthy",
         "ready": cfg.ready,
         "model_loaded": model_loaded,
-        "model_name": cfg.model_name,
+        "model_name": model_name,
     }
 
 
