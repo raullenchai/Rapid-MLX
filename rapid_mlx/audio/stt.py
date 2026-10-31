@@ -10,6 +10,9 @@ Supports:
 """
 
 import logging
+import math
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -503,6 +506,30 @@ def _audio_duration_seconds(audio_path: str) -> float | None:
     except Exception:  # noqa: BLE001
         pass
     try:
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    audio_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+            duration = float(result.stdout.strip())
+            if math.isfinite(duration) and duration >= 0:
+                return duration
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         # Last resort for compressed formats: use the same decoder mlx-audio
         # itself accepts.  This allocates a waveform only when cheap metadata
         # probes failed and Whisper actually returned timestamped segments.
@@ -861,6 +888,7 @@ class STTEngine:
             self.load()
 
         audio_path = str(audio_path)
+        source_duration = _audio_duration_seconds(audio_path)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
@@ -885,7 +913,7 @@ class STTEngine:
                 return TranscriptionResult(
                     text="",
                     language=None,
-                    duration=0.0,
+                    duration=source_duration,
                     segments=[],
                 )
 
@@ -967,7 +995,7 @@ class STTEngine:
                 if trim is not None and not trim.skipped and trim.has_speech:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
                 else:
-                    input_duration = _audio_duration_seconds(audio_path)
+                    input_duration = source_duration
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
                     segments,
@@ -990,8 +1018,8 @@ class STTEngine:
                     _shift_segment_time(seg, trim.offset_seconds)
 
             # Calculate duration from segments if available
-            duration = None
-            if segments:
+            duration = source_duration
+            if duration is None and segments:
                 last_seg = segments[-1] if segments else None
                 if last_seg:
                     duration = _segment_value(last_seg, "end")

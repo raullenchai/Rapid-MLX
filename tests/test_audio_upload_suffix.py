@@ -177,3 +177,28 @@ def test_ffmpeg_server_misconfiguration_is_not_a_client_decode_error(message):
     from rapid_mlx.routes.audio import _is_decode_error
 
     assert not _is_decode_error(RuntimeError(message))
+
+
+def test_alignment_aiff_is_converted_and_tempfiles_removed(upload_client, monkeypatch):
+    from rapid_mlx.routes import audio
+
+    client, paths, expected = upload_client
+    expected.update(payload=b"converted wav", suffix=".wav")
+    source_paths = []
+
+    def transcode(source, destination):
+        source_paths.append(Path(source))
+        assert source_paths[0].suffix == ".aiff"
+        assert source_paths[0].read_bytes() == b"original aiff"
+        Path(destination).write_bytes(expected["payload"])
+
+    monkeypatch.setattr(audio, "_transcode_aiff_to_wav", transcode)
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("audio.aiff", b"original aiff", "audio/aiff")},
+        data={"model": "aligner", "text": "hello"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(paths) == len(source_paths) == 1
+    assert not paths[0].exists()
+    assert not source_paths[0].exists()

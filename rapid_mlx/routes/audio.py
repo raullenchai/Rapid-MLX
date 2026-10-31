@@ -1045,7 +1045,7 @@ def _format_vtt_timestamp(seconds: float) -> str:
     return _format_srt_timestamp(seconds).replace(",", ".")
 
 
-def _iter_segments_for_subtitles(result) -> list[tuple[float, float, str]]:
+def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
     """Normalise the engine's ``segments`` list into ``(start, end, text)``.
 
     Whisper-style engines report dicts with ``start``/``end``/``text``
@@ -1054,7 +1054,7 @@ def _iter_segments_for_subtitles(result) -> list[tuple[float, float, str]]:
     when no segments are present so the SRT/VTT body is still valid.
     """
     segments = getattr(result, "segments", None) or []
-    out: list[tuple[float, float, str]] = []
+    out: list[tuple[float, float, str, Any]] = []
     for seg in segments:
         if isinstance(seg, dict):
             start = float(seg.get("start", 0.0) or 0.0)
@@ -1066,12 +1066,18 @@ def _iter_segments_for_subtitles(result) -> list[tuple[float, float, str]]:
             text = str(getattr(seg, "text", "") or "").strip()
         if not text:
             continue
-        out.append((start, end, text))
+        out.append((start, end, text, seg))
     if not out:
         duration = float(getattr(result, "duration", 0.0) or 0.0)
         text = str(getattr(result, "text", "") or "").strip()
-        out.append((0.0, duration, text))
+        out.append((0.0, duration, text, None))
     return out
+
+
+def _iter_segments_for_subtitles(result) -> list[tuple[float, float, str]]:
+    return [
+        (start, end, text) for start, end, text, _ in _segments_with_sources(result)
+    ]
 
 
 def _build_srt_body(result) -> str:
@@ -1221,19 +1227,47 @@ def _build_verbose_json_body(result, timestamp_granularities=None) -> dict:
         "task": "transcribe",
         "text": getattr(result, "text", ""),
         "language": getattr(result, "language", None),
-        "duration": getattr(result, "duration", None),
+        "duration": (
+            float(result.duration)
+            if getattr(result, "duration", None) is not None
+            else None
+        ),
     }
     if include_segments:
-        cues = _iter_segments_for_subtitles(result)
-        body["segments"] = [
-            {
-                "id": idx,
-                "start": start,
-                "end": end,
-                "text": text,
-            }
-            for idx, (start, end, text) in enumerate(cues)
-        ]
+        body["segments"] = []
+        for idx, (start, end, text, source) in enumerate(
+            _segments_with_sources(result)
+        ):
+            segment = {"id": idx, "start": start, "end": end, "text": text}
+            if source is not None:
+                for key in (
+                    "seek",
+                    "tokens",
+                    "temperature",
+                    "avg_logprob",
+                    "compression_ratio",
+                    "no_speech_prob",
+                ):
+                    value = (
+                        source.get(key)
+                        if isinstance(source, dict)
+                        else getattr(source, key, None)
+                    )
+                    if key == "tokens":
+                        if isinstance(value, (list, tuple)) and all(
+                            isinstance(v, (int, float))
+                            and not isinstance(v, bool)
+                            and math.isfinite(v)
+                            for v in value
+                        ):
+                            segment[key] = list(value)
+                    elif (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and math.isfinite(value)
+                    ):
+                        segment[key] = value
+            body["segments"].append(segment)
     if include_words:
         body["words"] = _iter_words_for_verbose(result)
     return body
@@ -1453,7 +1487,10 @@ def _audio_decode_error_envelope(exc: Exception) -> HTTPException:
         status_code=400,
         detail={
             "error": {
-                "message": f"could not decode audio file: {safe}",
+                "message": (
+                    f"could not decode audio file ({safe}). Supported formats: "
+                    f"{', '.join(_SUPPORTED_AUDIO_FORMATS)}."
+                ),
                 "type": "invalid_request_error",
                 "code": "invalid_audio_file",
                 "param": "file",
@@ -1462,22 +1499,25 @@ def _audio_decode_error_envelope(exc: Exception) -> HTTPException:
     )
 
 
-_AUDIO_UPLOAD_SUFFIXES = frozenset(
-    {
-        ".wav",
-        ".mp3",
-        ".mpga",
-        ".flac",
-        ".m4a",
-        ".m4b",
-        ".mp4",
-        ".aac",
-        ".ogg",
-        ".opus",
-        ".webm",
-        ".caf",
-    }
+_SUPPORTED_AUDIO_FORMATS = (
+    "flac",
+    "m4a",
+    "mp3",
+    "mp4",
+    "mpeg",
+    "mpga",
+    "ogg",
+    "opus",
+    "wav",
+    "webm",
+    "aac",
+    "caf",
+    "aiff",
 )
+_AUDIO_UPLOAD_SUFFIXES = frozenset(
+    f".{name}" for name in (*_SUPPORTED_AUDIO_FORMATS, "m4b", "aif", "aifc")
+)
+_AIFF_SUFFIXES = frozenset({".aiff", ".aif", ".aifc"})
 _AUDIO_UPLOAD_MIME_SUFFIXES = {
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
@@ -1497,6 +1537,10 @@ _AUDIO_UPLOAD_MIME_SUFFIXES = {
     "video/webm": ".webm",
     "audio/caf": ".caf",
     "audio/x-caf": ".caf",
+    "audio/aiff": ".aiff",
+    "audio/x-aiff": ".aiff",
+    "audio/aifc": ".aifc",
+    "audio/x-aifc": ".aifc",
 }
 
 
@@ -1537,6 +1581,48 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
                 ),
             )
         tmp.write(chunk)
+
+
+def _transcode_aiff_to_wav(source: str, destination: str) -> None:
+    """Convert AIFF using libsndfile before passing it to mlx-audio."""
+    import soundfile as sf
+
+    with (
+        sf.SoundFile(source) as audio,
+        sf.SoundFile(
+            destination,
+            mode="w",
+            samplerate=audio.samplerate,
+            channels=audio.channels,
+            format="WAV",
+            subtype="PCM_16",
+        ) as out,
+    ):
+        for block in audio.blocks(blocksize=65536, dtype="float32", always_2d=True):
+            out.write(block)
+
+
+def _cleanup_temp_audio(*paths: str | None) -> None:
+    for path in paths:
+        if path is not None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", path, cleanup_err
+                )
+
+
+async def _prepare_audio_for_engine(source: str, temp_paths: list[str]) -> str:
+    """Convert AIFF to WAV when needed and register it for cleanup."""
+    if os.path.splitext(source)[1].lower() not in _AIFF_SUFFIXES:
+        return source
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav:
+        temp_paths.append(wav.name)
+    await run_to_completion(_transcode_aiff_to_wav, source, wav.name)
+    return wav.name
 
 
 async def _run_stt_request(
@@ -1612,6 +1698,7 @@ async def _run_stt_request(
         )
 
     tmp_path: str | None = None
+    converted_paths: list[str] = []
     try:
         # SECURITY: Stream the upload to a bounded temp file *before* doing
         # anything expensive. Even a client that lies about / omits
@@ -1623,6 +1710,8 @@ async def _run_stt_request(
         ) as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
+
+        engine_path = await _prepare_audio_for_engine(tmp_path, converted_paths)
 
         from ..audio.stt import STTEngine
 
@@ -1661,7 +1750,7 @@ async def _run_stt_request(
                 model_name,
                 "infer",
                 _stt_engine.transcribe,
-                tmp_path,
+                engine_path,
                 **transcribe_kwargs,
             )
             _note_served_stt_engine(_stt_engine)
@@ -1758,15 +1847,7 @@ async def _run_stt_request(
             },
         )
     finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            except OSError as cleanup_err:
-                logger.warning(
-                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
-                )
+        _cleanup_temp_audio(tmp_path, *converted_paths)
 
 
 # ---------------------------------------------------------------------------
@@ -2210,12 +2291,15 @@ async def _run_alignment_request(
         )
 
     tmp_path: str | None = None
+    converted_paths: list[str] = []
     try:
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=_audio_upload_suffix(file)
         ) as tmp:
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
+
+        engine_path = await _prepare_audio_for_engine(tmp_path, converted_paths)
 
         # Weight load + alignment are seconds of blocking compute, so run
         # them on a worker thread — an ``async def`` handler that calls
@@ -2295,7 +2379,7 @@ async def _run_alignment_request(
                         ) == _canonical_model_id(model_name):
                             admission.commit()
             result = await run_to_completion(
-                _align_blocking, model_name, tmp_path, text, language
+                _align_blocking, model_name, engine_path, text, language
             )
             _note_served_stt_engine(_aligner_engine)
 
@@ -2372,15 +2456,7 @@ async def _run_alignment_request(
             },
         )
     finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            except OSError as cleanup_err:
-                logger.warning(
-                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
-                )
+        _cleanup_temp_audio(tmp_path, *converted_paths)
 
 
 @router.post("/v1/audio/transcriptions", dependencies=_AUDIO_POST_DEPENDENCIES)

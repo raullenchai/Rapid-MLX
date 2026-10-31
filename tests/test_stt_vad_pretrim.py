@@ -202,17 +202,20 @@ class TestSilenceReturnsEmpty:
     point of the guard. Whisper.generate must not be called; the
     returned result must be an empty ``TranscriptionResult``."""
 
-    def test_pure_silence_returns_empty_string(self, stub_engine):
+    def test_pure_silence_returns_empty_string(self, stub_engine, monkeypatch):
         eng, fake_vad, fake_whisper, path, *_ = stub_engine
         # VAD reports no speech at all.
         fake_vad._timestamps = []
+        from rapid_mlx.audio import stt as stt_mod
+
+        monkeypatch.setattr(stt_mod, "_audio_duration_seconds", lambda _: 1.5)
 
         result = eng.transcribe(path)
 
         assert result.text == ""
         assert result.segments == []
         assert result.language is None
-        assert result.duration == 0.0
+        assert result.duration == 1.5
         # Critical: Whisper was NOT invoked. This is the whole
         # anti-hallucination invariant.
         assert fake_whisper.calls == []

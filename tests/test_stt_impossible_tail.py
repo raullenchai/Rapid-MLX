@@ -3,6 +3,8 @@
 import wave
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_discards_only_segments_beyond_real_audio_duration():
     from rapid_mlx.audio.stt import _discard_impossible_whisper_tail
@@ -67,3 +69,28 @@ def test_wav_duration_does_not_require_optional_soundfile(tmp_path):
         wav.writeframes(b"\0\0" * 8_000)
 
     assert _audio_duration_seconds(str(path)) == 0.5
+
+
+def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
+    import soundfile
+    from mlx_audio.stt import utils
+
+    from rapid_mlx.audio import stt
+
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"not a wav")
+    monkeypatch.setattr(
+        soundfile, "info", lambda _: (_ for _ in ()).throw(RuntimeError())
+    )
+    monkeypatch.setattr(stt.shutil, "which", lambda name: "/usr/bin/ffprobe")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout="2.75\n")
+
+    monkeypatch.setattr(stt.subprocess, "run", run)
+    monkeypatch.setattr(utils, "load_audio", lambda _: pytest.fail("unexpected decode"))
+    assert stt._audio_duration_seconds(str(path)) == 2.75
+    assert calls[0][0][-1] == str(path)
+    assert calls[0][1]["timeout"] == 5
