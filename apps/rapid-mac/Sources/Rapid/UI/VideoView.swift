@@ -284,6 +284,7 @@ struct VideoView: View {
         VStack(spacing: RapidTheme.Space.md) {
             if job.status == .queued || job.status == .inProgress || viewModel.isLoadingPreview {
                 ProgressView(value: Double(job.progress), total: 100)
+                    .accessibilityLabel("Video generation progress")
                     .frame(maxWidth: 300)
             } else {
                 Image(systemName: job.status == .failed ? "exclamationmark.triangle" : "film")

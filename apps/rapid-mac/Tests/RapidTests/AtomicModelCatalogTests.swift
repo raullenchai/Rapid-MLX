@@ -92,7 +92,7 @@ struct AtomicModelCatalogTests {
         return String(decoding: output, as: UTF8.self)
     }
 
-    private static func mutated(
+    static func mutated(
         _ update: (inout [String: Any]) -> Void,
         resign: Bool = true
     ) -> String {

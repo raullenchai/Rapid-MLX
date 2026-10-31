@@ -221,6 +221,7 @@ struct ShareComputeShareTab: View {
                             .accessibilityIdentifier("ShareCompute.Setup.DownloadPicker")
                             if downloadState == .downloading {
                                 ProgressView(value: downloads.job(for: candidate.model.alias)?.progress.progressFraction).controlSize(.small).frame(width: 24)
+                                    .accessibilityLabel("Model download progress")
                                 Text("Downloading…").font(.rapid(size: 12))
                             } else {
                                 Button({ if case .failed = downloadState { return "Retry" }; return "Download" }()) {

@@ -5,6 +5,60 @@ import Testing
 @Suite("Sidebar resident unload")
 struct SidebarResidentUnloadTests {
     @MainActor
+    @Test("Audio lane names use catalog aliases and a short fallback")
+    func audioLaneNames() throws {
+        let json = AtomicModelCatalogTests.mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var models = snapshot["models"] as! [[String: Any]]
+            var source = models[4]["source"] as! [String: Any]
+            source["repo_id"] = "mlx-community/whisper-base-mlx"
+            models[4]["source"] = source
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases[4]["alias"] = "whisper-base"
+            snapshot["models"] = models
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+        let audio = try #require(ModelCatalog.atomicAudioEntries(json, cached: []))
+        let chat = ModelCatalog.parseAvailableJSON(json)
+        #expect(chat?.entries.contains(where: { $0.0 == "whisper-base" }) == false)
+        #expect(chat?.excluded.contains("whisper-base") == true)
+        #expect(audio.first { $0.alias == "whisper-base" }?.hfRepo == "mlx-community/whisper-base-mlx")
+        #expect(audio.first { $0.alias == "whisper-base" }?.audioFamily == "whisper")
+        let speech = ModelEntry(alias: "kokoro", hfRepo: "example/speech", sizeOnDisk: nil, cached: true)
+        #expect(SidebarView.audioLaneDisplayName(model: "mlx-community/whisper-base-mlx", lane: "stt", catalog: audio) == "Whisper Base")
+        #expect(SidebarView.audioLaneDisplayName(model: "WHISPER-BASE", lane: "stt", catalog: audio) == "Whisper Base")
+        #expect(SidebarView.audioLaneDisplayName(model: "other/WHISPER-BASE-MLX", lane: "stt", catalog: audio) == "Whisper Base")
+        #expect(SidebarView.audioLaneDisplayName(model: "EXAMPLE/SPEECH", lane: "tts", catalog: [speech]) == "kokoro")
+        #expect(SidebarView.audioLaneDisplayName(model: "other/unknown", lane: "stt", catalog: []) == "unknown")
+        #expect(SidebarView.audioLaneDisplayName(model: nil, lane: "tts", catalog: []) == "TTS")
+    }
+
+    @Test("Memory accessibility value spells out both quantities")
+    func memoryAccessibilityValue() {
+        let gib = UInt64(1) << 30
+        #expect(SidebarView.memoryAccessibilityValue(usedBytes: 6 * gib, limitBytes: 14 * gib) == "6 GB of 14 GB used")
+        #expect(SidebarView.memoryAccessibilityValue(usedBytes: 6 * gib, limitBytes: 0) == "6 GB used")
+    }
+
+    @MainActor
+    @Test("Memory meter exposes its spoken accessibility value")
+    func memoryMeterAccessibility() async throws {
+        let gib = UInt64(1) << 30
+        let used = 10 * gib
+        let limit = 32 * gib
+        let stage = GoldenStage(SidebarMemoryMeter(usedBytes: used, limitBytes: limit).frame(width: 200, height: 40))
+        let identifier = "Sidebar.Residency.Memory"
+        try await stage.waitForIdentifier(identifier)
+        #expect(stage.label(of: identifier) == "Model memory")
+        let description = stage.valueDescription(of: identifier)
+        #expect(description == SidebarView.memoryAccessibilityValue(usedBytes: used, limitBytes: limit))
+        #expect(description == "10 GB of 32 GB used")
+    }
+
+    @MainActor
     private final class UnloadProbe {
         var calls = 0
     }
