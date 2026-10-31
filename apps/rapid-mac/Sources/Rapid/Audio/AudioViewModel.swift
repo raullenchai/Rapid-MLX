@@ -78,10 +78,9 @@ final class AudioViewModel {
         Self.deduplicatedTranscriptionModels(transcriptionSelectionModels)
     }
 
-    /// Runtime selection keeps the catalog's stable order among cached models.
-    /// ``transcriptionModels`` is presentation-ranked (for example, a model
-    /// with a Recommended badge may appear first), and feeding that order
-    /// back into default selection silently changes the active checkpoint.
+    /// Selection uses stable deduplicated entries. An invalid selection defaults
+    /// to the recommended model, then a cached Whisper model in quality order,
+    /// then the first cached or first available model. Valid selections are kept.
     private var transcriptionSelectionModels: [ModelEntry] {
         let candidates = ModelSelectionPurpose.speechToText.entries(in: audioModels).filter {
             ModelCatalog.isDesktopAudioAliasVisible($0.alias)
@@ -479,22 +478,30 @@ final class AudioViewModel {
         if !transcriptionSelectionModels.contains(where: {
             $0.alias == selectedTranscriptionAlias
         }) {
-            selectedTranscriptionAlias = preferredAlias(
-                from: transcriptionSelectionModels,
-                preferred: ["whisper-small", "whisper-large-v3-turbo", "whisper-large-v3"]
-            )
+            selectedTranscriptionAlias = defaultTranscriptionAlias(from: transcriptionSelectionModels)
         }
         if !speechModels.contains(where: { $0.alias == selectedSpeechAlias }) {
-            selectedSpeechAlias = preferredAlias(
-                from: speechModels,
-                preferred: ["qwen3-tts-4bit", "qwen3-tts-6bit", "qwen3-tts"]
-            )
+            selectedSpeechAlias = defaultSpeechAlias(from: speechModels)
         }
     }
 
-    private func preferredAlias(from entries: [ModelEntry], preferred: [String]) -> String {
+    private func defaultTranscriptionAlias(from entries: [ModelEntry]) -> String {
+        if let recommended = entries.first(where: {
+            Self.transcriptionDetails(alias: $0.alias, family: $0.audioFamily).isRecommended
+        }) { return recommended.alias }
+        let whisperQualityOrder = [
+            "whisper-large-v3-turbo", "whisper-large-v3", "whisper-medium", "whisper-small", "whisper-base",
+        ]
+        for alias in whisperQualityOrder where entries.contains(where: { $0.alias == alias && $0.cached }) {
+            return alias
+        }
+        return entries.first(where: { $0.cached })?.alias ?? entries.first?.alias ?? ""
+    }
+
+    /// Speech selection is not persisted, so prefer cached models on each launch.
+    private func defaultSpeechAlias(from entries: [ModelEntry]) -> String {
         if let cached = entries.first(where: { $0.cached }) { return cached.alias }
-        for alias in preferred where entries.contains(where: { $0.alias == alias }) { return alias }
+        for alias in ["qwen3-tts-4bit", "qwen3-tts-6bit", "qwen3-tts"] where entries.contains(where: { $0.alias == alias }) { return alias }
         return entries.first?.alias ?? ""
     }
 
