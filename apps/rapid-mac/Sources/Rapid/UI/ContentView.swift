@@ -798,8 +798,7 @@ struct ContentView: View {
                 },
                 isStarting: { alias in
                     if case .starting(let startingAlias) = server.state, startingAlias == alias { return true }
-                    return autoStartPendingDownload?.alias == alias
-                        || (quickstartVisible && quickstart.selection.alias == alias)
+                    return quickstartVisible && quickstart.selection.alias == alias
                 }
             )
             if showLogs {

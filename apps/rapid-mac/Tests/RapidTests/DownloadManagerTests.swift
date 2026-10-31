@@ -345,6 +345,30 @@ struct DownloadManagerTests {
         }
     }
 
+    @Test("Disk gate stderr reaches the failed download job")
+    func diskGateFailureReachesJob() {
+        let mgr = DownloadManager()
+        let alias = "qwen3-0.6b-4bit"
+        let job = mgr._testingSeedJob(alias: alias)
+        for line in [
+            "  Error: Insufficient disk space for download.",
+            "    Download size:    34.9 GB",
+            "    Free space:        1.8 GB  (/)",
+            "    Need to free:     36.6 GB  (includes 10% working space for the download)",
+            "  Suggestions:",
+            "    - Free disk space, or set HF_HOME to a drive with more room",
+            "    - Pick a smaller variant: rapid-mlx models",
+            "    - Bypass this check (download will likely fail mid-way): --force-disk-check",
+        ] { mgr._testingIngestStderr(alias: alias, line: line) }
+        mgr._testingFinish(alias: alias, status: 1, reason: .exit)
+        #expect(job.failureKind == .downloadFailed)
+        if case .failed(let message) = job.status {
+            #expect(message == "There isn't enough disk space for this model. Free space, then retry to resume.")
+        } else {
+            Issue.record("Expected a failed pull")
+        }
+    }
+
     @Test("Signal exit (SIGKILL) lands as failed with a 'signal' phrasing")
     func signalExitMessageDistinguishedFromExit() {
         let mgr = DownloadManager()
