@@ -42,6 +42,7 @@ from typing import TextIO
 from ..doctor.runner import REPO_ROOT, python_executable
 
 _BOOT_LOG_TAIL_LINES = 30
+_ECHO_JOIN_TIMEOUT_S = 2.0
 
 
 class ServerStartFailed(RuntimeError):  # noqa: N818 — domain-specific error name
@@ -196,15 +197,21 @@ def serve(
                         position = reader.tell()
                         line = reader.readline()
                         if line.endswith("\n"):
-                            echo_log.write(line)
-                            echo_log.flush()
+                            try:
+                                echo_log.write(line)
+                                echo_log.flush()
+                            except (OSError, ValueError):
+                                return
                         else:
                             reader.seek(position)
                             stop_echo.wait(0.2)
                     remaining = reader.read()
                     if remaining:
-                        echo_log.write(remaining)
-                        echo_log.flush()
+                        try:
+                            echo_log.write(remaining)
+                            echo_log.flush()
+                        except (OSError, ValueError):
+                            return
 
             echo_thread = threading.Thread(target=echo_output, daemon=True)
             echo_thread.start()
@@ -254,7 +261,7 @@ def serve(
             try:
                 if echo_thread is not None:
                     stop_echo.set()
-                    echo_thread.join()
+                    echo_thread.join(timeout=_ECHO_JOIN_TIMEOUT_S)
             finally:
                 log_fh.close()
                 if tmp_log is not None:

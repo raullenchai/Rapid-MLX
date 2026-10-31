@@ -8,6 +8,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,55 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         pass
     assert ("ENGINE-DEBUG-LINE" in output.getvalue()) is echo
     assert "ENGINE-DEBUG-LINE" not in capsys.readouterr().err
+
+
+def test_serve_teardown_with_blocked_echo(monkeypatch):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    monkeypatch.setattr(_server, "_ECHO_JOIN_TIMEOUT_S", 0.1, raising=False)
+    entered = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    class BlockingStream:
+        def write(self, text):
+            entered.set()
+            release.wait()
+
+        def flush(self):
+            pass
+
+    def run():
+        try:
+            with _server.serve("fake", echo_log=BlockingStream()):
+                assert entered.wait(3), "echo did not start"
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        worker.join(timeout=6)
+        assert not worker.is_alive(), "server teardown blocked on echo"
+        assert not errors
+    finally:
+        release.set()
+        worker.join(timeout=3)
 
 
 @pytest.mark.parametrize(
