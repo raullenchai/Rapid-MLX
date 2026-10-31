@@ -417,7 +417,7 @@ def test_cli_interrupt(monkeypatch, capsys):
 
 
 def test_cli_sigterm_restores_handler(monkeypatch, capsys):
-    previous = signal.getsignal(signal.SIGTERM)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     def terminate(*args, **kwargs):
         os.kill(os.getpid(), signal.SIGTERM)
@@ -426,7 +426,7 @@ def test_cli_sigterm_restores_handler(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_local", terminate)
     monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     assert cli.benchmark_command(args()) == 143
-    assert signal.getsignal(signal.SIGTERM) == previous
+    assert all(signal.getsignal(sig) == handler for sig, handler in previous.items())
     assert "Traceback" not in capsys.readouterr().err
 
 
@@ -443,3 +443,65 @@ def test_cli_interrupt_json(monkeypatch, capsys):
         "error": "benchmark cancelled",
         "cancelled": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("sig", "baseline"),
+    [(signal.SIGINT, True), (signal.SIGTERM, True), (signal.SIGINT, False)],
+)
+def test_cli_cancels_blocked_text_load(tmp_path, sig, baseline):
+    probe = subprocess.run(
+        [sys.executable, "-c", "import mlx.core"], capture_output=True, check=False
+    )
+    if probe.returncode:
+        pytest.skip("MLX cannot load in this environment")
+    script = r"""
+import os, sys, threading
+from rapid_mlx.community_bench import local_runner, workspace
+from rapid_mlx import cli
+import rapid_mlx.utils.tokenizer as tokenizer
+
+def block(*args, **kwargs):
+    print("LOADING", file=sys.__stdout__, flush=True)
+    threading.Event().wait()
+
+local_runner.collect = lambda: (None, None)
+local_runner.run_conditions = lambda: None
+local_runner.resolve_provenance = lambda: None
+local_runner.model_is_cached = lambda *args: True
+local_runner._ensure_model_downloaded = lambda *args: None
+workspace.benchmark_runtime_readiness = lambda *args: {"status": "ready"}
+tokenizer.load_model_with_fallback = block
+if os.environ["TEST_BASELINE"] == "0":
+    import rapid_mlx.server as server
+    server.load_model = block
+sys.argv = ["rapid-mlx", "benchmark", "run", "lfm2.5-2.6b-4bit"]
+if os.environ["TEST_BASELINE"] == "1":
+    sys.argv.append("--baseline")
+cli.main()
+"""
+    env = os.environ.copy()
+    env.update(
+        RAPID_MLX_HOME=str(tmp_path),
+        XDG_STATE_HOME=str(tmp_path),
+        RAPID_MLX_TELEMETRY="0",
+        DO_NOT_TRACK="1",
+        TEST_BASELINE="1" if baseline else "0",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    try:
+        ready, _, _ = select.select([proc.stdout], [], [], 30)
+        assert ready, "loader did not start"
+        assert proc.stdout.readline().strip() == "LOADING"
+        proc.send_signal(sig)
+        assert proc.wait(timeout=10) == 128 + sig
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()

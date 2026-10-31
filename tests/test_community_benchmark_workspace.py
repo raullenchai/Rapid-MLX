@@ -3175,22 +3175,14 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
 
     archive = LocalRunArchive(tmp_path)
     shutdown_calls: list[tuple[bool, bool]] = []
-    executor_type = local_runner.concurrent.futures.ThreadPoolExecutor
+    executor_type = local_runner._TrackingExecutor
 
-    class RecordingExecutor:
-        def __init__(self, *args, **kwargs) -> None:
-            self.inner = executor_type(*args, **kwargs)
-
-        def submit(self, *args, **kwargs):
-            return self.inner.submit(*args, **kwargs)
-
+    class RecordingExecutor(executor_type):
         def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
             shutdown_calls.append((wait, cancel_futures))
-            self.inner.shutdown(wait=wait, cancel_futures=cancel_futures)
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr(
-        local_runner.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor
-    )
+    monkeypatch.setattr(local_runner, "_TrackingExecutor", RecordingExecutor)
     _mock_local_context(
         monkeypatch, "text_generation", "mlx-community/example-text-model"
     )

@@ -158,6 +158,36 @@ class LocalBenchmarkError(RuntimeError):
         self.saved = saved
 
 
+_abandoned_native_worker = False
+
+
+def abandoned_native_worker() -> bool:
+    return _abandoned_native_worker
+
+
+def _cancelling() -> bool:
+    return isinstance(
+        sys.exc_info()[1],
+        (
+            KeyboardInterrupt,
+            SystemExit,
+            BenchmarkCancelledError,
+            asyncio.CancelledError,
+        ),
+    )
+
+
+class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.futures = []
+
+    def submit(self, *args, **kwargs):
+        future = super().submit(*args, **kwargs)
+        self.futures.append(future)
+        return future
+
+
 class BenchmarkCancelledError(RuntimeError):
     """The local runtime reported a terminal user/system cancellation."""
 
@@ -1248,12 +1278,18 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         self._requests = {}
         self._active = {}
         self.timed_out = False
+        self._futures = []
+
+    def _submit(self, *args):
+        future = self._handle.executor.submit(*args)
+        self._futures.append(future)
+        return future
 
     async def abort_request(self, request_id):
         self._requests.pop(request_id, None)
         iterator = self._active.pop(request_id, None)
         if iterator is not None:
-            future = self._handle.executor.submit(iterator.close)
+            future = self._submit(iterator.close)
             future.add_done_callback(
                 lambda done: None if done.cancelled() else done.exception()
             )
@@ -1263,11 +1299,8 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
 
         prompt, sampling = self._requests.pop(request_id)
         loop = asyncio.get_running_loop()
-        iterator = await loop.run_in_executor(
-            self._handle.executor,
-            self._handle.token_stream,
-            prompt,
-            sampling.max_tokens,
+        iterator = await asyncio.wrap_future(
+            self._submit(self._handle.token_stream, prompt, sampling.max_tokens)
         )
         self._active[request_id] = iterator
         deadline = None if timeout is None else loop.time() + timeout
@@ -1277,8 +1310,8 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
                 remaining = None if deadline is None else deadline - loop.time()
                 if remaining is not None and remaining <= 0:
                     raise asyncio.TimeoutError
-                future = loop.run_in_executor(
-                    self._handle.executor, _next_generation_chunk, iterator
+                future = asyncio.wrap_future(
+                    self._submit(_next_generation_chunk, iterator)
                 )
                 has_chunk, chunk = (
                     await asyncio.wait_for(future, remaining)
@@ -1408,7 +1441,16 @@ async def _measure_dedicated(
                 )
         return measurements, context, identity, language
     finally:
-        handle.close(wait=adapter is None or not adapter.timed_out)
+        global _abandoned_native_worker
+        cancelling = _cancelling()
+        abandon = (
+            cancelling
+            and adapter is not None
+            and any(future.running() for future in adapter._futures)
+        )
+        if abandon:
+            _abandoned_native_worker = True
+        handle.close(wait=not abandon and (adapter is None or not adapter.timed_out))
 
 
 def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
@@ -1697,7 +1739,7 @@ async def _text_measurements(
                 resolve_product_paths,
             )
 
-            executor = concurrent.futures.ThreadPoolExecutor(
+            executor = _TrackingExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
                 initializer=_init_mlx_step_thread,
@@ -1785,7 +1827,7 @@ async def _text_measurements(
             serving_engine, tokenizer = await start_serving_engine()
             loaded_source, model = "", None
         else:
-            executor = concurrent.futures.ThreadPoolExecutor(
+            executor = _TrackingExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
                 initializer=_init_mlx_step_thread,
@@ -1954,16 +1996,14 @@ async def _text_measurements(
                         exc_info=True,
                     )
         finally:
-            # ThreadPoolExecutor workers are non-daemon and Python joins them
-            # again during interpreter shutdown. Leaving this executor live can
-            # make the CLI appear finished while its process (and Desktop memory
-            # lease) remains stuck. AsyncEngineCore has exited at this point, so
-            # cancel work that never started and synchronously reap the owned
-            # worker. The Desktop's outer CLI process group remains the hard
-            # cancellation boundary for native MLX calls that cannot be
-            # interrupted in-process.
             if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
+                global _abandoned_native_worker
+                abandon = _cancelling() and any(
+                    future.running() for future in executor.futures
+                )
+                if abandon:
+                    _abandoned_native_worker = True
+                executor.shutdown(wait=not abandon, cancel_futures=True)
 
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []
@@ -2079,6 +2119,9 @@ def run_local(
     per-round throughput, time estimate). It is never given the result and
     nothing is written to stdout here, so ``--json`` callers stay clean.
     """
+
+    global _abandoned_native_worker
+    _abandoned_native_worker = False
 
     if inherit_process_group and not _is_dedicated_process_group_leader():
         raise LocalBenchmarkError(
