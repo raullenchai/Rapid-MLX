@@ -11727,6 +11727,16 @@
         }
       }
     },
+    "Checking runtime…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查运行时…"
+          }
+        }
+      }
+    },
     "Checking this Mac…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13164,6 +13174,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "长回复"
+          }
+        }
+      }
+    },
+    "Looking for models this Mac can benchmark." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查找这台 Mac 可以跑分的模型。"
           }
         }
       }
