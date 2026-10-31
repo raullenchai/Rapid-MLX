@@ -15239,6 +15239,18 @@ def upgrade_command(args):
         )
         print("  Run `brew upgrade rapid-mlx` once it appears — usually within a day.")
         return
+    target = latest
+    stable = vc._parse_version(release.brew_stable) if release.brew_stable else None
+    if (
+        info.method == "brew"
+        and stable is not None
+        and lat is not None
+        and stable < lat
+    ):
+        target = release.brew_stable
+        print(
+            f"  Homebrew offers {target} now; {latest} will follow once the formula is updated."
+        )
     print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
     print(f"  Command:  {info.upgrade_command}")
     print()
@@ -15309,20 +15321,23 @@ def upgrade_command(args):
         sys.exit(result.returncode)
     verified = vc.installed_version_in_fresh_process(info)
     if verified is None:
-        print("  Could not confirm the installed version; run `rapid-mlx --version`.")
+        print(
+            "  Could not confirm the installed version; run `rapid-mlx --version` to check."
+        )
+        sys.exit(1)
     elif (
-        lat is not None
+        vc._parse_version(target) is not None
         and vc._parse_version(verified) is not None
-        and vc._parse_version(verified) >= lat
+        and vc._parse_version(verified) >= vc._parse_version(target)
     ):
         print(f"  ✓ rapid-mlx is now {verified}.")
     else:
         print(
-            f"  ✗ The upgrade command finished, but rapid-mlx is still {verified} (latest is {latest})."
+            f"  ✗ The upgrade command finished, but rapid-mlx is still {verified} (latest is {target})."
         )
         if info.method == "brew":
             print(
-                f"  Homebrew may not offer {latest} yet. Run `brew update && brew upgrade rapid-mlx`, or try again later."
+                f"  Homebrew may not offer {target} yet. Run `brew update && brew upgrade rapid-mlx`, or try again later."
             )
         else:
             print(

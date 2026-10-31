@@ -1368,20 +1368,76 @@ def test_cache_optional_fields(monkeypatch):
     assert vc._read_cache()["requires_python"] == ">=3.12"
     assert vc._read_cache()["brew_stable"] == "1.0.0"
     vc._cache_path().write_text(
-        json.dumps({"latest": "1.0.1", "requires_python": [], "brew_stable": "bad"})
+        json.dumps(
+            {
+                "latest": "1.0.1",
+                "requires_python": [],
+                "brew_stable": "bad",
+                "requires_python_checked": "yes",
+            }
+        )
     )
     cache = vc._read_cache()
     assert cache == {"latest": "1.0.1"}
     monkeypatch.setattr(
         vc,
         "_fetch_requires_python",
-        lambda version: pytest.fail("cache hit refetched spec"),
+        lambda version: None,
     )
     monkeypatch.setattr(vc, "_fetch_brew_formula_version", lambda: "1.0.1")
     release = vc.get_release_info(need_brew=True)
     assert release.requires_python is None
     assert release.brew_stable == "1.0.1"
     assert vc._read_cache()["brew_stable"] == "1.0.1"
+
+
+@pytest.mark.parametrize("spec", [None, ">=3.12"])
+def test_cached_missing_python_metadata_fetched_once(monkeypatch, spec):
+    import os
+    import time
+
+    path = vc._cache_path()
+    timestamp = int(time.time()) - 100
+    path.write_text(
+        json.dumps({"latest": "1.0.1", "brew_stable": "1.0.0", "ts": timestamp})
+    )
+    os.utime(path, (timestamp, timestamp))
+    fetch = MagicMock(return_value=spec)
+    monkeypatch.setattr(vc, "_fetch_requires_python", fetch)
+    assert vc.get_release_info().requires_python == spec
+    assert vc.get_release_info().requires_python == spec
+    fetch.assert_called_once_with("1.0.1")
+    cache = vc._read_cache()
+    assert cache["ts"] == timestamp
+    assert path.stat().st_mtime == timestamp
+    assert cache["brew_stable"] == "1.0.0"
+    assert cache["requires_python_checked"] is True
+
+
+def test_fresh_cache_marks_python_metadata_checked(monkeypatch):
+    monkeypatch.setattr(vc, "_fetch_latest", lambda: "1.0.1")
+    fetch = MagicMock(return_value=None)
+    monkeypatch.setattr(vc, "_fetch_requires_python", fetch)
+    assert vc.get_release_info().requires_python is None
+    assert vc.get_release_info().requires_python is None
+    fetch.assert_called_once_with("1.0.1")
+    assert vc._read_cache()["requires_python_checked"] is True
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        (">=3.10,>=3.12", "3.12"),
+        (">3.11", "3.12"),
+        ("==3.13.*", "3.13"),
+        ("<4", "3.12"),
+    ],
+)
+def test_python_upgrade_instructions_highest_floor(spec, expected):
+    info = vc.InstallInfo("uv", "upgrade", ["upgrade"])
+    assert vc.python_upgrade_instructions(info, spec) == [
+        f"uv tool upgrade --python {expected} rapid-mlx"
+    ]
 
 
 @pytest.mark.parametrize(

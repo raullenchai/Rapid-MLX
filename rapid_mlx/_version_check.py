@@ -187,6 +187,8 @@ def _read_cache() -> dict | None:
             brew = data.get("brew_stable")
             if not isinstance(brew, str) or not _CACHED_VERSION_RE.fullmatch(brew):
                 data.pop("brew_stable", None)
+            if not isinstance(data.get("requires_python_checked"), bool):
+                data.pop("requires_python_checked", None)
             return data
         return None
     except (OSError, json.JSONDecodeError):
@@ -194,18 +196,28 @@ def _read_cache() -> dict | None:
 
 
 def _write_cache(
-    latest: str, requires_python: str | None = None, brew_stable: str | None = None
+    latest: str,
+    requires_python: str | None = None,
+    brew_stable: str | None = None,
+    ts: int | float | None = None,
 ) -> None:
     p = _cache_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
+        mtime = p.stat().st_mtime if ts is not None and p.exists() else None
         with p.open("w") as f:
-            data = {"latest": latest, "ts": int(time.time())}
+            data = {
+                "latest": latest,
+                "ts": int(time.time()) if ts is None else ts,
+                "requires_python_checked": True,
+            }
             if requires_python is not None:
                 data["requires_python"] = requires_python
             if brew_stable is not None:
                 data["brew_stable"] = brew_stable
             json.dump(data, f)
+        if mtime is not None:
+            os.utime(p, (mtime, mtime))
     except OSError:
         # Cache write failure is non-fatal — we'll just refetch next time.
         pass
@@ -384,10 +396,22 @@ def get_release_info(
         latest = cached["latest"]
         spec = cached.get("requires_python")
         brew = cached.get("brew_stable")
+        rewrite = False
+        if spec is None and not cached.get("requires_python_checked", False):
+            spec = _fetch_requires_python(latest)
+            rewrite = True
         if need_brew and brew is None:
             brew = _fetch_brew_formula_version()
             if brew is not None:
-                _write_cache(latest, spec, brew)
+                rewrite = True
+        if rewrite:
+            ts = cached.get("ts")
+            if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                try:
+                    ts = _cache_path().stat().st_mtime
+                except OSError:
+                    return ReleaseInfo(latest, spec, brew)
+            _write_cache(latest, spec, brew, ts=ts)
         return ReleaseInfo(latest, spec, brew)
     latest = _fetch_latest()
     if latest is None:
@@ -641,12 +665,13 @@ class InstallInfo:
 
 
 def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list[str]:
-    bounds = re.findall(r"(?:^|,)\s*>=\s*(\d+)\.(\d+)", requires_python)
-    minor = (
-        ".".join(min(bounds, key=lambda p: (int(p[0]), int(p[1]))))
-        if bounds
-        else "3.12"
-    )
+    bounds = re.findall(r"(?:^|,)\s*(>=|>|==)\s*(\d+)\.(\d+)(\.\*)?", requires_python)
+    versions = [
+        (int(major), int(minor) + (op == ">"))
+        for op, major, minor, wildcard in bounds
+        if op != "==" or wildcard
+    ]
+    minor = ".".join(map(str, max(versions))) if versions else "3.12"
     installer = "curl -fsSL https://rapidmlx.com/install.sh | bash"
     if info.method == "brew":
         return ["brew upgrade rapid-mlx"]

@@ -245,7 +245,12 @@ def test_python_floor_prevents_upgrade(monkeypatch, capsys, method, guidance, dr
         ("pip", "1.0.0", 1, "still 1.0.0"),
         ("pip", "1.0.1", 0, "now 1.0.1"),
         ("brew", "1.0.0", 1, "brew update && brew upgrade rapid-mlx"),
-        ("pip", None, 0, "Could not confirm"),
+        (
+            "pip",
+            None,
+            1,
+            "Could not confirm the installed version; run `rapid-mlx --version` to check.",
+        ),
     ],
 )
 def test_upgrade_verifies_result(monkeypatch, capsys, method, verified, code, expected):
@@ -287,3 +292,32 @@ def test_brew_lag_does_not_run(monkeypatch, capsys):
         upgrade_command(SimpleNamespace(yes=True, dry_run=False))
     run.assert_not_called()
     assert "Homebrew has not published it yet" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verified,code", [("1.0.1", 0), ("1.0.0", 1)])
+def test_brew_upgrade_targets_formula_version(monkeypatch, capsys, verified, code):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.2", brew_stable="1.0.1"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade rapid-mlx", ["brew"]),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: verified)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == code
+    out = capsys.readouterr().out
+    assert (
+        "Homebrew offers 1.0.1 now; 1.0.2 will follow once the formula is updated."
+        in out
+    )
+    if code:
+        assert "(latest is 1.0.1)" in out
