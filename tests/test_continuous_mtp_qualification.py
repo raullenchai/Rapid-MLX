@@ -642,3 +642,187 @@ def test_qualification_prompts_are_lane_specific_and_stable() -> None:
     prompts = [module._prompt_for_lane(lane) for lane in range(4)]
     assert len(set(prompts)) == 4
     assert prompts == [module._prompt_for_lane(lane) for lane in range(4)]
+
+
+@pytest.mark.parametrize(
+    "initially_cached,opt_out", [(False, False), (True, False), (False, True)]
+)
+def test_serve_first_download_resolves_auto_mtp(
+    monkeypatch, capsys, initially_cached, opt_out
+):
+    from rapid_mlx import cli
+
+    args = _parsed_serve_args(
+        "qwen3.8-27b-4bit", *(["--no-spec-decode"] if opt_out else [])
+    )
+    cached = initially_cached
+    repo = "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX"
+
+    def config(_model):
+        return (
+            {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1} if cached else None,
+            None,
+        )
+
+    def download(*_args, **_kwargs):
+        nonlocal cached
+        cached = True
+        if opt_out:
+            raise _StopServeError
+
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.server",
+        SimpleNamespace(_resolve_api_key=lambda key: key),
+    )
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", config)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_cached_hf_config",
+        lambda *_: (None, f"{repo} is not in the local cache"),
+    )
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda _: "/cached/mtp")
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_warn_vision_text_only_degrade", lambda *a, **k: None)
+
+    def stop(_level):
+        raise _StopServeError
+
+    monkeypatch.setattr(cli, "_configure_bootstrap_logging", stop)
+    with pytest.raises(_StopServeError):
+        cli.serve_command(args)
+    assert "Automatic MTP skipped" not in capsys.readouterr().err
+    assert args.spec_decode == ("none" if opt_out else "mtp")
+    assert (args.speculative_config is None) == opt_out
+    assert not getattr(args, "_auto_mtp_deferred", False)
+
+
+def test_serve_unreadable_cached_target_skips_once_after_download(monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    args = _parsed_serve_args("qwen3.8-27b-4bit")
+    downloaded = False
+
+    def download(*_args, **_kwargs):
+        nonlocal downloaded
+        assert "Automatic MTP skipped" not in capsys.readouterr().err
+        downloaded = True
+
+    def cached_config(*_args):
+        if not downloaded:
+            return None, "example/model is not in the local cache"
+        return None, "cached target config could not be read"
+
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.server",
+        SimpleNamespace(_resolve_api_key=lambda key: key),
+    )
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", lambda _: (None, None))
+    monkeypatch.setattr(cli, "_resolve_cached_hf_config", cached_config)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_warn_vision_text_only_degrade", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli,
+        "_configure_bootstrap_logging",
+        lambda _: (_ for _ in ()).throw(_StopServeError()),
+    )
+    with pytest.raises(_StopServeError):
+        cli.serve_command(args)
+    assert downloaded
+    assert (
+        capsys.readouterr().err.count(
+            "Automatic MTP skipped: cached target config could not be read; using plain decode."
+        )
+        == 1
+    )
+    assert args.spec_decode == "none"
+
+
+def test_unreadable_cached_target_skips_on_first_pass(monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    args = _parsed_serve_args("qwen3.8-27b-4bit")
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", lambda _: (None, None))
+    monkeypatch.setattr(cli, "_resolve_cached_hf_config", lambda *_: (None, None))
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert (
+        "Automatic MTP skipped: cached target config could not be read; using plain decode."
+        in capsys.readouterr().err
+    )
+    assert not getattr(args, "_auto_mtp_deferred", False)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ("--speculative-config", '{"method":"mtp","num_speculative_tokens":2}'),
+        ("--enable-mtp", "--mtp-num-draft-tokens", "2"),
+    ],
+)
+def test_retry_restores_explicit_speculative_options(monkeypatch, options):
+    from rapid_mlx import cli
+
+    args = _parsed_serve_args("qwen3.8-27b-4bit", *options)
+    cached = False
+    retry_states = []
+    normalize = cli._normalize_speculative_config_or_exit
+
+    def config(_model):
+        return (
+            {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1} if cached else None,
+            None,
+        )
+
+    def download(*_args, **_kwargs):
+        nonlocal cached
+        cached = True
+
+    def record_normalization(args):
+        retry_states.append(getattr(args, "_auto_mtp_retry", False))
+        normalize(args)
+        # Explicit options bypass automatic detection, so simulate an earlier
+        # deferred decision to exercise their restoration through serve's retry.
+        if len(retry_states) == 1:
+            args._auto_mtp_deferred = True
+
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.server",
+        SimpleNamespace(_resolve_api_key=lambda key: key),
+    )
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", config)
+    monkeypatch.setattr(
+        cli, "_resolve_cached_hf_config", lambda *_: (None, "not in local cache")
+    )
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda _: "/cached/mtp")
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_warn_vision_text_only_degrade", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_normalize_speculative_config_or_exit", record_normalization
+    )
+    monkeypatch.setattr(
+        cli,
+        "_configure_bootstrap_logging",
+        lambda _: (_ for _ in ()).throw(_StopServeError()),
+    )
+
+    with pytest.raises(_StopServeError):
+        cli.serve_command(args)
+
+    assert cached
+    assert retry_states == [False, True]
+    assert args.spec_decode == "mtp"
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.num_speculative_tokens == 2

@@ -138,9 +138,9 @@ enum ModelSizing {
     /// Residency charge sent to the server. Downloaded bytes are better
     /// evidence for image aliases whose names carry no parameter count; add a
     /// modest runtime margin and keep the ordinary model estimate as a floor.
-    static func residentEstimateGB(alias: String, sizeText: String? = nil) -> Double {
+    static func residentEstimateGB(alias: String, sizeText: String? = nil, sizeBytes: Int64? = nil) -> Double {
         let heuristic = estimate(alias: alias).totalGB
-        guard let bytes = ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
+        guard let bytes = sizeBytes.flatMap({ $0 > 0 ? $0 : nil }) ?? ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
         else { return heuristic }
         let diskGiB = Double(bytes) / Double(UInt64(1) << 30)
         return max(heuristic, diskGiB * 1.25 + 0.5)
@@ -152,9 +152,10 @@ enum ModelSizing {
     static func imageResidentEstimateGB(
         alias: String,
         sizeText: String? = nil,
+        sizeBytes: Int64? = nil,
         minimumMemoryGB: Double? = nil
     ) -> Double {
-        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText)
+        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText, sizeBytes: sizeBytes)
         guard let minimumMemoryGB,
               minimumMemoryGB.isFinite,
               minimumMemoryGB > 0 else { return artifactEstimate }
@@ -392,24 +393,27 @@ enum ModelSizing {
         }
 
         var message: String {
-            let need = max(1, Int(footprintGB.rounded()))
-            let free = max(0, Int(freeGB.rounded()))
+            func size(_ gib: Double) -> String {
+                DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: max(0, gib) * Double(1 << 30)))
+            }
+            let need = size(footprintGB)
+            let free = size(freeGB)
             guard totalGB > 0 else {
-                let facts = "\(alias) needs about \(need) GB, and about \(free) GB is free right now."
+                let facts = "\(alias) needs about \(need), and about \(free) is free right now."
                 return facts + " Close some apps or pick a smaller model before loading it."
             }
             let usedGB = max(0, totalGB - freeGB)
             let projectedPercent = Int(((usedGB + footprintGB) / totalGB * 100).rounded())
             let threshold = severity == .unsafe ? 100.0 : 95.0
             let toFree = max(0, usedGB + footprintGB - threshold / 100 * totalGB)
-            let freeAction = max(1, Int(toFree.rounded(.up)))
+            let freeAction = size(max(1, toFree.rounded(.up)))
             let release = plannedReleaseGB > 0
-                ? "The switch accounts for about \(max(1, Int(plannedReleaseGB.rounded()))) GB released from the previous model. "
+                ? "The switch accounts for about \(size(plannedReleaseGB)) released from the previous model. "
                 : ""
-            let facts = "Loading it would then put memory use at about \(projectedPercent)% of \(Int(totalGB.rounded())) GB."
+            let facts = "Loading it would then put memory use at about \(projectedPercent)% of \(size(totalGB))."
             switch severity {
             case .unsafe:
-                return release + facts + " That is more memory than this Mac has. Free about \(freeAction) GB by closing some apps, or pick a smaller model."
+                return release + facts + " That is more memory than this Mac has. Free about \(freeAction) by closing some apps, or pick a smaller model."
             case .tight:
                 return release + facts + " It should load but may use memory compression or swap under longer chats."
             case .safe:

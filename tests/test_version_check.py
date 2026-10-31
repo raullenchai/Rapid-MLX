@@ -557,16 +557,24 @@ def test_non_tty_serve_warning_prints_only_to_stderr(monkeypatch, capsys):
     assert captured.err.strip() == vc.format_staleness_warning("1.0.0", "1.1.0")
 
 
-def test_only_audio_and_text_serve_opt_into_non_tty_warning():
-    """Keep daemon logging scoped to both serve lanes, not every CLI command."""
+def test_all_serve_lanes_opt_into_non_tty_warning():
+    """Keep daemon logging scoped to all serve lanes, not every CLI command."""
     cli_source = Path(vc.__file__).with_name("cli.py").read_text()
     call = "print_staleness_warning_if_any(allow_non_tty=True)"
 
-    assert cli_source.count(call) == 2
+    assert cli_source.count(call) == 4
     audio_source = cli_source.split("def _serve_audio_mode", 1)[1].split("\ndef ", 1)[0]
     text_source = cli_source.split("def serve_command", 1)[1].split("\ndef ", 1)[0]
+    retrieval_source = cli_source.split("def _serve_retrieval_only_mode", 1)[1].split(
+        "\ndef ", 1
+    )[0]
+    cua_source = cli_source.split("def _serve_cua_only_mode", 1)[1].split("\ndef ", 1)[
+        0
+    ]
     assert call in audio_source
     assert call in text_source
+    assert call in retrieval_source
+    assert call in cua_source
 
 
 # --- print_staleness_warning_if_any never raises ---------------------

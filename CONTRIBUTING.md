@@ -10,7 +10,7 @@ git clone https://github.com/raullenchai/Rapid-MLX.git
 cd Rapid-MLX
 # Install uv if needed: https://docs.astral.sh/uv/getting-started/installation/
 curl -LsSf https://astral.sh/uv/install.sh | sh
-~/.local/bin/uv venv --python 3.11 .venv
+~/.local/bin/uv venv --python 3.12 .venv
 source .venv/bin/activate
 ~/.local/bin/uv pip install --python .venv/bin/python -e ".[test]" ruff
 
@@ -18,7 +18,7 @@ source .venv/bin/activate
 rapid-mlx serve qwen3.5-4b-4bit --port 8000
 ```
 
-**Requirements:** Python 3.11+, macOS with Apple Silicon (M1/M2/M3/M4).
+**Requirements:** Python 3.12+, macOS with Apple Silicon (M1/M2/M3/M4).
 
 ## Running Tests
 

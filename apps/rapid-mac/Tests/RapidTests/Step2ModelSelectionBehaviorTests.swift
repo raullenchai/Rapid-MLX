@@ -889,7 +889,7 @@ struct Step2ModelSelectionBehaviorTests {
     @Test("Review shows only truthful, existing data for the selected model")
     func reviewFactsAreTruthful() {
         let cached = Self.entry("gemma3-1b", cached: true, size: "1.1 GiB")
-        #expect(QuickstartView.reviewSizeText(alias: "gemma3-1b", cached: cached) == "1.1 GiB")
+        #expect(QuickstartView.reviewSizeText(alias: "gemma3-1b", cached: cached) == DownloadProgress.formatBytes(Int64(1.1 * Double(1 << 30))))
         // Uncached quotes the same estimate the rest of the app quotes.
         #expect(
             QuickstartView.reviewSizeText(alias: "qwen3.5-4b-4bit", cached: nil)
@@ -900,7 +900,7 @@ struct Step2ModelSelectionBehaviorTests {
         // Free space is the real probe, and is omitted when there is no signal.
         #expect(QuickstartView.reviewFreeSpaceText(probe: { nil }) == nil)
         #expect(
-            QuickstartView.reviewFreeSpaceText(probe: { 12_884_901_888 }) == "12.0 GB available"
+            QuickstartView.reviewFreeSpaceText(probe: { 12_884_901_888 }) == "\(DownloadProgress.formatBytes(12_884_901_888)) available"
         )
     }
 

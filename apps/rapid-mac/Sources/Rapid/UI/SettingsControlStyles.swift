@@ -45,9 +45,10 @@ struct TrailingSettingsToggleStyle: ToggleStyle {
         // title line and keeps it there however long the copy gets.
         return HStack(alignment: .top, spacing: Self.gutter) {
             configuration.label
+                .accessibilityHidden(true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Toggle(isOn: binding) { EmptyView() }
+            Toggle(isOn: binding) { configuration.label }
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)

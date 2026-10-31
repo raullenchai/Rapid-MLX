@@ -150,6 +150,21 @@ def test_effective_metadata_and_summary():
 
     with pytest.raises(AccelerationConfigError, match="digest"):
         language("mtp")
+    embedded = effective_language(
+        config,
+        runtime_method="mtp",
+        draft_identity_digest=None,
+        mtp_head_in_target_repo=True,
+        context_length=4096,
+        live_kv_quant=None,
+    )
+    assert embedded["speculative_decoding"] == {
+        "method": "mtp",
+        "max_draft_tokens": 3,
+        "assistant_source": "embedded_head",
+    }
+    assert acceleration_summary(embedded) == "MTP k=3 · prefill chunk 2048"
+    jsonschema.validate(execution_config("text_generation", language=embedded), SCHEMA)
     result = language("mtp", "sha256:" + "a" * 64)
     assert result["speculative_decoding"]["assistant_source"] == "external_model"
     assert language()["speculative_decoding"] == {"method": "none"}
@@ -751,6 +766,75 @@ def test_sidecar_snapshot_subfolders_have_distinct_identities(tmp_path):
         assert sidecar["source"].get("subfolder") == subfolder
 
 
+@pytest.mark.parametrize(
+    "repo,revision,expected",
+    [
+        ("ORG/model", "a" * 40, True),
+        ("org/other", "a" * 40, False),
+        ("org/model", "b" * 40, False),
+        ("org/model", None, False),
+    ],
+)
+def test_sidecar_in_target_repo(monkeypatch, repo, revision, expected):
+    from rapid_mlx.community_bench import local_runner as lr
+
+    target = {
+        "components": [
+            {
+                "role": "primary",
+                "source": {
+                    "repo_id": "org/model",
+                    "resolved_revision": "a" * 40,
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        lr,
+        "unresolved_model_identity",
+        lambda *a, **kw: {"components": [{"source": {"resolved_revision": revision}}]},
+    )
+    assert lr._sidecar_in_target_repo(target, repo, None) is expected
+
+
+@pytest.mark.parametrize("same_repo", [True, False])
+def test_serving_sidecar_repository_classification(monkeypatch, tmp_path, same_repo):
+    import asyncio
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, "mtp")
+    original_identity = lr.unresolved_model_identity
+
+    def identity(repo, *args, **kwargs):
+        result = original_identity(repo, *args, **kwargs)
+        if repo.lower() == "org/model":
+            result["components"][0]["source"]["resolved_revision"] = "a" * 40
+        return result
+
+    monkeypatch.setattr(lr, "unresolved_model_identity", identity)
+    if same_repo:
+        snapshot = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
+        (snapshot / "mtp").mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+        original_scheduler = lr._engine_scheduler
+
+        def scheduler(engine):
+            result = original_scheduler(engine)
+            result.config.mtp_sidecar = str(snapshot / "mtp")
+            return result
+
+        monkeypatch.setattr(lr, "_engine_scheduler", scheduler)
+    _, _, loaded, language = asyncio.run(lr._text_measurements("org/model"))
+    spec = language["speculative_decoding"]
+    assert spec["assistant_source"] == (
+        "embedded_head" if same_repo else "external_model"
+    )
+    assert ("draft_model_identity_digest" in spec) is not same_repo
+    sidecar = next(c for c in loaded["components"] if c["component_id"] == "sidecar")
+    assert sidecar["source"]["repo_id"] == ("org/model" if same_repo else "org/draft")
+    if same_repo:
+        assert sidecar["source"]["subfolder"] == "mtp"
+
+
 def test_suffix_refused_and_prefix_summary():
     from rapid_mlx.community_bench.acceleration import (
         AccelerationConfigError,
@@ -1096,3 +1180,79 @@ def test_mllm_lane_routing_with_headless_fake(monkeypatch, tmp_path, fastpath):
     assert language["speculative_decoding"] == {"method": "none"}
     assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
     assert capture["compute_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fallback):
+    import asyncio
+    import sys
+
+    import huggingface_hub
+    from huggingface_hub import constants
+
+    from rapid_mlx import model_aliases, model_metadata
+    from rapid_mlx.community_bench.acceleration import AccelerationRequest
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, "mtp")
+    pinned_revision, main_revision = "a" * 40, "b" * 40
+    root = tmp_path / "models--org--model"
+    pinned = root / "snapshots" / pinned_revision
+    main = root / "snapshots" / main_revision
+    for snapshot in (pinned, main):
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+    (pinned / "mtp").mkdir()
+    (root / "refs").mkdir()
+    (root / "refs" / "main").write_text(main_revision)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda name: pinned_revision)
+    monkeypatch.setattr(model_aliases, "resolve_hub_model", lambda name: "org/model")
+    monkeypatch.setattr(
+        model_metadata,
+        "_complete_cached_checkpoint",
+        lambda root, snapshot, *a, **kw: snapshot if snapshot.is_dir() else None,
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda *a, **kw: str(main / "config.json"),
+    )
+    original_scheduler = lr._engine_scheduler
+
+    def scheduler(engine):
+        result = original_scheduler(engine)
+        result.config.mtp_sidecar = str(pinned / "mtp")
+        return result
+
+    monkeypatch.setattr(lr, "_engine_scheduler", scheduler)
+
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.tokenizer = object()
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        sys.modules["rapid_mlx.engine.batched"], "BatchedEngine", Engine
+    )
+    monkeypatch.setattr(
+        lr, "_uses_serving_benchmark_engine", lambda target: not fallback
+    )
+    if fallback:
+
+        def fail(*args, **kwargs):
+            raise ValueError("Model type unsupported_arch not supported.")
+
+        monkeypatch.setattr(
+            sys.modules["rapid_mlx.utils.tokenizer"], "load_model_with_fallback", fail
+        )
+    request = AccelerationRequest(baseline=True)
+    _, _, identity, language = asyncio.run(
+        lr._text_measurements("org/model", acceleration=request)
+    )
+    primary = next(c for c in identity["components"] if c["role"] == "primary")
+    assert primary["source"]["resolved_revision"] == pinned_revision

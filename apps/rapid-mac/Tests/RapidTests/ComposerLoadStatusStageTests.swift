@@ -140,7 +140,7 @@ struct ComposerLoadStatusStageTests {
                 #expect(!stage.identifiers().contains("Composer.DownloadAction"))
             }
             if path.contains("downloading-unknown-total") {
-                #expect(text.contains("2.9 GB"))
+                #expect(text.contains(DownloadProgress.formatBytes(Int64(1 << 30) * 29 / 10)))
                 #expect(!text.contains("%"))
             } else if path.contains("downloading-") {
                 #expect(text.contains("59%"))
@@ -184,7 +184,7 @@ struct ComposerLoadStatusStageTests {
         try await stage.waitForIdentifier("Composer.LoadStatus")
         let downloadingRail = try #require(node(stage, "Composer.LoadProgress"))
         #expect(downloadingRail.role == "AXProgressIndicator")
-        #expect(stage.treeText().contains("1.7 GB of 2.9 GB"))
+        #expect(stage.treeText().contains("\(DownloadProgress.formatBytes(gib * 17 / 10)) of \(DownloadProgress.formatBytes(gib * 29 / 10))"))
         #expect(stage.treeText().contains("59%"))
         // The banner stood down: one description of the moment, not two.
         #expect(node(stage, "Readiness.Action") == nil)

@@ -369,7 +369,7 @@ class TestRopeKwargGate:
         assert gen._media_boundary_misses == 0
 
     def test_plan_gated_by_unqualified_family(self):
-        # Only the qualified family (Qwen3.6 hybrid) may split: the 64-token
+        # Only qualified Qwen3.5 hybrid variants may split: the 64-token
         # alignment and MRoPE transaction are qualified per family, so any
         # other model — even one that consumes rope_deltas — stays cold.
         gen = _stub_generator()
@@ -379,6 +379,17 @@ class TestRopeKwargGate:
         assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
         # Structural gate: fires before planning, no miss counted.
         assert gen._media_boundary_misses == 0
+
+    def test_dense_family_qualification(self):
+        for wrapper_type, lm_type, expected in (
+            ("qwen3_5", "qwen2_vl", True),
+            ("qwen3_vl", "qwen3_5_text", True),
+            ("qwen3_vl", "qwen2_vl", False),
+        ):
+            gen = _stub_generator()
+            gen.model.config = type("Config", (), {"model_type": wrapper_type})()
+            gen.language_model.config = type("Config", (), {"model_type": lm_type})()
+            assert gen._media_family_qualified() is expected
 
     def test_family_probe_memoizes_per_model(self):
         gen = _stub_generator()
@@ -464,6 +475,14 @@ class TestRopeKwargGate:
         assert gen._media_model_supports_rope_kwarg() is True
 
     def test_rope_contract_matches_the_installed_implementations(self):
+        assert (
+            "mlx_vlm.models.qwen3_5.language",
+            "LanguageModel",
+        ) in _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS
+        assert (
+            "mlx_vlm.models.qwen3_5.qwen3_5",
+            "Model",
+        ) in _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS
         # The contract pins exact production implementations; this test
         # re-verifies their source so an mlx-vlm upgrade that changes the
         # rope plumbing cannot silently ride on a stale pin.

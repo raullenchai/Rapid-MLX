@@ -29,9 +29,9 @@ enum ExperimentalSurfaceCopy {
     static func videoMemory(minimum: Int, available: Int, bundle: Bundle = .main) -> String {
         format(
             "experimental.video.memory_requirement",
-            fallback: "Needs at least %1$d GB unified memory; this Mac has %2$d GB.",
+            fallback: "Needs at least %1$@ unified memory; this Mac has %2$d GB.",
             bundle: bundle,
-            minimum,
+            DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(minimum) * Double(1 << 30))),
             available
         )
     }
@@ -1612,6 +1612,14 @@ enum CommunityBenchmarkCommand {
     }
 }
 
+enum CommunityBenchmarkRuntimeState: Equatable, Sendable {
+    case checking, available, unavailable
+}
+
+enum CommunityBenchmarkRunContent: Equatable {
+    case result, ready, checkingRuntime, unavailable
+}
+
 /// The Community Benchmark workspace: Run, My Results, and Community.
 ///
 /// Owns the module's state and wires the three tabs, the Ready → Running →
@@ -1664,7 +1672,8 @@ struct CommunityBenchmarkView: View {
     @State private var staleFeedRetryTask: Task<Void, Never>?
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
-    @State private var benchmarkCLIAvailable = false
+    @State private var runtimeState: CommunityBenchmarkRuntimeState = .checking
+    private var benchmarkCLIAvailable: Bool { runtimeState == .available }
     @State private var productCatalog: [ModelEntry]?
 
     // MARK: Redesign state
@@ -1946,6 +1955,15 @@ struct CommunityBenchmarkView: View {
 
     // MARK: - Run
 
+    static func runContent(
+        hasResult: Bool, hasReadyModel: Bool, runtime: CommunityBenchmarkRuntimeState
+    ) -> CommunityBenchmarkRunContent {
+        if hasResult { return .result }
+        if hasReadyModel { return .ready }
+        if runtime == .checking { return .checkingRuntime }
+        return .unavailable
+    }
+
     @ViewBuilder
     private var runTab: some View {
         if isRunning, let runningModel, let runStartedAt {
@@ -1964,49 +1982,68 @@ struct CommunityBenchmarkView: View {
                 isNarrow: isNarrow,
                 onStop: stopRun
             )
-        } else if let result = latestResult, let scope = comparisonScope(for: result) {
-            CommunityBenchmarkResultView(
-                result: result,
-                modelAlias: alias(for: result.repoID),
-                scope: scope,
-                branch: branch,
-                observations: observations,
-                receipt: effectiveReceipts[result.id],
-                isPublishing: sharingRunID == result.id,
-                isNarrow: isNarrow,
-                onPublish: { prepareShare(result) },
-                // Repeats THIS run, not whatever the picker is on. The result
-                // on screen may be a stored one for another model, and "Run
-                // again" has to mean what it says.
-                onRunAgain: { runAgain(result) },
-                onBenchmarkAnother: {
-                    latestResultID = nil
-                    pickerSelection = selectedAlias
-                    pickerQuery = ""
-                    showsPicker = true
-                }
-            )
-        } else if let selected, let scope {
-            CommunityBenchmarkReadyView(
-                model: selected,
-                scope: scope,
-                branch: branch,
-                isRunEnabled: binary != nil && benchmarkCLIAvailable && selected.runtimeCanRun,
-                serverImpactNote: serverImpactNote,
-                isNarrow: isNarrow,
-                onRun: startRun,
-                onChangeModel: {
-                    pickerSelection = selectedAlias
-                    pickerQuery = ""
-                    showsPicker = true
-                },
-                onShowTestMethod: { showsTestMethod = true }
-            )
         } else {
-            CommunityUnavailableBand(
-                title: String(localized: "No benchmark models available"),
-                message: String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
-            )
+            switch Self.runContent(
+                hasResult: latestResult.flatMap { comparisonScope(for: $0) } != nil,
+                hasReadyModel: selected != nil && scope != nil,
+                runtime: runtimeState
+            ) {
+            case .result:
+                if let result = latestResult, let scope = comparisonScope(for: result) {
+                    CommunityBenchmarkResultView(
+                        result: result,
+                        modelAlias: alias(for: result.repoID),
+                        scope: scope,
+                        branch: branch,
+                        observations: observations,
+                        receipt: effectiveReceipts[result.id],
+                        isPublishing: sharingRunID == result.id,
+                        isNarrow: isNarrow,
+                        onPublish: { prepareShare(result) },
+                        // Repeats THIS run, not whatever the picker is on. The result
+                        // on screen may be a stored one for another model, and "Run
+                        // again" has to mean what it says.
+                        onRunAgain: { runAgain(result) },
+                        onBenchmarkAnother: {
+                            latestResultID = nil
+                            pickerSelection = selectedAlias
+                            pickerQuery = ""
+                            showsPicker = true
+                        }
+                    )
+                }
+            case .ready:
+                if let selected, let scope {
+                    CommunityBenchmarkReadyView(
+                        model: selected,
+                        scope: scope,
+                        branch: branch,
+                        isRunEnabled: binary != nil && benchmarkCLIAvailable && selected.runtimeCanRun,
+                        serverImpactNote: serverImpactNote,
+                        isNarrow: isNarrow,
+                        onRun: startRun,
+                        onChangeModel: {
+                            pickerSelection = selectedAlias
+                            pickerQuery = ""
+                            showsPicker = true
+                        },
+                        onShowTestMethod: { showsTestMethod = true }
+                    )
+                }
+            case .checkingRuntime:
+                CommunityUnavailableBand(
+                    title: String(localized: "Checking runtime…"),
+                    message: String(localized: "Looking for models this Mac can benchmark."),
+                    isLoading: true
+                )
+                .accessibilityIdentifier("CommunityBenchmark.Run.CheckingRuntime")
+            case .unavailable:
+                CommunityUnavailableBand(
+                    title: String(localized: "No benchmark models available"),
+                    message: String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
+                )
+                .accessibilityIdentifier("CommunityBenchmark.Run.Unavailable")
+            }
         }
     }
 
@@ -2561,7 +2598,7 @@ struct CommunityBenchmarkView: View {
 
     private func refreshBenchmarkCatalog() async {
         guard let binary else {
-            benchmarkCLIAvailable = false
+            runtimeState = .unavailable
             errorTone = .error
             errorMessage = String(localized: "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again.")
             return
@@ -2583,14 +2620,14 @@ struct CommunityBenchmarkView: View {
                     )
                 }
             }
-            benchmarkCLIAvailable = true
+            runtimeState = .available
             benchmarkMetadata = metadata
             selectedAlias = CommunityBenchmarkModel.reconciledSelection(
                 current: selectedAlias,
                 models: models, preferred: preferredAlias
             )
         } catch {
-            benchmarkCLIAvailable = false
+            runtimeState = .unavailable
             benchmarkMetadata = [:]
             errorTone = .error
             errorMessage = String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")

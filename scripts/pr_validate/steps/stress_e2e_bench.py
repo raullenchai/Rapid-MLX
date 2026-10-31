@@ -136,41 +136,9 @@ class StressE2EBenchStep(Step):
 
     def _run_matrix(self, ctx: Context) -> StepResult:
         try:
-            registry = _load_registry()
-        except Exception as e:  # noqa: BLE001
-            return StepResult(
-                name=self.name,
-                status="error",
-                summary=f"could not load model registry: {e}",
-            )
-
-        try:
-            available_gb = _available_ram_gb()
-        except Exception as e:  # noqa: BLE001
-            # Don't silently fall back — that has caused us to either
-            # under-pick (bench skips on a beefy Mac) or over-pick (OOM
-            # on a small machine). Surface the error so the operator
-            # sets PR_VALIDATE_RAM_GB explicitly.
-            return StepResult(
-                name=self.name,
-                status="error",
-                summary=(
-                    f"RAM probe failed ({type(e).__name__}: {e}) — "
-                    "set PR_VALIDATE_RAM_GB=<int> and retry"
-                ),
-            )
-        usable_gb = max(0, available_gb - RAM_HEADROOM_GB)
-
-        choices = _select_models(registry, usable_gb)
-        if not choices:
-            return StepResult(
-                name=self.name,
-                status="error",
-                summary=(
-                    f"no model in registry fits {usable_gb:.1f}GB usable RAM "
-                    f"(machine reports {available_gb:.1f}GB total)"
-                ),
-            )
+            registry, choices = _selected_choices()
+        except _SelectionError as e:
+            return StepResult(name=self.name, status="error", summary=str(e))
 
         ctx.run_log(
             f"selected {len(choices)} model(s): "
@@ -441,6 +409,32 @@ def _load_registry() -> dict[str, Any]:
             "golden_models.yaml needs PyYAML — `pip install pyyaml`"
         ) from e
     return yaml.safe_load(text)
+
+
+class _SelectionError(Exception):
+    pass
+
+
+def _selected_choices() -> tuple[dict[str, Any], list[ModelChoice]]:
+    try:
+        registry = _load_registry()
+    except Exception as e:  # noqa: BLE001
+        raise _SelectionError(f"could not load model registry: {e}") from e
+    try:
+        available_gb = _available_ram_gb()
+    except Exception as e:  # noqa: BLE001
+        raise _SelectionError(
+            f"RAM probe failed ({type(e).__name__}: {e}) — "
+            "set PR_VALIDATE_RAM_GB=<int> and retry"
+        ) from e
+    usable_gb = max(0, available_gb - RAM_HEADROOM_GB)
+    choices = _select_models(registry, usable_gb)
+    if not choices:
+        raise _SelectionError(
+            f"no model in registry fits {usable_gb:.1f}GB usable RAM "
+            f"(machine reports {available_gb:.1f}GB total)"
+        )
+    return registry, choices
 
 
 def _select_models(registry: dict[str, Any], usable_gb: float) -> list[ModelChoice]:

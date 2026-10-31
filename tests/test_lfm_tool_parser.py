@@ -556,7 +556,7 @@ class TestLfmTextFormatEnvelope:
     def test_openai_legal_tool_names_are_recognised(self):
         """Names follow the OpenAI charset, not Python identifier rules.
 
-        ``^[a-zA-Z0-9_-]{1,64}$`` is what the request validator accepts, so
+        The request validators accept ``^[a-zA-Z0-9_-]{1,128}$`` at most, so
         ``my-tool`` and ``2fa`` are names a client can register. Rejecting
         them here would stream the raw span while the finalize recovery
         path (which does accept them) extracted the call anyway.

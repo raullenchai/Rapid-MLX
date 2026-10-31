@@ -380,6 +380,46 @@ def test_dedicated_run_archives_valid_metadata(fake_dedicated):
     assert f.closed == [True]
 
 
+@pytest.mark.parametrize("embedded", [True, False])
+def test_dedicated_mtp_sidecar_identity(fake_dedicated, embedded):
+    from pathlib import Path
+
+    f = fake_dedicated
+    (Path(f.handle.target_path) / "config.json").write_text("{}")
+    draft = f.handle.target_path if embedded else f.handle.speculative["draft_path"]
+    f.handle.speculative = {
+        "method": "mtp",
+        "max_draft_tokens": 15,
+        "draft_path": draft,
+    }
+    workload = {
+        "cases": [
+            {
+                "case_id": "short",
+                "target_prompt_tokens": 512,
+                "target_output_tokens": 128,
+            },
+            {
+                "case_id": "long",
+                "target_prompt_tokens": 2048,
+                "target_output_tokens": 512,
+            },
+        ]
+    }
+    _, _, identity, language = asyncio.run(
+        f.lr._measure_dedicated(f.handle, "org/model", "example", workload, None)
+    )
+    spec = language["speculative_decoding"]
+    assert spec["assistant_source"] == (
+        "embedded_head" if embedded else "external_model"
+    )
+    if embedded:
+        assert "draft_model_identity_digest" not in spec
+    else:
+        assert spec["draft_model_identity_digest"].startswith("sha256:")
+    assert any(c["role"] == "other" for c in identity["components"])
+
+
 def test_dedicated_stream_failure_closes_and_records(fake_dedicated):
     f = fake_dedicated
     f.state.fail = True
