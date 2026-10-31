@@ -165,6 +165,7 @@ def render_banner(
     image_note: str | None = None,
     lane_rows: list[tuple[str, str]] | None = None,
     chat: bool = True,
+    auth_hint: bool = False,
 ) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
@@ -205,7 +206,7 @@ def render_banner(
             "(authentication required)" if ep.auth_required else "(not yet loaded)"
         )
         lines.append(f"  Model:     {ep.model or unknown_model}")
-        if ep.auth_required or os.environ.get("RAPID_MLX_API_KEY"):
+        if auth_hint or ep.auth_required or os.environ.get("RAPID_MLX_API_KEY"):
             lines.append("  Auth: authenticated connections require RAPID_MLX_API_KEY.")
             lines.append("    export RAPID_MLX_API_KEY='<server-api-key>'")
         if image_note:

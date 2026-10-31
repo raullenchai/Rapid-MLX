@@ -396,6 +396,26 @@ def test_audio_ready_banner_resolves_model_with_opaque_served_alias(
     assert "launch codex" not in out
 
 
+def test_stt_ready_banner_hints_at_configured_api_key(monkeypatch, capsys):
+    cfg = get_config()
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", "whisper-base")
+    monkeypatch.setattr(cfg, "model_name", "whisper-base")
+    monkeypatch.setattr(cfg, "api_key", "sk-test")
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "  Auth: authenticated connections require RAPID_MLX_API_KEY." in out
+    assert "    export RAPID_MLX_API_KEY='<server-api-key>'" in out
+    assert (
+        'curl http://127.0.0.1:18732/v1/audio/transcriptions -H "Authorization: Bearer $RAPID_MLX_API_KEY"'
+        in out
+    )
+    assert "sk-test" not in out
+
+
 def test_retrieval_ready_banner_has_lane_commands(monkeypatch, capsys):
     cfg = get_config()
     monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")

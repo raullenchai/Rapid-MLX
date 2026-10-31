@@ -1259,6 +1259,7 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
                     image_note=_text_lane_image_note(_cfg),
                     lane_rows=lane_rows,
                     chat=chat,
+                    auth_hint=not chat and bool(_cfg.api_key),
                 ),
                 end="",
             )
