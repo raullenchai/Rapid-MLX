@@ -36,7 +36,6 @@ def test_human_log_milestones(monkeypatch):
         tracker.add(163_000_000)
     tracker.flush()
     lines = stream.getvalue().splitlines()
-    assert len(lines) <= 11
     assert all("[bytes]" not in line for line in lines)
     matches = [
         re.fullmatch(r"  Downloaded \d+\.\d of 16\.3 GB \((\d+)%\)", line)
@@ -44,7 +43,7 @@ def test_human_log_milestones(monkeypatch):
     ]
     assert all(matches)
     percentages = [int(match.group(1)) for match in matches]
-    assert all(a < b for a, b in zip(percentages, percentages[1:]))
+    assert percentages == [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     assert lines[-1] == "  Downloaded 16.3 of 16.3 GB (100%)"
 
 

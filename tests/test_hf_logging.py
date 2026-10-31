@@ -207,6 +207,8 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
         logging.getLogger("httpx").info("transport record")
         logging.getLogger(_HF_HTTP_LOGGER).warning(_REAL_ADVISORY)
 
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
     monkeypatch.setattr(cli, "serve_command", serve)
     monkeypatch.setattr(
@@ -338,7 +340,8 @@ def test_quiet_progress_bars(monkeypatch, tty, role, user_setting, disabled):
 
     from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
 
-    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     enable_progress_bars()
     if role:
@@ -369,17 +372,23 @@ def test_bootstrap_configures_progress_bars(monkeypatch):
 
 
 def test_non_terminal_disables_hf_progress_bars(monkeypatch):
+    import os
     import sys
 
-    from huggingface_hub.utils import are_progress_bars_disabled
+    from huggingface_hub.utils import are_progress_bars_disabled, enable_progress_bars
 
     from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
 
-    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
-    quiet_hf_progress_bars_off_terminal()
-    assert are_progress_bars_disabled() is True
+    try:
+        quiet_hf_progress_bars_off_terminal()
+        assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+        assert are_progress_bars_disabled() is True
+    finally:
+        enable_progress_bars()
 
 
 def test_hf_progress_bars_restored_after_previous_test():
