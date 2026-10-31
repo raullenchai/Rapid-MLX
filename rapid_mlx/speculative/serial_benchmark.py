@@ -95,18 +95,38 @@ def pinned_cached_snapshot(repo: str, revision: str | None = None) -> str | None
     pin = model_aliases.resolve_revision(repo)
     hub_repo = model_aliases.resolve_hub_model(repo) if pin else repo
     cache = Path(constants.HF_HUB_CACHE) / ("models--" + hub_repo.replace("/", "--"))
-    revision = revision or pin
-    if not revision:
+    revision = pin if revision is None else revision
+    if revision is None:
         try:
             revision = (cache / "refs" / "main").read_text().strip()
         except OSError:
             return None
-    if ".." not in revision and not Path(revision).is_absolute():
-        ref = cache / "refs" / revision
-        if ref.is_file():
+        if (
+            not revision
+            or revision in {".", ".."}
+            or "/" in revision
+            or "\\" in revision
+        ):
+            return None
+    if (
+        not revision
+        or "\\" in revision
+        or Path(revision).is_absolute()
+        or any(part in {"", ".", ".."} for part in revision.split("/"))
+    ):
+        return None
+    ref = cache / "refs" / revision
+    if ref.is_file():
+        try:
             revision = ref.read_text().strip()
+        except OSError:
+            return None
+    if not revision or revision in {".", ".."} or "/" in revision or "\\" in revision:
+        return None
     snapshot = cache / "snapshots" / revision
-    return str(snapshot) if revision and snapshot.is_dir() else None
+    if snapshot.resolve().parent != (cache / "snapshots").resolve():
+        return None
+    return str(snapshot) if snapshot.is_dir() else None
 
 
 def cached_snapshot_path(repo, revision):

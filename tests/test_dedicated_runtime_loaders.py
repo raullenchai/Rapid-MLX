@@ -338,6 +338,52 @@ def test_cached_snapshot_resolves_named_revision(monkeypatch, tmp_path):
     assert cached_snapshot_path("org/model", "main") == str(snapshot)
 
 
+@pytest.mark.parametrize(
+    "revision", ["../outside", "/abs/path", "..", "", ".", "a//b", "a/../b", "a\\b"]
+)
+def test_cached_snapshot_rejects_unsafe_revision(monkeypatch, tmp_path, revision):
+    from huggingface_hub import constants
+
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    cache = tmp_path / "models--org--model"
+    (cache / "snapshots").mkdir(parents=True)
+    (cache / "outside").mkdir()
+    assert cached_snapshot_path("org/model", revision) is None
+
+
+def test_cached_snapshot_rejects_unsafe_ref_and_symlink(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    cache = tmp_path / "models--org--model"
+    (cache / "refs").mkdir(parents=True)
+    (cache / "snapshots").mkdir()
+    (cache / "outside").mkdir()
+    (cache / "refs" / "main").write_text("../outside")
+    assert cached_snapshot_path("org/model", "main") is None
+    assert cached_snapshot_path("org/model", None) is None
+    (cache / "snapshots" / "linked").symlink_to(cache / "outside")
+    assert cached_snapshot_path("org/model", "linked") is None
+
+
+def test_cached_snapshot_resolves_nested_ref(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    cache = tmp_path / "models--org--model"
+    (cache / "refs" / "refs" / "pr").mkdir(parents=True)
+    (cache / "refs" / "refs" / "pr" / "1").write_text("abc123")
+    snapshot = cache / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    assert cached_snapshot_path("org/model", "refs/pr/1") == str(snapshot)
+
+
 def test_dflash_unknown_profile_refusal(monkeypatch):
     from rapid_mlx import cli, model_aliases
     from rapid_mlx.speculative import dflash
