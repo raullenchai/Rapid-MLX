@@ -675,12 +675,27 @@ def _detect_hybrid_for_warmup(engine) -> bool:
     return False
 
 
+def _is_generative_media_engine(engine: BaseEngine) -> bool:
+    import sys
+
+    for module_name, class_name in (
+        ("rapid_mlx.runtime.image_lane", "ImageEngine"),
+        ("rapid_mlx.runtime.video_lane", "VideoEngine"),
+    ):
+        module = sys.modules.get(module_name)
+        engine_type = getattr(module, class_name, None)
+        if engine_type is not None and isinstance(engine, engine_type):
+            return True
+    return False
+
+
 async def _warmup_primary_engine(engine: BaseEngine) -> None:
     """Compile the configured engine on its model-owning worker."""
 
     import time as _time
 
-    logger.info("Warming up (compiling Metal shaders)...")
+    if not _is_generative_media_engine(engine):
+        logger.info("Warming up (compiling Metal shaders)...")
     warmup_start = _time.monotonic()
     try:
         is_hybrid = _detect_hybrid_for_warmup(engine)
@@ -706,7 +721,8 @@ async def _warmup_primary_engine(engine: BaseEngine) -> None:
                 logger.debug("Hybrid warmup error (non-fatal): %s", exc)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Warmup failed (non-fatal): %s", exc)
-    logger.info("Warmup complete (%.1fs)", _time.monotonic() - warmup_start)
+    if not _is_generative_media_engine(engine):
+        logger.info("Warmup complete (%.1fs)", _time.monotonic() - warmup_start)
 
 
 async def _finish_primary_demand_load() -> None:
@@ -3145,7 +3161,8 @@ def load_model(
         except Exception as e:
             logger.warning(f"Failed to set up tool logits bias: {e}")
 
-    logger.info(f"Default max tokens: {_default_max_tokens}")
+    if _profile_modality not in ("image-gen", "video-gen"):
+        logger.info(f"Default max tokens: {_default_max_tokens}")
 
     # Register in multi-model registry
     aliases = set()

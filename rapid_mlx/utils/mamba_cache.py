@@ -119,7 +119,7 @@ def ensure_mamba_support():
     """
     global _patched
     if not _patched:
-        logger.info(
+        logger.debug(
             "[MambaCache] Skipping _make_cache patch — "
             "mlx-lm ArraysCache has native batching support"
         )

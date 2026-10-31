@@ -393,7 +393,7 @@ def install() -> bool:
     _original_kernel = stock_kernel
     _gd.gated_delta_kernel = gated_delta_kernel_fast
     _installed = True
-    logger.info(
+    logger.debug(
         "[gdn_prefill] blocked-seq GDN prefill kernel installed "
         "(prompt>=%d tokens, Dk=%d)",
         _MIN_TOKENS,
