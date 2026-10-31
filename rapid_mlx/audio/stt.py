@@ -487,7 +487,9 @@ def _segment_value(segment: Any, key: str) -> Any:
     return getattr(segment, key, None)
 
 
-def _audio_duration_seconds(audio_path: str) -> float | None:
+def _audio_duration_seconds(
+    audio_path: str, *, allow_decode: bool = True
+) -> float | None:
     """Read the source duration without decoding the whole file again."""
     try:
         import wave  # noqa: PLC0415
@@ -529,6 +531,8 @@ def _audio_duration_seconds(audio_path: str) -> float | None:
                 return duration
     except Exception:  # noqa: BLE001
         pass
+    if not allow_decode:
+        return None
     try:
         # Last resort for compressed formats: use the same decoder mlx-audio
         # itself accepts.  This allocates a waveform only when cheap metadata
@@ -888,7 +892,7 @@ class STTEngine:
             self.load()
 
         audio_path = str(audio_path)
-        source_duration = _audio_duration_seconds(audio_path)
+        source_duration = _audio_duration_seconds(audio_path, allow_decode=False)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
@@ -996,6 +1000,8 @@ class STTEngine:
                     input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
                 else:
                     input_duration = source_duration
+                    if input_duration is None:
+                        input_duration = _audio_duration_seconds(audio_path)
                 text, segments = _discard_impossible_whisper_tail(
                     text if isinstance(text, str) else str(text),
                     segments,

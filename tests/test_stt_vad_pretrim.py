@@ -208,7 +208,7 @@ class TestSilenceReturnsEmpty:
         fake_vad._timestamps = []
         from rapid_mlx.audio import stt as stt_mod
 
-        monkeypatch.setattr(stt_mod, "_audio_duration_seconds", lambda _: 1.5)
+        monkeypatch.setattr(stt_mod, "_audio_duration_seconds", lambda _, **kwargs: 1.5)
 
         result = eng.transcribe(path)
 

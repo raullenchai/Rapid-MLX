@@ -1584,22 +1584,33 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 
 
 def _transcode_aiff_to_wav(source: str, destination: str) -> None:
-    """Convert AIFF using libsndfile before passing it to mlx-audio."""
+    """Convert AIFF to a bounded PCM WAV before passing it to mlx-audio."""
     import soundfile as sf
 
-    with (
-        sf.SoundFile(source) as audio,
-        sf.SoundFile(
+    max_bytes = 4 * MAX_AUDIO_UPLOAD_SIZE
+    with sf.SoundFile(source) as audio:
+
+        def check_size(size: int) -> None:
+            if size > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Audio upload too large: exceeds {MAX_AUDIO_UPLOAD_SIZE} bytes",
+                )
+
+        check_size(audio.frames * audio.channels * 2 + 44)
+        with sf.SoundFile(
             destination,
             mode="w",
             samplerate=audio.samplerate,
             channels=audio.channels,
             format="WAV",
             subtype="PCM_16",
-        ) as out,
-    ):
-        for block in audio.blocks(blocksize=65536, dtype="float32", always_2d=True):
-            out.write(block)
+        ) as out:
+            written = 44
+            for block in audio.blocks(blocksize=65536, dtype="float32", always_2d=True):
+                written += len(block) * audio.channels * 2
+                check_size(written)
+                out.write(block)
 
 
 def _cleanup_temp_audio(*paths: str | None) -> None:

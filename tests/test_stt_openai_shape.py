@@ -127,9 +127,7 @@ def test_aiff_route(client, monkeypatch, endpoint):
     body = response.json()
     assert isinstance(body["duration"], float)
     assert body["segments"][0]["end"] == pytest.approx(body["duration"])
-    assert seen[0][1] == (
-        "translate" if endpoint == "translations" else "transcribe"
-    )
+    assert seen[0][1] == ("translate" if endpoint == "translations" else "transcribe")
     from pathlib import Path
 
     assert not Path(seen[0][0]).exists()
@@ -150,3 +148,63 @@ def test_garbage_upload_reports_supported_formats(client, monkeypatch):
     assert response.status_code == 400
     message = response.json()["detail"]["error"]["message"]
     assert "Supported formats:" in message and "aiff" in message
+
+
+def test_non_whisper_duration_does_not_decode_when_probes_fail(tmp_path, monkeypatch):
+    from mlx_audio.stt import utils
+
+    from rapid_mlx.audio import stt
+
+    path = tmp_path / "unknown.audio"
+    path.write_bytes(b"not a wave file")
+    monkeypatch.setattr(sf, "info", lambda _: (_ for _ in ()).throw(ValueError()))
+    monkeypatch.setattr(stt.shutil, "which", lambda _: None)
+
+    def unexpected_decode(_):
+        pytest.fail("duration probing must not decode audio on the request path")
+
+    monkeypatch.setattr(utils, "load_audio", unexpected_decode)
+    engine = stt.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
+    engine._loaded = True
+    engine.model = SimpleNamespace(
+        generate=lambda *a, **kw: SimpleNamespace(
+            text="hello", language="en", segments=[{"end": 1.25}]
+        )
+    )
+    assert engine.transcribe(path).duration == 1.25
+
+
+def test_aiff_expansion_limit_cleans_up(client, monkeypatch):
+    from pathlib import Path
+
+    from rapid_mlx.routes import audio
+
+    monkeypatch.setattr(audio, "MAX_AUDIO_UPLOAD_SIZE", 128)
+    destinations = []
+    transcode = audio._transcode_aiff_to_wav
+
+    def capture(source, destination):
+        destinations.append(destination)
+        transcode(source, destination)
+
+    class OversizedAudio:
+        frames = 235
+        channels = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(audio, "_transcode_aiff_to_wav", capture)
+    monkeypatch.setattr(sf, "SoundFile", lambda *args, **kwargs: OversizedAudio())
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "whisper-large-v3"},
+        files={"file": ("compressed.aifc", b"small", "audio/aiff")},
+    )
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Audio upload too large: exceeds 128 bytes"
+    assert len(destinations) == 1
+    assert not Path(destinations[0]).exists()
