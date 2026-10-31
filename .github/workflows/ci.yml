@@ -828,6 +828,40 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  test-apple-silicon-mac-only:
+    needs: changes
+    if: >-
+      !cancelled() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.engine == 'true'
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install project and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # The mac-only roster runs in the same .[test] environment that pr_validate validates against.
+          pip install -e ".[vision,image,test]"
+
+      - name: Run mac-only tests
+        run: |
+          files=$(python -m scripts.pr_validate.steps.mac_only_tests --list --shard ${{ matrix.shard }}/3)
+          test -n "$files"
+          # Hosted exclusions are maintained in mac_only_tests.HOSTED_DESELECT.
+          deselect=$(python -m scripts.pr_validate.steps.mac_only_tests --deselect-args)
+          pytest $files $deselect -m "not slow and not integration and not needle and not real_hf_cache and not requires_network" -q --tb=short -p no:cacheprovider -n 3 --dist loadfile
+
   changed-lines-coverage:
     needs:
       - changes
@@ -972,6 +1006,7 @@ jobs:
       - test-matrix
       - linux-coverage
       - test-apple-silicon
+      - test-apple-silicon-mac-only
       - changed-lines-coverage
       - l1-smoke
     runs-on: ${{ fromJSON((vars.CI_LINUX_LIGHT_RUNNER != '' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && (!github.event.workflow_run || github.event.workflow_run.head_repository.full_name == github.repository)) && vars.CI_LINUX_LIGHT_RUNNER || '"ubuntu-latest"') }}
@@ -1018,6 +1053,10 @@ jobs:
           fi
           if [ "${{ needs.test-apple-silicon.result }}" != "success" ]; then
             echo "Apple Silicon tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.test-apple-silicon-mac-only.result }}" != "success" ]; then
+            echo "Apple Silicon mac-only tests failed"
             exit 1
           fi
           if [ "${{ github.event_name }}" = pull_request ] \
