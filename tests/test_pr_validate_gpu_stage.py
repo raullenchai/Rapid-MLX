@@ -18,6 +18,7 @@ from scripts.pr_validate.base import Step, StepResult
 from scripts.pr_validate.context import Context
 from scripts.pr_validate.gpu_lock import hold_gpu_lock
 from scripts.pr_validate.runner import run_pipeline
+from scripts.pr_validate.steps import stress_e2e_bench
 from scripts.pr_validate.steps.stress_e2e_bench import StressE2EBenchStep
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,12 @@ def setup(monkeypatch, tmp_path):
     monkeypatch.setenv("PR_VALIDATE_GPU_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.delenv("PR_VALIDATE_NO_GPU_CACHE", raising=False)
     monkeypatch.setattr(gpu_cache, "_repo_state", lambda _: (SHA, True))
+    monkeypatch.setattr(
+        stress_e2e_bench,
+        "_selected_choices",
+        lambda: ({}, [types.SimpleNamespace(family="text", model_id="org/model")]),
+    )
+    monkeypatch.setattr(gpu_cache, "model_fingerprint", lambda _: {"test": "weights"})
     ctx = Context(pr_number=1, head_sha=SHA, base_sha="b" * 40, work_dir=tmp_path)
     return ctx, tmp_path / "gpu.lock"
 

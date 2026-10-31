@@ -45,7 +45,7 @@ class LayaBackend:
             from laya_mlx import load
         except ImportError as exc:
             raise RuntimeError(
-                "Laya requires Python 3.11+ and the System One extra. "
+                "Laya requires Python 3.12+ and the System One extra. "
                 f"Install with: {package_install_command('rapid-mlx[system-one]')}"
             ) from exc
         self._agent = load(model, device=device, dtype=dtype, batch_size=batch_size)
