@@ -516,6 +516,34 @@ def test_plan_rejects_draft_only_model() -> None:
     assert "Serve '" in str(error.value)
 
 
+def test_image_catalog_excludes_incompatible_registered_workload() -> None:
+    aliases = {m["alias"] for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert "bonsai-image-4b-2bit" not in aliases
+    assert "flux2-klein-4b" in aliases
+
+
+def test_plan_rejects_incompatible_image_schedule() -> None:
+    with pytest.raises(ValueError, match="4-step schedule"):
+        plan_for_alias("bonsai-image-4b-2bit")
+
+
+def test_cli_rejects_incompatible_image_before_server(monkeypatch, capsys) -> None:
+    import rapid_mlx.cli as top_cli
+
+    monkeypatch.setattr(
+        _server, "serve", lambda *a, **kw: pytest.fail("server started")
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["rapid-mlx", "benchmark", "run", "bonsai-image-4b-2bit"]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        top_cli.main()
+    assert excinfo.value.code == 1
+    error = capsys.readouterr().err
+    assert "Benchmark command failed:" in error
+    assert "4-step schedule" in error
+
+
 def test_run_local_rejects_draft_before_loading_or_archiving(
     monkeypatch, tmp_path
 ) -> None:
@@ -2585,6 +2613,37 @@ def test_local_request_failure_uses_bounded_fallback_for_non_json_error() -> Non
     ):
         local_runner._raise_for_status(
             NonJSONErrorResponse({}), phase="video benchmark request"
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "detail": {
+                "error": {
+                    "message": "Bonsai Image supports its published 4-step schedule only."
+                }
+            }
+        },
+        {
+            "detail": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+        {
+            "error": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+    ],
+)
+def test_local_request_failure_preserves_nested_message(body) -> None:
+    with pytest.raises(
+        RuntimeError, match="Bonsai Image supports its published 4-step schedule only"
+    ):
+        local_runner._raise_for_status(
+            _HTTPErrorResponse(body), phase="image benchmark request"
         )
 
 
