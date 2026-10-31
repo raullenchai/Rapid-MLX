@@ -164,7 +164,7 @@ enum CommunityBenchmarkCopy {
                             "%1$@ published %2$@ for %3$@ on an %4$@. Run it once to add another reference and tighten the range."
                     ),
                     Self.countPhrase(count, isAtLeast: isAtLeast),
-                    count == 1 && !isAtLeast
+                    count == 1
                         ? String(localized: "result exists")
                         : String(localized: "results exist"),
                     scope.modelAlias,
@@ -237,7 +237,7 @@ enum CommunityBenchmarkCopy {
                             "%1$@ %2$@ for this pairing. Yours makes the comparison harder to argue with."
                     ),
                     Self.countPhrase(count, isAtLeast: isAtLeast),
-                    count == 1 && !isAtLeast
+                    count == 1
                         ? String(localized: "published result exists")
                         : String(localized: "published results exist")
                 )
@@ -362,10 +362,14 @@ enum CommunityBenchmarkCopy {
                     String(localized: "Comparison statistics appear when the community data loads.")
                 )
             case let .unavailable(reason):
-                return (
-                    String(localized: "Community data unavailable"),
-                    reason.message
-                )
+                let title: String
+                switch reason {
+                case .offline, .failed, .notConfigured:
+                    title = String(localized: "Community data unavailable")
+                case .boundedFeed, .ambiguousIdentity, .incompleteAggregate, .invalidCount:
+                    title = String(localized: "Comparison statistics not available")
+                }
+                return (title, reason.message)
             }
         }
     }
