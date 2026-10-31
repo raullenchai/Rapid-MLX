@@ -293,7 +293,7 @@ def _fetch_latest() -> str | None:
                     else None
                 )
                 if match:
-                    versions.append(tuple(map(int, match.groups())))
+                    versions.append((int(match[1]), int(match[2]), int(match[3])))
             if len(releases) < 100:
                 return ".".join(map(str, max(versions))) if versions else None
             page += 1
@@ -427,7 +427,7 @@ def get_release_info(
         return None
     result = _fetch_requires_python(latest)
     checked = result is not _REQUIRES_PYTHON_FAILED
-    spec = result if checked else None
+    spec = result if isinstance(result, str) else None
     brew = _fetch_brew_formula_version() if need_brew else None
     _write_cache(latest, spec, brew, requires_python_checked=checked)
     return ReleaseInfo(latest, spec, brew)
@@ -587,6 +587,7 @@ def prompt_upgrade_if_available() -> bool:
         if release and release.latest == latest_str:
             block = _upgrade_block(installed_str, release, info)
             if block == "python":
+                assert release.requires_python is not None
                 if _prompt_floor_announced != latest_str:
                     print(
                         format_python_floor_warning(
@@ -742,6 +743,7 @@ def _format_available_warning(installed: str, latest: str) -> str:
             and release.latest == latest
             and _upgrade_block(installed, release, info) == "python"
         ):
+            assert release.requires_python is not None
             return format_python_floor_warning(
                 installed, latest, release.requires_python, info
             )
