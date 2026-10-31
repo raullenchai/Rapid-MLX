@@ -381,12 +381,17 @@ def benchmark_command(args) -> int:
             # --progress, which streams RS-tagged progress the Desktop can tell
             # apart from that document and render as a live bar + ETA.
             acceleration = request_from_args(args)
-            if not acceleration.baseline:
-                plan = plan_for_alias(args.benchmark_model)
-                if plan["model"][
-                    "task_type"
-                ] == "text_generation" and not _is_deepseek_v41_benchmark_target(
-                    plan["model"]["repo_id"]
+            if not acceleration.baseline and (
+                acceleration.overrides or acceleration.flags
+            ):
+                try:
+                    plan = plan_for_alias(args.benchmark_model)
+                except (LocalBenchmarkError, KeyError, ValueError):
+                    plan = None
+                if (
+                    plan is not None
+                    and plan["model"]["task_type"] == "text_generation"
+                    and not _is_deepseek_v41_benchmark_target(plan["model"]["repo_id"])
                 ):
                     preflight_benchmark_acceleration(args.benchmark_model, acceleration)
             event_sink = None
