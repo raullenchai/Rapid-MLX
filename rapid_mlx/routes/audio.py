@@ -1110,6 +1110,7 @@ def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
     keys; future backends may report a dataclass. Walk both shapes and
     fall back to a single cue covering ``result.duration`` (or 0..0)
     when no segments are present so the SRT/VTT body is still valid.
+    Untimed segments collapse into one cue when a positive finite duration is available.
     """
     segments = getattr(result, "segments", None) or []
     out: list[tuple[float, float, str, Any]] = []
@@ -1125,6 +1126,12 @@ def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
         if not text:
             continue
         out.append((start, end, text, seg))
+    if out and not any(end > 0 for _, end, _, _ in out):
+        duration = _finite_or_none(getattr(result, "duration", None))
+        if duration is not None and duration > 0:
+            text = str(getattr(result, "text", "") or "").strip()
+            source = out[0][3] if len(out) == 1 else None
+            out = [(0.0, duration, text or " ".join(seg[2] for seg in out), source)]
     if not out:
         duration = float(getattr(result, "duration", 0.0) or 0.0)
         text = str(getattr(result, "text", "") or "").strip()
