@@ -754,7 +754,15 @@ class TTSEngine:
         :func:`is_qwen3_voicedesign_model` so the engine and the route's voice
         allowlist share ONE classifier and can never disagree.
         """
-        return is_qwen3_voicedesign_model(self.model_name)
+        from .registry import resolve_audio_alias
+
+        entry = resolve_audio_alias(self.model_name)
+        name = (
+            entry.catalog_hf_id
+            if entry and entry.notes == "local folder" and entry.catalog_hf_id
+            else self.model_name
+        )
+        return is_qwen3_voicedesign_model(name)
 
     def _detect_family(self, model_name: str) -> str:
         """Detect model family from name (delegates to the module SSOT so the
@@ -829,11 +837,6 @@ class TTSEngine:
                     asset.repo_id,
                     allow_patterns=list(asset.allow_patterns),
                     revision=asset.revision,
-                    **(
-                        {"local_files_only": True}
-                        if Path(self.model_name).expanduser().is_dir()
-                        else {}
-                    ),
                 )
             self._loaded = True
             logger.info(
