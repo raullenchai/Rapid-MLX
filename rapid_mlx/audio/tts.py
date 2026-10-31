@@ -27,9 +27,10 @@ import numpy as np
 from .time_stretch import time_stretch
 
 # These mlx-audio families accept but ignore speed, or lack a native tempo
-# control. All other families (including Kokoro and F5) keep native handling.
+# control, including VoxCPM and VibeVoice. All other families (including Kokoro
+# and F5) keep native handling.
 _POST_STRETCH_FAMILIES = frozenset(
-    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano"}
+    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano", "voxcpm", "vibevoice"}
 )
 
 logger = logging.getLogger(__name__)
