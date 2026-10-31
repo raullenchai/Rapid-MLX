@@ -12,6 +12,7 @@ import SwiftUI
 /// every copied snippet is correct for the current run. Saved agent
 /// connections reuse their private key and preferred port across restarts.
 struct ConnectToolsView: View {
+    static let terminalFootnote = "Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal on this Mac? Use the copy button and run the command yourself."
     let host: String
     let port: Int
     let bearer: String
@@ -446,7 +447,7 @@ struct ConnectToolsView: View {
             }
             .groupedCard()
             if terminal {
-                Text("Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal or Mac? Use the copy button and run the command yourself.")
+                Text(Self.terminalFootnote)
                     .font(RapidFont.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -540,6 +541,10 @@ struct ConnectToolsView: View {
     }
 
     private var tools: [ConnectTool] {
+        tools(for: integrationTargets)
+    }
+
+    func tools(for integrationTargets: [IntegrationTarget]) -> [ConnectTool] {
         guard !integrationTargets.isEmpty else { return legacyTools }
         return IntegrationCatalog.agentPageOrdered(integrationTargets).map { target in
             if IntegrationCatalog.isolatedAgentIDs.contains(target.id) {
@@ -781,7 +786,7 @@ private extension View {
 }
 
 /// One agent's copyable, process-scoped launch command.
-private struct ConnectTool: Identifiable {
+struct ConnectTool: Identifiable {
     let id: String
     let name: String
     let symbol: String
@@ -811,6 +816,7 @@ private struct ConnectTool: Identifiable {
     var persistent: Bool = false
     var dayTwoSnippet: String? = nil
     var sessionSnippet: String? = nil
+    var offersSessionCommand: Bool { sessionSnippet != nil }
     /// Short visible requirement shown under the name (e.g. Cursor's HTTPS need).
     var caveat: String? = nil
 }
@@ -854,7 +860,7 @@ private struct ConnectToolRow: View {
                 .accessibilityLabel("Copy \(tool.name) command")
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
                 .contextMenu {
-                    if let sessionSnippet = tool.sessionSnippet {
+                    if tool.offersSessionCommand, let sessionSnippet = tool.sessionSnippet {
                         Button("Copy one-session command") {
                             copyToPasteboard(sessionSnippet)
                         }
@@ -864,9 +870,13 @@ private struct ConnectToolRow: View {
                 }
                 // The context menu is mouse-first; give keyboard and VoiceOver
                 // users the same one-session command as a named action.
-                .accessibilityAction(named: "Copy one-session command") {
-                    guard isReady, let sessionSnippet = tool.sessionSnippet else { return }
-                    copyToPasteboard(sessionSnippet)
+                .accessibilityActions {
+                    if tool.offersSessionCommand, let sessionSnippet = tool.sessionSnippet {
+                        Button("Copy one-session command") {
+                            guard isReady else { return }
+                            copyToPasteboard(sessionSnippet)
+                        }
+                    }
                 }
                 Button("Open in Terminal") {
                     do {
