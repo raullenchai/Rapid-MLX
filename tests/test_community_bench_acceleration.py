@@ -673,6 +673,14 @@ def test_cli_acceleration_summary_and_json(monkeypatch, capsys):
     }
     monkeypatch.setattr(cli.LocalRunArchive, "default", lambda: object())
     monkeypatch.setattr(cli, "run_local", lambda alias, **kwargs: run)
+    monkeypatch.setattr(
+        cli,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {"task_type": "text_generation", "repo_id": "test/model"}
+        },
+    )
+    monkeypatch.setattr(cli, "preflight_benchmark_acceleration", lambda *args: None)
     monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     monkeypatch.setattr(cli, "summarize_measurements", lambda run: [])
     args = SimpleNamespace(benchmark_action="run", benchmark_model="x", json=False)
@@ -1180,6 +1188,79 @@ def test_mllm_lane_routing_with_headless_fake(monkeypatch, tmp_path, fastpath):
     assert language["speculative_decoding"] == {"method": "none"}
     assert language["kv_cache"] == {"mode": "full_precision", "dtype": "bfloat16"}
     assert capture["compute_dtype"] == "bfloat16"
+
+
+def test_cli_default_run_skips_early_acceleration_preflight(monkeypatch, capsys):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+
+    def unexpected_preflight(*args, **kwargs):
+        pytest.fail("default run must not perform early acceleration preflight")
+
+    def runner(*args, **kwargs):
+        raise cli.LocalBenchmarkError("runner reached", None, saved=False)
+
+    monkeypatch.setattr(cli, "preflight_benchmark_acceleration", unexpected_preflight)
+    monkeypatch.setattr(cli, "run_local", runner)
+    args = build_parser().parse_args(["benchmark", "run", "qwen3.8-27b-4bit"])
+    assert cli.benchmark_command(args) == 1
+    assert "runner reached" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("error_type", ["local", "key", "value"])
+def test_cli_plan_failure_defers_to_runner(monkeypatch, capsys, error_type):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+
+    errors = {
+        "local": cli.LocalBenchmarkError("plan failed", None, saved=False),
+        "key": KeyError("plan failed"),
+        "value": ValueError("plan failed"),
+    }
+
+    def failed_plan(*args, **kwargs):
+        raise errors[error_type]
+
+    def runner(*args, **kwargs):
+        raise cli.LocalBenchmarkError("runner reached", None, saved=False)
+
+    monkeypatch.setattr(cli, "plan_for_alias", failed_plan)
+    monkeypatch.setattr(cli, "run_local", runner)
+    args = build_parser().parse_args(
+        ["benchmark", "run", "unknown", "--speculative-config", '{"method":"suffix"}']
+    )
+    assert cli.benchmark_command(args) == 1
+    assert "runner reached" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_cli_suffix_refused_before_runner(monkeypatch, capsys, json_output):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli
+
+    def unexpected_runner(*args, **kwargs):
+        raise AssertionError("runner must not be reached")
+
+    monkeypatch.setattr(cli, "run_local", unexpected_runner)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.8-27b-4bit",
+            "--speculative-config",
+            '{"method":"suffix"}',
+        ]
+        + (["--json"] if json_output else [])
+    )
+    assert cli.benchmark_command(args) == 1
+    output = capsys.readouterr()
+    assert "Suffix decoding cannot be benchmarked" in output.err
+    assert "Benchmarking" not in output.out + output.err
+    assert "Loading" not in output.out + output.err
+    if json_output:
+        assert json.loads(output.err)["saved"] is False
+    else:
+        assert "Benchmark command failed:" in output.err
 
 
 @pytest.mark.parametrize("fallback", [False, True])

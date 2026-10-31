@@ -15,6 +15,7 @@ import pytest
 
 from rapid_mlx.bench import _server
 from rapid_mlx.community_bench import cli
+from rapid_mlx.community_bench.acceleration import AccelerationRequest
 
 
 def test_serve_interrupt_kills_unresponsive_group(monkeypatch, tmp_path):
@@ -373,7 +374,7 @@ def test_cli_interrupt(monkeypatch, capsys):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_local", interrupt)
-    monkeypatch.setattr(cli, "request_from_args", lambda args: None)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     assert cli.benchmark_command(args()) == 130
     assert (
         capsys.readouterr().err
@@ -389,7 +390,7 @@ def test_cli_sigterm_restores_handler(monkeypatch, capsys):
         time.sleep(1)
 
     monkeypatch.setattr(cli, "run_local", terminate)
-    monkeypatch.setattr(cli, "request_from_args", lambda args: None)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     assert cli.benchmark_command(args()) == 143
     assert signal.getsignal(signal.SIGTERM) == previous
     assert "Traceback" not in capsys.readouterr().err
@@ -400,7 +401,7 @@ def test_cli_interrupt_json(monkeypatch, capsys):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_local", interrupt)
-    monkeypatch.setattr(cli, "request_from_args", lambda args: None)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     assert cli.benchmark_command(args(True)) == 130
     output = capsys.readouterr()
     assert output.out == ""

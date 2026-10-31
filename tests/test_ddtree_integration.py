@@ -302,6 +302,7 @@ def test_build_app_healthz_models_and_completion_explicit_context() -> None:
     body = r.json()
     assert body["engine"] == "ddtree"
     assert body["drafter"] == "z-lab/Qwen3.5-9B-DFlash"
+
     assert body["tree_budget"] == 24
 
     r = client.get("/v1/models")
@@ -384,6 +385,24 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
     assert body["ready"] is False
     assert body["drafter"] == "z-lab/Qwen3.5-9B-DFlash"
 
+    health_response = client.get("/health")
+    assert health_response.status_code == 200
+    health = health_response.json()
+    assert health["ready"] is False
+    assert health["state"] == "loading"
+    assert health["model_loaded"] is False
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    assert ready.json() == {
+        "error": {
+            "message": "model loading",
+            "type": "service_unavailable",
+            "code": "model_not_ready",
+        },
+        "ready": False,
+        "state": "loading",
+    }
+
     r = client.post(
         "/v1/chat/completions",
         json={
@@ -398,6 +417,9 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
     r = client.get("/healthz")
     assert r.status_code == 200
     assert r.json()["ready"] is True
+    ready = client.get("/health/ready")
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ok", "ready": True}
 
 
 def test_build_app_honors_api_key_and_model_name() -> None:
@@ -487,6 +509,21 @@ def test_build_app_runtime_load_failure_is_sanitized() -> None:
     assert r.status_code == 200
     assert r.json()["status"] == "error"
     assert "secret local path" not in r.text
+
+    health = client.get("/health").json()
+    assert health["ready"] is False
+    assert health["state"] == "error"
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    assert ready.json() == {
+        "error": {
+            "message": "model failed to load",
+            "type": "service_unavailable",
+            "code": "model_not_ready",
+        },
+        "ready": False,
+        "state": "error",
+    }
 
     r = client.post(
         "/v1/chat/completions",
@@ -613,3 +650,41 @@ def test_run_ddtree_server_loads_runtime_on_separate_executor(monkeypatch) -> No
     assert len(loader.submitted) == 1
     assert generator.submitted == []
     uvicorn_run.assert_called_once()
+
+
+@pytest.mark.parametrize("api_key", [None, "secret"])
+def test_public_health_probes(api_key):
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.speculative.ddtree.server import _build_app
+
+    reset_config()
+    try:
+        app = _build_app(
+            runtime=_fake_runtime(),
+            served_model_name="test-model",
+            default_max_tokens=64,
+            cors_origins=[],
+            api_key=api_key,
+        )
+        client = TestClient(app, base_url="http://127.0.0.1")
+        headers = {"Authorization": "Bearer secret"} if api_key else {}
+        healthz = client.get("/healthz", headers=headers).json()
+        response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {
+            **healthz,
+            "status": "healthy",
+            "ready": True,
+            "state": "ready",
+            "model_loaded": True,
+            "model_name": "test-model",
+            "model_type": "llm",
+            "engine_type": healthz["engine"],
+        }
+        assert client.get("/health/ready").json() == {"status": "ok", "ready": True}
+        assert client.get("/").json() == {"status": "ok"}
+        assert client.head("/").status_code == 200
+    finally:
+        reset_config()
