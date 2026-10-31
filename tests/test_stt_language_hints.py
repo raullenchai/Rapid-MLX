@@ -139,6 +139,17 @@ def test_language(route, model, language, expected):
     assert backend.calls[0][1]["language"] == expected
 
 
+@pytest.mark.parametrize(
+    "language,expected",
+    [("  ", "  "), ("ZH-cn", "zh-CN"), ("fr", "fr"), ("fr-FR", "fr-FR")],
+)
+def test_native_language_hint_unmatched_and_case_insensitive(language, expected):
+    from rapid_mlx.audio.stt import _native_language_hint
+
+    backend = Backend(prompts={"zh-CN": 0, "ja-JP": 1})
+    assert _native_language_hint(backend, language) == expected
+
+
 @pytest.mark.parametrize("model", ["parakeet", "nemotron-asr"])
 @pytest.mark.parametrize("fmt", ["srt", "verbose_json"])
 def test_sentence_timing(route, model, fmt):
@@ -187,6 +198,19 @@ def test_long_firered(route, monkeypatch):
     assert segments[0]["start"] == 0 and segments[-1]["end"] == 240
     assert all(a["end"] == b["start"] for a, b in zip(segments, segments[1:]))
     assert all(len(call[0][0]) <= 60 * 16000 for call in backend.calls)
+
+
+def test_short_firered(route, monkeypatch):
+    client, backend = route
+    backend.config.model_type = "fireredasr2"
+    waveform = np.ones(5 * 16000, dtype=np.float32) * 0.001
+    monkeypatch.setattr("mlx_audio.stt.utils.load_audio", lambda path, sr: waveform)
+    response = post(client, "firered-asr2", wav(5, noise=True))
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "hello"
+    assert len(backend.calls) == 1
+    assert isinstance(backend.calls[0][0][0], np.ndarray)
+    np.testing.assert_array_equal(backend.calls[0][0][0], waveform)
 
 
 def test_firered_cuts_at_quiet_frame_and_joins_cjk():
