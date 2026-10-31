@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
+import rapid_mlx
 from rapid_mlx.bench import _server
 from rapid_mlx.catalog import rcj_digest
 from rapid_mlx.community_bench import (
@@ -1400,10 +1401,13 @@ def _text_run() -> dict:
     )
 
 
-def test_run_collector_version_matches_installed_distribution() -> None:
-    from importlib.metadata import version
+def test_run_builder_imports_package_version() -> None:
+    assert run_builder.__version__ is rapid_mlx.__version__
 
-    assert _text_run()["collector"]["version"] == version("rapid-mlx")
+
+def test_run_collector_uses_builder_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(run_builder, "__version__", "9.9.9-test")
+    assert _text_run()["collector"]["version"] == "9.9.9-test"
 
 
 def test_archive_validates_then_writes_private_atomic_result(tmp_path: Path) -> None:
