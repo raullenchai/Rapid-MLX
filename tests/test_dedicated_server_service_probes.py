@@ -47,13 +47,15 @@ def clean_config():
 
 @contextmanager
 def running_server(app):
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    # Hand uvicorn the already-bound socket so no other process can take
+    # the port between choosing it and serving on it.
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    thread = threading.Thread(
+        target=server.run, kwargs={"sockets": [sock]}, daemon=True
     )
-    thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
         deadline = time.monotonic() + 10
@@ -64,6 +66,7 @@ def running_server(app):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        sock.close()
         assert not thread.is_alive(), "server did not stop"
 
 
