@@ -318,6 +318,14 @@ def tensorfold_runtime_handle(
         finally:
             executor.shutdown(wait=wait)
 
+    context_window = getattr(backend._app, "context_window", None)
+    if (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        context_window = None
+
     handle = SerialRuntimeHandle(
         lane=lane,
         tokenizer=backend._app.tokenizer,
@@ -333,7 +341,7 @@ def tensorfold_runtime_handle(
             "lanes": lanes,
         },
         target_path=target_path,
-        context_length=None,
+        context_length=context_window,
         close=close,
     )
     return handle

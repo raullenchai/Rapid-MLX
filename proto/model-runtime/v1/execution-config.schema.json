@@ -107,7 +107,7 @@
         "prefill_backend": {"enum": ["gpu", "cpu", "hybrid"]},
         "prefill_chunk_size": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991},
         "runtime": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"enum": ["native_mtp", "dflash", "companion_dspark", "tensorfold_dflash", "tensorfold_mtp"]}, "algorithm": {"enum": ["dflash", "dflash2"]}, "lanes": {"type": "integer", "minimum": 1, "maximum": 64}}},
-        "pflash": {"type": "object", "additionalProperties": false, "required": ["mode", "threshold", "keep_ratio_millionths"], "properties": {"mode": {"enum": ["auto", "always"]}, "threshold": {"type": "integer", "minimum": 1}, "keep_ratio_millionths": {"type": "integer", "minimum": 1, "maximum": 1000000}}}
+        "pflash": {"type": "object", "additionalProperties": false, "required": ["mode", "threshold", "keep_ratio_millionths"], "properties": {"mode": {"enum": ["auto", "always"]}, "threshold": {"type": "integer", "minimum": 0}, "keep_ratio_millionths": {"type": "integer", "minimum": 1, "maximum": 1000000}}}
       }
     },
     "mediaInput": {

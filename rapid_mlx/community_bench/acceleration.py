@@ -64,6 +64,11 @@ def validate_request(
         raise AccelerationConfigError(
             "This model always runs its qualified runtime; acceleration flags and --baseline cannot change it."
         )
+    ratio = request.overrides.get("pflash_keep_ratio")
+    if ratio is not None and round(ratio * 1_000_000) < 1:
+        raise AccelerationConfigError(
+            "--pflash-keep-ratio must be at least 0.000001 for a benchmark run so the recorded setting matches what ran."
+        )
     if "speculative_config" in request.overrides:
         try:
             config = json.loads(request.overrides["speculative_config"])
