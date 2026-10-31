@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Upgrade output filtering and uv configuration compatibility."""
 
+import os
 import re
 import sys
+import time
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -135,3 +137,102 @@ def test_other_commands_use_plain_subprocess(monkeypatch):
     argv = ["brew", "upgrade", "rapid-mlx"]
     assert runner.run_upgrade_command(argv) == 7
     run.assert_called_once_with(argv, check=False)
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError, KeyboardInterrupt])
+def test_filtered_pip_reaps_child_when_stderr_write_fails(monkeypatch, tmp_path, error):
+    executable = tmp_path / "fake-python"
+    pid_file = tmp_path / "pid"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib, sys, time\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "sys.stderr.write('normal line\\n')\n"
+        "sys.stderr.flush()\n"
+        "time.sleep(30)\n"
+    )
+    executable.chmod(0o755)
+
+    class FailingStderr:
+        def write(self, text):
+            raise error()
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(sys, "stderr", FailingStderr())
+    start = time.monotonic()
+    with pytest.raises(error):
+        runner.run_upgrade_command([str(executable), "-m", "pip", "install", "x"])
+    assert time.monotonic() - start < 10
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
+
+
+@pytest.fixture
+def fake_pip(tmp_path):
+    executable = tmp_path / "fake-python"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "assert sys.argv[1:] == ['-m', 'pip', 'install', '--upgrade', 'rapid-mlx']\n"
+        "sys.stderr.write(\"WARNING: transformers 5.0.0 does not provide the extra 'tokenizers'\\nreal error line\\n\")\n"
+    )
+    executable.chmod(0o755)
+    return [str(executable), "-m", "pip", "install", "--upgrade", "rapid-mlx"]
+
+
+def _prepare_prompt(monkeypatch, argv, method):
+    from rapid_mlx import _version_check as vc
+
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.1")
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade command", argv),
+    )
+    monkeypatch.setattr(vc, "get_release_info", lambda **kwargs: None)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    return vc.prompt_upgrade_if_available
+
+
+def test_prompt_filters_pip_advisory(monkeypatch, fake_pip, capfd):
+    prompt = _prepare_prompt(monkeypatch, fake_pip, "pip")
+    assert prompt() is True
+    stderr = capfd.readouterr().err
+    assert "does not provide the extra" not in stderr
+    assert "real error line" in stderr
+
+
+def test_prompt_supplies_uv_metadata(monkeypatch, clean_uv, capfd):
+    monkeypatch.setenv("HOME", str(clean_uv / "home"))
+    executable = clean_uv / "uv"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib, sys\n"
+        "config = os.environ.get('UV_CONFIG_FILE')\n"
+        "if not config or '[[dependency-metadata]]' not in pathlib.Path(config).read_text():\n"
+        "    sys.stderr.write(\"WARNING: transformers 5.0.0 does not provide the extra 'tokenizers'\\n\")\n"
+    )
+    executable.chmod(0o755)
+    prompt = _prepare_prompt(
+        monkeypatch, [str(executable), "tool", "upgrade", "rapid-mlx"], "uv"
+    )
+    assert prompt() is True
+    assert "does not provide the extra" not in capfd.readouterr().err
+
+
+def test_dependency_repair_filters_pip_advisory(monkeypatch, fake_pip, capfd):
+    from rapid_mlx import dependency_repair
+
+    monkeypatch.setattr(dependency_repair, "repair_argv", lambda: fake_pip)
+    monkeypatch.setattr(
+        sys, "stdin", SimpleNamespace(isatty=lambda: True, readline=lambda: "y\n")
+    )
+    assert dependency_repair.recover(module=None) is True
+    stderr = capfd.readouterr().err
+    assert "does not provide the extra" not in stderr
+    assert "real error line" in stderr

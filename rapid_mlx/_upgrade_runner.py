@@ -70,7 +70,7 @@ def _run_filtered(argv: list[str]) -> int:
                 sys.stderr.write(line)
                 sys.stderr.flush()
         return process.wait()
-    except KeyboardInterrupt:
+    except BaseException:
         process.terminate()
         process.wait()
         raise
