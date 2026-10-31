@@ -2532,3 +2532,52 @@ def test_subprocess_sigterm_default_disposition_still_terminates():
         f" short-circuit must be gated on SIGHUP only;"
         f" stderr={stderr!r}"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires flock")
+def test_crash_file_in_use_reflects_writer_lock(monkeypatch, tmp_path):
+    import fcntl
+
+    from rapid_mlx import _signal_observability as so
+
+    path = tmp_path / "crash-20261031T000000Z-4242.txt"
+    assert so._crash_file_in_use(path) is False  # missing file
+    path.write_text("partial\n", encoding="utf-8")
+    assert so._crash_file_in_use(path) is False
+    holder = os.open(path, os.O_RDWR)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert so._crash_file_in_use(path) is True
+        monkeypatch.setattr(so, "_crash_file_pid", lambda _path: 4242)
+        assert so._crash_file_is_live(path, tmp_path) is True
+    finally:
+        os.close(holder)
+    monkeypatch.setattr(so.os, "name", "nt")
+    try:
+        assert so._crash_file_in_use(path) is False
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires flock")
+def test_crash_file_lock_failure_is_not_fatal(monkeypatch, tmp_path, caplog):
+    import fcntl
+    import logging
+
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so, "process_identity", lambda _pid: None)
+
+    def deny(_fd, _flags):
+        raise OSError("locks unsupported")
+
+    monkeypatch.setattr(fcntl, "flock", deny)
+    caplog.set_level(logging.DEBUG, logger=so.logger.name)
+    try:
+        so.install_signal_observability(observed_signals=())
+        assert "could not lock crash file" in caplog.text
+        assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    finally:
+        so._reset_for_tests()
