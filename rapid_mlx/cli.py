@@ -3865,18 +3865,19 @@ def _normalize_speculative_config_or_exit(args):
                 is MTPEligibility.NONE
             ):
                 if hf_cfg is None:
-                    if not getattr(args, "_auto_mtp_retry", False):
+                    profile = resolve_profile(args.model)
+                    pin = (
+                        profile.revision
+                        or getattr(profile, "tensorfold_target_revision", None)
+                        or getattr(profile, "dflash_target_revision", None)
+                    )
+                    _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
+                    reason = reason or "cached target config could not be read"
+                    if not getattr(args, "_auto_mtp_retry", False) and reason.endswith(
+                        "is not in the local cache"
+                    ):
                         args._auto_mtp_deferred = True
                         reason = None
-                    else:
-                        profile = resolve_profile(args.model)
-                        pin = (
-                            profile.revision
-                            or getattr(profile, "tensorfold_target_revision", None)
-                            or getattr(profile, "dflash_target_revision", None)
-                        )
-                        _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
-                        reason = reason or "cached target config could not be read"
                 else:
                     reason = _detect_mtp_eligibility_verbose(
                         hf_cfg, has_external_sidecar=True

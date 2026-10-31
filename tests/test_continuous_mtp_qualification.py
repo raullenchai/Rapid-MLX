@@ -712,7 +712,8 @@ def test_serve_unreadable_cached_target_skips_once_after_download(monkeypatch, c
         downloaded = True
 
     def cached_config(*_args):
-        assert downloaded
+        if not downloaded:
+            return None, "example/model is not in the local cache"
         return None, "cached target config could not be read"
 
     monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
@@ -742,6 +743,22 @@ def test_serve_unreadable_cached_target_skips_once_after_download(monkeypatch, c
         == 1
     )
     assert args.spec_decode == "none"
+
+
+def test_unreadable_cached_target_skips_on_first_pass(monkeypatch, capsys):
+    from rapid_mlx import cli
+
+    args = _parsed_serve_args("qwen3.8-27b-4bit")
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", lambda _: (None, None))
+    monkeypatch.setattr(cli, "_resolve_cached_hf_config", lambda *_: (None, None))
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert (
+        "Automatic MTP skipped: cached target config could not be read; using plain decode."
+        in capsys.readouterr().err
+    )
+    assert not getattr(args, "_auto_mtp_deferred", False)
 
 
 @pytest.mark.parametrize(
