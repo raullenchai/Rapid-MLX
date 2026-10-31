@@ -245,3 +245,20 @@ def test_catalog_fit_uses_measured_footprint_when_weights_lookup_fails():
     assert result.fits is False
     assert result.fit_basis == "gpu_budget"
     assert result.estimate_source == "curated_footprint"
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_catalog_fit_unknown_profile(monkeypatch, raises):
+    if raises:
+
+        def fail(_alias):
+            raise RuntimeError("profile lookup failed")
+
+        monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", fail)
+
+    result = preflight.catalog_memory_fit(
+        "unknown-alias", ram_bytes=8 * GIB, recommended_working_set_bytes=6 * GIB
+    )
+    assert result.estimate_bytes is None
+    assert result.fits is None
+    assert result.fit_basis == "unknown"

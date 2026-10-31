@@ -939,6 +939,7 @@ def catalog_memory_fit(
         else:
             estimate, source = None, "unknown"
         floor = profile.min_memory_gb
+        fits: bool | None
         if profile.modality != "text" and floor is not None and ram_bytes is not None:
             fits = ram_bytes >= floor * _GIB
             basis = "memory_floor"

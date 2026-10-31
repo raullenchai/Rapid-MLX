@@ -352,6 +352,15 @@ def test_floor_based_catalog_and_plan_wording(
 
 
 @pytest.mark.parametrize("fit", ["fits", "does_not_fit"])
+def test_gpu_budget_plan_wording(fit):
+    model = {"estimated_memory_gb": 6, "memory_fit": fit}
+    verdict = "fits" if fit == "fits" else "does NOT fit"
+    assert community_cli._memory_line(model, 16, 12) == (
+        f"~6.0 GB working set; {verdict} this Mac (GPU can use about 12 GB of 16 GB)"
+    )
+
+
+@pytest.mark.parametrize("fit", ["fits", "does_not_fit"])
 def test_floor_based_plan_curated_working_set_wording(fit):
     model = {
         "estimated_memory_gib": 6,
