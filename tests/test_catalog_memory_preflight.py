@@ -379,6 +379,14 @@ def test_cached_image_keeps_floor_warning(monkeypatch, capsys):
     assert "proceeding anyway" in capsys.readouterr().out
 
 
+def test_cached_alias_below_enforced_floor_exits(monkeypatch):
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: True)
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 36 * GIB)
+    args = SimpleNamespace(command="serve", model="qwen3.8-27b-tensorfold")
+    with pytest.raises(SystemExit):
+        preflight._check_catalog_memory_fit(args)
+
+
 @pytest.mark.parametrize("ram, fits", [(36, False), (48, True), (64, True)])
 def test_catalog_fit_enforced_floor(ram, fits):
     result = preflight.catalog_memory_fit(

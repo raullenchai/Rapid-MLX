@@ -1065,15 +1065,16 @@ def _check_catalog_memory_fit(args: Any) -> None:
 
         alias = getattr(args, "_original_alias", None) or args.model
         profile = resolve_profile(alias)
-        if profile is None or is_repo_cached(profile.hf_path):
+        if profile is None:
             return
+        cached = is_repo_cached(profile.hf_path)
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
         result = catalog_memory_refusal(
             alias,
             ram_bytes=ram,
             recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
-            cached=False,
+            cached=cached,
         )
         if result is None:
             return
