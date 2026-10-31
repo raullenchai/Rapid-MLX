@@ -391,6 +391,41 @@ def test_non_terminal_disables_hf_progress_bars(monkeypatch):
         enable_progress_bars()
 
 
+def test_non_terminal_disables_progress_before_hub_import(monkeypatch):
+    import os
+    import sys
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.delitem(sys.modules, "huggingface_hub", raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+
+    quiet_hf_progress_bars_off_terminal()
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+
+
+def test_quiet_progress_ignores_desktop_role_error(monkeypatch):
+    import os
+    import sys
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+    from rapid_mlx.telemetry import consent_runtime
+
+    def fail():
+        raise RuntimeError("role unavailable")
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    monkeypatch.setattr(consent_runtime, "is_desktop_sidecar", fail)
+
+    assert quiet_hf_progress_bars_off_terminal() is None
+    assert "HF_HUB_DISABLE_PROGRESS_BARS" not in os.environ
+
+
 def test_hf_progress_bars_restored_after_previous_test():
     from huggingface_hub.utils import are_progress_bars_disabled
 

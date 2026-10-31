@@ -9,6 +9,16 @@ import sys
 from rapid_mlx import _mirror
 
 
+def test_desktop_progress_protocol_handles_role_error(monkeypatch):
+    from rapid_mlx.telemetry import consent_runtime
+
+    def fail():
+        raise RuntimeError("role unavailable")
+
+    monkeypatch.setattr(consent_runtime, "is_desktop_sidecar", fail)
+    assert _mirror._desktop_progress_protocol() is False
+
+
 def test_human_emits_only_when_progress_is_due(monkeypatch):
     monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
     monkeypatch.setattr(sys, "stdout", io.StringIO())
