@@ -188,9 +188,10 @@ def test_decoded_duration_precedes_segments_and_vad_return(
 
     def duration_probe(path, *, allow_decode):
         calls.append(allow_decode)
-        return 2.5 if allow_decode else None
+        return None
 
     monkeypatch.setattr(stt, "_audio_duration_seconds", duration_probe)
+    monkeypatch.setattr(stt, "_decoded_audio_duration", lambda _: 2.5)
     engine = stt.STTEngine("whisper-small")
     engine._loaded = True
     engine._enable_vad_pretrim = no_speech
@@ -208,7 +209,7 @@ def test_decoded_duration_precedes_segments_and_vad_return(
         engine.model.generate = lambda *a, **kw: pytest.fail("backend must not run")
     result = engine.transcribe(path)
     assert result.duration == 2.5
-    assert calls == [False, True]
+    assert calls == [False]
     if no_speech:
         assert result.segments == []
 

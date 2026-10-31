@@ -1,5 +1,6 @@
 """Regression coverage for Whisper decoding past a short input's duration."""
 
+import os
 import wave
 from types import SimpleNamespace
 
@@ -92,5 +93,5 @@ def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
     monkeypatch.setattr(stt.subprocess, "run", run)
     monkeypatch.setattr(utils, "load_audio", lambda _: pytest.fail("unexpected decode"))
     assert stt._audio_duration_seconds(str(path)) == 2.75
-    assert calls[0][0][-1] == str(path)
+    assert calls[0][0][-1] == "file:" + os.path.abspath(path)
     assert calls[0][1]["timeout"] == 5

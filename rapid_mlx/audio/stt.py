@@ -536,6 +536,11 @@ def _audio_duration_seconds(
         pass
     if not allow_decode:
         return None
+    return _decoded_audio_duration(audio_path)
+
+
+def _decoded_audio_duration(audio_path: str) -> float | None:
+    """Determine duration using the decoder as a last resort."""
     try:
         # Last resort for compressed formats: use the same decoder mlx-audio
         # itself accepts.  This allocates a waveform only when cheap metadata
@@ -897,7 +902,7 @@ class STTEngine:
         audio_path = str(audio_path)
         source_duration = _audio_duration_seconds(audio_path, allow_decode=False)
         if source_duration is None:
-            source_duration = _audio_duration_seconds(audio_path, allow_decode=True)
+            source_duration = _decoded_audio_duration(audio_path)
 
         if self._is_sensevoice and task != "transcribe":
             raise ValueError(
