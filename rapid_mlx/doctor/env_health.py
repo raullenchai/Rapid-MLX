@@ -606,12 +606,11 @@ def _runtime_python_path() -> Path:
         def _python_from_entrypoint(entry: Path, process: Any) -> Path | None:
             try:
                 lines = entry.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError):
-                return None
-            if not lines:
+                first_line = lines[0]
+            except (OSError, UnicodeDecodeError, IndexError):
                 return None
             interpreter_path = launcher_interpreter(
-                lines[0] if lines else "", lines[1] if len(lines) > 1 else ""
+                first_line, lines[1] if len(lines) > 1 else ""
             )
             if interpreter_path and Path(interpreter_path).name.startswith("env"):
                 process_exe = Path(process.exe()).absolute()
