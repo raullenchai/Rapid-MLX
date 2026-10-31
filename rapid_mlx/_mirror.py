@@ -275,7 +275,7 @@ class _ProgressTracker:
         self._human_due_bucket = 0  # guarded by _lock
         self._human_last_done = 0
         self._human_last_bucket = 0
-        self._human_last_line = None
+        self._human_last_line: str | None = None
         self._ansi = self._is_tty and "NO_COLOR" not in os.environ
         # Render state — guarded by ``_io_lock`` (never ``_lock``).
         self._bar_live = False  # a bar is currently drawn on the TTY row
@@ -347,7 +347,7 @@ class _ProgressTracker:
         line = f"  Downloaded {done / 1e9:.1f} of {total / 1e9:.1f} GB ({pct}%)"
         milestone = bucket > self._human_last_bucket
         timed = now - self._human_last_time >= 30 and done > self._human_last_done
-        if (final or milestone or timed) and line != self._human_last_line:
+        if timed or ((final or milestone) and line != self._human_last_line):
             print(line, file=self._out, flush=True)
             self._human_last_time = now
             self._human_last_done = done
