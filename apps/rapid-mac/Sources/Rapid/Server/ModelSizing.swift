@@ -138,9 +138,9 @@ enum ModelSizing {
     /// Residency charge sent to the server. Downloaded bytes are better
     /// evidence for image aliases whose names carry no parameter count; add a
     /// modest runtime margin and keep the ordinary model estimate as a floor.
-    static func residentEstimateGB(alias: String, sizeText: String? = nil) -> Double {
+    static func residentEstimateGB(alias: String, sizeText: String? = nil, sizeBytes: Int64? = nil) -> Double {
         let heuristic = estimate(alias: alias).totalGB
-        guard let bytes = ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
+        guard let bytes = sizeBytes ?? ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
         else { return heuristic }
         let diskGiB = Double(bytes) / Double(UInt64(1) << 30)
         return max(heuristic, diskGiB * 1.25 + 0.5)
@@ -152,9 +152,10 @@ enum ModelSizing {
     static func imageResidentEstimateGB(
         alias: String,
         sizeText: String? = nil,
+        sizeBytes: Int64? = nil,
         minimumMemoryGB: Double? = nil
     ) -> Double {
-        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText)
+        let artifactEstimate = residentEstimateGB(alias: alias, sizeText: sizeText, sizeBytes: sizeBytes)
         guard let minimumMemoryGB,
               minimumMemoryGB.isFinite,
               minimumMemoryGB > 0 else { return artifactEstimate }

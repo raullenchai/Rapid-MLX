@@ -3579,11 +3579,11 @@ struct QuickstartView: View {
         }
     }
 
-    /// Estimated download size, using decimal bytes per billion parameters.
+    /// Estimated download size, using the sizing estimate’s binary units.
     static func sizeText(for alias: String) -> String {
         let gb = ModelSizing.estimate(alias: alias).weightsGB
         guard gb > 0 else { return "" }
-        return "~" + DownloadProgress.formatBytes(Int64(gb * 1_000_000_000))
+        return "~" + DownloadProgress.formatBytes(Int64(gb * Double(1 << 30)))
     }
 
     static func sizeText(for choice: QuickstartModelChoice) -> String {

@@ -417,8 +417,8 @@ enum ModelCacheActions {
             return entries.sorted { $0.alias.localizedStandardCompare($1.alias) == .orderedAscending }
         case .sizeDescending:
             return entries.sorted { lhs, rhs in
-                let lhsBytes = parseSizeBytes(lhs.sizeOnDisk) ?? -1
-                let rhsBytes = parseSizeBytes(rhs.sizeOnDisk) ?? -1
+                let lhsBytes = lhs.size?.byteCount ?? -1
+                let rhsBytes = rhs.size?.byteCount ?? -1
                 if lhsBytes != rhsBytes { return lhsBytes > rhsBytes }
                 return lhs.alias.localizedStandardCompare(rhs.alias) == .orderedAscending
             }
@@ -426,11 +426,11 @@ enum ModelCacheActions {
     }
 
     /// Disk-usage footer aggregation. Walks the cached entries,
-    /// parses each ``sizeOnDisk`` string back into bytes, and
+    /// uses numeric sizes with a legacy-text fallback, and
     /// returns a ``(count, bytes, missingSizeCount)`` triple.
     ///
     /// codex r2 P3 (#210): ``missingSizeCount`` is the number of
-    /// cached entries whose ``sizeOnDisk`` was nil / unparseable.
+    /// cached entries with no numeric or parseable legacy size.
     /// When that's > 0 the footer ADDS a ``(+N unmeasured)``
     /// suffix instead of silently pretending the byte total
     /// represents every cached model — a partial sum dressed as
@@ -447,10 +447,10 @@ enum ModelCacheActions {
     /// total and cleanup signal contradict its own delete surface (#1818).
     static func largestManagedEntry(_ entries: [ModelEntry]) -> ModelEntry? {
         entries
-            .filter { $0.cached && !$0.isExternal && parseSizeBytes($0.sizeOnDisk) != nil }
+            .filter { $0.cached && !$0.isExternal && $0.size?.byteCount != nil }
             .max {
-                let lhs = parseSizeBytes($0.sizeOnDisk) ?? 0
-                let rhs = parseSizeBytes($1.sizeOnDisk) ?? 0
+                let lhs = $0.size?.byteCount ?? 0
+                let rhs = $1.size?.byteCount ?? 0
                 if lhs != rhs { return lhs < rhs }
                 return $0.alias.localizedStandardCompare($1.alias) == .orderedDescending
             }
@@ -495,7 +495,7 @@ enum ModelCacheActions {
         var missing = 0
         for entry in entries where entry.cached {
             cachedCount += 1
-            if let bytes = parseSizeBytes(entry.sizeOnDisk) {
+            if let bytes = entry.size?.byteCount {
                 total += bytes
                 anyParsed = true
             } else {

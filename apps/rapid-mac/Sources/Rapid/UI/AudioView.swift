@@ -546,7 +546,7 @@ struct AudioView: View {
             _ = downloads.startDownload(
                 alias: alias,
                 hfPath: entry.hfRepo,
-                totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+                totalBytes: entry.size?.byteCount
             )
         case .start(let alias), .retry(let alias):
             Task { await loadAudioModel(alias) }
@@ -599,7 +599,7 @@ struct AudioView: View {
                     _ = downloads.startDownload(
                         alias: alias,
                         hfPath: currentEntry.hfRepo,
-                        totalBytes: ModelCacheActions.parseSizeBytes(currentEntry.sizeOnDisk)
+                        totalBytes: currentEntry.size?.byteCount
                     )
                 }
                 await downloads.awaitDownloadSettlement(alias: alias)

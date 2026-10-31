@@ -944,7 +944,7 @@ struct SettingsModelManagementPanel: View {
         if let size = entry.size?.displayText { return size }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
-        return DownloadProgress.formatBytes(Int64(fp.weightsGB * 1_000_000_000))
+        return DownloadProgress.formatBytes(Int64(fp.weightsGB * Double(1 << 30)))
     }
 
     /// Catalog byte counts from the manifest or cache inventory are formatted once

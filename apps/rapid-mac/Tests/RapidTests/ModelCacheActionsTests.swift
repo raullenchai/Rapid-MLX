@@ -17,6 +17,14 @@ struct ModelCacheActionsTests {
         ModelEntry(alias: alias, hfRepo: repo, sizeOnDisk: size, cached: cached)
     }
 
+    @Test func numericSizeOverridesUnparseableDisplay() {
+        let entry = ModelEntry(alias: "model", hfRepo: nil, sizeOnDisk: "about one gig", cached: true, sizeBytes: 1_070_000_000)
+        let usage = ModelCacheActions.aggregateOnDiskBytes([entry])
+        #expect(usage.totalBytes == 1_070_000_000)
+        #expect(usage.missingSizeCount == 0)
+        #expect(ModelCacheActions.largestManagedEntry([entry])?.alias == entry.alias)
+    }
+
     // MARK: - Status badge
 
     @Test("status badge: inUse wins over cached when serving matches")

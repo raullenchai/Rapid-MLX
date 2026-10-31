@@ -6,7 +6,10 @@ import Testing
 struct ModelSizeTests {
     @Test func byteFormatting() {
         let bytes: Int64 = 1_500_000_000
-        #expect(DownloadProgress.formatBytes(bytes) == ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+        let expected = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        #expect(ModelSize.bytes(bytes).displayText == expected)
+        #expect(ModelSize.legacy("1.5 GB")?.displayText == expected)
+        #expect(DownloadProgress.formatBytes(bytes) == expected)
         #expect(DownloadProgress.formatBytes(-1) == "0 bytes")
     }
 
@@ -20,6 +23,13 @@ struct ModelSizeTests {
         #expect(ModelSize.legacy("  ") == nil)
         #expect(ModelSize.legacy(nil) == nil)
         #expect(ModelSize.legacy("1e99 GiB")?.byteCount == nil)
+    }
+
+    @Test func localizedLegacyParsing() {
+        let german = Locale(identifier: "de_DE")
+        #expect(ModelSize.parseBytes("1,07 GB", locale: german) == 1_070_000_000)
+        #expect(ModelSize.parseBytes("1,07\u{00a0}GB", locale: german) == 1_070_000_000)
+        #expect(ModelSize.parseBytes("1.234,5 MB", locale: german) == 1_234_500_000)
     }
 
     @Test func cachedInventoryAndMergePreserveBytes() throws {

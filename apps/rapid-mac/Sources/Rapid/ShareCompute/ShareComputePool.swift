@@ -33,7 +33,7 @@ struct ShareComputeLocalModel: Identifiable, Hashable, Sendable {
         guard !isReady else { return nil }
         let footprint = ModelSizing.estimate(alias: model.alias)
         guard footprint.weightsGB > 0 else { return nil }
-        return Int64(footprint.weightsGB * 1_000_000_000)
+        return Int64(footprint.weightsGB * Double(1 << 30))
     }
 
     /// Joins the pool catalog to the local catalog.

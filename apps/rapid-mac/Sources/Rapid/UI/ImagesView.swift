@@ -325,7 +325,7 @@ struct ImagesView: View {
             _ = downloads.startDownload(
                 alias: target,
                 hfPath: entry.hfRepo,
-                totalBytes: ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+                totalBytes: entry.size?.byteCount
             )
         case .start(let target), .retry(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
@@ -352,7 +352,8 @@ struct ImagesView: View {
             hfPath: hfPath,
             estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: alias,
-                sizeText: entry?.size?.displayText,
+                sizeText: entry?.sizeOnDisk,
+                sizeBytes: entry?.sizeBytes,
                 minimumMemoryGB: entry?.minimumMemoryGB
             ),
             imageMode: viewModel.isEditing ? .editing : .generation,

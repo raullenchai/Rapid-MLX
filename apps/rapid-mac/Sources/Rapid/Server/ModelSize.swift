@@ -13,7 +13,7 @@ enum ModelSize: Hashable, Sendable, ExpressibleByStringLiteral {
         return parseBytes(text).map(Self.bytes) ?? .legacyText(text)
     }
 
-    static func parseBytes(_ raw: String?) -> Int64? {
+    static func parseBytes(_ raw: String?, locale: Locale = .current) -> Int64? {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }
@@ -40,7 +40,17 @@ enum ModelSize: Hashable, Sendable, ExpressibleByStringLiteral {
         for (suffix, multiplier) in units {
             if lower.hasSuffix(suffix) {
                 let numPart = lower.dropLast(suffix.count).trimmingCharacters(in: .whitespaces)
-                if let value = Double(numPart) {
+                let normalized: String?
+                if let decimal = locale.decimalSeparator, decimal != ".", numPart.contains(decimal) {
+                    var text = numPart
+                    if let grouping = locale.groupingSeparator, !grouping.isEmpty {
+                        text = text.replacingOccurrences(of: grouping, with: "")
+                    }
+                    normalized = text.replacingOccurrences(of: decimal, with: ".")
+                } else {
+                    normalized = nil
+                }
+                if let value = Double(numPart) ?? normalized.flatMap(Double.init) {
                     let bytes = value * multiplier
                     guard bytes.isFinite, bytes >= 0, bytes < Double(Int64.max) else { return nil }
                     return Int64(bytes)

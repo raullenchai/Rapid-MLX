@@ -527,7 +527,8 @@ final class ImageGenViewModel {
             hfPath: selected.hfRepo,
             estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: selected.alias,
-                sizeText: selected.size?.displayText,
+                sizeText: selected.sizeOnDisk,
+                sizeBytes: selected.sizeBytes,
                 minimumMemoryGB: selected.minimumMemoryGB
             )
         )

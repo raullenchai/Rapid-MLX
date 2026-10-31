@@ -961,6 +961,13 @@ struct ModelResidencyTests {
         #expect(message.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget"))
     }
 
+    @Test func imageResidencyUsesNumericSizeBeforeDisplayText() {
+        let bytes: Int64 = 20 * (1 << 30)
+        let entry = ModelEntry(alias: "image-model", hfRepo: nil, sizeOnDisk: "about one gig", cached: true, sizeBytes: bytes)
+        let estimate = ModelSizing.imageResidentEstimateGB(alias: entry.alias, sizeText: entry.sizeOnDisk, sizeBytes: entry.sizeBytes)
+        #expect(estimate == Double(bytes) / Double(1 << 30) * 1.25 + 0.5)
+    }
+
     @Test("Image residency estimate uses catalog bytes plus runtime margin")
     func imageEstimateUsesDownloadSize() {
         let estimate = ModelSizing.residentEstimateGB(
