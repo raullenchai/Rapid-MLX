@@ -168,9 +168,9 @@ def _move_fd_above_stdio(fd: int) -> int:
 
 
 def _crash_logs_dir() -> Path:
-    from rapid_mlx.telemetry.state import _default_telemetry_dir
+    from rapid_mlx.first_run import _state_dir
 
-    return _default_telemetry_dir() / "logs"
+    return _state_dir() / "logs"
 
 
 def _crash_files(log_dir: Path) -> list[Path]:
