@@ -2588,6 +2588,7 @@ def load_dflash_runtime(
     drafter_revision: str | None,
     experimental_opt_in: bool,
     expected_algorithm: str | None,
+    experimental_warning_shown: bool = False,
 ):
     if not have_runtime():
         from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
@@ -2619,7 +2620,8 @@ def load_dflash_runtime(
                 "no speedup or may be slower than autoregressive decoding."
             )
         if not registry_verified_pair:
-            logger.warning(
+            log = logger.debug if experimental_warning_shown else logger.warning
+            log(
                 "Experimental DFlash: this 4-bit target/drafter pair has not "
                 "been performance-validated by Rapid-MLX and may be slower"
             )
@@ -2689,6 +2691,7 @@ def run_dflash_server(
     default_reasoning_effort: str | None = None,
     experimental_opt_in: bool = False,
     expected_algorithm: str | None = None,
+    experimental_warning_shown: bool = False,
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -2717,6 +2720,7 @@ def run_dflash_server(
         drafter_revision=drafter_revision,
         experimental_opt_in=experimental_opt_in,
         expected_algorithm=expected_algorithm,
+        experimental_warning_shown=experimental_warning_shown,
     )
 
     app = _build_app(

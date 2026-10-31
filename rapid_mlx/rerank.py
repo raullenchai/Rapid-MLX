@@ -557,7 +557,12 @@ class RerankEngine:
             and config.get("sliding_window") is not None
             and any(w is not None for w in _jina_attention_windows(config))
         ):
-            family = replace(family, auto_max_length=8192, max_query_tokens=1024)
+            family = replace(
+                family,
+                label="jina-reranker-v3.5",
+                auto_max_length=8192,
+                max_query_tokens=1024,
+            )
         if self._instruction_setting and not family.accepts_instruction:
             raise UnsupportedRerankModelError(
                 f"'{self.model_name}' ({family.label}) takes no instruction; "
@@ -569,7 +574,11 @@ class RerankEngine:
                 "remove --rerank-prompt"
             )
 
-        logger.info("Loading rerank model: %s (%s)", self.model_name, family.label)
+        logger.info(
+            "Loading rerank model: %s (%s)",
+            self.model_name,
+            family.label,
+        )
         start = time.perf_counter()
         # Untyped config.json value, validated by _resolve_max_length.
         model_max: Any
