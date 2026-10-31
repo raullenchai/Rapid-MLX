@@ -68,6 +68,11 @@ curl -s http://localhost:8000/v1/audio/speech \
   --output hello.wav
 ```
 
+**Voices:** List them with `curl "http://127.0.0.1:8000/v1/audio/voices?model=<alias>"`.
+OpenAI names such as `alloy` and `nova` map to the nearest model voice or its
+default. Single-voice models such as `moss-tts-nano` and `voxcpm2` have one
+voice named `default`.
+
 ### STT quick start
 
 ```bash
@@ -78,6 +83,9 @@ curl -s http://localhost:8000/v1/audio/transcriptions \
   -F "model=whisper-large-v3" \
   -F "file=@speech.mp3"
 ```
+
+On a server serving one speech-to-text model, `model="whisper-1"` (the OpenAI
+SDK default name) uses that served model.
 
 ### IndexTTS zero-shot voice cloning
 
