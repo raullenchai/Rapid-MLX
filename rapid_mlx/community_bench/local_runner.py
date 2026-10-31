@@ -177,15 +177,36 @@ def _cancelling() -> bool:
     )
 
 
+class _OutstandingFutures:
+    """Futures that have not finished yet; finished ones are released."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: set[concurrent.futures.Future] = set()
+
+    def track(self, future: concurrent.futures.Future) -> concurrent.futures.Future:
+        with self._lock:
+            self._pending.add(future)
+        future.add_done_callback(self._discard)
+        return future
+
+    def _discard(self, future: concurrent.futures.Future) -> None:
+        with self._lock:
+            self._pending.discard(future)
+
+    def any_running(self) -> bool:
+        with self._lock:
+            pending = list(self._pending)
+        return any(future.running() for future in pending)
+
+
 class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.futures = []
+        self.futures = _OutstandingFutures()
 
     def submit(self, *args, **kwargs):
-        future = super().submit(*args, **kwargs)
-        self.futures.append(future)
-        return future
+        return self.futures.track(super().submit(*args, **kwargs))
 
 
 class BenchmarkCancelledError(RuntimeError):
@@ -1278,12 +1299,10 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         self._requests = {}
         self._active = {}
         self.timed_out = False
-        self._futures = []
+        self._futures = _OutstandingFutures()
 
     def _submit(self, *args):
-        future = self._handle.executor.submit(*args)
-        self._futures.append(future)
-        return future
+        return self._futures.track(self._handle.executor.submit(*args))
 
     async def abort_request(self, request_id):
         self._requests.pop(request_id, None)
@@ -1443,11 +1462,7 @@ async def _measure_dedicated(
     finally:
         global _abandoned_native_worker
         cancelling = _cancelling()
-        abandon = (
-            cancelling
-            and adapter is not None
-            and any(future.running() for future in adapter._futures)
-        )
+        abandon = cancelling and adapter is not None and adapter._futures.any_running()
         if abandon:
             _abandoned_native_worker = True
         handle.close(wait=not abandon and (adapter is None or not adapter.timed_out))
@@ -1998,9 +2013,7 @@ async def _text_measurements(
         finally:
             if executor is not None:
                 global _abandoned_native_worker
-                abandon = _cancelling() and any(
-                    future.running() for future in executor.futures
-                )
+                abandon = _cancelling() and executor.futures.any_running()
                 if abandon:
                     _abandoned_native_worker = True
                 executor.shutdown(wait=not abandon, cancel_futures=True)
