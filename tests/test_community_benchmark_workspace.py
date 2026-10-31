@@ -513,7 +513,8 @@ def test_plan_rejects_draft_only_model() -> None:
     with pytest.raises(DraftModelNotServableError) as error:
         plan_for_alias("qwen3.6-35b-mtp-4bit")
     assert "draft checkpoint" in str(error.value)
-    assert "Serve '" in str(error.value)
+    assert "Benchmark '" in str(error.value)
+    assert "Serve '" not in str(error.value)
 
 
 def test_run_local_rejects_draft_before_loading_or_archiving(

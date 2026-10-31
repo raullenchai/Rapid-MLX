@@ -378,8 +378,9 @@ def summarize_measurements(run: dict[str, Any]) -> list[str]:
 def _print_failure(args, exc: Exception) -> int:
     run = exc.run if isinstance(exc, LocalBenchmarkError) else None
     saved = exc.saved if isinstance(exc, LocalBenchmarkError) else False
+    message = str(exc).removeprefix("error: ")
     if args.json:
-        payload = {"error": str(exc), "saved": saved}
+        payload = {"error": message, "saved": saved}
         # A refusal is a decision, not a malfunction. Flagged so a GUI can say
         # so in a calm voice instead of presenting it as a crash.
         if isinstance(exc, PublicationRefused):
@@ -392,16 +393,16 @@ def _print_failure(args, exc: Exception) -> int:
         )
     elif saved and run is not None:
         print(
-            f"Benchmark failed; local outcome saved as {run['run_id']}: {exc}",
+            f"Benchmark failed; local outcome saved as {run['run_id']}: {message}",
             file=sys.stderr,
         )
     elif run is not None:
         print(
-            f"Benchmark failed; local outcome could not be saved: {exc}",
+            f"Benchmark failed; local outcome could not be saved: {message}",
             file=sys.stderr,
         )
     else:
-        print(f"Benchmark command failed: {exc}", file=sys.stderr)
+        print(f"Benchmark command failed: {message}", file=sys.stderr)
     return 1
 
 

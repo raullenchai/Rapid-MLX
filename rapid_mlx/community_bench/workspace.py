@@ -274,7 +274,7 @@ def plan_for_alias(
     filesystem and never downloads anything.
     """
 
-    raise_if_draft_only_model(alias_name)
+    raise_if_draft_only_model(alias_name, action="Benchmark")
     catalog = benchmark_catalog(
         memory_gib=memory_gib,
         recommended_working_set_bytes=recommended_working_set_bytes,
