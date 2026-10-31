@@ -36,9 +36,48 @@ from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.audio_worker import require_audio_worker_available
+from ..utils.model_file_guard import RemoteCodeConsentRequired
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
+
+
+def _remote_code_consent_error(exc: Exception) -> HTTPException | None:
+    """Find consent refusals in a bounded exception chain."""
+    pending = [(exc, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, RemoteCodeConsentRequired):
+            logger.warning("Model repository code consent required: %s", current)
+            return HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "message": (
+                            "This model ships executable repository code "
+                            "(auto_map/model_file), which Rapid-MLX does not run "
+                            "without consent. Review the model's code, then "
+                            "restart the server with RAPID_MLX_TRUST_REMOTE_CODE=1 "
+                            "to allow it."
+                        ),
+                        "type": "permission_error",
+                        "code": "remote_code_consent_required",
+                        "param": "model",
+                    }
+                },
+            )
+        if depth < 5:
+            pending.extend(
+                (cause, depth + 1)
+                for cause in (current.__cause__, current.__context__)
+                if cause is not None
+            )
+    return None
+
 
 router = APIRouter()
 _AUDIO_POST_DEPENDENCIES = [
@@ -1902,6 +1941,9 @@ async def _run_stt_request(
         # via the catch-all below.
         raise
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # R6-H3: corrupted upload (raw garbage bytes, wrong codec,
         # truncated header) is a CLIENT error — surface a 400 with
         # the OpenAI-shape envelope so callers don't have to retry
@@ -2518,6 +2560,9 @@ async def _run_alignment_request(
     except (HTTPException, ModelDownloadsDisabledError):
         raise
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # ONE handler, classified inside — deliberately not a chain of
         # ``except ValueError`` / ``except Exception`` clauses. A bare
         # ``raise`` in the narrower clause exits the whole try statement
@@ -3807,6 +3852,9 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             ),
         )
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # R7-H3: ``logger.exception`` writes the FULL traceback to the
         # operator log so future regressions in mlx_audio (or any other
         # upstream backend) leave enough breadcrumbs to root-cause from
