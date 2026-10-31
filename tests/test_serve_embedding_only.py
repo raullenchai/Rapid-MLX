@@ -499,7 +499,8 @@ def test_embedding_only_mode_configures_server_and_runs_uvicorn(monkeypatch, lis
     assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (
         ("localhost", 8123, None) if listen_fd is None else (None, None, listen_fd)
     )
-    assert uvicorn_kwargs["on_server_accepting"]() is None
+    # Retrieval-only servers use the default ready banner.
+    assert uvicorn_kwargs.get("on_server_accepting") is None
 
 
 @pytest.mark.parametrize(
