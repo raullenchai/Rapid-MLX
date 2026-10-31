@@ -163,6 +163,8 @@ def render_banner(
     include_connect: bool = True,
     running: bool = True,
     image_note: str | None = None,
+    lane_rows: list[tuple[str, str]] | None = None,
+    chat: bool = True,
 ) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
@@ -197,7 +199,8 @@ def render_banner(
         lines.append(f"  Ready: {ep.base_url}")
         lines.append("")
         lines.append(f"  OpenAI:    {ep.openai_url}")
-        lines.append(f"  Anthropic: {ep.anthropic_url}")
+        if chat:
+            lines.append(f"  Anthropic: {ep.anthropic_url}")
         unknown_model = (
             "(authentication required)" if ep.auth_required else "(not yet loaded)"
         )
@@ -211,8 +214,13 @@ def render_banner(
     if include_connect and ep.listen_fd is None:
         lines.append("")
         lines.append("  Connect:")
-        width = max(len(a) for a, _, _ in _CONNECT_ROWS)
-        for app, cmd, needs_endpoint in _CONNECT_ROWS:
+        rows = (
+            _CONNECT_ROWS
+            if chat
+            else [(label, cmd, False) for label, cmd in (lane_rows or [])]
+        )
+        width = max((len(a) for a, _, _ in rows), default=0)
+        for app, cmd, needs_endpoint in rows:
             rendered = cmd
             if needs_endpoint:
                 rendered += f" --base-url {shlex.quote(ep.openai_url)}"

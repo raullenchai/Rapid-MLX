@@ -1221,15 +1221,21 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
     if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
         import logging
 
-        from rapid_mlx.audio.registry import is_audio_name
+        from rapid_mlx.audio.registry import is_audio_name, resolve_audio_alias
         from rapid_mlx.onboarding import record_serve_success, track_next_step
         from rapid_mlx.runtime.optional_runtime import _running_in_desktop_sidecar
 
         if not _running_in_desktop_sidecar():
             record_serve_success()
 
+        audio_entry = resolve_audio_alias(_cfg.model_alias) or resolve_audio_alias(
+            _cfg.model_name
+        )
+        lane_rows = _ready_lane_rows(_cfg, _ep, audio_entry)
+        chat = lane_rows is None
         interactive = (
-            sys.stdout.isatty()
+            chat
+            and sys.stdout.isatty()
             and logging.getLogger().getEffectiveLevel() <= logging.INFO
             and not _running_in_desktop_sidecar()
             and not _cfg.retrieval_only
@@ -1247,10 +1253,100 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
                 print(next_step, end="", flush=True)
                 track_next_step()
         else:
-            print(render_banner(_ep, image_note=_text_lane_image_note(_cfg)), end="")
+            print(
+                render_banner(
+                    _ep,
+                    image_note=_text_lane_image_note(_cfg),
+                    lane_rows=lane_rows,
+                    chat=chat,
+                ),
+                end="",
+            )
         from rapid_mlx.newsletter_hint import maybe_print_newsletter_hint
 
         maybe_print_newsletter_hint(update_notice_shown=update_notice_shown)
+
+
+def _ready_lane_rows(cfg, ep, audio_entry):
+    """Build copyable examples for servers without a chat lane."""
+    import json
+    import shlex
+
+    image = getattr(_engine, "is_image_gen", False)
+    video = getattr(_engine, "is_video_gen", False)
+    if not (audio_entry or cfg.retrieval_only or image or video):
+        return None
+    auth = ' -H "Authorization: Bearer $RAPID_MLX_API_KEY"' if cfg.api_key else ""
+
+    def url(path):
+        return shlex.quote(ep.openai_url + path)
+
+    def json_command(path, body):
+        payload = shlex.quote(
+            json.dumps(body, ensure_ascii=True, separators=(",", ":"))
+        )
+        return (
+            f"curl {url(path)}{auth} -H 'Content-Type: application/json' -d {payload}"
+        )
+
+    model = ep.model or ""
+    if audio_entry and audio_entry.type == "stt":
+        return [
+            (
+                "Transcribe",
+                f"curl {url('/audio/transcriptions')}{auth} -F {shlex.quote('model=' + model)} -F file=@audio.wav",
+            )
+        ]
+    if audio_entry and audio_entry.type == "tts":
+        return [
+            (
+                "Speak",
+                json_command("/audio/speech", {"model": model, "input": "Hello"})
+                + " -o speech.wav",
+            )
+        ]
+    if cfg.retrieval_only:
+        rows = []
+        if cfg.embedding_model_locked:
+            rows.append(
+                (
+                    "Embeddings",
+                    json_command(
+                        "/embeddings",
+                        {"model": cfg.embedding_model_locked, "input": "Hello"},
+                    ),
+                )
+            )
+        if cfg.rerank_model_locked:
+            rows.append(
+                (
+                    "Rerank",
+                    json_command(
+                        "/rerank",
+                        {
+                            "model": cfg.rerank_model_locked,
+                            "query": "Hello",
+                            "documents": ["Hello world"],
+                        },
+                    ),
+                )
+            )
+        return rows
+    if image:
+        return [
+            (
+                "Generate",
+                json_command(
+                    "/images/generations", {"model": model, "prompt": "A cat"}
+                ),
+            )
+        ]
+    return [
+        (
+            "Generate",
+            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}",
+        )
+    ]
 
 
 def _text_lane_image_note(cfg) -> str | None:

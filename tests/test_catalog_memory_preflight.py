@@ -215,3 +215,31 @@ def test_fitting_pick_searches_lower_tiers():
         fitting_pick(current.floor_gb, budget, exclude=expected.upper())
         == tiers[0].picks[0].alias
     )
+
+
+def test_cli_piped_alias_precedes_memory_refusal():
+    import os
+    import subprocess
+
+    code = """
+import sys
+from rapid_mlx.byom import preflight
+import rapid_mlx._download_gate as gate
+preflight.physical_ram_bytes = lambda: 16 << 30
+preflight._mlx_recommended_working_set_bytes = lambda: 11 << 30
+gate.is_repo_cached = lambda _: False
+sys.argv = ['rapid-mlx', 'serve', 'gemma-4-31b-8bit']
+from rapid_mlx.cli import main
+main()
+"""
+    env = dict(os.environ, HF_HUB_OFFLINE="1")
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 1, result.stdout
+    assert result.stdout.index("Alias:") < result.stdout.index("needs ~")
