@@ -50,6 +50,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from rapid_mlx import __version__ as _rapid_mlx_version
+from rapid_mlx._version_check import launcher_interpreter
 from rapid_mlx.runtime.base_runtime import (
     homebrew_runtime_hint,
     is_homebrew_interpreter,
@@ -604,23 +605,22 @@ def _runtime_python_path() -> Path:
 
         def _python_from_entrypoint(entry: Path, process: Any) -> Path | None:
             try:
-                shebang = entry.read_text(encoding="utf-8").splitlines()[0]
+                lines = entry.read_text(encoding="utf-8").splitlines()
+                first_line = lines[0]
             except (OSError, UnicodeDecodeError, IndexError):
                 return None
-            if not shebang.startswith("#!"):
-                return _python_sibling(entry)
-            shebang_parts = shebang[2:].strip().split()
-            if len(shebang_parts) >= 1 and Path(shebang_parts[0]).name.startswith(
-                "env"
-            ):
+            interpreter_path = launcher_interpreter(
+                first_line, lines[1] if len(lines) > 1 else ""
+            )
+            if interpreter_path and Path(interpreter_path).name.startswith("env"):
                 process_exe = Path(process.exe()).absolute()
                 if process_exe.is_file() and process_exe.name.lower().startswith(
                     "python"
                 ):
                     return process_exe
                 return _python_sibling(entry)
-            if shebang_parts:
-                interpreter = Path(shebang_parts[0]).absolute()
+            if interpreter_path:
+                interpreter = Path(interpreter_path).absolute()
                 if interpreter.is_file() and interpreter.name.lower().startswith(
                     "python"
                 ):
@@ -3331,9 +3331,12 @@ def _service_runtime_version(
             return None
         launcher = executable_path.read_text(encoding="utf-8")
         lines = launcher.splitlines()
-        if not lines or not lines[0].startswith("#!"):
+        interpreter = launcher_interpreter(
+            lines[0] if lines else "", lines[1] if len(lines) > 1 else ""
+        )
+        if not interpreter:
             return None
-        declared_interpreter = Path(lines[0][2:].strip())
+        declared_interpreter = Path(interpreter)
         if (
             not declared_interpreter.is_absolute()
             or declared_interpreter.parent.parent != environment

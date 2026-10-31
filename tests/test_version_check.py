@@ -733,16 +733,48 @@ def test_active_scripts_symlink_must_target_active_interpreter(tmp_path, monkeyp
     assert vc._launcher_belongs_to_running_install(str(launcher)) is True
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        (
+            "#!/bin/sh",
+            "'''exec' '/path with space/python' \"$0\" \"$@\"",
+            "/path with space/python",
+        ),
+        (
+            "#!/bin/sh",
+            '\'\'\'exec\' "/path with space/python" "$0" "$@"',
+            "/path with space/python",
+        ),
+        ("#!/bin/sh", '\'\'\'exec\' "/path/$var/python" "$0" "$@"', None),
+        ("#!/bin/sh", '\'\'\'exec\' "/path/`cmd`/python" "$0" "$@"', None),
+        ("#!/bin/sh", '\'\'\'exec\' "/path/\\python" "$0" "$@"', None),
+        ("#!/bin/sh", "'''exec' /path/python \"$0\" \"$@\"", "/path/python"),
+        ("#!/bin/sh -", "'''exec' /path/python \"$0\" \"$@\"", "/path/python"),
+        ("#!/x/python", "", "/x/python"),
+        ("#!/usr/bin/env python3", "", "/usr/bin/env"),
+        ("not a shebang", "", None),
+        ("#!/bin/sh", "invalid", None),
+    ],
+)
+def test_launcher_interpreter(first, second, expected):
+    assert vc.launcher_interpreter(first, second) == expected
+
+
 @pytest.mark.parametrize("shell", ["#!/bin/sh", "#!/bin/sh -"])
-@pytest.mark.parametrize("quoted", [True, False])
-def test_macos_pipx_trampoline_ownership(tmp_path, monkeypatch, shell, quoted):
+@pytest.mark.parametrize("quoting", ["single", "double", "none"])
+def test_macos_pipx_trampoline_ownership(tmp_path, monkeypatch, shell, quoting):
     home = tmp_path / "home"
     venv = home / "Library" / "Application Support" / "pipx" / "venvs" / "rapid-mlx"
     launcher = venv / "bin" / "rapid-mlx"
     launcher.parent.mkdir(parents=True)
     (venv / "pipx_metadata.json").write_text("managed")
-    python = launcher.parent / "python" if quoted else tmp_path / "python"
-    interpreter = f"'{python}'" if quoted else str(python)
+    python = tmp_path / "python" if quoting == "none" else launcher.parent / "python"
+    interpreter = {
+        "single": f"'{python}'",
+        "double": f'"{python}"',
+        "none": str(python),
+    }[quoting]
     launcher.write_text(f"{shell}\n'''exec' {interpreter} \"$0\" \"$@\"\n' '''\n")
     monkeypatch.setattr(vc.sys, "executable", str(python))
     monkeypatch.setattr(vc.sys, "platform", "darwin")
