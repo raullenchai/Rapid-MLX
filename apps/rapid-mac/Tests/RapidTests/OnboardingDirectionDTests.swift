@@ -926,7 +926,7 @@ struct OnboardingDirectionDTests {
         )
         let labels = rows.map(\.label)
         #expect(labels.first == "Model", "the alias about to be pulled is named first")
-        #expect(labels.contains("Download"))
+        #expect(labels.contains("Download size"))
         #expect(labels.contains("On this Mac"))
         #expect(labels.contains("Memory when loaded"))
         #expect(labels.contains("Free space"))
@@ -938,7 +938,7 @@ struct OnboardingDirectionDTests {
         let starter = QuickstartCoordinator.defaultChoice
         #expect(QuickstartView.reviewDownloadText(alias: starter.alias, cached: nil)
                 == QuickstartView.sizeText(for: starter))
-        #expect(rows.first { $0.label == "Download" }?.value
+        #expect(rows.first { $0.label == "Download size" }?.value
                 == QuickstartView.sizeText(for: starter))
     }
 
@@ -990,7 +990,7 @@ struct OnboardingDirectionDTests {
             hardware: hardware32,
             freeBytes: nil
         )
-        #expect(rows.map(\.label).contains("Size on disk"))
+        #expect(rows.map(\.label).contains("Download size"))
         #expect(!rows.map(\.label).contains("Download"))
         #expect(rows.first { $0.label == "On this Mac" }?.value == "Already downloaded")
     }

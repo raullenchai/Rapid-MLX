@@ -79,7 +79,7 @@ struct AudioView: View {
             alias: selectedAlias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedEntry?.cached,
-            sizeText: selectedEntry?.size?.displayText,
+            sizeText: selectedEntry?.displayedModelSize?.displayText,
             download: download,
             loading: isLoading ? .init(
                 alias: selectedAlias,
@@ -113,7 +113,7 @@ struct AudioView: View {
             serverState: server.readinessState(for: selectedAlias),
             alias: selectedAlias,
             cacheState: cacheState,
-            sizeText: selectedEntry?.size?.displayText,
+            sizeText: selectedEntry?.displayedModelSize?.displayText,
             progress: progress,
             failure: server.residentLoadFailure(for: selectedAlias).map {
                 .init(message: $0.message, alias: $0.alias)
@@ -546,7 +546,7 @@ struct AudioView: View {
             _ = downloads.startDownload(
                 alias: alias,
                 hfPath: entry.hfRepo,
-                totalBytes: entry.size?.byteCount
+                totalBytes: entry.displayedModelSize?.byteCount
             )
         case .start(let alias), .retry(let alias):
             Task { await loadAudioModel(alias) }
@@ -599,7 +599,7 @@ struct AudioView: View {
                     _ = downloads.startDownload(
                         alias: alias,
                         hfPath: currentEntry.hfRepo,
-                        totalBytes: currentEntry.size?.byteCount
+                        totalBytes: currentEntry.displayedModelSize?.byteCount
                     )
                 }
                 await downloads.awaitDownloadSettlement(alias: alias)

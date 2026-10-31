@@ -162,8 +162,8 @@ struct QuickstartCachedModelTests {
     @Test("an uncatalogued cached alias keeps the alias and no duplicate caption")
     func uncataloguedCachedRowKeepsAlias() {
         let choice = QuickstartView.choice(forCachedModel: entry("bonsai-8b-2bit"))
-        #expect(choice.displayName == "bonsai-8b-2bit")
-        #expect(QuickstartView.cachedRowSecondaryText(for: choice) == nil)
+        #expect(choice.displayName == "Bonsai · 8B · 2-bit")
+        #expect(QuickstartView.cachedRowSecondaryText(for: choice) == "bonsai-8b-2bit")
     }
 
     @Test("compaction leaves a short cached list untouched")

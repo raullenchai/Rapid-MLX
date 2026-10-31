@@ -23,7 +23,7 @@ struct QuickstartShortlistLabelTests {
             secondaryText: choice.alias
         )
         #expect(label.hasPrefix(choice.displayName + ". " + choice.alias))
-        #expect(label.contains("on disk 2 GB · 92% capability"))
+        #expect(label.contains("on this Mac, size 2 GB · 92% capability"))
         #expect(!label.contains("capability capability"))
         #expect(!label.contains(".."))
         #expect(!label.contains("download 2 GB"))
@@ -94,7 +94,7 @@ struct QuickstartShortlistLabelTests {
             #expect(
                 QuickstartView.shortlistSizeText(
                     for: choice, cached: nil, recommendedForPhysicalRAMGB: ram
-                ) == QuickstartView.sizeText(forRecommended: choice, physicalRAMGB: ram)
+                ) == QuickstartView.sizeText(for: choice)
             )
         }
     }
@@ -105,7 +105,7 @@ struct QuickstartShortlistLabelTests {
         let recommendedCached = QuickstartRecommendedCard.accessibilityText(
             for: choice, sizeText: "19.03 GiB", isCached: true
         )
-        #expect(recommendedCached.contains("on disk 19.03 GiB"))
+        #expect(recommendedCached.contains("on this Mac, size 19.03 GiB"))
         #expect(!recommendedCached.contains("download"))
 
         let recommendedFresh = QuickstartRecommendedCard.accessibilityText(
@@ -116,7 +116,7 @@ struct QuickstartShortlistLabelTests {
         let lowMemoryCached = QuickstartLowMemoryCard.accessibilityText(
             for: choice, sizeText: "19.03 GiB", isCached: true
         )
-        #expect(lowMemoryCached.contains("On disk 19.03 GiB"))
+        #expect(lowMemoryCached.contains("On this Mac, size 19.03 GiB"))
         #expect(!lowMemoryCached.lowercased().contains("download"))
 
         let lowMemoryFresh = QuickstartLowMemoryCard.accessibilityText(
@@ -128,21 +128,11 @@ struct QuickstartShortlistLabelTests {
         // is on, rather than dropping the fact entirely.
         #expect(QuickstartRecommendedCard.accessibilityText(
             for: choice, sizeText: "", isCached: true
-        ).contains("on disk"))
+        ).contains("on this Mac"))
     }
     @Test("A cached model with no measurable size claims no size at all")
     func cachedWithoutSizeClaimsNothing() {
-        // `rapid-mlx ls` can hand back a cached row with no size (an external
-        // model, a partial snapshot). This test replaces an earlier one that
-        // asserted the opposite — fall through to the download estimate, on
-        // the theory that an empty size lane reads as "free". codex was right
-        // that the fallback is worse: it shows, and VoiceOver speaks, an
-        // estimated DOWNLOAD figure as an on-disk size for a model that is
-        // not being downloaded at all. That is the same defect this whole
-        // file exists for ("download 20 GB" on a model already holding 19.03
-        // GiB), one lane along. A wrong number is worse than no number, and
-        // the accessibility label already degrades to a bare "on disk" when
-        // the size text is empty.
+        // A cached model with no known size must not speak a download estimate.
         let choice = QuickstartCoordinator.lowMemoryChoice
         // Both shapes of "we could not measure it": absent and empty.
         for unmeasured in [entry(choice.alias, sizeOnDisk: nil),
@@ -152,14 +142,12 @@ struct QuickstartShortlistLabelTests {
                 cached: unmeasured,
                 recommendedForPhysicalRAMGB: 256
             )
-            #expect(text.isEmpty,
-                    "A cached row with no measured size must not borrow the download estimate.")
-            // The spoken label degrades to a bare "on disk" — no number, and
-            // in particular not a download figure described as one.
+            #expect(text.isEmpty)
+            // The spoken label preserves the cached status without a size.
             let spoken = QuickstartRecommendedCard.accessibilityText(
                 for: choice, sizeText: text, isCached: true
             )
-            #expect(spoken.contains("on disk"))
+            #expect(spoken.contains("on this Mac"))
             #expect(!spoken.contains("download"))
         }
         // Sanity check: the uncached lane still produces a size, so the
@@ -190,11 +178,11 @@ struct QuickstartShortlistLabelTests {
                 #expect(!label.contains("!."))
                 #expect(!label.contains("?."))
                 #expect(label.contains("15.2 GB · 92% capability"))
-                #expect(label.lowercased().contains(isCached ? "on disk" : "download"))
+                #expect(label.lowercased().contains(isCached ? "on this mac" : "download"))
                 if !blurb.isEmpty {
                     let sentence = ".!?".contains(blurb.last!) ? blurb : blurb + "."
                     #expect(label.contains(sentence + " " + (label.contains("Lowest memory") ?
-                        (isCached ? "On disk" : "Download") : (isCached ? "on disk" : "download"))))
+                        (isCached ? "On this Mac" : "Download") : (isCached ? "on this Mac" : "download"))))
                 }
             }
         }
@@ -208,10 +196,10 @@ struct QuickstartShortlistLabelTests {
         )
         #expect(QuickstartCompactCard.accessibilityText(
             for: choice, sizeText: "2.85 GB", isCached: true
-        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on disk 2.85 GB")
+        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on this Mac, size 2.85 GB")
         #expect(QuickstartCompactCard.accessibilityText(
             for: choice, sizeText: "", isCached: true
-        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on disk")
+        ) == "qwen3.5-4b-4bit. Already downloaded and ready to start. on this Mac")
         #expect(QuickstartCompactCard.accessibilityText(
             for: choice, sizeText: ""
         ) == "qwen3.5-4b-4bit. Already downloaded and ready to start.")

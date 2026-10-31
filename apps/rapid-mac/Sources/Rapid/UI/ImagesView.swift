@@ -17,7 +17,7 @@ enum ImageReadinessPresentation {
 
     static func rowTitle(_ entry: ModelEntry) -> String {
         var details: [String] = []
-        if let size = entry.size?.displayText, !size.isEmpty { details.append(size) }
+        if let size = entry.displayedModelSize?.displayText, !size.isEmpty { details.append(size) }
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
             details.append("≥\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30)))) RAM")
         }
@@ -272,7 +272,7 @@ struct ImagesView: View {
             alias: viewModel.selectedAlias,
             cacheState: imageCacheState,
             sizeText: viewModel.imageModels
-                .first { $0.alias == viewModel.selectedAlias }?.size?.displayText,
+                .first { $0.alias == viewModel.selectedAlias }?.displayedModelSize?.displayText,
             progress: startupProgress,
             // A rejected resident load (e.g. the sidecar cannot serve this
             // model) must surface the engine's reason HERE, on the surface
@@ -325,7 +325,7 @@ struct ImagesView: View {
             _ = downloads.startDownload(
                 alias: target,
                 hfPath: entry.hfRepo,
-                totalBytes: entry.size?.byteCount
+                totalBytes: entry.displayedModelSize?.byteCount
             )
         case .start(let target), .retry(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
