@@ -206,11 +206,16 @@ struct SidebarResidentUnloadTests {
     @Test("Memory summary keeps one shared unit in the narrow sidebar")
     func compactMemorySummary() {
         let gib = UInt64(1) << 30
+        let used = DownloadProgress.formatMemory(Int64(6) * (1 << 30))
+        let limit = DownloadProgress.formatMemory(Int64(204) * (1 << 30))
+        let unit = used.split(separator: " ").last!
+        let expected = limit.hasSuffix(" \(unit)")
+            ? "\(used.dropLast(unit.count + 1)) / \(limit)" : "\(used) / \(limit)"
         #expect(
             SidebarView.memorySummary(
                 usedBytes: 6 * gib,
                 limitBytes: 204 * gib
-            ) == "6 / 204 GB"
+            ) == expected
         )
     }
 
@@ -245,13 +250,13 @@ struct SidebarResidentUnloadTests {
             SidebarView.residentUnloadLabel(
                 modelCount: 1,
                 memoryUsedBytes: 6 * gib
-            ) == "Unload model and free 6 GB"
+            ) == "Unload model and free \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))"
         )
         #expect(
             SidebarView.residentUnloadLabel(
                 modelCount: 2,
                 memoryUsedBytes: 10 * gib
-            ) == "Unload all models and free 10 GB"
+            ) == "Unload all models and free \(DownloadProgress.formatMemory(Int64(10) * (1 << 30)))"
         )
     }
 
@@ -261,8 +266,8 @@ struct SidebarResidentUnloadTests {
             SidebarView.residentUnloadHelp(
                 isOperating: false,
                 hasActiveResponse: false,
-                enabledLabel: "Unload model and free 6 GB"
-            ) == "Unload model and free 6 GB"
+                enabledLabel: "Unload model and free \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))"
+            ) == "Unload model and free \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))"
         )
         #expect(
             SidebarView.residentUnloadHelp(

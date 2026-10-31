@@ -17,9 +17,9 @@ enum ImageReadinessPresentation {
 
     static func rowTitle(_ entry: ModelEntry) -> String {
         var details: [String] = []
-        if let size = entry.sizeOnDisk, !size.isEmpty { details.append(size) }
+        if let size = entry.size?.displayText, !size.isEmpty { details.append(size) }
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
-            details.append(String(format: "≥%.0f GB RAM", memory))
+            details.append("≥\(DownloadProgress.formatMemory(Int64(memory * Double(1 << 30)))) RAM")
         }
         details.append("512² default")
         details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")
@@ -272,7 +272,7 @@ struct ImagesView: View {
             alias: viewModel.selectedAlias,
             cacheState: imageCacheState,
             sizeText: viewModel.imageModels
-                .first { $0.alias == viewModel.selectedAlias }?.sizeOnDisk,
+                .first { $0.alias == viewModel.selectedAlias }?.size?.displayText,
             progress: startupProgress,
             // A rejected resident load (e.g. the sidecar cannot serve this
             // model) must surface the engine's reason HERE, on the surface
@@ -352,7 +352,7 @@ struct ImagesView: View {
             hfPath: hfPath,
             estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: alias,
-                sizeText: entry?.sizeOnDisk,
+                sizeText: entry?.size?.displayText,
                 minimumMemoryGB: entry?.minimumMemoryGB
             ),
             imageMode: viewModel.isEditing ? .editing : .generation,

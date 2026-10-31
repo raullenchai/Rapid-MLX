@@ -151,7 +151,7 @@ struct ShareComputeShareTab: View {
         if case .failed(let message) = job?.status { failure = message }
         return .decide(hasReady: selected?.isReady == true, hasCandidate: candidate != nil, storage: storage, downloading: candidate.map { downloads.isDownloading($0.model.alias) } ?? false, failure: failure)
     }
-    private func size(_ bytes: Int64?) -> String { bytes.map { "~" + ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "" }
+    private func size(_ bytes: Int64?) -> String { bytes.map { "~" + DownloadProgress.formatBytes($0) } ?? "" }
     private var keyDone: Bool { hasSavedKey || !requiresConnection }
     private var modelDone: Bool { selected?.isReady == true }
     private var current: ShareComputeSetupStep { .current(keyDone: keyDone, modelDone: modelDone) }

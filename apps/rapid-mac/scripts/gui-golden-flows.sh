@@ -2540,10 +2540,13 @@ flow_download_progress() {
     press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
     local press_pid=$!
 
+    local observed_size estimated_size
+    observed_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 633 * 1024 * 1024, countStyle: .file))')
+    estimated_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 563 * 1024 * 1024, countStyle: .file))')
     local observed=0
     for _ in {1..40}; do
         see_main "$OUT/downloading.json"
-        if jq -e '(.data.ui_elements | tostring) | contains("633 MB downloaded")' \
+        if jq -e --arg size "$observed_size" '(.data.ui_elements | tostring) | contains($size + " downloaded")' \
             "$OUT/downloading.json" >/dev/null; then
             observed=1
             break
@@ -2552,8 +2555,8 @@ flow_download_progress() {
     done
     [[ "$observed" == 1 ]] \
         || die "overrun fixture never reached a truthful bytes-downloaded state"
-    if jq -e '(.data.ui_elements | tostring)
-              | test("633 MB[[:space:]]*/[[:space:]]*563 MB")' \
+    if jq -e --arg observed "$observed_size" --arg estimated "$estimated_size" \
+        '(.data.ui_elements | tostring) | contains($observed + " / " + $estimated)' \
         "$OUT/downloading.json" >/dev/null; then
         die "download progress still shows observed bytes above its displayed total"
     fi

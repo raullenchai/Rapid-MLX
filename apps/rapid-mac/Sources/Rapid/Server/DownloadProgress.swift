@@ -917,65 +917,49 @@ final class DownloadProgress {
         case .fetching(let done, let total, let percent):
             return "\(done) of \(total) file\(total == 1 ? "" : "s") (\(percent)%)"
         case .downloading(let file, let done, let total, let percent, let speed, let eta):
-            var parts: [String] = ["\(percent)%", "\(file) (\(done)/\(total))"]
-            if let speed { parts.append(speed) }
+            let doneText = Self.tqdmBytes(done).map(Self.formatBytes) ?? done
+            let totalText = Self.tqdmBytes(total).map(Self.formatBytes) ?? total
+            var parts: [String] = ["\(percent)%", "\(file) (\(doneText)/\(totalText))"]
+            if let speed {
+                let value = speed.hasSuffix("/s") ? String(speed.dropLast(2)) : speed
+                if speed.hasSuffix("/s"), let bytes = Self.tqdmBytes(value, speed: true) {
+                    parts.append(Self.formatSpeed(bytesPerSecond: Double(bytes)))
+                } else {
+                    parts.append(speed)
+                }
+            }
             if let eta { parts.append("ETA \(eta)") }
             return parts.joined(separator: " · ")
         }
     }
 
-    /// Human-friendly byte formatter used by ``progressSubtitle``.
-    /// Uses 1024-base ("GB" label but really GiB) to match HF's tqdm
-    /// rendering so the same model reads as the same number in both
-    /// places. Rounding: 1 decimal place below 100 of any unit (so
-    /// 1.2 GB / 6.8 GB), no decimal at ≥ 100 (so 250 MB not 250.4 MB).
-    ///
-    /// Exposed ``nonisolated static`` for tests + so the UI can format
-    /// auxiliary numbers (e.g. "Freed 1.2 GB") consistently.
+    /// Use system file units for storage and memory units for RAM; never hand-roll byte labels.
     nonisolated static func formatBytes(_ bytes: Int64) -> String {
-        let absBytes = bytes < 0 ? 0 : Double(bytes)
-        let units: [(threshold: Double, suffix: String)] = [
-            (1024.0 * 1024.0 * 1024.0 * 1024.0, "TB"),
-            (1024.0 * 1024.0 * 1024.0, "GB"),
-            (1024.0 * 1024.0, "MB"),
-            (1024.0, "KB"),
-        ]
-        for (threshold, suffix) in units where absBytes >= threshold {
-            let value = absBytes / threshold
-            if value >= 100 {
-                return "\(Int(value.rounded())) \(suffix)"
-            }
-            return String(format: "%.1f %@", value, suffix)
-        }
-        return "\(Int(absBytes.rounded())) B"
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        return formatter.string(fromByteCount: max(0, bytes))
     }
 
-    /// Format a byte-rate the way Chrome / Finder do: "683 KB/s",
-    /// "5.2 MB/s". Uses 1024-base so a number quoted next to the
-    /// `formatBytes`-formatted totals reads consistently.
-    ///
-    /// Below 1 KB/s the readout collapses to "< 1 KB/s" — at that
-    /// level the next significant change won't arrive for many
-    /// seconds anyway, and "0 B/s" reads like a stall.
+    nonisolated static func formatMemory(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        formatter.allowsNonnumericFormatting = false
+        return formatter.string(fromByteCount: max(0, bytes))
+    }
+
+    /// tqdm uses a 1024 divisor for bare prefixes; speed adds its own B unit.
+    private nonisolated static func tqdmBytes(_ token: String, speed: Bool = false) -> Int64? {
+        var value = token
+        if speed, value.hasSuffix("B"), !value.hasSuffix("iB") { value.removeLast() }
+        if let last = value.last, "KMGT".contains(last) { value += "iB" }
+        return ModelSize.parseBytes(value)
+    }
+
+    /// Format a byte rate in the same file units, with a floor below 1 KB/s.
     nonisolated static func formatSpeed(bytesPerSecond rate: Double) -> String {
-        let value = max(0, rate)
-        let units: [(threshold: Double, suffix: String)] = [
-            (1024.0 * 1024.0 * 1024.0, "GB/s"),
-            (1024.0 * 1024.0, "MB/s"),
-            (1024.0, "KB/s"),
-        ]
-        for (threshold, suffix) in units where value >= threshold {
-            let scaled = value / threshold
-            if scaled >= 100 {
-                return "\(Int(scaled.rounded())) \(suffix)"
-            }
-            return String(format: "%.1f %@", scaled, suffix)
-        }
-        // Below 1 KB/s we collapse to a floor so the speed token can't
-        // read a literal "0 B/s" or a tiny "317 B/s" next to a still-
-        // moving GB counter — both undermine the "this is alive"
-        // signal the readout exists to provide.
-        return "< 1 KB/s"
+        guard rate.isFinite, rate >= 1_000 else { return "< 1 KB/s" }
+        return formatBytes(Int64(clamping: UInt64(min(rate, Double(Int64.max - 1024))))) + "/s"
     }
 
     /// Format the remaining time in the same idiom Chrome's download

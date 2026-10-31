@@ -538,7 +538,7 @@ struct VideoView: View {
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
         guard let minimum = model.minimumMemoryGB else { return model.alias }
-        return "\(model.alias) · \(Int(minimum.rounded())) GB"
+        return "\(model.alias) · \(DownloadProgress.formatMemory(Int64(minimum * Double(1 << 30))))"
     }
 
     private var referenceControls: some View {
@@ -577,10 +577,7 @@ struct VideoView: View {
     }
 
     private var referenceLimitText: String {
-        ByteCountFormatter.string(
-            fromByteCount: Int64(viewModel.referenceMaximumBytes),
-            countStyle: .file
-        )
+        DownloadProgress.formatBytes(Int64(viewModel.referenceMaximumBytes))
     }
 
     private var acceptedReferenceContentTypes: [UTType] {

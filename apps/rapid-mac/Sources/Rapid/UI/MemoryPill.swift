@@ -114,8 +114,8 @@ struct MemoryPill: View {
     }
 
     static func tooltip(snap: MemoryProbe.Snapshot, pressure: MemoryProbe.Pressure) -> String {
-        let usedGB = Double(snap.usedBytes) / Double(1 << 30)
-        let freeGB = Double(snap.freeBytes) / Double(1 << 30)
+        let used = DownloadProgress.formatMemory(Int64(clamping: snap.usedBytes))
+        let free = DownloadProgress.formatMemory(Int64(clamping: snap.freeBytes))
         let pct = Int((snap.usedRatio * 100).rounded())
         let header: String
         switch pressure {
@@ -123,10 +123,7 @@ struct MemoryPill: View {
         case .warning:  header = "Memory: tight"
         case .critical: header = "Memory: critical — model loads may fail or trigger swap"
         }
-        return String(
-            format: "%@\n%.1f GB in use (%d%%), %.1f GB free.",
-            header, usedGB, pct, freeGB
-        )
+        return "\(header)\n\(used) in use (\(pct)%), \(free) free."
     }
 
     private func tooltip(snap: MemoryProbe.Snapshot, pressure: MemoryProbe.Pressure) -> String {
@@ -134,18 +131,15 @@ struct MemoryPill: View {
     }
 
     static func accessibilityLabel(snap: MemoryProbe.Snapshot, pressure: MemoryProbe.Pressure) -> String {
-        let usedGB = Double(snap.usedBytes) / Double(1 << 30)
-        let totalGB = Double(snap.totalBytes) / Double(1 << 30)
+        let used = DownloadProgress.formatMemory(Int64(clamping: snap.usedBytes))
+        let total = DownloadProgress.formatMemory(Int64(clamping: snap.totalBytes))
         let state: String
         switch pressure {
         case .normal:   state = "normal"
         case .warning:  state = "tight"
         case .critical: state = "critical"
         }
-        return String(
-            format: "Memory %@: %.1f gigabytes used out of %.0f gigabytes",
-            state, usedGB, totalGB
-        )
+        return "Memory \(state): \(used) used out of \(total)"
     }
 
     private func accessibilityLabel(snap: MemoryProbe.Snapshot, pressure: MemoryProbe.Pressure) -> String {

@@ -326,7 +326,7 @@ final class QuickstartCoordinator {
             alias: "qwen3.6-35b-4bit",
             displayName: "Qwen 3.6 · 35B",
             hfRepo: nil,
-            blurb: "The fast pick for very high-RAM Macs — same 20 GB footprint, great speed.",
+            blurb: "The fast pick for very high-RAM Macs — same footprint, great speed.",
             tier: .tradeUp,
             minRAMGB: 48
         ),
@@ -1607,7 +1607,7 @@ struct QuickstartView: View {
                 // starts bearing on the decision (Paper 05.1 frames 03/04).
                 freeSpace: coordinator.step == .welcome
                     ? nil
-                    : freeBytesProbe().map { Self.wholeGB(Double($0) / Double(1 << 30)) }
+                    : freeBytesProbe().map { DownloadProgress.formatBytes($0) }
             )
         }
     }
@@ -2310,7 +2310,7 @@ struct QuickstartView: View {
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == entry.alias,
-                                sizeText: entry.sizeOnDisk ?? "",
+                                sizeText: entry.size?.displayText ?? "",
                                 isCached: true,
                                 secondaryText: Self.cachedRowSecondaryText(for: choice),
                                 onActivate: { activatePrimary(in: .shortlist) }
@@ -2345,7 +2345,7 @@ struct QuickstartView: View {
                                     QuickstartCompactCard(
                                         choice: choice,
                                         selected: coordinator.selection.alias == entry.alias,
-                                        sizeText: entry.sizeOnDisk ?? "",
+                                        sizeText: entry.size?.displayText ?? "",
                                         isCached: true,
                                         secondaryText: Self.cachedRowSecondaryText(for: choice),
                                         onActivate: { activatePrimary(in: .shortlist) }
@@ -2435,7 +2435,7 @@ struct QuickstartView: View {
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                                sizeText: cached?.size?.displayText ?? Self.sizeText(for: choice),
                                 isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
@@ -2834,7 +2834,7 @@ struct QuickstartView: View {
         guard available else {
             let needed = ModelSizing.estimate(alias: entry.alias).totalGB
             guard needed > 0 else { return "Needs more memory than this Mac has" }
-            return "Needs ≈ \(Self.wholeGB(needed)) · this Mac has \(Self.wholeGB(hardware.physicalRAMGB))"
+            return "Needs ≈ \(Self.preciseGB(needed)) · this Mac has \(Self.wholeGB(hardware.physicalRAMGB))"
         }
         let repo = entry.hfRepo ?? ""
         return repo.isEmpty ? entry.alias : repo
@@ -2863,11 +2863,9 @@ struct QuickstartView: View {
         return badges
     }
 
-    /// Whole gibibytes — for a MACHINE figure: this Mac's memory, free space,
-    /// the fit threshold. One place so the catalogue row, the rail and the
-    /// Review table cannot round the same number differently.
+    /// Format a machine memory figure using system memory units.
     static func wholeGB(_ value: Double) -> String {
-        "\(Int(value.rounded())) GB"
+        DownloadProgress.formatMemory(Int64(max(0, value) * Double(1 << 30)))
     }
 
     /// One decimal — for a MODEL figure: an estimated footprint.
@@ -2877,7 +2875,7 @@ struct QuickstartView: View {
     /// two trade-ups distinguishable, and 5.9 vs 6 is exactly the comparison
     /// the user is being shown.
     static func preciseGB(_ value: Double) -> String {
-        String(format: "%.1f GB", value)
+        DownloadProgress.formatMemory(Int64(max(0, value) * Double(1 << 30)))
     }
 
     /// Leave the catalogue, remembering where the user was.
@@ -3050,7 +3048,7 @@ struct QuickstartView: View {
                         QuickstartCompactCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                            sizeText: cached?.size?.displayText ?? Self.sizeText(for: choice),
                             isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
                         ) { coordinator.select(choice) }
@@ -3142,7 +3140,7 @@ struct QuickstartView: View {
         if let freeBytes {
             rows.append(OnboardingFactRow(
                 "Free space",
-                "\(wholeGB(Double(freeBytes) / Double(1 << 30))) available",
+                "\(DownloadProgress.formatBytes(freeBytes)) available",
                 identifier: "Quickstart.Review.FreeSpace"
             ))
         }
@@ -3581,40 +3579,22 @@ struct QuickstartView: View {
         }
     }
 
-    /// Human-readable download size for a choice card. MB under 1 GB
-    /// (so the 0.6B reads "~370 MB", not "0.4 GB"), one-decimal GB above.
-    /// Returns "" when ``ModelSizing`` has no estimate.
+    /// Estimated download size, using decimal bytes per billion parameters.
     static func sizeText(for alias: String) -> String {
         let gb = ModelSizing.estimate(alias: alias).weightsGB
         guard gb > 0 else { return "" }
-        if gb < 1 {
-            return "~\(Int((gb * 1024).rounded())) MB"
-        }
-        return String(format: "%.1f GB", gb)
+        return "~" + DownloadProgress.formatBytes(Int64(gb * 1_000_000_000))
     }
 
     static func sizeText(for choice: QuickstartModelChoice) -> String {
-        guard let bytes = choice.downloadBytes else {
-            return sizeText(for: choice.alias)
-        }
-        let mib = Double(bytes) / Double(1 << 20)
-        if mib < 1024 {
-            return "~\(Int(mib.rounded())) MB"
-        }
-        return String(format: "%.1f GB", mib / 1024)
+        guard let bytes = choice.downloadBytes else { return sizeText(for: choice.alias) }
+        return "~" + DownloadProgress.formatBytes(bytes)
     }
 
-    /// The size lane a "Recommended for your N GB Mac" card shows: the SSOT's
-    /// measured footprint plus its capability score, e.g.
-    /// ``"20 GB · 92% capability"`` — labelled exactly as the model picker
-    /// labels the same number.
-    /// Integral footprints render without a decimal ("20 GB"), non-integral
-    /// with one ("8.7 GB").
+    /// Measured runtime footprint and capability for a recommended card.
     static func recommendationSizeText(from pick: RAMBucketedDefault.Pick) -> String {
-        let gb = pick.footprintGB.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(pick.footprintGB))
-            : String(format: "%.1f", pick.footprintGB)
-        return "\(gb) GB · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
+        let size = DownloadProgress.formatMemory(Int64(pick.footprintGB * Double(1 << 30)))
+        return "\(size) · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
     }
 
     /// Size lane for a recommended card, looked up from the SSOT by alias so
@@ -3659,7 +3639,7 @@ struct QuickstartView: View {
                 .first { $0.alias == choice.alias }?
                 .capabilityPct
         }
-        if let onDisk = cached?.sizeOnDisk, !onDisk.isEmpty {
+        if let onDisk = cached?.size?.displayText, !onDisk.isEmpty {
             guard let capability else { return onDisk }
             return "\(onDisk) · \(ModelPickerBar.capabilityText(capability))"
         }
@@ -3818,7 +3798,7 @@ struct QuickstartView: View {
     /// The size a catalogue row shows: what it occupies if it is here, what it
     /// would cost if it is not.
     static func rowSizeText(for entry: ModelEntry) -> String {
-        if entry.cached, let onDisk = entry.sizeOnDisk, !onDisk.isEmpty {
+        if entry.cached, let onDisk = entry.size?.displayText, !onDisk.isEmpty {
             return onDisk
         }
         return sizeText(for: entry.alias)
@@ -3848,7 +3828,7 @@ struct QuickstartView: View {
     /// the same model. Returns an explicit "Unknown" rather than an empty row
     /// when there is no estimate — a blank would read as "free".
     static func reviewSizeText(alias: String, cached: ModelEntry?) -> String {
-        if let cached, let onDisk = cached.sizeOnDisk, !onDisk.isEmpty {
+        if let cached, let onDisk = cached.size?.displayText, !onDisk.isEmpty {
             return onDisk
         }
         let estimate = sizeText(for: alias)
@@ -4151,19 +4131,19 @@ struct QuickstartView: View {
             HStack(alignment: .top, spacing: 44) {
                 OnboardingStat(
                     label: "NEEDS",
-                    value: Self.wholeGB(warning.footprintGB),
+                    value: Self.preciseGB(warning.footprintGB),
                     tone: warning.severity == .safe
                         ? RapidTheme.statusReady
                         : RapidTheme.statusError
                 )
                 OnboardingStat(
                     label: "FREE NOW",
-                    value: Self.wholeGB(warning.freeGB)
+                    value: Self.preciseGB(warning.freeGB)
                 )
                 if warning.totalGB > 0 {
                     OnboardingStat(
                         label: "THIS MAC",
-                        value: Self.wholeGB(warning.totalGB)
+                        value: Self.preciseGB(warning.totalGB)
                     )
                 }
             }
@@ -5020,36 +5000,9 @@ struct QuickstartView: View {
 
     // MARK: - Pure helpers (test seam)
 
-    /// Format a byte count for the low-disk banner copy. Pure so the
-    /// banner string can be pinned by a unit test.
-    ///
-    /// Unit cutoff:
-    ///   * `< 1 GB` → "N MB" (no decimals), e.g. ``99 MB``
-    ///   * `≥ 1 GB` → "N.N GB" (one decimal),  e.g. ``1.5 GB``
-    ///
-    /// Issue #357: the previous one-decimal-GB formatter rendered a
-    /// 99 MB volume as ``0.1 GB`` — both rounds UP and uses the wrong
-    /// unit. LM Studio / Ollama (the precedents cited by PR #353) both
-    /// switch to MB under 1 GB, so we match.
-    ///
-    /// Negative inputs clamp to ``0`` — the formatter should never
-    /// produce a negative display, even if a future caller passes a
-    /// degenerate value.
+    /// Format a byte count for the low-disk banner.
     static func formatBytesForBanner(_ bytes: Int64) -> String {
-        let clamped = max(bytes, 0)
-        let mbDivisor: Int64 = 1024 * 1024            // 1 MiB
-        let gbDivisor: Int64 = 1024 * 1024 * 1024     // 1 GiB
-        if clamped < gbDivisor {
-            // Codex r1 MINOR: floor (integer division) instead of
-            // `String(format: "%.0f MB", Double / mbDivisor)`. `%.0f`
-            // rounds, so `1 GiB - 1` byte would render as `1024 MB`
-            // — the very rounding-up pathology the GB branch avoids.
-            // Floored MB never crosses the 1 GB cutoff visually.
-            let mb = clamped / mbDivisor
-            return "\(mb) MB"
-        }
-        let gb = Double(clamped) / Double(gbDivisor)
-        return String(format: "%.1f GB", gb)
+        DownloadProgress.formatBytes(bytes)
     }
 
     /// Body copy for the low-disk warning banner. Pure helper so the

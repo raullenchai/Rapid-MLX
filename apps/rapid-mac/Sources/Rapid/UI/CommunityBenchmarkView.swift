@@ -29,9 +29,9 @@ enum ExperimentalSurfaceCopy {
     static func videoMemory(minimum: Int, available: Int, bundle: Bundle = .main) -> String {
         format(
             "experimental.video.memory_requirement",
-            fallback: "Needs at least %1$d GB unified memory; this Mac has %2$d GB.",
+            fallback: "Needs at least %1$@ unified memory; this Mac has %2$d GB.",
             bundle: bundle,
-            minimum,
+            DownloadProgress.formatMemory(Int64(minimum) * (1 << 30)),
             available
         )
     }

@@ -2134,7 +2134,7 @@ struct ContentView: View {
             let footprint = ModelSizing.estimate(alias: pending)
             let sizeText: String? = footprint.paramsBillions == nil
                 ? nil
-                : String(format: "~%.1f GB", footprint.weightsGB)
+                : "~" + DownloadProgress.formatBytes(Int64(footprint.weightsGB * 1_000_000_000))
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
             return .noPrimaryLaunch

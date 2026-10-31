@@ -55,7 +55,7 @@ struct MemoryProbeTests {
             totalBytes: 256 * UInt64(1 << 30),
             usedBytes: 16 * UInt64(1 << 30)
         )
-        #expect(MemoryProbe.formatLabel(snap) == "16.0 GB / 256 GB")
+        #expect(MemoryProbe.formatLabel(snap) == "\(DownloadProgress.formatMemory(Int64(snap.usedBytes))) / \(DownloadProgress.formatMemory(Int64(snap.totalBytes)))")
     }
 
     @Test("Total rounds to integer GB so 18 GB / 16 GB Mac doesn't read '15.9 / 18.0'")
@@ -69,7 +69,18 @@ struct MemoryProbeTests {
             usedBytes: 9 * UInt64(1 << 30) + 500 * UInt64(1 << 20)
         )
         let label = MemoryProbe.formatLabel(snap)
-        #expect(label.hasSuffix(" / 18 GB"), "Total must round to an integer; got '\(label)'")
+        #expect(label.hasSuffix(" / \(DownloadProgress.formatMemory(Int64(snap.totalBytes)))"), "Total must round to an integer; got '\(label)'")
+    }
+
+    @Test("Memory pill uses the shared formatter for tooltip and accessibility")
+    func pillLabels() {
+        let snap = MemoryProbe.Snapshot(totalBytes: 18 * UInt64(1 << 30), usedBytes: 9 * UInt64(1 << 30))
+        let used = DownloadProgress.formatMemory(Int64(snap.usedBytes))
+        let free = DownloadProgress.formatMemory(Int64(snap.freeBytes))
+        let total = DownloadProgress.formatMemory(Int64(snap.totalBytes))
+        #expect(MemoryPill.tooltip(snap: snap, pressure: .normal).contains("\(used) in use"))
+        #expect(MemoryPill.tooltip(snap: snap, pressure: .normal).contains("\(free) free"))
+        #expect(MemoryPill.accessibilityLabel(snap: snap, pressure: .normal).contains("\(used) used out of \(total)"))
     }
 
     // MARK: - Snapshot integrity

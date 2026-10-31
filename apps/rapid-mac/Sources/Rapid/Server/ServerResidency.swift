@@ -88,18 +88,13 @@ struct ResidentReplacementProjection: Codable, Sendable, Equatable {
 
     func rejectionMessage(alias: String) -> String? {
         guard reason == "role_capacity_insufficient_after_eviction" else { return nil }
-        let gib = Double(UInt64(1) << 30)
-        let releasedGB = modelsToFree.reduce(0.0) {
-            $0 + Double($1.estimatedBytes)
-        } / gib
-        let projectedGB = Double(projectedBytes) / gib
-        let limitGB = Double(limitBytes) / gib
-        let release = releasedGB > 0
-            ? "Rapid can release about \(max(1, Int(releasedGB.rounded()))) GB from the current model, but "
+        let released = modelsToFree.reduce(0.0) { $0 + Double($1.estimatedBytes) }
+        let release = released > 0
+            ? "Rapid can release about \(DownloadProgress.formatMemory(Int64(released))) from the current model, but "
             : ""
         return release
-            + "\(alias) would still need about \(Int(projectedGB.rounded())) GB "
-            + "of the \(Int(limitGB.rounded())) GB model-memory budget."
+            + "\(alias) would still need about \(DownloadProgress.formatMemory(Int64(clamping: projectedBytes))) "
+            + "of the \(DownloadProgress.formatMemory(Int64(clamping: limitBytes))) model-memory budget."
     }
 }
 

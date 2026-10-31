@@ -371,7 +371,7 @@ struct ModelPickerBar: View {
             }
             .accessibilityIdentifier("ModelPickerBar.Delete.Cancel")
         } message: { entry in
-            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.sizeOnDisk.map { " Frees \($0)." } ?? "")")
+            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.size.map { $0.displayText }.map { " Frees \($0)." } ?? "")")
         }
         // v0.5.2: brief toast at the top of the picker after a
         // successful (or failed) deletion. Auto-dismisses after a
@@ -1189,7 +1189,7 @@ struct ModelPickerBar: View {
         } label: {
             Label(
                 ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
-                    + (notFit ? String(localized: " · needs ~\(Int(footprint.totalGB.rounded())) GB") : ""),
+                    + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30))))") : ""),
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
@@ -1202,7 +1202,7 @@ struct ModelPickerBar: View {
         // ``qualityRowHelpText`` so the help() modifier stays a single
         // value and tests can pin the multi-line copy.
         .help(notFit
-            ? String(localized: "Estimated to need about \(Int(footprint.totalGB.rounded())) GB; this Mac has \(Int(hardware.usableRAMGB.rounded())) GB available for models. You can download it, but starting it may fail or destabilize the Mac.")
+            ? String(localized: "Estimated to need about \(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30)))); this Mac has \(DownloadProgress.formatMemory(Int64(hardware.usableRAMGB * Double(1 << 30)))) available for models. You can download it, but starting it may fail or destabilize the Mac.")
             : ModelPickerBar.aliasRowHelpText(
                 alias: entry.alias,
                 bucket: bucket,
@@ -1221,7 +1221,7 @@ struct ModelPickerBar: View {
                 alias: entry.alias,
                 cached: entry.cached,
                 bucket: bucket
-            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(Int(footprint.totalGB.rounded())) gigabytes") : "")
+            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30))))") : "")
         )
         // v0.5.2: right-click → "Delete from disk". Cached rows
         // only — uncached models would just trigger "alias not
@@ -1234,7 +1234,7 @@ struct ModelPickerBar: View {
                 Button(role: .destructive) {
                     pendingDeletion = entry
                 } label: {
-                    if let size = entry.sizeOnDisk {
+                    if let size = entry.size?.displayText {
                         Text("Delete from disk (\(size))")
                     } else {
                         Text("Delete from disk")
@@ -1426,7 +1426,7 @@ struct ModelPickerBar: View {
         guard let entry = entry else {
             return String(localized: "Delete this model?")
         }
-        if let size = entry.sizeOnDisk {
+        if let size = entry.size?.displayText {
             return String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
         }
         return String(localized: "Delete \"\(entry.alias)\"?")
@@ -1730,15 +1730,15 @@ struct ModelPickerBar: View {
         footprint: ModelSizing.Footprint,
         hardware: MacHardware
     ) -> String {
-        let usable = Int(hardware.usableRAMGB.rounded())
-        let total = Int(footprint.totalGB.rounded())
+        let usable = DownloadProgress.formatMemory(Int64(hardware.usableRAMGB * Double(1 << 30)))
+        let total = DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30)))
         let firstSentence: String
-        if footprint.paramsBillions != nil && total > 0 {
-            firstSentence = String(localized: "Estimated need ≈ \(total) GB; your Mac has about \(usable) GB available for the model.")
+        if footprint.paramsBillions != nil && footprint.totalGB > 0 {
+            firstSentence = String(localized: "Estimated need ≈ \(total); your Mac has about \(usable) available for the model.")
         } else {
             // Unknown parameter count — skip the numeric comparison
             // rather than report "0 GB needed" which reads as a bug.
-            firstSentence = String(localized: "Estimated footprint exceeds your Mac's usable RAM (\(usable) GB).")
+            firstSentence = String(localized: "Estimated footprint exceeds your Mac's usable RAM (\(usable)).")
         }
         return String(localized: "\(firstSentence) Continuing may cause swap thrashing, performance crashes, or system lock-up.")
     }

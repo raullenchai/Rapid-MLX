@@ -823,9 +823,9 @@ struct ModelResidencyTests {
         )
 
         let message = projection.rejectionMessage(alias: "qwen3.8-27b-4bit")
-        #expect(message?.contains("release about 6 GB") == true)
-        #expect(message?.contains("26 GB") == true)
-        #expect(message?.contains("24 GB model-memory budget") == true)
+        #expect(message?.contains("release about \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))") == true)
+        #expect(message?.contains(DownloadProgress.formatMemory(Int64(26) * (1 << 30))) == true)
+        #expect(message?.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget") == true)
         #expect(message?.contains("close some apps") == false)
     }
 
@@ -956,9 +956,9 @@ struct ModelResidencyTests {
             Issue.record("Expected the typed 507 to remain a rejected resident load")
             return
         }
-        #expect(message.contains("release about 6 GB"))
-        #expect(message.contains("26 GB"))
-        #expect(message.contains("24 GB model-memory budget"))
+        #expect(message.contains("release about \(DownloadProgress.formatMemory(Int64(6) * (1 << 30)))"))
+        #expect(message.contains(DownloadProgress.formatMemory(Int64(26) * (1 << 30))))
+        #expect(message.contains("\(DownloadProgress.formatMemory(Int64(24) * (1 << 30))) model-memory budget"))
     }
 
     @Test("Image residency estimate uses catalog bytes plus runtime margin")

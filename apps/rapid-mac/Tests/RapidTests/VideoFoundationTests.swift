@@ -82,7 +82,7 @@ struct VideoFoundationTests {
         #expect(entry.alias == "ltx-2.3-mlx-q4")
         #expect(entry.kind == .video)
         #expect(entry.cached)
-        #expect(entry.sizeOnDisk == "9.5 GiB")
+        #expect(entry.sizeOnDisk == DownloadProgress.formatBytes(Int64(9.5 * Double(1 << 30))))
         #expect(entry.videoCapabilities == [.textToVideo, .imageToVideo])
         #expect(entry.minimumMemoryGB == 24)
         #expect(entries.first { $0.alias == "cogvideox-fun-5b-q4" }?.videoCapabilities == [.textToVideo])

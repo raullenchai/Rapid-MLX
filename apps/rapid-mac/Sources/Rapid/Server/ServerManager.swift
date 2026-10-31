@@ -484,13 +484,9 @@ final class ServerManager {
                minimumMemoryGB.isFinite,
                minimumMemoryGB > 0,
                let memorySnapshot {
-                let totalMemoryGB = Double(memorySnapshot.totalBytes) / Double(1 << 30)
+                let totalMemory = DownloadProgress.formatMemory(Int64(clamping: memorySnapshot.totalBytes))
                 appendLogLines([
-                    String(
-                        format: "This video model needs at least %.0f GB of unified memory; this Mac has %.0f GB.",
-                        minimumMemoryGB,
-                        totalMemoryGB
-                    )
+                    "This video model needs at least \(DownloadProgress.formatMemory(Int64(minimumMemoryGB * Double(1 << 30)))) of unified memory; this Mac has \(totalMemory)."
                 ])
             } else {
                 appendLogLines([

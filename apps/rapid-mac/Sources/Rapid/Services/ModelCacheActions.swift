@@ -165,12 +165,12 @@ enum ModelCacheActions {
         isServing: Bool = false
     ) -> DeletionConfirmation {
         let title: String
-        if let size = entry.sizeOnDisk {
+        if let size = entry.size?.displayText {
             title = String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
         } else {
             title = String(localized: "Delete \"\(entry.alias)\"?")
         }
-        let suffix = entry.sizeOnDisk.map { String(localized: " Frees \($0).") } ?? ""
+        let suffix = entry.size.map { $0.displayText }.map { String(localized: " Frees \($0).") } ?? ""
         let stopPrefix = isServing ? String(localized: "Stops the currently serving model first. ") : ""
         let message = stopPrefix
             + String(localized: "Removes this model from your Mac. You can download it again later by selecting it.")
@@ -188,9 +188,9 @@ enum ModelCacheActions {
     static func successMessage(alias: String, freedBytes: Int64?, fallbackSize: String?) -> String {
         let freedLabel: String
         if let bytes = freedBytes, bytes > 0 {
-            freedLabel = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+            freedLabel = DownloadProgress.formatBytes(bytes)
         } else if let fallback = fallbackSize {
-            freedLabel = fallback
+            freedLabel = ModelSize.legacy(fallback)?.displayText ?? fallback
         } else {
             freedLabel = ""
         }
@@ -458,11 +458,11 @@ enum ModelCacheActions {
 
     static func storageSummary(usage: DiskUsage, freeBytes: Int64?) -> String {
         let used = usage.totalBytes.map {
-            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+            DownloadProgress.formatBytes($0)
         } ?? String(localized: "size unavailable")
         let models = modelCountLabel(usage.cachedCount)
         guard let freeBytes else { return "\(used) · \(models)" }
-        let free = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
+        let free = DownloadProgress.formatBytes(freeBytes)
         return String(localized: "\(used) · \(models) · \(free) free")
     }
 
@@ -526,7 +526,7 @@ enum ModelCacheActions {
             return String(localized: " (+\(usage.missingSizeCount) unmeasured)")
         }()
         if let bytes = usage.totalBytes {
-            let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+            let size = DownloadProgress.formatBytes(bytes)
             return String(localized: "Total: \(size) across \(label)\(unmeasuredSuffix)")
         }
         return String(localized: "Total: \(label)\(unmeasuredSuffix)")
@@ -542,41 +542,7 @@ enum ModelCacheActions {
     /// format drift gracefully (parse failure → row sorts last,
     /// footer falls back to count-only).
     static func parseSizeBytes(_ raw: String?) -> Int64? {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return nil
-        }
-        // Strip the trailing " GB" / " GiB" / " MB" / etc. Accept
-        // both decimal (GB) and binary (GiB) units — rapid-mlx
-        // currently emits decimal but a future format change to
-        // binary shouldn't silently zero the footer.
-        let lower = raw.lowercased()
-        let units: [(String, Double)] = [
-            ("tib", 1024 * 1024 * 1024 * 1024),
-            ("gib", 1024 * 1024 * 1024),
-            ("mib", 1024 * 1024),
-            ("kib", 1024),
-            ("tb", 1_000_000_000_000),
-            ("gb", 1_000_000_000),
-            ("mb", 1_000_000),
-            ("kb", 1_000),
-            ("t", 1_000_000_000_000),
-            ("g", 1_000_000_000),
-            ("m", 1_000_000),
-            ("k", 1_000),
-            ("b", 1),
-        ]
-        for (suffix, multiplier) in units {
-            if lower.hasSuffix(suffix) {
-                let numPart = lower.dropLast(suffix.count).trimmingCharacters(in: .whitespaces)
-                if let value = Double(numPart) {
-                    return Int64(value * multiplier)
-                }
-                return nil
-            }
-        }
-        // Bare number with no unit — treat as bytes.
-        if let bytes = Int64(lower) { return bytes }
-        return nil
+        ModelSize.parseBytes(raw)
     }
 
     // MARK: - Family / quant chip labels

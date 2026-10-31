@@ -169,9 +169,9 @@ enum CommunityBenchmarkPicker {
         downloadSizeGB: Double? = nil
     ) -> (title: String, detail: String?) {
         if model.entry.cached {
-            return (String(localized: "Downloaded"), model.entry.sizeOnDisk)
+            return (String(localized: "Downloaded"), model.entry.size?.displayText)
         }
-        let detail = downloadSizeGB.map { String(format: "%.1f GB", $0) }
+        let detail = downloadSizeGB.map { DownloadProgress.formatBytes(Int64($0 * 1_000_000_000)) }
         return (String(localized: "Not downloaded"), detail)
     }
 }

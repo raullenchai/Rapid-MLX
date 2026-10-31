@@ -85,15 +85,7 @@ enum MemoryProbe {
     /// the labelling style is part of the UI promise, not an
     /// incidental detail.
     static func formatLabel(_ snapshot: Snapshot) -> String {
-        let usedGB = Double(snapshot.usedBytes) / Double(1 << 30)
-        let totalGB = Double(snapshot.totalBytes) / Double(1 << 30)
-        // Used: one decimal so a 100 MB shift is visible during a
-        // model load. Total: integer because RAM is sold in
-        // round-number sticks and the rounding noise on "256 GB"
-        // would otherwise show as "255.9 GB" which looks broken.
-        let usedStr = String(format: "%.1f", usedGB)
-        let totalStr = String(format: "%.0f", totalGB)
-        return "\(usedStr) GB / \(totalStr) GB"
+        return "\(DownloadProgress.formatMemory(Int64(clamping: snapshot.usedBytes))) / \(DownloadProgress.formatMemory(Int64(clamping: snapshot.totalBytes)))"
     }
 
     // MARK: - Syscall plumbing

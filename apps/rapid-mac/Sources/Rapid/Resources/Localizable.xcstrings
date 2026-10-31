@@ -17397,13 +17397,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Needs at least %1$d GB unified memory; this Mac has %2$d GB."
+            "value" : "Needs at least %1$@ unified memory; this Mac has %2$d GB."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "至少需要 %1$d GB 统一内存；这台 Mac 有 %2$d GB。"
+            "value" : "至少需要 %1$@ 统一内存；这台 Mac 有 %2$d GB。"
           }
         }
       }
