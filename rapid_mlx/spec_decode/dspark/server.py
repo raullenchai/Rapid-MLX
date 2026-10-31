@@ -259,6 +259,9 @@ def _prepare_multimodal_prompt(
         "num_audios": 0,
         "enable_thinking": bool(enable_thinking),
     }
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+    messages, _ = sanitize_template_inputs(messages, None, processor)
     prompt = apply_chat_template(processor, model.config, messages, **template_kwargs)
     generation_kwargs = {"image": images} if images else {}
     return PreparedPrompt(prompt=prompt, generation_kwargs=generation_kwargs)

@@ -72,6 +72,19 @@ class DeepSeekV40731ToolParser(ToolParser):
         present = [(index, tag) for index, tag in matches if index >= 0]
         return min(present, default=None, key=lambda match: match[0])
 
+    @classmethod
+    def _envelope_bodies(cls, text: str) -> list[str]:
+        bodies = []
+        while (start := cls._first_start(text)) is not None:
+            body_start = start[0] + len(start[1])
+            end = text.find(cls.END, body_start)
+            if end < 0:
+                bodies.append(text[body_start:])
+                break
+            bodies.append(text[body_start:end])
+            text = text[end + len(cls.END) :]
+        return bodies
+
     def reset(self) -> None:
         super().reset()
         self._stream_calls_emitted = 0
@@ -107,7 +120,11 @@ class DeepSeekV40731ToolParser(ToolParser):
             return ExtractedToolCallInformation(False, [], model_output)
         content = model_output[: start[0]].strip() or None
         calls = []
-        for match in self.INVOKE.finditer(model_output):
+        for match in (
+            match
+            for body in self._envelope_bodies(model_output)
+            for match in self.INVOKE.finditer(body)
+        ):
             arguments: dict[str, Any] = {}
             for param in self.PARAM.finditer(match.group("body")):
                 raw = param.group("value")
@@ -209,7 +226,11 @@ class DeepSeekV4FlashToolParser(DeepSeekV40731ToolParser):  # type: ignore[misc]
         if start is None:
             return ExtractedToolCallInformation(False, [], model_output)
         calls = []
-        for match in self.INVOKE.finditer(model_output):
+        for match in (
+            match
+            for body in self._envelope_bodies(model_output)
+            for match in self.INVOKE.finditer(body)
+        ):
             arguments = {}
             for param in self.PARAM.finditer(match.group("body")):
                 raw = param.group("value")

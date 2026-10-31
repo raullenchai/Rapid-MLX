@@ -306,6 +306,8 @@ def render_prompt(processor, _model, request, *, enable_thinking=False) -> str:
             status_code=400,
             detail="tool calling is not qualified for DeepSeek V4.1 Flash",
         )
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
     bos = processor.bos_token or "<｜begin▁of▁sentence｜>"
     eos = processor.eos_token or "<｜end▁of▁sentence｜>"
     pieces = [bos]
@@ -316,6 +318,13 @@ def render_prompt(processor, _model, request, *, enable_thinking=False) -> str:
                 status_code=400,
                 detail="DeepSeek V4.1 Flash currently accepts text content only",
             )
+        sanitized, _ = sanitize_template_inputs(
+            [{"role": message.role, "content": content}],
+            None,
+            processor,
+            include_reasoning_sentinels=True,
+        )
+        content = sanitized[0]["content"]
         if message.role == "system":
             pieces.append(content)
         elif message.role == "user":

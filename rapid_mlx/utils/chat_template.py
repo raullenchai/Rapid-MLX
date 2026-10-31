@@ -2423,6 +2423,37 @@ def is_flint_chat_template(
     )
 
 
+def sanitize_template_inputs(
+    messages, tools, template_applicator, *, include_reasoning_sentinels=False
+):
+    """Return (messages, tools) with control markers neutralized; fail closed to the baseline markers."""
+    try:
+        messages = _sanitize_messages_for_template(
+            messages,
+            template_applicator,
+            include_reasoning_sentinels=include_reasoning_sentinels,
+        )
+    except Exception as e:
+        logger.debug(
+            "Chat-template marker sanitisation failed (%s); applying baseline-marker fallback",
+            e,
+        )
+        messages = _baseline_sanitize_messages(messages)
+    try:
+        tools = _sanitize_tools_for_template(
+            tools,
+            template_applicator,
+            include_reasoning_sentinels=include_reasoning_sentinels,
+        )
+    except Exception as e:
+        logger.debug(
+            "Chat-template tool-marker sanitisation failed (%s); applying baseline-marker fallback",
+            e,
+        )
+        tools = _baseline_sanitize_tools(tools)
+    return messages, tools
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],

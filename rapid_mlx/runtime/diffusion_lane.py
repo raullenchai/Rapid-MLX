@@ -877,6 +877,13 @@ class DiffusionEngine(BaseEngine):
                 "surface tool calls.",
                 len(tools),
             )
+        from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+        messages, sanitized_tools = sanitize_template_inputs(
+            messages, template_kwargs.get("tools"), self._processor.tokenizer
+        )
+        if "tools" in template_kwargs:
+            template_kwargs["tools"] = sanitized_tools
         return self._processor.tokenizer.apply_chat_template(
             messages,
             **template_kwargs,
