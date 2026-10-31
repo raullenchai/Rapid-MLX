@@ -38,6 +38,11 @@ def install_health_probes(
             "engine_type": details.get("engine", "unknown"),
         }
 
+    @app.get("/livez")
+    async def livez() -> dict[str, str]:
+        return {"status": "alive"}
+
+    @app.get("/readyz")
     @app.get("/health/ready")
     async def health_ready() -> Any:
         details = await healthz()
@@ -47,7 +52,13 @@ def install_health_probes(
             else details.get("status") == "ok"
         )
         if ready:
-            return {"status": "ok", "ready": True}
+            return {
+                "status": "ok",
+                "ready": True,
+                "state": "ready",
+                "model_loaded": True,
+                "model": model_name,
+            }
         state = details.get("status") or "loading"
         return JSONResponse(
             status_code=503,
@@ -61,5 +72,6 @@ def install_health_probes(
                 },
                 "ready": False,
                 "state": state,
+                "model_loaded": False,
             },
         )
