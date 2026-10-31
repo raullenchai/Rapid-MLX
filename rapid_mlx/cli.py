@@ -1406,6 +1406,12 @@ def _serve_retrieval_only_mode(args) -> None:
     if getattr(args, "rerank_model", None):
         _load_rerank_model_or_exit(args, server.load_rerank_model)
 
+    from . import update_refresh
+    from ._version_check import print_staleness_warning_if_any
+
+    announced = print_staleness_warning_if_any(allow_non_tty=True)
+    update_refresh.start(announced=announced)
+
     print()
     print("  Retrieval-only mode: no primary model loaded.")
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
@@ -6057,6 +6063,12 @@ def _serve_cua_only_mode(args) -> None:
             cfg.cua_permission_requests_enabled = False
     else:
         cfg.bind_listen_fd = listen_fd
+
+    from . import update_refresh
+    from ._version_check import print_staleness_warning_if_any
+
+    announced = print_staleness_warning_if_any(allow_non_tty=True)
+    update_refresh.start(announced=announced)
 
     print()
     print("  🐆 Rapid-MLX CUA server")
