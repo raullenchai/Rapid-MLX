@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 _AFCONVERT = "/usr/bin/afconvert"
+_AUDIO_PAD_SECONDS = 0.1
 
 
 class VideoEncodingError(RuntimeError):
@@ -113,6 +115,14 @@ def encode_rgb_video(
                 or not np.isfinite(samples).all()
             ):
                 raise VideoEncodingError("invalid audio samples")
+            # ``-shortest`` keeps a longer soundtrack from extending the clip.
+            # Pad a shorter one with silence (plus margin for AAC framing) so
+            # the audio never ends first: every frame is kept and ffmpeg never
+            # stops reading frames early.
+            minimum = math.ceil(frame_count * sampling_rate / fps)
+            minimum += math.ceil(sampling_rate * _AUDIO_PAD_SECONDS)
+            if samples.shape[1] < minimum:
+                samples = np.pad(samples, ((0, 0), (0, minimum - samples.shape[1])))
             if not os.path.isfile(_AFCONVERT) or not os.access(_AFCONVERT, os.X_OK):
                 raise VideoEncodingError("AAC audio encoder (afconvert) is unavailable")
             directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
@@ -139,7 +149,7 @@ def encode_rgb_video(
                     ],
                     check=True,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     timeout=120,
                 )
             except (
@@ -147,8 +157,13 @@ def encode_rgb_video(
                 subprocess.TimeoutExpired,
                 OSError,
             ) as exc:
+                stderr = getattr(exc, "stderr", None) or b""
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", errors="replace")
+                detail = stderr.strip()[-500:]
                 raise VideoEncodingError(
                     f"audio encoding failed: {type(exc).__name__}"
+                    + (f": {detail}" if detail else "")
                 ) from exc
         stderr_file = stack.enter_context(tempfile.TemporaryFile())
         try:

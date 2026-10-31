@@ -157,16 +157,18 @@ def test_generation_encodes_with_ffmpeg_binary_when_path_has_no_ffmpeg(
     monkeypatch.setattr(minimax_h3, "_merge_turbo_lora", lambda *a: None)
 
     def generate(request):
-        samples = 0.2 * np.sin(2 * np.pi * 440 * np.arange(24000) / 48000)
+        # The soundtrack (0.05 s) is much shorter than the clip (2 s): every
+        # frame must still be encoded.
+        samples = 0.2 * np.sin(2 * np.pi * 440 * np.arange(2400) / 48000)
         return VideoGenerationResult(
-            frames=mx.array(np.zeros((1, 12, 64, 96, 3), dtype=np.float32)),
+            frames=mx.array(np.zeros((1, 48, 64, 96, 3), dtype=np.float32)),
             audio=mx.array(np.stack([samples, samples]).astype(np.float32)),
             fps=24.0,
             sampling_rate=48000,
             seed=request.seed,
             width=96,
             height=64,
-            num_frames=12,
+            num_frames=48,
             steps=9,
             model="h3",
             family="minimax_h3",
@@ -201,6 +203,13 @@ def test_generation_encodes_with_ffmpeg_binary_when_path_has_no_ffmpeg(
     )
     assert "Video: h264" in probe.stderr
     assert "Audio: aac" in probe.stderr
+    cv2 = pytest.importorskip("cv2")
+    capture = cv2.VideoCapture(str(output))
+    decoded = 0
+    while capture.read()[0]:
+        decoded += 1
+    capture.release()
+    assert decoded == 48
 
 
 @pytest.mark.parametrize(

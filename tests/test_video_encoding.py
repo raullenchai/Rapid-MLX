@@ -428,7 +428,8 @@ def test_audio_is_converted_to_aac_and_stream_copied(tmp_path, monkeypatch):
     ((afconvert, kwargs),) = calls
     assert afconvert[1:7] == ["-f", "mp4f", "-d", "aac", "-b", "192000"]
     assert kwargs["check"] is True
-    assert seen == {"channels": 2, "rate": 48000, "frames": 480}
+    # 2 frames at 24 fps need 4000 samples, plus 0.1 s of margin.
+    assert seen == {"channels": 2, "rate": 48000, "frames": 8800}
     (command,) = _RecordingProcess.commands
     assert "-an" not in command
     assert command[command.index("-c:a") + 1] == "copy"
@@ -481,3 +482,45 @@ def test_audio_conversion_failure_is_reported(tmp_path, monkeypatch):
         )
     assert not output.exists()
     assert _RecordingProcess.commands == []
+
+
+def test_longer_audio_is_not_padded(tmp_path, monkeypatch):
+    import wave
+
+    from rapid_mlx.video import encoding
+
+    _install_audio_fakes(monkeypatch)
+    original = encoding.subprocess.run
+    seen = {}
+
+    def capture(command, **kwargs):
+        with wave.open(command[-2], "rb") as wav:
+            seen["frames"] = wav.getnframes()
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(encoding.subprocess, "run", capture)
+    encode_rgb_video(
+        np.zeros((2, 4, 4, 3), dtype=np.uint8),
+        tmp_path / "out.mp4",
+        24,
+        audio=np.zeros((1, 48000), dtype=np.float32),
+        sampling_rate=48000,
+    )
+    assert seen == {"frames": 48000}
+
+
+def test_audio_conversion_failure_includes_encoder_detail(tmp_path, monkeypatch):
+    _install_audio_fakes(
+        monkeypatch,
+        afconvert_error=subprocess.CalledProcessError(
+            1, ["afconvert"], stderr=b"Error: unsupported format\n"
+        ),
+    )
+    with pytest.raises(VideoEncodingError, match="unsupported format"):
+        encode_rgb_video(
+            np.zeros((1, 2, 2, 3), dtype=np.uint8),
+            tmp_path / "out.mp4",
+            24,
+            audio=np.zeros(16, dtype=np.float32),
+            sampling_rate=48000,
+        )
