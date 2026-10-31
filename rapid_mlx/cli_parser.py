@@ -34,6 +34,21 @@ BENCHMARK_ACCELERATION_FLAGS = (
 )
 
 
+_BENCHMARK_ACCELERATION_HELP = {
+    "--mtp-max-k": argparse.SUPPRESS,
+    "--kv-cache-dtype": "Set the KV cache dtype for the measured run; int8 and int4 reduce cache memory, with possible decoding overhead and model compatibility restrictions.",
+    "--kv-cache-quantization": "Deprecated; use --kv-cache-dtype. Enable KV cache quantization; this option takes precedence when both are supplied.",
+    "--kv-cache-quantization-bits": "Deprecated; use --kv-cache-dtype. Set the KV cache quantization bit width (default: 8).",
+    "--kv-cache-quantization-group-size": "Deprecated; use --kv-cache-dtype. Set the KV cache quantization group size (default: 64).",
+    "--speculative-config": "Configure speculative decoding as JSON. DFlash and MTP are supported; DDTree cannot measure time to first token, and suffix decoding is refused because prompts repeat. Accepted keys: method, model, num_speculative_tokens, backend.",
+    "--no-spec-decode": "Disable speculative decoding for the measured run, including model-selected acceleration.",
+    "--prefill-step-size": "Set prompt prefill chunk size; larger chunks can improve throughput but use more memory.",
+    "--pflash": "Select lossy long-prompt prefill compression (off, auto, always) for the measured run.",
+    "--pflash-threshold": "Set the minimum prompt length in tokens for --pflash auto compression (default: 32768).",
+    "--pflash-keep-ratio": "Set the fraction of prompt tokens retained during compression; otherwise use the model profile or engine default.",
+}
+
+
 def _stamp_port_explicit(args: argparse.Namespace) -> argparse.Namespace:
     """Stamp bind-port provenance from the parsed server namespace."""
     if not hasattr(args, "port"):
@@ -103,7 +118,7 @@ def _add_disable_disk_caches_arg(parser: argparse.ArgumentParser) -> None:
             "Write no optional caches to disk: no prefix-cache snapshot at "
             "shutdown or idle unload (and none loaded at startup), no KV "
             "checkpoints, no vision prefix-cache disk tier. Takes precedence "
-            "over --kv-disk-checkpoint-interval and APC_DISK_ENABLED. Also "
+            "over periodic KV checkpoints and APC_DISK_ENABLED. Also "
             "set by RAPID_MLX_DISABLE_DISK_CACHES=1."
         ),
     )
@@ -2304,6 +2319,9 @@ def _add_benchmark_parser(
     for action in serve._actions:
         if any(flag in BENCHMARK_ACCELERATION_FLAGS for flag in action.option_strings):
             copied = copy.copy(action)
+            benchmark_help = _BENCHMARK_ACCELERATION_HELP[action.option_strings[0]]
+            if action.help != argparse.SUPPRESS:
+                copied.help = benchmark_help
             copied.default = argparse.SUPPRESS
             copied.required = False
             acceleration._add_action(copied)

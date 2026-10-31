@@ -62,14 +62,13 @@ _HARMONY_CHANNEL_ANALYSIS = "analysis"
 _HARMONY_CHANNEL_FINAL = "final"
 _HARMONY_CHANNEL_COMMENTARY = "commentary"
 
-# Tool-call recipient shape: ``functions.<safe-name>``. OpenAI's
-# documented function-name regex is ``[a-zA-Z0-9_-]{1,64}`` — match
-# that exactly so any tool the upstream API accepts also round-trips
-# through the router. A recipient that doesn't match (whitespace,
+# Tool-call recipient shape: ``functions.<safe-name>``. Accept the shared
+# charset and the longest name accepted by any route (128 characters) so
+# tool calls round-trip through the router. A recipient that doesn't match (whitespace,
 # marker-like characters, newlines, leading digit beyond the allowed
 # set) is treated as structural corruption: the router abstains rather
 # than surfacing a half-parsed call.
-_RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,64}$")
+_RECIPIENT_SHAPE = re.compile(r"^functions\.[A-Za-z0-9_\-]{1,128}$")
 
 # HuggingFace hub cache snapshot dir pattern. Path components have the
 # form ``models--<owner>--<name>`` so ``/.../models--openai--gpt-oss-20b

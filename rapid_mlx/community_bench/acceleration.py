@@ -244,10 +244,11 @@ def effective_language(
     context_length,
     live_kv_quant: tuple[int, int] | None,
     compute_dtype: str = "unknown",
+    mtp_head_in_target_repo: bool = False,
 ) -> dict:
     if runtime_method == "mtp":
         spec = {"method": "mtp", "max_draft_tokens": scheduler_config.mtp_max_k}
-        if scheduler_config.mtp_sidecar:
+        if scheduler_config.mtp_sidecar and not mtp_head_in_target_repo:
             if not draft_identity_digest:
                 raise AccelerationConfigError(
                     "MTP sidecar requires a draft model identity digest"

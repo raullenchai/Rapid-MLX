@@ -184,7 +184,8 @@ def _new_stream_request_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex}"
 
 
-_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Shared output guard: accept the longest tool name admitted by any route.
+_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 router = APIRouter()
 

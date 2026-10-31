@@ -466,7 +466,7 @@ def test_recipient_shape_accepts_digit_start_names(router):
     """Codex round-2 BLOCKING (PR #515): the original recipient
     shape regex ``^functions\\.[A-Za-z_]...`` rejected valid OpenAI
     tool names whose first character is a digit (e.g. ``2fa_lookup``).
-    Widen to match the OpenAI spec ``[A-Za-z0-9_-]{1,64}``.
+    Accept the shared charset, including the Messages API 128-character limit.
     """
 
     class _C:

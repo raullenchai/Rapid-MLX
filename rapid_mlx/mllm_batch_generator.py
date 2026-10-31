@@ -818,15 +818,18 @@ _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 # Model families qualified for the split media boundary, by ``config.model_type``.
 # Structural gates (rope-deltas consumption, cloneable leaves, singleton turn)
 # prove a model *can* be split; only qualification proves the split is
-# *correct* for it — the 64-token alignment is tuned to this family's hybrid
-# recurrent scan, and position/MRoPE handling differs per family. Everything
+# *correct* for it. Dense qwen3_5 shares the hybrid GatedDeltaNet + full-attention
+# layout, MRoPE rope-deltas contract, and 64-token scan tile with the qualified
+# MoE variant. Position/MRoPE handling differs per family. Everything
 # else stays on the cold single forward until it is qualified on real
 # hardware (the design note's non-goal: no unqualified families ship).
 _CHUNKED_MEDIA_PREFILL_MODEL_TYPES = frozenset(
     {"qwen3_5", "qwen3_5_moe", "qwen3_vl", "qwen3_vl_moe"}
 )
 
-_MEDIA_QUALIFIED_MODEL_TYPES = frozenset({"qwen3_5_moe", "qwen3_5_moe_text"})
+_MEDIA_QUALIFIED_MODEL_TYPES = frozenset(
+    {"qwen3_5_moe", "qwen3_5_moe_text", "qwen3_5", "qwen3_5_text"}
+)
 
 _MEDIA_ROPE_MISSING = object()
 
@@ -875,6 +878,9 @@ def _is_type_checking(test: ast.AST) -> bool:
 # verification, never structurally.
 _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
     {
+        # qwen3_5/language.py LanguageModel.__call__ pops rope_deltas into
+        # self._rope_deltas for MRoPE positions; the MoE subclass inherits it.
+        ("mlx_vlm.models.qwen3_5.language", "LanguageModel"),
         # mlx_vlm/models/qwen3_5_moe/language.py, LanguageModel.__call__:
         # pops ``rope_deltas`` from **kwargs and folds it into the MRoPE
         # position offsets (``delta = (offsets + rope_deltas...)``).
@@ -883,6 +889,9 @@ _MEDIA_ROPE_CONSUMING_LM_IMPLEMENTATIONS = frozenset(
 )
 _MEDIA_ROPE_PLUMBING_WRAPPER_IMPLEMENTATIONS = frozenset(
     {
+        # qwen3_5_moe/qwen3_5_moe.py Model subclasses this dense Model and
+        # inherits its __call__ unchanged.
+        ("mlx_vlm.models.qwen3_5.qwen3_5", "Model"),
         # mlx_vlm/models/qwen3_5_moe/qwen3_5_moe.py, Model: the Qwen3VL
         # wrapper recomputes/merges ``rope_deltas`` through
         # InputEmbeddingsFeatures and forwards it to the consuming LM.
@@ -1861,9 +1870,8 @@ class MLLMBatchGenerator:
 
         Structural gates prove a model can be split; this gate proves the
         split is known-correct for it — the boundary alignment and MRoPE
-        transaction were qualified on exactly one family (Qwen3.6 hybrid,
-        ``config.model_type`` ``qwen3_5_moe``/``qwen3_5_moe_text``), and
-        the design note ships no unqualified families. Any other model —
+        transaction are qualified for the dense and MoE Qwen3.5 hybrid
+        variants, and the design note ships no unqualified families. Any other model —
         or one without a resolvable ``model_type`` — stays on the cold
         single forward. Memoized per model-class pair like the other
         structural probes.
@@ -3815,6 +3823,8 @@ class MLLMBatchGenerator:
             request.attention_mask = cached_pixels.attention_mask
             request.image_grid_thw = cached_pixels.image_grid_thw
             request.extra_kwargs = dict(cached_pixels.extra_kwargs)
+            # The effective cap is part of the media digest identity.
+            request.media_pixel_cap = int(cached_pixels.media_pixel_cap or 0)
             request.chunked_media_prefill = self._media_prefill_static_chunkable(
                 request, attention_mask=request.attention_mask
             )
@@ -4041,6 +4051,7 @@ class MLLMBatchGenerator:
                 image_grid_thw=request.image_grid_thw,
                 extra_kwargs=request.extra_kwargs,
                 processing_time=processing_time,
+                media_pixel_cap=request.media_pixel_cap,
             )
 
         self._stats.num_images_processed += len(all_images)

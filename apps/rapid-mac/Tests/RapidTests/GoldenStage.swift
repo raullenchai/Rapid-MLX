@@ -248,6 +248,20 @@ final class GoldenStage {
         return result.takeUnretainedValue() as? String
     }
 
+    func valueDescription(of identifier: String) -> String? {
+        guard let node = findNode(identifier) else { return nil }
+        let sel = NSSelectorFromString("accessibilityValueDescription")
+        guard node.responds(to: sel), let result = node.perform(sel) else { return nil }
+        return result.takeUnretainedValue() as? String
+    }
+
+    func label(of identifier: String) -> String? {
+        guard let node = findNode(identifier) else { return nil }
+        let sel = NSSelectorFromString("accessibilityLabel")
+        guard node.responds(to: sel), let result = node.perform(sel) else { return nil }
+        return result.takeUnretainedValue() as? String
+    }
+
     func help(of identifier: String) -> String? {
         guard let node = findNode(identifier) else { return nil }
         let selector = NSSelectorFromString("accessibilityHelp")

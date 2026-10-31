@@ -137,7 +137,7 @@ struct DictationView: View {
             Spacer(minLength: RapidTheme.Space.md)
             // Gate turning it ON, never turning it OFF, so a session whose
             // permissions lapsed can always be switched back.
-            Toggle("", isOn: $controller.isEnabled)
+            Toggle("Dictation", isOn: $controller.isEnabled)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .disabled(!controller.readinessSnapshot.isReady && !controller.isEnabled)
@@ -283,7 +283,7 @@ struct DictationView: View {
                 done: !controller.isEnabled || controller.isHotkeyArmed
             ) {
                 Menu {
-                    Picker("", selection: $controller.trigger) {
+                    Picker("Hotkey", selection: $controller.trigger) {
                         ForEach(DictationHotkey.Trigger.allCases) { trigger in
                             Text(trigger.label).tag(trigger)
                         }
@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: entry.sizeBytes ?? ModelCacheActions.parseSizeBytes(entry.sizeOnDisk)
+            totalBytes: entry.size?.byteCount
         )
     }
 
@@ -893,6 +893,7 @@ private struct TranscriptionModelOptionRow: View {
             HStack(spacing: RapidTheme.Space.xs) {
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 42)
+                        .accessibilityLabel("Dictation model download progress")
                     Text(verbatim: "100%")
                         .font(RapidFont.caption)
                         .monospacedDigit()
