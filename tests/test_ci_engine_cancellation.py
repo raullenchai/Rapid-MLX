@@ -27,6 +27,7 @@ def test_workloads_reuse_existing_desktop_cancellation_pattern():
         "test-matrix",
         "linux-coverage",
         "test-apple-silicon",
+        "test-apple-silicon-mac-only",
         "changed-lines-coverage",
         "l1-smoke",
     ):
@@ -54,6 +55,7 @@ def test_real_aggregate_cannot_green_a_cancelled_scope(scope, cancelled):
         "test-matrix",
         "linux-coverage",
         "test-apple-silicon",
+        "test-apple-silicon-mac-only",
         "changed-lines-coverage",
         "l1-smoke",
     ):

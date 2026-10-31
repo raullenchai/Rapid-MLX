@@ -17,7 +17,7 @@ ROUTED = (
     "authorize-merge-ready.yml",
 )
 MAC_JOBS = {
-    "ci.yml": {"test-apple-silicon", "l1-smoke"},
+    "ci.yml": {"test-apple-silicon", "test-apple-silicon-mac-only", "l1-smoke"},
     "rapid-mac-ci.yml": {"build", "gui-app-build", "gui-golden-flows"},
 }
 # Only multi-minute jobs ride the heavy pool; seconds-long control-plane jobs

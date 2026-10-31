@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Run test files that hosted Linux and the Apple roster do not fully execute."""
+"""Run the hosted mac-only selection early during local pre-push validation."""
 
+import argparse
 import os
 import re
 import subprocess
@@ -17,6 +18,18 @@ from .full_unit import (
     _run_group_bounded,
     _timeout_dump,
     pytest_parallel_args,
+)
+
+# These tests still run in the local pr_validate mac-only stage.
+# The prefix cache tests need a locally cached model; telemetry needs
+# multi-process timing the hosted runner cannot meet; the GUI guard
+# needs OS permissions the hosted sandbox denies.
+HOSTED_DESELECT = (
+    "tests/test_mid_conversation_system_prefix_cache.py::TestRenderedTokenPrefixIsStable::test_leading_tokens_survive_an_injected_nudge",
+    "tests/test_mid_conversation_system_prefix_cache.py::TestRenderedTokenPrefixIsStable::test_hoisting_would_have_failed_this_test",
+    "tests/test_telemetry_track.py::test_simultaneous_missing_extra_serve_failures_emit_once",
+    "tests/test_telemetry_track.py::test_server_start_ready_wire_order_and_opt_out",
+    "tests/test_agent_test_gui_guard.py::test_launch_attempt_remains_failure_if_agent_times_out",
 )
 
 
@@ -42,8 +55,8 @@ def select_mac_only_files(repo_root: Path) -> list[str]:
         r"requires_mlx|real_hf_cache|requires_network|importorskip|darwin|sys\.platform|platform\.(machine|system)"
     )
     # Linux deselects requires_mlx, real_hf_cache and requires_network and
-    # skips MLX/macOS-only imports; Apple runs only its explicit roster.
-    # At introduction, 130 files / ~2,700 tests ran locally but in no CI job.
+    # skips MLX/macOS-only imports; the original Apple job runs its roster.
+    # The hosted mac-only job and this local step share this selection.
     selected = []
     for path in (repo_root / "tests").rglob("test_*.py"):
         relative = path.relative_to(repo_root).as_posix()
@@ -58,9 +71,30 @@ def select_mac_only_files(repo_root: Path) -> list[str]:
     return sorted(selected)
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="List the mac-only test selection")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--list", action="store_true")
+    mode.add_argument("--deselect-args", action="store_true")
+    parser.add_argument("--shard", metavar="I/N")
+    args = parser.parse_args()
+    if args.deselect_args:
+        print("\n".join(f"--deselect={node}" for node in HOSTED_DESELECT))
+        return
+    files = select_mac_only_files(Path.cwd())
+    if args.shard is not None:
+        if not re.fullmatch(r"[0-9]+/[0-9]+", args.shard):
+            parser.error("--shard must be I/N with 1 <= I <= N")
+        index, total = map(int, args.shard.split("/"))
+        if not 1 <= index <= total:
+            parser.error("--shard must be I/N with 1 <= I <= N")
+        files = sorted(files)[index - 1 :: total]
+    print("\n".join(files), end="\n" if files else "")
+
+
 class MacOnlyTestsStep(Step):
     name = "mac_only_tests"
-    description = "local-only tests no hosted CI job executes (MLX/macOS-bound files outside the Apple CI roster)"
+    description = "early pre-push signal for the hosted Apple mac-only selection"
 
     def should_run(self, ctx: Context) -> bool:
         return ctx.blast_radius != "low"
@@ -142,3 +176,7 @@ class MacOnlyTestsStep(Step):
             details=note + a[2] + b[2],
             artifacts=a[3] + b[3],
         )
+
+
+if __name__ == "__main__":
+    main()
