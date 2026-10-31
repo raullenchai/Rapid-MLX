@@ -38,6 +38,9 @@ def cli_environment(monkeypatch, tmp_path, capsys):
 
 @pytest.mark.parametrize("command", ["serve", "chat", "bench", "pull"])
 def test_downloads_suppress_progress_at_entry(monkeypatch, cli_environment, command):
+    from huggingface_hub.utils import enable_progress_bars
+
+    enable_progress_bars()
     observed = []
 
     if command == "serve":
@@ -63,12 +66,13 @@ def test_downloads_suppress_progress_at_entry(monkeypatch, cli_environment, comm
             monkeypatch.setitem(sys.modules, module.__name__, module)
 
     def download(*args, **kwargs):
-        suppressed = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "1"
+        env_set = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "1"
+        live = None
         if "huggingface_hub" in sys.modules:
             from huggingface_hub.utils import are_progress_bars_disabled
 
-            suppressed |= are_progress_bars_disabled()
-        observed.append(suppressed)
+            live = are_progress_bars_disabled()
+        observed.append((env_set, live))
         raise DownloadReachedError
 
     monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
@@ -78,7 +82,7 @@ def test_downloads_suppress_progress_at_entry(monkeypatch, cli_environment, comm
     )
     with pytest.raises(DownloadReachedError):
         cli.main()
-    assert observed == [True]
+    assert observed == [(True, True)]
 
 
 @pytest.mark.parametrize(
