@@ -858,9 +858,9 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
     except OSError:
         return False
     shebang = launcher_interpreter(first_line, second_line)
-    return bool(shebang) and Path(os.path.realpath(shebang)) == Path(
-        os.path.realpath(sys.executable)
-    )
+    if not shebang:
+        return False
+    return Path(os.path.realpath(shebang)) == Path(os.path.realpath(sys.executable))
 
 
 def detect_install_method() -> InstallInfo:
