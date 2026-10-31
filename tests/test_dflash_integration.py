@@ -310,9 +310,38 @@ def test_programmatic_experimental_4bit_logs_unverified_pair(
 
     assert any(
         "has not been performance-validated" in record.message
-        and record.levelname == "DEBUG"
+        and record.levelname == "WARNING"
         for record in caplog.records
     )
+
+
+def test_cli_shown_experimental_warning_logs_at_debug(monkeypatch, caplog) -> None:
+    from rapid_mlx.speculative.dflash import server as srv
+
+    monkeypatch.setattr(srv, "have_runtime", lambda: True)
+    monkeypatch.setattr(
+        "rapid_mlx.utils.model_file_guard.load_vlm_with_policy",
+        lambda *_args, **_kwargs: (MagicMock(), MagicMock()),
+    )
+    monkeypatch.setattr(srv, "load_runtime", lambda *_args, **_kwargs: MagicMock())
+    with caplog.at_level("DEBUG"):
+        srv.load_dflash_runtime(
+            main_model_repo="user/target-4bit",
+            main_model_revision=None,
+            drafter_repo="user/drafter",
+            drafter_revision=None,
+            expected_algorithm="dflash",
+            experimental_opt_in=True,
+            experimental_warning_shown=True,
+        )
+
+    records = [
+        record
+        for record in caplog.records
+        if "has not been performance-validated" in record.message
+    ]
+    assert any(record.levelname == "DEBUG" for record in records)
+    assert not any(record.levelname == "WARNING" for record in records)
 
 
 def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:

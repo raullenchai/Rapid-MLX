@@ -415,8 +415,10 @@ def test_cli_combines_experimental_warnings(monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(dflash, "check", lambda *a, **k: None)
-    _resolve_dflash_launch_or_exit(SimpleNamespace(model="unknown/model"))
+    args = SimpleNamespace(model="unknown/model")
+    _resolve_dflash_launch_or_exit(args)
     out = capsys.readouterr().out
     assert out.count("Experimental DFlash") == 1
     assert out.count("first warning") == 1
     assert "second warning" in out
+    assert args._dflash_warning_shown is True
