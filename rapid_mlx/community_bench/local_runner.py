@@ -237,6 +237,13 @@ class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
     def submit(self, *args, **kwargs):
         return self.futures.track(super().submit(*args, **kwargs))
 
+    def join_workers(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` for worker threads; True when all exited."""
+        deadline = time.monotonic() + timeout
+        for thread in list(self._threads):
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in list(self._threads))
+
 
 class BenchmarkCancelledError(RuntimeError):
     """The local runtime reported a terminal user/system cancellation."""
@@ -2044,10 +2051,16 @@ async def _text_measurements(
         finally:
             if executor is not None:
                 global _abandoned_native_worker
-                abandon = _cancelling() and executor.futures.any_outstanding()
-                if abandon:
-                    _abandoned_native_worker = True
-                executor.shutdown(wait=not abandon, cancel_futures=True)
+                if _cancelling():
+                    # Never join on cancellation: a worker may be inside a
+                    # native load or the initializer. Give idle workers a
+                    # moment to exit; any still alive are abandoned and the
+                    # CLI exits without waiting for them.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    if not executor.join_workers(timeout=1.0):
+                        _abandoned_native_worker = True
+                else:
+                    executor.shutdown(wait=True, cancel_futures=True)
 
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []

@@ -569,3 +569,27 @@ def test_cancelled_queued_future_with_worker_in_initializer_is_outstanding():
     while executor.futures.any_outstanding():
         assert time.monotonic() < deadline
         time.sleep(0.01)
+
+
+def test_join_workers_reports_worker_still_blocked():
+    from rapid_mlx.community_bench import local_runner
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def initializer():
+        entered.set()
+        release.wait(5)
+
+    executor = local_runner._TrackingExecutor(max_workers=1, initializer=initializer)
+    try:
+        future = executor.submit(lambda: None)
+        assert entered.wait(5)
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        started = time.monotonic()
+        assert executor.join_workers(timeout=0.2) is False
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()
+    assert executor.join_workers(timeout=5) is True
