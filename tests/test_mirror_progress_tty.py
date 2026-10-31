@@ -59,6 +59,7 @@ def _every_add_emits(monkeypatch):
 
 def test_non_tty_keeps_machine_bytes_heartbeat(monkeypatch):
     """Piped stdout emits ``[bytes] D/T`` and never the human bar."""
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     fake = _FakePipe()
     monkeypatch.setattr(sys, "stdout", fake)
     t = _ProgressTracker(total=1000)

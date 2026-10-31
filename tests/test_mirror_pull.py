@@ -3489,6 +3489,7 @@ def test_bytes_heartbeat_emitted_during_r2_pull(
     advance its progress bar while a multi-GB shard streams between
     ``[N/M] file R2 (X MB)`` completion lines.
     """
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
     revision = "feed" * 10
     files = [
@@ -3626,6 +3627,7 @@ def test_progress_tracker_is_per_pull_not_global(
     and asserting each one's final heartbeat matches its OWN planned
     total (the cross-pull contamination would shift one side).
     """
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     import re
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -3744,6 +3746,7 @@ def test_progress_no_double_count_on_r2_short_read_then_hf(
     Fixed by rolling back ``chunks_credited`` at every post-credit
     failure path before the dispatcher hands off to HF.
     """
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     import re
 
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
@@ -3821,6 +3824,7 @@ def test_progress_resumed_r2_credits_existing_prefix(
     the chunk loop and include it in ``chunks_credited`` so rollback
     stays balanced if R2 then fails.
     """
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     import re
 
     repo_id = "mlx-community/Qwen3-0.6B-4bit"
@@ -3889,7 +3893,7 @@ def test_progress_resumed_r2_credits_existing_prefix(
     )
 
 
-def test_progress_tracker_clamps_display_at_total():
+def test_progress_tracker_clamps_display_at_total(monkeypatch):
     """Direct unit test on ``_ProgressTracker``: an over-credit during
     streaming must not emit ``done > total``.
 
@@ -3901,6 +3905,7 @@ def test_progress_tracker_clamps_display_at_total():
     so subsequent ``subtract`` correctly balances against the actual
     credit.
     """
+    monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     import io
     from contextlib import redirect_stdout
 
