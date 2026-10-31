@@ -174,8 +174,13 @@ def _configure_bootstrap_logging(log_level: str) -> None:
 
     import logging
 
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
+    quiet_hf_progress_bars_off_terminal()
     normalized = _log_level_choice(log_level)
     quiet_transport_loggers(normalized)
     silence_hf_unauthenticated_warning()
@@ -12166,6 +12171,10 @@ def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
     import copy
+
+    from ._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    quiet_hf_progress_bars_off_terminal()
 
     # Every nested runtime-asset pull retries the user's original request,
     # preserving its selected variant and pinned dependency set.

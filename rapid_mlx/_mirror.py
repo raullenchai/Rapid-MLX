@@ -217,6 +217,16 @@ _BAR_MAX_CELLS = 24
 _BAR_MIN_CELLS = 8
 
 
+def _desktop_progress_protocol() -> bool:
+    """Whether this process is consuming the Desktop progress protocol."""
+    try:
+        from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+
+        return is_desktop_sidecar()
+    except Exception:
+        return False
+
+
 class _ProgressTracker:
     """Aggregate bytes-done counter for one R2 pull.
 
@@ -257,14 +267,7 @@ class _ProgressTracker:
         # target the same object even if sys.stdout is later swapped.
         self._out = sys.stdout
         self._is_tty = bool(self._out) and self._out.isatty()
-        self._machine = False
-        if not self._is_tty:
-            try:
-                from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
-
-                self._machine = is_desktop_sidecar()
-            except Exception:
-                pass
+        self._machine = not self._is_tty and _desktop_progress_protocol()
         self._human = not self._is_tty and not self._machine
         self._human_last_time = time.monotonic() if self._human else 0.0
         self._human_last_done = 0
@@ -2367,7 +2370,8 @@ def download_with_mirror_fallback(
             and (expected_sha256 is not None or expected_git_oid is not None)
             and (not pinned or expected_size is not None)
         )
-        _print_dim(f"  [current] {_safe_display_name(fname)}")
+        if _desktop_progress_protocol():
+            _print_dim(f"  [current] {_safe_display_name(fname)}")
         if r2_eligible:
             # ``dub`` is set above to either the catalog's
             # download_url_base (default mirror) or the synthetic

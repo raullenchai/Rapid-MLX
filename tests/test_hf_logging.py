@@ -320,3 +320,49 @@ def test_transformers_model_type_is_escaped():
         )
         assert filt.filter(_record(msg))
         assert not filt.filter(_record(msg.replace("voxxcpm", "vox.cpm")))
+
+
+@pytest.mark.parametrize(
+    ("tty", "role", "user_setting", "disabled"),
+    [
+        (False, None, None, True),
+        (True, None, None, False),
+        (False, "desktop-sidecar", None, False),
+        (False, None, "0", False),
+    ],
+)
+def test_quiet_progress_bars(monkeypatch, tty, role, user_setting, disabled):
+    import sys
+
+    from huggingface_hub.utils import are_progress_bars_disabled, enable_progress_bars
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS", raising=False)
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    enable_progress_bars()
+    if role:
+        monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", role)
+    if user_setting is not None:
+        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", user_setting)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: tty)
+    try:
+        quiet_hf_progress_bars_off_terminal()
+        quiet_hf_progress_bars_off_terminal()
+        assert are_progress_bars_disabled() is disabled
+    finally:
+        enable_progress_bars()
+
+
+def test_bootstrap_configures_progress_bars(monkeypatch):
+    from rapid_mlx import _hf_logging, cli
+
+    calls = []
+    monkeypatch.setattr(
+        _hf_logging, "quiet_hf_progress_bars_off_terminal", lambda: calls.append(True)
+    )
+    monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: None)
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "setLevel", lambda level: None)
+    cli._configure_bootstrap_logging("INFO")
+    assert calls == [True]
