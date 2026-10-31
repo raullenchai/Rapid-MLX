@@ -286,8 +286,11 @@ struct HFCacheByteMonitorTests {
 
     @Test("formatBytes clamps negative values and renders zero as 0 bytes")
     func formatBytesDefensive() {
-        #expect(DownloadProgress.formatBytes(0) == "0 bytes")
-        #expect(DownloadProgress.formatBytes(-1) == "0 bytes")
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        #expect(DownloadProgress.formatBytes(0) == formatter.string(fromByteCount: 0))
+        #expect(DownloadProgress.formatBytes(-1) == formatter.string(fromByteCount: 0))
     }
 
     // MARK: - DownloadManager.estimateTotalBytes

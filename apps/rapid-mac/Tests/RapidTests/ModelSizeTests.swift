@@ -10,7 +10,10 @@ struct ModelSizeTests {
         #expect(ModelSize.bytes(bytes).displayText == expected)
         #expect(ModelSize.legacy("1.5 GB")?.displayText == expected)
         #expect(DownloadProgress.formatBytes(bytes) == expected)
-        #expect(DownloadProgress.formatBytes(-1) == "0 bytes")
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        #expect(DownloadProgress.formatBytes(-1) == formatter.string(fromByteCount: 0))
     }
 
     @Test func legacyTextParsing() {

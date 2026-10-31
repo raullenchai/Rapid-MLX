@@ -69,8 +69,8 @@ struct DownloadProgressTests {
         for bytes: Int64 in [-1, 0, 16 * (1 << 30)] {
             #expect(DownloadProgress.formatMemory(bytes) == formatter.string(fromByteCount: max(0, bytes)))
         }
-        #expect(DownloadProgress.formatMemory(0) == "0 bytes")
-        #expect(DownloadProgress.formatMemory(-1) == "0 bytes")
+        #expect(DownloadProgress.formatMemory(0) == formatter.string(fromByteCount: 0))
+        #expect(DownloadProgress.formatMemory(-1) == formatter.string(fromByteCount: 0))
     }
 
     @Test("Floating-point byte estimates saturate safely for display")
