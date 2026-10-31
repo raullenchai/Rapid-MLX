@@ -1201,6 +1201,12 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         if _served_model_name_set
         else (_cfg.model_alias or _cfg.model_name)
     )
+    if _cfg.retrieval_only and not _banner_model:
+        _banner_model = ", ".join(
+            model
+            for model in (_cfg.embedding_model_locked, _cfg.rerank_model_locked)
+            if model
+        )
     _ep = endpoints_from_bind(
         _cfg.bind_host,
         _cfg.bind_port,

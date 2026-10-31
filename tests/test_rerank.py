@@ -1097,8 +1097,17 @@ def test_jina_checkpoint_limits(monkeypatch, caplog, mode):
     )
 
     engine = rerank.RerankEngine("fake/checkpoint")
-    engine.load()
+    with caplog.at_level("INFO", logger="rapid_mlx.rerank"):
+        engine.load()
     v35 = mode in ("v35", "derived")
+    if v35:
+        assert engine.family.label == "jina-reranker-v3.5"
+        assert (
+            "Loading rerank model: fake/checkpoint (jina-reranker-v3.5)" in caplog.text
+        )
+    else:
+        assert engine.family.label == "jina-reranker-v3"
+        assert "(jina-reranker-v3)" in caplog.text
     assert engine.max_length == (8192 if v35 else 2048)
     assert engine.family.max_query_tokens == (1024 if v35 else 512)
     if not v35:
@@ -1808,7 +1817,12 @@ def test_retrieval_only_mode_loads_both_models(monkeypatch):
         "_load_rerank_model_or_exit",
         lambda args, fn: events.append(("rerank", fn is stub_server.load_rerank_model)),
     )
-    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_k: events.append("run"))
+
+    def run_uvicorn(*_args, **kwargs):
+        assert kwargs.get("on_server_accepting") is None
+        events.append("run")
+
+    monkeypatch.setattr(cli, "_run_uvicorn", run_uvicorn)
     monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     args = types.SimpleNamespace(
         embedding_model="embed",

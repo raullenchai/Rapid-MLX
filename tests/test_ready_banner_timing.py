@@ -458,3 +458,20 @@ def test_generation_ready_banner_has_authenticated_lane_command(
     assert "Authorization: Bearer $RAPID_MLX_API_KEY" in out
     assert "secret" not in out
     assert "launch codex" not in out and "Anthropic:" not in out
+
+
+def test_rerank_only_ready_banner_without_primary_model(monkeypatch, capsys):
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "localhost")
+    monkeypatch.setattr(cfg, "bind_port", 8765)
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "model_alias", None)
+    monkeypatch.setattr(cfg, "embedding_engine", None)
+    monkeypatch.setattr(cfg, "rerank_engine", object())
+    monkeypatch.setattr(cfg, "rerank_model_locked", "rank-model")
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "Ready: http://localhost:8765" in out
+    assert "Model:     rank-model" in out
+    assert "(not yet loaded)" not in out
+    assert "curl http://localhost:8765/v1/rerank" in out

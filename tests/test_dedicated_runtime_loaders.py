@@ -213,6 +213,7 @@ def test_servers_delegate_loading(monkeypatch):
             drafter_repo="draft",
             drafter_revision="d",
             experimental_opt_in=True,
+            experimental_warning_shown=False,
             expected_algorithm="dflash2",
         ),
         (pair, {"prefill_step_size": 42}),
