@@ -296,6 +296,7 @@ class _ProgressTracker:
                 )
                 if bucket > self._human_due_bucket:
                     self._human_due_bucket = bucket
+                    self._last_emit = now
                     do_emit = True
                 if now - self._last_emit >= 30:
                     self._last_emit = now

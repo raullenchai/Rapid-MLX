@@ -66,6 +66,27 @@ def test_human_log_slow_progress_and_flush(monkeypatch):
     ]
 
 
+def test_human_timer_runs_from_milestone(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stream)
+    now = [0.0]
+    monkeypatch.setattr(_mirror.time, "monotonic", lambda: now[0])
+    tracker = _mirror._ProgressTracker(total=1_000_000_000)
+
+    now[0] = 1.0
+    tracker.add(100_000_000)
+    now[0] = 30.0
+    tracker.add(1_000_000)
+    assert len(stream.getvalue().splitlines()) == 1
+    now[0] = 31.5
+    tracker.add(9_000_000)
+    assert stream.getvalue().splitlines() == [
+        "  Downloaded 0.1 of 1.0 GB (10%)",
+        "  Downloaded 0.1 of 1.0 GB (11%)",
+    ]
+
+
 def test_desktop_pipe_keeps_machine_protocol(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", "desktop-sidecar")
     monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
