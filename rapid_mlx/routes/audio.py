@@ -44,12 +44,13 @@ logger = logging.getLogger(__name__)
 
 def _remote_code_consent_error(exc: Exception) -> HTTPException | None:
     """Find consent refusals in a bounded exception chain."""
-    pending = [(exc, 0)]
+    current = exc
     seen = set()
-    while pending:
-        current, depth = pending.pop(0)
+    for _ in range(6):
+        if current is None:
+            break
         if id(current) in seen:
-            continue
+            break
         seen.add(id(current))
         if isinstance(current, RemoteCodeConsentRequired):
             logger.warning("Model repository code consent required: %s", current)
@@ -70,12 +71,12 @@ def _remote_code_consent_error(exc: Exception) -> HTTPException | None:
                     }
                 },
             )
-        if depth < 5:
-            pending.extend(
-                (cause, depth + 1)
-                for cause in (current.__cause__, current.__context__)
-                if cause is not None
-            )
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            break
     return None
 
 

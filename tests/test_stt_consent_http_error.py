@@ -15,7 +15,7 @@ from rapid_mlx.utils.model_file_guard import (
 )
 
 
-@pytest.mark.parametrize("failure", ["direct", "wrapped", "generic"])
+@pytest.mark.parametrize("failure", ["direct", "wrapped", "generic", "suppressed"])
 def test_transcription_load_errors(monkeypatch, failure):
     from rapid_mlx.audio import probe
     from rapid_mlx.routes import audio
@@ -28,6 +28,11 @@ def test_transcription_load_errors(monkeypatch, failure):
         def load(self):
             if failure == "generic":
                 raise RuntimeError("ordinary failure")
+            if failure == "suppressed":
+                try:
+                    raise RemoteCodeConsentRequired("private path /model")
+                except RemoteCodeConsentRequired:
+                    raise RuntimeError("load failed") from None
             if failure == "wrapped":
                 try:
                     raise RemoteCodeConsentRequired("private path /model")
@@ -56,7 +61,7 @@ def test_transcription_load_errors(monkeypatch, failure):
         files={"file": ("audio.wav", b"test", "audio/wav")},
     )
     error = response.json()["detail"]["error"]
-    if failure == "generic":
+    if failure in ("generic", "suppressed"):
         assert response.status_code == 500
         assert error["code"] == "transcription_failed"
     else:
