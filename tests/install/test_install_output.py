@@ -1,9 +1,10 @@
 """Regression checks for installer output."""
+
 import os
 import pty
 import subprocess
 import sys
-import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -12,24 +13,48 @@ SCRIPT = Path(__file__).resolve().parents[2] / "install.sh"
 
 
 def run_bash(code, *args, env=None, **kwargs):
-    return subprocess.run(["bash", "-c", 'RAPID_INSTALL_LIB=1 source "$1"; shift; ' + code,
-                           "test", str(SCRIPT), *map(str, args)],
-                          env={**os.environ, **(env or {})}, **kwargs)
+    clean_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"UV_CONFIG_FILE", "UV_NO_CONFIG"}
+    }
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            'RAPID_INSTALL_LIB=1 source "$1"; shift; ' + code,
+            "test",
+            str(SCRIPT),
+            *map(str, args),
+        ],
+        env={**clean_env, **(env or {})},
+        **kwargs,
+    )
 
 
 @pytest.mark.parametrize("term", ["dumb", "xterm"])
 def test_no_colour_on_pipe(term):
-    result = run_bash('ok ok; warn warning; err error; info info; dim dim',
-                      env={"TERM": term}, capture_output=True)
+    result = run_bash(
+        "ok ok; warn warning; err error; info info; dim dim",
+        env={"TERM": term},
+        capture_output=True,
+    )
     assert b"\x1b" not in result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("term,no_color,expected", [("xterm", "", True), ("dumb", "", False), ("xterm", "1", False), ("", "", False)])
+@pytest.mark.parametrize(
+    "term,no_color,expected",
+    [("xterm", "", True), ("dumb", "", False), ("xterm", "1", False), ("", "", False)],
+)
 def test_terminal_colour(term, no_color, expected):
     master, slave = pty.openpty()
     try:
-        result = run_bash('ok hello', env={"TERM": term, "NO_COLOR": no_color},
-                          stdout=slave, stderr=subprocess.PIPE)
+        result = run_bash(
+            "ok hello",
+            env={"TERM": term, "NO_COLOR": no_color},
+            stdout=slave,
+            stderr=subprocess.PIPE,
+        )
         output = os.read(master, 4096)
         assert result.returncode == 0
         assert (b"\x1b" in output) == expected
@@ -41,7 +66,8 @@ def test_terminal_colour(term, no_color, expected):
 
 @pytest.mark.parametrize("status", [0, 3])
 def test_package_output_filter(status):
-    result = run_bash('''
+    result = run_bash(
+        """
 stub() {
     echo 'warning: The package `transformers==5.15.1` does not have an extra named `tokenizers`' >&2
     echo "WARNING: transformers 5.16.0 does not provide the extra 'tokenizers'" >&2
@@ -52,90 +78,144 @@ stub() {
     return "$1"
 }
 run_package_command stub "$1"
-''', status, capture_output=True, text=True)
+""",
+        status,
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == status
     assert result.stdout == "stdout remains unchanged\n"
-    assert result.stderr == ("warning: The package `transformers==5.15.1` does not have an extra named `tokenizers`\n"
-                             "warning: unrelated warning\n"
-                             "error: installation problem\n"
-                             "WARNING: another-package 1.0 does not provide the extra 'tokenizers'\n")
+    assert result.stderr == (
+        "warning: The package `transformers==5.15.1` does not have an extra named `tokenizers`\n"
+        "warning: unrelated warning\n"
+        "error: installation problem\n"
+        "WARNING: another-package 1.0 does not provide the extra 'tokenizers'\n"
+    )
 
 
 def test_package_filter_all_stderr():
-    result = run_bash('''
+    result = run_bash(
+        """
 stub() { echo "WARNING: transformers 5.15.1 does not provide the extra 'tokenizers'" >&2; }
 run_package_command stub
-''', capture_output=True, text=True)
+""",
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize("requirements,expected", [
-    (["transformers>=5.0,<6", "transformers[tokenizers]>=5.1,!=5.2; extra == 'chat'"],
-     "transformers>=5.0,<6,>=5.1,!=5.2"),
-    (["other<2"], ""),
-    (["transformers>=5,<6", "transformers>=oops"], ""),
-    (["transformers>=5"], ""),
-])
-@pytest.mark.parametrize("target", ["stable", "1.2.3", "latest"])
-def test_transformers_override(tmp_path, requirements, expected, target):
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    (bindir / "python").symlink_to(sys.executable)
-    if target == "latest":
-        content = '[project]\ndependencies = ' + json.dumps(requirements[:1]) + '\n'
-        content += '[project.optional-dependencies]\nchat = ' + json.dumps(requirements[1:]) + '\n'
-        expected_url = "https://raw.githubusercontent.com/raullenchai/Rapid-MLX/" + "a" * 40 + "/pyproject.toml"
-    else:
-        content = json.dumps({"info": {"requires_dist": requirements}})
-        expected_url = "https://pypi.org/pypi/rapid-mlx/" + ("json" if target == "stable" else target + "/json")
-    metadata = tmp_path / "metadata"
-    metadata.write_text(content)
-    result = run_bash('''
-INSTALL_DIR=$1 TARGET=$2 RAPID_MLX_GIT_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-# Pass fixture paths through globals; download has its own positional parameters.
-FIXTURE=$3 EXPECTED_URL=$4
-download() { [ "$1" = "$EXPECTED_URL" ] || return 1; cat "$FIXTURE"; }
-transformers_override
-''', tmp_path, target, metadata, expected_url, capture_output=True, text=True)
-    assert result.returncode == 0
-    assert result.stdout == expected
-    assert result.stderr == ""
+EXPECTED_METADATA = {
+    "name": "mlx-video-with-audio",
+    "version": "0.1.36",
+    "requires-dist": [
+        "mlx>=0.22.0",
+        "numpy",
+        "safetensors",
+        "huggingface_hub",
+        "transformers",
+        "tqdm",
+        "opencv-python>=4.12.0.88",
+        "Pillow>=10.3.0",
+        "mlx-vlm",
+        "soundfile>=0.12.0",
+        'pytest; extra == "dev"',
+    ],
+}
 
 
 @pytest.mark.parametrize("status", [0, 7])
-@pytest.mark.parametrize("fetch_ok", [True, False])
-def test_uv_override_and_stderr(tmp_path, status, fetch_ok):
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    (bindir / "python").symlink_to(sys.executable)
+def test_uv_metadata_and_stderr(tmp_path, status):
     stderr = tmp_path / "stderr"
     record = tmp_path / "record"
-    result = run_bash('''
-INSTALL_DIR=$1 TARGET=stable RECORD=$2 EXPECTED_STDERR=$3 FETCH_OK=$4 STATUS=$5
-download() {
-    [ "$FETCH_OK" = yes ] || return 1
-    printf '%s' '{"info":{"requires_dist":["transformers>=5,<6"]}}'
-}
-run_install_command() {
-    "$INSTALL_DIR/bin/python" -I -c 'import os, sys; a = os.fstat(2); b = os.stat(sys.argv[1]); sys.exit((a.st_dev, a.st_ino) != (b.st_dev, b.st_ino))' "$EXPECTED_STDERR" || return 99
-    printf '%s\\n' "$@" > "$RECORD"
-    if [ "$FETCH_OK" = yes ]; then
-        [ "$4" = --overrides ] || return 98
-        cat "$5" >> "$RECORD"
-    fi
+    config_copy = tmp_path / "config-copy"
+    result = run_bash(
+        """
+unset UV_CONFIG_FILE UV_NO_CONFIG XDG_CONFIG_DIRS
+export XDG_CONFIG_HOME="$1/config-home"
+cd "$1"
+RECORD=$2 CONFIG_COPY=$3 EXPECTED_STDERR=$4 STATUS=$5 PYTHON=$6
+uv() {
+    "$PYTHON" -c 'import os, sys; a = os.fstat(2); b = os.stat(sys.argv[1]); sys.exit((a.st_dev, a.st_ino) != (b.st_dev, b.st_ino))' "$EXPECTED_STDERR" || return 99
+    printf '%s\n' "$UV_CONFIG_FILE" "$@" > "$RECORD"
+    cat "$UV_CONFIG_FILE" > "$CONFIG_COPY"
     return "$STATUS"
 }
 run_package_command uv pip install
-''', tmp_path, record, stderr, "yes" if fetch_ok else "no", status,
-                      stdout=subprocess.PIPE, stderr=stderr.open("w"), text=True)
+""",
+        tmp_path,
+        record,
+        config_copy,
+        stderr,
+        status,
+        sys.executable,
+        stdout=subprocess.PIPE,
+        stderr=stderr.open("w"),
+        text=True,
+    )
     assert result.returncode == status
-    args = record.read_text().splitlines()
-    assert args[:3] == ["uv", "pip", "install"]
-    if fetch_ok:
-        assert args[3] == "--overrides"
-        assert args[5] == "transformers>=5,<6"
-        assert not Path(args[4]).parent.exists()
-    else:
-        assert len(args) == 3
+    config_path, *args = record.read_text().splitlines()
+    assert args == ["pip", "install"]
+    assert tomllib.loads(config_copy.read_text()) == {
+        "dependency-metadata": [EXPECTED_METADATA]
+    }
+    assert not Path(config_path).parent.exists()
     assert stderr.read_text() == ""
+
+
+def test_metadata_version_matches_project_pin():
+    project = tomllib.loads((SCRIPT.parent / "pyproject.toml").read_text())
+    requirements = project["project"]["dependencies"] + [
+        requirement
+        for group in project["project"].get("optional-dependencies", {}).values()
+        for requirement in group
+    ]
+    pins = {
+        requirement.split("==", 1)[1].split(";", 1)[0].strip()
+        for requirement in requirements
+        if requirement.startswith("mlx-video-with-audio==")
+    }
+    assert pins == {EXPECTED_METADATA["version"]}
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    ["xdg_home", "preset", "ancestor", "xdg_dirs", "no_config", "pyproject"],
+)
+def test_uv_preserves_existing_configuration(tmp_path, configuration):
+    work = tmp_path / "parent" / "child"
+    work.mkdir(parents=True)
+    config_home = tmp_path / "config-home"
+    config_dirs = tmp_path / "config-dirs"
+    preset = tmp_path / "preset.toml"
+    env = {"XDG_CONFIG_HOME": str(config_home), "XDG_CONFIG_DIRS": str(config_dirs)}
+    if configuration == "xdg_home":
+        (config_home / "uv").mkdir(parents=True)
+        (config_home / "uv" / "uv.toml").touch()
+    elif configuration == "preset":
+        env["UV_CONFIG_FILE"] = str(preset)
+    elif configuration == "ancestor":
+        (work.parent / "uv.toml").touch()
+    elif configuration == "xdg_dirs":
+        (config_dirs / "uv").mkdir(parents=True)
+        (config_dirs / "uv" / "uv.toml").touch()
+    elif configuration == "no_config":
+        env["UV_NO_CONFIG"] = "1"
+    else:
+        (work.parent / "pyproject.toml").write_text("[tool.uv]\n")
+    result = run_bash(
+        """
+uv() { printf '%s|%s|%s\n' "${UV_CONFIG_FILE-unset}" "${UV_NO_CONFIG-unset}" "$*"; }
+run_package_command uv pip install
+""",
+        env=env,
+        cwd=work,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (
+        result.stdout
+        == f"{env.get('UV_CONFIG_FILE', 'unset')}|{env.get('UV_NO_CONFIG', 'unset')}|pip install\n"
+    )

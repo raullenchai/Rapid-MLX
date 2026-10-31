@@ -422,45 +422,30 @@ validate_target() {
     esac
 }
 
-transformers_override() {
-    local url result
-    case "$TARGET" in
-        stable) url="https://pypi.org/pypi/rapid-mlx/json" ;;
-        latest) url="https://raw.githubusercontent.com/raullenchai/Rapid-MLX/${RAPID_MLX_GIT_COMMIT}/pyproject.toml" ;;
-        *) url="https://pypi.org/pypi/rapid-mlx/${TARGET}/json" ;;
-    esac
-    # Metadata is advisory: any download or parsing failure leaves the normal
-    # resolver behavior intact. Python reads the pipeline, not installer stdin.
-    result=$( ( download "$url" | "$INSTALL_DIR/bin/python" -I -c '
-import json, re, sys, tomllib
-
-try:
-    if sys.argv[1] == "latest":
-        project = tomllib.loads(sys.stdin.read())["project"]
-        requirements = list(project["dependencies"])
-        for group in project.get("optional-dependencies", {}).values():
-            requirements.extend(group)
-    else:
-        requirements = json.load(sys.stdin)["info"]["requires_dist"]
-    specs = []
-    for requirement in requirements:
-        if not isinstance(requirement, str):
-            raise ValueError("invalid requirement")
-        match = re.match(r"^\s*transformers(?=\s|\[|[<>=!~;]|$)(.*)$", requirement, re.I)
-        if not match:
-            continue
-        rest = match.group(1).split(";", 1)[0].strip()
-        rest = re.sub(r"^\[[^\[\]]+\]\s*", "", rest)
-        if not re.fullmatch(r"(?:<=|>=|==|!=|~=|<|>)\s*[0-9]+(?:\.[0-9]+)*(?:\s*,\s*(?:<=|>=|==|!=|~=|<|>)\s*[0-9]+(?:\.[0-9]+)*)*", rest):
-            raise ValueError("invalid specifier")
-        specs.append(rest)
-    result = "transformers" + ",".join(specs)
-    if specs and "<" in result and re.fullmatch(r"transformers[<>=!~,.0-9 ]+", result):
-        print(result)
-except Exception:
-    pass
-' "$TARGET" ) 2>/dev/null ) || return 0
-    printf '%s' "$result"
+uv_config_absent() {
+    local dir config_dir result config_dirs=${XDG_CONFIG_DIRS:-}
+    [ -z "${UV_CONFIG_FILE+x}" ] && [ -z "${UV_NO_CONFIG+x}" ] || return 1
+    for config_dir in "${XDG_CONFIG_HOME:-$HOME/.config}" /etc "${config_dirs//:/$'\n'}"; do
+        while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            [ ! -e "$dir/uv/uv.toml" ] && [ ! -L "$dir/uv/uv.toml" ] || return 1
+        done <<< "$config_dir"
+    done
+    dir=$PWD
+    while :; do
+        [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
+        if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
+            if grep -Fq '[tool.uv' "$dir/pyproject.toml" 2>/dev/null; then
+                return 1
+            else
+                result=$?
+                [ "$result" -eq 1 ] || return 1
+            fi
+        fi
+        [ "$dir" = / ] && break
+        dir=${dir%/*}
+        [ -n "$dir" ] || dir=/
+    done
 }
 
 # Preserve the installer status even when grep removes every stderr line.
@@ -468,12 +453,18 @@ run_package_command() {
     if [ "$1" = uv ]; then
         # A subshell scopes the cleanup trap and leaves uv stderr untouched.
         (
-            local override
-            override=$(transformers_override)
-            if [ -n "$override" ] && tmpdir=$(mktemp -d 2>/dev/null); then
+            if uv_config_absent && tmpdir=$(mktemp -d 2>/dev/null); then
                 trap 'rm -rf "$tmpdir"' EXIT
-                if printf '%s\n' "$override" 2>/dev/null > "$tmpdir/overrides.txt"; then
-                    run_install_command "$@" --overrides "$tmpdir/overrides.txt"
+                if cat > "$tmpdir/uv.toml" <<'EOF'
+[[dependency-metadata]]
+name = "mlx-video-with-audio"
+version = "0.1.36"
+requires-dist = ["mlx>=0.22.0", "numpy", "safetensors", "huggingface_hub", "transformers", "tqdm",
+                 "opencv-python>=4.12.0.88", "Pillow>=10.3.0", "mlx-vlm", "soundfile>=0.12.0",
+                 "pytest; extra == \"dev\""]
+EOF
+                then
+                    UV_CONFIG_FILE="$tmpdir/uv.toml" run_install_command "$@"
                 else
                     run_install_command "$@"
                 fi
