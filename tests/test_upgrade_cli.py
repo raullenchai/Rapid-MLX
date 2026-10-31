@@ -321,3 +321,34 @@ def test_brew_upgrade_targets_formula_version(monkeypatch, capsys, verified, cod
     )
     if code:
         assert "(latest is 1.0.1)" in out
+
+
+def test_upgrade_propagates_command_failure(monkeypatch):
+    _stub_brew_with_upgrade_available(monkeypatch)
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=7)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 7
+
+
+def test_upgrade_reports_python_guidance_if_floor_changes(monkeypatch, capsys):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(
+        vc, "get_release_info", lambda **kw: vc.ReleaseInfo("1.0.1", ">=3.12")
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("uv", "upgrade", ["upgrade"]),
+    )
+    monkeypatch.setattr(vc, "_python_supports", MagicMock(side_effect=[True, False]))
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: "1.0.0")
+    with (
+        patch("subprocess.run", return_value=MagicMock(returncode=0)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 1
+    assert "uv tool upgrade --python 3.12 rapid-mlx" in capsys.readouterr().out

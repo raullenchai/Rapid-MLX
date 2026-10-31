@@ -1563,3 +1563,95 @@ def test_fresh_process_version_falls_back_to_python(monkeypatch):
     assert run.call_args.args[0][0:3] == [vc.sys.executable, "-I", "-c"]
     with patch("subprocess.run", side_effect=OSError):
         assert vc.installed_version_in_fresh_process(info) is None
+
+
+def test_python_supports_without_packaging(monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+
+    def without_packaging(name, *args, **kwargs):
+        if name == "packaging.specifiers":
+            raise ImportError("packaging unavailable")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_packaging)
+    assert vc._python_supports(">=99", (3, 10, 0)) is True
+
+
+def test_cache_rewrite_survives_missing_cache_file(monkeypatch):
+    monkeypatch.setattr(vc, "_read_cache", lambda: {"latest": "1.0.1"})
+    monkeypatch.setattr(vc, "_fetch_requires_python", lambda version: ">=3.12")
+    with patch.object(vc, "_write_cache") as write:
+        release = vc.get_release_info()
+    assert (release.latest, release.requires_python) == ("1.0.1", ">=3.12")
+    write.assert_not_called()
+
+
+def test_notices_fail_open_when_install_detection_fails(monkeypatch):
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.1")
+    monkeypatch.setattr(
+        vc, "detect_install_method", MagicMock(side_effect=OSError("offline"))
+    )
+    assert vc.staleness_warning() == vc.format_staleness_warning("1.0.0", "1.0.1")
+    assert vc._format_available_warning(
+        "1.0.0", "1.0.1"
+    ) == vc.format_staleness_warning("1.0.0", "1.0.1")
+
+
+def test_prompt_offers_available_brew_formula(monkeypatch, interactive, capsys):
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.2")
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.0.2", brew_stable="1.0.1"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade", ["brew"]),
+    )
+    with patch("builtins.input", return_value="n"), patch("subprocess.run") as run:
+        assert vc.prompt_upgrade_if_available() is False
+    run.assert_not_called()
+    assert "available: 1.0.1" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "method,command,expected",
+    [
+        ("brew", "brew upgrade rapid-mlx", "brew upgrade rapid-mlx"),
+        (
+            "unknown",
+            "sudo pipx upgrade --global rapid-mlx",
+            "sudo pipx reinstall --global --python python3.12 rapid-mlx",
+        ),
+    ],
+)
+def test_python_upgrade_instructions_for_managed_installs(method, command, expected):
+    assert vc.python_upgrade_instructions(
+        vc.InstallInfo(method, command, []), ">=3.12"
+    ) == [expected]
+
+
+def test_fresh_process_failure_does_not_accept_output():
+    info = vc.InstallInfo("pip", "upgrade", ["upgrade"])
+    with patch(
+        "subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="1.0.1")
+    ):
+        assert vc.installed_version_in_fresh_process(info) is None
+
+
+def test_shell_launcher_without_valid_trampoline_is_rejected(tmp_path, monkeypatch):
+    launcher = tmp_path / "rapid-mlx"
+    launcher.write_text("#!/bin/sh\necho hello\n")
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda name: SimpleNamespace(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    assert vc._launcher_belongs_to_running_install(str(launcher)) is False

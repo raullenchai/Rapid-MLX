@@ -280,3 +280,37 @@ def test_refresh_respects_upgrade_blocks(
         assert "run `rapid-mlx upgrade`" not in output
         refresh._refresh()
         assert capsys.readouterr().err == ""
+
+
+def test_refresh_announces_available_brew_formula_once(monkeypatch, capsys):
+    vc.get_latest_version.return_value = "1.2.0"
+    monkeypatch.setattr(
+        vc,
+        "get_release_info",
+        lambda **kw: vc.ReleaseInfo("1.2.0", brew_stable="1.1.0"),
+    )
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("brew", "brew upgrade", ["brew"]),
+    )
+    refresh.start()
+    refresh._refresh()
+    assert refresh.snapshot() == {"latest_version": "1.2.0", "update_available": True}
+    assert (
+        capsys.readouterr().err == vc.format_staleness_warning("1.0.0", "1.1.0") + "\n"
+    )
+    refresh._refresh()
+    assert capsys.readouterr().err == ""
+
+
+def test_refresh_fails_open_when_install_detection_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        vc, "detect_install_method", Mock(side_effect=OSError("unavailable"))
+    )
+    refresh.start()
+    refresh._refresh()
+    assert refresh.snapshot() == {"latest_version": "1.1.0", "update_available": True}
+    assert (
+        capsys.readouterr().err == vc.format_staleness_warning("1.0.0", "1.1.0") + "\n"
+    )
