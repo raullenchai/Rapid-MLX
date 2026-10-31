@@ -17,7 +17,9 @@ mutation) so the suite runs identically on every Python and every OS.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import importlib
 import json
 import os
@@ -5782,3 +5784,26 @@ def test_optional_section_deadline_is_restored(monkeypatch, deep, crashes):
     assert len(report.sections) == 2
     assert report.n_fail == int(crashes)
     assert eh._DOCTOR_DEADLINE is None
+
+
+def test_service_runtime_version_pip_trampoline(tmp_path):
+    environment = tmp_path / "venv with space"
+    bin_dir = environment / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python3.12"
+    python.write_text("")
+    python.chmod(0o755)
+    launcher = bin_dir / "rapid-mlx"
+    launcher.write_text(f"#!/bin/sh\n'''exec' \"{python}\" \"$0\" \"$@\"\n' '''\n")
+    metadata_root = environment / "lib" / "python3.12" / "site-packages"
+    dist_info = metadata_root / "rapid_mlx-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    (dist_info / "METADATA").write_text("Name: rapid-mlx\nVersion: 1.2.3\n")
+    content = launcher.read_bytes()
+    digest = (
+        base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+    )
+    (dist_info / "RECORD").write_text(
+        f"../../../bin/rapid-mlx,sha256={digest},{len(content)}\n"
+    )
+    assert eh._service_runtime_version(str(launcher)) == "1.2.3"

@@ -181,7 +181,7 @@ or read the [protocol and privacy details](https://github.com/raullenchai/Rapid-
 rapid-mlx chat
 ```
 
-A complete cached chat model that fits this Mac starts without another download. Otherwise Rapid-MLX selects a starter model and downloads its weights before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
+With no model named, `rapid-mlx chat` uses a chat model already on this Mac — the `qwen3.5-4b-4bit` starter if present, otherwise the best fit for this Mac's memory — without another download. If none is downloaded yet, it downloads the `qwen3.5-4b-4bit` starter (~3.1 GB) before opening the REPL. Type `/help` for slash commands, `/exit` to quit.
 
 **2. Or serve it for use from other apps:**
 
@@ -367,7 +367,7 @@ compute per second of footage, not real time.
 
 The dependency commands below use the official `install.sh` environment. For Homebrew or another install method, follow [optional extras](https://rapidmlx.com/docs/extras.html).
 
-44 audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
+Audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
 OpenAI SDK works unchanged.
 
 ```bash
@@ -657,7 +657,7 @@ and newer Macs; Rapid does not silently swap checkpoint precision.
 The pinned `ornith-1.5-122b-a10b-4bit` alias offers the publisher’s 122B hybrid MoE checkpoint on Macs with at least 96 GB unified memory. Install the `[vision]` runtime for its checkpoint loader; this alias qualifies text chat, streaming, tools, and thinking controls. Its download is about 69.6 GB. See the [October 27 qualification record](docs/engineering/performance/2026-10-27-trending-models.md) for results and the two excluded candidates.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (216 text + 13 image + 10 video + 44 audio aliases, 283 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

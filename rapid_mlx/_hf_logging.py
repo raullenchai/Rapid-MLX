@@ -47,7 +47,9 @@ than once, even concurrently, adds exactly one filter.
 from __future__ import annotations
 
 import logging
+import re
 import threading
+from contextlib import contextmanager
 
 # The logger huggingface_hub's ``_warn_on_warning_headers`` emits from:
 # ``logging.get_logger(__name__)`` where ``__name__`` is this module.
@@ -121,6 +123,37 @@ def silence_hf_unauthenticated_warning() -> None:
         filt = _DropUnauthenticatedAdvisory()
         setattr(filt, _FILTER_TAG, True)
         logger.addFilter(filt)
+
+
+class _DropTransformersBaseConfigMismatch(logging.Filter):
+    """Hide the empty base-config target warning for one model type."""
+
+    def __init__(self, model_type: str) -> None:
+        super().__init__()
+        self._pattern = re.compile(
+            rf"You are using a model of type `{re.escape(model_type)}` "
+            r"to instantiate a model of type ``\."
+        )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.WARNING:
+            return True
+        try:
+            return self._pattern.search(record.getMessage()) is None
+        except Exception:
+            return True
+
+
+@contextmanager
+def suppress_transformers_base_config_mismatch(model_type: str):
+    """Suppress the base-config warning when voxcpm2 AutoTokenizer falls back."""
+    logger = logging.getLogger("transformers.configuration_utils")
+    filt = _DropTransformersBaseConfigMismatch(model_type)
+    logger.addFilter(filt)
+    try:
+        yield
+    finally:
+        logger.removeFilter(filt)
 
 
 def quiet_transport_loggers(level_name: str) -> None:

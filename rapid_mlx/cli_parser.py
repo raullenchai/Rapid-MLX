@@ -14,6 +14,7 @@ import sys
 import textwrap
 
 from rapid_mlx._completion import alias_completer
+from rapid_mlx.first_run import FIRST_RUN_MODEL, FIRST_RUN_MODEL_SIZE
 from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
 
 # TurboQuant and min-quantize-tokens affect prefix-cache entries, which the
@@ -40,7 +41,7 @@ _BENCHMARK_ACCELERATION_HELP = {
     "--kv-cache-quantization": "Deprecated; use --kv-cache-dtype. Enable KV cache quantization; this option takes precedence when both are supplied.",
     "--kv-cache-quantization-bits": "Deprecated; use --kv-cache-dtype. Set the KV cache quantization bit width (default: 8).",
     "--kv-cache-quantization-group-size": "Deprecated; use --kv-cache-dtype. Set the KV cache quantization group size (default: 64).",
-    "--speculative-config": "Configure speculative decoding as JSON. DFlash and MTP are supported; DDTree cannot measure time to first token, and suffix decoding is refused because prompts repeat. Accepted keys: method, model, num_speculative_tokens, backend.",
+    "--speculative-config": 'Configure speculative decoding as JSON, e.g. \'{"method":"dflash","model":"<drafter>"}\' or \'{"method":"mtp"}\'. Tree-based decoding ("ddtree") cannot report time to first token; suffix decoding is refused because the benchmark repeats its prompts. Accepted keys: method, model, num_speculative_tokens, backend.',
     "--no-spec-decode": "Disable speculative decoding for the measured run, including model-selected acceleration.",
     "--prefill-step-size": "Set prompt prefill chunk size; larger chunks can improve throughput but use more memory.",
     "--pflash": "Select lossy long-prompt prefill compression (off, auto, always) for the measured run.",
@@ -1907,7 +1908,7 @@ def _add_serve_parser(
             "it, e.g. a fine-tune or a renamed local copy: qwen3 "
             "(Qwen3-Reranker), bge2 (BGE reranker v2 Gemma), mxbai2 "
             "(mxbai-rerank-v2), roberta (XLM-RoBERTa cross-encoders such as "
-            "bge-reranker-v2-m3) or jina3 (jina-reranker-v3). Default: detect "
+            "bge-reranker-v2-m3) or jina3 (jina-reranker-v3 / v3.5). Default: detect "
             "from the model name and config."
         ),
     )
@@ -2297,7 +2298,7 @@ def _add_benchmark_parser(
     community_run = community_subparsers.add_parser(
         "run",
         help="Run the registered protocol and save the result locally",
-        description='Runs serve runtime selection, including DFlash, native MTP and companion DSpark. TensorFold profiles are supported. Choose DFlash with --speculative-config \'{"method":"dflash","model":"<drafter>"}\'; disable speculation with --no-spec-decode or accelerations with --baseline. DDTree cannot measure time to first token; suffix decoding is refused because prompts repeat.',
+        description='Runs the model with the same acceleration `rapid-mlx serve` would pick for it (for example multi-token prediction), so results match what you get when serving. Use a draft model with --speculative-config \'{"method":"dflash","model":"<drafter>"}\'; turn speculation off with --no-spec-decode, or every acceleration off with --baseline. Tree-based speculative decoding (method "ddtree") cannot report time to first token, and suffix decoding is refused because the benchmark repeats its prompts.',
     )
     community_run.add_argument(
         "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
@@ -2675,10 +2676,10 @@ def _add_chat_parser(
         "model",
         nargs="?",
         default=None,
-        help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name). "
-        "When omitted, defaults to the qwen3.5-4b-4bit starter — a "
-        "dogfood-tested, tool-call-reliable model — downloaded once on first "
-        "use. See `rapid_mlx.first_run.select_chat_default`.",
+        help=f"Model alias (e.g. {FIRST_RUN_MODEL}) or HF repo (org/name). "
+        f"When omitted, uses a chat model already on this Mac (the {FIRST_RUN_MODEL} "
+        "starter if present, otherwise the best fit for this Mac's memory); if none "
+        f"is downloaded yet, downloads the {FIRST_RUN_MODEL} starter ({FIRST_RUN_MODEL_SIZE}) once.",
     ).completer = alias_completer
     chat_parser.add_argument(
         "--harness",

@@ -1207,6 +1207,7 @@ async def _run_job(
             job.status = completed_job.status
             job.progress = completed_job.progress
             job.completed_at = completed_job.completed_at
+            _touch_activity()
     except asyncio.CancelledError:
         if generation_completed:
             # The completed MP4 remains valid. Metadata persistence is atomic
@@ -1216,6 +1217,7 @@ async def _run_job(
                 job.status = completed_job.status
                 job.progress = completed_job.progress
                 job.completed_at = completed_job.completed_at
+                _touch_activity()
             raise
         with _jobs_lock:
             if job.status != "failed":

@@ -397,3 +397,65 @@ def test_experimental_pair_without_drafter_names_declared_drafter() -> None:
     joined = " ".join(result.reasons)
     assert "requires an explicit drafter" in joined
     assert repr(profile.dflash_draft_model) in joined
+
+
+def test_cli_combines_experimental_warnings(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from rapid_mlx.cli import _resolve_dflash_launch_or_exit
+    from rapid_mlx.speculative import dflash
+    from rapid_mlx.speculative.dflash import eligibility
+
+    monkeypatch.setattr(
+        eligibility,
+        "report",
+        lambda *a, **k: SimpleNamespace(
+            warnings=["first warning", "second warning", "first warning"],
+            recommendation="experimental",
+        ),
+    )
+    monkeypatch.setattr(dflash, "check", lambda *a, **k: None)
+    args = SimpleNamespace(model="unknown/model")
+    _resolve_dflash_launch_or_exit(args)
+    out = capsys.readouterr().out
+    assert out.count("Experimental DFlash") == 1
+    assert out.count("first warning") == 1
+    assert "second warning" in out
+    assert args._dflash_warning_shown is True
+
+
+def test_cli_combines_ddtree_experimental_warnings(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from rapid_mlx.cli import _preflight_ddtree_or_exit
+    from rapid_mlx.speculative import ddtree
+    from rapid_mlx.speculative.ddtree import eligibility as ddtree_eligibility
+
+    monkeypatch.setattr(
+        ddtree_eligibility,
+        "report",
+        lambda *a, **k: SimpleNamespace(
+            warnings=["first warning", "second warning", "first warning"]
+        ),
+    )
+    monkeypatch.setattr(ddtree, "check", lambda *a, **k: None)
+    monkeypatch.setattr(ddtree_eligibility, "have_runtime", lambda: True)
+    args = SimpleNamespace(
+        model="user/unknown-model-4bit",
+        _original_alias=None,
+        _speculative_config=SimpleNamespace(
+            method="ddtree",
+            model="user/drafter",
+            num_speculative_tokens=8,
+            tree_budget=12,
+        ),
+        enable_dflash=False,
+        suffix_decoding=False,
+        spec_decode="none",
+        no_spec_decode=False,
+    )
+    _preflight_ddtree_or_exit(args)
+    out = capsys.readouterr().out
+    assert out.count("Experimental DDTree") == 1
+    assert out.count("first warning") == 1
+    assert "second warning" in out

@@ -802,17 +802,12 @@ _SHARED_PREFIX_STORE_MIN_TOKENS = 1024
 # resume snapshot paths — one constant so the two capacities stay identical.
 _MEDIA_SNAPSHOT_HEADROOM_TOKENS = 64
 
-# Media boundaries are aligned DOWN to this grid (a multiple of it). The
-# hybrid GatedDeltaNet prefill scans tokens in fixed-size chunk tiles that
-# start at each forward's beginning (``gated_delta_chunked`` C=64); a split
-# whose boundary sits inside a tile re-tiling the tail produces last-ULP
-# state differences that compound through the recurrence (measured ~1.5
-# logits of drift, same argmax) and can flip near-tie tokens a turn or two
-# later. With the boundary on the grid, the split's tiles coincide with the
-# single forward's and the split eliminates the recurrent tile
-# re-alignment drift. GEMM batch-size differences between the split and
-# single forwards remain and still produce small cross-phase float
-# divergence (same argmax; reported, not gated — see the design note).
+# Prefer this recurrent-scan tile grid to remove one source of drift. An
+# off-grid split re-tiles the tail after the boundary; its measured last-ULP
+# recurrent-state drift is comparable to the GEMM batch-size drift every warm
+# resume carries (same argmax). Store and repeat resumes use the identical
+# split, so repeats remain deterministic. Requiring alignment would disable
+# caching for short post-image questions, the most common request shape.
 _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 
 # Model families qualified for the split media boundary, by ``config.model_type``.
@@ -2447,20 +2442,6 @@ class MLLMBatchGenerator:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        boundary = len(full_ids) - marker_width
-        # Align the boundary DOWN to the recurrent-scan tile grid so the
-        # split's chunking coincides with the single forward's (see
-        # ``_MEDIA_BOUNDARY_ALIGN_TOKENS``). The suffix only grows, so the
-        # engine's stable-boundary semantics are preserved; anything that
-        # cannot keep the aligned boundary above the placeholders (or the
-        # minimum) stays cold.
-        boundary = (boundary // _MEDIA_BOUNDARY_ALIGN_TOKENS) * (
-            _MEDIA_BOUNDARY_ALIGN_TOKENS
-        )
-        if boundary < _MEDIA_BOUNDARY_MIN_TOKENS or boundary >= len(full_ids):
-            if not counted_miss:
-                self._media_boundary_misses += 1
-            return None
         # The suffix is forwarded with ``pixel_values=None``: every vision
         # placeholder token must sit inside the prefix. The engine's
         # boundary semantics cannot guarantee that for all request shapes
@@ -2476,11 +2457,29 @@ class MLLMBatchGenerator:
             (i for i, token in enumerate(full_ids) if token in placeholder_ids),
             default=-1,
         )
-        if last_placeholder >= boundary:
+        raw = len(full_ids) - marker_width
+        aligned = (raw // _MEDIA_BOUNDARY_ALIGN_TOKENS) * _MEDIA_BOUNDARY_ALIGN_TOKENS
+        # Prefer the grid to remove recurrent-scan re-tiling drift. An
+        # off-grid split re-tiles the tail after the boundary, with measured
+        # last-ULP recurrent-state drift comparable to the GEMM batch-size
+        # drift every warm resume carries (same argmax). Store and repeat
+        # resumes use the same split, keeping
+        # repeats deterministic. A strict grid gate would leave short
+        # post-image questions, the most common shape, uncached.
+        store_boundary: int | None = next(
+            (
+                candidate
+                for candidate in (aligned, raw)
+                if _MEDIA_BOUNDARY_MIN_TOKENS <= candidate < len(full_ids)
+                and candidate > last_placeholder
+            ),
+            None,
+        )
+        if store_boundary is None:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary, generation, digest)
+        return ("store", None, store_boundary, generation, digest)
 
     def _media_store(
         self,

@@ -1251,8 +1251,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "Write a KeepAlive LaunchAgent (com.quicksilver.node.<id>.plist) "
             "that re-runs this share at login with the same declared flags "
             "(--thinking/--port/--cors-origins/--rate-limit/--chat-frontend/"
-            "origin override), print the launchctl line, and exit. Serves "
-            "passthrough args are refused (they can carry credentials) and "
+            "origin override), print the launchctl line, and exit. Extra serve flags "
+            "passed after -- are refused (they can carry credentials) and "
             "--reregister is never baked in. Requires a prior interactive "
             "run (the plist carries no key material — macOS only)."
         ),

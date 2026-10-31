@@ -138,7 +138,15 @@ def _raise_for_status(response: requests.Response, *, phase: str) -> None:
         try:
             body = response.json()
             if isinstance(body, dict):
-                detail = body.get("detail") or body.get("error")
+                for candidate in (body.get("detail"), body.get("error")):
+                    if isinstance(candidate, dict):
+                        nested = candidate.get("error")
+                        candidate = (
+                            nested.get("message") if isinstance(nested, dict) else None
+                        ) or candidate.get("message")
+                    if isinstance(candidate, str) and candidate.strip():
+                        detail = candidate
+                        break
         except (requests.exceptions.JSONDecodeError, ValueError):
             detail = None
         if not isinstance(detail, str) or not detail.strip():
@@ -1429,6 +1437,12 @@ def _sidecar_in_target_repo(target_identity, sidecar_repo, sidecar_snapshot):
         return False
     if repo.lower() != sidecar_repo.lower():
         return False
+    if sidecar_snapshot:
+        from pathlib import Path
+
+        snapshot = Path(sidecar_snapshot)
+        if snapshot.parent.name == "snapshots":
+            return revision == snapshot.name
     source = unresolved_model_identity(
         sidecar_repo, "text_generation", snapshot_path=sidecar_snapshot
     )["components"][0]["source"]
@@ -1466,7 +1480,7 @@ async def _load_serving_engine(model_id, scheduler_config, serve_args):
     from rapid_mlx import server
 
     server.load_model(
-        model_id,
+        getattr(serve_args, "_original_alias", None) or model_id,
         scheduler_config=scheduler_config,
         force_mllm=serve_args.mllm,
         force_text=serve_args.no_mllm,
@@ -1616,7 +1630,6 @@ async def _text_measurements(
     workload = registered_workload("text_generation")
     executor = None
     serving_engine = None
-    started_serving_engine = False
     mtp_source: str | None = None
     language = None
     try:
@@ -1759,7 +1772,6 @@ async def _text_measurements(
             loaded_source, model = "", None
         elif use_serving_engine:
             serving_engine, tokenizer = await start_serving_engine()
-            started_serving_engine = True
             loaded_source, model = "", None
         else:
             executor = concurrent.futures.ThreadPoolExecutor(
@@ -1777,7 +1789,6 @@ async def _text_measurements(
                 executor.shutdown(wait=False, cancel_futures=True)
                 executor = None
                 serving_engine, tokenizer = await start_serving_engine()
-                started_serving_engine = True
                 loaded_source, model = "", None
             else:
                 # ``return_source`` appends the concrete checkpoint source; a
@@ -1785,8 +1796,15 @@ async def _text_measurements(
                 model, tokenizer = loaded[0], loaded[1]
                 loaded_source = loaded[2] if len(loaded) > 2 else ""
         _stage_finished(progress, load_started, "Model loaded")
-        if started_serving_engine and not loaded_source:
-            # The serving loaders do not retain their resolved checkpoint path.
+        if serving_engine is not None and not loaded_source:
+            from pathlib import Path
+
+            # BatchedEngine retains the checkpoint path passed by the server.
+            concrete = getattr(serving_engine, "_model_name", None)
+            if isinstance(concrete, (str, os.PathLike)) and Path(concrete).is_dir():
+                loaded_source = str(concrete)
+        if serving_engine is not None and not loaded_source:
+            # Some serving loaders do not retain their resolved checkpoint path.
             # Reuse their offline catalog-pin resolver, never refs/main or a
             # download, when the loader did not return a concrete source.
             from rapid_mlx.model_metadata import resolve_pinned_cached_snapshot
