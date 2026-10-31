@@ -1400,6 +1400,12 @@ def _text_run() -> dict:
     )
 
 
+def test_run_collector_version_matches_installed_distribution() -> None:
+    from importlib.metadata import version
+
+    assert _text_run()["collector"]["version"] == version("rapid-mlx")
+
+
 def test_archive_validates_then_writes_private_atomic_result(tmp_path: Path) -> None:
     archive = LocalRunArchive(tmp_path / "benchmark-home")
     run = _image_run()
