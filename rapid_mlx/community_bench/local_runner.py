@@ -1508,7 +1508,9 @@ def _sidecar_identity(sidecar):
         index = len(parts) - 1 - parts[::-1].index("snapshots")
         cache_name = parts[index - 1]
         if not cache_name.startswith("models--") or index + 1 >= len(parts):
-            raise AccelerationConfigError("Cannot identify MTP sidecar snapshot")
+            raise AccelerationConfigError(
+                "Cannot identify speculative sidecar snapshot"
+            )
         repo = cache_name[len("models--") :].replace("--", "/")
         snapshot = str(Path(*parts[: index + 2]))
         revision = parts[index + 1]
@@ -1519,7 +1521,7 @@ def _sidecar_identity(sidecar):
         revision = identity["components"][0]["source"].get("resolved_revision")
         if not revision:
             raise AccelerationConfigError(
-                "Cannot resolve MTP sidecar snapshot revision"
+                "Cannot resolve speculative sidecar snapshot revision"
             )
     identity = unresolved_model_identity(
         repo, "text_generation", subfolder, snapshot_path=snapshot
