@@ -50,7 +50,14 @@ def _scoped_snapshot_download(module):
     with _SNAPSHOT_DOWNLOAD_LOCK:
         had_original = hasattr(module, "snapshot_download")
         original = getattr(module, "snapshot_download", None)
-        module.snapshot_download = model_downloads.snapshot_download
+
+        def resolve_snapshot(repo_id, **kwargs):
+            local = Path(repo_id).expanduser()
+            if local.is_dir():
+                return str(local)
+            return model_downloads.snapshot_download(repo_id, **kwargs)
+
+        module.snapshot_download = resolve_snapshot
         try:
             yield
         finally:
@@ -259,6 +266,10 @@ def _resolve_indextts_snapshot(model_name: str) -> Path:
     local. Try the cache first; reach for the network only when the cache cannot
     satisfy the load, so a cold or partial checkpoint still pulls as before.
     """
+    local = Path(model_name).expanduser()
+    if local.is_dir():
+        return local
+
     from rapid_mlx.model_downloads import (
         ModelDownloadsDisabledError,
         snapshot_download,
@@ -289,7 +300,7 @@ def _load_indextts_model(model_name: str):
     in-memory copy and otherwise follow mlx-audio's normal load sequence.
     """
     import mlx.core as mx
-    from mlx_audio.tts.models.indextts.indextts import Model
+    from mlx_audio.tts.models.indextts import indextts
 
     local_path = Path(model_name).expanduser()
     if local_path.is_dir():
@@ -309,7 +320,19 @@ def _load_indextts_model(model_name: str):
     # second, appending ``tokenizer.model`` itself on the local fallback.
     config["tokenizer_name"] = str(model_path)
 
-    model = Model(config)
+    # The upstream constructor tries the Hub before its local fallback. Give
+    # it a module-local adapter so a filesystem path never reaches the Hub.
+    from types import SimpleNamespace
+
+    with _SNAPSHOT_DOWNLOAD_LOCK:
+        original_hub = indextts.huggingface_hub
+        indextts.huggingface_hub = SimpleNamespace(
+            hf_hub_download=lambda repo_id, filename: str(Path(repo_id) / filename)
+        )
+        try:
+            model = indextts.Model(config)
+        finally:
+            indextts.huggingface_hub = original_hub
     weights = {}
     for weight_path in sorted(model_path.glob("*.safetensors")):
         weights.update(mx.load(str(weight_path)))
@@ -465,6 +488,10 @@ def _list_snapshot_voices(model_name: str) -> list[str]:
     stall would convert "client sent invalid voice" into "server
     appears to hang then times out".
     """
+    local = Path(model_name).expanduser()
+    if local.is_dir():
+        return sorted(p.stem for p in (local / "voices").glob("*.safetensors"))
+
     # Local imports keep ``rapid_mlx.audio.tts`` cheap to import on
     # API-only runners that don't install huggingface_hub (the audio
     # extras pin it, but the boot-guard path probes this module
@@ -570,6 +597,11 @@ def detect_tts_family(model_name: str) -> str:
     ``TTSEngine._detect_family`` method delegates here so the two can never
     disagree (mirrors the ``is_qwen3_*`` shared classifiers above).
     """
+    from .registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(model_name)
+    if entry is not None and entry.notes == "local folder" and entry.type == "tts":
+        return entry.family
     name_lower = model_name.lower()
     if "kokoro" in name_lower:
         return "kokoro"
@@ -690,7 +722,8 @@ class TTSEngine:
 
         from .. import model_downloads
 
-        model_downloads.require_local(self.model_name)
+        if not Path(self.model_name).expanduser().is_dir():
+            model_downloads.require_local(self.model_name)
 
         # F5-TTS is a standalone pure-MLX package (not mlx_audio's load_model
         # path): EN+ZH multilingual, zero-shot voice cloning, no torch. It fills
@@ -747,6 +780,11 @@ class TTSEngine:
                     asset.repo_id,
                     allow_patterns=list(asset.allow_patterns),
                     revision=asset.revision,
+                    **(
+                        {"local_files_only": True}
+                        if Path(self.model_name).expanduser().is_dir()
+                        else {}
+                    ),
                 )
             self._loaded = True
             logger.info(

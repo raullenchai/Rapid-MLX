@@ -8,10 +8,53 @@ import huggingface_hub
 import pytest
 
 from rapid_mlx import model_downloads
-from rapid_mlx.audio.stt import STTEngine
+from rapid_mlx.audio.stt import STTEngine, _whisper_processor_source
 from rapid_mlx.model_aliases import resolve_revision
 
 REPO = "mlx-community/whisper-tiny-mlx"
+
+
+@pytest.mark.parametrize(
+    ("name", "n_mels", "n_vocab", "expected"),
+    [
+        (REPO, 128, 51865, "openai/whisper-tiny"),
+        ("/local/whisper", 80, 51865, "openai/whisper-base"),
+        ("/local/whisper", 80, 51864, "openai/whisper-base.en"),
+        ("/local/whisper", 128, 51865, "openai/whisper-large-v3"),
+        ("/local/whisper", 80, None, "openai/whisper-large-v3"),
+    ],
+)
+def test_whisper_processor_source(name, n_mels, n_vocab, expected):
+    assert _whisper_processor_source(name, n_mels, n_vocab) == expected
+
+
+@pytest.mark.parametrize("disabled", [True, False])
+def test_local_whisper_processor_uses_model_dimensions(monkeypatch, tmp_path, disabled):
+    import sys
+
+    processor = object()
+    loader = Mock(side_effect=[OSError("missing"), processor])
+    monkeypatch.setattr(model_downloads, "disabled", lambda: disabled)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(WhisperProcessor=SimpleNamespace(from_pretrained=loader)),
+    )
+    engine = STTEngine(str(tmp_path))
+    engine.model = SimpleNamespace(
+        _processor=None, dims=SimpleNamespace(n_mels=80, n_vocab=51865)
+    )
+    engine._ensure_whisper_processor()
+    assert loader.call_args_list[0].args == ("openai/whisper-base",)
+    assert loader.call_args_list[0].kwargs == {"local_files_only": True}
+    if disabled:
+        assert loader.call_count == 1
+        assert engine.model._processor is None
+    else:
+        assert loader.call_count == 2
+        assert loader.call_args_list[1].args == ("openai/whisper-base",)
+        assert loader.call_args_list[1].kwargs == {}
+        assert engine.model._processor is processor
 
 
 @pytest.mark.parametrize("name", [REPO, "whisper-tiny"])

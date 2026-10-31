@@ -468,7 +468,41 @@ DEFAULT_STT_ALIAS = "whisper-large-v3"
 DEFAULT_ALIGNER_ALIAS = "qwen3-aligner"
 
 
-def _resolve_stt_model(model: str) -> str:
+def _served_stt_default() -> str | None:
+    """Return the configured STT model, if one is served."""
+    from ..audio.registry import resolve_audio_alias
+    from ..config import get_config
+
+    cfg = get_config()
+    for served in (
+        getattr(cfg, "model_alias", None),
+        getattr(cfg, "model_name", None),
+        getattr(cfg, "model_path", None),
+    ):
+        entry = resolve_audio_alias(served)
+        if entry is not None and entry.type == "stt":
+            return entry.hf_id
+    return None
+
+
+def _served_local_request(model: str, kind: str) -> str | None:
+    from ..audio.registry import resolve_audio_alias
+    from ..config import get_config
+
+    entry = resolve_audio_alias(model)
+    if entry is None:
+        cfg = get_config()
+        if model in (
+            getattr(cfg, "model_alias", None),
+            getattr(cfg, "model_name", None),
+        ):
+            entry = resolve_audio_alias(getattr(cfg, "model_path", None))
+    if entry is not None and entry.type == kind and entry.notes == "local folder":
+        return entry.hf_id
+    return None
+
+
+def _resolve_stt_model(model: str | None) -> str:
     """Resolve an OpenAI-style STT model alias to the MLX repo path.
 
     Returns the resolved repo path for known aliases or passes through
@@ -488,6 +522,8 @@ def _resolve_stt_model(model: str) -> str:
     rejecting ``"default"`` here breaks every OpenAI tutorial without
     a manual ``model=`` argument.
     """
+    if model is None or model == "default":
+        return _served_stt_default() or STT_MODEL_ALIASES[DEFAULT_STT_ALIAS]
     if not isinstance(model, str) or not model:
         raise HTTPException(
             status_code=400,
@@ -500,8 +536,9 @@ def _resolve_stt_model(model: str) -> str:
                 }
             },
         )
-    if model == "default":
-        return STT_MODEL_ALIASES[DEFAULT_STT_ALIAS]
+    local = _served_local_request(model, "stt")
+    if local is not None:
+        return local
     if model in STT_MODEL_ALIASES:
         return STT_MODEL_ALIASES[model]
 
@@ -608,6 +645,16 @@ def _reject_non_whisper_for_translation(
     # Resolve aliases first so callers that pass ``parakeet`` (alias)
     # vs ``mlx-community/parakeet-tdt-0.6b-v2`` (HF id) get the same
     # verdict.
+    from ..audio.registry import resolve_audio_alias
+
+    target = (
+        _resolve_stt_model("default")
+        if model == "default"
+        else (_served_local_request(model, "stt") or model)
+    )
+    entry = resolve_audio_alias(target)
+    if entry is not None and entry.type == "stt":
+        model = f"registered/{entry.family}"
     resolved = STT_MODEL_ALIASES.get(model, model)
     resolved_lc = resolved.lower()
     # Whisper-shaped → accept; the engine honors task=translate.
@@ -680,6 +727,16 @@ def _reject_word_timestamps_for_non_whisper(
         return
     if not isinstance(model, str) or not model:
         return
+    from ..audio.registry import resolve_audio_alias
+
+    target = (
+        _resolve_stt_model("default")
+        if model == "default"
+        else (_served_local_request(model, "stt") or model)
+    )
+    entry = resolve_audio_alias(target)
+    if entry is not None and entry.type == "stt":
+        model = f"registered/{entry.family}"
     resolved = STT_MODEL_ALIASES.get(model, model)
     if "whisper" in resolved.lower():
         return
@@ -2579,7 +2636,7 @@ async def create_transcription(
         ):
             response_format = "verbose_json"
     else:
-        model = model_merged if model_provided else DEFAULT_STT_ALIAS
+        model = model_merged if model_provided else "default"
 
     # R6-H2: reject unknown ``response_format`` values up front with a
     # 400 envelope so a typo (``"jsno"``) or unsupported value
@@ -2733,7 +2790,7 @@ async def create_translation(
     model = (
         model_form
         if model_form is not None
-        else (model_query if model_query is not None else "whisper-large-v3")
+        else (model_query if model_query is not None else "default")
     )
     response_format = (
         response_format_form
@@ -2871,7 +2928,11 @@ def _served_tts_default() -> str | None:
     # name (which resolves to nothing) while the real TTS model lives on
     # ``model_name``. Short-circuiting on the truthy-but-unrecognised alias
     # would wrongly fall back to Kokoro. First TTS hit wins.
-    for served in (getattr(cfg, "model_alias", None), getattr(cfg, "model_name", None)):
+    for served in (
+        getattr(cfg, "model_alias", None),
+        getattr(cfg, "model_name", None),
+        getattr(cfg, "model_path", None),
+    ):
         if not served:
             continue
         entry = resolve_audio_alias(served)
@@ -2912,7 +2973,9 @@ def _resolve_tts_model(model: str | None) -> str:
             # this reuses the exact mapping rule below without recursing again.
             return _resolve_tts_model(served)
         return TTS_MODEL_ALIASES[DEFAULT_TTS_ALIAS]
-    return TTS_MODEL_ALIASES.get(model.lower(), model)
+    return _served_local_request(model, "tts") or TTS_MODEL_ALIASES.get(
+        model.lower(), model
+    )
 
 
 def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
