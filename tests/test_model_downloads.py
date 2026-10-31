@@ -508,7 +508,15 @@ def test_whisper_processor_patch_forces_cache_only(monkeypatch):
     engine.model = SimpleNamespace(_processor=None)
     engine._ensure_whisper_processor()
     assert engine.model._processor == "processor"
-    assert calls == [("openai/whisper-large-v3-turbo", {"local_files_only": True})]
+    assert calls == [
+        (
+            "openai/whisper-large-v3-turbo",
+            {
+                "local_files_only": True,
+                "revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+            },
+        )
+    ]
 
 
 def test_anthropic_download_policy_error_keeps_anthropic_envelope():
