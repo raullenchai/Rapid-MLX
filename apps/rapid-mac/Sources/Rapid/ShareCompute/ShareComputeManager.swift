@@ -121,12 +121,13 @@ final class ShareComputeManager {
         // these operations can require another registration, never silently
         // route rewards to the previous account. Node credentials are retained.
         guard invalidateRegistrationProof() else { return false }
-        guard providerStore.save(key) else {
+        let saved = providerStore.save(key)
+        providerKeyRevision += 1
+        refreshProviderKey()
+        guard saved else {
             providerKeyMessage = String(localized: "This Mac couldn't save the provider key. Check that you have an unlocked login Keychain and try again.")
             return false
         }
-        providerKeyRevision += 1
-        refreshProviderKey()
         return true
     }
 
@@ -134,12 +135,13 @@ final class ShareComputeManager {
     func removeProviderKey() -> Bool {
         guard canEditProviderKey else { return false }
         guard invalidateRegistrationProof() else { return false }
-        guard providerStore.remove() else {
+        let removed = providerStore.remove()
+        providerKeyRevision += 1
+        refreshProviderKey()
+        guard removed else {
             providerKeyMessage = String(localized: "This Mac couldn't remove the provider key. Unlock your Keychain and try again.")
             return false
         }
-        providerKeyRevision += 1
-        refreshProviderKey()
         return true
     }
 
