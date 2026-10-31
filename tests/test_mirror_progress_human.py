@@ -62,3 +62,46 @@ def test_desktop_pipe_keeps_machine_protocol(monkeypatch):
     assert (
         stream.getvalue() == "  [bytes] 40/100\n  [bytes] 100/100\n  [bytes] 100/100\n"
     )
+
+
+def test_current_line_only_for_desktop(monkeypatch, tmp_path, capsys):
+    import json
+    from unittest.mock import patch
+
+    from tests.test_mirror_pull import (
+        _catalog_payload,
+        _FakeResponse,
+        _mk_model_info,
+        _UrlRouter,
+    )
+
+    repo = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo, "mirrored")])
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    for role in (None, "desktop-sidecar"):
+        if role:
+            monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", role)
+        else:
+            monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+        router = _UrlRouter()
+        router.add(
+            "https://models.rapidmlx.com/api/models",
+            _FakeResponse(200, json.dumps(catalog).encode()),
+        )
+        router.add(
+            f"https://models.rapidmlx.com/{repo}/model.safetensors",
+            _FakeResponse(200, b"x" * 100),
+        )
+        with (
+            patch("urllib.request.urlopen", side_effect=router),
+            patch(
+                "huggingface_hub.model_info",
+                return_value=_mk_model_info(revision, [("model.safetensors", 100)]),
+            ),
+        ):
+            assert _mirror.download_with_mirror_fallback(
+                repo, cache_dir=tmp_path / str(role)
+            )
+        output = capsys.readouterr().out
+        assert ("[current] model.safetensors" in output) is bool(role)

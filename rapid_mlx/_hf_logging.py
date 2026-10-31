@@ -47,6 +47,8 @@ than once, even concurrently, adds exactly one filter.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 
 # The logger huggingface_hub's ``_warn_on_warning_headers`` emits from:
@@ -128,3 +130,19 @@ def quiet_transport_loggers(level_name: str) -> None:
     target = logging.NOTSET if level_name.upper() == "DEBUG" else logging.WARNING
     for name in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
         logging.getLogger(name).setLevel(target)
+
+
+def quiet_hf_progress_bars_off_terminal() -> None:
+    """Disable Hub bars for redirected human output before workers start."""
+    if "HF_HUB_DISABLE_PROGRESS_BARS" in os.environ:
+        return
+    try:
+        from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+
+        if sys.stderr.isatty() or is_desktop_sidecar():
+            return
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+    except Exception:
+        pass
