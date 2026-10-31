@@ -6,7 +6,7 @@ import re
 from rapid_mlx.cli_parser import build_parser
 from rapid_mlx.cua.cli import build_parser as build_cua_parser
 
-FLAG = re.compile(r"(?<![\w-])--[a-z][a-z0-9-]*[a-z0-9]")
+FLAG = re.compile(r"(?<![\w-])--[a-z](?:[a-z0-9-]*[a-z0-9])?")
 COMMAND = re.compile(r"\brapid-mlx[ \t]+")
 CODE = re.compile(r"`+([^`]+)`+")
 CHIP = re.compile(r"\bM[1-5]\b")
@@ -68,11 +68,42 @@ def unknown_flags(text, local_flags, all_parsers):
             words = words[1:]
         contexts.append((span.start(), span.end(), command_flags(words)))
     for invocation in COMMAND.finditer(text):
-        end = re.search(r"[,;:.] | \(| — |\n", text[invocation.end() :])
-        end = invocation.end() + end.start() if end else len(text)
-        contexts.append(
-            (invocation.end(), end, command_flags(text[invocation.end() : end].split()))
-        )
+        line_start = text.rfind("\n", 0, invocation.start()) + 1
+        shell_line = not text[line_start : invocation.start()].strip()
+        tokens = list(re.finditer(r"\S+", text[invocation.end() :]))
+        path = ()
+        index = 0
+        end = invocation.end()
+        while index < len(tokens):
+            word = tokens[index].group()
+            if path + (word,) not in all_parsers:
+                break
+            path += (word,)
+            end = invocation.end() + tokens[index].end()
+            index += 1
+        if shell_line:
+            line_end = text.find("\n", invocation.end())
+            if line_end == -1:
+                line_end = len(text)
+            comment = text.find(" #", invocation.end(), line_end)
+            end = comment if comment != -1 else line_end
+            contexts.append((invocation.end(), end, command_flags(path)))
+            continue
+        expects_value = False
+        while index < len(tokens):
+            token = tokens[index]
+            word = token.group()
+            if word.startswith("--"):
+                expects_value = True
+            elif expects_value:
+                expects_value = False
+            else:
+                break
+            end = invocation.end() + token.end()
+            if word.endswith((",", ";", ":", ".", ")")):
+                break
+            index += 1
+        contexts.append((invocation.end(), end, command_flags(path)))
     return {
         match.group()
         for match in FLAG.finditer(text)
@@ -100,6 +131,29 @@ def test_qualified_flag_context_is_limited_to_each_occurrence():
         all_parsers,
     ) == {"--host"}
     assert not unknown_flags("rapid-mlx models --cached", set(), all_parsers)
+    assert unknown_flags(
+        "Use rapid-mlx serve --port 8000 and then use --host on this command",
+        set(),
+        all_parsers,
+    ) == {"--host"}
+    assert unknown_flags(
+        "Use rapid-mlx serve --port 8000, then set --host.", set(), all_parsers
+    ) == {"--host"}
+    assert not unknown_flags(
+        "Run rapid-mlx serve --port 8000 --host 0.0.0.0", set(), all_parsers
+    )
+    assert unknown_flags("Use --x here.", set(), all_parsers) == {"--x"}
+    assert not unknown_flags(
+        "  rapid-mlx serve qwen3.5-9b-4bit --port 8000 # server",
+        set(),
+        all_parsers,
+    )
+    assert not unknown_flags(
+        "  rapid-mlx launch claude-code --model x", set(), all_parsers
+    )
+    assert unknown_flags(
+        "  rapid-mlx serve model --port 8000 # --host", set(), all_parsers
+    ) == {"--host"}
 
 
 def test_help_flag_references_belong_to_the_relevant_command():
