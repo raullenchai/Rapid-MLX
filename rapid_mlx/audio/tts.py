@@ -753,6 +753,8 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
+            from .._hf_logging import suppress_transformers_base_config_mismatch
+
             kokoro_pipeline = None
             if self._model_family == "kokoro":
                 from mlx_audio.tts.models.kokoro import pipeline
@@ -760,15 +762,16 @@ class TTSEngine:
                 kokoro_pipeline = pipeline
             model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
             legacy_vae = model_path / "audiovae.pth"
-            if legacy_vae.exists() or legacy_vae.is_symlink():
-                from .voxcpm_security import load_voxcpm_checkpoint
+            with suppress_transformers_base_config_mismatch("voxcpm2"):
+                if legacy_vae.exists() or legacy_vae.is_symlink():
+                    from .voxcpm_security import load_voxcpm_checkpoint
 
-                self.model = load_voxcpm_checkpoint(model_path)
-            elif kokoro_pipeline is not None:
-                with _scoped_snapshot_download(kokoro_pipeline):
+                    self.model = load_voxcpm_checkpoint(model_path)
+                elif kokoro_pipeline is not None:
+                    with _scoped_snapshot_download(kokoro_pipeline):
+                        self.model = load_model(model_path)
+                else:
                     self.model = load_model(model_path)
-            else:
-                self.model = load_model(model_path)
             if self._model_family == "moss_tts_nano":
                 from .registry import runtime_assets_for
 

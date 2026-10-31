@@ -11184,10 +11184,15 @@ def models_command(args):
             24, max((len(e.alias) for e in audio_entries), default=0) + 2
         )
         print()
-        print(f"  Audio models ({len(audio_entries)} aliases)")
+        if modality != "audio":
+            print(f"  Audio models ({len(audio_entries)} aliases)")
+        kind_width = max(
+            len("Kind"), max(len(f"[audio:{e.type}]") for e in audio_entries)
+        )
+        family_width = max(len("Family"), max(len(e.family) for e in audio_entries))
         audio_header = (
-            f"  {'Alias':<{audio_alias_width}} {'Size':<10} {'Kind':<10} "
-            f"{'Family':<12} {'HF id':<40}"
+            f"  {'Alias':<{audio_alias_width}} {'Size':<10} {'Kind':<{kind_width}} "
+            f"{'Family':<{family_width}} {'HF id':<40}"
         )
         # Size the rule to THIS table's header, not the text table's width —
         # the text table's Tools/Reasoning columns are data-sized now (#1999),
@@ -11200,8 +11205,8 @@ def models_command(args):
             kind_tag = f"[audio:{entry.type}]"
             print(
                 f"  {entry.alias:<{audio_alias_width}} "
-                f"{format_size(entry.hf_id):<10} {kind_tag:<10} "
-                f"{entry.family:<12} {entry.hf_id:<40}"
+                f"{format_size(entry.hf_id):<10} {kind_tag:<{kind_width}} "
+                f"{entry.family:<{family_width}} {entry.hf_id:<40}"
             )
         print(audio_sep)
 
@@ -11215,7 +11220,8 @@ def models_command(args):
             24, max((len(a) for a in video_profiles), default=0) + 2
         )
         print()
-        print(f"  Video models ({len(video_profiles)} aliases)")
+        if modality != "video-gen":
+            print(f"  Video models ({len(video_profiles)} aliases)")
         video_header = (
             f"  {'Alias':<{video_alias_width}} {'Size':<10} {'Kind':<11} "
             f"{'Runtime':<13} {'HF id':<40}"
@@ -11247,34 +11253,37 @@ def models_command(args):
             24, max((len(a) for a in image_profiles), default=0) + 2
         )
         print()
-        print(f"  Image models ({len(image_profiles)} aliases)")
-        image_header = (
-            f"  {'Alias':<{image_alias_width}} {'Size':<10} {'Kind':<11} {'HF id':<40}"
-        )
-        image_sep = "  " + "─" * (len(image_header) - 2)
-        print(image_sep)
-        print(image_header)
-        print(image_sep)
-        for alias in sorted(image_profiles):
-            p = image_profiles[alias]
-            folded_path = p.hf_path.casefold().replace("_", "-")
+        if modality != "image-gen":
+            print(f"  Image models ({len(image_profiles)} aliases)")
+        image_kinds = {}
+        for alias, profile in image_profiles.items():
+            folded_path = profile.hf_path.casefold().replace("_", "-")
             if (
                 "flux2" in folded_path
                 or "flux.2" in folded_path
                 or "klein" in folded_path
                 or (
                     "qwen-image-2.1" in folded_path
-                    and not is_qwen_image_21_turbo(p.hf_path)
+                    and not is_qwen_image_21_turbo(profile.hf_path)
                 )
             ):
-                kind_tag = "[image:both]"
+                image_kinds[alias] = "[image:both]"
             elif "qwen-image-edit" in folded_path:
-                kind_tag = "[image:edit]"
+                image_kinds[alias] = "[image:edit]"
             else:
-                kind_tag = "[image:gen]"
+                image_kinds[alias] = "[image:gen]"
+        image_kind_width = max(len("Kind"), max(map(len, image_kinds.values())))
+        image_header = f"  {'Alias':<{image_alias_width}} {'Size':<10} {'Kind':<{image_kind_width}} {'HF id':<40}"
+        image_sep = "  " + "─" * (len(image_header) - 2)
+        print(image_sep)
+        print(image_header)
+        print(image_sep)
+        for alias in sorted(image_profiles):
+            p = image_profiles[alias]
+            kind_tag = image_kinds[alias]
             print(
                 f"  {alias:<{image_alias_width}} "
-                f"{format_size(p.hf_path):<10} {kind_tag:<12} "
+                f"{format_size(p.hf_path):<10} {kind_tag:<{image_kind_width}} "
                 f"{p.hf_path:<40}"
             )
         print(image_sep)
@@ -11289,7 +11298,8 @@ def models_command(args):
     print("  Pick a model: run `rapid-mlx recipe` for RAM-fit recommendations")
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
-    print("       `rapid-mlx chat <alias>` for an interactive REPL")
+    if modality not in ("audio", "video-gen", "image-gen"):
+        print("       `rapid-mlx chat <alias>` for an interactive REPL")
     print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
     if audio_entries:
         print("       `rapid-mlx serve kokoro|whisper-large-v3|parakeet` for audio")
