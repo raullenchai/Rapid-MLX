@@ -17,6 +17,7 @@ struct DictationView: View {
     @State private var fixTarget: DictationHistory.Entry?
     @State private var showModelPicker = false
     @State private var handledCompletedDownloads: Set<String> = []
+    @State private var notifiedSelectedCompletion: String?
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -67,14 +68,20 @@ struct DictationView: View {
             } else {
                 selectedCompleted = false
             }
-            guard !pending.isEmpty || selectedCompleted else { return }
+            if !selectedCompleted { notifiedSelectedCompletion = nil }
+            let shouldNotify = DictationDownloadReplay.shouldNotifySelected(
+                selected: selected, selectedCompleted: selectedCompleted,
+                lastNotified: notifiedSelectedCompletion
+            )
+            guard !pending.isEmpty || shouldNotify else { return }
             if !pending.isEmpty {
                 await viewModel.refreshCatalog()
             }
             guard !Task.isCancelled else { return }
             // Selecting an already-handled model must still update the active session.
-            if selectedCompleted {
+            if shouldNotify {
                 await controller.modelDownloadDidFinish(alias: selected)
+                notifiedSelectedCompletion = selected
             }
             for alias in pending {
                 guard !Task.isCancelled else { return }
@@ -1044,30 +1051,53 @@ private struct DictationFixSheet: View {
     }
 }
 
+enum DictationDownloadReplay {
+    static func shouldNotifySelected(selected: String, selectedCompleted: Bool, lastNotified: String?) -> Bool {
+        selectedCompleted && lastNotified != selected
+    }
+}
+
 /// Minimal wrapping layout for chips. `LazyVGrid` cannot do variable-width
 /// items, and a plain `HStack` overflows once a few long names are added.
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     var spacing: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
+    static func frames(
+        maxWidth: CGFloat,
+        spacing: CGFloat,
+        measure: [(ProposedViewSize) -> CGSize]
+    ) -> (frames: [CGRect], size: CGSize) {
+        var frames: [CGRect] = []
         var origin = CGPoint.zero
         var lineHeight: CGFloat = 0
-        var total = CGSize.zero
+        var width: CGFloat = 0
+        var lineIsEmpty = true
 
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if origin.x + size.width > maxWidth, origin.x > 0 {
+        for measureSubview in measure {
+            var size = measureSubview(.unspecified)
+            if maxWidth.isFinite, size.width > maxWidth {
+                size = measureSubview(ProposedViewSize(width: maxWidth, height: nil))
+                size.width = min(size.width, maxWidth)
+            }
+            if !lineIsEmpty, origin.x + spacing + size.width > maxWidth {
                 origin.x = 0
                 origin.y += lineHeight + spacing
                 lineHeight = 0
+                lineIsEmpty = true
             }
-            origin.x += size.width + spacing
+            if !lineIsEmpty { origin.x += spacing }
+            frames.append(CGRect(origin: origin, size: size))
+            origin.x += size.width
             lineHeight = max(lineHeight, size.height)
-            total.width = max(total.width, min(origin.x - spacing, maxWidth))
+            width = max(width, origin.x)
+            lineIsEmpty = false
         }
-        total.height = origin.y + lineHeight
-        return total
+        return (frames, CGSize(width: width, height: origin.y + lineHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        Self.frames(maxWidth: proposal.width ?? .infinity, spacing: spacing,
+                    measure: subviews.map { subview in { subview.sizeThatFits($0) } }).size
     }
 
     func placeSubviews(
@@ -1076,19 +1106,11 @@ private struct FlowLayout: Layout {
         subviews: Subviews,
         cache: inout ()
     ) {
-        var origin = bounds.origin
-        var lineHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if origin.x + size.width > bounds.maxX, origin.x > bounds.minX {
-                origin.x = bounds.minX
-                origin.y += lineHeight + spacing
-                lineHeight = 0
-            }
-            subview.place(at: origin, proposal: ProposedViewSize(size))
-            origin.x += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
+        let frames = Self.frames(maxWidth: bounds.width, spacing: spacing,
+                                 measure: subviews.map { subview in { subview.sizeThatFits($0) } }).frames
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
     }
 }

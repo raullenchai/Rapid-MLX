@@ -1166,6 +1166,32 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("completed downloads do not interrupt active dictation", arguments: [
+        DictationController.Phase.recording, .starting, .transcribing,
+    ])
+    func completedDownloadPreservesActiveDictation(phase: DictationController.Phase) async {
+        var prewarmCount = 0
+        let controller = readinessController(
+            phase: phase,
+            serverState: .ready(alias: "another-model"),
+            prewarm: { prewarmCount += 1; return true },
+            hotkeyStart: { true }
+        )
+        await controller.modelDownloadDidFinish(alias: controller.modelAlias)
+        #expect(controller.phase == phase)
+        #expect(prewarmCount == 0)
+    }
+
+    @Test("selected download completions are notified once per selection")
+    func selectedDownloadReplay() {
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: nil))
+        #expect(!DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: "a"))
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: nil))
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "b", selectedCompleted: true, lastNotified: "a"))
+        #expect(!DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: false, lastNotified: nil))
+    }
+
+    @MainActor
     @Test("a failed optional weight probe still arms a serving model")
     func failedWeightProbeStillArmsServingModel() async {
         var hotkeyStartCount = 0
