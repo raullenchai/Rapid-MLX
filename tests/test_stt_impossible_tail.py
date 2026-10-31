@@ -1,8 +1,9 @@
 """Regression coverage for Whisper decoding past a short input's duration."""
 
 import os
+import sys
 import wave
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -73,16 +74,15 @@ def test_wav_duration_does_not_require_optional_soundfile(tmp_path):
 
 
 def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
-    import soundfile
     from mlx_audio.stt import utils
 
     from rapid_mlx.audio import stt
 
     path = tmp_path / "audio.m4a"
     path.write_bytes(b"not a wav")
-    monkeypatch.setattr(
-        soundfile, "info", lambda _: (_ for _ in ()).throw(RuntimeError())
-    )
+    soundfile = ModuleType("soundfile")
+    soundfile.info = lambda _: (_ for _ in ()).throw(RuntimeError())
+    monkeypatch.setitem(sys.modules, "soundfile", soundfile)
     monkeypatch.setattr(stt.shutil, "which", lambda name: "/usr/bin/ffprobe")
     calls = []
 
@@ -111,15 +111,13 @@ def test_m4a_duration_uses_ffprobe_before_audio_decode(monkeypatch, tmp_path):
 
 
 def test_ffprobe_unavailable_duration_returns_none(monkeypatch, tmp_path):
-    import soundfile
-
     from rapid_mlx.audio import stt
 
     path = tmp_path / "audio.m4a"
     path.write_bytes(b"not a wav")
-    monkeypatch.setattr(
-        soundfile, "info", lambda _: (_ for _ in ()).throw(RuntimeError())
-    )
+    soundfile = ModuleType("soundfile")
+    soundfile.info = lambda _: (_ for _ in ()).throw(RuntimeError())
+    monkeypatch.setitem(sys.modules, "soundfile", soundfile)
     monkeypatch.setattr(stt.shutil, "which", lambda _: "/usr/bin/ffprobe")
     monkeypatch.setattr(
         stt.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="N/A")
