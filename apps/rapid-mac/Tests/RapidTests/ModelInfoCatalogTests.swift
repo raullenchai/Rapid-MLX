@@ -10,6 +10,21 @@ import Testing
 ///     and unknown cases
 @Suite("ModelInfoCatalog — v0.4.18")
 struct ModelInfoCatalogTests {
+    @Test("Picker uses the live context window only for its matching alias")
+    func pickerLiveContextWindow() throws {
+        let json = """
+        {"id":"lfm2.5-1b-4bit","context_window":65536}
+        """
+        let profile = try JSONDecoder().decode(ServerModelProfile.self, from: Data(json.utf8))
+        let matching = ModelPickerBar.liveContextWindow(for: "LFM2.5-1B-4BIT", profile: profile)
+        #expect(matching == 65_536)
+        #expect(ModelPickerBar.liveContextWindow(for: "qwen3-8b", profile: profile) == nil)
+        #expect(ModelPickerBar.liveContextWindow(for: "lfm2.5-1b-4bit", profile: nil) == nil)
+        #expect(ModelInfoCatalog.info(for: "lfm2.5-1b-4bit", hfRepo: nil, serverContextWindow: matching).contextWindow == 65_536)
+        let switched = ModelPickerBar.liveContextWindow(for: "qwen3-8b", profile: profile)
+        #expect(ModelInfoCatalog.info(for: "qwen3-8b", hfRepo: nil, serverContextWindow: switched).contextWindow == 32_768)
+    }
+
     // MARK: - Family + context
 
     @Test("Qwen 3.6 / 3.5 / 3 land in their own family slots with 32k context")
