@@ -15238,7 +15238,9 @@ def upgrade_command(args):
             f"  rapid-mlx {latest} is released, but Homebrew has not published it yet (formula: {release.brew_stable})."
         )
         print("  Run `brew upgrade rapid-mlx` once it appears — usually within a day.")
-        return
+        if getattr(args, "dry_run", False):
+            return
+        sys.exit(1)
     target = latest
     stable = vc._parse_version(release.brew_stable) if release.brew_stable else None
     if (
@@ -15259,12 +15261,15 @@ def upgrade_command(args):
         print(
             f"  rapid-mlx {latest} requires Python {release.requires_python}; this install runs Python {sys.version_info.major}.{sys.version_info.minor} ({sys.executable})."
         )
-        print(f"  `{info.upgrade_command}` would leave you on {current}. To upgrade:")
+        print(
+            f"  `{info.upgrade_command}` cannot install {latest} on this Python. To move to {latest}:"
+        )
         for line in vc.python_upgrade_instructions(info, release.requires_python):
             print(f"  {line}")
         if getattr(args, "dry_run", False):
             return
-        sys.exit(1)
+        if info.method not in {"pip", "uv", "pipx"}:
+            sys.exit(1)
 
     if info.method == "unknown":
         print(
@@ -15299,27 +15304,45 @@ def upgrade_command(args):
         print("  Skipped — run the command above when ready.\n")
         return
 
+    def run_upgrade():
+        """Run the selected command and probe the installed version on success."""
+        try:
+            # Use argv form so paths cannot be interpreted as shell syntax.
+            result = subprocess.run(info.upgrade_argv, check=False)
+        except FileNotFoundError as exc:
+            missing = exc.filename or info.upgrade_argv[0]
+            print(
+                f"\n  Upgrade command not found: {missing}\n"
+                f"  Reinstall {info.method} or run the command above manually.\n"
+            )
+            return 1, None
+        except KeyboardInterrupt:
+            print("\n  Interrupted.\n")
+            sys.exit(130)
+        print()
+        if result.returncode:
+            return result.returncode, None
+        return 0, vc.installed_version_in_fresh_process(info)
+
     print()
-    try:
-        # Use argv form (shell=False) so paths with spaces in
-        # ``sys.executable`` (or any other argv entry) can't be reinterpreted
-        # as shell separators. install.sh's pipe is wrapped as ``bash -c``
-        # in upgrade_argv, so we still get the pipe semantics it needs.
-        result = subprocess.run(info.upgrade_argv, check=False)
-    except FileNotFoundError as exc:
-        missing = exc.filename or info.upgrade_argv[0]
-        print(
-            f"\n  Upgrade command not found: {missing}\n"
-            f"  Reinstall {info.method} or run the command above manually.\n"
-        )
+    returncode, verified = run_upgrade()
+    if block == "python":
+        parsed_verified = vc._parse_version(verified) if verified else None
+        if (
+            returncode == 0
+            and cur is not None
+            and parsed_verified is not None
+            and parsed_verified > cur
+        ):
+            print(
+                f"  ✓ rapid-mlx is now {verified} — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. "
+                f"{latest} needs Python {release.requires_python}; follow the steps above to move to it."
+            )
+            sys.exit(0)
+        print("  This Python already has the newest release it can run.")
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n  Interrupted.\n")
-        sys.exit(130)
-    print()
-    if result.returncode:
-        sys.exit(result.returncode)
-    verified = vc.installed_version_in_fresh_process(info)
+    if returncode:
+        sys.exit(returncode)
     if verified is None:
         print(
             "  Could not confirm the installed version; run `rapid-mlx --version` to check."
