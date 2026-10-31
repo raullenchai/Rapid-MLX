@@ -238,18 +238,20 @@ cat > "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
 Metadata-Version: 2.1
 Name: rapid-mlx
 Version: 1.0.0
-Requires-Dist: mlx>=0.1
-Requires-Dist: gradio>=4; extra == "chat"
-Requires-Dist: pytz; extra == "chat"
-Requires-Dist: mlx-audio>=0.5; platform_system == 'Darwin' and extra == "audio"
-Requires-Dist: soundfile; extra == "audio"
-Requires-Dist: mflux; extra == "image"
-Requires-Dist: mlx-video; python_version >= "3.11" and extra == "video"
-Requires-Dist: pytest; extra == "dev"
+Requires-Dist: rmlx-fixture-mlx>=0.1
+Requires-Dist: rmlx-fixture-gradio>=4; extra == "chat"
+Requires-Dist: rmlx-fixture-pytz; extra == "chat"
+Requires-Dist: rmlx-fixture-mlx-audio>=0.5; platform_system == 'Darwin' and extra == "audio"
+Requires-Dist: rmlx-fixture-soundfile; extra == "audio"
+Requires-Dist: rmlx-fixture-mflux; extra == "image"
+Requires-Dist: rmlx-fixture-mlx-video; python_version >= "3.11" and extra == "video"
+Requires-Dist: rmlx-fixture-pytest; extra == "dev"
 EOF
-for dist in mlx gradio pytz mlx_audio soundfile pytest; do
-    mkdir -p "$SITE/$dist-1.0.dist-info"
-    printf 'Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n' "$dist" > "$SITE/$dist-1.0.dist-info/METADATA"
+for dist in mlx gradio pytz mlx-audio soundfile pytest; do
+    fixture="rmlx-fixture-$dist"
+    dist_dir="${fixture//-/_}-1.0.dist-info"
+    mkdir -p "$SITE/$dist_dir"
+    printf 'Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n' "$fixture" > "$SITE/$dist_dir/METADATA"
 done
 check "detects installed optional features" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
 mkdir -p "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info"
@@ -257,7 +259,7 @@ cat > "$WORK/conflicting-cwd/rapid_mlx-9.9.9.dist-info/METADATA" <<'EOF'
 Metadata-Version: 2.1
 Name: rapid-mlx
 Version: 9.9.9
-Requires-Dist: gradio; extra == "bogus"
+Requires-Dist: rmlx-fixture-gradio; extra == "bogus"
 EOF
 check "ignores conflicting metadata in the current directory" \
     "$(cd "$WORK/conflicting-cwd" && installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat"
@@ -270,6 +272,18 @@ check "ignores conflicting metadata in the current directory" \
     [ "$(cat "$WORK/isolated-spec")" = 'rapid-mlx[audio,chat]==1.0.0' ]
 ) && ok "reinstall ignores conflicting current-directory version" || bad "reinstall ignores conflicting current-directory version"
 check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I)"
+if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null; then
+    cat >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA" <<'EOF'
+Requires-Dist: rmlx-fixture-foo; python_version >= "3.0" and extra == "gated"
+Requires-Dist: rmlx-fixture-bar; python_version < "3.0" and extra == "never"
+EOF
+    mkdir -p "$SITE/rmlx_fixture_foo-1.0.dist-info" "$SITE/rmlx_fixture_bar-1.0.dist-info"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-foo\nVersion: 1.0\n' > "$SITE/rmlx_fixture_foo-1.0.dist-info/METADATA"
+    printf 'Metadata-Version: 2.1\nName: rmlx-fixture-bar\nVersion: 1.0\n' > "$SITE/rmlx_fixture_bar-1.0.dist-info/METADATA"
+    check "evaluates Python-gated extras with packaging" "$(installed_extras_of_venv "$EXTRAS_VENV")" "audio,chat,gated"
+else
+    printf '  SKIP Python-gated extras: packaging is not importable\n'
+fi
 cat > "$EXTRAS_VENV/bin/python" <<'EOF'
 #!/bin/bash
 exit 1
@@ -307,6 +321,17 @@ EOF
     PRESERVED_EXTRAS=""; reinstall_preserved_extras
     [ ! -e "$WORK/recorded" ]
 ) && ok "reinstall pins version, tolerates failure, and skips empty extras" || bad "reinstall pins version, tolerates failure, and skips empty extras"
+
+(
+    INSTALL_DIR="$WORK/reinstall-missing-version"; mkdir -p "$INSTALL_DIR/bin"
+    printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/python"
+    chmod +x "$INSTALL_DIR/bin/python"
+    recorder() { touch "$WORK/unexpected-install"; }
+    INSTALLER=(recorder); PRESERVED_EXTRAS="audio,chat"; TARGET=stable
+    output="$(reinstall_preserved_extras)" || exit 1
+    [ ! -e "$WORK/unexpected-install" ] || exit 1
+    case "$output" in *"Install them later with: $INSTALL_DIR/bin/python -m pip install 'rapid-mlx[audio,chat]'"*) : ;; *) exit 1 ;; esac
+) && ok "missing version gives an unpinned reinstall hint" || bad "missing version gives an unpinned reinstall hint"
 
 # ── Transactional rebuilds preserve the old venv and shared state ───────────
 make_old_install() {

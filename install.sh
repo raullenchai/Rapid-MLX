@@ -113,6 +113,11 @@ installed_extras_of_venv() {
 import importlib.metadata as metadata
 import re
 
+try:
+    from packaging.requirements import Requirement
+except ImportError:
+    Requirement = None
+
 def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -125,11 +130,19 @@ for requirement in requirements:
     if not name:
         continue
     marker = requirement.partition(";")[2]
-    if re.search(r"\bpython_(?:full_)?version\b", marker, re.I):
-        continue
-    if re.search(r"\b(?:platform_system\s*==\s*[\"\x27]Windows[\"\x27]|sys_platform\s*==\s*[\"\x27]win32[\"\x27])", marker, re.I):
-        continue
     extra = re.search(r"\bextra\s*==\s*[\"\x27]([^\"\x27]+)[\"\x27]", marker, re.I)
+    if Requirement is not None:
+        try:
+            req = Requirement(requirement)
+            if req.marker and not req.marker.evaluate({"extra": extra.group(1) if extra else ""}):
+                continue
+        except Exception:
+            continue
+    else:
+        if re.search(r"\bpython_(?:full_)?version\b", marker, re.I):
+            continue
+        if re.search(r"\b(?:platform_system\s*==\s*[\"\x27]Windows[\"\x27]|sys_platform\s*==\s*[\"\x27]win32[\"\x27])", marker, re.I):
+            continue
     name = normalize(name.group())
     if extra:
         extras.setdefault(normalize(extra.group(1)), set()).add(name)
@@ -500,8 +513,10 @@ reinstall_preserved_extras() {
     version=$(run_install_command "$INSTALL_DIR/bin/python" -I -c 'import importlib.metadata as m; print(m.version("rapid-mlx"))' 2>/dev/null) || version=""
     if [ "$TARGET" = latest ]; then
         spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}] @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT:-}"
-    else
+    elif [ -n "$version" ]; then
         spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}]==${version}"
+    else
+        spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}]"
     fi
     info "Reinstalling optional features: $PRESERVED_EXTRAS"
     if { [ "$TARGET" != latest ] && [ -z "$version" ]; } || ! run_install_command "${INSTALLER[@]}" "$spec"; then
