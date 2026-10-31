@@ -200,6 +200,7 @@ def _write_cache(
     requires_python: str | None = None,
     brew_stable: str | None = None,
     ts: int | float | None = None,
+    requires_python_checked: bool = True,
 ) -> None:
     p = _cache_path()
     try:
@@ -209,8 +210,9 @@ def _write_cache(
             data = {
                 "latest": latest,
                 "ts": int(time.time()) if ts is None else ts,
-                "requires_python_checked": True,
             }
+            if requires_python_checked:
+                data["requires_python_checked"] = True
             if requires_python is not None:
                 data["requires_python"] = requires_python
             if brew_stable is not None:
@@ -309,9 +311,12 @@ def _fetch_latest() -> str | None:
         return None
 
 
-def _fetch_requires_python(version: str) -> str | None:
+_REQUIRES_PYTHON_FAILED = object()
+
+
+def _fetch_requires_python(version: str) -> str | None | object:
     if not _CACHED_VERSION_RE.fullmatch(version):
-        return None
+        return _REQUIRES_PYTHON_FAILED
     try:
         req = urllib.request.Request(
             f"https://pypi.org/pypi/rapid-mlx/{version}/json",
@@ -329,7 +334,7 @@ def _fetch_requires_python(version: str) -> str | None:
         OSError,
         http.client.HTTPException,
     ):
-        return None
+        return _REQUIRES_PYTHON_FAILED
 
 
 def _fetch_brew_formula_version() -> str | None:
@@ -396,10 +401,14 @@ def get_release_info(
         latest = cached["latest"]
         spec = cached.get("requires_python")
         brew = cached.get("brew_stable")
+        checked = cached.get("requires_python_checked", False)
         rewrite = False
-        if spec is None and not cached.get("requires_python_checked", False):
-            spec = _fetch_requires_python(latest)
-            rewrite = True
+        if spec is None and not checked:
+            result = _fetch_requires_python(latest)
+            if result is not _REQUIRES_PYTHON_FAILED:
+                spec = result
+                checked = True
+                rewrite = True
         if need_brew and brew is None:
             brew = _fetch_brew_formula_version()
             if brew is not None:
@@ -411,14 +420,16 @@ def get_release_info(
                     ts = _cache_path().stat().st_mtime
                 except OSError:
                     return ReleaseInfo(latest, spec, brew)
-            _write_cache(latest, spec, brew, ts=ts)
+            _write_cache(latest, spec, brew, ts=ts, requires_python_checked=checked)
         return ReleaseInfo(latest, spec, brew)
     latest = _fetch_latest()
     if latest is None:
         return None
-    spec = _fetch_requires_python(latest)
+    result = _fetch_requires_python(latest)
+    checked = result is not _REQUIRES_PYTHON_FAILED
+    spec = result if checked else None
     brew = _fetch_brew_formula_version() if need_brew else None
-    _write_cache(latest, spec, brew)
+    _write_cache(latest, spec, brew, requires_python_checked=checked)
     return ReleaseInfo(latest, spec, brew)
 
 

@@ -1353,14 +1353,14 @@ def test_metadata_fetches(monkeypatch, fetch, body, expected):
 
 
 def test_metadata_fetches_fail_open(monkeypatch):
-    assert vc._fetch_requires_python("1.0.1") is None
+    assert vc._fetch_requires_python("1.0.1") is vc._REQUIRES_PYTHON_FAILED
     assert vc._fetch_brew_formula_version() is None
     monkeypatch.setattr(
         vc.urllib.request,
         "urlopen",
         lambda *a, **k: pytest.fail("invalid version reached network"),
     )
-    assert vc._fetch_requires_python("../bad") is None
+    assert vc._fetch_requires_python("../bad") is vc._REQUIRES_PYTHON_FAILED
 
 
 def test_cache_optional_fields(monkeypatch):
@@ -1422,6 +1422,43 @@ def test_fresh_cache_marks_python_metadata_checked(monkeypatch):
     assert vc.get_release_info().requires_python is None
     fetch.assert_called_once_with("1.0.1")
     assert vc._read_cache()["requires_python_checked"] is True
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_failed_python_metadata_is_retried(monkeypatch, fresh):
+    import os
+    import time
+
+    path = vc._cache_path()
+    timestamp = int(time.time()) - 100
+    if not fresh:
+        path.write_text(json.dumps({"latest": "1.0.1", "ts": timestamp}))
+        os.utime(path, (timestamp, timestamp))
+    monkeypatch.setattr(vc, "_fetch_latest", lambda: "1.0.1")
+    monkeypatch.setattr(vc, "_fetch_brew_formula_version", lambda: "1.0.0")
+    fetch = MagicMock(side_effect=[vc._REQUIRES_PYTHON_FAILED, ">=3.12"])
+    monkeypatch.setattr(vc, "_fetch_requires_python", fetch)
+
+    release = vc.get_release_info(need_brew=True)
+    assert (release.latest, release.requires_python, release.brew_stable) == (
+        "1.0.1",
+        None,
+        "1.0.0",
+    )
+    cache = vc._read_cache()
+    assert "requires_python_checked" not in cache
+    original_ts, original_mtime = cache["ts"], path.stat().st_mtime
+    if not fresh:
+        assert original_ts == original_mtime == timestamp
+
+    assert vc.get_release_info(need_brew=True).requires_python == ">=3.12"
+    assert fetch.call_count == 2
+    cache = vc._read_cache()
+    assert cache["requires_python_checked"] is True
+    assert cache["requires_python"] == ">=3.12"
+    assert cache["brew_stable"] == "1.0.0"
+    assert cache["ts"] == original_ts
+    assert path.stat().st_mtime == original_mtime
 
 
 @pytest.mark.parametrize(
