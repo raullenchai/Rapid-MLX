@@ -10,6 +10,8 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+pytestmark = pytest.mark.requires_mlx
+
 PROJECT = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())[
     "project"
 ]
@@ -37,11 +39,7 @@ def _base_closure():
         pending.extend(
             req.name for item in requirements if _active(req := Requirement(item))
         )
-    if missing:
-        raise RuntimeError(
-            f"Missing distribution metadata for: {', '.join(sorted(missing))}"
-        )
-    return names
+    return names, missing
 
 
 def _probes(*specifiers):
@@ -87,7 +85,8 @@ def test_narrowing_versions():
     assert not _narrowing_versions(SpecifierSet(">=0.5.3,<0.6"), SpecifierSet("<0.6"))
 
 
-CLOSURE = _base_closure() - {"rapid-mlx"}
+CLOSURE, MISSING = _base_closure()
+CLOSURE -= {"rapid-mlx"}
 DIRECT = {canonicalize_name(req.name): req for req in BASE if _active(req)}
 CASES = [
     (extra, req)
@@ -101,6 +100,12 @@ CASES = [
 
 def test_cases_include_mlx_audio():
     assert any(canonicalize_name(req.name) == "mlx-audio" for _, req in CASES)
+
+
+def test_base_closure_metadata_complete():
+    assert not MISSING, (
+        f"Missing distribution metadata for: {', '.join(sorted(MISSING))}"
+    )
 
 
 @pytest.mark.parametrize(("extra", "req"), CASES, ids=lambda value: str(value))
