@@ -1445,13 +1445,13 @@ def test_per_batch_cap_fires_on_oversized_batch_with_actionable_message(
     assert "exceeds the per-batch cap" in msg, (
         f"cap error must keep the marker substring; got: {msg}"
     )
-    # Actionable levers — must call out image-downscale for VLM users.
+    # Recommend image downscaling and the vision budget, not the unsafe
+    # prefill-step-size advice.
     assert "downscale the image" in msg, (
         f"cap error must suggest image downscale; got: {msg}"
     )
-    assert "--prefill-step-size" in msg, (
-        f"cap error must mention --prefill-step-size for the text path; got: {msg}"
-    )
+    assert "--prefill-step-size" not in msg
+    assert "--vision-prefill-token-budget" in msg
 
 
 def test_per_batch_cap_does_not_fail_at_default_on_typical_screenshot(

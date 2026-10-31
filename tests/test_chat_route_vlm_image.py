@@ -425,14 +425,14 @@ def test_chat_route_maps_per_batch_cap_error_to_http_400():
 
     Post-fix: the chat route recognises the per-batch-cap marker and
     converts to HTTP 400 with the actionable engine message
-    ("downscale the image / raise --prefill-step-size").
+    ("downscale the image or send fewer images" or shorten the prompt).
     """
     engine = _StubMLLMEngine(
         raise_msg=(
             "Vision-request prompt tokens (2292) exceeds the per-batch cap "
-            "(2048 for 1 request(s)). For image inputs, downscale the "
-            "image; for text inputs, shorten the prompt or restart "
-            "the server with --prefill-step-size set higher."
+            "(2048 for 1 request(s)). For image inputs, downscale the image or send "
+            "fewer images; for text, shorten the prompt. The per-request vision budget is set by "
+            "--vision-prefill-token-budget."
         )
     )
     client = _make_client(engine)
@@ -457,7 +457,8 @@ def test_chat_route_maps_per_batch_cap_error_to_http_400():
         f"detail must carry the actionable engine message; got {detail!r}"
     )
     assert "downscale the image" in detail
-    assert "--prefill-step-size" in detail
+    assert "send fewer images" in detail
+    assert "--vision-prefill-token-budget" in detail
 
 
 def test_chat_route_maps_image_fetch_error_to_http_400_still_works():
