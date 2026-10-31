@@ -204,17 +204,35 @@ def test_generation_encodes_with_ffmpeg_binary_when_path_has_no_ffmpeg(
 
 
 @pytest.mark.parametrize(
-    "audio,rate",
-    [([0.0], None), ([], 48000), ([[float("nan")]], 48000), ([[0.0]] * 9, 48000)],
+    "audio,rate,message",
+    [
+        ([0.0], None, "sampling rate must be positive"),
+        ([], 48000, "invalid audio samples"),
+        ([[float("nan")]], 48000, "invalid audio samples"),
+        ([[0.0]] * 9, 48000, "invalid audio samples"),
+    ],
 )
-def test_invalid_audio_is_rejected(monkeypatch, tmp_path, audio, rate):
+def test_invalid_audio_is_rejected(monkeypatch, tmp_path, audio, rate, message):
     import numpy as np
 
     from rapid_mlx.runtime import video_lane
     from rapid_mlx.video.encoding import VideoEncodingError, encode_rgb_video
 
+    from rapid_mlx.video import encoding
+
     monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "/fake/ffmpeg")
-    with pytest.raises(VideoEncodingError):
+    # Validation must reject the audio before any subprocess is started.
+    monkeypatch.setattr(
+        encoding.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("afconvert must not run for invalid audio"),
+    )
+    monkeypatch.setattr(
+        encoding.subprocess,
+        "Popen",
+        lambda *a, **k: pytest.fail("ffmpeg must not run for invalid audio"),
+    )
+    with pytest.raises(VideoEncodingError, match=message):
         encode_rgb_video(
             np.zeros((1, 2, 2, 3), dtype=np.uint8),
             tmp_path / "out.mp4",
