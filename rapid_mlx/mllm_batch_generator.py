@@ -1892,12 +1892,10 @@ class MLLMBatchGenerator:
             if self.language_model is not self.model:
                 candidates += (self.language_model,)
             try:
-                found_policy = False
                 enabled = True
                 for candidate in candidates:
                     policy = getattr(candidate, "chunked_prefill_policy", None)
                     if callable(policy):
-                        found_policy = True
                         try:
                             result = policy(
                                 input_ids=None,
@@ -1911,9 +1909,7 @@ class MLLMBatchGenerator:
                         except Exception:
                             policy_allows = False
                         enabled = policy_allows and enabled
-                if found_policy:
-                    return enabled
-                return not any(
+                return enabled and not any(
                     getattr(candidate, "no_chunked_prefill", False)
                     for candidate in candidates
                 )

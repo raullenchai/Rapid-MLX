@@ -192,6 +192,17 @@ def test_wrapper_policy_cannot_override_language_model_policy(monkeypatch):
     assert not gen.model.embeddings
 
 
+def test_wrapper_policy_cannot_override_language_model_opt_out(monkeypatch):
+    gen = generator(monkeypatch)
+    gen.model.chunked_prefill_policy = lambda **kwargs: True
+    gen.language_model.no_chunked_prefill = True
+
+    run(gen, request(), [Cache()])
+
+    assert gen.model.calls == [11]
+    assert not gen.model.embeddings
+
+
 def test_vision_budget_counts_only_placeholders_for_chunkable_requests(monkeypatch):
     gen = generator(monkeypatch)
     req = request(12000)
