@@ -953,9 +953,7 @@ def catalog_memory_fit(
             image_estimate = measured_image_estimate_bytes(alias)
             if image_estimate is None:
                 image_estimate = measured_image_estimate_bytes(profile.hf_path)
-        if image_estimate is not None:
-            estimate, source = image_estimate, "measured_peak"
-        elif measured is not None:
+        if measured is not None:
             estimate, source = int(measured * _GIB), "curated_footprint"
         elif weights is not None:
             estimate = int(
@@ -964,19 +962,15 @@ def catalog_memory_fit(
             source = "weights_estimate"
         else:
             estimate, source = None, "unknown"
+        if image_estimate is not None and (
+            estimate is None or image_estimate > estimate
+        ):
+            estimate, source = image_estimate, "measured_peak"
         floor = profile.min_memory_gb
         fits: bool | None
         if _enforced_memory_floor(profile, ram_bytes):
             fits, basis = False, "memory_floor"
-        elif profile.modality != "text" and floor is not None and ram_bytes is not None:
-            fits = ram_bytes >= floor * _GIB
-            basis = "memory_floor"
-        elif (
-            profile.modality == "text"
-            and floor is not None
-            and ram_bytes is not None
-            and ram_bytes >= floor * _GIB
-        ):
+        elif floor is not None and ram_bytes is not None and ram_bytes >= floor * _GIB:
             fits = not (
                 recommended_working_set_bytes is not None
                 and weights is not None
@@ -984,6 +978,8 @@ def catalog_memory_fit(
                 and weights > budget
             )
             basis = "memory_floor"
+        elif profile.modality != "text" and floor is not None and ram_bytes is not None:
+            fits, basis = False, "memory_floor"
         else:
             fits = (
                 estimate <= budget

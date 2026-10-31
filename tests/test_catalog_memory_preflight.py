@@ -292,6 +292,46 @@ def test_image_fit_uses_admission_charge():
     assert result.estimate_source == "measured_peak"
 
 
+def test_image_estimate_preserves_weights_estimate():
+    from rapid_mlx.model_sizes import size_bytes
+
+    alias = "qwen-image-2.1-bf16"
+    weights = size_bytes(resolve_profile(alias).hf_path)
+    result = preflight.catalog_memory_fit(
+        alias, ram_bytes=64 * GIB, recommended_working_set_bytes=None
+    )
+    assert result.estimate_bytes >= int(
+        weights * (1 + preflight._SERVE_OVERHEAD_FRACTION)
+        + preflight._SERVE_OVERHEAD_BYTES
+    )
+    assert result.estimate_source == "weights_estimate"
+
+
+def test_image_at_floor_refuses_when_weights_exceed_gpu_budget(monkeypatch):
+    alias = "flux-schnell"
+    weights = 20 * GIB
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: weights)
+    result = preflight.catalog_memory_fit(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=8 * GIB
+    )
+    assert (result.fits, result.fit_basis) == (False, "memory_floor")
+    refusal = preflight.catalog_memory_refusal(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=8 * GIB, cached=False
+    )
+    assert refusal.kind == "gpu_budget"
+    assert refusal.footprint_bytes == weights
+
+
+def test_image_below_floor_refusal():
+    refusal = preflight.catalog_memory_refusal(
+        "qwen-image-edit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=24 * GIB,
+        cached=False,
+    )
+    assert refusal.kind == "memory_floor"
+
+
 @pytest.mark.parametrize("alias", ["diffusion-gemma-26b-8bit", "qwen-image-edit"])
 def test_non_text_refuses_before_download(alias, monkeypatch, capsys):
     monkeypatch.setattr(
