@@ -84,9 +84,9 @@ def _failure_window_snapshot() -> tuple[bool, frozenset[str]]:
 
 def _marker_path() -> Path:
     """Resolve this process's serve marker beneath the existing state root."""
-    from rapid_mlx.telemetry.state import _default_telemetry_dir
+    from rapid_mlx.first_run import _state_dir
 
-    return _default_telemetry_dir() / "state" / f"serve-inflight-{os.getpid()}.json"
+    return _state_dir() / "state" / f"serve-inflight-{os.getpid()}.json"
 
 
 def _marker_pid(path: Path) -> int | None:

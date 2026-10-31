@@ -367,10 +367,11 @@ def _reset_one_shot_state():
         model_events._reset_for_tests()
 
 
-def test_telemetry_state_uses_per_test_root(tmp_path) -> None:
+def test_telemetry_state_uses_per_test_root(tmp_path, monkeypatch) -> None:
     from rapid_mlx.telemetry import state, store
 
     root = tmp_path / ".rapid-mlx"
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(root))
     assert state.client_id_path() == root / "telemetry-client-id"
     assert state.consent_path() == root / "telemetry-consent.yaml"
     assert store.db_path() == root / "telemetry.db"

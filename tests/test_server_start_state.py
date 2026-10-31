@@ -39,7 +39,9 @@ def _marker_payload(pid: int, *, current: bool = False) -> dict[str, object]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def _reset_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_STATE_DIR", raising=False)
     server_start._reset_for_tests()
     yield
     server_start._reset_for_tests()

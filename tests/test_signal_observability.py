@@ -38,6 +38,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_crash_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_STATE_DIR", raising=False)
+
+
 def _wait_for_nonempty_file(path: Path, *, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
