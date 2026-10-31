@@ -20,7 +20,7 @@ the install is the smoke-test surface.
 from __future__ import annotations
 
 import builtins
-import importlib
+import importlib.util
 import json
 import os
 import re
@@ -2113,13 +2113,14 @@ def test_uvicorn_handled_signals_import_fallback(monkeypatch):
 
     from rapid_mlx import _uvicorn
 
-    try:
-        with monkeypatch.context() as patch:
-            patch.delattr(uvicorn.server, "HANDLED_SIGNALS")
-            importlib.reload(_uvicorn)
-            assert _uvicorn.HANDLED_SIGNALS == (signal.SIGINT, signal.SIGTERM)
-    finally:
-        importlib.reload(_uvicorn)
+    spec = importlib.util.spec_from_file_location(
+        "rapid_mlx._uvicorn_fallback_probe", _uvicorn.__file__
+    )
+    assert spec is not None and spec.loader is not None
+    probe = importlib.util.module_from_spec(spec)
+    monkeypatch.delattr(uvicorn.server, "HANDLED_SIGNALS")
+    spec.loader.exec_module(probe)
+    assert probe.HANDLED_SIGNALS == (signal.SIGINT, signal.SIGTERM)
 
 
 def test_uvicorn_capture_signals_clean_exit_keeps_crash_sink(monkeypatch):
