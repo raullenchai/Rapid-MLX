@@ -1832,12 +1832,13 @@ class MLLMBatchGenerator:
         grid = request.image_grid_thw
         if grid is not None:
             grid = flatten(grid.tolist() if hasattr(grid, "tolist") else grid)
+        pixel_values = request.pixel_values
         geometry = (
             int(request.media_pixel_cap or 0),
             int(getattr(self, "vision_min_pixels", 0) or 0),
             (
-                tuple(request.pixel_values.shape)
-                if hasattr(request.pixel_values, "shape")
+                tuple(pixel_values.shape)
+                if pixel_values is not None and hasattr(pixel_values, "shape")
                 else None
             ),
             grid,
