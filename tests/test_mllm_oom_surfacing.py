@@ -224,3 +224,100 @@ def test_completions_engine_abort_does_not_disable_retries(
         assert "x-should-retry" not in response.headers
     finally:
         reset_config()
+
+
+class _StreamingAbortEngine(_StubMLLMEngine):
+    async def stream_chat(self, messages, **kwargs):
+        async for output in super().stream_chat(messages, **kwargs):
+            output.finished = False
+            yield output
+        raise InferenceAbortedError("private detail", error_kind="insufficient_memory")
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "route_name", "event_name"),
+    [
+        (
+            "/v1/messages",
+            {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 8},
+            "anthropic",
+            "error",
+        ),
+        ("/v1/responses", {"input": "hello"}, "responses", "response.failed"),
+    ],
+)
+def test_streaming_memory_abort(path, payload, route_name, event_name, monkeypatch):
+    import json
+
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.request import inference_aborted_error_payload
+    from rapid_mlx.routes import anthropic, responses
+
+    route = {"anthropic": anthropic, "responses": responses}[route_name]
+    client = _make_client_with_envelope(_StreamingAbortEngine())
+    client.app.include_router(route.router)
+    monkeypatch.setattr(route, "_check_admission_or_503", lambda _engine: None)
+    try:
+        with client:
+            response = client.post(
+                path, json={"model": "qwen3-vl-8b-4bit", "stream": True, **payload}
+            )
+        assert response.status_code == 200
+        frames = response.text.split("\n\n")
+        frame = next(
+            frame for frame in frames if frame.startswith(f"event: {event_name}\n")
+        )
+        event = json.loads(
+            next(line[6:] for line in frame.splitlines() if line.startswith("data: "))
+        )
+        expected = inference_aborted_error_payload(
+            InferenceAbortedError("private detail", error_kind="insufficient_memory")
+        )
+        assert "memory" in expected["message"].lower()
+        assert "private detail" not in response.text
+        if path == "/v1/messages":
+            assert "event: message_start" in response.text
+            assert event == {
+                "type": "error",
+                "error": {"type": "overloaded_error", "message": expected["message"]},
+            }
+            assert "[DONE]" not in response.text
+        else:
+            assert "event: response.created" in response.text
+            assert event["response"]["error"] == {
+                "code": "insufficient_memory",
+                "message": expected["message"],
+            }
+    finally:
+        reset_config()
+
+
+def test_disconnect_guard_openai_memory_abort():
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from rapid_mlx.request import inference_aborted_error_payload
+    from rapid_mlx.service.helpers import _disconnect_guard
+
+    async def source():
+        yield "data: started\n\n"
+        raise InferenceAbortedError("private detail", error_kind="insufficient_memory")
+
+    class Request:
+        url = SimpleNamespace(path="/v1/chat/completions")
+
+        async def is_disconnected(self):
+            return False
+
+    async def collect():
+        return [chunk async for chunk in _disconnect_guard(source(), Request())]
+
+    chunks = asyncio.run(collect())
+    expected = inference_aborted_error_payload(
+        InferenceAbortedError("private detail", error_kind="insufficient_memory")
+    )
+    assert json.loads(chunks[-2][6:]) == {
+        "error": {key: expected[key] for key in ("message", "type", "code")}
+    }
+    assert chunks[-1] == "data: [DONE]\n\n"

@@ -1947,8 +1947,14 @@ class MLLMBatchGenerator:
                 return all(fresh(item) for item in children)
             return getattr(leaf, "offset", None) == 0
 
+        # Full-prompt position metadata is sliced using a scalar cache offset;
+        # per-row batched offsets disable that slicing, so only B=1 can chunk.
+        shape = getattr(request.input_ids, "shape", None)
         return (
-            cache is not None
+            shape is not None
+            and len(shape) == 2
+            and shape[0] == 1
+            and cache is not None
             and fresh(cache)
             and self._media_prefill_static_chunkable(
                 request, attention_mask=request.attention_mask
@@ -1958,7 +1964,8 @@ class MLLMBatchGenerator:
     def _vision_token_count(self, input_ids) -> int:
         ids = self._media_placeholder_token_ids()
         if not ids:
-            return input_ids.size
+            size: int = input_ids.size
+            return size
         return sum(int((input_ids == token_id).sum().item()) for token_id in set(ids))
 
     def _media_budget_token_count(self, input_ids, chunked):
@@ -4485,13 +4492,14 @@ class MLLMBatchGenerator:
                 raise ClientRequestError(
                     _prefill_cap_violation([request], self.vision_prefill_token_budget)
                 )
-            output = (
-                self._media_forward(request, input_ids, cache, kwargs, chunked=True)
-                if chunked
-                else self._media_forward(request, input_ids, cache, kwargs)
-                if cache is not None
-                else self.model(input_ids, cache=cache, **kwargs)
-            )
+            if chunked and cache is not None:
+                output = self._media_forward(
+                    request, input_ids, cache, kwargs, chunked=True
+                )
+            elif cache is not None:
+                output = self._media_forward(request, input_ids, cache, kwargs)
+            else:
+                output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
         # Release preprocessed vision inputs now that they have been encoded

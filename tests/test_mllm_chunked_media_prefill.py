@@ -97,6 +97,13 @@ def run(gen, req, cache):
             next(steps)
 
 
+def test_batched_media_input_is_not_chunkable(monkeypatch):
+    gen = generator(monkeypatch)
+    req = request()
+    req.input_ids = mx.array([[99] + [1] * 10, [99] + [1] * 10])
+    assert not gen._media_prefill_chunkable(req, [Cache()])
+
+
 def test_chunked_media_metadata_and_last_token(monkeypatch):
     gen = generator(monkeypatch)
     run(gen, request(), [Cache()])

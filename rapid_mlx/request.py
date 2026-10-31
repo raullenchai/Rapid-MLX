@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from fastapi import HTTPException
+
     from .paged_cache import BlockTable
 
 
@@ -520,7 +522,7 @@ def inference_aborted_error_code(exc: BaseException) -> str:
     return classify_engine_abort(exc)
 
 
-def inference_aborted_http_exception(exc: BaseException):
+def inference_aborted_http_exception(exc: BaseException) -> "HTTPException":
     """Map an engine abort to a sanitized HTTP response."""
     from fastapi import HTTPException
 

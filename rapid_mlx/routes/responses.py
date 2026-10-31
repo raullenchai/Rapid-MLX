@@ -5301,6 +5301,19 @@ async def _stream_responses(
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
         _record_failed(_telemetry_inference.classify_inference_failure(e))
+        from rapid_mlx.request import (
+            InferenceAbortedError,
+            inference_aborted_error_payload,
+        )
+
+        if isinstance(e, InferenceAbortedError):
+            _abort_payload = inference_aborted_error_payload(e)
+            _error = {
+                "code": _abort_payload["code"],
+                "message": _abort_payload["message"],
+            }
+        else:
+            _error = {"code": "internal_error", "message": str(e)}
         yield _emit(
             "response.failed",
             {
@@ -5308,10 +5321,7 @@ async def _stream_responses(
                 "response": {
                     "id": response_id,
                     "status": "failed",
-                    "error": {
-                        "code": "internal_error",
-                        "message": str(e),
-                    },
+                    "error": _error,
                 },
             },
         )
