@@ -86,6 +86,17 @@ def _disable_catalog_memory_preflight(request, monkeypatch):
         monkeypatch.setattr(preflight, "_check_catalog_memory_fit", lambda args: None)
 
 
+@pytest.fixture(autouse=True)
+def _benchmark_host_memory(request, monkeypatch):
+    if "bench" in request.node.path.name:
+        from rapid_mlx.community_bench import local_runner
+
+        monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 1 << 40)
+        monkeypatch.setattr(
+            local_runner, "mlx_recommended_working_set_bytes", lambda: None
+        )
+
+
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
 
 

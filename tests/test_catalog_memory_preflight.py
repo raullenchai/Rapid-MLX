@@ -284,6 +284,48 @@ def test_catalog_fit_uses_measured_footprint_when_weights_lookup_fails():
     assert result.estimate_source == "curated_footprint"
 
 
+def test_image_fit_uses_admission_charge():
+    result = preflight.catalog_memory_fit(
+        "flux-schnell", ram_bytes=32 * GIB, recommended_working_set_bytes=24 * GIB
+    )
+    assert result.estimate_bytes == int(21.4 * GIB)
+    assert result.estimate_source == "measured_peak"
+
+
+@pytest.mark.parametrize("alias", ["diffusion-gemma-26b-8bit", "qwen-image-edit"])
+def test_non_text_refuses_before_download(alias, monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 24 * GIB
+    )
+    with pytest.raises(SystemExit):
+        run(alias, 32, monkeypatch)
+    output = capsys.readouterr().err
+    assert "Nothing was downloaded" in output
+    assert "proceeding anyway" not in output
+
+
+def test_cached_image_keeps_floor_warning(monkeypatch, capsys):
+    from rapid_mlx.cli import _check_alias_min_memory
+
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: True)
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=32 * GIB)
+    )
+    run("qwen-image-edit", 32, monkeypatch)
+    _check_alias_min_memory("qwen-image-edit")
+    assert "proceeding anyway" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ram, fits", [(36, False), (48, True), (64, True)])
+def test_catalog_fit_enforced_floor(ram, fits):
+    result = preflight.catalog_memory_fit(
+        "qwen3.8-27b-tensorfold",
+        ram_bytes=ram * GIB,
+        recommended_working_set_bytes=None,
+    )
+    assert (result.fits, result.fit_basis) == (fits, "memory_floor")
+
+
 @pytest.mark.parametrize("raises", [False, True])
 def test_catalog_fit_unknown_profile(monkeypatch, raises):
     if raises:

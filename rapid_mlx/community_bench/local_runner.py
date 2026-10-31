@@ -32,6 +32,12 @@ from typing import Any
 
 import requests
 
+from ..byom.preflight import (
+    _gb,
+    catalog_memory_refusal,
+    mlx_recommended_working_set_bytes,
+    physical_ram_bytes,
+)
 from ..client_header import RAPID_CLIENT_BENCH
 from ..http_auth import rapid_mlx_client_headers
 from .acceleration import (
@@ -2036,6 +2042,37 @@ def _announce_plan(
         _report(progress, f"  {describe_case(case)}")
 
 
+def refuse_if_memory_does_not_fit(alias: str, repo_id: str) -> None:
+    refusal = catalog_memory_refusal(
+        alias,
+        ram_bytes=physical_ram_bytes(),
+        recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+        cached=model_is_cached(repo_id) is True,
+    )
+    if refusal is not None:
+        if refusal.kind == "memory_floor":
+            from rapid_mlx.model_aliases import resolve_profile
+
+            profile = resolve_profile(alias)
+            if profile is not None and not profile.enforce_min_memory:
+                raise ValueError(
+                    f"{alias} needs a Mac with at least {refusal.floor_gb:g} GB of "
+                    f"unified memory; this Mac has {refusal.ram_bytes / (1 << 30):.1f} GB. "
+                    "Nothing was downloaded."
+                )
+            raise ValueError(
+                f"{alias} requires at least {refusal.floor_gb:.0f} GB of unified memory; "
+                f"this Mac reports {refusal.ram_bytes / (1 << 30):.1f} GB. "
+                "Nothing was downloaded."
+            )
+        raise ValueError(
+            f"{alias} needs ~{_gb(refusal.footprint_bytes)} of GPU memory; "
+            f"this Mac's GPU can use about {_gb(refusal.budget_bytes)} of its "
+            f"{_gb(refusal.ram_bytes)}. Nothing was downloaded. "
+            "Pick a model that fits: rapid-mlx benchmark catalog"
+        )
+
+
 def run_local(
     alias: str,
     *,
@@ -2066,6 +2103,7 @@ def run_local(
         plan = plan_for_alias(alias)
     except Exception as exc:
         raise LocalBenchmarkError(str(exc), None, saved=False) from exc
+    refuse_if_memory_does_not_fit(alias, plan["model"]["repo_id"])
     model = plan["model"]
     task_type = model["task_type"]
     acceleration = acceleration or AccelerationRequest()
