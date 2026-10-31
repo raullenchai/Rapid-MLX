@@ -565,6 +565,11 @@ def _mlx_recommended_working_set_bytes() -> int | None:
         return None
 
 
+def mlx_recommended_working_set_bytes() -> int | None:
+    """Return Metal's reported working-set limit, when available."""
+    return _mlx_recommended_working_set_bytes()
+
+
 def metal_working_set_bytes(ram_bytes: int | None) -> int | None:
     return _working_set_budget(ram_bytes, _mlx_recommended_working_set_bytes())
 
@@ -886,6 +891,76 @@ def _note_uncataloged_serve(args: Any) -> None:
         )
 
 
+@dataclass(frozen=True)
+class CatalogMemoryFit:
+    estimate_bytes: int | None
+    estimate_source: str
+    budget_bytes: int | None
+    ram_bytes: int | None
+    fits: bool | None
+    fit_basis: str
+    floor_gib: float | None
+
+
+def catalog_memory_fit(
+    alias: str, *, ram_bytes: int | None, recommended_working_set_bytes: int | None
+) -> CatalogMemoryFit:
+    """Estimate catalog memory and apply serve's fit rules without I/O.
+
+    For non-text models, serve has no GPU preflight beyond the whole-machine
+    alias floor; when that floor or RAM is unknown, compare the estimate to
+    the working-set budget instead. Errors produce an unknown result.
+    """
+    unknown = CatalogMemoryFit(None, "unknown", None, None, None, "unknown", None)
+    try:
+        from rapid_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_sizes import size_bytes
+        from rapid_mlx.recommendations import recommendation_footprint_gb
+
+        profile = resolve_profile(alias)
+        if profile is None:
+            return unknown
+        budget = _working_set_budget(ram_bytes, recommended_working_set_bytes)
+        measured = recommendation_footprint_gb(alias)
+        weights = size_bytes(profile.hf_path)
+        if measured is not None:
+            estimate, source = int(measured * _GIB), "curated_footprint"
+        elif weights is not None:
+            estimate = int(
+                weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
+            )
+            source = "weights_estimate"
+        else:
+            estimate, source = None, "unknown"
+        floor = profile.min_memory_gb
+        if profile.modality != "text" and floor is not None and ram_bytes is not None:
+            fits = ram_bytes >= floor * _GIB
+            basis = "memory_floor"
+        elif (
+            profile.modality == "text"
+            and floor is not None
+            and ram_bytes is not None
+            and ram_bytes >= floor * _GIB
+        ):
+            fits = not (
+                recommended_working_set_bytes is not None
+                and weights is not None
+                and budget is not None
+                and weights > budget
+            )
+            basis = "memory_floor"
+        else:
+            fits = (
+                estimate <= budget
+                if estimate is not None and budget is not None
+                else None
+            )
+            basis = "gpu_budget" if fits is not None else "unknown"
+        return CatalogMemoryFit(estimate, source, budget, ram_bytes, fits, basis, floor)
+    except Exception:
+        return unknown
+
+
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
@@ -898,7 +973,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
         from rapid_mlx._download_gate import is_repo_cached
         from rapid_mlx.model_aliases import resolve_profile
         from rapid_mlx.model_sizes import size_bytes
-        from rapid_mlx.recommendations import fitting_pick, recommendation_footprint_gb
+        from rapid_mlx.recommendations import fitting_pick
 
         alias = getattr(args, "_original_alias", None) or args.model
         profile = resolve_profile(alias)
@@ -909,30 +984,21 @@ def _check_catalog_memory_fit(args: Any) -> None:
         ):
             return
         ram = physical_ram_bytes()
-        recommended = _mlx_recommended_working_set_bytes()
-        budget = _working_set_budget(ram, recommended)
-        if not ram or not budget:
+        # The public wrapper delegates through the private name for compatibility.
+        result = catalog_memory_fit(
+            alias,
+            ram_bytes=ram,
+            recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+        )
+        budget = result.budget_bytes
+        if result.fits is not False or not ram or not budget:
             return
-        if profile.min_memory_gb is not None and ram >= profile.min_memory_gb * _GIB:
-            # Trust the curated floor unless weights alone exceed a real Metal limit.
-            if recommended is None:
-                return
-            size = size_bytes(profile.hf_path)
-            if size is None:
-                return
-            footprint: int = int(size)
-        else:
-            measured = recommendation_footprint_gb(alias)
-            if measured is not None:
-                footprint = int(measured * _GIB)
-            else:
-                weights = size_bytes(profile.hf_path)
-                if weights is None:
-                    return
-                footprint = int(
-                    weights * (1 + _SERVE_OVERHEAD_FRACTION) + _SERVE_OVERHEAD_BYTES
-                )
-        if footprint <= budget:
+        footprint = (
+            size_bytes(profile.hf_path)
+            if result.fit_basis == "memory_floor"
+            else result.estimate_bytes
+        )
+        if footprint is None:
             return
     except Exception:
         return

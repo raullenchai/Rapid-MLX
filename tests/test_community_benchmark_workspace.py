@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import multiprocessing
 import os
 import signal
@@ -57,6 +58,13 @@ from rapid_mlx.community_bench.workspace import (
 from rapid_mlx.model_aliases import DraftModelNotServableError, draft_only_conflict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _offline_metal_probe(monkeypatch):
+    monkeypatch.setattr(
+        community_cli, "mlx_recommended_working_set_bytes", lambda: None
+    )
 
 
 class _Response:
@@ -155,9 +163,9 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
     assert by_alias["qwen-image-2.1"]["focus"] is True
-    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 32
+    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 39
     assert (
-        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "profile_minimum"
+        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "weights_estimate"
     )
     assert all("modality" not in model for model in catalog["models"])
 
@@ -241,86 +249,168 @@ def test_runtime_readiness_degrades_probe_faults_to_unknown(
     }
 
 
-def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
-    """An 18 GB Mac must not be told an 18 GB model fits."""
-    from rapid_mlx.community_bench.workspace import memory_fit
+@pytest.mark.catalog_memory_preflight
+@pytest.mark.parametrize("ram", (8, 16, 18, 24, 32, 36, 48, 64, 96, 128))
+def test_catalog_matches_serve_for_text_models(ram, monkeypatch, capsys):
+    from rapid_mlx.byom import preflight
+    from rapid_mlx.model_aliases import resolve_profile
 
-    assert memory_fit(18, 18) == "does_not_fit"
-    assert memory_fit(17, 18) == "does_not_fit"
-    assert memory_fit(16, 18) == "fits"  # 2 GB headroom on 18 GB
-    assert memory_fit(58, 64) == "does_not_fit"  # 10% headroom on 64 GB
-    assert memory_fit(57, 64) == "fits"
-    assert memory_fit(None, 18) == "unknown"
-    assert memory_fit(8, None) == "unknown"
-    # A profile minimum is a whole-machine floor: qwen-image's 64 GB minimum
-    # fits a 64 GB Mac, exactly as the launch logic admits it.
-    assert memory_fit(64, 64, "profile_minimum") == "fits"
-    assert memory_fit(64, 48, "profile_minimum") == "does_not_fit"
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: ram * gib)
+    monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
+    monkeypatch.setattr(preflight, "_emit_rejection", lambda *args: None)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
+    for model in benchmark_catalog(memory_gib=ram)["models"]:
+        alias = model["alias"]
+        profile = resolve_profile(alias)
+        if profile is None or profile.modality != "text":
+            continue
+        args = SimpleNamespace(
+            command="serve",
+            model=alias,
+            no_preflight=False,
+            disk_stream=False,
+            _original_alias=alias,
+        )
+        try:
+            preflight._check_catalog_memory_fit(args)
+            passed = True
+        except SystemExit:
+            passed = False
+        assert (model["memory_fit"] == "fits") == passed, (ram, alias)
+    capsys.readouterr()
 
 
-def test_memory_estimate_precedence_and_parameter_floor() -> None:
-    from rapid_mlx.community_bench.workspace import (
-        _parameter_floor_gib,
-        estimate_memory_gib,
+def test_catalog_uses_curated_working_set_and_video_floor():
+    from rapid_mlx.byom.preflight import catalog_memory_fit
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.recommendations import recommendation_footprint_gb
+
+    models = {m["alias"]: m for m in benchmark_catalog(memory_gib=32)["models"]}
+    qwen = models["qwen3.5-4b-4bit"]
+    assert qwen["estimated_memory_gib"] == math.ceil(
+        recommendation_footprint_gb("qwen3.5-4b-4bit")
+    )
+    assert qwen["memory_estimate_source"] == "curated_footprint"
+    wan = models["wan2.2-ti2v-5b-q8"]
+    assert wan["estimated_memory_gib"] != resolve_profile(wan["alias"]).min_memory_gb
+    assert wan["memory_estimate_source"] == "weights_estimate"
+    assert wan["memory_fit"] == "fits"
+    assert wan["memory_fit_basis"] == "memory_floor"
+    assert wan["memory_floor_gib"] == 32
+    models24 = {m["alias"]: m for m in benchmark_catalog(memory_gib=24)["models"]}
+    assert models24[wan["alias"]]["memory_fit"] == "does_not_fit"
+    assert models24[wan["alias"]]["memory_fit_basis"] == "memory_floor"
+    models8 = {m["alias"]: m for m in benchmark_catalog(memory_gib=8)["models"]}
+    assert models8["qwen3.5-4b-4bit"]["memory_fit_basis"] == "gpu_budget"
+    for ram, expected in ((32, True), (24, False)):
+        result = catalog_memory_fit(
+            wan["alias"], ram_bytes=ram << 30, recommended_working_set_bytes=None
+        )
+        assert (result.fits, result.fit_basis, result.floor_gib) == (
+            expected,
+            "memory_floor",
+            32,
+        )
+    result = catalog_memory_fit(
+        "qwen3.5-4b-4bit", ram_bytes=8 << 30, recommended_working_set_bytes=None
+    )
+    assert result.fit_basis == "gpu_budget"
+
+
+@pytest.mark.parametrize(
+    ("ram", "catalog_verdict", "plan_verdict"),
+    [
+        (
+            32,
+            "fits (32 GB+ profile)",
+            "fits this Mac (profile qualified for Macs with 32 GB or more)",
+        ),
+        (
+            24,
+            "does not fit (32 GB+ profile)",
+            "does NOT fit this Mac (profile requires a Mac with 32 GB or more)",
+        ),
+    ],
+)
+def test_floor_based_catalog_and_plan_wording(
+    ram, catalog_verdict, plan_verdict, capsys
+):
+    alias = "wan2.2-ti2v-5b-q8"
+    catalog = benchmark_catalog(memory_gib=ram)
+    catalog.update(memory_gib=ram, memory_source="override")
+    community_cli._print_catalog(catalog, show_all=True)
+    output = capsys.readouterr().out
+    row = next(line for line in output.splitlines() if alias in line)
+    assert catalog_verdict in row
+    community_cli._print_plan(plan_for_alias(alias, memory_gib=ram))
+    output = capsys.readouterr().out
+    assert (
+        f"Memory:   ~23 GB working set (estimated from weight size); {plan_verdict}"
+        in output
     )
 
-    # An explicit profile minimum wins over everything.
-    assert estimate_memory_gib(
-        "qwen3.5-4b-4bit", minimum_memory_gb=12.5, download_size_bytes=1
-    ) == (13, "profile_minimum")
-    # The curated recommendation footprint is the picker's own number.
-    assert estimate_memory_gib(
-        "qwen3.8-27b-4bit",
-        minimum_memory_gb=None,
-        download_size_bytes=1 << 30,
-        footprints={"qwen3.8-27b-4bit": 20.0},
-    ) == (20, "curated_footprint")
-    # A stale curated number is floored the same way.
-    assert estimate_memory_gib(
-        "qwen3.6-35b-mtp-4bit",
-        minimum_memory_gb=None,
-        download_size_bytes=None,
-        footprints={"qwen3.6-35b-mtp-4bit": 3.0},
-    ) == (21, "parameter_count_floor")
-    # A catalog download size that is impossible for the named parameter
-    # count is raised to the parameter floor (the 3 GB "35B MTP" row).
-    assert estimate_memory_gib(
-        "qwen3.6-35b-mtp-4bit", minimum_memory_gb=None, download_size_bytes=1 << 30
-    ) == (21, "parameter_count_floor")
-    # A plausible artifact size keeps the historical +2 GB fallback.
-    assert estimate_memory_gib(
-        "some-new-7b-4bit", minimum_memory_gb=None, download_size_bytes=4 << 30
-    ) == (6, "artifact_size_fallback")
-    assert estimate_memory_gib(
-        "mystery-model", minimum_memory_gb=None, download_size_bytes=None
-    ) == (None, "unknown")
-    # Floor parsing: size × bits/8 × 1.1 + 1, largest size wins, default 4-bit.
-    assert _parameter_floor_gib("bonsai-27b-2bit") == 9
-    assert _parameter_floor_gib("lfm2.5-8b-a1b-4bit") == 6
-    assert _parameter_floor_gib("tmax-9b") == 6
-    assert _parameter_floor_gib("tmax-9b-bf16") == 21
-    assert _parameter_floor_gib("gemma-4-e4b-4bit") == 4
-    assert _parameter_floor_gib("z-image-turbo") is None
-    # Drafters are named after the model they pair with; no floor for them.
-    assert _parameter_floor_gib("gemma-4-31b-assistant") is None
-    assert estimate_memory_gib(
-        "gemma-4-31b-assistant",
-        minimum_memory_gb=None,
-        download_size_bytes=900 << 20,
-        footprints={},
-    ) == (3, "artifact_size_fallback")
+
+@pytest.mark.parametrize("fit", ["fits", "does_not_fit"])
+def test_floor_based_plan_curated_working_set_wording(fit):
+    model = {
+        "estimated_memory_gib": 6,
+        "memory_estimate_source": "curated_footprint",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 16,
+        "memory_fit": fit,
+    }
+    verdict = (
+        "fits this Mac (profile qualified for Macs with 16 GB or more)"
+        if fit == "fits"
+        else "does NOT fit this Mac (profile requires a Mac with 16 GB or more)"
+    )
+    assert (
+        community_cli._memory_line(model, 16, None) == f"~6.0 GB working set; {verdict}"
+    )
 
 
-def test_curated_footprints_degrade_to_empty_when_the_tiers_cannot_load(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rapid_mlx.community_bench.workspace import curated_footprints
+@pytest.mark.catalog_memory_preflight
+def test_real_metal_limit_matches_serve(monkeypatch, capsys):
+    from rapid_mlx.byom import preflight
 
-    def boom():
-        raise RuntimeError("policy unreadable")
-
-    monkeypatch.setattr("rapid_mlx.recommendations.load_recommendation_tiers", boom)
-    assert curated_footprints() == {}
+    alias = "qwen3-coder-30b-4bit"
+    gib = 1 << 30
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 24 * gib)
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 12 * gib
+    )
+    monkeypatch.setattr(preflight, "_emit_rejection", lambda *args: None)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
+    monkeypatch.setattr(
+        community_cli, "mlx_recommended_working_set_bytes", lambda: 12 * gib
+    )
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 24)
+    _cli_archive(monkeypatch, SimpleNamespace())
+    args = SimpleNamespace(
+        benchmark_action="catalog", memory_gib=None, json=True, all=False
+    )
+    assert community_cli.benchmark_command(args) == 0
+    catalog = json.loads(capsys.readouterr().out)
+    model = next(m for m in catalog["models"] if m["alias"] == alias)
+    assert model["memory_fit"] == "does_not_fit"
+    assert catalog["memory_budget_gib"] == 12.0
+    assert (
+        next(
+            m for m in benchmark_catalog(memory_gib=24)["models"] if m["alias"] == alias
+        )["memory_fit"]
+        == "fits"
+    )
+    with pytest.raises(SystemExit):
+        preflight._check_catalog_memory_fit(
+            SimpleNamespace(
+                command="serve",
+                model=alias,
+                no_preflight=False,
+                disk_stream=False,
+                _original_alias=alias,
+            )
+        )
 
 
 def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
@@ -1261,7 +1351,9 @@ def test_run_local_translates_planning_error_without_fabricating_a_run(
     monkeypatch.setattr(
         local_runner,
         "plan_for_alias",
-        lambda alias: (_ for _ in ()).throw(ValueError(f"unknown model {alias}")),
+        lambda alias, **kwargs: (_ for _ in ()).throw(
+            ValueError(f"unknown model {alias}")
+        ),
     )
 
     with pytest.raises(
@@ -1299,7 +1391,9 @@ def test_non_run_cli_actions_return_structured_errors(
     monkeypatch.setattr(
         community_cli,
         "plan_for_alias",
-        lambda alias: (_ for _ in ()).throw(ValueError(f"unknown model {alias}")),
+        lambda alias, **kwargs: (_ for _ in ()).throw(
+            ValueError(f"unknown model {alias}")
+        ),
     )
     args = SimpleNamespace(
         benchmark_action=action,
@@ -3288,7 +3382,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Community Benchmark models (local by default)" in out
-    assert "Fit column assumes 8 GB (--memory-gib), not this Mac's memory" in out
+    assert "Assuming 8.0 GB unified memory (--memory-gib)" in out
     assert "This Mac:" not in out
     # Recommended = focus models that fit, listed first under a heading; the
     # long tail is summarised, not dumped, unless --all is passed.
@@ -3383,12 +3477,12 @@ def test_cli_catalog_defaults_memory_to_this_mac(
     )
 
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": 48}
+    assert seen == {"memory_gib": 48, "recommended_working_set_bytes": None}
     assert "This Mac: 48 GB unified memory" in capsys.readouterr().out
 
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: None)
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": None}
+    assert seen == {"memory_gib": None, "recommended_working_set_bytes": None}
     assert "memory unknown; pass --memory-gib" in capsys.readouterr().out
 
     args_json = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=True)
@@ -3434,7 +3528,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
                 "task_type": "text_generation",
                 "protocol_id": "rapid-community-speed",
                 "estimated_memory_gib": 6,
-                "memory_estimate_source": "artifact_size_fallback",
+                "memory_estimate_source": "weights_estimate",
                 "memory_fit": "fits",
                 "runtime": runtime_readiness,
             },
@@ -3454,7 +3548,11 @@ def test_cli_plan_prints_protocol_and_local_storage(
 
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
-    assert seen == {"memory_gib": 18, "check_cache": True}
+    assert seen == {
+        "memory_gib": 18,
+        "check_cache": True,
+        "recommended_working_set_bytes": None,
+    }
     assert "Model:    example-text  (mlx-community/example-text)" in out
     assert "Protocol: rapid-community-speed v2" in out
     # Every case with its token plan and rounds, so "plan" actually plans.
@@ -3465,7 +3563,8 @@ def test_cli_plan_prints_protocol_and_local_storage(
     ) in out
     assert "pp2048-tg512     2048 prompt tokens -> 512 output tokens" in out
     assert (
-        "Memory:   ~6 GB estimated (from download size); fits this Mac (18 GB)" in out
+        "Memory:   ~6.0 GB working set (estimated from weight size); fits this Mac (18 GB)"
+        in out
     )
     assert "Download: not cached yet; `benchmark run` downloads it" in out
     assert "Runtime:  ready" in out
@@ -3518,7 +3617,7 @@ def test_cli_plan_memory_and_download_lines_cover_every_verdict(
 
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
-    assert "Memory:   ~64 GB estimated; does NOT fit this Mac (18 GB)" in out
+    assert "Memory:   ~64 GB working set; does NOT fit this Mac (18 GB)" in out
     assert "Download: already in the local Hugging Face cache" in out
     assert "Cases:" not in out
 

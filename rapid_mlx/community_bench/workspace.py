@@ -8,12 +8,12 @@ import heapq
 import json
 import math
 import os
-import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rapid_mlx.byom.preflight import _working_set_budget, catalog_memory_fit
 from rapid_mlx.catalog import build_legacy_catalog_snapshot
 from rapid_mlx.model_aliases import draft_only_conflict, raise_if_draft_only_model
 
@@ -128,144 +128,14 @@ def _primary_task(task_types: list[str]) -> str | None:
     return None
 
 
-#: Unified memory the benchmark must leave to macOS, the display server and
-#: the KV cache of the 2048-token case. A 27B 4-bit model whose weights alone
-#: are 18 GB used to be reported as "fits" on an 18 GB Mac; running it swaps
-#: the machine to a halt, which is the one outcome a planning column exists
-#: to prevent.
-_HEADROOM_FLOOR_GIB = 2
-_HEADROOM_FRACTION = 0.10
-
-#: Alias fragments that mark a paired sidecar rather than a standalone model.
-_SIDECAR_MARKERS = ("assistant", "draft")
-
-_PARAM_COUNT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
-_BIT_WIDTH = re.compile(r"(\d+(?:\.\d+)?)(?:bit|bpw)")
-
-
-def _parameter_floor_gib(alias: str) -> int | None:
-    """Lower bound on the working set from the alias's own name.
-
-    ``qwen3.6-35b-mtp-4bit`` names 35 B parameters at 4 bits: at least
-    35 × 0.5 GB of weights, before any activations or cache. Catalog
-    download sizes are sometimes wrong for variant repos (an MTP head listed
-    as 3 GB for a 35 B model); this floor keeps such rows from being called
-    a fit. An alias that names no bit width is assumed 4-bit (the catalog's
-    usual default variant) so the floor stays a lower bound; ``bf16``/``fp16``
-    names count as 16-bit. Where an alias names several sizes
-    (``lfm2.5-8b-a1b``) the largest wins: all experts must be resident for
-    a benchmark.
-    """
-    lowered = alias.lower()
-    # Speculative-decoding drafters are named after the model they pair with
-    # (``gemma-4-31b-assistant`` is a 0.4 B four-layer drafter), so the size
-    # in their name says nothing about their own weights.
-    if any(marker in lowered for marker in _SIDECAR_MARKERS):
-        return None
-    counts = [float(m) for m in _PARAM_COUNT.findall(lowered)]
-    if not counts:
-        return None
-    params_b = max(counts)
-    bits_match = _BIT_WIDTH.search(lowered)
-    bits = float(bits_match.group(1)) if bits_match else 4.0
-    if "bf16" in lowered or "fp16" in lowered or "-f16" in lowered:
-        bits = 16.0
-    weights_gib = params_b * bits / 8.0
-    return int(math.ceil(weights_gib * 1.1 + 1))
-
-
-def curated_footprints() -> dict[str, float]:
-    """``alias -> working-set GB`` from the recommendation tiers, read once.
-
-    The picker's curated footprints are the best planning number we have
-    for the models they cover; reading the tiers once per catalog build
-    avoids re-validating them for every alias.
-    """
-    try:
-        from rapid_mlx.recommendations import load_recommendation_tiers
-
-        tiers = load_recommendation_tiers()
-    except Exception:  # noqa: BLE001 — planning data must never fail the catalog
-        return {}
-    footprints: dict[str, float] = {}
-    for tier in tiers:
-        for pick in tier.picks:
-            footprint = getattr(pick, "footprint_gb", None)
-            if isinstance(footprint, int | float) and footprint > 0:
-                footprints.setdefault(pick.alias.casefold(), float(footprint))
-    return footprints
-
-
-def estimate_memory_gib(
-    alias: str,
-    *,
-    minimum_memory_gb: float | None,
-    download_size_bytes: int | None,
-    footprints: dict[str, float] | None = None,
-) -> tuple[int | None, str]:
-    """Planning estimate with its provenance.
-
-    Precedence: an explicit profile minimum (``profile_minimum`` — the
-    smallest *total* machine memory the profile admits, so it is compared
-    against the host directly), then the curated recommendation footprint
-    (the working set the model picker already shows), then the artifact size
-    plus activations, never below the parameter-count floor. The last three
-    are working-set estimates and get OS/KV headroom in ``memory_fit``.
-    """
-    if isinstance(minimum_memory_gb, int | float) and minimum_memory_gb > 0:
-        return int(minimum_memory_gb + 0.999999), "profile_minimum"
-    if footprints is None:
-        footprints = curated_footprints()
-    floor = _parameter_floor_gib(alias)
-    footprint = footprints.get(alias.casefold())
-    if isinstance(footprint, int | float) and footprint > 0:
-        estimate = int(math.ceil(footprint))
-        # Curated numbers are hand-maintained; the parameter floor guards
-        # against a stale one just like it guards the artifact size.
-        if floor is not None and floor > estimate:
-            return floor, "parameter_count_floor"
-        return estimate, "curated_footprint"
-    if isinstance(download_size_bytes, int):
-        # This is deliberately a planning estimate, not benchmark evidence.
-        estimate = max(1, (download_size_bytes + (1 << 30) - 1) // (1 << 30) + 2)
-        if floor is not None and floor > estimate:
-            return floor, "parameter_count_floor"
-        return estimate, "artifact_size_fallback"
-    if floor is not None:
-        return floor, "parameter_count_floor"
-    return None, "unknown"
-
-
-def memory_fit(
-    estimated_memory_gib: int | None,
-    memory_gib: int | None,
-    source: str = "artifact_size_fallback",
-) -> str:
-    """``fits`` only when the estimate leaves the required headroom.
-
-    A ``profile_minimum`` is already a whole-machine floor (existing launch
-    logic admits ``total_ram >= min_memory_gb``), so it is compared directly;
-    every working-set estimate must additionally leave room for macOS and
-    the 2048-token KV cache.
-    """
-    if memory_gib is None or estimated_memory_gib is None:
-        return "unknown"
-    if source == "profile_minimum":
-        return "fits" if estimated_memory_gib <= memory_gib else "does_not_fit"
-    headroom = max(_HEADROOM_FLOOR_GIB, math.ceil(memory_gib * _HEADROOM_FRACTION))
-    return "fits" if estimated_memory_gib + headroom <= memory_gib else "does_not_fit"
-
-
-def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
+def benchmark_catalog(
+    *, memory_gib: int | None = None, recommended_working_set_bytes: int | None = None
+) -> dict[str, Any]:
     """Project the atomic catalog into the model-first benchmark picker."""
 
     snapshot = build_legacy_catalog_snapshot()
-    # This is the shadow-migration bridge until minimum-memory evidence is
-    # projected into the atomic recommendation layer for every alias.
-    from rapid_mlx.model_aliases import list_profiles
-
-    profiles = list_profiles()
-    footprints = curated_footprints()
+    ram_bytes = memory_gib * (1 << 30) if memory_gib else None
+    budget = _working_set_budget(ram_bytes, recommended_working_set_bytes)
     models = {item["registry_model_id"]: item for item in snapshot["models"]}
     entries: list[dict[str, Any]] = []
     for alias in snapshot["aliases"]:
@@ -286,14 +156,21 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
             continue
         model = models[alias["target"]["registry_model_id"]]
         workload = registered_workload(task)
-        profile = profiles.get(alias["alias"])
-        estimated_memory_gib, estimate_source = estimate_memory_gib(
+        result = catalog_memory_fit(
             alias["alias"],
-            minimum_memory_gb=getattr(profile, "min_memory_gb", None),
-            download_size_bytes=model.get("estimated_download_size_bytes"),
-            footprints=footprints,
+            ram_bytes=ram_bytes,
+            recommended_working_set_bytes=recommended_working_set_bytes,
         )
-        fit = memory_fit(estimated_memory_gib, memory_gib, estimate_source)
+        estimated_memory_gib = (
+            math.ceil(result.estimate_bytes / (1 << 30))
+            if result.estimate_bytes is not None
+            else None
+        )
+        fit = (
+            "unknown"
+            if result.fits is None
+            else ("fits" if result.fits else "does_not_fit")
+        )
         entries.append(
             {
                 "alias": alias["alias"],
@@ -307,8 +184,10 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
                 "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
-                "memory_estimate_source": estimate_source,
+                "memory_estimate_source": result.estimate_source,
                 "memory_fit": fit,
+                "memory_fit_basis": result.fit_basis,
+                "memory_floor_gib": result.floor_gib,
                 "identity_strength": alias["target"]["resolution_status"],
                 "comparable": alias["target"]["resolution_status"] != "unresolved",
                 "runtime": benchmark_runtime_readiness(alias["alias"], task),
@@ -318,6 +197,9 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "catalog_digest": snapshot["catalog_digest"],
+        "memory_budget_gib": round(budget / (1 << 30), 1)
+        if budget is not None
+        else None,
         "models": entries,
     }
 
@@ -375,7 +257,11 @@ def model_is_cached(repo_id: str) -> bool | None:
 
 
 def plan_for_alias(
-    alias_name: str, *, memory_gib: int | None = None, check_cache: bool = False
+    alias_name: str,
+    *,
+    memory_gib: int | None = None,
+    check_cache: bool = False,
+    recommended_working_set_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Describe the exact local workload for one alias.
 
@@ -386,11 +272,15 @@ def plan_for_alias(
     """
 
     raise_if_draft_only_model(alias_name)
-    catalog = benchmark_catalog(memory_gib=memory_gib)
+    catalog = benchmark_catalog(
+        memory_gib=memory_gib,
+        recommended_working_set_bytes=recommended_working_set_bytes,
+    )
     for entry in catalog["models"]:
         if entry["alias"] == alias_name:
             plan = {
                 "schema_version": 1,
+                "memory_budget_gib": catalog["memory_budget_gib"],
                 "model": entry,
                 "workload": registered_workload(entry["task_type"]),
                 "privacy": {
