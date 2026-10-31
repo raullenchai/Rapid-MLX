@@ -960,6 +960,7 @@ final class DownloadProgress {
         var value = token
         if speed, value.hasSuffix("B"), !value.hasSuffix("iB") { value.removeLast() }
         if let last = value.last, "KMGT".contains(last) { value += "iB" }
+        if let last = value.last, last >= "0", last <= "9" { value += "B" }
         return ModelSize.parseBytes(value)
     }
 

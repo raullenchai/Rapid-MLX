@@ -61,6 +61,15 @@ struct DownloadProgressTests {
         #expect(progress.progressSubtitle?.contains(speed) == true)
     }
 
+    @Test("tqdm fallback formats unitless decimal bytes")
+    func tqdmUnitlessDecimalFallback() {
+        let progress = DownloadProgress()
+        progress.ingest("model.safetensors:  0%|          | 0.00/4.20G [00:00<?, ?it/s]")
+        let done = DownloadProgress.formatBytes(0)
+        let total = DownloadProgress.formatBytes(Int64(4.20 * Double(1 << 30)))
+        #expect(progress.progressSubtitle?.contains("(\(done)/\(total))") == true)
+    }
+
     @Test("memory formatter uses system memory units and clamps negatives")
     func formatMemory() {
         let formatter = ByteCountFormatter()
