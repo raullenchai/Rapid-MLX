@@ -89,3 +89,30 @@ def test_offline_processor_uses_pinned_revision(monkeypatch):
     assert calls == [
         ("openai/whisper-base", {"revision": PIN, "local_files_only": True})
     ]
+
+
+def test_offline_processor_falls_back_to_unpinned_cache(monkeypatch):
+    processor = object()
+    calls = []
+
+    def load(repo, **kwargs):
+        calls.append((repo, kwargs))
+        if kwargs.get("local_files_only") and "revision" in kwargs:
+            raise OSError("pinned snapshot missing")
+        assert kwargs == {"local_files_only": True}
+        return processor
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(WhisperProcessor=SimpleNamespace(from_pretrained=load)),
+    )
+    engine = STTEngine("mlx-community/whisper-base-mlx")
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+    assert engine.model._processor is processor
+    assert calls == [
+        ("openai/whisper-base", {"revision": PIN, "local_files_only": True}),
+        ("openai/whisper-base", {"local_files_only": True}),
+    ]

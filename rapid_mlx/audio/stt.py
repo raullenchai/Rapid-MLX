@@ -860,12 +860,18 @@ class STTEngine:
                 )
             except OSError:
                 # Transformers reports missing local processor assets as OSError.
-                # Keep the existing online lookup only for a cache miss.
-                if model_downloads.disabled():
-                    raise
-                processor = WhisperProcessor.from_pretrained(
-                    processor_source, **revision_kwargs
-                )
+                try:
+                    if not revision_kwargs:
+                        raise
+                    processor = WhisperProcessor.from_pretrained(
+                        processor_source, local_files_only=True
+                    )
+                except OSError:
+                    if model_downloads.disabled():
+                        raise
+                    processor = WhisperProcessor.from_pretrained(
+                        processor_source, **revision_kwargs
+                    )
         except Exception as e:  # noqa: BLE001
             # Network failure, gated repo, unsupported revision — log
             # and bail. The upstream ValueError surfaces at first

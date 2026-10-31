@@ -190,6 +190,7 @@ def test_whisper_processor_local_first(monkeypatch, cached):
     if cached:
         hub.assert_not_called()
     else:
+        expected.append(("openai/whisper-tiny", {"local_files_only": True}))
         expected.append(("openai/whisper-tiny", {"revision": revision}))
         hub.assert_called_once_with("openai/whisper-tiny", revision=revision)
     assert calls == expected
@@ -217,9 +218,11 @@ def test_whisper_processor_failure_preserves_policy(monkeypatch, error, disabled
         "local_files_only": True,
         "revision": "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
     }
-    assert loader.call_count == (
-        2 if isinstance(error, OSError) and not disabled else 1
-    )
+    if isinstance(error, OSError):
+        assert loader.call_args_list[1].kwargs == {"local_files_only": True}
+        assert loader.call_count == (2 if disabled else 3)
+    else:
+        assert loader.call_count == 1
 
 
 @pytest.fixture(autouse=True)
