@@ -20,6 +20,7 @@ the install is the smoke-test surface.
 from __future__ import annotations
 
 import builtins
+import importlib
 import json
 import os
 import re
@@ -465,6 +466,40 @@ def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
     assert paths[0].exists()
     assert len(list(tmp_path.glob("crash-*.txt"))) == 6
     assert not paths[1].exists()
+
+
+def test_rotation_removes_inactive_empty_files_and_tolerates_lstat_error(
+    monkeypatch, tmp_path
+):
+    from rapid_mlx import _signal_observability as so
+
+    active = tmp_path / "crash-active.txt"
+    empty = tmp_path / "crash-empty.txt"
+    nonempty = tmp_path / "crash-nonempty.txt"
+    inaccessible = tmp_path / "crash-inaccessible.txt"
+    for path in (active, empty, inaccessible):
+        path.touch()
+    nonempty.write_text("traceback", encoding="utf-8")
+    monkeypatch.setattr(so, "_crash_path", active)
+    monkeypatch.setattr(
+        so, "_crash_files", lambda _directory: [active, empty, nonempty, inaccessible]
+    )
+    monkeypatch.setattr(so, "_crash_file_is_live", lambda *_args: False)
+    real_lstat = Path.lstat
+
+    def lstat(path, *args, **kwargs):
+        if path == inaccessible:
+            raise OSError("file disappeared")
+        return real_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", lstat)
+        so._rotate_crash_files(tmp_path)
+
+    assert active.exists()
+    assert not empty.exists()
+    assert nonempty.read_text(encoding="utf-8") == "traceback"
+    assert inaccessible.exists()
 
 
 def test_rotation_retains_live_process_before_marker_exists(monkeypatch, tmp_path):
@@ -2010,6 +2045,81 @@ def test_sigterm_leaves_no_empty_crash_file(tmp_path):
 
     assert proc.returncode in (-signal.SIGTERM, 128 + signal.SIGTERM)
     assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt")) == []
+
+
+@pytest.fixture
+def active_empty_crash_file(monkeypatch, tmp_path):
+    from rapid_mlx import _signal_observability as so
+
+    path = tmp_path / "crash-active.txt"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    file_stat = os.fstat(fd)
+    monkeypatch.setattr(so, "_crash_fd", fd)
+    monkeypatch.setattr(so, "_crash_fd_identity", (file_stat.st_dev, file_stat.st_ino))
+    monkeypatch.setattr(
+        so, "_crash_file_identity", (file_stat.st_dev, file_stat.st_ino)
+    )
+    monkeypatch.setattr(so, "_crash_path", path)
+    monkeypatch.setattr(so, "_crash_pipe", None)
+    monkeypatch.setattr(so, "_crash_tee", None)
+    monkeypatch.setattr(so, "_faulthandler_was_enabled", False)
+    monkeypatch.setattr(so.faulthandler, "disable", lambda: None)
+    try:
+        yield path
+    finally:
+        if so._crash_fd == fd:
+            os.close(fd)
+
+
+def test_release_crash_file_after_clean_shutdown(monkeypatch, active_empty_crash_file):
+    from rapid_mlx import _signal_observability as so
+
+    monkeypatch.setattr(so, "_install_lock", threading.Lock())
+    so.release_crash_file_after_clean_shutdown()
+    assert not active_empty_crash_file.exists()
+
+    def fail_cleanup():
+        raise SystemExit("cleanup failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(so, "_cleanup_crash_file", fail_cleanup)
+        so.release_crash_file_after_clean_shutdown()
+
+
+def test_default_signal_cleans_crash_file_and_swallows_errors(
+    monkeypatch, active_empty_crash_file
+):
+    from rapid_mlx import _signal_observability as so
+
+    events = []
+    monkeypatch.setattr(so, "_prior_handlers", {signal.SIGTERM: signal.SIG_DFL})
+    monkeypatch.setattr(so.faulthandler, "dump_traceback", lambda **_kwargs: None)
+    monkeypatch.setattr(signal, "signal", lambda *args: events.append(args))
+    monkeypatch.setattr(signal, "raise_signal", lambda signum: events.append(signum))
+    so._on_signal(signal.SIGTERM, None)
+    assert not active_empty_crash_file.exists()
+
+    def fail_cleanup():
+        raise SystemExit("cleanup failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(so, "_cleanup_crash_file", fail_cleanup)
+        so._on_signal(signal.SIGTERM, None)
+    assert events == [(signal.SIGTERM, signal.SIG_DFL), signal.SIGTERM] * 2
+
+
+def test_uvicorn_handled_signals_import_fallback(monkeypatch):
+    import uvicorn.server
+
+    from rapid_mlx import _uvicorn
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.delattr(uvicorn.server, "HANDLED_SIGNALS")
+            importlib.reload(_uvicorn)
+            assert _uvicorn.HANDLED_SIGNALS == (signal.SIGINT, signal.SIGTERM)
+    finally:
+        importlib.reload(_uvicorn)
 
 
 def test_uvicorn_capture_signals_clean_exit_keeps_crash_sink(monkeypatch):
