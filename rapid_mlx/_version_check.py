@@ -842,6 +842,24 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
         return None
 
 
+def launcher_interpreter(first_line: str, second_line: str) -> str | None:
+    """Return the interpreter declared by a console-script launcher."""
+    if not first_line.startswith("#!"):
+        return None
+    if re.fullmatch(r"#!/bin/sh(?:\s+-)?\s*", first_line):
+        match = re.match(
+            r"^'''exec' (?:'([^']+)'|\"([^\"]+)\"|(\S+)) \"\$0\" \"\$@\"",
+            second_line,
+        )
+        if match and match.group(2) and any(c in match.group(2) for c in "$`\\"):
+            return None
+        return (
+            next((group for group in match.groups() if group), None) if match else None
+        )
+    parts = first_line[2:].strip().split(maxsplit=1)
+    return parts[0] if parts else None
+
+
 def _launcher_belongs_to_running_install(binary: str) -> bool:
     """Prove that a PATH launcher is owned by this interpreter's install.
 
@@ -864,19 +882,10 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
             second_line = launcher.readline(4096).decode("utf-8", "replace")
     except OSError:
         return False
-    if not first_line.startswith("#!"):
+    shebang = launcher_interpreter(first_line, second_line)
+    if not shebang:
         return False
-    if re.fullmatch(r"#!/bin/sh(?:\s+-)?\s*", first_line):
-        match = re.match(r"^'''exec' (?:'([^']+)'|(\S+)) \"\$0\" \"\$@\"", second_line)
-        if not match:
-            return False
-        shebang = match.group(1) or match.group(2)
-    else:
-        parts = first_line[2:].strip().split(maxsplit=1)
-        shebang = parts[0] if parts else ""
-    return bool(shebang) and Path(os.path.realpath(shebang)) == Path(
-        os.path.realpath(sys.executable)
-    )
+    return Path(os.path.realpath(shebang)) == Path(os.path.realpath(sys.executable))
 
 
 def _externally_managed() -> bool:
