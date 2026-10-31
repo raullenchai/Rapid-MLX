@@ -7,6 +7,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -505,3 +506,33 @@ cli.main()
         if proc.poll() is None:
             proc.kill()
         proc.communicate()
+
+
+def test_outstanding_futures_include_worker_blocked_in_initializer():
+    from rapid_mlx.community_bench import local_runner
+
+    release = threading.Event()
+    executor = local_runner._TrackingExecutor(
+        max_workers=1, initializer=lambda: release.wait(5)
+    )
+    try:
+        executor.submit(lambda: None)
+        # The worker is still inside the initializer: nothing is "running",
+        # yet joining the executor would block.
+        assert executor.futures.any_outstanding()
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+    assert not executor.futures.any_outstanding()
+
+
+def test_finished_futures_are_released():
+    from rapid_mlx.community_bench import local_runner
+
+    executor = local_runner._TrackingExecutor(max_workers=1)
+    try:
+        for _ in range(50):
+            executor.submit(lambda: object()).result()
+        assert not executor.futures._pending
+    finally:
+        executor.shutdown(wait=True)

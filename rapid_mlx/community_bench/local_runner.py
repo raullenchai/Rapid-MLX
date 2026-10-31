@@ -194,10 +194,16 @@ class _OutstandingFutures:
         with self._lock:
             self._pending.discard(future)
 
-    def any_running(self) -> bool:
+    def any_outstanding(self) -> bool:
+        """True while any submitted work has not finished.
+
+        A future stays pending while its worker thread is still inside the
+        executor initializer, so "running" alone would miss a worker blocked
+        there; joining it would then hang cancellation.
+        """
         with self._lock:
             pending = list(self._pending)
-        return any(future.running() for future in pending)
+        return any(not future.done() for future in pending)
 
 
 class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
@@ -1462,7 +1468,9 @@ async def _measure_dedicated(
     finally:
         global _abandoned_native_worker
         cancelling = _cancelling()
-        abandon = cancelling and adapter is not None and adapter._futures.any_running()
+        abandon = (
+            cancelling and adapter is not None and adapter._futures.any_outstanding()
+        )
         if abandon:
             _abandoned_native_worker = True
         handle.close(wait=not abandon and (adapter is None or not adapter.timed_out))
@@ -2013,7 +2021,7 @@ async def _text_measurements(
         finally:
             if executor is not None:
                 global _abandoned_native_worker
-                abandon = _cancelling() and executor.futures.any_running()
+                abandon = _cancelling() and executor.futures.any_outstanding()
                 if abandon:
                     _abandoned_native_worker = True
                 executor.shutdown(wait=not abandon, cancel_futures=True)
