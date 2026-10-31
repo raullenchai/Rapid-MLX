@@ -1815,6 +1815,7 @@ class MLXMultimodalLM:
             from ..utils.model_file_guard import (
                 validate_local_model_file,
                 validate_model_code,
+                validate_vlm_processor_code,
             )
 
             if not isinstance(self.config, dict):
@@ -1822,6 +1823,9 @@ class MLXMultimodalLM:
             validate_model_code(self.config, trust_remote_code=trust_remote_code)
             if self.config.get("model_file"):
                 validate_local_model_file(model_path)
+            validate_vlm_processor_code(
+                model_path, self.config, trust_remote_code=trust_remote_code
+            )
             if (
                 isinstance(self.config, dict)
                 and self.config.get("model_type") == "minicpmv4_7"

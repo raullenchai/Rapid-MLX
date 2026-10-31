@@ -15,6 +15,10 @@ from typing import Any
 
 from .._env import env_falsey, env_truthy
 
+# Reviewed against the pinned media dependency; re-review on dependency bumps.
+FORCED_TRUST_PROCESSOR_TYPES = frozenset({"got", "inkling", "inkling_mm_model"})
+AUXILIARY_TRUST_PROCESSOR_TYPES = frozenset({"moondream1", "moondream2"})
+
 
 def validate_local_model_file(
     model_name: str | Path, *, model_config: dict | None = None
@@ -122,6 +126,50 @@ def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) 
         )
 
 
+def validate_vlm_processor_code(
+    model_path: str | Path, config: dict, *, trust_remote_code: bool
+) -> None:
+    """Run once at model load, never on requests; catalog pins are not consent.
+
+    Native and reviewed routes are untouched.
+    """
+    if trust_remote_code:
+        return
+    model_type = str(config.get("model_type") or "").lower()
+    if model_type in AUXILIARY_TRUST_PROCESSOR_TYPES:
+        raise ValueError(
+            "Model processor loads tokenizer code from an auxiliary repository; "
+            "review the code and explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+        )
+    if model_type not in FORCED_TRUST_PROCESSOR_TYPES:
+        return
+
+    for name in (
+        "config.json",
+        "tokenizer_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+        "video_preprocessor_config.json",
+    ):
+        if name == "config.json":
+            metadata = config
+        else:
+            try:
+                with (Path(model_path) / name).open(encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Unable to read {name} as a JSON object") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{name} must contain a JSON object")
+        if metadata.get("auto_map") or metadata.get("model_file"):
+            raise ValueError(
+                "Model processor loads repository code (auto_map or model_file); "
+                "review the code and explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+            )
+
+
 def validate_processor_code(model_path: str | Path) -> None:
     """Inspect local metadata before loaders that force repository-code trust.
 
@@ -226,11 +274,12 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
     revision = kwargs.pop("revision", None)
     model_path = resolve_vlm_checkpoint(model_name, revision=revision)
     with (model_path / "config.json").open(encoding="utf-8") as handle:
-        config = json.load(handle)
-    if not isinstance(config, dict):
+        disk_config = json.load(handle)
+    if not isinstance(disk_config, dict):
         raise ValueError("Model config must contain an object")
-    config = {**config, **(kwargs.get("model_config") or {})}
+    config = {**disk_config, **(kwargs.get("model_config") or {})}
     validate_model_code(config, trust_remote_code=trust)
+    validate_vlm_processor_code(model_path, disk_config, trust_remote_code=trust)
     if config.get("model_file"):
         validate_local_model_file(model_path, model_config=config)
     if config.get("model_type") == "kimi_k25" and not config.get("model_file"):
