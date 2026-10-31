@@ -394,7 +394,7 @@ enum ModelSizing {
 
         var message: String {
             func size(_ gib: Double) -> String {
-                DownloadProgress.formatMemory(Int64(max(0, gib) * Double(1 << 30)))
+                DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: max(0, gib) * Double(1 << 30)))
             }
             let need = size(footprintGB)
             let free = size(freeGB)

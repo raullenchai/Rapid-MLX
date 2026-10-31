@@ -538,7 +538,7 @@ struct VideoView: View {
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
         guard let minimum = model.minimumMemoryGB else { return model.alias }
-        return "\(model.alias) · \(DownloadProgress.formatMemory(Int64(minimum * Double(1 << 30))))"
+        return "\(model.alias) · \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimum * Double(1 << 30))))"
     }
 
     private var referenceControls: some View {

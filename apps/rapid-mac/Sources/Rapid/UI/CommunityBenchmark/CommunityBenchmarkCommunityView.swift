@@ -563,7 +563,7 @@ struct CommunityBenchmarkCommunityView: View {
         let readiness = gap.isDownloaded
             ? String(localized: "Already downloaded.")
             : gap.downloadSizeGB.map {
-                String(localized: "\(DownloadProgress.formatBytes(Int64($0 * 1_000_000_000))) download.")
+                String(localized: "\(DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: $0 * 1_000_000_000))) download.")
             } ?? String(localized: "Downloads when the benchmark starts.")
         return "\(coverage) \(readiness)"
     }
@@ -601,7 +601,7 @@ struct CommunityBenchmarkCommunityView: View {
     private func gapDetail(_ gap: CommunityCoverageGap) -> String {
         if !gap.fitsThisMac {
             let needed = gap.requiredMemoryGB.map {
-                String(localized: "needs about \(DownloadProgress.formatMemory(Int64($0) * (1 << 30)))")
+                String(localized: "needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double($0) * Double(1 << 30))))")
             } ?? String(localized: "needs more memory")
             return String(
                 format: String(localized: "May not fit · %1$@"),

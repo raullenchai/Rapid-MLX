@@ -2865,7 +2865,7 @@ struct QuickstartView: View {
 
     /// Format a machine memory figure using system memory units.
     static func wholeGB(_ value: Double) -> String {
-        DownloadProgress.formatMemory(Int64(max(0, value) * Double(1 << 30)))
+        DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: max(0, value) * Double(1 << 30)))
     }
 
     /// One decimal — for a MODEL figure: an estimated footprint.
@@ -2875,7 +2875,7 @@ struct QuickstartView: View {
     /// two trade-ups distinguishable, and 5.9 vs 6 is exactly the comparison
     /// the user is being shown.
     static func preciseGB(_ value: Double) -> String {
-        DownloadProgress.formatMemory(Int64(max(0, value) * Double(1 << 30)))
+        DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: max(0, value) * Double(1 << 30)))
     }
 
     /// Leave the catalogue, remembering where the user was.
@@ -3583,7 +3583,7 @@ struct QuickstartView: View {
     static func sizeText(for alias: String) -> String {
         let gb = ModelSizing.estimate(alias: alias).weightsGB
         guard gb > 0 else { return "" }
-        return "~" + DownloadProgress.formatBytes(Int64(gb * Double(1 << 30)))
+        return "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: gb * Double(1 << 30)))
     }
 
     static func sizeText(for choice: QuickstartModelChoice) -> String {
@@ -3593,7 +3593,7 @@ struct QuickstartView: View {
 
     /// Measured runtime footprint and capability for a recommended card.
     static func recommendationSizeText(from pick: RAMBucketedDefault.Pick) -> String {
-        let size = DownloadProgress.formatMemory(Int64(pick.footprintGB * Double(1 << 30)))
+        let size = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))
         return "\(size) · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
     }
 

@@ -73,6 +73,20 @@ struct DownloadProgressTests {
         #expect(DownloadProgress.formatMemory(-1) == "0 bytes")
     }
 
+    @Test("Floating-point byte estimates saturate safely for display")
+    func floatingPointByteFormatting() {
+        for value in [Double.infinity, .nan, -1.0] {
+            let bytes = DownloadProgress.bytes(fromDouble: value)
+            #expect(bytes == 0)
+            #expect(DownloadProgress.formatBytes(bytes) == DownloadProgress.formatBytes(0))
+            #expect(DownloadProgress.formatMemory(bytes) == DownloadProgress.formatMemory(0))
+        }
+        let bytes = DownloadProgress.bytes(fromDouble: 1e30)
+        #expect(bytes == Int64.max)
+        #expect(!DownloadProgress.formatBytes(bytes).isEmpty)
+        #expect(!DownloadProgress.formatMemory(bytes).isEmpty)
+    }
+
     /// #150 root-cause regression. ``huggingface_hub`` ≥0.20 ships its
     /// per-file tqdm with `unit_divisor=1024`, which renders bytes as
     /// IEC-suffixed `2.10GiB/5.13GiB` (and speed as `23.4MiB/s`)

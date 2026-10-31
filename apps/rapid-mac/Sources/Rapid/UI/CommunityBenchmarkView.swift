@@ -31,7 +31,7 @@ enum ExperimentalSurfaceCopy {
             "experimental.video.memory_requirement",
             fallback: "Needs at least %1$@ unified memory; this Mac has %2$d GB.",
             bundle: bundle,
-            DownloadProgress.formatMemory(Int64(minimum) * (1 << 30)),
+            DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(minimum) * Double(1 << 30))),
             available
         )
     }

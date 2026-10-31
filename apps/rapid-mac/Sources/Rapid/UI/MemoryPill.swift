@@ -132,7 +132,7 @@ struct MemoryPill: View {
 
     static func accessibilityLabel(snap: MemoryProbe.Snapshot, pressure: MemoryProbe.Pressure) -> String {
         let used = DownloadProgress.formatMemory(Int64(clamping: snap.usedBytes))
-        let total = DownloadProgress.formatMemory(Int64(clamping: snap.totalBytes))
+        let total = MemoryProbe.formatTotal(snap.totalBytes)
         let state: String
         switch pressure {
         case .normal:   state = "normal"

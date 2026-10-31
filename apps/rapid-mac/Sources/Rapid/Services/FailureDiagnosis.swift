@@ -297,7 +297,7 @@ enum FailureDiagnoser {
             if let modelAlias,
                ModelSizing.estimate(alias: modelAlias).paramsBillions != nil {
                 let required = ModelSizing.estimate(alias: modelAlias).totalGB
-                message = "This model needs about \(DownloadProgress.formatMemory(Int64(ceil(required * 10) / 10 * Double(1 << 30)))) free. Free up memory or choose a smaller model."
+                message = "This model needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: ceil(required * 10) / 10 * Double(1 << 30)))) free. Free up memory or choose a smaller model."
             } else {
                 message = "This model needs more free memory. Free up memory or choose a smaller model."
             }

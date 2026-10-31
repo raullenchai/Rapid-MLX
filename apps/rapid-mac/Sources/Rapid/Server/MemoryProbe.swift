@@ -84,8 +84,13 @@ enum MemoryProbe {
     /// out of the view so the contract can be pinned by tests —
     /// the labelling style is part of the UI promise, not an
     /// incidental detail.
+    static func formatTotal(_ bytes: UInt64) -> String {
+        let gib = Double(1 << 30)
+        return DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: (Double(bytes) / gib).rounded() * gib))
+    }
+
     static func formatLabel(_ snapshot: Snapshot) -> String {
-        return "\(DownloadProgress.formatMemory(Int64(clamping: snapshot.usedBytes))) / \(DownloadProgress.formatMemory(Int64(clamping: snapshot.totalBytes)))"
+        return "\(DownloadProgress.formatMemory(Int64(clamping: snapshot.usedBytes))) / \(formatTotal(snapshot.totalBytes))"
     }
 
     // MARK: - Syscall plumbing

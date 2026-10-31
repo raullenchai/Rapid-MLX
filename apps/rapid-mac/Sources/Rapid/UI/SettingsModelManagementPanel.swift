@@ -778,7 +778,7 @@ struct SettingsModelManagementPanel: View {
     /// capability % — "4.8 GB · ~117 tok/s · Chat only" — because the
     /// blended score would understate conversation and overstate the rest.
     static func pickStatsLine(_ pick: RAMBucketedDefault.Pick) -> String {
-        var parts = [DownloadProgress.formatMemory(Int64(pick.footprintGB * Double(1 << 30)))]
+        var parts = [DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))]
         if let caveat = pick.caveat {
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
@@ -944,7 +944,7 @@ struct SettingsModelManagementPanel: View {
         if let size = entry.size?.displayText { return size }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
-        return DownloadProgress.formatBytes(Int64(fp.weightsGB * Double(1 << 30)))
+        return DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: fp.weightsGB * Double(1 << 30)))
     }
 
     /// Catalog byte counts from the manifest or cache inventory are formatted once

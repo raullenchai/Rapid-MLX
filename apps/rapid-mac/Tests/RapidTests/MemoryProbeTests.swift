@@ -65,11 +65,12 @@ struct MemoryProbeTests {
         // showing the manufacturer's spec, not the kernel's
         // available-RAM count.
         let snap = MemoryProbe.Snapshot(
-            totalBytes: 18 * UInt64(1 << 30),
+            totalBytes: 18 * UInt64(1 << 30) - 100 * UInt64(1 << 20),
             usedBytes: 9 * UInt64(1 << 30) + 500 * UInt64(1 << 20)
         )
         let label = MemoryProbe.formatLabel(snap)
-        #expect(label.hasSuffix(" / \(DownloadProgress.formatMemory(Int64(snap.totalBytes)))"), "Total must round to an integer; got '\(label)'")
+        #expect(label == "\(DownloadProgress.formatMemory(Int64(snap.usedBytes))) / 18 GB")
+        #expect(MemoryPill.accessibilityLabel(snap: snap, pressure: .normal).contains("out of 18 GB"))
     }
 
     @Test("Memory pill uses the shared formatter for tooltip and accessibility")

@@ -90,7 +90,7 @@ struct ResidentReplacementProjection: Codable, Sendable, Equatable {
         guard reason == "role_capacity_insufficient_after_eviction" else { return nil }
         let released = modelsToFree.reduce(0.0) { $0 + Double($1.estimatedBytes) }
         let release = released > 0
-            ? "Rapid can release about \(DownloadProgress.formatMemory(Int64(released))) from the current model, but "
+            ? "Rapid can release about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: released))) from the current model, but "
             : ""
         return release
             + "\(alias) would still need about \(DownloadProgress.formatMemory(Int64(clamping: projectedBytes))) "

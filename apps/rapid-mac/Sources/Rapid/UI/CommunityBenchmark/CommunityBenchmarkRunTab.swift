@@ -177,7 +177,7 @@ struct CommunityBenchmarkReadyView: View {
                 ? String(localized: "May not fit this Mac")
                 : String(localized: "Fits this Mac"),
             detail: model.estimatedMemoryGib.map {
-                String(localized: "\(DownloadProgress.formatMemory(Int64($0) * (1 << 30))) of \(DownloadProgress.formatMemory(Int64(scope.macProfile.memoryGiB) * (1 << 30)))")
+                String(localized: "\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double($0) * Double(1 << 30)))) of \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(scope.macProfile.memoryGiB) * Double(1 << 30))))")
             },
             tone: doesNotFit ? RapidTheme.statusError : RapidTheme.textSecondary
         )

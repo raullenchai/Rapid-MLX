@@ -358,7 +358,7 @@ struct SettingsPerformancePanel: View {
                 Text("Cache budget")
                     .font(RapidFont.bodyEmphasis)
                 Spacer()
-                Text(config.cacheMemoryMB.map { DownloadProgress.formatMemory(Int64($0) * (1 << 20)) } ?? String(localized: "Automatic"))
+                Text(config.cacheMemoryMB.map { DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double($0) * Double(1 << 20))) } ?? String(localized: "Automatic"))
                     .font(RapidFont.metric)
                     .foregroundStyle(RapidTheme.textSecondary)
             }

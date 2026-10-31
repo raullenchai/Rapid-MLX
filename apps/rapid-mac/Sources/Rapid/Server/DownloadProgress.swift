@@ -933,6 +933,13 @@ final class DownloadProgress {
         }
     }
 
+    /// Saturate display-only byte estimates before converting to an integer.
+    nonisolated static func bytes(fromDouble value: Double) -> Int64 {
+        guard value.isFinite, value > 0 else { return 0 }
+        guard value < Double(Int64.max) else { return Int64.max }
+        return Int64(value)
+    }
+
     /// Use system file units for storage and memory units for RAM; never hand-roll byte labels.
     nonisolated static func formatBytes(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()

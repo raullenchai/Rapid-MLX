@@ -304,7 +304,7 @@ private struct PickerRow: View {
         return VStack(alignment: .trailing, spacing: 1) {
             if doesNotFit, let needed = row.model.estimatedMemoryGib {
                 Text(
-                    String(localized: "Needs about \(DownloadProgress.formatMemory(Int64(needed) * (1 << 30)))")
+                    String(localized: "Needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(needed) * Double(1 << 30))))")
                 )
                 .font(RapidFont.secondary)
                 .foregroundStyle(RapidTheme.textSecondary)

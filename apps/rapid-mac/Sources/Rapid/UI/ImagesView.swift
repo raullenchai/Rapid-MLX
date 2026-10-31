@@ -19,7 +19,7 @@ enum ImageReadinessPresentation {
         var details: [String] = []
         if let size = entry.size?.displayText, !size.isEmpty { details.append(size) }
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
-            details.append("≥\(DownloadProgress.formatMemory(Int64(memory * Double(1 << 30)))) RAM")
+            details.append("≥\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30)))) RAM")
         }
         details.append("512² default")
         details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")

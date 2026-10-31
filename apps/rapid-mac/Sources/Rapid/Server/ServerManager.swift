@@ -486,7 +486,7 @@ final class ServerManager {
                let memorySnapshot {
                 let totalMemory = DownloadProgress.formatMemory(Int64(clamping: memorySnapshot.totalBytes))
                 appendLogLines([
-                    "This video model needs at least \(DownloadProgress.formatMemory(Int64(minimumMemoryGB * Double(1 << 30)))) of unified memory; this Mac has \(totalMemory)."
+                    "This video model needs at least \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimumMemoryGB * Double(1 << 30)))) of unified memory; this Mac has \(totalMemory)."
                 ])
             } else {
                 appendLogLines([

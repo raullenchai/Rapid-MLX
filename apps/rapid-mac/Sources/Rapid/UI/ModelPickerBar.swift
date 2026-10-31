@@ -1189,7 +1189,7 @@ struct ModelPickerBar: View {
         } label: {
             Label(
                 ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
-                    + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30))))") : ""),
+                    + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : ""),
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
@@ -1202,7 +1202,7 @@ struct ModelPickerBar: View {
         // ``qualityRowHelpText`` so the help() modifier stays a single
         // value and tests can pin the multi-line copy.
         .help(notFit
-            ? String(localized: "Estimated to need about \(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30)))); this Mac has \(DownloadProgress.formatMemory(Int64(hardware.usableRAMGB * Double(1 << 30)))) available for models. You can download it, but starting it may fail or destabilize the Mac.")
+            ? String(localized: "Estimated to need about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30)))); this Mac has \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: hardware.usableRAMGB * Double(1 << 30)))) available for models. You can download it, but starting it may fail or destabilize the Mac.")
             : ModelPickerBar.aliasRowHelpText(
                 alias: entry.alias,
                 bucket: bucket,
@@ -1221,7 +1221,7 @@ struct ModelPickerBar: View {
                 alias: entry.alias,
                 cached: entry.cached,
                 bucket: bucket
-            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30))))") : "")
+            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : "")
         )
         // v0.5.2: right-click → "Delete from disk". Cached rows
         // only — uncached models would just trigger "alias not
@@ -1730,8 +1730,8 @@ struct ModelPickerBar: View {
         footprint: ModelSizing.Footprint,
         hardware: MacHardware
     ) -> String {
-        let usable = DownloadProgress.formatMemory(Int64(hardware.usableRAMGB * Double(1 << 30)))
-        let total = DownloadProgress.formatMemory(Int64(footprint.totalGB * Double(1 << 30)))
+        let usable = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: hardware.usableRAMGB * Double(1 << 30)))
+        let total = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30)))
         let firstSentence: String
         if footprint.paramsBillions != nil && footprint.totalGB > 0 {
             firstSentence = String(localized: "Estimated need ≈ \(total); your Mac has about \(usable) available for the model.")

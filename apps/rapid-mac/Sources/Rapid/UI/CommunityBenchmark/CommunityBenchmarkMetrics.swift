@@ -94,7 +94,7 @@ enum CommunityBenchmarkMetrics {
             supporting.append(
                 Metric(
                     key: "memory",
-                    value: DownloadProgress.formatMemory(Int64(memory * Double(1 << 30))),
+                    value: DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30))),
                     unit: nil,
                     label: String(localized: "Peak memory")
                 )
@@ -154,7 +154,7 @@ enum CommunityBenchmarkMetrics {
             supporting.append(
                 Metric(
                     key: "memory",
-                    value: DownloadProgress.formatMemory(Int64(memory * Double(1 << 30))),
+                    value: DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30))),
                     unit: nil,
                     label: String(localized: "Peak memory")
                 )
@@ -196,7 +196,7 @@ enum CommunityBenchmarkMetrics {
             supporting.append(
                 Metric(
                     key: "memory",
-                    value: DownloadProgress.formatMemory(Int64(memory * Double(1 << 30))),
+                    value: DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30))),
                     unit: nil,
                     label: String(localized: "Peak memory")
                 )
