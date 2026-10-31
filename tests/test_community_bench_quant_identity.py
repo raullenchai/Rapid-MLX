@@ -95,10 +95,16 @@ def test_pflash_zero_threshold_validates_as_saved():
     BenchmarkRunValidator().validate(run)
 
 
-def test_pflash_tiny_keep_ratio_refused():
-    request = AccelerationRequest(overrides={"pflash_keep_ratio": 0.0000001})
+@pytest.mark.parametrize("ratio", [0.0000001, 0.0000006])
+def test_pflash_tiny_keep_ratio_refused(ratio):
+    request = AccelerationRequest(overrides={"pflash_keep_ratio": ratio})
     with pytest.raises(AccelerationConfigError, match="must be at least 0.000001"):
         validate_request(request, "text_generation", is_fixed_runtime=False)
+
+
+def test_pflash_smallest_recordable_keep_ratio_accepted():
+    request = AccelerationRequest(overrides={"pflash_keep_ratio": 0.000001})
+    validate_request(request, "text_generation", is_fixed_runtime=False)
 
 
 @pytest.mark.parametrize("lane", ["tensorfold_qwen27", "tensorfold_glm53"])
