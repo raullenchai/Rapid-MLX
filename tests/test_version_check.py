@@ -1708,3 +1708,34 @@ def test_python_upgrade_instructions_without_packaging(monkeypatch):
     assert vc.python_upgrade_instructions(info, ">3.11.1") == [
         "uv tool upgrade --python 3.12 rapid-mlx"
     ]
+
+
+def test_user_pip_install_upgrade_and_python_instructions(tmp_path, monkeypatch):
+    import site
+    import sys
+
+    import rapid_mlx
+
+    user_site = tmp_path / "site-packages"
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setattr(
+        rapid_mlx, "__file__", str(user_site / "rapid_mlx" / "__init__.py")
+    )
+    monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    info = vc.detect_install_method()
+    assert info.upgrade_argv == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--user",
+        "--upgrade",
+        "rapid-mlx",
+    ]
+    assert "pip install --user --upgrade rapid-mlx" in info.upgrade_command
+    instructions = vc.python_upgrade_instructions(info, ">=3.12")
+    assert any("python3.12 -m venv" in line for line in instructions)
+    assert all("--user" not in line for line in instructions)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    assert "--user" not in vc.detect_install_method().upgrade_argv

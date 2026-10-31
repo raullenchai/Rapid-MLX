@@ -389,10 +389,8 @@ def test_python_floor_tries_compatible_upgrade(
     assert exc.value.code == code
     out = capsys.readouterr().out
     if code == 0:
-        import sys
-
         assert (
-            f"  ✓ rapid-mlx is now 1.0.1 — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. 1.0.2 needs Python >=3.12; follow the steps above to move to it."
+            "  ✓ rapid-mlx is now 1.0.1, the newest release this Python could install. 1.0.2 needs Python >=3.12; follow the steps above to move to it."
             in out
         )
     elif verified is None:

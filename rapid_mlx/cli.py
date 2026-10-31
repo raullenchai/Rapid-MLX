@@ -15411,7 +15411,7 @@ def upgrade_command(args):
             sys.exit(1)
         if parsed_verified > cur:
             print(
-                f"  ✓ rapid-mlx is now {verified} — the newest release for Python {sys.version_info.major}.{sys.version_info.minor}. "
+                f"  ✓ rapid-mlx is now {verified}, the newest release this Python could install. "
                 f"{latest} needs Python {release.requires_python}; follow the steps above to move to it."
             )
             sys.exit(0)

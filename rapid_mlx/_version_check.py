@@ -996,16 +996,20 @@ def detect_install_method() -> InstallInfo:
                 binary_path=binary,
             )
 
+    import site
+
+    import rapid_mlx
+
+    user_site = Path(os.path.realpath(site.getusersitepackages()))
+    package_file = Path(os.path.realpath(rapid_mlx.__file__))
+    is_user = sys.prefix == sys.base_prefix and user_site in package_file.parents
+    argv = [sys.executable, "-m", "pip", "install"]
+    if is_user:
+        argv.append("--user")
+    argv.extend(["--upgrade", "rapid-mlx"])
     return InstallInfo(
         method="pip",
-        upgrade_command=f"{sys.executable} -m pip install --upgrade rapid-mlx",
-        upgrade_argv=[
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "rapid-mlx",
-        ],
+        upgrade_command=shlex.join(argv),
+        upgrade_argv=argv,
         binary_path=binary,
     )

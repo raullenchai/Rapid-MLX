@@ -392,7 +392,7 @@ class WebTools:
         try:
             # Total wall-clock budget covers geocoding plus forecast, or all fallback hops.
             async with (
-                asyncio.timeout(TIMEOUT if timeout is None else timeout),  # type: ignore[attr-defined]  # Harness requires Python 3.11; base mypy target is 3.10.
+                asyncio.timeout(TIMEOUT if timeout is None else timeout),
                 self._client() as client,
             ):
                 return await operation(client)
@@ -460,7 +460,7 @@ class WebTools:
             try:
                 # Each attempt gets a share of the total deadline, leaving time
                 # for the remaining providers even when a connection stalls.
-                async with asyncio.timeout(TIMEOUT / len(candidates)):  # type: ignore[attr-defined]  # Python 3.11-only harness.
+                async with asyncio.timeout(TIMEOUT / len(candidates)):
                     results = await self._search_provider(client, provider, key, query)
                 break
             except ProviderError as exc:
