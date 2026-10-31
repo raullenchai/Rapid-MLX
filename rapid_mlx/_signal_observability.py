@@ -32,6 +32,8 @@ must NOT change graceful-shutdown semantics: a SIGTERM still has to land
 on uvicorn's normal handler so the FastAPI lifespan shutdown drains
 in-flight requests, persists the prefix cache, and emits the
 ``Application shutdown complete.`` banner the dogfood logs were missing.
+Default signal termination also removes an empty crash file before re-raising,
+so SIGTERM does not leave an empty crash file behind.
 
 NOTE on threading: ``signal.signal`` MUST be called from the main thread
 (POSIX restriction enforced by CPython). The install helper detects
@@ -349,7 +351,16 @@ def _report_previous_crash(log_dir: Path) -> None:
 def _rotate_crash_files(log_dir: Path) -> None:
     retained_inactive = 0
     for path in _crash_files(log_dir):
+        if path == _crash_path:
+            continue
         if not _is_acknowledged(path.name) and _crash_file_is_live(path, log_dir):
+            continue
+        try:
+            path_stat = path.lstat()
+            if stat.S_ISREG(path_stat.st_mode) and path_stat.st_size == 0:
+                path.unlink()
+                continue
+        except OSError:
             continue
         retained_inactive += 1
         if retained_inactive <= 5:
@@ -476,6 +487,16 @@ def _cleanup_crash_file() -> None:
             _enable_faulthandler(sys.stderr)
         except (OSError, RuntimeError, ValueError):
             pass
+
+
+def release_crash_file_after_clean_shutdown() -> None:
+    """Release the crash sink before Uvicorn re-raises a shutdown signal."""
+    try:
+        with _install_lock:
+            _cleanup_crash_file()
+    except BaseException:
+        # Shutdown and signal propagation must not depend on diagnostics.
+        pass
 
 
 def _install_crash_file() -> None:
@@ -730,6 +751,10 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
             )
             raise
     elif prior == signal.SIG_DFL:
+        try:
+            _cleanup_crash_file()
+        except BaseException:
+            pass
         # Restore the default disposition and re-deliver the signal so
         # the kernel-level terminate behaviour fires. ``signal.signal``
         # is async-signal-safe in CPython's signal module; the

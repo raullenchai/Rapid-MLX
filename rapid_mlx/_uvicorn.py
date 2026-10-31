@@ -10,6 +10,7 @@ import os
 import socket
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 import uvicorn
@@ -79,6 +80,20 @@ def suppress_next_lifespan_traceback(exc: BaseException) -> None:
 
 class AcceptingConnectionsServer(uvicorn.Server):
     """Run a callback after Uvicorn has created every configured listener."""
+
+    if hasattr(uvicorn.Server, "capture_signals"):
+
+        @contextmanager
+        def capture_signals(self):
+            with super().capture_signals():
+                try:
+                    yield
+                finally:
+                    from rapid_mlx._signal_observability import (
+                        release_crash_file_after_clean_shutdown,
+                    )
+
+                    release_crash_file_after_clean_shutdown()
 
     def __init__(
         self,

@@ -1975,6 +1975,118 @@ def test_package_has_one_faulthandler_enable_call_site():
     ]
 
 
+def test_sigterm_leaves_no_empty_crash_file(tmp_path):
+    program = textwrap.dedent(
+        """
+        import signal
+        from rapid_mlx._signal_observability import install_signal_observability
+
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        install_signal_observability()
+        print("ready", flush=True)
+        signal.pause()
+        """
+    )
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", program],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert _read_ready_with_timeout(proc).strip() == "ready"
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode in (-signal.SIGTERM, 128 + signal.SIGTERM)
+    assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt")) == []
+
+
+def test_uvicorn_sigterm_leaves_no_empty_crash_file(tmp_path):
+    program = textwrap.dedent(
+        """
+        from contextlib import asynccontextmanager
+        from fastapi import FastAPI
+        from rapid_mlx._signal_observability import install_signal_observability
+        from rapid_mlx._uvicorn import run_uvicorn
+
+        @asynccontextmanager
+        async def lifespan(app):
+            install_signal_observability()
+            yield
+
+        app = FastAPI(lifespan=lifespan)
+        run_uvicorn(app, host="127.0.0.1", port=0, log_level="warning",
+                    on_server_accepting=lambda: print("ready", flush=True))
+        """
+    )
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", program],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert _read_ready_with_timeout(proc).strip() == "ready"
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert proc.returncode in (-signal.SIGTERM, 128 + signal.SIGTERM)
+    assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt")) == []
+
+
+def test_startup_sweeps_stale_empty_crash_files(tmp_path):
+    log_dir = tmp_path / ".rapid-mlx" / "logs"
+    log_dir.mkdir(parents=True)
+    empty = log_dir / "crash-20200101T000000Z-99999999.txt"
+    nonempty = log_dir / "crash-20200102T000000Z-99999999.txt"
+    empty.touch()
+    nonempty.write_text("fatal traceback", encoding="utf-8")
+    env = dict(
+        os.environ,
+        HOME=str(tmp_path),
+        PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from rapid_mlx._signal_observability import install_signal_observability; install_signal_observability()",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+
+    assert not empty.exists()
+    assert any(
+        path.read_text(encoding="utf-8") == "fatal traceback"
+        for path in log_dir.glob("crash-*.txt")
+    )
+
+
 def test_subprocess_sigterm_emits_warning_and_stack_dump():
     """End-to-end: spawn a child running the install + an idle loop,
     send SIGTERM, assert the WARNING marker + thread-stack dump appear
