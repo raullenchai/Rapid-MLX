@@ -220,24 +220,14 @@ _BAR_MIN_CELLS = 8
 class _ProgressTracker:
     """Aggregate bytes-done counter for one R2 pull.
 
-    Workers call ``add(delta)`` for each chunk they write; at most one call
-    per ``_PROGRESS_HEARTBEAT_SECONDS`` window renders a progress
-    observation.
+    Workers call ``add(delta)`` for each chunk they write. The render mode
+    is chosen once from the captured stdout and process role:
 
-    Two render modes, chosen once at construction from the captured
-    ``stdout``:
-
-    * **non-TTY** (the desktop app's captured pipe, a redirected log, or
-      pytest capture) — emit the machine-readable ``[bytes] D/T`` line the
-      desktop's ``DownloadProgress`` parser and the mirror regression tests
-      depend on. Unchanged from the original heartbeat.
-    * **TTY** (a human running bare ``rapid-mlx chat``) — redraw a single
-      in-place bar with ``\\r`` so a multi-GB cold pull shows one live line
-      instead of scrolling hundreds of raw ``[bytes]`` lines (0.11 dogfood
-      papercut). Discrete status lines route through :meth:`write_line` so
-      they don't shred the bar. ``isatty()`` alone selects this mode;
-      ``NO_COLOR`` keeps the bar but drops ANSI (``\\r`` + space-pad erase)
-      rather than falling back to the machine flood.
+    * **TTY** — redraw an in-place bar; ``NO_COLOR`` only disables ANSI.
+    * **Desktop non-TTY** — emit the machine-readable ``[bytes] D/T``
+      heartbeat used by the desktop progress parser.
+    * **Other non-TTY** — print occasional human-readable progress lines at
+      10% milestones or after 30 seconds of continued progress.
 
     Three robustness properties, all from codex review on PR #1259:
 
@@ -266,14 +256,20 @@ class _ProgressTracker:
         # Capture the stream once so the isatty() decision and every write
         # target the same object even if sys.stdout is later swapped.
         self._out = sys.stdout
-        # A human terminal gets the in-place bar; anything piped keeps the
-        # machine ``[bytes] D/T`` contract. The TTY-vs-machine choice is
-        # ``isatty()`` ALONE — ``NO_COLOR`` must NOT push an interactive user
-        # back to the byte flood this change removes (codex #1259). NO_COLOR
-        # only downgrades *styling*: an escape-free ``\r`` + space-pad bar
-        # instead of the ``\x1b[2K`` erase (``\r`` is a carriage return, not
-        # color, so a colorless progress bar is still fine under NO_COLOR).
         self._is_tty = bool(self._out) and self._out.isatty()
+        self._machine = False
+        if not self._is_tty:
+            try:
+                from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+
+                self._machine = is_desktop_sidecar()
+            except Exception:
+                pass
+        self._human = not self._is_tty and not self._machine
+        self._human_last_time = time.monotonic() if self._human else 0.0
+        self._human_last_done = 0
+        self._human_last_bucket = 0
+        self._human_last_line = None
         self._ansi = self._is_tty and "NO_COLOR" not in os.environ
         # Render state — guarded by ``_io_lock`` (never ``_lock``).
         self._bar_live = False  # a bar is currently drawn on the TTY row
@@ -288,7 +284,7 @@ class _ProgressTracker:
             if self._total <= 0:
                 return
             now = time.monotonic()
-            if now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
+            if self._human or now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
                 self._last_emit = now
                 do_emit = True
         # Render OUTSIDE the counter lock (codex #1259): a slow / backpressured
@@ -321,8 +317,25 @@ class _ProgressTracker:
             if self._is_tty:
                 self._draw_bar(done, total)
                 self._bar_live = True
-            else:
+            elif self._machine:
                 print(f"  [bytes] {done}/{total}", file=self._out, flush=True)
+            else:
+                self._human_progress(done, total)
+
+    def _human_progress(self, done: int, total: int, final: bool = False) -> None:
+        """Print a human progress observation when due; caller holds _io_lock."""
+        pct = int(done * 100 / total)
+        bucket = min(pct // 10, 9)
+        now = time.monotonic()
+        line = f"  Downloaded {done / 1e9:.1f} of {total / 1e9:.1f} GB ({pct}%)"
+        milestone = bucket > self._human_last_bucket
+        timed = now - self._human_last_time >= 30 and done > self._human_last_done
+        if (final or milestone or timed) and line != self._human_last_line:
+            print(line, file=self._out, flush=True)
+            self._human_last_time = now
+            self._human_last_done = done
+            self._human_last_line = line
+        self._human_last_bucket = max(self._human_last_bucket, bucket)
 
     def _inplace(self, text: str, newline: bool) -> None:
         """Redraw ``text`` on the current terminal row (caller holds
@@ -437,8 +450,10 @@ class _ProgressTracker:
                     # banner starts on a clean row.
                     self._draw_bar(done, total, newline=True)
                     self._bar_live = False
-            else:
+            elif self._machine:
                 print(f"  [bytes] {done}/{total}", file=self._out, flush=True)
+            else:
+                self._human_progress(done, total, final=True)
 
 
 def _rollback_credits(
