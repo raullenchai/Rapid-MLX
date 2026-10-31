@@ -755,11 +755,57 @@ def test_retry_restores_explicit_speculative_options(monkeypatch, options):
     from rapid_mlx import cli
 
     args = _parsed_serve_args("qwen3.8-27b-4bit", *options)
-    warm = _parsed_serve_args("qwen3.8-27b-4bit", *options)
-    before = dict(vars(args))
-    cli._normalize_speculative_config_or_exit(args)
-    after = cli._speculative_changes(args, before)
-    cli._restore_speculative_changes(args, before, after)
-    cli._normalize_speculative_config_or_exit(args)
-    cli._normalize_speculative_config_or_exit(warm)
-    assert vars(args) == vars(warm)
+    cached = False
+    retry_states = []
+    normalize = cli._normalize_speculative_config_or_exit
+
+    def config(_model):
+        return (
+            {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1} if cached else None,
+            None,
+        )
+
+    def download(*_args, **_kwargs):
+        nonlocal cached
+        cached = True
+
+    def record_normalization(args):
+        retry_states.append(getattr(args, "_auto_mtp_retry", False))
+        normalize(args)
+        # Explicit options bypass automatic detection, so simulate an earlier
+        # deferred decision to exercise their restoration through serve's retry.
+        if len(retry_states) == 1:
+            args._auto_mtp_deferred = True
+
+    monkeypatch.setenv("RAPID_MLX_DISABLE_VERSION_CHECK", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.server",
+        SimpleNamespace(_resolve_api_key=lambda key: key),
+    )
+    monkeypatch.setattr(cli, "_gather_kv_cache_dtype_inputs", config)
+    monkeypatch.setattr(
+        cli, "_resolve_cached_hf_config", lambda *_: (None, "not in local cache")
+    )
+    monkeypatch.setattr(cli, "_cached_mtp_sidecar", lambda _: "/cached/mtp")
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_warn_vision_text_only_degrade", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_normalize_speculative_config_or_exit", record_normalization
+    )
+    monkeypatch.setattr(
+        cli,
+        "_configure_bootstrap_logging",
+        lambda _: (_ for _ in ()).throw(_StopServeError()),
+    )
+
+    with pytest.raises(_StopServeError):
+        cli.serve_command(args)
+
+    assert cached
+    assert retry_states == [False, True]
+    assert args.spec_decode == "mtp"
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.num_speculative_tokens == 2
