@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Cancellation cleans up benchmark servers and reports a conventional exit."""
 
+import fcntl
 import io
 import json
 import os
@@ -84,6 +85,63 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         assert any(b"ENGINE-DEBUG-LINE\n" in data for data in writes)
     finally:
         os.close(read_fd)
+
+
+def test_serve_stops_echo_when_pipe_is_full(monkeypatch):
+    real_popen = subprocess.Popen
+    script = """
+import http.server, sys
+print('ENGINE-DEBUG-LINE', flush=True)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+"""
+    monkeypatch.setattr(
+        _server.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: real_popen(
+            [sys.executable, "-c", script, cmd[cmd.index("--port") + 1]], **kwargs
+        ),
+    )
+    read_fd, write_fd = os.pipe()
+    output = None
+    try:
+        flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        fcntl.fcntl(write_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            while True:
+                os.write(write_fd, b"x" * 4096)
+        except BlockingIOError:
+            pass
+        finally:
+            fcntl.fcntl(write_fd, fcntl.F_SETFL, flags)
+
+        output = os.fdopen(write_fd, "w")
+        with _server.serve("fake", echo_log=output):
+            echo_thread = next(
+                thread
+                for thread in threading.enumerate()
+                if getattr(getattr(thread, "_target", None), "__name__", "")
+                == "echo_output"
+            )
+            time.sleep(0.3)  # Let the echo attempt to write to the full pipe.
+            start = time.monotonic()
+        elapsed = time.monotonic() - start
+        echo_thread.join(timeout=3)
+        assert not echo_thread.is_alive(), "echo thread survived teardown"
+        assert not any(
+            thread.name == "rapid-mlx-bench-log-echo"
+            for thread in threading.enumerate()
+        )
+        assert elapsed < 6
+    finally:
+        os.close(read_fd)
+        if output is not None:
+            output.close()
+        else:
+            os.close(write_fd)
 
 
 def test_serve_teardown_with_blocked_echo(monkeypatch):

@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import io
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -204,12 +205,36 @@ def serve(
 
                 if fd is not None:
 
-                    def write_bytes(data: bytes) -> bool:
+                    def write_bytes(data: bytes, deadline: float | None = None) -> bool:
                         try:
                             written = 0
                             while written < len(data):
-                                written += os.write(fd, data[written:])
-                        except OSError:
+                                while True:
+                                    if deadline is None:
+                                        if stop_echo.is_set():
+                                            return False
+                                        timeout = 0.2
+                                    else:
+                                        remaining = deadline - time.monotonic()
+                                        if remaining <= 0:
+                                            return False
+                                        timeout = min(0.2, remaining)
+                                    try:
+                                        writable = select.select([], [fd], [], timeout)[
+                                            1
+                                        ]
+                                    except (OSError, ValueError):
+                                        break
+                                    if writable:
+                                        break
+                                chunk = data[
+                                    written : written + getattr(select, "PIPE_BUF", 512)
+                                ]
+                                count = os.write(fd, chunk)
+                                if count <= 0:
+                                    return False
+                                written += count
+                        except (OSError, ValueError):
                             return False
                         return True
 
@@ -223,7 +248,7 @@ def serve(
                             else:
                                 reader.seek(position)
                                 stop_echo.wait(0.2)
-                        write_bytes(reader.read())
+                        write_bytes(reader.read(), deadline=time.monotonic() + 1.0)
                     return
 
                 with open(log_path or tmp_log, errors="replace") as reader:
@@ -247,7 +272,9 @@ def serve(
                         except (OSError, ValueError):
                             return
 
-            echo_thread = threading.Thread(target=echo_output, daemon=True)
+            echo_thread = threading.Thread(
+                target=echo_output, name="rapid-mlx-bench-log-echo", daemon=True
+            )
             echo_thread.start()
 
         try:
