@@ -1332,8 +1332,8 @@ def _ready_lane_rows(cfg, ep, audio_entry):
                 ("Reference", "REF_AUDIO=$(base64 < reference.wav | tr -d '\\n')"),
                 (
                     "Speak",
-                    f"curl --fail {url('/audio/speech')}{auth} "
-                    f"-H 'Content-Type: application/json' -d \"{payload}\" "
+                    f"printf '%s' \"{payload}\" | curl --fail {url('/audio/speech')}{auth} "
+                    "-H 'Content-Type: application/json' --data-binary @- "
                     "-o speech.wav",
                 ),
             ]

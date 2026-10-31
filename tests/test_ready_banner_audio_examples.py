@@ -38,15 +38,19 @@ def command(output, label):
     ]
     + [("mlx-community/IndexTTS-1.5", "gateway-tts")],
 )
-def test_reference_speech_commands(monkeypatch, capsys, tmp_path, model, served_alias):
+@pytest.mark.parametrize("large_audio", [False, True], ids=["small", "large"])
+def test_reference_speech_commands(
+    monkeypatch, capsys, tmp_path, model, served_alias, large_audio
+):
     output = banner(monkeypatch, capsys, model, served_alias)
-    audio = b"reference audio\x00\xff"
+    audio = os.urandom(3 * 1024 * 1024) if large_audio else b"reference audio\x00\xff"
     (tmp_path / "reference.wav").write_bytes(audio)
     curl = tmp_path / "curl"
     curl.write_text(
         "#!/bin/sh\n"
         'exec "' + os.sys.executable + '" -c '
-        '\'import json,sys; open("curl-args.json", "w").write(json.dumps(sys.argv[1:]))\' "$@"\n'
+        '\'import json,sys; open("curl-args.json", "w").write(json.dumps(sys.argv[1:])); '
+        'open("curl-stdin.json", "w").write(sys.stdin.read() if "@-" in sys.argv else "")\' "$@"\n'
     )
     curl.chmod(0o755)
     env = dict(os.environ, PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
@@ -57,7 +61,8 @@ def test_reference_speech_commands(monkeypatch, capsys, tmp_path, model, served_
         check=True,
     )
     argv = json.loads((tmp_path / "curl-args.json").read_text())
-    payload = json.loads(argv[argv.index("-d") + 1])
+    assert argv[argv.index("--data-binary") + 1] == "@-"
+    payload = json.loads((tmp_path / "curl-stdin.json").read_text())
     assert payload["model"] == (served_alias or model)
     assert base64.b64decode(payload["ref_audio"], validate=True) == audio
     if model == "qwen3-tts-clone" or served_alias == "gateway-tts":
