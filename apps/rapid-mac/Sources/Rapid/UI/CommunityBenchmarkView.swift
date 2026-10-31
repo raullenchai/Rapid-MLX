@@ -1629,6 +1629,8 @@ enum CommunityBenchmarkRunContent: Equatable {
 /// confirmation, published). The measurement pipeline underneath — process
 /// spawn, progress parsing, result decoding, publish payload — is unchanged.
 struct CommunityBenchmarkView: View {
+    static let catalogArguments = ["benchmark", "catalog", "--json"]
+
     let catalog: [ModelEntry]
     var preferredAliases: [String] = []
     let binary: URL?
@@ -2605,11 +2607,10 @@ struct CommunityBenchmarkView: View {
             errorMessage = String(localized: "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again.")
             return
         }
-        let memory = max(1, Int(MacHardware.detect().physicalRAMGB.rounded()))
         do {
             let data = try await CommunityBenchmarkCommand.run(
                 binary: binary,
-                arguments: ["benchmark", "catalog", "--memory-gib", String(memory), "--json"]
+                arguments: Self.catalogArguments
             )
             let envelope = try JSONDecoder().decode(
                 CommunityBenchmarkCatalogEnvelope.self, from: data
