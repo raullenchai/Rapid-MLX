@@ -560,31 +560,32 @@ def estimate_model_bytes(model_name: str) -> int:
         # Conservative admission charge for the 15.98 GB mflux-layout bf16
         # payload plus generation activations. The alias itself requires a
         # 32 GB Mac; this fallback prevents a dynamic load from inheriting the
-        # q4 checkpoint's measured 5.9 GiB charge merely because both names
+        # q4 checkpoint's measured charge merely because both names
         # contain "flux2-klein-4b".
         "flux2-klein-4b-mflux-bf16": 18.0,
         "flux2-klein-4b-bf16": 18.0,
-        "flux2-klein-4b": 5.9,
+        # 1024x1024: 13.15 GiB peak active plus 1 GiB bounded cache.
+        "flux2-klein-4b": 14.2,
+        "flux.2-klein-4b": 14.2,
         # Published 3.62 GiB fixed payload (2-bit transformer, 4-bit text
         # encoder, FP16 VAE). Keep 7 GiB of admission room for 1024²
         # activations, Metal compilation, tiled decode, and output encoding;
         # dogfood records the measured allocator peak before landing.
         "bonsai-image": 7.0,
         "bonsai_image": 7.0,
-        # mflux-community/flux-1-schnell-mflux-q4, measured after a real
-        # 1024x1024 4-step generation (`/usr/bin/time -l`): 9.46 GiB peak RSS.
-        # Keep one decimal place and round up so alias-only admission never
-        # falls through to the generic 4 GiB estimate.
-        "flux-schnell": 9.5,
-        "z-image-turbo": 5.9,
+        # 1024x1024 4-step generation: 20.33 GiB peak active plus 1 GiB bounded
+        # cache. The earlier 9.46 GiB RSS figure did not count GPU memory.
+        "flux-schnell": 21.4,
+        # 1024x1024: 12.02 GiB peak active plus 1 GiB bounded cache.
+        "z-image-turbo": 13.1,
         # BF16 unified backbone + custom diffusion heads. Rapid's 1024² server
         # dogfood measured 17.43 GiB max RSS; round up to retain allocator and
         # output headroom (docs/engineering/performance/2026-09-04-hidream-o1-dev-dogfood.md).
         "hidream-o1": 18.0,
         "hidream_o1": 18.0,
         # Official fp16 checkpoint converted to an 8-bit UNet at load. Real
-        # 1024² / 30-step dogfood measured up to 12.49 GiB MLX peak; retain
-        # allocator/output headroom while the catalog keeps a 16 GiB minimum.
+        # 1024² / 30-step generation measured 11.53 GiB peak process footprint
+        # with bounded cache; retain headroom with a 24 GB catalog minimum.
         "sdxl-base": 14.0,
         "stable-diffusion-xl": 14.0,
         # 15.25 GiB of revision-pinned MMDiT + CLIP/T5/tokenizer payloads.

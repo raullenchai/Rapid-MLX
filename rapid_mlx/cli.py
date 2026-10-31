@@ -2048,7 +2048,7 @@ def _resolve_mtp_depth_for_model(
     return requested
 
 
-def _check_alias_min_memory(user_typed: str) -> None:
+def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
     """Apply the alias-level unified-memory warning or hard admission floor.
 
     codex #1069 round 3 [NIT #3]: fires alongside (and before) the
@@ -2106,24 +2106,23 @@ def _check_alias_min_memory(user_typed: str) -> None:
         )
         raise SystemExit(1)
 
-    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    if stream is None:
+        stream = sys.stdout
+    is_tty = stream.isatty() and "NO_COLOR" not in os.environ
     YELLOW = "\x1b[33m" if is_tty else ""
     BOLD = "\x1b[1m" if is_tty else ""
     RESET = "\x1b[0m" if is_tty else ""
     print(
-        f"\n{YELLOW}{BOLD}⚠  Ultra-only alias '{user_typed}' declares a "
-        f"{floor_gb:.0f} GB unified-memory floor, but this Mac reports "
-        f"{total_ram_gb:.1f} GB.{RESET}"
+        f"\n{YELLOW}{BOLD}⚠  '{user_typed}' needs a Mac with at least "
+        f"{floor_gb:.0f} GB of unified memory; this Mac has "
+        f"{total_ram_gb:.1f} GB.{RESET}",
+        file=stream,
     )
     print(
-        f"{YELLOW}   The model weights are large enough to OOM the Metal "
-        "allocator (or kernel-panic on macOS < 15.2, issue #324) before "
-        f"the first token generates.{RESET}"
-    )
-    print(
-        f"{YELLOW}   Recommended: pick a Tier-1 alias sized for this "
-        "machine (`rapid-mlx models` for the full list). "
-        f"Proceeding anyway…{RESET}\n"
+        f"{YELLOW}   It will likely run out of memory and be stopped by macOS. "
+        "Pick a smaller model (`rapid-mlx models`) — proceeding anyway…"
+        f"{RESET}\n",
+        file=stream,
     )
 
 
@@ -6885,8 +6884,9 @@ def serve_command(args):
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
-    if _serve_profile is not None and getattr(
-        _serve_profile, "enforce_min_memory", False
+    if _serve_profile is not None and (
+        _serve_profile.modality == "image-gen"
+        or getattr(_serve_profile, "enforce_min_memory", False)
     ):
         _check_alias_min_memory(
             getattr(args, "_original_alias", None) or getattr(args, "model", "")
@@ -8496,9 +8496,9 @@ def serve_command(args):
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
-    # "your Mac is too small for this Ultra-only alias" hint before we
-    # start a 166 GB download.
-    _check_alias_min_memory(args.model)
+    # memory floor warning before downloading the model.
+    if _serve_profile is None or _serve_profile.modality != "image-gen":
+        _check_alias_min_memory(args.model)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
