@@ -1182,6 +1182,23 @@ struct DictationTests {
         #expect(prewarmCount == 0)
     }
 
+    @Test("download status key tracks a selected compatibility alias")
+    func downloadStatusKeyTracksSelectedAlias() {
+        let running = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-large-v3"]
+        ) { $0 == "whisper-1" ? .running : nil }
+        let completed = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-large-v3"]
+        ) { $0 == "whisper-1" ? .completed : nil }
+        #expect(running != completed)
+        #expect(completed == "whisper-1|whisper-1#completed|whisper-large-v3#none")
+
+        let deduplicated = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-1", "whisper-1"]
+        ) { _ in .completed }
+        #expect(deduplicated == "whisper-1|whisper-1#completed")
+    }
+
     @Test("selected download completions are notified once per selection")
     func selectedDownloadReplay() {
         #expect(DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: nil))

@@ -433,18 +433,11 @@ struct DictationView: View {
     /// Alias + job status folded into one value so `.task(id:)` re-fires on
     /// any transition (same pattern as Quickstart's download watcher).
     private var modelDownloadStatusKey: String {
-        let statuses = viewModel.transcriptionModels.map(\.alias).sorted().map { alias in
-            let status: String
-            switch downloads.job(for: alias)?.status {
-            case .running: status = "running"
-            case .completed: status = "completed"
-            case .failed: status = "failed"
-            case .cancelled: status = "cancelled"
-            case nil: status = "none"
-            }
-            return "\(alias)#\(status)"
-        }
-        return ([controller.modelAlias] + statuses).joined(separator: "|")
+        DictationDownloadReplay.downloadStatusKey(
+            selected: controller.modelAlias,
+            pickerAliases: viewModel.transcriptionModels.map(\.alias),
+            status: { downloads.job(for: $0)?.status }
+        )
     }
 
     /// Download state for the selected model, resolved through the same
@@ -1052,6 +1045,27 @@ private struct DictationFixSheet: View {
 }
 
 enum DictationDownloadReplay {
+    static func downloadStatusKey(
+        selected: String,
+        pickerAliases: [String],
+        status: (String) -> DownloadManager.Job.Status?
+    ) -> String {
+        var aliases = Set(pickerAliases)
+        if !selected.isEmpty { aliases.insert(selected) }
+        let statuses = aliases.sorted().map { alias in
+            let label: String
+            switch status(alias) {
+            case .running: label = "running"
+            case .completed: label = "completed"
+            case .failed: label = "failed"
+            case .cancelled: label = "cancelled"
+            case nil: label = "none"
+            }
+            return "\(alias)#\(label)"
+        }
+        return ([selected] + statuses).joined(separator: "|")
+    }
+
     static func shouldNotifySelected(selected: String, selectedCompleted: Bool, lastNotified: String?) -> Bool {
         selectedCompleted && lastNotified != selected
     }
