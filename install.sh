@@ -16,6 +16,8 @@ MIN_PYTHON_MINOR=12
 # Newest validated interpreter; raise together with the classifiers and CI matrix.
 MAX_PYTHON_MINOR=13
 VENV_BACKUP=""
+PRESERVED_EXTRAS=""
+OLD_VENV_PYTHON=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,6 +104,47 @@ venv_is_complete() {
     ver=$(run_install_command "$dir/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo "0.0")
     major="${ver%%.*}"; minor="${ver#*.}"
     [ "$major" -ge 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ] && [ "$minor" -le "$MAX_PYTHON_MINOR" ]
+}
+
+# Infer optional features from installed requirement distributions in the old venv.
+installed_extras_of_venv() {
+    local dir="$1" result
+    result=$(run_install_command "$dir/bin/python" -I -c '
+import importlib.metadata as metadata
+import re
+
+def normalize(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+requirements = metadata.distribution("rapid-mlx").requires or []
+installed = {normalize(d.metadata["Name"]) for d in metadata.distributions() if d.metadata.get("Name")}
+base = set()
+extras = {}
+for requirement in requirements:
+    name = re.match(r"[A-Za-z0-9._-]+", requirement)
+    if not name:
+        continue
+    marker = requirement.partition(";")[2]
+    if re.search(r"\bpython_(?:full_)?version\b", marker, re.I):
+        continue
+    if re.search(r"\b(?:platform_system\s*==\s*[\"\x27]Windows[\"\x27]|sys_platform\s*==\s*[\"\x27]win32[\"\x27])", marker, re.I):
+        continue
+    extra = re.search(r"\bextra\s*==\s*[\"\x27]([^\"\x27]+)[\"\x27]", marker, re.I)
+    name = normalize(name.group())
+    if extra:
+        extras.setdefault(normalize(extra.group(1)), set()).add(name)
+    else:
+        base.add(name)
+selected = []
+for extra, names in extras.items():
+    distinct = names - base
+    if extra not in {"dev", "test", "all"} and not extra.startswith("ci-") and distinct and distinct <= installed:
+        selected.append(extra)
+if selected:
+    print(",".join(sorted(selected)))
+' 2>/dev/null) || return 0
+    [ -z "$result" ] || printf '%s\n' "$result"
+    return 0
 }
 
 # Rebuilds move only venv entries aside, preserving shared state. The new venv
@@ -267,8 +310,16 @@ dispatch_venv() {
             upgrade_pip
             ;;
         rebuild)
-            warn "Existing $INSTALL_DIR has no usable virtual environment — rebuilding it."
+            PRESERVED_EXTRAS="$(installed_extras_of_venv "$INSTALL_DIR" || true)"
+            OLD_VENV_PYTHON="$(run_install_command "$INSTALL_DIR/bin/python" -c 'import sys; print("{}.{}".format(sys.version_info[0], sys.version_info[1]))' 2>/dev/null || true)"
+            if [[ "$OLD_VENV_PYTHON" =~ ^[0-9]+\.[0-9]+$ ]] &&
+               { [ "${OLD_VENV_PYTHON#*.}" -lt "$MIN_PYTHON_MINOR" ] || [ "${OLD_VENV_PYTHON#*.}" -gt "$MAX_PYTHON_MINOR" ]; }; then
+                warn "Existing $INSTALL_DIR uses Python $OLD_VENV_PYTHON; Rapid-MLX needs Python 3.${MIN_PYTHON_MINOR}–3.${MAX_PYTHON_MINOR} — rebuilding it."
+            else
+                warn "Existing $INSTALL_DIR has no usable virtual environment — rebuilding it."
+            fi
             dim "(shared state is preserved; the previous environment is kept until the new one works)"
+            [ -z "$PRESERVED_EXTRAS" ] || dim "Optional features to reinstall: $PRESERVED_EXTRAS"
             VENV_BACKUP="$INSTALL_DIR/.venv-previous.$$"
             stash_venv_entries "$INSTALL_DIR" "$VENV_BACKUP"
             info "Installing Rapid-MLX..."
@@ -440,6 +491,24 @@ install_package() {
             }
             ;;
     esac
+}
+
+# Restoring optional features is best effort after the rebuild is committed.
+reinstall_preserved_extras() {
+    local version spec
+    [ -n "$PRESERVED_EXTRAS" ] || return 0
+    version=$(run_install_command "$INSTALL_DIR/bin/python" -I -c 'import importlib.metadata as m; print(m.version("rapid-mlx"))' 2>/dev/null) || version=""
+    if [ "$TARGET" = latest ]; then
+        spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}] @ git+${GITHUB_REPO}@${RAPID_MLX_GIT_COMMIT:-}"
+    else
+        spec="${PYPI_PACKAGE}[${PRESERVED_EXTRAS}]==${version}"
+    fi
+    info "Reinstalling optional features: $PRESERVED_EXTRAS"
+    if { [ "$TARGET" != latest ] && [ -z "$version" ]; } || ! run_install_command "${INSTALLER[@]}" "$spec"; then
+        warn "Could not reinstall optional features ($PRESERVED_EXTRAS)."
+        dim "Install them later with: $INSTALL_DIR/bin/python -m pip install '$spec'"
+    fi
+    return 0
 }
 
 # When sourced by the test harness we only want the definitions above, not the
@@ -621,6 +690,7 @@ fi
 
 install_package
 finish_rebuild
+reinstall_preserved_extras
 
 # Query the just-installed CLI's stable JSON surface. Failure is harmless and
 # falls back to the RAM baseline; never scrape the human table or cache paths.
