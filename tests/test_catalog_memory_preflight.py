@@ -236,6 +236,19 @@ def test_same_task_pick_prefers_cache_disk_and_small_download(
     disk_probe.assert_called_once_with()
 
 
+def test_same_task_pick_treats_cache_probe_fault_as_uncached(monkeypatch):
+    def probe(repo):
+        if repo == "mlx-community/Qwen-Image-2.1-mflux-q4":
+            raise OSError("unreadable cache")
+        return False
+
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", probe)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 15.2)
+    assert preflight._same_task_fitting_pick(
+        "qwen-image-edit", ram_bytes=32 * GIB, recommended_working_set_bytes=25 * GIB
+    ) == ("flux2-klein-4b", "image editing")
+
+
 def test_text_diffusion_falls_back_to_text_pick():
     pick, label = preflight._same_task_fitting_pick(
         "diffusion-gemma-26b-8bit",
