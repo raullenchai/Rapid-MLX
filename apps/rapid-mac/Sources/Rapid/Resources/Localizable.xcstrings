@@ -42,6 +42,16 @@
         }
       }
     },
+    "%lld steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 步"
+          }
+        }
+      }
+    },
     "%lld supported" : {
       "localizations" : {
         "zh-Hans" : {
@@ -118,6 +128,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "4. 应用更改。"
+          }
+        }
+      }
+    },
+    "512² default" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认 512²"
           }
         }
       }
@@ -282,12 +302,52 @@
         }
       }
     },
+    "Choose a PNG or JPEG image." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择 PNG 或 JPEG 图像。"
+          }
+        }
+      }
+    },
+    "Choose an image no larger than 8192 px or 40 megapixels." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择尺寸不超过 8192 像素且总像素不超过 4000 万的图像。"
+          }
+        }
+      }
+    },
+    "Choose an image smaller than %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择小于 %@ 的图像。"
+          }
+        }
+      }
+    },
     "Codex can stall on tool calls with this model. Choose a recommended Qwen model for coding agents." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex 使用此模型时可能在工具调用中卡住。请为编程智能体选择推荐的 Qwen 模型。"
+          }
+        }
+      }
+    },
+    "Complete the steps above to go online." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "完成上方步骤即可上线。"
           }
         }
       }
@@ -332,12 +392,52 @@
         }
       }
     },
+    "Couldn't import the image: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法导入图像：%@"
+          }
+        }
+      }
+    },
+    "Couldn't save the image: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存图像：%@"
+          }
+        }
+      }
+    },
     "Couldn’t open Terminal" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法打开终端"
+          }
+        }
+      }
+    },
+    "Create images locally, then keep generating offline." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本地生成图像，离线也能继续创作。"
+          }
+        }
+      }
+    },
+    "Decoding and saving…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在解码并保存…"
           }
         }
       }
@@ -372,6 +472,36 @@
         }
       }
     },
+    "Describe the image you want…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述你想要的图像…"
+          }
+        }
+      }
+    },
+    "Describe what you want to change…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述你想要的修改…"
+          }
+        }
+      }
+    },
+    "Describe what you want to see, then press Generate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "描述你想看到的画面，然后点击生成。"
+          }
+        }
+      }
+    },
     "Download a model to share. %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -398,6 +528,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下载完整版应用"
+          }
+        }
+      }
+    },
+    "Download needed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要下载"
           }
         }
       }
@@ -472,6 +612,26 @@
         }
       }
     },
+    "Downloading or loading the image model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载或加载图像模型…"
+          }
+        }
+      }
+    },
+    "Draw anything" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随心绘制"
+          }
+        }
+      }
+    },
     "Enable Community Benchmark" : {
       "localizations" : {
         "zh-Hans" : {
@@ -492,12 +652,32 @@
         }
       }
     },
+    "Estimating…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在估算…"
+          }
+        }
+      }
+    },
     "Everything rapid-mlx can serve on this Mac. Your shortlist pick stays selected." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "rapid-mlx 可在这台 Mac 上运行的所有模型。你在推荐列表中的选择仍会保留。"
+          }
+        }
+      }
+    },
+    "First run — only happens once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次运行 — 仅需一次"
           }
         }
       }
@@ -522,6 +702,16 @@
         }
       }
     },
+    "Image request failed (HTTP %lld)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像请求失败（HTTP %lld）。"
+          }
+        }
+      }
+    },
     "JPEG, PNG, or WebP · up to %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -542,6 +732,26 @@
         }
       }
     },
+    "Key saved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "密钥已保存"
+          }
+        }
+      }
+    },
+    "Malformed server response." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器响应格式错误。"
+          }
+        }
+      }
+    },
     "Measuring %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -558,6 +768,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "模型下载地址"
+          }
+        }
+      }
+    },
+    "Model: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型：%@"
           }
         }
       }
@@ -652,6 +872,16 @@
         }
       }
     },
+    "Pick a starter below while Rapid gets the model ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 准备模型期间，可以先从下方选一个示例。"
+          }
+        }
+      }
+    },
     "Preview includes current automatic context. Each of your messages is preceded by its local time. Tool and attachment context may be added when you send." : {
       "localizations" : {
         "zh-Hans" : {
@@ -688,6 +918,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下载大小：%@。"
+          }
+        }
+      }
+    },
+    "Rapid couldn't start Share Compute." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法启动共享算力。"
+          }
+        }
+      }
+    },
+    "Rapid couldn't unload the current model safely." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法安全卸载当前模型。"
           }
         }
       }
@@ -732,6 +982,36 @@
         }
       }
     },
+    "Rapid-MLX's local engine is not available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 的本地引擎不可用。"
+          }
+        }
+      }
+    },
+    "Reconnecting to the relay." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重新连接中继。"
+          }
+        }
+      }
+    },
+    "Reconnecting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重新连接…"
+          }
+        }
+      }
+    },
     "Release model when idle" : {
       "localizations" : {
         "zh-Hans" : {
@@ -762,6 +1042,16 @@
         }
       }
     },
+    "Save your QuickSilver provider key to connect this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存你的 QuickSilver 提供商密钥以连接这台 Mac。"
+          }
+        }
+      }
+    },
     "Search" : {
       "localizations" : {
         "zh-Hans" : {
@@ -778,6 +1068,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "上次设置未完成，没有保留之前的内容。请选择模型，系统将在此处下载。"
+          }
+        }
+      }
+    },
+    "Share Compute reported an unsupported status." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享算力报告了不支持的状态。"
+          }
+        }
+      }
+    },
+    "Share Compute stopped unexpectedly." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "共享算力意外停止。"
+          }
+        }
+      }
+    },
+    "Sharing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在分享"
           }
         }
       }
@@ -832,6 +1152,26 @@
         }
       }
     },
+    "That model is not available in the QuickSilver pool." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "QuickSilver 池中没有该模型。"
+          }
+        }
+      }
+    },
+    "The image model isn't running yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像模型尚未运行。"
+          }
+        }
+      }
+    },
     "The model files are being written into your Hugging Face cache. This is a plain file transfer — nothing about you is sent with it." : {
       "localizations" : {
         "zh-Hans" : {
@@ -852,12 +1192,52 @@
         }
       }
     },
+    "The provider key couldn't be saved." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存提供商密钥。"
+          }
+        }
+      }
+    },
+    "The selected file isn't a readable image." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取所选文件中的图像。"
+          }
+        }
+      }
+    },
+    "The server returned no image." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器未返回图像。"
+          }
+        }
+      }
+    },
     "The weights are on disk. They are being loaded into Metal and the model is warming up — usually 5 to 15 seconds, longer the first time a model runs." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "权重已保存到磁盘，正在加载到 Metal 并预热模型，通常需要 5 到 15 秒，首次运行可能更久。"
+          }
+        }
+      }
+    },
+    "This Mac goes online and earns API credits for served tokens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这台 Mac 将上线，并按处理的 token 赚取 API 积分。"
           }
         }
       }
@@ -888,6 +1268,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "使用兼容 Hugging Face 的地址，例如 https://hf-mirror.com。留空则使用默认地址。新下载会使用此地址；重新启动服务器后，加载模型也会使用此地址。现有下载仍使用原地址。"
+          }
+        }
+      }
+    },
+    "Your Mac is online and serving requests." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的 Mac 已上线，正在处理请求。"
           }
         }
       }
@@ -10377,6 +10767,16 @@
         }
       }
     },
+    "the model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型"
+          }
+        }
+      }
+    },
     "took %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10403,6 +10803,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你的本地模型"
+          }
+        }
+      }
+    },
+    "~%llds left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余约 %lld 秒"
           }
         }
       }

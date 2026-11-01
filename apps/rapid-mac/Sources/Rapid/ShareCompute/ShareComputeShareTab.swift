@@ -173,7 +173,7 @@ struct ShareComputeShareTab: View {
                 divider
                 setupRow(number: 1, title: String(localized: "QuickSilver provider key"), done: keyDone, step: .key) {
                     if keyDone {
-                        Text(savedKeyLabel ?? "Key saved")
+                        Text(savedKeyLabel ?? String(localized: "Key saved"))
                     } else {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("One key from your QuickSilver dashboard lets this Mac share and shows your credits.")
@@ -205,7 +205,7 @@ struct ShareComputeShareTab: View {
                     else if let selected {
                         HStack(spacing: 5) {
                             if !selected.isReady { Circle().fill(.orange).frame(width: 6, height: 6) }
-                            Text(selected.isReady ? "Ready on this Mac" : "Download needed")
+                            Text(selected.isReady ? String(localized: "Ready on this Mac") : String(localized: "Download needed"))
                         }
                     } else { Text("One model is shared at a time.") }
                 } action: {
@@ -228,7 +228,7 @@ struct ShareComputeShareTab: View {
                                     .accessibilityLabel("Model download progress")
                                 Text("Downloading…").font(.rapid(size: 12))
                             } else {
-                                Button({ if case .failed = downloadState { return "Retry" }; return "Download" }()) {
+                                Button({ if case .failed = downloadState { return String(localized: "Retry") }; return String(localized: "Download") }()) {
                                     _ = downloads.startDownload(alias: candidate.model.alias, hfPath: candidate.entry?.hfRepo, totalBytes: candidate.estimatedDownloadBytes)
                                 }.buttonStyle(.borderedProminent).disabled(downloadState == .insufficient)
                                     .accessibilityIdentifier("ShareCompute.Setup.Download")
@@ -238,7 +238,7 @@ struct ShareComputeShareTab: View {
                 }
                 divider
                 setupRow(number: 3, title: String(localized: "Start sharing"), done: false, step: .start) {
-                    Text(canStart ? "This Mac goes online and earns API credits for served tokens." : "Complete the steps above to go online.")
+                    Text(canStart ? String(localized: "This Mac goes online and earns API credits for served tokens.") : String(localized: "Complete the steps above to go online."))
                 } action: {
                     if canStart {
                         Button("Start sharing", action: onStart).buttonStyle(.borderedProminent)

@@ -31,7 +31,11 @@ final class ShareComputeManager {
         }
     }
 
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle {
+        didSet { failureNeedsProviderKey = false }
+    }
+    /// Set only by local key failures, independently of their localized text.
+    private(set) var failureNeedsProviderKey = false
     private(set) var snapshot: ShareComputeStatusSnapshot?
     private(set) var activeModel: ShareComputeModel?
 
@@ -220,16 +224,17 @@ final class ShareComputeManager {
         // with an unrelated engine-availability error.
         guard canEditProviderKey else { return }
         guard let server, let binary = server.binaryPath else {
-            state = .failed("Rapid-MLX's local engine is not available.")
+            state = .failed(String(localized: "Rapid-MLX's local engine is not available."))
             return
         }
         guard ShareComputeModel.desktopSharing.contains(model) else {
-            state = .failed("That model is not available in the QuickSilver pool.")
+            state = .failed(String(localized: "That model is not available in the QuickSilver pool."))
             return
         }
         if let providerKey, !providerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard saveProviderKey(providerKey) else {
-                state = .failed(providerKeyMessage ?? "The provider key couldn't be saved.")
+                state = .failed(providerKeyMessage ?? String(localized: "The provider key couldn't be saved."))
+                failureNeedsProviderKey = true
                 return
             }
         }
@@ -237,7 +242,8 @@ final class ShareComputeManager {
         if needsRegistration(for: model, worker: worker) {
             guard case .found(let key) = providerStore.load() else {
                 refreshProviderKey()
-                state = .failed(providerKeyMessage ?? "Save your QuickSilver provider key to connect this Mac.")
+                state = .failed(providerKeyMessage ?? String(localized: "Save your QuickSilver provider key to connect this Mac."))
+                failureNeedsProviderKey = true
                 return
             }
             registrationKey = key.rawValue
@@ -274,7 +280,7 @@ final class ShareComputeManager {
                 return
             }
             operationID = nil
-            state = .failed("Rapid couldn't unload the current model safely.")
+            state = .failed(String(localized: "Rapid couldn't unload the current model safely."))
             activeModel = nil
             return
         }
@@ -354,7 +360,7 @@ final class ShareComputeManager {
             detachPipes(out, err)
             removeCurrentStatusFile()
             activeModel = nil
-            state = .failed("Rapid couldn't start Share Compute.")
+            state = .failed(String(localized: "Rapid couldn't start Share Compute."))
             operationID = nil
             releaseReservation()
         }
@@ -452,8 +458,8 @@ final class ShareComputeManager {
         // gone. Keep controls locked until childExited/finishDeferredExit has
         // confirmed teardown and released unified-memory residency.
         case "stopped": .stopping
-        case "error": .failed(snapshot.message ?? "Share Compute stopped unexpectedly.")
-        default: .failed("Share Compute reported an unsupported status.")
+        case "error": .failed(snapshot.message ?? String(localized: "Share Compute stopped unexpectedly."))
+        default: .failed(String(localized: "Share Compute reported an unsupported status."))
         }
     }
 
@@ -520,7 +526,7 @@ final class ShareComputeManager {
         } else if case .failed = state {
             // Keep the actionable status published by the provider.
         } else {
-            state = .failed(finalSnapshot?.message ?? "Share Compute stopped unexpectedly.")
+            state = .failed(finalSnapshot?.message ?? String(localized: "Share Compute stopped unexpectedly."))
         }
         if groupIsAlive {
             // The supervisor may exit a beat before its nested serve child.
