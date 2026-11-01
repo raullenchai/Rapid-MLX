@@ -375,7 +375,7 @@ OpenAI SDK works unchanged.
 
 # Text to speech
 rapid-mlx serve kokoro
-curl http://localhost:8000/v1/audio/speech \
+curl --fail http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro","input":"hello from rapid-mlx"}' --output hello.wav
 
