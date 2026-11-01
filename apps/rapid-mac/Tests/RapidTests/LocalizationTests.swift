@@ -95,6 +95,183 @@ struct LocalizationTests {
             .appendingPathComponent("Sources/Rapid/\(relativePath)")
     }
 
+    /// Covers the literals the native extractor skips because an interpolation's
+    /// type (and so its exact `%@` / `%lld` specifier) is only known to the
+    /// compiler. Specifiers are compared loosely here; every literal whose key
+    /// can be derived exactly is checked by `nativeExtractedSourceKeysTranslated`.
+    @Test("Interpolated source literals have Simplified Chinese catalog entries")
+    func interpolatedSourceLiteralsTranslated() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        // Skip an interpolation as a balanced expression, including quoted strings
+        // inside it, so nested calls and nil-coalescing literals stay intact.
+        func interpolationEnd(_ text: String, from start: String.Index) -> String.Index? {
+            var i = start
+            var depth = 1
+            var quoted = false
+            while i < text.endIndex {
+                let c = text[i]
+                if c == "\\" {
+                    i = text.index(after: i)
+                    if i < text.endIndex { i = text.index(after: i) }
+                    continue
+                }
+                if c == "\"" { quoted.toggle() }
+                if !quoted {
+                    if c == "(" { depth += 1 }
+                    if c == ")" {
+                        depth -= 1
+                        if depth == 0 { return text.index(after: i) }
+                    }
+                }
+                i = text.index(after: i)
+            }
+            return nil
+        }
+        func normalize(_ value: String) -> String {
+            var result = ""
+            var i = value.startIndex
+            while i < value.endIndex {
+                if value[i...].hasPrefix(#"\("#),
+                   let end = interpolationEnd(value, from: value.index(i, offsetBy: 2)) {
+                    result += "{arg}"
+                    i = end
+                } else {
+                    result.append(value[i])
+                    i = value.index(after: i)
+                }
+            }
+            return result.replacingOccurrences(of: #"\n"#, with: "\n").replacingOccurrences(
+                of: #"%(?:\d+\$)?(?:@|lld|ld|d|(?:\.\d+)?l?f)"#,
+                with: "{arg}", options: .regularExpression
+            ).replacingOccurrences(of: "%%", with: "%")
+        }
+        let indexed = Dictionary(grouping: strings.keys, by: normalize)
+        let pattern = #"(?:String\s*\(\s*localized\s*:|\b(?:Text|Button|Toggle|Label|Section|Picker|LabeledContent)\s*\(|\.(?:help|navigationTitle|accessibilityLabel|accessibilityHint)\s*\()\s*\""#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let enumerator = try #require(FileManager.default.enumerator(at: rapidSource(""), includingPropertiesForKeys: nil))
+        let allowlist: Set<String> = ["LLM", "macOS", "Rapid-MLX", "MCP", "Hugging Face", "QuickSilver", "R"]
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            if url.lastPathComponent == "DevSnapshot.swift" || url.path.contains("/UI/Markdown/") { continue }
+            let source = try String(contentsOf: url, encoding: .utf8)
+            for match in regex.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
+                guard let prefix = Range(match.range, in: source) else { continue }
+                let lineStart = source[..<prefix.lowerBound].lastIndex(of: "\n").map { source.index(after: $0) } ?? source.startIndex
+                if source[lineStart..<prefix.lowerBound].trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+                let start = prefix.upperBound
+                var end = start
+                while end < source.endIndex {
+                    if source[end...].hasPrefix(#"\("#),
+                       let next = interpolationEnd(source, from: source.index(end, offsetBy: 2)) {
+                        end = next
+                    } else if source[end] == "\\" {
+                        end = source.index(after: end)
+                        if end < source.endIndex { end = source.index(after: end) }
+                    } else if source[end] == "\"" {
+                        break
+                    } else {
+                        end = source.index(after: end)
+                    }
+                }
+                guard end < source.endIndex else { continue }
+                let after = source[source.index(after: end)...].drop(while: \.isWhitespace)
+                let before = source[..<prefix.lowerBound].reversed().drop(while: \.isWhitespace)
+                if after.first == "+" || before.first == "+" { continue }
+                let literal = String(source[start..<end]).replacingOccurrences(of: #"\""#, with: "\"")
+                if allowlist.contains(literal) || normalize(literal).replacingOccurrences(of: "{arg}", with: "").rangeOfCharacter(from: .letters) == nil { continue }
+                let translated = (indexed[normalize(literal)] ?? []).contains { key in
+                    guard let entry = strings[key] as? [String: Any],
+                          let localizations = entry["localizations"] as? [String: Any],
+                          let zh = localizations["zh-Hans"] as? [String: Any] else { return false }
+                    let plural = ((zh["variations"] as? [String: Any])?["plural"] as? [String: Any])?["other"] as? [String: Any]
+                    guard let unit = (plural ?? zh)["stringUnit"] as? [String: Any] else { return false }
+                    return unit["state"] as? String == "translated" && !(unit["value"] as? String ?? "").isEmpty
+                }
+                #expect(translated, "Missing zh-Hans: \(literal) in \(url.lastPathComponent)")
+            }
+        }
+    }
+
+    private func rapidSources() throws -> [String] {
+        let source = rapidSource("")
+        let enumerator = try #require(FileManager.default.enumerator(
+            at: source, includingPropertiesForKeys: nil
+        ))
+        let excludedSource = rapidSource("DevSnapshot.swift")
+        var sources: [String] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            if url.standardizedFileURL == excludedSource.standardizedFileURL { continue }
+            sources.append(url.path)
+        }
+        return sources.sorted()
+    }
+
+    @Test("Every native-extracted source key carries zh-Hans")
+    func nativeExtractedSourceKeysTranslated() async throws {
+        let sources = try rapidSources()
+        try #require(!sources.isEmpty, "No Swift sources found for localization extraction")
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-extract-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        let extractor = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: [
+                "xcstringstool", "extract", "--avoid-arg-placeholder",
+                "--modern-localizable-strings", "--SwiftUI",
+                "--output-format", "xcstrings", "--output-directory", output.path
+            ] + sources,
+            timeout: 30
+        )
+        try #require(
+            extractor.terminationStatus == 0,
+            "xcstringstool extraction failed: \(String(decoding: extractor.standardError, as: UTF8.self))"
+        )
+
+        let extractedData = try Data(contentsOf: output.appendingPathComponent("Localizable.xcstrings"))
+        let extracted = try #require(
+            try JSONSerialization.jsonObject(with: extractedData) as? [String: Any]
+        )
+        let extractedStrings = try #require(extracted["strings"] as? [String: Any])
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let allowlist: Set<String> = ["7659", "URL", "herdr", "https://huggingface.co", "✓", "R"]
+        for key in extractedStrings.keys.sorted() {
+            if allowlist.contains(key) || key.rangeOfCharacter(from: .letters) == nil { continue }
+            let entry = strings[key] as? [String: Any]
+            let localizations = entry?["localizations"] as? [String: Any]
+            let zh = localizations?["zh-Hans"] as? [String: Any]
+            let plural = ((zh?["variations"] as? [String: Any])?["plural"] as? [String: Any])?["other"] as? [String: Any]
+            let units = [zh?["stringUnit"], plural?["stringUnit"]].compactMap { $0 as? [String: Any] }
+            let translated = units.contains { unit in
+                unit["state"] as? String == "translated" && !(unit["value"] as? String ?? "").isEmpty
+            }
+            #expect(translated, "Missing translated zh-Hans for exact source key: \(key)")
+        }
+    }
+
+    @Test("Benchmark translations use the intended terminology")
+    func benchmarkTranslations() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let expected = ["Run": "运行", "Change model": "更换模型", "The most unified memory the model held at once.": "模型运行期间占用的统一内存峰值。"]
+        for (key, value) in expected {
+            let entry = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(localizations["zh-Hans"] as? [String: Any])
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(unit["value"] as? String == value)
+        }
+        for (_, raw) in strings {
+            guard let entry = raw as? [String: Any], let localizations = entry["localizations"] as? [String: Any], let zh = localizations["zh-Hans"] as? [String: Any] else { continue }
+            func containsBadTranslation(_ value: Any) -> Bool {
+                if let string = value as? String { return string.contains("跑步") }
+                if let dictionary = value as? [String: Any] { return dictionary.values.contains(where: containsBadTranslation) }
+                if let array = value as? [Any] { return array.contains(where: containsBadTranslation) }
+                return false
+            }
+            #expect(!containsBadTranslation(zh))
+        }
+    }
+
     @Test("Catalog parses as valid xcstrings JSON with the expected top-level shape")
     func catalogShape() throws {
         let json = try loadCatalog()

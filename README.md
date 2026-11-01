@@ -162,7 +162,7 @@ own Apple Silicon Mac. Runs stay local until you explicitly choose to publish;
 you do not need a GitHub account or a benchmark JSON pull request.
 
 - **Desktop:** Enable **Community Benchmark** in **Settings → Experimental**,
-  then choose a model in the Community Benchmark tab, run it, review the result
+  then open the **Benchmark** tab in the sidebar, choose a model, run it, review the result
   in **My Results**, and select **Publish** if you want to share it.
 - **CLI:** Run `rapid-mlx benchmark catalog`, then
   `rapid-mlx benchmark run <model>`. Review the saved result and publish it

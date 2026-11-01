@@ -2,6 +2,666 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%1$lld published results exist for %2$@ on an %3$@. Run it once to add another reference and tighten the range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已有 %1$lld 个公开结果：%2$@，%3$@。运行一次即可再添加一个参考，让范围更精确。"
+          }
+        }
+      }
+    },
+    "%@s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 秒"
+          }
+        }
+      }
+    },
+    "%lld of 3 done" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已完成 %lld / 3 项"
+          }
+        }
+      }
+    },
+    "%lld published results exist for this pairing. Yours makes the comparison harder to argue with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此组合已有 %lld 个公开结果。你的结果让比较更有说服力。"
+          }
+        }
+      }
+    },
+    "%lld supported" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持 %lld 个"
+          }
+        }
+      }
+    },
+    "%llds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 秒"
+          }
+        }
+      }
+    },
+    "1 published result exists for %1$@ on an %2$@. Run it once to add another reference and tighten the range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已有 1 个公开结果：%1$@，%2$@。运行一次即可再添加一个参考，让范围更精确。"
+          }
+        }
+      }
+    },
+    "1 published result exists for this pairing. Yours makes the comparison harder to argue with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此组合已有 1 个公开结果。你的结果让比较更有说服力。"
+          }
+        }
+      }
+    },
+    "1. Help → Troubleshooting → Enable Developer Mode." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1. 帮助 → 故障排除 → 启用开发者模式。"
+          }
+        }
+      }
+    },
+    "2. Developer → Configure Third-Party Inference." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2. 开发者 → 配置第三方推理。"
+          }
+        }
+      }
+    },
+    "3. Choose Gateway, paste the URL and API key above, then Test." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "3. 选择网关，粘贴上方 URL 和 API 密钥，然后测试。"
+          }
+        }
+      }
+    },
+    "4. Apply Changes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "4. 应用更改。"
+          }
+        }
+      }
+    },
+    "A short newsletter: new models, what fits your RAM, one command to run them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "简短的新闻通讯：新模型、适合你内存的模型，以及运行它们的命令。"
+          }
+        }
+      }
+    },
+    "Add your QuickSilver key to see your credits." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加你的 QuickSilver 密钥以查看积分。"
+          }
+        }
+      }
+    },
+    "Adds the Benchmark tab for measuring models on this Mac and, if you choose, publishing results to the Community Benchmark. Nothing runs until you start a benchmark." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加“基准测试”标签页，用于在此 Mac 上测量模型；如果你愿意，也可以将结果发布到社区基准测试。开始基准测试之前不会运行任何内容。"
+          }
+        }
+      }
+    },
+    "After 1 hour" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 小时后"
+          }
+        }
+      }
+    },
+    "After 15 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "15 分钟后"
+          }
+        }
+      }
+    },
+    "After 30 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 分钟后"
+          }
+        }
+      }
+    },
+    "Allow %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许 %@"
+          }
+        }
+      }
+    },
+    "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许此端点接收任务目标，并在执行期间接收辅助功能快照%@"
+          }
+        }
+      }
+    },
+    "Always allow applies to this tool only. You can review and revoke it in Settings → Experimental." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“始终允许”仅适用于此工具。你可以在“设置 → 实验性功能”中查看和撤销。"
+          }
+        }
+      }
+    },
+    "Approval expired" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批准已过期"
+          }
+        }
+      }
+    },
+    "At least %1$lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少 %1$lld 个"
+          }
+        }
+      }
+    },
+    "At least %1$lld published results exist for %2$@ on an %3$@. Run it once to add another reference and tighten the range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已有至少 %1$lld 个公开结果：%2$@，%3$@。运行一次即可再添加一个参考，让范围更精确。"
+          }
+        }
+      }
+    },
+    "At least %lld published results exist for this pairing. Yours makes the comparison harder to argue with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此组合已有至少 %lld 个公开结果。你的结果让比较更有说服力。"
+          }
+        }
+      }
+    },
+    "At least 1 published result exists for %1$@ on an %2$@. Run it once to add another reference and tighten the range." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已有至少 1 个公开结果：%1$@，%2$@。运行一次即可再添加一个参考，让范围更精确。"
+          }
+        }
+      }
+    },
+    "At least 1 published result exists for this pairing. Yours makes the comparison harder to argue with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此组合已有至少 1 个公开结果。你的结果让比较更有说服力。"
+          }
+        }
+      }
+    },
+    "Built-in Agent Harness (Experimental)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置智能体框架（实验性）"
+          }
+        }
+      }
+    },
+    "Codex can stall on tool calls with this model. Choose a recommended Qwen model for coding agents." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codex 使用此模型时可能在工具调用中卡住。请为编程智能体选择推荐的 Qwen 模型。"
+          }
+        }
+      }
+    },
+    "Connectors are programs running on this Mac. Only allow tools from servers you set up yourself." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接器是在这台 Mac 上运行的程序。请仅允许来自你自行设置的服务器的工具。"
+          }
+        }
+      }
+    },
+    "Copy %@ command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制 %@ 命令"
+          }
+        }
+      }
+    },
+    "Copy command — run it in your own terminal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制命令，在自己的终端中运行"
+          }
+        }
+      }
+    },
+    "Copy one-session command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制单次会话命令"
+          }
+        }
+      }
+    },
+    "Couldn’t open Terminal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开终端"
+          }
+        }
+      }
+    },
+    "Default download address restored. Restart the server to apply it to model loading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已恢复默认下载地址。重新启动服务器后，加载模型时将使用此地址。"
+          }
+        }
+      }
+    },
+    "Deny" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拒绝"
+          }
+        }
+      }
+    },
+    "Deny %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拒绝 %@"
+          }
+        }
+      }
+    },
+    "Download a model to share. %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载模型以供共享。%@"
+          }
+        }
+      }
+    },
+    "Download address saved. Restart the server to apply it to model loading." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载地址已保存。重新启动服务器后，加载模型时将使用此地址。"
+          }
+        }
+      }
+    },
+    "Download full app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载完整版应用"
+          }
+        }
+      }
+    },
+    "Download the model below to turn dictation on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载下面的模型以启用听写。"
+          }
+        }
+      }
+    },
+    "Downloaded — choose it in the model picker to start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，在模型选择器中选中即可启动"
+          }
+        }
+      }
+    },
+    "Downloaded — ready in Audio › Speech to Text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，可在“音频 › 语音转文字”中使用"
+          }
+        }
+      }
+    },
+    "Downloaded — ready in Audio › Text to Speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，可在“音频 › 文字转语音”中使用"
+          }
+        }
+      }
+    },
+    "Downloaded — ready in Images" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，可在“图像”中使用"
+          }
+        }
+      }
+    },
+    "Downloaded — ready in Video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，可在“视频”中使用"
+          }
+        }
+      }
+    },
+    "Downloaded — starting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，正在启动…"
+          }
+        }
+      }
+    },
+    "Enable Community Benchmark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启用社区基准测试"
+          }
+        }
+      }
+    },
+    "Enter an HTTP or HTTPS base URL without credentials, a query, or a fragment." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入不含凭据、查询参数或片段的 HTTP 或 HTTPS 基础网址。"
+          }
+        }
+      }
+    },
+    "Everything rapid-mlx can serve on this Mac. Your shortlist pick stays selected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "rapid-mlx 可在这台 Mac 上运行的所有模型。你在推荐列表中的选择仍会保留。"
+          }
+        }
+      }
+    },
+    "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在指定时间内没有请求时释放内存。下一条消息会重新加载模型，需要几秒钟。"
+          }
+        }
+      }
+    },
+    "Hugging Face endpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hugging Face 端点"
+          }
+        }
+      }
+    },
+    "JPEG, PNG, or WebP · up to %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "JPEG、PNG 或 WebP · 最多 %@"
+          }
+        }
+      }
+    },
+    "Join Rapid-MLX Discord…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入 Rapid-MLX Discord…"
+          }
+        }
+      }
+    },
+    "Measuring %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在测量 %@"
+          }
+        }
+      }
+    },
+    "Model download address" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型下载地址"
+          }
+        }
+      }
+    },
+    "Models run locally on Apple Silicon. You download one model once — after that it works with no network at all." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型在 Apple Silicon 上本地运行。只需下载一次模型，之后无需网络即可使用。"
+          }
+        }
+      }
+    },
+    "Never" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "永不"
+          }
+        }
+      }
+    },
+    "New chats use the built-in agent harness with web, file and terminal tools. Existing chats keep their current engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新聊天使用内置智能体框架，提供网页、文件和终端工具。现有聊天继续使用当前引擎。"
+          }
+        }
+      }
+    },
+    "New models for your Mac, the day they drop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac 新模型发布当天即可获知"
+          }
+        }
+      }
+    },
+    "Not enough free space (%@ needed)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用空间不足（需要 %@）。"
+          }
+        }
+      }
+    },
+    "Not now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂不"
+          }
+        }
+      }
+    },
+    "Open %@ in System Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在系统设置中打开%@"
+          }
+        }
+      }
+    },
+    "Open in Terminal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在终端中打开"
+          }
+        }
+      }
+    },
+    "Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal or Mac? Use the copy button and run the command yourself." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“在终端中打开”会使用专用配置启动已连接此模型的智能体，不会更改智能体自身的设置。想使用其他终端或 Mac？请使用复制按钮，自行运行命令。"
+          }
+        }
+      }
+    },
+    "Preview includes current automatic context. Each of your messages is preceded by its local time. Tool and attachment context may be added when you send." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览包含当前自动上下文。每条消息前会显示本地时间。发送时可能添加工具和附件上下文。"
+          }
+        }
+      }
+    },
     "Provider status" : {
       "localizations" : {
         "zh-Hans" : {
@@ -28,6 +688,226 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下载大小：%@。"
+          }
+        }
+      }
+    },
+    "Rapid will remove the saved endpoint for %@. You can add it again later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 将移除为 %@ 保存的端点。你之后可以重新添加。"
+          }
+        }
+      }
+    },
+    "Rapid-MLX %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX %@"
+          }
+        }
+      }
+    },
+    "Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 在 Mac 上运行 AI 模型。你的对话保留在这台电脑上，不会发送到云端。"
+          }
+        }
+      }
+    },
+    "Rapid-MLX v%@ is available" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX v%@ 已推出"
+          }
+        }
+      }
+    },
+    "Release model when idle" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "空闲时释放模型"
+          }
+        }
+      }
+    },
+    "Reviewed domain: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已审核的域名：%@"
+          }
+        }
+      }
+    },
+    "Run the setup command below to enable Rapid's tier mapping, then in Claude Desktop:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行下方设置命令以启用 Rapid 的层级映射，然后在 Claude Desktop 中："
+          }
+        }
+      }
+    },
+    "Search" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索"
+          }
+        }
+      }
+    },
+    "Setup didn't finish last time. Nothing was carried over — choose a model and it downloads from here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上次设置未完成，没有保留之前的内容。请选择模型，系统将在此处下载。"
+          }
+        }
+      }
+    },
+    "Standard (no speed-ups)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标准（未启用加速）"
+          }
+        }
+      }
+    },
+    "Start & Send" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动并发送"
+          }
+        }
+      }
+    },
+    "Step %lld · limit %lld: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 步 · 上限 %lld 步：%@"
+          }
+        }
+      }
+    },
+    "Subscribe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅"
+          }
+        }
+      }
+    },
+    "Switch source" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换来源"
+          }
+        }
+      }
+    },
+    "The model files are being written into your Hugging Face cache. This is a plain file transfer — nothing about you is sent with it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型文件正在写入 Hugging Face 缓存。这只是文件传输，不会发送你的个人信息。"
+          }
+        }
+      }
+    },
+    "The page's text is sent back to the model. Only http/https public addresses are allowed — private and local addresses are blocked." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网页文本会发送回模型。仅允许使用 http/https 公共地址，私有和本地地址会被阻止。"
+          }
+        }
+      }
+    },
+    "The weights are on disk. They are being loaded into Metal and the model is warming up — usually 5 to 15 seconds, longer the first time a model runs." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "权重已保存到磁盘，正在加载到 Metal 并预热模型，通常需要 5 到 15 秒，首次运行可能更久。"
+          }
+        }
+      }
+    },
+    "Up to %lld steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多 %lld 步"
+          }
+        }
+      }
+    },
+    "Use Hugging Face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用 Hugging Face"
+          }
+        }
+      }
+    },
+    "Use a Hugging Face compatible address, such as https://hf-mirror.com. Leave blank to use the default. Applies to new downloads; restart the server for model loading. Existing downloads continue with their original address." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用兼容 Hugging Face 的地址，例如 https://hf-mirror.com。留空则使用默认地址。新下载会使用此地址；重新启动服务器后，加载模型也会使用此地址。现有下载仍使用原地址。"
+          }
+        }
+      }
+    },
+    "in %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "位于 %@"
+          }
+        }
+      }
+    },
+    "modified %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "修改于 %@"
           }
         }
       }
@@ -249,16 +1129,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加密钥"
-          }
-        }
-      }
-    },
-    "Add your key in Settings to see your credits." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在设置中添加密钥以查看积分。"
           }
         }
       }
@@ -2353,6 +3223,16 @@
         }
       }
     },
+    "plus the download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另加下载时间"
+          }
+        }
+      }
+    },
     "speculative_status.ready" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3671,16 +4551,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加照片或文件"
-          }
-        }
-      }
-    },
-    "Adds the Benchmark tab for measuring models on this Mac. Nothing runs until you start a benchmark." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加“基准测试”标签页，用于在这台 Mac 上测量模型。在你开始测试之前不会运行任何内容。"
           }
         }
       }
@@ -5287,16 +6157,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "启用 %@"
-          }
-        }
-      }
-    },
-    "Enable Benchmark" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "启用基准测试"
           }
         }
       }
@@ -10757,16 +11617,6 @@
         }
       }
     },
-    "%1$@ %2$@ for this pairing. Yours makes the comparison harder to argue with." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ %2$@ 对于此配对。你的比较让这种比较更难以反驳。"
-          }
-        }
-      }
-    },
     "%1$@ free · Enough space" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10793,16 +11643,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%1$@ 已不在基准测试目录中，因此无法再次运行。选择其他模型。"
-          }
-        }
-      }
-    },
-    "%1$@ published %2$@ for %3$@ on an %4$@. Run it once to add another reference and tighten the range." : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ 在 %4$@ 上为 %3$@ 发布了 %2$@。运行一次以添加另一个参考并收紧范围。"
           }
         }
       }
@@ -11702,7 +12542,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "改变模型"
+            "value" : "更换模型"
           }
         }
       }
@@ -12893,7 +13733,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "整个跑步需要多长时间。"
+            "value" : "整个测试运行需要多长时间。"
           }
         }
       }
@@ -15403,7 +16243,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "跑步"
+            "value" : "运行"
           }
         }
       }
@@ -15453,7 +16293,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无论如何都要跑"
+            "value" : "仍然运行"
           }
         }
       }
@@ -16223,7 +17063,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "模型同时拥有的最统一的记忆。"
+            "value" : "模型运行期间占用的统一内存峰值。"
           }
         }
       }
@@ -16753,7 +17593,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "这衡量什么"
+            "value" : "测量内容"
           }
         }
       }
@@ -17108,16 +17948,6 @@
         }
       }
     },
-    "at least %1$d" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "至少 %1$d"
-          }
-        }
-      }
-    },
     "below" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17288,26 +18118,6 @@
         }
       }
     },
-    "published result exists" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已发表的结果已存在"
-          }
-        }
-      }
-    },
-    "published results exist" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已发表的结果存在"
-          }
-        }
-      }
-    },
     "published runs" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17338,32 +18148,12 @@
         }
       }
     },
-    "result exists" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "结果存在"
-          }
-        }
-      }
-    },
     "results" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "结果"
-          }
-        }
-      }
-    },
-    "results exist" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "结果存在"
           }
         }
       }

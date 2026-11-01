@@ -160,7 +160,8 @@ struct CommunityBenchmarkReadyView: View {
 
     private var modelIdentity: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Text(model.entry.alias)
+            Text(ModelDisplayName.name(for: model.entry.alias))
+                    .help(model.entry.alias)
                 .font(.rapid(size: 15, weight: .semibold))
                 .foregroundStyle(RapidTheme.textPrimary)
                 .lineLimit(1)
@@ -272,7 +273,8 @@ struct CommunityBenchmarkRunningView: View {
                         .tracking(0.7)
                         .foregroundStyle(RapidTheme.textTertiary)
                     HStack(spacing: RapidTheme.Space.sm) {
-                        Text(model.entry.alias)
+                        Text(ModelDisplayName.name(for: model.entry.alias))
+                    .help(model.entry.alias)
                             .font(.rapid(size: 22, weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.tail)

@@ -248,7 +248,8 @@ private struct PickerRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: RapidTheme.Space.sm) {
-                        Text(row.model.entry.alias)
+                        Text(ModelDisplayName.name(for: row.model.entry.alias))
+                    .help(row.model.entry.alias)
                             .font(RapidFont.bodyEmphasis)
                             .foregroundStyle(RapidTheme.textPrimary)
                             .lineLimit(1)

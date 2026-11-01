@@ -3,6 +3,7 @@ import Testing
 @testable import Rapid
 
 @Suite("Community read API seam and pulse")
+@MainActor
 struct CommunityBenchmarkDirectoryTests {
     private static let profile = CommunityMacProfile(chip: "Apple M3 Pro", memoryGiB: 18)
     private static let scope = CommunityBenchmarkScope(
@@ -75,7 +76,7 @@ struct CommunityBenchmarkDirectoryTests {
     @Test("Scope descriptions name model, workload, and Mac profile")
     func scopeDescriptionIsComplete() {
         let description = Self.scope.scopeDescription
-        #expect(description.contains("qwen3.5-9b-4bit"))
+        #expect(description.contains(ModelDisplayName.name(for: "qwen3.5-9b-4bit")))
         #expect(description.contains("LLM"))
         #expect(description.contains("Apple M3 Pro · 18 GB"))
     }

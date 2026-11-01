@@ -1785,8 +1785,7 @@ struct QuickstartView: View {
                 OnboardingDisplayTitle(text: String(localized: "Your AI runs\non this Mac."), size: 52)
 
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Models run locally on Apple Silicon. You download one model "
-                         + "once — after that it works with no network at all.")
+                    Text("Models run locally on Apple Silicon. You download one model once — after that it works with no network at all.")
                     Text("No account, no subscription.")
                 }
                 .scaledSystemFont(17, relativeTo: .title3)
@@ -1802,8 +1801,7 @@ struct QuickstartView: View {
                 // where it left off. Paper 05.1 state 18: "The copy promises a
                 // fresh download, never a resume."
                 if coordinator.isResumingIncompleteSetup {
-                    Text("Setup didn't finish last time. Nothing was carried over — "
-                         + "choose a model and it downloads from here.")
+                    Text("Setup didn't finish last time. Nothing was carried over — choose a model and it downloads from here.")
                         .scaledSystemFont(13)
                         .foregroundStyle(RapidTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2531,8 +2529,7 @@ struct QuickstartView: View {
                         OnboardingDisplayTitle(text: "All models")
                     }
                     Spacer(minLength: 24)
-                    Text("Everything rapid-mlx can serve on this Mac. "
-                         + "Your shortlist pick stays selected.")
+                    Text("Everything rapid-mlx can serve on this Mac. Your shortlist pick stays selected.")
                         .scaledSystemFont(15, relativeTo: .callout)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -3858,9 +3855,7 @@ struct QuickstartView: View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingDisplayTitle(text: "One download,\nthen it's yours.")
 
-            Text("The model files are being written into your Hugging Face cache. "
-                 + "This is a plain file transfer — nothing "
-                 + "about you is sent with it.")
+            Text("The model files are being written into your Hugging Face cache. This is a plain file transfer — nothing about you is sent with it.")
                 .scaledSystemFont(16, relativeTo: .title3)
                 .foregroundStyle(RapidTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -4042,9 +4037,7 @@ struct QuickstartView: View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingDisplayTitle(text: "Loading into memory.")
 
-            Text("The weights are on disk. They are being loaded into Metal and the "
-                 + "model is warming up — usually 5 to 15 seconds, longer the first "
-                 + "time a model runs.")
+            Text("The weights are on disk. They are being loaded into Metal and the model is warming up — usually 5 to 15 seconds, longer the first time a model runs.")
                 .scaledSystemFont(16, relativeTo: .title3)
                 .foregroundStyle(RapidTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

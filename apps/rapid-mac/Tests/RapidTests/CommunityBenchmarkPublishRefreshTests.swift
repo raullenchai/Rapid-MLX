@@ -216,7 +216,7 @@ struct CommunityBenchmarkPublishRefreshTests {
     }
 
     @Test("A duplicate publication never moves the count")
-    func duplicateDoesNotIncrement() {
+    @MainActor func duplicateDoesNotIncrement() {
         var state = CommunityPublicationState()
         let outcome = state.recordPublication(
             receipt: Self.receipt(alreadyExists: true), receiptSaved: true,

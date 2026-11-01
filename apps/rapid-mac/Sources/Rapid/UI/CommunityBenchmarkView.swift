@@ -916,10 +916,10 @@ final class ProgressSequencer: @unchecked Sendable {
 /// long to expect before the result row appears.
 enum CommunityBenchmarkRunStatus {
     /// `Measuring qwen3.5-9b-4bit · 2 cases × (1 warmup + 5 rounds) · usually 2–5 minutes`
-    static func description(for model: CommunityBenchmarkModel) -> String {
-        var parts = ["Measuring \(model.entry.alias)", scope(for: model.task)]
+    @MainActor static func description(for model: CommunityBenchmarkModel) -> String {
+        var parts = [String(format: String(localized: "Measuring %@"), ModelDisplayName.name(for: model.entry.alias)), scope(for: model.task)]
         parts.append(expectedDuration(for: model.task))
-        if !model.entry.cached { parts.append("plus the download") }
+        if !model.entry.cached { parts.append(String(localized: "plus the download")) }
         return parts.joined(separator: " · ")
     }
 
@@ -2057,7 +2057,7 @@ struct CommunityBenchmarkView: View {
             format: String(
                 localized: "Chat and Images pause while %1$@ is measured, then your model reloads automatically."
             ),
-            selected.entry.alias
+            ModelDisplayName.name(for: selected.entry.alias)
         )
     }
 

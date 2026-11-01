@@ -153,7 +153,7 @@ struct ShareComputeCreditsTab: View {
     }
     @ViewBuilder private var stateNote: some View {
         switch state {
-        case .noKey: note("key", String(localized: "No QuickSilver key yet"), String(localized: "Add your key in Settings to see your credits."), "ShareCompute.Credits.NoKey", action: true)
+        case .noKey: note("key", String(localized: "No QuickSilver key yet"), String(localized: "Add your QuickSilver key to see your credits."), "ShareCompute.Credits.NoKey", action: true, addKey: true)
         case .unauthorized: note("exclamationmark.triangle", ShareComputeLedgerError.unauthorized.displayMessage, String(localized: "Update your key in Settings to see your credits."), "ShareCompute.Credits.Unauthorized", action: true)
         case .loading: note("clock", String(localized: "Reading your ledger…"), String(localized: "Your credit activity will appear here."), "ShareCompute.Credits.Loading")
         case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, String(localized: "QuickSilver limits ledger checks per hour."), "ShareCompute.Credits.RateLimited")
@@ -171,7 +171,7 @@ struct ShareComputeCreditsTab: View {
     private var emptyNote: some View {
         note("tray", String(localized: "No accounting windows yet"), String(localized: "Windows appear when your node serves metered requests."), "ShareCompute.Credits.Empty")
     }
-    private func note(_ icon: String, _ title: String, _ detail: String, _ id: String, action: Bool = false) -> some View {
+    private func note(_ icon: String, _ title: String, _ detail: String, _ id: String, action: Bool = false, addKey: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: icon).foregroundStyle(.secondary).accessibilityHidden(true)
@@ -181,7 +181,9 @@ struct ShareComputeCreditsTab: View {
                 }
             }.accessibilityElement(children: .combine).accessibilityIdentifier(id)
             if action {
-                Button("Open Share Compute settings", action: onOpenKeySettings)
+                Button(action: onOpenKeySettings) {
+                    if addKey { Text("Add key") } else { Text("Open Share Compute settings") }
+                }
                     .accessibilityLabel(String(localized: "Open Settings → Experimental → Share Compute"))
                     .accessibilityIdentifier("ShareCompute.Credits.OpenKeySettings")
             }
@@ -259,7 +261,7 @@ struct ShareComputeLedgerRowView: View {
                     HStack { Text(periodLabel); Spacer(); statusTag }
                     HStack(spacing: 5) {
                         Text(verbatim: "\(modelLabel) · \(window.nodeID)").lineLimit(1).truncationMode(.middle)
-                        Text("· " + ShareComputeCreditsCopy.row(requests: window.requestCount, credit: credit(window.finalCredit))).fixedSize()
+                        Text(verbatim: "· \(ShareComputeCreditsCopy.row(requests: window.requestCount, credit: credit(window.finalCredit)))").fixedSize()
                     }.foregroundStyle(.secondary)
                 }
             } else {
