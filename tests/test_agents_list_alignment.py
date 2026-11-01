@@ -53,3 +53,20 @@ def test_agents_list_client_column_aligns_for_max_width_name(monkeypatch, capsys
         == short_row.index("Claude Code")
         == long_row.index("DeepSeek Harness")
     )
+
+
+def test_agents_list_subcommand_shows_roster(monkeypatch, capsys):
+    # The help describes `agents` as listing integrations, so `agents list`
+    # and `agents ls` must show the roster rather than "Unknown agent: list".
+    monkeypatch.setattr(
+        "rapid_mlx.agents.list_profiles",
+        lambda: [_profile("claude-code", "Claude Code")],
+    )
+    monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda name: None)
+    for word in ("list", "ls"):
+        cli.agents_command(
+            SimpleNamespace(agent_name=word, base_url="http://localhost:8000")
+        )
+        out = capsys.readouterr().out
+        assert "Supported AI Agents" in out
+        assert "Unknown agent" not in out
