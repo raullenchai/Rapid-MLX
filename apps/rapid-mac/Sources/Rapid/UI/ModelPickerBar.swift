@@ -1060,7 +1060,7 @@ struct ModelPickerBar: View {
     /// capability %. Pure so tests can pin the copy without a SwiftUI host.
     /// The one spelling of a recommendation's capability score, shared with
     /// first-run setup so the same number never appears unlabelled there.
-    static func capabilityText(_ pct: Int) -> String {
+    nonisolated static func capabilityText(_ pct: Int) -> String {
         String(localized: "\(pct)% capability")
     }
 
