@@ -265,3 +265,31 @@ def test_configured_directory_is_checked_beyond_scan_cap(tmp_path, monkeypatch):
     _write_metadata(tmp_path, "config.json", qwen_tokenizer_path=directories[-1].name)
     with pytest.raises(RemoteCodeConsentRequired, match="tokenizer-64"):
         validate_processor_code(tmp_path)
+
+
+def test_forced_trust_tokenizer_is_checked_beyond_scan_cap(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    for index in range(70):
+        (tmp_path / f"a{index:02d}").mkdir()
+    _write_metadata(tmp_path, "config.json", model_type="z_image")
+    _write_metadata(tmp_path / "tokenizer", auto_map={"AutoTokenizer": ["tok.T", None]})
+    original = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", lambda path: iter(sorted(original(path))))
+
+    with pytest.raises(RemoteCodeConsentRequired, match="tokenizer.*auto_map"):
+        validate_processor_code(tmp_path)
+
+
+def test_speculative_config_paths_skip_invalid_strings(tmp_path, monkeypatch):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    _write_metadata(
+        tmp_path, "config.json", description="x" * 300, other_text="contains\x00nul"
+    )
+
+    validate_processor_code(tmp_path)
