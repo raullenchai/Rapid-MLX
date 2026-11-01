@@ -378,6 +378,70 @@ def _isolate_server_serve_config():
                 setattr(limiter, name, value)
 
 
+@pytest.fixture
+def isolated_server_model_state(monkeypatch):
+    """Restore real load_model calls, including their in-place singleton writes.
+
+    Opt in only where the real server loader runs: importing here keeps the
+    optional server stack out of conftest import and unrelated unit tests.
+    """
+    from rapid_mlx import response_cache, server
+    from rapid_mlx.routes.audio import _AUDIO_REGISTRATION_SENTINEL
+
+    # Every global assigned by load_model, even on a partially failed load.
+    for name in (
+        "_engine",
+        "_model_alias",
+        "_model_name",
+        "_model_path",
+        "_served_model_name_set",
+        "_default_max_tokens",
+        "_default_max_tokens_is_explicit",
+        "_tool_parser_instance",
+        "_alias_recommended_sampling",
+        "_generation_config_sampling",
+        # Serving entrypoints/lifespan can also publish residency state.
+        "_resident_memory_limit_bytes",
+        "_resident_idle_ttl_seconds",
+        "_resident_gpu_memory_utilization",
+        "_primary_lazy_load",
+        "_primary_idle_unload_seconds",
+        "_prefix_cache_load_task",
+        "_telemetry_model_served_state",
+        "_telemetry_audio_model_served_state",
+        "_telemetry_embedding_model_served_state",
+        "_telemetry_rerank_model_served_state",
+    ):
+        monkeypatch.setattr(server, name, getattr(server, name))
+
+    # Saving references alone cannot undo registry.add() or manager/lifecycle
+    # mutations. Give the test its own registry and no pre-existing owners.
+    monkeypatch.setattr(server, "_model_registry", type(server._model_registry)())
+    monkeypatch.setattr(server, "_residency_manager", None)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+
+    # _sync_config and the runtime-config publication overwrite fields on the
+    # existing config object; preserve those fields without copying engines.
+    cfg = server.get_config()
+    for name, value in vars(cfg).items():
+        monkeypatch.setattr(cfg, name, value)
+    monkeypatch.setattr(cfg, "model_registry", server._model_registry)
+    monkeypatch.setattr(cfg, "residency_manager", None)
+    monkeypatch.setattr(cfg, "primary_model_lifecycle", None)
+    monkeypatch.setattr(
+        response_cache, "_response_cache", response_cache.ResponseCache(capacity=0)
+    )
+
+    # The loader's audio registration hook can append routes and stamp the app.
+    monkeypatch.setattr(server.app.router, "routes", list(server.app.router.routes))
+    monkeypatch.setattr(
+        server.app,
+        _AUDIO_REGISTRATION_SENTINEL,
+        getattr(server.app, _AUDIO_REGISTRATION_SENTINEL, False),
+        raising=False,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_admission_context():
     """A reservation made by a test must not enter the next test's ASGI task.
