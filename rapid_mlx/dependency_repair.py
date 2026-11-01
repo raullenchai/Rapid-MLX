@@ -104,9 +104,10 @@ def _reinstall_spec() -> list[str]:
 
     fallback = [f"rapid-mlx=={__version__}" if __version__ != "0.0.0" else "rapid-mlx"]
     try:
-        direct = json.loads(
-            metadata.distribution("rapid-mlx").read_text("direct_url.json")
-        )
+        direct_text = metadata.distribution("rapid-mlx").read_text("direct_url.json")
+        if direct_text is None:
+            return fallback
+        direct = json.loads(direct_text)
         url = direct["url"]
         if not isinstance(url, str):
             return fallback

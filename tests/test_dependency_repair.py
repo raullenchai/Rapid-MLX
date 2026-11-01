@@ -742,6 +742,7 @@ def test_pip_repair_preserves_source(
 ):
     import rapid_mlx
 
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
     distribution = Mock()
     distribution.read_text.return_value = direct
     monkeypatch.setattr(
@@ -750,7 +751,7 @@ def test_pip_repair_preserves_source(
     monkeypatch.setattr(
         repair.importlib.util, "find_spec", lambda _: None if bootstrap else object()
     )
-    expected = expected or [f"rapid-mlx=={rapid_mlx.__version__}"]
+    expected = expected or ["rapid-mlx==9.8.7"]
     argv = repair.repair_argv()
     distribution.read_text.assert_called_once_with("direct_url.json")
     if bootstrap:
@@ -815,6 +816,7 @@ def test_reinstall_spec_preserves_subdirectory(
 ):
     import rapid_mlx
 
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
     distribution = Mock()
     distribution.read_text.return_value = json.dumps(
         {"url": url, source: info, "subdirectory": subdirectory}
@@ -822,7 +824,7 @@ def test_reinstall_spec_preserves_subdirectory(
     monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
 
     if encoded is None:
-        expected = [f"rapid-mlx=={rapid_mlx.__version__}"]
+        expected = ["rapid-mlx==9.8.7"]
     elif prefix is None:
         expected = ["-e", f"/tmp/source tree/{subdirectory}"]
     else:
@@ -879,6 +881,7 @@ def test_reinstall_spec_preserves_archive_hash(
 ):
     import rapid_mlx
 
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
     distribution = Mock()
     distribution.read_text.return_value = json.dumps(
         {
@@ -892,7 +895,7 @@ def test_reinstall_spec_preserves_archive_hash(
     expected = (
         f"rapid-mlx @ https://example.org/rapid.whl#{fragment}"
         if fragment is not None
-        else f"rapid-mlx=={rapid_mlx.__version__}"
+        else "rapid-mlx==9.8.7"
     )
     assert repair._reinstall_spec() == [expected]
 
@@ -900,10 +903,32 @@ def test_reinstall_spec_preserves_archive_hash(
 def test_pip_repair_unreadable_source_uses_running_version(environment, monkeypatch):
     import rapid_mlx
 
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
     distribution = Mock()
     distribution.read_text.side_effect = OSError("unreadable")
     monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
-    assert repair.repair_argv()[-1] == f"rapid-mlx=={rapid_mlx.__version__}"
+    assert repair.repair_argv()[-1] == "rapid-mlx==9.8.7"
+
+
+def test_reinstall_spec_missing_direct_url_uses_running_version(monkeypatch):
+    import rapid_mlx
+
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
+    distribution = Mock()
+    distribution.read_text.return_value = None
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+    assert repair._reinstall_spec() == ["rapid-mlx==9.8.7"]
+    distribution.read_text.assert_called_once_with("direct_url.json")
+
+
+def test_reinstall_spec_unknown_version_uses_bare_spec(monkeypatch):
+    import rapid_mlx
+
+    monkeypatch.setattr(rapid_mlx, "__version__", "0.0.0")
+    distribution = Mock()
+    distribution.read_text.return_value = None
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+    assert repair._reinstall_spec() == ["rapid-mlx"]
 
 
 def test_pip_fallback_preserves_editable_source(environment, monkeypatch):
