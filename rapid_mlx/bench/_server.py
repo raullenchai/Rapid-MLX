@@ -445,9 +445,7 @@ def _terminate(
 ) -> None:
     """Best-effort clean teardown of a server process group."""
     isolated = isolated_process_group and sys.platform != "win32"
-    if (isolated and proc.returncode is not None) or (
-        not isolated and proc.poll() is not None
-    ):
+    if not isolated and proc.poll() is not None:
         return
     # serve() starts an isolated server with setsid(), making its PID the PGID.
     pgid: int = proc.pid

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import signal
@@ -25,6 +26,7 @@ from .hardware import host_memory_gib
 from .local_runner import (
     LocalBenchmarkError,
     _is_deepseek_v41_benchmark_target,
+    abandoned_native_worker,
     refuse_if_memory_does_not_fit,
     run_local,
 )
@@ -39,6 +41,30 @@ from .workspace import (
 
 _LEADERBOARD_URL = "https://rapidmlx.com/leaderboard"
 _CONTRIBUTOR_BASE_URL = f"{_LEADERBOARD_URL}/contributors"
+
+
+_CANCEL_BACKSTOP_SECONDS = 15
+
+
+def _hard_exit_cancelled(code: int) -> None:
+    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        atexit._run_exitfuncs()  # noqa: SLF001
+    except BaseException:  # noqa: BLE001
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except BaseException:  # noqa: BLE001
+            pass
+    os._exit(code)
+
+
+def _cancel_backstop(code: int) -> None:
+    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    os._exit(code)
 
 
 def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
@@ -557,15 +583,24 @@ def _benchmark_command(args) -> int:
                 progress_sink = None
             received_signal = signal.SIGINT
 
-            def cancel_on_sigterm(signum, frame):
-                nonlocal received_signal
-                received_signal = signum
+            timer = None
+
+            def cancel_on_signal(signum, frame):
+                nonlocal received_signal, timer
+                if timer is None:
+                    received_signal = signum
+                    timer = threading.Timer(
+                        _CANCEL_BACKSTOP_SECONDS, _cancel_backstop, [128 + signum]
+                    )
+                    timer.daemon = True
+                    timer.start()
                 raise KeyboardInterrupt
 
             main_thread = threading.current_thread() is threading.main_thread()
-            previous_handler = None
+            previous_handlers = {}
             if main_thread:
-                previous_handler = signal.signal(signal.SIGTERM, cancel_on_sigterm)
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    previous_handlers[sig] = signal.signal(sig, cancel_on_signal)
             try:
                 try:
                     value = run_local(
@@ -580,7 +615,10 @@ def _benchmark_command(args) -> int:
                     )
                 finally:
                     if main_thread:
-                        signal.signal(signal.SIGTERM, previous_handler)
+                        for sig, handler in previous_handlers.items():
+                            signal.signal(sig, handler)
+                    if timer is not None and sys.exc_info()[0] is None:
+                        timer.cancel()
             except KeyboardInterrupt:
                 if args.json:
                     print(
@@ -598,6 +636,10 @@ def _benchmark_command(args) -> int:
                         "Benchmark cancelled; benchmark processes were stopped.",
                         file=sys.stderr,
                     )
+                if abandoned_native_worker():
+                    _hard_exit_cancelled(128 + received_signal)
+                if timer is not None:
+                    timer.cancel()
                 return 128 + received_signal
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))

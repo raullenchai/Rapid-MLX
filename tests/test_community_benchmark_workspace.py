@@ -6,6 +6,7 @@ import base64
 import builtins
 import contextlib
 import hashlib
+import http.server
 import io
 import json
 import math
@@ -3467,22 +3468,14 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
 
     archive = LocalRunArchive(tmp_path)
     shutdown_calls: list[tuple[bool, bool]] = []
-    executor_type = local_runner.concurrent.futures.ThreadPoolExecutor
+    executor_type = local_runner._TrackingExecutor
 
-    class RecordingExecutor:
-        def __init__(self, *args, **kwargs) -> None:
-            self.inner = executor_type(*args, **kwargs)
-
-        def submit(self, *args, **kwargs):
-            return self.inner.submit(*args, **kwargs)
-
+    class RecordingExecutor(executor_type):
         def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
             shutdown_calls.append((wait, cancel_futures))
-            self.inner.shutdown(wait=wait, cancel_futures=cancel_futures)
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr(
-        local_runner.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor
-    )
+    monkeypatch.setattr(local_runner, "_TrackingExecutor", RecordingExecutor)
     _mock_local_context(
         monkeypatch, "text_generation", "mlx-community/example-text-model"
     )
@@ -4679,6 +4672,132 @@ def test_failure_codes_classify_without_leaking_text(
     assert local_runner._failure_code(error) == code
 
 
+def test_server_exit_log_tail_does_not_determine_failure_code(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text("Request timeout: 1800.0s\n")
+    error = _server.describe_server_exit(
+        SimpleNamespace(poll=lambda: -9), log, wait_s=0
+    )
+    assert local_runner._failure_code(error) == "runtime_error"
+    assert local_runner._failure_code(TimeoutError()) == "timeout"
+    assert local_runner._failure_code(MemoryError()) == "runtime_oom"
+    assert (
+        local_runner._failure_code(
+            RuntimeError("failure\n--- server log tail ---\ntimeout")
+        )
+        == "runtime_error"
+    )
+
+
+def test_archived_server_exit_with_timeout_in_log_is_runtime_error(
+    monkeypatch, tmp_path
+):
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    log = tmp_path / "server.log"
+    log.write_text("Request timeout: 1800.0s\n")
+    error = _server.describe_server_exit(
+        SimpleNamespace(poll=lambda: -9), log, wait_s=0
+    )
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(local_runner, "_run_image", fail)
+    archive = LocalRunArchive(tmp_path / "archive")
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-image", archive=archive)
+    assert archive.list()[0]["outcome"] == {
+        "status": "failed",
+        "failure_code": "runtime_error",
+    }
+
+
+@pytest.mark.parametrize("partial_body", [False, True])
+def test_video_download_connection_failures_are_transport_errors(
+    tmp_path, partial_body
+):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if partial_body:
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"short")
+            self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(local_runner.VideoArtifactTransportError):
+            local_runner._download_video_artifact(
+                f"http://127.0.0.1:{server.server_port}",
+                "job-1",
+                str(tmp_path / "video.mp4"),
+                timeout_s=10,
+            )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("server_exited", [True, False])
+def test_video_download_transport_error_reports_server_exit(monkeypatch, server_exited):
+    error = _server.ServerExitedError(
+        "The local model server stopped unexpectedly (killed by SIGKILL).",
+        -9,
+        "SIGKILL",
+        "",
+    )
+
+    @contextlib.contextmanager
+    def serve(*args, **kwargs):
+        yield {
+            "base_url": "http://local/v1",
+            "exit_error": lambda: error if server_exited else None,
+        }
+
+    case = registered_workload("video_generation")["cases"][0]
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(
+        local_runner.requests,
+        "post",
+        lambda *args, **kwargs: _Response({"id": "job-1", "status": "queued"}),
+    )
+    monkeypatch.setattr(
+        local_runner.requests,
+        "get",
+        lambda *args, **kwargs: _Response(
+            {
+                "id": "job-1",
+                "status": "completed",
+                "size": f"{case['width']}x{case['height']}",
+                "frames": case["frames"],
+                "fps": case["fps_milli"] // 1000,
+            }
+        ),
+    )
+    monkeypatch.setattr(local_runner.time, "sleep", lambda _: None)
+
+    def fail(*args, **kwargs):
+        raise local_runner.VideoArtifactTransportError("connection closed")
+
+    monkeypatch.setattr(local_runner, "_download_video_artifact", fail)
+    with pytest.raises(RuntimeError) as caught:
+        local_runner._run_video("example-video")
+    if server_exited:
+        assert caught.value is error
+    else:
+        assert "server is still running" in str(caught.value)
+    assert isinstance(caught.value.__cause__, local_runner.VideoArtifactTransportError)
+
+
 @pytest.mark.parametrize("received", [0, 1])
 @pytest.mark.parametrize("error_type", [TimeoutError, asyncio.TimeoutError])
 def test_text_round_timeout_reports_case_and_progress(received, error_type) -> None:
@@ -5194,7 +5313,18 @@ def test_video_probe_worker_survives_a_torn_result_pipe(
     assert sender.closed is True
 
 
-@pytest.mark.parametrize("outcome", ["ok", "runtime", "unexpected"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "ok",
+        "runtime",
+        "unexpected",
+        "connection",
+        "chunked",
+        "http",
+        "http_no_response",
+    ],
+)
 def test_video_download_worker_reports_each_outcome(
     monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
@@ -5209,6 +5339,18 @@ def test_video_download_worker_reports_each_outcome(
             raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
         if outcome == "unexpected":
             raise OSError("disk pulled")
+        if outcome in {"connection", "chunked"}:
+            error_type = (
+                requests.exceptions.ConnectionError
+                if outcome == "connection"
+                else requests.exceptions.ChunkedEncodingError
+            )
+            raise error_type("connection closed\nprivate server detail")
+        if outcome in {"http", "http_no_response"}:
+            response = requests.Response() if outcome == "http" else None
+            if response is not None:
+                response.status_code = 503
+            raise requests.HTTPError("private response detail", response=response)
 
     monkeypatch.setattr(local_runner, "_download_video_artifact_unbounded", download)
     receiver, sender = multiprocessing.Pipe(duplex=False)
@@ -5225,6 +5367,14 @@ def test_video_download_worker_reports_each_outcome(
         assert (status, payload) == (
             "error",
             "video artifact exceeds the 1 GiB safety limit",
+        )
+    elif outcome in {"connection", "chunked"}:
+        assert (status, payload) == ("transport", "connection closed")
+    elif outcome in {"http", "http_no_response"}:
+        code = 503 if outcome == "http" else None
+        assert (status, payload) == (
+            "error",
+            f"video artifact download failed with HTTP {code}",
         )
     else:
         assert (status, payload) == ("error", "video artifact download failed")
