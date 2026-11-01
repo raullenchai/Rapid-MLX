@@ -195,14 +195,21 @@ def test_custom_handler_calls_directly(default_signals):
 def test_second_signal_hard_exits(monkeypatch, default_signals, second_signal):
     release = threading.Event()
     exits = []
+    delivered = []
+    real_start = threading.Thread.start
 
-    def first_signal(_self):
-        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+    def start(thread):
+        # Deliver the first signal as the download worker starts; other
+        # threads (the cancellation backstop timer) start normally.
+        if thread.name == "rapid-mlx-download":
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        real_start(thread)
 
     def cleanup():
+        delivered.append(second_signal)
         signal.getsignal(second_signal)(second_signal, None)
 
-    monkeypatch.setattr(cancel.threading.Thread, "start", first_signal)
+    monkeypatch.setattr(cancel.threading.Thread, "start", start)
     monkeypatch.setattr(cancel, "_remove_owned_incomplete_files", cleanup)
 
     def hard_exit(code):
@@ -214,6 +221,7 @@ def test_second_signal_hard_exits(monkeypatch, default_signals, second_signal):
     try:
         with pytest.raises(SystemExit) as raised:
             cancel.run_cancellable_download(lambda: release.wait(), retry_hint="retry")
+        assert delivered == [second_signal]
         assert raised.value.code == 130
         assert exits == [130]
     finally:
