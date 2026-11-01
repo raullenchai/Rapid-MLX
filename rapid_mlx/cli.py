@@ -2338,6 +2338,34 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     if total_ram_bytes <= 0:
         return
 
+    total_gb = total_ram_bytes / (1024**3)
+    catalog_floor_gb = (
+        float(catalog_profile.min_memory_gb)
+        if catalog_profile is not None and catalog_profile.min_memory_gb is not None
+        else None
+    )
+    host_pick = catalog_working_gb is not None and (
+        is_recommended_alias(display_alias, total_gb)
+        or (catalog_floor_gb is not None and total_gb >= catalog_floor_gb)
+    )
+    if catalog_working_gb is None and catalog_profile is not None:
+        try:
+            from rapid_mlx.byom.preflight import (
+                catalog_memory_fit,
+                mlx_recommended_working_set_bytes,
+            )
+
+            fit = catalog_memory_fit(
+                display_alias,
+                ram_bytes=total_ram_bytes,
+                recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+            )
+            if fit.estimate_bytes is not None:
+                catalog_working_gb = fit.estimate_bytes / (1024**3)
+                host_pick = fit.fits is True
+        except Exception:
+            pass  # Best-effort: retain the disk-derived fallback.
+
     # Projected post-load pressure: already-used + estimated working set.
     # ``available`` is psutil's best estimate of "memory we can grab without
     # swapping," which on macOS includes inactive + cached pages that the
@@ -2350,17 +2378,7 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     used_ram_bytes = max(0, total_ram_bytes - available_ram_bytes)
     projected_use = used_ram_bytes + estimated_working
     ratio = projected_use / total_ram_bytes
-    total_gb = total_ram_bytes / (1024**3)
-    catalog_floor_gb = (
-        float(catalog_profile.min_memory_gb)
-        if catalog_profile is not None and catalog_profile.min_memory_gb is not None
-        else None
-    )
-    host_pick = catalog_working_gb is not None and (
-        is_recommended_alias(display_alias, total_gb)
-        or (catalog_floor_gb is not None and total_gb >= catalog_floor_gb)
-    )
-    # A measured tier pick follows the same live policy as Desktop: remain
+    # A measured tier pick or fitting catalog model follows Desktop's policy: remain
     # silent below 95%, advise at 95–100%, and use the blocking-strength copy
     # only beyond physical memory. Unknown models retain the earlier,
     # conservative warning bands because their disk-derived x1.5 value is the
