@@ -2,6 +2,7 @@
 """Local model folders retain catalog MTP behavior and fail closed."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -121,6 +122,34 @@ def test_shard_fallback_only_for_separate_sidecar(model, served_folder):
     assert cli._local_mtp_head_file(model, served_folder=served_folder) == (
         None if served_folder else str(first)
     )
+
+
+def test_shard_scan_skips_stat_oserror(tmp_path, monkeypatch):
+    first = tmp_path / "model-00001-of-00002.safetensors"
+    second = tmp_path / "model-00002-of-00002.safetensors"
+    first.write_bytes(b"x")
+    second.write_bytes(b"x")
+    original_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == first:
+            raise OSError("shard stat failed")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    assert cli._local_mtp_head_file(tmp_path, served_folder=False) == str(second)
+
+
+def test_local_head_getsize_oserror_returns_none(tmp_path, monkeypatch):
+    head = tmp_path / "mtp.safetensors"
+    head.write_bytes(b"x")
+
+    def getsize(path):
+        assert path == str(head)
+        raise OSError("head size unavailable")
+
+    monkeypatch.setattr(cli.os.path, "getsize", getsize)
+    assert cli._local_mtp_head_file(tmp_path, served_folder=False) is None
 
 
 def test_empty_fixed_candidate_prevents_shard_fallback(model):
