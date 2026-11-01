@@ -838,6 +838,10 @@ Tested on Apple M2 Max (32GB).
 5. **Cache models** - engines are lazy-loaded and cached
 6. **Pre-download models** to avoid first-run latency
 
+## Models that ship their own code
+
+Some speech checkpoints declare `auto_map` or `model_file` in their configuration, meaning they run Python from the model repository. Rapid-MLX refuses by default, and the API returns 403 with code `remote_code_consent_required`. After reviewing the code, start the server with `RAPID_MLX_TRUST_REMOTE_CODE=1 rapid-mlx serve <model>`. Setting `RAPID_MLX_TRUST_REMOTE_CODE=0` always disables repository code execution.
+
 ## Troubleshooting
 
 ### mlx-audio not installed
