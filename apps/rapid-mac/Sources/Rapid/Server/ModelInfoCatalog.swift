@@ -143,53 +143,66 @@ enum ModelInfoCatalog {
             ? String(alias.prefix(ModelCatalog.maxAliasBytes))
             : alias
         let a = boundedAlias.lowercased()
+        // Numeric version keys must not match the start of a longer number.
+        func has(_ key: String) -> Bool {
+            guard key.last?.isNumber == true else { return a.contains(key) }
+            var start = a.startIndex
+            while let range = a.range(of: key, range: start..<a.endIndex) {
+                if range.upperBound == a.endIndex || !a[range.upperBound].isNumber {
+                    return true
+                }
+                start = a.index(after: range.lowerBound)
+            }
+            return false
+        }
         // Qwen family — order matters (qwen3.8 / qwen3.6 before qwen3)
-        if a.contains("qwen3.8") { return ("Qwen 3.8", 32_768) }
-        if a.contains("qwen3.6") { return ("Qwen 3.6", 32_768) }
-        if a.contains("qwen3.5") { return ("Qwen 3.5", 32_768) }
-        if a.contains("qwen3-coder-next") { return ("Qwen 3 Coder Next", 32_768) }
-        if a.contains("qwen3-vl") { return ("Qwen 3 VL", 32_768) }
-        if a.contains("qwen3") { return ("Qwen 3", 32_768) }
-        if a.contains("qwq") { return ("QwQ", 32_768) }
-        if a.contains("qwen2.5") { return ("Qwen 2.5", 32_768) }
-        if a.contains("qwen2") { return ("Qwen 2", 32_768) }
+        if has("qwen3.8") { return ("Qwen 3.8", 32_768) }
+        if has("qwen3.6") { return ("Qwen 3.6", 32_768) }
+        if has("qwen3.5") { return ("Qwen 3.5", 32_768) }
+        if has("qwen3-coder-next") { return ("Qwen 3 Coder Next", 32_768) }
+        if has("qwen3-vl") { return ("Qwen 3 VL", 32_768) }
+        if has("qwen3") { return ("Qwen 3", 32_768) }
+        if has("qwq") { return ("QwQ", 32_768) }
+        if has("qwen2.5") { return ("Qwen 2.5", 32_768) }
+        if has("qwen2") { return ("Qwen 2", 32_768) }
         // K2 Horizon dense checkpoints advertise a 524k context window. The
         // loaded server's memory-aware effective limit still wins when present.
-        if a.contains("k2-horizon") { return ("K2 Horizon", 524_288) }
+        if has("k2-horizon") { return ("K2 Horizon", 524_288) }
         // Llama
-        if a.contains("llama-4.5") || a.contains("llama4.5") { return ("Llama 4.5", 131_072) }
-        if a.contains("llama-4") || a.contains("llama4") { return ("Llama 4", 131_072) }
-        if a.contains("llama-3.3") || a.contains("llama3.3") { return ("Llama 3.3", 131_072) }
-        if a.contains("llama-3.2") || a.contains("llama3.2") { return ("Llama 3.2", 131_072) }
-        if a.contains("llama-3.1") || a.contains("llama3.1") { return ("Llama 3.1", 131_072) }
-        if a.contains("llama-3") || a.contains("llama3") { return ("Llama 3", 8_192) }
+        if has("llama-4.5") || has("llama4.5") { return ("Llama 4.5", 131_072) }
+        if has("llama-4") || has("llama4") { return ("Llama 4", 131_072) }
+        if has("llama-3.3") || has("llama3.3") { return ("Llama 3.3", 131_072) }
+        if has("llama-3.2") || has("llama3.2") { return ("Llama 3.2", 131_072) }
+        if has("llama-3.1") || has("llama3.1") { return ("Llama 3.1", 131_072) }
+        if has("llama-3") || has("llama3") { return ("Llama 3", 8_192) }
         // Gemma — long-context variants ship as separate repos and we
         // surface them as the same family display; we only assert the
         // stock window here.
-        if a.contains("gemma-4") || a.contains("gemma4") { return ("Gemma 4", 8_192) }
-        if a.contains("gemma-3n") || a.contains("gemma3n") { return ("Gemma 3n", 8_192) }
-        if a.contains("gemma-3") || a.contains("gemma3") { return ("Gemma 3", 8_192) }
-        if a.contains("gemma-2") || a.contains("gemma2") { return ("Gemma 2", 8_192) }
+        if has("gemma-4") || has("gemma4") { return ("Gemma 4", 8_192) }
+        if has("gemma-3n") || has("gemma3n") { return ("Gemma 3n", 8_192) }
+        if has("gemma-3") || has("gemma3") { return ("Gemma 3", 8_192) }
+        if has("gemma-2") || has("gemma2") { return ("Gemma 2", 8_192) }
         // Mistral
-        if a.contains("mistral-3") { return ("Mistral 3", 32_768) }
-        if a.contains("mistral") { return ("Mistral", 32_768) }
+        if has("mistral-3") { return ("Mistral 3", 32_768) }
+        if has("mistral") { return ("Mistral", 32_768) }
         // GLM
-        if a.contains("glm-5") { return ("GLM 5", 131_072) }
-        if a.contains("glm-4.7") || a.contains("glm47") { return ("GLM 4.7", 131_072) }
-        if a.contains("glm-4") || a.contains("glm4") { return ("GLM 4", 131_072) }
+        if has("glm-5") { return ("GLM 5", 131_072) }
+        if has("glm-4.7") || has("glm47") { return ("GLM 4.7", 131_072) }
+        if has("glm-4") || has("glm4") { return ("GLM 4", 131_072) }
         // DeepSeek
-        if a.contains("deepseek-v4") { return ("DeepSeek V4", 131_072) }
-        if a.contains("deepseek-v3") { return ("DeepSeek V3", 131_072) }
-        if a.contains("deepseek") { return ("DeepSeek", 32_768) }
+        if has("deepseek-v4.1") || has("deepseek-v41") { return ("DeepSeek V4.1", 131_072) }
+        if has("deepseek-v4") { return ("DeepSeek V4", 131_072) }
+        if has("deepseek-v3") { return ("DeepSeek V3", 131_072) }
+        if has("deepseek") { return ("DeepSeek", 32_768) }
         // Phi
-        if a.contains("phi-4") || a.contains("phi4") { return ("Phi 4", 16_384) }
-        if a.contains("phi-3") || a.contains("phi3") { return ("Phi 3", 4_096) }
+        if has("phi-4") || has("phi4") { return ("Phi 4", 16_384) }
+        if has("phi-3") || has("phi3") { return ("Phi 3", 4_096) }
         // SmolLM
-        if a.contains("smollm3") { return ("SmolLM 3", 8_192) }
-        if a.contains("smollm") { return ("SmolLM", 2_048) }
+        if has("smollm3") { return ("SmolLM 3", 8_192) }
+        if has("smollm") { return ("SmolLM", 2_048) }
         // Hermes
-        if a.contains("hermes-3") || a.contains("hermes3") { return ("Hermes 3", 131_072) }
-        if a.contains("hermes") { return ("Hermes", 32_768) }
+        if has("hermes-3") || has("hermes3") { return ("Hermes 3", 131_072) }
+        if has("hermes") { return ("Hermes", 32_768) }
         // Ornith-1.5 official MLX checkpoints advertise 262144 through
         // ``text_config.max_position_embeddings`` in both the 9B dense and
         // 35B-A3B MoE configs. The live server value still wins when present.
@@ -201,8 +214,8 @@ enum ModelInfoCatalog {
         if a.hasPrefix("lfm3-") { return ("LFM3", nil) }
         if a.hasPrefix("lfm2.5-") { return ("LFM2.5", nil) }
         // Bonsai (small / experimental)
-        if a.contains("bonsai2") { return ("Bonsai 2", 4_096) }
-        if a.contains("bonsai") { return ("Bonsai", 4_096) }
+        if has("bonsai2") { return ("Bonsai 2", 4_096) }
+        if has("bonsai") { return ("Bonsai", 4_096) }
         return ("Unknown", nil)
     }
 }

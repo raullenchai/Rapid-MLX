@@ -524,7 +524,7 @@ final class DictationController {
             voiceLaneReady: voiceLaneReady
         )) else {
             if isEnabled, enableRequestID == requestID, modelAlias == preparingAlias {
-                lastError = "\(preparingAlias) couldn't finish preparing for dictation. Try again."
+                lastError = "\(ModelDisplayName.name(for: preparingAlias)) couldn't finish preparing for dictation. Try again."
                 transition(to: .off, alias: nil)
             }
             return
@@ -1115,11 +1115,11 @@ final class DictationController {
             guard transcribeRequestID == requestID, modelAlias == alias else { return }
             let facts = catalogByAlias[alias]
             if facts == nil {
-                lastError = "\(alias) isn't in the audio model catalog. Pick another model."
+                lastError = "\(ModelDisplayName.name(for: alias)) isn't in the audio model catalog. Pick another model."
             } else if facts?.cached != true {
-                lastError = "\(alias) isn't downloaded. Open Rapid → Audio to download it."
+                lastError = "\(ModelDisplayName.name(for: alias)) isn't downloaded. Open Rapid → Audio to download it."
             } else {
-                lastError = "\(alias) couldn't finish preparing for dictation. Try again."
+                lastError = "\(ModelDisplayName.name(for: alias)) couldn't finish preparing for dictation. Try again."
             }
             // The user is mid-flow in another app with only the HUD visible.
             // Leaving "Transcribing…" up while silently failing reads as a

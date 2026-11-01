@@ -77,7 +77,7 @@ struct ModelSizeTests {
         let headline = readiness.headline(displayName: "Qwen3 ASR 0.6B")
         #expect(headline.contains("Qwen3 ASR 0.6B"))
         #expect(!headline.contains("qwen3-asr-0.6b"))
-        #expect(readiness.headline(displayName: nil).contains("qwen3-asr-0.6b"))
+        #expect(readiness.headline(displayName: nil).contains(ModelDisplayName.name(for: "qwen3-asr-0.6b")))
         #expect(readiness.action == .download(alias: "qwen3-asr-0.6b"))
         #expect(AudioViewModel.transcriptionDetails(alias: "qwen3-asr-0.6b", family: "qwen3_asr").displayName == "Qwen3 ASR 0.6B")
     }

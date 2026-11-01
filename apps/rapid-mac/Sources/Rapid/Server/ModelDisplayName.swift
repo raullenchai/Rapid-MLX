@@ -1,7 +1,7 @@
 import Foundation
 
 extension ModelDisplayName {
-    @MainActor static func name(for alias: String) -> String {
+    nonisolated static func name(for alias: String) -> String {
         if let choice = QuickstartCoordinator.onboardingChoices.first(where: { $0.alias == alias }) {
             return choice.displayName
         }
@@ -17,6 +17,7 @@ extension ModelDisplayName {
         } ?? 0
         var consumedSize = false
         var consumedBits = false
+        let variantSpellings = ["tensorfold": "TensorFold"]
         var variants: [String] = []
         for token in tokens.dropFirst(familyEnd) {
             if !consumedSize, token.last == "b", let value = Double(token.dropLast()), value == params {
@@ -25,7 +26,7 @@ extension ModelDisplayName {
                       ModelSizing.parseBitsPerWeight(token) == bits {
                 consumedBits = true
             } else {
-                variants.append(token.uppercased().hasPrefix("A") && Double(token.dropFirst().dropLast()) != nil && token.hasSuffix("b") ? token.uppercased() : token.capitalized)
+                variants.append(token.uppercased().hasPrefix("A") && Double(token.dropFirst().dropLast()) != nil && token.hasSuffix("b") ? token.uppercased() : (variantSpellings[token] ?? token.capitalized))
             }
         }
         let variant = variants.isEmpty ? "" : " · " + variants.joined(separator: " ")

@@ -166,7 +166,7 @@ struct DictationView: View {
     private var statusHeadline: String {
         guard controller.isEnabled else { return "Dictation is off" }
         if controller.phase == .preparingModel {
-            return "Loading \(controller.modelAlias) into memory…"
+            return "Loading \(ModelDisplayName.name(for: controller.modelAlias)) into memory…"
         }
         if controller.phase == .off {
             return controller.isHotkeyArmed
@@ -187,7 +187,7 @@ struct DictationView: View {
         }
         if controller.phase == .off {
             return controller.lastError
-                ?? "Rapid will load \(controller.modelAlias) when you next use dictation."
+                ?? "Rapid will load \(ModelDisplayName.name(for: controller.modelAlias)) when you next use dictation."
         }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
@@ -483,7 +483,7 @@ struct DictationView: View {
             if case .running = downloads.job(for: controller.modelAlias)?.status {
                 return "Downloading — dictation can turn on when it finishes."
             }
-            return selectedModelDetails?.summary ?? entry.alias
+            return selectedModelDetails?.summary ?? ModelDisplayName.name(for: entry.alias)
         }
         var detail = "Ready on disk."
         if let serving = server.servingAlias, !serving.isEmpty, serving != controller.modelAlias {

@@ -20,11 +20,11 @@ struct DictationEnablePolicy {
     }
 
     static func modelNotDownloadedMessage(alias: String) -> String {
-        "\(alias) isn't downloaded yet. Download it in the Model row, then turn dictation on."
+        "\(ModelDisplayName.name(for: alias)) isn't downloaded yet. Download it in the Model row, then turn dictation on."
     }
 
     static func modelNoLongerOnDiskMessage(alias: String) -> String {
-        "\(alias) isn't on disk anymore. Open Rapid → Audio to download it."
+        "\(ModelDisplayName.name(for: alias)) isn't on disk anymore. Open Rapid → Audio to download it."
     }
 
     static func showsErrorBanner(lastError: String?, modelAlias: String, modelDownloadRowVisible: Bool) -> Bool {

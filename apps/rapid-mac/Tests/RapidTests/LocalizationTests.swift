@@ -585,7 +585,7 @@ struct LocalizationTests {
     }
 
     /// Catalog keys for interpolated copy are whatever the compiler derives
-    /// from the call site ("Chatting with \(alias)" -> "Chatting with %@").
+    /// from the call site ("Chatting with \(name)" -> "Chatting with %@").
     /// Resolving real interpolations against the compiled table proves the
     /// hand-written keys match that derivation instead of merely existing.
     @Test("Interpolated call-site strings resolve against the compiled zh-Hans table")
@@ -616,13 +616,13 @@ struct LocalizationTests {
             "xcstringstool did not emit a loadable English localization bundle"
         )
 
-        let alias = "qwen3.8-27b-4bit"
+        let name = ModelDisplayName.name(for: "qwen3.8-27b-4bit")
         let count = 3
         #expect(String(localized: "New Chat", bundle: zhBundle) == "新对话")
         #expect(String(localized: "Model Management", bundle: zhBundle) == "模型管理")
-        #expect(String(localized: "Chatting with \(alias)", bundle: zhBundle) == "正在与 qwen3.8-27b-4bit 对话")
-        #expect(String(localized: "Download \(alias) first", bundle: zhBundle) == "请先下载 qwen3.8-27b-4bit")
-        #expect(String(localized: "Type a message, then Start & Send to start \(alias).", bundle: zhBundle) == "输入消息后，即可启动 qwen3.8-27b-4bit 并发送。")
+        #expect(String(localized: "Chatting with \(name)", bundle: zhBundle) == "正在与 \(name) 对话")
+        #expect(String(localized: "Download \(name) first", bundle: zhBundle) == "请先下载 \(name)")
+        #expect(String(localized: "Type a message, then Start & Send to start \(name).", bundle: zhBundle) == "输入消息后，即可启动 \(name) 并发送。")
         // Composer load status: positional arguments must survive, or the
         // byte counts would print in the wrong order.
         let done = "1.7 GB", total = "2.9 GB"

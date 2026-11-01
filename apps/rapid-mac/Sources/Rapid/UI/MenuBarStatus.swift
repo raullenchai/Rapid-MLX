@@ -30,11 +30,11 @@ enum MenuBarStatus {
         case .missing:
             return String(localized: "Setup needed")
         case .starting(let alias):
-            return alias.isEmpty ? String(localized: "Starting…") : String(localized: "\(alias) · Starting…")
+            return alias.isEmpty ? String(localized: "Starting…") : String(localized: "\(ModelDisplayName.name(for: alias)) · Starting…")
         case .ready(let alias):
-            return alias.isEmpty ? String(localized: "Ready") : String(localized: "\(alias) · Ready")
+            return alias.isEmpty ? String(localized: "Ready") : String(localized: "\(ModelDisplayName.name(for: alias)) · Ready")
         case .crashed(let alias, _):
-            return alias.isEmpty ? String(localized: "Crashed") : String(localized: "\(alias) · Crashed")
+            return alias.isEmpty ? String(localized: "Crashed") : String(localized: "\(ModelDisplayName.name(for: alias)) · Crashed")
         }
     }
 

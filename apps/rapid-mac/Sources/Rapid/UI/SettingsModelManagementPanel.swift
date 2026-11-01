@@ -475,7 +475,7 @@ struct SettingsModelManagementPanel: View {
                     Text("Largest")
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
-                    Text(largest.alias)
+                    Text(ModelDisplayName.name(for: largest.alias))
                         .font(RapidFont.bodyEmphasis)
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
@@ -771,14 +771,16 @@ struct SettingsModelManagementPanel: View {
         .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(isPrimary ? "primary" : "alt")")
     }
 
+    /// Peak memory for an 8K prompt, capability, and measured speed.
     /// Compact stats line under a recommended card's model name:
-    /// "7.6 GB · 86% capability · ~17 tok/s" (tok/s omitted when we have
+    /// "7.6 GB memory · 86% capability · ~17 tok/s" (tok/s omitted when we have
     /// no local measurement for that tier). When the pick carries a
     /// ``caveat`` (e.g. a chat specialist), that word replaces the
-    /// capability % — "4.8 GB · ~117 tok/s · Chat only" — because the
+    /// capability % — "4.8 GB memory · ~117 tok/s · Chat only" — because the
     /// blended score would understate conversation and overstate the rest.
     static func pickStatsLine(_ pick: RAMBucketedDefault.Pick) -> String {
-        var parts = [DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))]
+        let size = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))
+        var parts = [String(localized: "\(size) memory")]
         if let caveat = pick.caveat {
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
@@ -797,7 +799,7 @@ struct SettingsModelManagementPanel: View {
     /// do, otherwise the one action button.
     ///
     /// No size caption here. ``pickStatsLine`` already opens with the
-    /// pick's footprint two columns to the left ("7.6 GB · 86%
+    /// pick's footprint two columns to the left ("7.6 GB memory · 86%
     /// capability · ~17 tok/s"), so a second "7.6 GB" beside the button
     /// was the same fact twice on one card — and the two were computed
     /// from different sources (the curated ``Pick.footprintGB`` vs
@@ -943,7 +945,7 @@ struct SettingsModelManagementPanel: View {
     }
 
     nonisolated static func downloadTotalBytes(_ entry: ModelEntry) -> Int64? {
-        entry.size?.byteCount
+        entry.displayedModelSize?.byteCount
     }
 
     /// Catalog byte counts from the manifest or cache inventory are formatted once
@@ -979,7 +981,7 @@ struct SettingsModelManagementPanel: View {
         }
         .buttonStyle(.plain)
         .frame(width: 15)
-        .accessibilityLabel(isFav ? String(localized: "Unpin \(alias)") : String(localized: "Pin \(alias)"))
+        .accessibilityLabel(isFav ? String(localized: "Unpin \(ModelDisplayName.name(for: alias))") : String(localized: "Pin \(ModelDisplayName.name(for: alias))"))
         .accessibilityIdentifier("Settings.ModelManagement.Favorite.\(alias)")
     }
 
@@ -1074,7 +1076,7 @@ struct SettingsModelManagementPanel: View {
                     // staying the same grey as the copy glyph beside it.
                     QuietIconButton(
                         symbol: "trash",
-                        label: String(localized: "Delete \(entry.alias) from disk"),
+                        label: String(localized: "Delete \(ModelDisplayName.name(for: entry.alias)) from disk"),
                         help: String(localized: "Delete from disk"),
                         tint: RapidTheme.statusError,
                         size: RapidTheme.ControlHeight.mini
@@ -1106,7 +1108,7 @@ struct SettingsModelManagementPanel: View {
                     .lineLimit(1)
                 QuietIconButton(
                     symbol: "trash",
-                    label: String(localized: "Stop serving and delete \(entry.alias) from disk"),
+                    label: String(localized: "Stop serving and delete \(ModelDisplayName.name(for: entry.alias)) from disk"),
                     help: String(localized: "Stop serving and delete this model from disk."),
                     tint: RapidTheme.statusError,
                     size: RapidTheme.ControlHeight.mini
@@ -1127,7 +1129,7 @@ struct SettingsModelManagementPanel: View {
                 }
                 QuietIconButton(
                     symbol: "arrow.down.circle",
-                    label: String(localized: "Download \(entry.alias)"),
+                    label: String(localized: "Download \(ModelDisplayName.name(for: entry.alias))"),
                     help: String(localized: "Download"),
                     size: RapidTheme.ControlHeight.mini,
                     symbolSize: 14
@@ -1239,7 +1241,8 @@ struct SettingsModelManagementPanel: View {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 HStack(spacing: RapidTheme.Space.xs) {
-                    Text(entry.alias)
+                    Text(ModelDisplayName.name(for: entry.alias))
+                        .help(entry.alias)
                         .font(RapidFont.bodyEmphasis)
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
@@ -1277,7 +1280,7 @@ struct SettingsModelManagementPanel: View {
         HStack(spacing: RapidTheme.Space.sm) {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text(capability == .audio ? ModelDisplayName.name(for: entry.alias) : entry.alias)
+                Text(ModelDisplayName.name(for: entry.alias))
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
@@ -1619,7 +1622,7 @@ struct SettingsModelManagementPanel: View {
         if server.servingAlias == entry.alias {
             await server.stop()
             guard server.servingAlias != entry.alias else {
-                lastError = String(localized: "Couldn't stop \(entry.alias), so it was not deleted.")
+                lastError = String(localized: "Couldn't stop \(ModelDisplayName.name(for: entry.alias)), so it was not deleted.")
                 return
             }
         }

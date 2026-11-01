@@ -43,7 +43,7 @@ struct ComposerLoadStatusTests {
         #expect(s.phase == .downloading)
         #expect(s.progress == .determinate(0.594))
         #expect(s.percentText == "59%")
-        #expect(s.detail == "\(alias) · \(DownloadProgress.formatBytes(gib * 17 / 10)) of \(DownloadProgress.formatBytes(gib * 29 / 10))")
+        #expect(s.detail == "\(ModelDisplayName.name(for: alias)) · \(DownloadProgress.formatBytes(gib * 17 / 10)) of \(DownloadProgress.formatBytes(gib * 29 / 10))")
         #expect(s.etaText == "< 1 min left")
     }
 
@@ -66,14 +66,14 @@ struct ComposerLoadStatusTests {
         let s = try #require(resolve(.starting(alias: alias), progress: progress).1)
         #expect(s.progress == .indeterminate)
         #expect(s.percentText == nil)
-        #expect(s.detail == "\(alias) · \(DownloadProgress.formatBytes(gib * 29 / 10)) downloaded")
+        #expect(s.detail == "\(ModelDisplayName.name(for: alias)) · \(DownloadProgress.formatBytes(gib * 29 / 10)) downloaded")
     }
 
     @Test("Before the disk is observed the slot names the model, never 0 B")
     func noBytesYet() throws {
         let progress = ModelReadiness.ProgressSnapshot(activity: .downloading, bytesDownloaded: 0)
         let s = try #require(resolve(.starting(alias: alias), progress: progress).1)
-        #expect(s.detail == alias)
+        #expect(s.detail == ModelDisplayName.name(for: alias))
     }
 
     @Test("A byte count past an under-estimated total falls back to 'downloaded'")
@@ -130,7 +130,7 @@ struct ComposerLoadStatusTests {
         #expect(s.progress == .indeterminate)
         #expect(s.percentText == nil)
         #expect(s.etaText == nil)
-        #expect(s.detail == alias)
+        #expect(s.detail == ModelDisplayName.name(for: alias))
         #expect(!s.accessibilityLabel.contains("%"))
     }
 

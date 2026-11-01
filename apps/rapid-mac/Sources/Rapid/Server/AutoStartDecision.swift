@@ -365,9 +365,9 @@ enum AutoStartDecision: Equatable {
     /// the contract test, no SwiftUI environment to stand up.
     static func promptDownloadCaption(alias: String, sizeText: String?) -> String {
         if let sizeText, !sizeText.isEmpty {
-            return "Click Start to download \(alias) (\(sizeText))."
+            return "Click Start to download \(ModelDisplayName.name(for: alias)) (\(sizeText))."
         }
-        return "Click Start to download \(alias)."
+        return "Click Start to download \(ModelDisplayName.name(for: alias))."
     }
 
     // MARK: - Helpers

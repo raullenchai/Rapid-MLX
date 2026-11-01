@@ -646,7 +646,7 @@ struct ModelPickerBar: View {
 
     /// What the composer chip shows. A real alias, or an instruction.
     private var pickerLabel: String {
-        ModelDisplayName.configValue(alias: alias) ?? String(localized: "Choose a model")
+        ModelDisplayName.configValue(alias: alias).map { ModelDisplayName.name(for: $0) } ?? String(localized: "Choose a model")
     }
 
     /// True when the chip is showing the instruction rather than a model.
@@ -845,13 +845,13 @@ struct ModelPickerBar: View {
     /// ``"<alias> · <subtitle>"`` — so the Quickstart row stays
     /// visually consistent with the other sections.
     static func quickstartRowTitle(alias: String) -> String {
-        return "\(alias) · \(quickstartSubtitle)"
+        return "\(ModelDisplayName.name(for: alias)) · \(quickstartSubtitle)"
     }
 
     /// VoiceOver label for the Quickstart row.
     static func quickstartRowAccessibilityLabel(alias: String, cached: Bool) -> String {
         let downloaded = cached ? String(localized: "downloaded") : String(localized: "not downloaded")
-        return String(localized: "Quickstart: \(alias), \(downloaded). \(quickstartSubtitle).")
+        return String(localized: "Quickstart: \(ModelDisplayName.name(for: alias)), \(downloaded). \(quickstartSubtitle).")
     }
 
     /// Pure helper for the "All models" dedup. When the Quickstart
@@ -1042,15 +1042,15 @@ struct ModelPickerBar: View {
         // standard-benchmark meters live in "All models" (Settings), so
         // the recommendation never shows two conflicting sets of numbers
         // for the same model.
-        .help(tagline)
-        .accessibilityLabel("\(entry.alias). \(tagline)")
+        .help(entry.alias + "\n" + tagline)
+        .accessibilityLabel("\(ModelDisplayName.name(for: entry.alias)). \(tagline)")
     }
 
     /// Pure helper so the menu title is pinnable by tests. " — " em
     /// dash separator anchors the "Recommended" / "Faster" label on the
     /// left while the alias trails on the right.
     static func recommendedRowMenuTitle(label: String, alias: String) -> String {
-        return "\(label) — \(alias)"
+        return "\(label) — \(ModelDisplayName.name(for: alias))"
     }
 
     /// Tooltip / caption tagline for a recommended row: whether it's the
@@ -1206,13 +1206,13 @@ struct ModelPickerBar: View {
         // the cache-state cue. Combined into one string via
         // ``qualityRowHelpText`` so the help() modifier stays a single
         // value and tests can pin the multi-line copy.
-        .help(notFit
+        .help(entry.alias + "\n" + (notFit
             ? String(localized: "Estimated to need about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30)))); this Mac has \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: hardware.usableRAMGB * Double(1 << 30)))) available for models. You can download it, but starting it may fail or destabilize the Mac.")
             : ModelPickerBar.aliasRowHelpText(
                 alias: entry.alias,
                 bucket: bucket,
                 cached: entry.cached
-            )
+            ))
         )
         // VoiceOver: the leading SF Symbol carries the cache cue
         // sighted users see, but the symbol's image hint isn't read,
@@ -1255,7 +1255,7 @@ struct ModelPickerBar: View {
             if !entry.cached
                 && !downloads.isDownloading(entry.alias) {
                 Button {
-                    downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: entry.size?.byteCount)
+                    downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: entry.displayedModelSize?.byteCount)
                 } label: {
                     Text("Download in background")
                 }
@@ -1315,7 +1315,7 @@ struct ModelPickerBar: View {
     /// quality → tools so the size cue stays adjacent to the alias
     /// name; both badges share the leading " · " separator.
     static func aliasButtonTitle(alias: String, bucket: ModelPickerVisibility.QualityBucket) -> String {
-        var title = alias
+        var title = ModelDisplayName.name(for: alias)
         if let suffix = ModelPickerVisibility.qualityStickerSuffix(for: bucket) {
             title += " \(suffix)"
         }
@@ -1412,11 +1412,11 @@ struct ModelPickerBar: View {
         // the unified tooltip in ``qualityStickerTooltip``.
         switch bucket {
         case .tiny:
-            qualityPart = String(localized: "\(alias), \(downloaded), tiny model — may contradict itself in multi-turn chat")
+            qualityPart = String(localized: "\(ModelDisplayName.name(for: alias)), \(downloaded), tiny model — may contradict itself in multi-turn chat")
         case .small:
-            qualityPart = String(localized: "\(alias), \(downloaded), small model — may contradict itself in multi-turn chat")
+            qualityPart = String(localized: "\(ModelDisplayName.name(for: alias)), \(downloaded), small model — may contradict itself in multi-turn chat")
         case .midOrLarger:
-            qualityPart = "\(alias), \(downloaded)"
+            qualityPart = "\(ModelDisplayName.name(for: alias)), \(downloaded)"
         }
         return qualityPart
     }
@@ -1432,9 +1432,9 @@ struct ModelPickerBar: View {
             return String(localized: "Delete this model?")
         }
         if let size = entry.size?.displayText {
-            return String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
+            return String(localized: "Delete \"\(ModelDisplayName.name(for: entry.alias))\"? This frees \(size).")
         }
-        return String(localized: "Delete \"\(entry.alias)\"?")
+        return String(localized: "Delete \"\(ModelDisplayName.name(for: entry.alias))\"?")
     }
 
     private var pickerIcon: String {
@@ -1657,7 +1657,7 @@ struct ModelPickerBar: View {
         if !selectedAliasIsCached {
             let entry = catalog.first(where: { $0.alias == trimmed })
             if !downloads.isDownloading(trimmed) {
-                _ = downloads.startDownload(alias: trimmed, hfPath: entry?.hfRepo, totalBytes: entry?.size?.byteCount)
+                _ = downloads.startDownload(alias: trimmed, hfPath: entry?.hfRepo, totalBytes: entry?.displayedModelSize?.byteCount)
             }
             return
         }
@@ -1723,7 +1723,7 @@ struct ModelPickerBar: View {
         if alias.isEmpty {
             return String(localized: "This model likely won't fit your \(gb) GB Mac")
         }
-        return String(localized: "\(alias) likely won't fit your \(gb) GB Mac")
+        return String(localized: "\(ModelDisplayName.name(for: alias)) likely won't fit your \(gb) GB Mac")
     }
 
     /// Pure helper — produces the body string from the footprint and
@@ -2171,9 +2171,13 @@ struct ModelInfoPopover: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(info.alias)
+            Text(ModelDisplayName.name(for: info.alias))
                 .font(.rapid(.headline))
                 .lineLimit(1)
+                .textSelection(.enabled)
+            Text(info.alias)
+                .font(.rapid(.caption))
+                .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             Text("\(info.paramsLabel) · \(info.quantLabel) · \(info.contextLabel) context")
                 .font(.rapid(.caption))

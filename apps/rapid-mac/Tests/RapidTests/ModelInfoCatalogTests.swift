@@ -27,6 +27,33 @@ struct ModelInfoCatalogTests {
 
     // MARK: - Family + context
 
+    @Test("Parameter counts do not match numeric family versions", arguments: [
+        "diffusion-gemma-26b-4bit", "embeddinggemma-300m-6bit", "embeddinggemma-300m-4bit",
+    ])
+    func numericFamilyBoundaries(alias: String) {
+        let result = ModelInfoCatalog.familyAndContext(for: alias)
+        #expect(result.family == "Unknown")
+        #expect(result.contextWindow == nil)
+    }
+
+    @Test("Known numeric family versions keep their labels and context", arguments: [
+        ("gemma-2-9b-4bit", "Gemma 2", 8_192),
+        ("gemma-3-27b-4bit", "Gemma 3", 8_192),
+        ("deepseek-v41-flash-1017", "DeepSeek V4.1", 131_072),
+        ("deepseek-v4.1-flash-1017", "DeepSeek V4.1", 131_072),
+        ("deepseek-v4-flash-4bit", "DeepSeek V4", 131_072),
+        ("qwen3.8-27b-4bit", "Qwen 3.8", 32_768),
+        ("qwen3-8b-4bit", "Qwen 3", 32_768),
+        ("llama-3.1-8b", "Llama 3.1", 131_072),
+        ("gemma-2", "Gemma 2", 8_192),
+        ("gemma-26b-gemma-2-9b-4bit", "Gemma 2", 8_192),
+    ])
+    func numericFamilyVersions(alias: String, family: String, context: Int) {
+        let result = ModelInfoCatalog.familyAndContext(for: alias)
+        #expect(result.family == family)
+        #expect(result.contextWindow == context)
+    }
+
     @Test("Qwen 3.6 / 3.5 / 3 land in their own family slots with 32k context")
     func qwenFamilies() {
         let i36 = ModelInfoCatalog.info(for: "qwen3.6-27b", hfRepo: nil)

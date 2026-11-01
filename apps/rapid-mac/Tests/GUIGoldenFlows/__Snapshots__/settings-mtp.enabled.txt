@@ -12,7 +12,7 @@ AXApplication title="Rapid-MLX"
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXGroup desc="qwen3.8-27b-4bit isn't running, It's already downloaded — starting takes a few seconds." enabled=true
+          AXGroup desc="Qwen 3.8 · 27B isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Readiness.Action" desc="Start" enabled=true
@@ -23,7 +23,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Start & Send" help="Type a message, then Start & Send to start qwen3.8-27b-4bit." enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Start & Send" help="Type a message, then Start & Send to start Qwen 3.8 · 27B." enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

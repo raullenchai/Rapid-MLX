@@ -518,7 +518,7 @@ struct ContentView: View {
             }
             .accessibilityIdentifier("ModelSwitchGuard.Cancel")
         } message: { request in
-            Text("Switching to \(request.risk.targetAlias) may interrupt those responses.")
+            Text("Switching to \(ModelDisplayName.name(for: request.risk.targetAlias)) may interrupt those responses.")
         }
     }
 
@@ -1297,7 +1297,7 @@ struct ContentView: View {
     /// picker's "Download in background" uses.
     private func downloadModel(_ target: String) {
         let entry = catalogEntries.first(where: { $0.alias == target })
-        _ = downloads.startDownload(alias: target, hfPath: entry?.hfRepo, totalBytes: entry?.size?.byteCount)
+        _ = downloads.startDownload(alias: target, hfPath: entry?.hfRepo, totalBytes: entry?.displayedModelSize?.byteCount)
     }
 
     private func selectChatModel(_ target: String) {

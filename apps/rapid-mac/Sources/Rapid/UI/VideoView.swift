@@ -254,8 +254,8 @@ struct VideoView: View {
                         .accessibilityIdentifier("Video.CancelDownload")
                 }
             } else if !model.cached {
-                Button("Download \(model.alias)") {
-                    _ = downloads.startDownload(alias: model.alias, hfPath: model.hfRepo, totalBytes: model.size?.byteCount)
+                Button(String(localized: "Download \(ModelDisplayName.name(for: model.alias))")) {
+                    _ = downloads.startDownload(alias: model.alias, hfPath: model.hfRepo, totalBytes: model.displayedModelSize?.byteCount)
                 }
                 .buttonStyle(.rapidPrimary)
                 .disabled(!viewModel.isSelectedModelEligible)
@@ -537,8 +537,8 @@ struct VideoView: View {
     }
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
-        guard let minimum = model.minimumMemoryGB else { return model.alias }
-        return "\(model.alias) · \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimum * Double(1 << 30))))"
+        guard let minimum = model.minimumMemoryGB else { return ModelDisplayName.name(for: model.alias) }
+        return "\(ModelDisplayName.name(for: model.alias)) · \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: minimum * Double(1 << 30))))"
     }
 
     private var referenceControls: some View {

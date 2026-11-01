@@ -29,7 +29,7 @@ struct ShareComputeRedesignTests {
     private static func receipt(
         id: String,
         catalogID: String = "qwen3.8-27b",
-        model: String = "Qwen3.8 27B · 4-bit",
+        model: String = "Qwen 3.8 · 27B · TensorFold",
         started: Date,
         duration: TimeInterval = 3_600,
         reward: ShareComputeRewardStatus = .available,

@@ -216,7 +216,7 @@ struct SettingsPerformancePanel: View {
             } else {
                 Picker("Model", selection: $selectedAlias) {
                     ForEach(modelChoices) { entry in
-                        Text(entry.cached ? entry.alias : String(localized: "\(entry.alias) · not downloaded"))
+                        Text(entry.cached ? ModelDisplayName.name(for: entry.alias) : String(localized: "\(ModelDisplayName.name(for: entry.alias)) · not downloaded"))
                             .tag(Optional(entry.alias))
                     }
                 }
@@ -241,8 +241,8 @@ struct SettingsPerformancePanel: View {
             != server.hasAppliedSpeculativeDecoding(forAlias: alias)
         return InlineNotice(
             message: speculativeChanged
-                ? String(localized: "Restart \(alias) to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available.")
-                : String(localized: "Reload \(alias) to apply. Other resident models will stay available."),
+                ? String(localized: "Restart \(ModelDisplayName.name(for: alias)) to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available.")
+                : String(localized: "Reload \(ModelDisplayName.name(for: alias)) to apply. Other resident models will stay available."),
             tone: .warning,
             actionTitle: isReloading ? String(localized: "Restarting…") : (speculativeChanged ? String(localized: "Restart model") : String(localized: "Reload model")),
             actionIdentifier: "Settings.Performance.ReloadModel",
@@ -394,10 +394,10 @@ struct SettingsPerformancePanel: View {
         return VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             HStack {
                 Text(perf.hasOverride(forAlias: alias)
-                     ? "Customized for \(alias)."
+                     ? "Customized for \(ModelDisplayName.name(for: alias))."
                      : measured
-                        ? "\(alias) will use its measured defaults."
-                        : "\(alias) will use the engine defaults; no measured profile is published for it.")
+                        ? "\(ModelDisplayName.name(for: alias)) will use its measured defaults."
+                        : "\(ModelDisplayName.name(for: alias)) will use the engine defaults; no measured profile is published for it.")
                 .font(RapidFont.caption)
                 .foregroundStyle(RapidTheme.textSecondary)
                 Spacer()

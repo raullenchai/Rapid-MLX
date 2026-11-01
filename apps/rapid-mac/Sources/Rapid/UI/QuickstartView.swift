@@ -251,7 +251,7 @@ final class QuickstartCoordinator {
     /// Standard starter for Macs with at least 16 GB RAM. The first-run
     /// decision itself is made by ``defaultChoice(hardware:catalog:)`` so a
     /// lower-memory Mac and an eligible cached model can take the right path.
-    static let defaultChoice = QuickstartModelChoice(
+    nonisolated static let defaultChoice = QuickstartModelChoice(
         alias: "qwen3.5-4b-4bit",
         displayName: "Qwen 3.5 · 4B",
         hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit",
@@ -263,7 +263,7 @@ final class QuickstartCoordinator {
     /// Smarter optional choice for Macs below 16 GB RAM. Clean 8 GB hardware
     /// validation showed that loading it projects beyond the app's usable RAM
     /// budget, so first run defaults to ``lowMemoryChoice`` instead.
-    static let compactDefaultChoice = QuickstartModelChoice(
+    nonisolated static let compactDefaultChoice = QuickstartModelChoice(
         alias: "lfm2.5-2.6b-4bit",
         displayName: "LFM2.5 · 2.6B",
         hfRepo: "LiquidAI/LFM2.5-2.6B-MLX",
@@ -275,7 +275,7 @@ final class QuickstartCoordinator {
     /// Deliberately weaker than the starter. Onboarding surfaces this one explicitly as
     /// a memory-first fallback and names the trade-off instead of pretending
     /// it is an equivalent recommendation.
-    static let lowMemoryChoice = QuickstartModelChoice(
+    nonisolated static let lowMemoryChoice = QuickstartModelChoice(
         alias: "lfm2.5-1b-4bit",
         displayName: "LFM2.5 · 1.2B",
         hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
@@ -294,7 +294,7 @@ final class QuickstartCoordinator {
     /// (tqdm-fallback progress is fine off the first-impression path);
     /// size + benchmark meters resolve from ``ModelSizing`` /
     /// ``BenchScoresCatalog`` at render.
-    static let onboardingChoices: [QuickstartModelChoice] = [
+    nonisolated static let onboardingChoices: [QuickstartModelChoice] = [
         defaultChoice,
         compactDefaultChoice,
         lowMemoryChoice,

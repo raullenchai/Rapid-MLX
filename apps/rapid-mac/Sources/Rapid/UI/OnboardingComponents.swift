@@ -436,7 +436,7 @@ struct OnboardingCatalogRow: View {
                     tone: isAvailable ? .neutral : .muted
                 )
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(alias)
+                    Text(ModelDisplayName.name(for: alias))
                         .scaledSystemFont(14, weight: .semibold)
                         .foregroundStyle(isAvailable ? RapidTheme.textPrimary : RapidTheme.textTertiary)
                         .lineLimit(1)
@@ -485,7 +485,7 @@ struct OnboardingCatalogRow: View {
     }
 
     private var accessibilityText: String {
-        var parts = [alias, subtitle]
+        var parts = [ModelDisplayName.name(for: alias), subtitle]
         parts.append(contentsOf: badges.map(\.text.localizedLowercase))
         if !sizeText.isEmpty { parts.append(sizeText) }
         return parts.joined(separator: ". ")

@@ -277,7 +277,7 @@ final class AudioViewModel {
     /// actual question: which model fits my language and speed/quality needs?
     /// Keep the fallback useful so a newly added engine alias never lands in
     /// the UI as an unexplained name.
-    static func transcriptionDetails(
+    nonisolated static func transcriptionDetails(
         alias: String,
         family: String?
     ) -> TranscriptionModelDetails {

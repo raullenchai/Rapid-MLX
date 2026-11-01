@@ -934,7 +934,7 @@ struct ModelReadinessTests {
         ]
         for state in named {
             XCTAssertTrue(
-                state.headline.contains(alias),
+                state.headline.contains(ModelDisplayName.name(for: alias)),
                 "headline should name the model: \(state.headline)"
             )
         }
@@ -963,7 +963,7 @@ struct ModelReadinessTests {
         for state in blocking {
             XCTAssertFalse(state.sendAllowed)
             XCTAssertTrue(
-                state.composerPlaceholder.contains(alias),
+                state.composerPlaceholder.contains(ModelDisplayName.name(for: alias)),
                 "blocking placeholder should name the model: \(state.composerPlaceholder)"
             )
         }
@@ -974,11 +974,11 @@ struct ModelReadinessTests {
         for state in working {
             XCTAssertFalse(state.sendAllowed)
             XCTAssertTrue(
-                ComposerLoadStatus.resolve(readiness: state, progress: nil)?.detail == alias,
+                ComposerLoadStatus.resolve(readiness: state, progress: nil)?.detail == ModelDisplayName.name(for: alias),
                 "the composer load status must name the model"
             )
             XCTAssertFalse(
-                state.composerPlaceholder.contains(alias),
+                state.composerPlaceholder.contains(ModelDisplayName.name(for: alias)),
                 "the load status already names the model: \(state.composerPlaceholder)"
             )
         }
@@ -996,7 +996,7 @@ struct ModelReadinessTests {
         XCTAssertEqual(ModelReadiness.noModel.emptyStateSubtitle, "Choose a model to start")
         XCTAssertEqual(
             ModelReadiness.ready(alias: alias).emptyStateSubtitle,
-            "Chatting with \(alias)"
+            "Chatting with \(ModelDisplayName.name(for: alias))"
         )
         XCTAssertEqual(
             ModelReadiness.starting(alias: alias, detail: nil).emptyStateSubtitle,

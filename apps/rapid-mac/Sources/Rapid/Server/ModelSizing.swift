@@ -384,11 +384,11 @@ enum ModelSizing {
         var title: String {
             switch severity {
             case .unsafe:
-                return "\(alias) may crash your Mac right now"
+                return "\(ModelDisplayName.name(for: alias)) may crash your Mac right now"
             case .tight:
-                return "\(alias) is a tight fit right now"
+                return "\(ModelDisplayName.name(for: alias)) is a tight fit right now"
             case .safe:
-                return "\(alias) is ready to load"
+                return "\(ModelDisplayName.name(for: alias)) is ready to load"
             }
         }
 
@@ -399,7 +399,7 @@ enum ModelSizing {
             let need = size(footprintGB)
             let free = size(freeGB)
             guard totalGB > 0 else {
-                let facts = "\(alias) needs about \(need), and about \(free) is free right now."
+                let facts = "\(ModelDisplayName.name(for: alias)) needs about \(need), and about \(free) is free right now."
                 return facts + " Close some apps or pick a smaller model before loading it."
             }
             let usedGB = max(0, totalGB - freeGB)
