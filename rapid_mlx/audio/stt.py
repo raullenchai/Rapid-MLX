@@ -273,7 +273,7 @@ def _load_local_whisper_processor(transformers_module, source, revision_kwargs):
                 tokenizer = tokenizer_class.from_pretrained(
                     source, local_files_only=True, **revision_kwargs
                 )
-            except OSError:
+            except Exception:  # noqa: BLE001
                 if fast_tokenizer is None or slow_tokenizer is None:
                     raise
                 tokenizer = slow_tokenizer.from_pretrained(
@@ -282,8 +282,8 @@ def _load_local_whisper_processor(transformers_module, source, revision_kwargs):
             processor = transformers_module.WhisperProcessor(
                 feature_extractor=feature_extractor, tokenizer=tokenizer
             )
-        except OSError:
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("%s", type(e).__name__)
         else:
             logger.info(
                 "Assembled WhisperProcessor from the cached feature extractor "

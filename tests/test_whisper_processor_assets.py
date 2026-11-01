@@ -190,6 +190,56 @@ def test_offline_processor_falls_back_to_unpinned_cache(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("online_required", [False, True])
+def test_processor_failed_composition_retries_with_downloads_enabled(
+    monkeypatch, caplog, online_required
+):
+    processor = object()
+    calls = []
+
+    def load(source, **kwargs):
+        calls.append(("processor", source, kwargs))
+        if kwargs.get("local_files_only") and ("revision" in kwargs or online_required):
+            raise OSError("original processor error")
+        return processor
+
+    def load_extractor(source, **kwargs):
+        calls.append(("extractor", source, kwargs))
+        raise ValueError("invalid cached extractor details")
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            WhisperProcessor=SimpleNamespace(from_pretrained=load),
+            WhisperFeatureExtractor=SimpleNamespace(from_pretrained=load_extractor),
+            WhisperTokenizerFast=SimpleNamespace(),
+        ),
+    )
+    engine = STTEngine("mlx-community/whisper-base-mlx")
+    engine.model = SimpleNamespace(_processor=None)
+    with caplog.at_level("DEBUG", logger="rapid_mlx.audio.stt"):
+        engine._ensure_whisper_processor()
+
+    assert engine.model._processor is processor
+    expected = [
+        (name, "openai/whisper-base", {"revision": PIN, "local_files_only": True})
+        for name in ("processor", "extractor")
+    ]
+    expected.append(("processor", "openai/whisper-base", {"local_files_only": True}))
+    if online_required:
+        expected.extend(
+            [
+                ("extractor", "openai/whisper-base", {"local_files_only": True}),
+                ("processor", "openai/whisper-base", {"revision": PIN}),
+            ]
+        )
+    assert calls == expected
+    assert "ValueError" in caplog.text
+    assert "invalid cached extractor details" not in caplog.text
+
+
 def test_offline_processor_composes_from_cached_parts(monkeypatch, caplog):
     processor, feature_extractor, tokenizer = object(), object(), object()
     calls = []
