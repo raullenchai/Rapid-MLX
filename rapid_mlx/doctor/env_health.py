@@ -10,8 +10,8 @@ optional dev tools. The user runs ``rapid-mlx doctor`` to answer one question
 * never escalate to sudo or read user data outside ``~/.cache/huggingface``;
 * report a deterministic status (✓ / ⚠ / ✗) with a one-line label.
 
-``rapid-mlx doctor`` uses a twenty-second scheduling budget to accommodate
-cold package imports while reserving time for later checks. Built-in I/O and
+``rapid-mlx doctor`` uses a sixty-second scheduling budget to accommodate
+cold first package imports while reserving time for later checks. Built-in I/O and
 subprocess probes have explicit timeouts, and timeout results downgrade to ⚠
 or skipped — never ✗.
 
@@ -299,10 +299,13 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
     "replaces it — install the current Rapid-MLX Desktop.app (its DMG ships a "
     "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
 )
-_DOCTOR_BUDGET_S = 20.0
+# First imports after installs that do not precompile bytecode can be slow,
+# especially while loading fresh native libraries. Allow cold probes to finish
+# while reserving time for the later diagnostics; warm probes return immediately.
+_DOCTOR_BUDGET_S = 60.0
 _DOCTOR_FOLLOWUP_RESERVE_S = 5.0
-_DOCTOR_DEEP_BUDGET_S = 30.0
-_IMPORT_PROBE_TIMEOUT_S = 20.0
+_DOCTOR_DEEP_BUDGET_S = 75.0
+_IMPORT_PROBE_TIMEOUT_S = 45.0
 # Leave enough scheduling-budget headroom for subprocess timeout cleanup, report
 # assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
 # terminating the child at its timeout and can return a few milliseconds
@@ -3163,6 +3166,31 @@ def _running_cli_exe() -> str | None:
     return sibling if os.path.exists(sibling) else None
 
 
+def _plain_virtualenv_root(
+    running_exe: str | None, *, installer_root: Path | None = None
+) -> Path | None:
+    """Identify a plain venv; paths are injectable to avoid host-dependent tests."""
+    if not running_exe:
+        return None
+    try:
+        bin_dir = Path(running_exe).parent
+        root = bin_dir.parent
+        if bin_dir.name != "bin" or not (root / "pyvenv.cfg").is_file():
+            return None
+        if any(
+            (root / name).exists() for name in ("uv-receipt.toml", "pipx_metadata.json")
+        ):
+            return None
+        installer_root = (
+            installer_root if installer_root is not None else Path.home() / ".rapid-mlx"
+        )
+        if root.resolve() == installer_root.resolve():
+            return None
+        return root
+    except OSError:
+        return None
+
+
 def section_shell_integration(
     *,
     which: Callable[[str], str | None] | None = None,
@@ -3219,11 +3247,18 @@ def section_shell_integration(
                 detail=f"active={active} shadowed={shadowed}",
             )
     else:
-        s.add(
-            "rapid-mlx NOT on $PATH",
-            CheckStatus.FAIL,
-            detail="shutil.which('rapid-mlx') returned None",
-        )
+        venv = _plain_virtualenv_root(running_exe)
+        detail = "shutil.which('rapid-mlx') returned None"
+        if venv is not None:
+            s.add(
+                f"rapid-mlx not on $PATH (running from the virtualenv {venv}) — "
+                f"run `source {shlex.quote(str(venv / 'bin' / 'activate'))}` "
+                f"or add `{shlex.quote(str(venv / 'bin'))}` to PATH",
+                CheckStatus.WARN,
+                detail=f"{detail}; running={running_exe} venv={venv}",
+            )
+        else:
+            s.add("rapid-mlx NOT on $PATH", CheckStatus.FAIL, detail=detail)
 
     present, rc = _argcomplete_hook_present(rcs=rcs)
     if present:

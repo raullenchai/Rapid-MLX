@@ -15,6 +15,8 @@ This module is deliberately import-light so CLI startup paths can consult it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 BASE_RUNTIME_EXTRAS: frozenset[str] = frozenset(
     {"vision", "image", "video", "dflash", "mtp"}
 )
@@ -30,6 +32,13 @@ def runtime_install_spec(extra: str, version: str) -> str:
     if is_base_runtime_extra(extra):
         return f"rapid-mlx=={version}"
     return f"rapid-mlx[{extra}]=={version}"
+
+
+def runtime_install_spec_with_extras(extras: Iterable[str], version: str) -> str:
+    """Return a pinned requirement preserving the supplied optional extras."""
+    names = sorted(set(extras))
+    suffix = f"[{','.join(names)}]" if names else ""
+    return f"rapid-mlx{suffix}=={version}"
 
 
 def homebrew_runtime_hint(extra: str, version: str) -> str:

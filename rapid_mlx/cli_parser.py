@@ -2999,14 +2999,14 @@ def _add_doctor_parser(
     doctor_parser.add_argument(
         "--deep",
         action="store_true",
-        help="Run opt-in dependency, DNS, and route probes (up to 30 seconds)",
+        help="Run opt-in dependency, DNS, and route probes (up to 75 seconds)",
     )
     doctor_parser.add_argument(
         "--fix",
         action="store_true",
         help=(
             "Plan and apply only verified repairs (bounded stages may total "
-            "up to 90 seconds)"
+            "up to 3 minutes)"
         ),
     )
     doctor_parser.add_argument(

@@ -4,7 +4,7 @@
 The contract for the doctor subcommand (PR #4 of the doctor refactor
 series) is:
 
-* runs in a twenty-second scheduling budget wall-clock,
+* runs in a sixty-second scheduling budget wall-clock,
 * **never** instantiates an engine,
 * **never** loads a model,
 * **never** opens a server port.

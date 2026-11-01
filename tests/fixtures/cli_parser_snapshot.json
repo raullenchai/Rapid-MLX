@@ -2857,7 +2857,7 @@
        "const": true,
        "default": false,
        "dest": "deep",
-       "help": "Run opt-in dependency, DNS, and route probes (up to 30 seconds)",
+       "help": "Run opt-in dependency, DNS, and route probes (up to 75 seconds)",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
@@ -2872,7 +2872,7 @@
        "const": true,
        "default": false,
        "dest": "fix",
-       "help": "Plan and apply only verified repairs (bounded stages may total up to 90 seconds)",
+       "help": "Plan and apply only verified repairs (bounded stages may total up to 3 minutes)",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
