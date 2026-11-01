@@ -791,6 +791,20 @@ struct ContentView: View {
                     if server.residency.contains(alias) { return true }
                     if case .ready(let readyAlias) = server.state { return readyAlias == alias }
                     return false
+                },
+                lane: { alias in
+                    guard let entry = catalogEntries.first(where: { $0.alias == alias }) else { return nil }
+                    return ModelSelectionPurpose.allCases.first(where: { $0.accepts(entry) })
+                },
+                isStarting: { alias in
+                    let startingAlias: String?
+                    if case .starting(let alias) = server.state { startingAlias = alias }
+                    else { startingAlias = nil }
+                    return Self.isStartingDownload(
+                        alias: alias, serverStartingAlias: startingAlias,
+                        quickstartVisible: quickstartVisible, quickstartAlias: quickstart.selection.alias,
+                        quickstartPhase: quickstart.phase
+                    )
                 }
             )
             if showLogs {
@@ -1602,6 +1616,14 @@ struct ContentView: View {
         // Keep the card up while the user is mid-flow (download / start /
         // waiting to confirm Ready).
         return ContentView.quickstartRetainsSurface(phase: quickstart.phase)
+    }
+
+    static func isStartingDownload(
+        alias: String, serverStartingAlias: String?, quickstartVisible: Bool,
+        quickstartAlias: String, quickstartPhase: QuickstartCoordinator.Phase
+    ) -> Bool {
+        serverStartingAlias == alias || (quickstartVisible && quickstartAlias == alias
+            && (quickstartPhase == .downloading || quickstartPhase == .starting))
     }
 
     /// Does onboarding still own the window in this phase?

@@ -14,6 +14,37 @@ import Testing
 @MainActor
 @Suite("DownloadManager — state machine + cancellation")
 struct DownloadManagerTests {
+    @Test func startingDownloadRequiresAnActiveMatchingStart() {
+        func starting(_ alias: String = "model", server: String? = nil, visible: Bool = true,
+                      selected: String = "model", phase: QuickstartCoordinator.Phase) -> Bool {
+            ContentView.isStartingDownload(alias: alias, serverStartingAlias: server,
+                quickstartVisible: visible, quickstartAlias: selected, quickstartPhase: phase)
+        }
+        #expect(starting(server: "model", visible: false, phase: .idle))
+        #expect(starting(phase: .starting))
+        #expect(starting(phase: .downloading))
+        #expect(!starting(phase: .failed(message: "Failed", origin: .start)))
+        #expect(!starting(phase: .idle))
+        #expect(!starting("other", server: "model", phase: .starting))
+        #expect(!starting(visible: false, phase: .starting))
+    }
+
+    @Test func downloadAuthSignalsDoNotMatchByteCounts() {
+        let unreachable = DownloadManager.classifyPullFailure(
+            tailLines: [
+                "Downloading model-00001-of-00004.safetensors 4013 MB",
+                "Error: could not reach Hugging Face for 'x/y'.",
+            ], source: .huggingFace
+        )
+        #expect(unreachable.kind == .downloadSourceUnavailable)
+        #expect(unreachable.message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+
+        let forbidden = DownloadManager.classifyPullFailure(
+            tailLines: ["403 Client Error: Forbidden"], source: .huggingFace
+        )
+        #expect(forbidden.kind == .downloadFailed)
+        #expect(forbidden.message == "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry.")
+    }
     private func waitUntil(
         deadline: Date,
         predicate: () -> Bool
@@ -284,6 +315,29 @@ struct DownloadManagerTests {
         }
     }
 
+    @Test("The complete stderr tail reaches the job failure classification")
+    func unreachableSourceFullTail() {
+        let mgr = DownloadManager()
+        let alias = "smollm3-3b-4bit"
+        _ = mgr._testingSeedJob(alias: alias, source: .huggingFace, retryAttempt: 3)
+        for line in [
+            "Download interrupted, retrying (1/3)",
+            "Download interrupted, retrying (2/3)",
+            "Error: could not reach Hugging Face for 'mlx-community/SmolLM3-3B-4bit'.",
+            "Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "You can also serve an already-cached model.",
+            "Retry: rapid-mlx pull smollm3-3b-4bit",
+        ] { mgr._testingIngestStderr(alias: alias, line: line) }
+        mgr._testingFinish(alias: alias, status: 1, reason: .exit)
+        let job = mgr.job(for: alias)
+        #expect(job?.failureKind == .downloadSourceUnavailable)
+        if case .failed(let message) = job?.status {
+            #expect(message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+        } else {
+            Issue.record("Expected a failed pull")
+        }
+    }
+
     @Test("CLI disk and network copy survives stderr tail and reaches job status")
     func cliFailureCopyReachesJobStatus() {
         for (line, source, expected) in [
@@ -304,6 +358,78 @@ struct DownloadManagerTests {
                 Issue.record("Expected a failed pull for \(line)")
             }
         }
+    }
+
+    @Test("Disk gate stderr reaches the failed download job")
+    func diskGateFailureReachesJob() {
+        let mgr = DownloadManager()
+        let alias = "qwen3-0.6b-4bit"
+        let job = mgr._testingSeedJob(alias: alias)
+        for line in [
+            "  Error: Insufficient disk space for download.",
+            "    Download size:    34.9 GB",
+            "    Free space:        1.8 GB  (/)",
+            "    Need to free:     36.6 GB  (includes 10% working space for the download)",
+            "  Suggestions:",
+            "    - Free disk space, or set HF_HOME to a drive with more room",
+            "    - Pick a smaller variant: rapid-mlx models",
+            "    - Bypass this check (download will likely fail mid-way): --force-disk-check",
+        ] { mgr._testingIngestStderr(alias: alias, line: line) }
+        mgr._testingFinish(alias: alias, status: 1, reason: .exit)
+        #expect(job.failureKind == .downloadFailed)
+        if case .failed(let message) = job.status {
+            #expect(message == "There isn't enough disk space for this model. Free space, then retry to resume.")
+        } else {
+            Issue.record("Expected a failed pull")
+        }
+    }
+
+    @Test("Complete stdout failures reach the exit diagnosis")
+    func stdoutFailureBlocks() {
+        let cases: [([String], DesktopFunnelReporter.DownloadFailureCause, String)] = [
+            ([
+                "",
+                "  Error: Insufficient disk space for download.",
+                "    Download size:    34.9 GB",
+                "    Free space:        1.8 GB  (/)",
+                "    Need to free:     36.6 GB  (includes 10% working space for the download)",
+                "",
+                "  Suggestions:",
+                "    - Free disk space, or set HF_HOME to a drive with more room",
+                "    - Pick a smaller variant: rapid-mlx models",
+                "    - Bypass this check (download will likely fail mid-way): --force-disk-check",
+                "",
+            ], .diskFull, "There isn't enough disk space for this model. Free space, then retry to resume."),
+            ([
+                "",
+                "  Error: Model 'x' not found on HuggingFace.",
+                "  See catalog aliases with `rapid-mlx models`.",
+                "  Use an exact `namespace/repository-name` ID, for example `mlx-community/Qwen3.5-9B-4bit`.",
+            ], .notFound, "This model wasn't found on Hugging Face. Check the model name, then try again."),
+        ]
+        for (lines, cause, message) in cases {
+            let mgr = DownloadManager()
+            let job = mgr._testingSeedJob(alias: "x", retryAttempt: 3)
+            for line in lines { mgr._testingIngestStderr(alias: "x", line: line, isStderr: false) }
+            mgr._testingFinish(alias: "x", status: 1, reason: .exit)
+            #expect(job.failureCause == cause)
+            #expect(job.status == .failed(message: message))
+        }
+    }
+
+    @Test("Mirror fallback preserves the full network failure block")
+    func mirrorFallbackNetworkFailure() {
+        let mgr = DownloadManager()
+        let job = mgr._testingSeedJob(alias: "x", source: .mirror, retryAttempt: 3)
+        for line in [
+            "  Error: could not reach Hugging Face for 'x'.",
+            "  Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "  You can also serve an already-cached model.",
+            "  Retry: rapid-mlx pull x",
+        ] { mgr._testingIngestStderr(alias: "x", line: line) }
+        mgr._testingFinish(alias: "x", status: 1, reason: .exit)
+        #expect(job.failureCause == .network)
+        #expect(job.status == .failed(message: "The network connection interrupted the download. Check your connection, then retry to resume."))
     }
 
     @Test("Signal exit (SIGKILL) lands as failed with a 'signal' phrasing")
@@ -519,6 +645,68 @@ struct DownloadManagerTests {
 
 @Suite("Download failure guidance")
 struct DownloadFailureGuidanceTests {
+    @Test func fullTailClassification() {
+        let lines = [
+            "Download interrupted, retrying (1/3)",
+            "Download interrupted, retrying (2/3)",
+            "Error: could not reach Hugging Face for 'mlx-community/SmolLM3-3B-4bit'.",
+            "Check your network connection and unset `HF_HUB_OFFLINE` if offline mode is not intended.",
+            "You can also serve an already-cached model.",
+            "Retry: rapid-mlx pull smollm3-3b-4bit",
+        ]
+        let hf = DownloadManager.classifyPullFailure(tailLines: lines, source: .huggingFace)
+        #expect(hf.kind == .downloadSourceUnavailable)
+        #expect(hf.message == "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+        let mirror = DownloadManager.classifyPullFailure(tailLines: ["mirror gateway timeout"], source: .mirror)
+        #expect(mirror.kind == .downloadSourceUnavailable)
+        #expect(mirror.message == "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry.")
+        let other = DownloadManager.classifyPullFailure(tailLines: ["checksum mismatch"], source: .huggingFace)
+        #expect(other.kind == .downloadFailed)
+        #expect(other.message == "The model download didn't finish. Retry to resume it.")
+        #expect(DownloadManager.classifyPullFailure(tailLines: ["connection refused"], source: .huggingFace).kind == .downloadSourceUnavailable)
+        #expect(DownloadManager.classifyPullFailure(tailLines: ["Read timed out"], source: .huggingFace).kind == .downloadFailed)
+    }
+
+    @Test func terminalFailureAndMirrorHuggingFaceUnreachable() {
+        let unprefixedChecksum = DownloadManager.classifyPullFailure(
+            tailLines: ["Download interrupted (Connection refused), retrying", "sha256 mismatch for model.safetensors"],
+            source: .huggingFace
+        )
+        #expect(unprefixedChecksum.kind == .downloadFailed)
+        #expect(unprefixedChecksum.message != "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry.")
+
+        let checksum = DownloadManager.classifyPullFailure(
+            tailLines: ["Download interrupted (Connection refused), retrying", "Error: sha256 mismatch for model.safetensors"],
+            source: .huggingFace
+        )
+        #expect(checksum.kind == .downloadFailed)
+        #expect(checksum.message == "The model download didn't finish. Retry to resume it.")
+
+        let mirrorOutage = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face for x/y.", "Download interrupted, retrying", "Error: mirror models.rapidmlx.com returned 503 Service Unavailable"],
+            source: .mirror
+        )
+        #expect(mirrorOutage.kind == .downloadSourceUnavailable)
+        #expect(mirrorOutage.message == "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry.")
+        let mixedTerminal = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face; mirror models.rapidmlx.com returned 503 Service Unavailable"],
+            source: .mirror
+        )
+        #expect(mixedTerminal.kind == .downloadSourceUnavailable)
+
+        let disk = DownloadManager.classifyPullFailure(
+            tailLines: ["Connection refused", "No space left on device"], source: .huggingFace
+        )
+        #expect(disk.kind == .downloadFailed)
+        #expect(disk.message == "There isn't enough disk space for this model. Free space, then retry to resume.")
+
+        let mirror = DownloadManager.classifyPullFailure(
+            tailLines: ["Error: could not reach Hugging Face for 'x/y'."], source: .mirror
+        )
+        #expect(mirror.kind == .downloadFailed)
+        #expect(mirror.message == "The network connection interrupted the download. Check your connection, then retry to resume.")
+    }
+
     @Test func specificCauses() {
         #expect(DownloadManager.pullFailureMessage(
             raw: "OSError: [Errno 28] No space left on device", source: .huggingFace
@@ -531,7 +719,7 @@ struct DownloadFailureGuidanceTests {
         ).contains("hf auth login"))
         #expect(DownloadManager.pullFailureMessage(
             raw: "mirror gateway timeout", source: .mirror
-        ).contains("Switch to Hugging Face"))
+        ).contains("Switch source"))
         #expect(DownloadManager.pullFailureMessage(
             raw: "connection reset", source: .huggingFace
         ).contains("network"))
@@ -547,6 +735,23 @@ struct DownloadFailureGuidanceTests {
 @MainActor
 @Suite("DownloadStrip — phase caption formatting")
 struct DownloadStripCaptionTests {
+
+    @Test func completedDetails() {
+        let cases: [(ModelSelectionPurpose?, String)] = [
+            (.chat, "Downloaded — choose it in the model picker to start"),
+            (.speechToText, "Downloaded — ready in Audio › Speech to Text"),
+            (.textToSpeech, "Downloaded — ready in Audio › Text to Speech"),
+            (.imageGeneration, "Downloaded — ready in Images"),
+            (.imageEditing, "Downloaded — ready in Images"),
+            (.textToVideo, "Downloaded — ready in Video"),
+            (.imageToVideo, "Downloaded — ready in Video"),
+            (nil, "Downloaded"),
+        ]
+        for (lane, expected) in cases {
+            #expect(DownloadStrip.completedDetail(lane: lane, isStarting: false) == expected)
+            #expect(DownloadStrip.completedDetail(lane: lane, isStarting: true) == "Downloaded — starting…")
+        }
+    }
 
     @Test("A completed resident job is removed while its row is hidden")
     @MainActor

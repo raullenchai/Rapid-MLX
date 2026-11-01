@@ -132,7 +132,15 @@ def _raise_for_status(response: requests.Response, *, phase: str) -> None:
         try:
             body = response.json()
             if isinstance(body, dict):
-                detail = body.get("detail") or body.get("error")
+                for candidate in (body.get("detail"), body.get("error")):
+                    if isinstance(candidate, dict):
+                        nested = candidate.get("error")
+                        candidate = (
+                            nested.get("message") if isinstance(nested, dict) else None
+                        ) or candidate.get("message")
+                    if isinstance(candidate, str) and candidate.strip():
+                        detail = candidate
+                        break
         except (requests.exceptions.JSONDecodeError, ValueError):
             detail = None
         if not isinstance(detail, str) or not detail.strip():

@@ -608,7 +608,7 @@ def prompt_upgrade_if_available() -> bool:
         if latest is None or latest <= installed:
             return False
 
-        import subprocess
+        from rapid_mlx._upgrade_runner import run_upgrade_command
 
         info = detect_install_method()
         release = get_release_info(need_brew=info.method == "brew")
@@ -647,14 +647,14 @@ def prompt_upgrade_if_available() -> bool:
 
         print()
         try:
-            result = subprocess.run(info.upgrade_argv, check=False)
+            returncode = run_upgrade_command(info.upgrade_argv)
         except FileNotFoundError as e:
             print(f"  Upgrade command not found: {e}\n")
             return False
         except KeyboardInterrupt:
             print("\n  Interrupted.\n")
             return False
-        if result.returncode == 0:
+        if returncode == 0:
             new = installed_version_in_fresh_process(info)
             parsed_new = _parse_version(new) if new is not None else None
             target = _parse_version(latest_str)
@@ -679,7 +679,7 @@ def prompt_upgrade_if_available() -> bool:
         # `serve_command` do ``sys.exit(0)`` and leave the user with no
         # running server and only an error message.
         print(
-            f"\nUpgrade exited with code {result.returncode}; "
+            f"\nUpgrade exited with code {returncode}; "
             f"continuing with rapid-mlx {installed_str}.\n"
         )
         return False

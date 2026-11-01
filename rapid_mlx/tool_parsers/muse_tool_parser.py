@@ -403,6 +403,7 @@ class MuseToolParser(ToolParser):
         # for that call, and the trailing text is picked up on the next
         # call because the cursor did not advance past it (codex r2 #1).
         self._content_emitted = 0
+        self._content_cursor_initialized = False
 
     @staticmethod
     def _convert_invokes(
@@ -565,6 +566,10 @@ class MuseToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not hasattr(self, "_stream_calls_emitted"):
             self.reset()
+        if not self._content_cursor_initialized:
+            # The caller may already have passed plain previous text through.
+            self._content_emitted = len(self._visible_content(previous_text))
+            self._content_cursor_initialized = True
 
         # A block close just completed — parse ONLY the newly completed
         # blocks (already-emitted blocks keep their ids and are never

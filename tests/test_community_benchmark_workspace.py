@@ -617,6 +617,87 @@ def test_plan_rejects_draft_only_model() -> None:
     assert "Serve '" not in str(error.value)
 
 
+def test_image_catalog_excludes_incompatible_registered_workload() -> None:
+    aliases = {m["alias"] for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert "bonsai-image-4b-2bit" not in aliases
+    assert "flux2-klein-4b" in aliases
+
+
+def test_image_protocol_issue_ignores_engine_import_failure(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "rapid_mlx.image.engine", None)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+
+
+@pytest.mark.parametrize("failure_stage", ("construction", "validation"))
+def test_image_protocol_issue_ignores_unexpected_engine_errors(
+    monkeypatch, failure_stage
+) -> None:
+    from rapid_mlx.image import engine
+
+    calls = []
+
+    class FailingEngine:
+        def __init__(self, model):
+            calls.append("construction")
+            if failure_stage == "construction":
+                raise RuntimeError("construction failed")
+
+        def validate_request(self, **kwargs):
+            calls.append("validation")
+            raise RuntimeError("validation failed")
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", FailingEngine)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+    assert calls == (
+        ["construction"]
+        if failure_stage == "construction"
+        else ["construction", "validation"]
+    )
+
+
+def test_plan_rejects_excluded_image_without_protocol_issue(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workspace_module, "benchmark_catalog", lambda **kwargs: {"models": []}
+    )
+    calls = []
+    monkeypatch.setattr(
+        workspace_module,
+        "benchmark_protocol_issue",
+        lambda alias, task: calls.append((alias, task)),
+    )
+    with pytest.raises(ValueError, match="unknown or unsupported benchmark model"):
+        plan_for_alias("bonsai-image-4b-2bit")
+    assert calls == [("bonsai-image-4b-2bit", "image_generation")]
+
+
+def test_plan_rejects_incompatible_image_schedule() -> None:
+    with pytest.raises(ValueError, match="4-step schedule"):
+        plan_for_alias("bonsai-image-4b-2bit")
+
+
+def test_cli_rejects_incompatible_image_before_server(monkeypatch, capsys) -> None:
+    import rapid_mlx.cli as top_cli
+
+    monkeypatch.setattr(
+        _server, "serve", lambda *a, **kw: pytest.fail("server started")
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["rapid-mlx", "benchmark", "run", "bonsai-image-4b-2bit"]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        top_cli.main()
+    assert excinfo.value.code == 1
+    error = capsys.readouterr().err
+    assert "Benchmark command failed:" in error
+    assert "4-step schedule" in error
+
+
 def test_run_local_rejects_draft_before_loading_or_archiving(
     monkeypatch, tmp_path
 ) -> None:
@@ -2686,6 +2767,37 @@ def test_local_request_failure_uses_bounded_fallback_for_non_json_error() -> Non
     ):
         local_runner._raise_for_status(
             NonJSONErrorResponse({}), phase="video benchmark request"
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "detail": {
+                "error": {
+                    "message": "Bonsai Image supports its published 4-step schedule only."
+                }
+            }
+        },
+        {
+            "detail": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+        {
+            "error": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+    ],
+)
+def test_local_request_failure_preserves_nested_message(body) -> None:
+    with pytest.raises(
+        RuntimeError, match="Bonsai Image supports its published 4-step schedule only"
+    ):
+        local_runner._raise_for_status(
+            _HTTPErrorResponse(body), phase="image benchmark request"
         )
 
 

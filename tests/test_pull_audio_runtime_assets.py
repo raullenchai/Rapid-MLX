@@ -178,7 +178,7 @@ def test_runtime_requirement_failure_does_not_report_successful_pull(
         cli.pull_command(argparse.Namespace(model="mlx-community/Kokoro-82M-bf16"))
 
     assert excinfo.value.code == 1
-    output = capsys.readouterr().out
+    output = capsys.readouterr().err
     assert "Could not prepare audio runtime" in output
     assert "rapid-mlx[audio]" in output
     assert "rapid-mlx pull mlx-community/Kokoro-82M-bf16" in output
@@ -212,7 +212,7 @@ def test_main_pull_requirement_failure_is_actionable_without_traceback(
         cli.main()
 
     assert excinfo.value.code == 1
-    output = capsys.readouterr().out
+    output = capsys.readouterr().err
     assert "Could not prepare audio runtime for 'kokoro'" in output
     assert "rapid-mlx pull kokoro" in output
     assert "rapid-mlx[audio]" in output

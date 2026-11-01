@@ -316,6 +316,7 @@ class HyV3ToolParser(ToolParser):
         # arrive in the SAME delta (codex R3 BLOCKING: pre-opener content was
         # silently dropped once any opener was present).
         self._content_emitted: int = 0
+        self._content_cursor_initialized = False
 
     def reset(self) -> None:
         super().reset()
@@ -719,6 +720,10 @@ class HyV3ToolParser(ToolParser):
         """
         if not previous_text:
             self._reset_streaming_state()
+        if not self._content_cursor_initialized:
+            # Plain previous text may have bypassed the parser and reached the client.
+            self._content_emitted = len(self._safe_content_prefix(previous_text))
+            self._content_cursor_initialized = True
 
         # ---- Token-ID gate: no tool call has begun → pure content. ----
         if not self._opener_seen(current_text, current_token_ids):

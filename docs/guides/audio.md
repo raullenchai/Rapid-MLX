@@ -68,6 +68,11 @@ curl -s http://localhost:8000/v1/audio/speech \
   --output hello.wav
 ```
 
+**Voices:** List them with `curl "http://127.0.0.1:8000/v1/audio/voices?model=<alias>"`.
+OpenAI names such as `alloy` and `nova` map to the nearest model voice or its
+default. Single-voice models such as `moss-tts-nano` and `voxcpm2` have one
+voice named `default`.
+
 ### STT quick start
 
 ```bash
@@ -78,6 +83,9 @@ curl -s http://localhost:8000/v1/audio/transcriptions \
   -F "model=whisper-large-v3" \
   -F "file=@speech.mp3"
 ```
+
+On a server serving one speech-to-text model, `model="whisper-1"` (the OpenAI
+SDK default name) uses that served model.
 
 ### IndexTTS zero-shot voice cloning
 
@@ -829,6 +837,10 @@ Tested on Apple M2 Max (32GB).
 4. **Use SAM-Audio small** for faster voice separation
 5. **Cache models** - engines are lazy-loaded and cached
 6. **Pre-download models** to avoid first-run latency
+
+## Models that ship their own code
+
+Some speech checkpoints declare `auto_map` or `model_file` in their configuration, meaning they run Python from the model repository. Rapid-MLX refuses by default, and the API returns 403 with code `remote_code_consent_required`. After reviewing the code, start the server with `RAPID_MLX_TRUST_REMOTE_CODE=1 rapid-mlx serve <model>`. Setting `RAPID_MLX_TRUST_REMOTE_CODE=0` always disables repository code execution.
 
 ## Troubleshooting
 
