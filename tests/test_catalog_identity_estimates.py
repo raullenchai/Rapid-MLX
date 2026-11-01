@@ -2,16 +2,44 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rapid_mlx.model_aliases import catalog_alias_for, list_profiles
+from rapid_mlx.model_aliases import catalog_alias_for, catalog_identity, list_profiles
 from rapid_mlx.recommendations import recommendation_footprint_gb
 from rapid_mlx.runtime.model_registry import ModelRegistry
 from rapid_mlx.runtime.resident_models import (
     ResidentModelCapacityError,
     ResidentModelManager,
     estimate_model_bytes,
+    measured_image_estimate_bytes,
 )
 
 GIB = 1024**3
+
+
+def test_catalog_identity_returns_none_when_catalog_lookup_raises(monkeypatch):
+    def fail(name):
+        raise RuntimeError("catalog lookup failed")
+
+    monkeypatch.setattr("rapid_mlx.model_aliases.catalog_alias_for", fail)
+
+    assert catalog_identity("anything") is None
+
+
+@pytest.mark.parametrize("model_name", ["qwen-image", "unknown/image-model"])
+def test_measured_image_estimate_uses_hf_path_or_raw_spelling(monkeypatch, model_name):
+    alias = "qwen-image"
+    hf_path = list_profiles()[alias].hf_path
+    sentinel_bytes = 123456789
+    estimates = {
+        alias: None,
+        hf_path: sentinel_bytes,
+        "unknown/image-model": sentinel_bytes,
+    }
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models._measured_image_estimate_for_spelling",
+        estimates.__getitem__,
+    )
+
+    assert measured_image_estimate_bytes(model_name) == sentinel_bytes
 
 
 @pytest.mark.parametrize(
