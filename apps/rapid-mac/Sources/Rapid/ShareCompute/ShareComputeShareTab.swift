@@ -167,7 +167,7 @@ struct ShareComputeShareTab: View {
                         .font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }.padding(RapidTheme.Space.lg)
                 divider
-                setupRow(number: 1, title: "QuickSilver provider key", done: keyDone, step: .key) {
+                setupRow(number: 1, title: String(localized: "QuickSilver provider key"), done: keyDone, step: .key) {
                     if keyDone {
                         Text(savedKeyLabel ?? "Key saved")
                     } else {
@@ -187,7 +187,7 @@ struct ShareComputeShareTab: View {
                     }
                 }
                 divider
-                setupRow(number: 2, title: "Model to share", done: modelDone, step: .model) {
+                setupRow(number: 2, title: String(localized: "Model to share"), done: modelDone, step: .model) {
                     if !catalogLoaded { Text("Checking downloaded models…") }
                     else if models.isEmpty {
                         switch downloadState {
@@ -233,7 +233,7 @@ struct ShareComputeShareTab: View {
                     } else if catalogLoaded { selector }
                 }
                 divider
-                setupRow(number: 3, title: "Start sharing", done: false, step: .start) {
+                setupRow(number: 3, title: String(localized: "Start sharing"), done: false, step: .start) {
                     Text(canStart ? "This Mac goes online and earns API credits for served tokens." : "Complete the steps above to go online.")
                 } action: {
                     if canStart {

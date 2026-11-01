@@ -930,9 +930,20 @@ struct SettingsModelManagementPanel: View {
     }
 
     private func contextLabel(_ alias: String) -> String? {
-        guard let ctx = ModelInfoCatalog.familyAndContext(for: alias).contextWindow else { return nil }
+        Self.contextLabel(alias, profile: server.activeModelProfile)
+    }
+
+    nonisolated static func contextLabel(_ alias: String, profile: ServerModelProfile?) -> String? {
+        guard let ctx = ModelInfoCatalog.info(
+            for: alias, hfRepo: nil,
+            serverContextWindow: ModelPickerBar.liveContextWindow(for: alias, profile: profile)
+        ).contextWindow else { return nil }
         if ctx >= 1024, ctx % 1024 == 0 { return "\(ctx / 1024)k" }
         return "\(ctx)"
+    }
+
+    nonisolated static func downloadTotalBytes(_ entry: ModelEntry) -> Int64? {
+        entry.size?.byteCount
     }
 
     /// Catalog byte counts from the manifest or cache inventory are formatted once
@@ -1121,7 +1132,7 @@ struct SettingsModelManagementPanel: View {
                     size: RapidTheme.ControlHeight.mini,
                     symbolSize: 14
                 ) {
-                    _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                    _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
                 }
                 .accessibilityIdentifier("Settings.ModelManagement.Download.\(entry.alias)")
             }
@@ -1138,7 +1149,7 @@ struct SettingsModelManagementPanel: View {
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Retry")
             }
@@ -1386,7 +1397,7 @@ struct SettingsModelManagementPanel: View {
                 .foregroundStyle(RapidTheme.statusReady)
         case .notCached:
             Button {
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Download")
             }
@@ -1403,7 +1414,7 @@ struct SettingsModelManagementPanel: View {
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Retry")
             }

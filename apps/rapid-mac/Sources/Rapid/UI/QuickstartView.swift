@@ -4608,6 +4608,7 @@ struct QuickstartView: View {
                 started = downloads.startDownload(
                     alias: coordinator.selection.alias,
                     hfPath: coordinator.selection.hfRepo,
+                    totalBytes: coordinator.selection.downloadBytes,
                     source: alternate
                 )
             }
