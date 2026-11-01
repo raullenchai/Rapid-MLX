@@ -23,11 +23,11 @@ enum ImageClientError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notReady:
-            return "The image model isn't running yet."
+            return String(localized: "The image model isn't running yet.")
         case let .http(status, message):
-            return message ?? "Image request failed (HTTP \(status))."
+            return message ?? String(localized: "Image request failed (HTTP \(status)).")
         case .emptyResponse:
-            return "The server returned no image."
+            return String(localized: "The server returned no image.")
         case let .transport(detail):
             return detail
         }
@@ -176,7 +176,7 @@ struct ImageClient {
             throw ImageClientError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else {
-            throw ImageClientError.transport("Malformed server response.")
+            throw ImageClientError.transport(String(localized: "Malformed server response."))
         }
         guard (200...299).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.message

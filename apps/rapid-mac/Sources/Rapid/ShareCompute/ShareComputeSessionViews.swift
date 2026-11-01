@@ -324,8 +324,8 @@ struct ShareComputeOnlineView: View {
             HStack(alignment: .center) {
                 Circle().fill(isReconnecting ? Color.orange : Color.green).frame(width: 9, height: 9).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isReconnecting ? "Reconnecting…" : "Sharing").font(.rapid(size: 15, weight: .semibold))
-                    Text(isReconnecting ? "Reconnecting to the relay." : "Your Mac is online and serving requests.")
+                    Text(isReconnecting ? String(localized: "Reconnecting…") : String(localized: "Sharing")).font(.rapid(size: 15, weight: .semibold))
+                    Text(isReconnecting ? String(localized: "Reconnecting to the relay.") : String(localized: "Your Mac is online and serving requests."))
                         .font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)

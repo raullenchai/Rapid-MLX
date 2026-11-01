@@ -216,7 +216,7 @@ final class ImageGenViewModel {
     /// A readable name for the selected model, shown in the cold-load HUD.
     var selectedDisplayName: String {
         let alias = inFlightAlias ?? selectedAlias
-        return alias.isEmpty ? "the model" : alias
+        return alias.isEmpty ? String(localized: "the model") : alias
     }
 
     // MARK: - Edit

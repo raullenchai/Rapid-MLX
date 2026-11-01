@@ -691,6 +691,100 @@ struct LocalizationTests {
         #expect(String(localized: "Connected", bundle: zhBundle) == "已连接")
     }
 
+    @Test("Images and Share Compute String copy resolves against compiled zh-Hans")
+    func compiledImagesAndShareComputeStringCopy() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["xcstringstool", "compile", try catalogURL().path,
+                        "--output-directory", output.path, "--serialization-format", "binary"]
+        )
+        try #require(compiler.terminationStatus == 0)
+        let zhBundle = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        // Keep the source literal and the compiler-derived catalog key separate:
+        // interpolations must remain localizable before they become plain String.
+        let contracts: [(path: String, literal: String, key: String, zh: String)] = [
+            ("UI/ImagesView.swift", #"Draw anything"#, "Draw anything", "随心绘制"),
+            ("UI/ImagesView.swift", #"Describe what you want to see, then press Generate."#, "Describe what you want to see, then press Generate.", "描述你想看到的画面，然后点击生成。"),
+            ("UI/ImagesView.swift", #"Create images locally, then keep generating offline."#, "Create images locally, then keep generating offline.", "在本地生成图像，离线也能继续创作。"),
+            ("UI/ImagesView.swift", #"Pick a starter below while Rapid gets the model ready."#, "Pick a starter below while Rapid gets the model ready.", "Rapid 准备模型期间，可以先从下方选一个示例。"),
+            ("UI/ImagesView.swift", #"Describe what you want to change…"#, "Describe what you want to change…", "描述你想要的修改…"),
+            ("UI/ImagesView.swift", #"Describe the image you want…"#, "Describe the image you want…", "描述你想要的图像…"),
+            ("UI/ImagesView.swift", #"512² default"#, "512² default", "默认 512²"),
+            ("UI/ImagesView.swift", #"\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps"#, "%lld steps", "%lld 步"),
+            ("UI/ImagesView.swift", #"Downloading or loading the image model…"#, "Downloading or loading the image model…", "正在下载或加载图像模型…"),
+            ("UI/ImagesView.swift", #"Stopping…"#, "Stopping…", "正在停止…"),
+            ("UI/ImagesView.swift", #"Finalizing image…"#, "Finalizing image…", "正在完成图像…"),
+            ("UI/ImagesView.swift", #"Generating"#, "Generating", "生成中"),
+            ("UI/ImagesView.swift", #"Warming up \(viewModel.selectedDisplayName)"#, "Warming up %@", "正在预热 %@"),
+            ("UI/ImagesView.swift", #"Decoding and saving…"#, "Decoding and saving…", "正在解码并保存…"),
+            ("UI/ImagesView.swift", #"First run — only happens once"#, "First run — only happens once", "首次运行 — 仅需一次"),
+            ("UI/ImagesView.swift", #"Estimating…"#, "Estimating…", "正在估算…"),
+            ("UI/ImagesView.swift", #"~\(max(1, Int(secondsRemaining.rounded())))s left"#, "~%llds left", "剩余约 %lld 秒"),
+            ("UI/ImagesView.swift", #"Image \(ordinal), \(image.prompt), selected"#, "Image %lld, %@, selected", "图像 %lld，%@，已选中"),
+            ("UI/ImagesView.swift", #"Image \(ordinal), \(image.prompt)"#, "Image %lld, %@", "图像 %lld，%@"),
+            ("UI/ImagesView.swift", #"Replace source image"#, "Replace source image", "替换源图像"),
+            ("UI/ImagesView.swift", #"Import image to edit"#, "Import image to edit", "导入要编辑的图像"),
+            ("UI/ImagesView.swift", #"No image editing models available"#, "No image editing models available", "没有可用的图像编辑模型"),
+            ("UI/ImagesView.swift", #"No image generation models available"#, "No image generation models available", "没有可用的图像生成模型"),
+            ("UI/ImagesView.swift", #"Loading…"#, "Loading…", "加载中…"),
+            ("UI/ImagesView.swift", #"Choose a model"#, "Choose a model", "选择模型"),
+            ("UI/ImagesView.swift", #"Model: \(viewModel.selectedAlias)"#, "Model: %@", "模型：%@"),
+            ("UI/ImagesView.swift", #"Model: \(ImageReadinessPresentation.rowTitle(entry))"#, "Model: %@", "模型：%@"),
+            ("UI/ImagesView.swift", #"Edit image"#, "Edit image", "编辑图像"),
+            ("UI/ImagesView.swift", #"Generate"#, "Generate", "生成"),
+            ("UI/ImagesView.swift", #"Load the model first"#, "Load the model first", "请先加载模型"),
+            ("UI/ImagesView.swift", #"Couldn't save the image: \(error.localizedDescription)"#, "Couldn't save the image: %@", "无法保存图像：%@"),
+            ("UI/ImagesView.swift", #"Couldn't import the image: \(error.localizedDescription)"#, "Couldn't import the image: %@", "无法导入图像：%@"),
+            ("UI/ImagesView.swift", #"Choose an image smaller than \(DownloadProgress.formatBytes(Int64(ImageClient.maxEditImageBytes)))."#, "Choose an image smaller than %@.", "请选择小于 %@ 的图像。"),
+            ("UI/ImagesView.swift", #"Choose an image no larger than 8192 px or 40 megapixels."#, "Choose an image no larger than 8192 px or 40 megapixels.", "请选择尺寸不超过 8192 像素且总像素不超过 4000 万的图像。"),
+            ("UI/ImagesView.swift", #"Choose a PNG or JPEG image."#, "Choose a PNG or JPEG image.", "请选择 PNG 或 JPEG 图像。"),
+            ("UI/ImagesView.swift", #"The selected file isn't a readable image."#, "The selected file isn't a readable image.", "无法读取所选文件中的图像。"),
+            ("Images/ImageClient.swift", #"The image model isn't running yet."#, "The image model isn't running yet.", "图像模型尚未运行。"),
+            ("Images/ImageClient.swift", #"Image request failed (HTTP \(status))."#, "Image request failed (HTTP %lld).", "图像请求失败（HTTP %lld）。"),
+            ("Images/ImageClient.swift", #"The server returned no image."#, "The server returned no image.", "服务器未返回图像。"),
+            ("Images/ImageClient.swift", #"Malformed server response."#, "Malformed server response.", "服务器响应格式错误。"),
+            ("Images/ImageGenViewModel.swift", #"the model"#, "the model", "模型"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Key saved"#, "Key saved", "密钥已保存"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Ready on this Mac"#, "Ready on this Mac", "在这台 Mac 上准备就绪"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Download needed"#, "Download needed", "需要下载"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Retry"#, "Retry", "重试"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Download"#, "Download", "下载"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"This Mac goes online and earns API credits for served tokens."#, "This Mac goes online and earns API credits for served tokens.", "这台 Mac 将上线，并按处理的 token 赚取 API 积分。"),
+            ("ShareCompute/ShareComputeShareTab.swift", #"Complete the steps above to go online."#, "Complete the steps above to go online.", "完成上方步骤即可上线。"),
+            ("ShareCompute/ShareComputeSessionViews.swift", #"Reconnecting…"#, "Reconnecting…", "正在重新连接…"),
+            ("ShareCompute/ShareComputeSessionViews.swift", #"Sharing"#, "Sharing", "正在分享"),
+            ("ShareCompute/ShareComputeSessionViews.swift", #"Reconnecting to the relay."#, "Reconnecting to the relay.", "正在重新连接中继。"),
+            ("ShareCompute/ShareComputeSessionViews.swift", #"Your Mac is online and serving requests."#, "Your Mac is online and serving requests.", "你的 Mac 已上线，正在处理请求。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Rapid-MLX's local engine is not available."#, "Rapid-MLX's local engine is not available.", "Rapid-MLX 的本地引擎不可用。"),
+            ("ShareCompute/ShareComputeManager.swift", #"That model is not available in the QuickSilver pool."#, "That model is not available in the QuickSilver pool.", "QuickSilver 池中没有该模型。"),
+            ("ShareCompute/ShareComputeManager.swift", #"The provider key couldn't be saved."#, "The provider key couldn't be saved.", "无法保存提供商密钥。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Save your QuickSilver provider key to connect this Mac."#, "Save your QuickSilver provider key to connect this Mac.", "保存你的 QuickSilver 提供商密钥以连接这台 Mac。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Rapid couldn't unload the current model safely."#, "Rapid couldn't unload the current model safely.", "Rapid 无法安全卸载当前模型。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Rapid couldn't start Share Compute."#, "Rapid couldn't start Share Compute.", "Rapid 无法启动共享算力。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Share Compute stopped unexpectedly."#, "Share Compute stopped unexpectedly.", "共享算力意外停止。"),
+            ("ShareCompute/ShareComputeManager.swift", #"Share Compute reported an unsupported status."#, "Share Compute reported an unsupported status.", "共享算力报告了不支持的状态。"),
+        ]
+        for contract in contracts {
+            let source = try String(contentsOf: rapidSource(contract.path), encoding: .utf8)
+            #expect(
+                source.contains(#"String(localized: ""# + contract.literal + #"")"#),
+                "Missing localization lookup in \(contract.path): \(contract.literal)"
+            )
+            #expect(zhBundle.localizedString(forKey: contract.key, value: nil, table: nil) == contract.zh)
+        }
+        // Exercise real interpolations as well as the raw compiled templates.
+        let ordinal = 2, steps = 8, status = 500
+        let prompt = "a whale", alias = "z-image"
+        #expect(String(localized: "\(steps) steps", bundle: zhBundle) == "8 步")
+        #expect(String(localized: "Image \(ordinal), \(prompt), selected", bundle: zhBundle) == "图像 2，a whale，已选中")
+        #expect(String(localized: "Image request failed (HTTP \(status)).", bundle: zhBundle) == "图像请求失败（HTTP 500）。")
+        #expect(String(localized: "Model: \(alias)", bundle: zhBundle) == "模型：z-image")
+    }
+
     @Test("Share Compute Credits captions resolve against the compiled zh-Hans table")
     func compiledShareComputeCreditsCopy() async throws {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
