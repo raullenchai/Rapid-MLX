@@ -183,6 +183,28 @@ def test_refusal_suggests_fitting_same_task_model(
     run(pick, 32, monkeypatch)
 
 
+def test_text_diffusion_falls_back_to_text_pick():
+    pick, label = preflight._same_task_fitting_pick(
+        "diffusion-gemma-26b-8bit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+    assert (pick, label) == (
+        fitting_pick(32, 12, exclude="diffusion-gemma-26b-8bit"),
+        "text",
+    )
+    assert pick is not None
+    assert resolve_profile(pick).modality == "text"
+
+
+def test_same_task_pick_unknown_alias():
+    assert preflight._same_task_fitting_pick(
+        "not-a-catalog-model",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=25 * GIB,
+    ) == (None, None)
+
+
 def test_refusal_without_fitting_image_model(monkeypatch, capsys):
     monkeypatch.setattr(
         preflight, "_mlx_recommended_working_set_bytes", lambda: 3 * GIB
