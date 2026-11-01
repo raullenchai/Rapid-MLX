@@ -3,6 +3,7 @@ import Testing
 @testable import Rapid
 
 @Suite("Community Benchmark contribution branches")
+@MainActor
 struct CommunityBenchmarkBranchTests {
     private static let scope = CommunityBenchmarkScope(
         modelAlias: "z-image-turbo",
@@ -100,7 +101,7 @@ struct CommunityBenchmarkBranchTests {
         #expect(branch.allowsComparisonStatistics)
 
         let ready = CommunityBenchmarkCopy.readyInvitation(branch: branch, scope: Self.scope)
-        #expect(ready.body.contains("at least 7 published results exist"))
+        #expect(ready.body.contains("At least 7 published results exist"))
 
         // An exact count must NOT be hedged.
         let exact = CommunityContributionBranch.select(
@@ -150,7 +151,7 @@ struct CommunityBenchmarkBranchTests {
             branch: .firstReference, scope: Self.scope
         )
         #expect(ready.eyebrow == "FIRST RESULT NEEDED")
-        #expect(ready.body.contains("z-image-turbo"))
+        #expect(ready.body.contains(ModelDisplayName.name(for: "z-image-turbo")))
         #expect(ready.body.contains("Image"))
         #expect(ready.body.contains("Apple M3 Pro · 18 GB"))
 
@@ -158,7 +159,7 @@ struct CommunityBenchmarkBranchTests {
             branch: .firstReference, scope: Self.scope
         )
         #expect(publish.headline == "Create the first public reference")
-        #expect(publish.body.contains("z-image-turbo"))
+        #expect(publish.body.contains(ModelDisplayName.name(for: "z-image-turbo")))
         #expect(publish.body.contains("Image"))
         #expect(publish.body.contains("Apple M3 Pro · 18 GB"))
 
@@ -171,7 +172,7 @@ struct CommunityBenchmarkBranchTests {
         #expect(published.headline == "Published to Community Benchmark")
         #expect(!published.headline.localizedCaseInsensitiveContains("first"))
         #expect(!published.body.localizedCaseInsensitiveContains("first"))
-        #expect(published.body.contains("z-image-turbo"))
+        #expect(published.body.contains(ModelDisplayName.name(for: "z-image-turbo")))
         #expect(published.body.contains("Image"))
         #expect(published.body.contains("Apple M3 Pro · 18 GB"))
     }
@@ -294,8 +295,8 @@ struct CommunityBenchmarkBranchTests {
     @Test("Bounded coverage and withheld comparison use consistent copy")
     func boundedCoverageAndComparison() {
         let branch = CommunityContributionBranch.strengthen(observationCount: 1, isAtLeast: true)
-        #expect(CommunityBenchmarkCopy.readyInvitation(branch: branch, scope: Self.scope).body.contains("at least 1 published result exists"))
-        #expect(CommunityBenchmarkCopy.publishInvitation(branch: branch, scope: Self.scope).body.contains("at least 1 published result exists"))
+        #expect(CommunityBenchmarkCopy.readyInvitation(branch: branch, scope: Self.scope).body.contains("At least 1 published result exists"))
+        #expect(CommunityBenchmarkCopy.publishInvitation(branch: branch, scope: Self.scope).body.contains("At least 1 published result exists"))
         for reason in [CommunityUnavailableReason.boundedFeed, .ambiguousIdentity, .incompleteAggregate, .invalidCount] {
             let placeholder = CommunityBenchmarkCopy.comparisonPlaceholder(branch: .unknown(.unavailable(reason)), scope: Self.scope)
             #expect(placeholder?.title == "Comparison statistics not available")

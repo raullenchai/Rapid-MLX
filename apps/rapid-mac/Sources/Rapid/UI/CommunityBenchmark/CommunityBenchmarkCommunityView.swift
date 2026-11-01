@@ -362,7 +362,8 @@ struct CommunityBenchmarkCommunityView: View {
     private func observationRow(_ row: CommunityObservationRow) -> some View {
         HStack(spacing: RapidTheme.Space.md) {
             HStack(spacing: RapidTheme.Space.sm) {
-                Text(row.modelAlias)
+                Text(ModelDisplayName.name(for: row.modelAlias))
+                    .help(row.modelAlias)
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
@@ -400,8 +401,8 @@ struct CommunityBenchmarkCommunityView: View {
             Text(
                 row.summary.isBounded
                     ? String(
-                        format: String(localized: "at least %1$d"),
-                        row.summary.observationCount
+                        format: String(localized: "At least %1$lld"),
+                        Int64(row.summary.observationCount)
                     )
                     : "\(row.summary.observationCount)"
             )
@@ -513,7 +514,8 @@ struct CommunityBenchmarkCommunityView: View {
             }
             .foregroundStyle(RapidTheme.brandPrimaryDeep)
 
-            Text(gap.modelAlias)
+            Text(ModelDisplayName.name(for: gap.modelAlias))
+                    .help(gap.modelAlias)
                 .font(.rapid(size: 15, weight: .semibold))
                 .foregroundStyle(RapidTheme.textPrimary)
                 .lineLimit(1)
@@ -571,7 +573,8 @@ struct CommunityBenchmarkCommunityView: View {
     private func gapRow(_ gap: CommunityCoverageGap) -> some View {
         HStack(spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(gap.modelAlias)
+                Text(ModelDisplayName.name(for: gap.modelAlias))
+                    .help(gap.modelAlias)
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(
                         gap.fitsThisMac ? RapidTheme.textPrimary : RapidTheme.textSecondary

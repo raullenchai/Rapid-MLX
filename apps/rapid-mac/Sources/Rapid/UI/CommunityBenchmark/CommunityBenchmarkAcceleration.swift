@@ -26,8 +26,7 @@ enum CommunityBenchmarkAcceleration {
             parts.append(label)
         }
         if language.prefixCacheEnabled == true { parts.append("prefix cache") }
-        if parts.isEmpty && language.pflash?.mode == nil { parts.append("no accelerations") }
-        if let chunk = language.prefillChunkSize { parts.append("prefill chunk \(chunk)") }
+        if parts.isEmpty && language.pflash?.mode == nil { parts.append(String(localized: "Standard (no speed-ups)")) }
         if let mode = language.pflash?.mode { parts.append("PFlash \(mode)") }
         return parts.joined(separator: " · ")
     }

@@ -31,9 +31,10 @@ struct CommunityBenchmarkTestMethodSheet: View {
                         SectionHeader(
                             String(
                                 format: String(localized: "WHAT IT RUNS ON %1$@"),
-                                modelAlias
+                                ModelDisplayName.name(for: modelAlias)
                             )
                         )
+                        .help(modelAlias)
                         ForEach(Array(passes.enumerated()), id: \.offset) { index, pass in
                             passRow(index: index + 1, pass: pass)
                         }

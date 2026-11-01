@@ -210,7 +210,7 @@ struct CommunityStoredResultPublishTests {
     }
 
     @Test("The Published sheet names X, the model that was published")
-    func celebrationNamesX() {
+    @MainActor func celebrationNamesX() {
         let x = Self.decode(Self.storedRunX)
         let scopeX = try! #require(x.communityScope(alias: Self.alias))
         let scopeY = try! #require(
@@ -233,10 +233,10 @@ struct CommunityStoredResultPublishTests {
             alreadyPublished: false
         )
         let text = "\(celebration.headline) \(celebration.body)"
-        #expect(context.scope?.scopeDescription.contains("gemma-4-12b-4bit") == true)
+        #expect(context.scope?.scopeDescription.contains(ModelDisplayName.name(for: "gemma-4-12b-4bit")) == true)
         // It names X's Mac too, because X was not measured on this one.
         #expect(context.scope?.scopeDescription.contains("Apple M2 Max") == true)
-        #expect(!text.contains("qwen3.5-9b-4bit"))
+        #expect(!text.contains(ModelDisplayName.name(for: "qwen3.5-9b-4bit")))
         #expect(!text.contains("Apple M3 Pro"))
     }
 

@@ -1853,8 +1853,7 @@ struct ContentView: View {
                             .accessibilityIdentifier("MissingRuntime.RecheckStatus")
                     }
 
-                    Text("Rapid-MLX runs AI models on your Mac. Your chats stay on "
-                         + "this computer — no messages are sent to the cloud.")
+                    Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
                         .scaledSystemFont(13)
                         .foregroundStyle(RapidTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2322,8 +2321,7 @@ private struct BrowseApprovalSheet: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             .clipShape(RoundedRectangle(cornerRadius: 6))
 
-            Text("The page's text is sent back to the model. Only http/https "
-                + "public addresses are allowed — private and local addresses are blocked.")
+            Text("The page's text is sent back to the model. Only http/https public addresses are allowed — private and local addresses are blocked.")
                 .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
@@ -2424,13 +2422,11 @@ private struct MCPToolApprovalSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            Text("Connectors are programs running on this Mac. Only allow tools "
-                + "from servers you set up yourself.")
+            Text("Connectors are programs running on this Mac. Only allow tools from servers you set up yourself.")
                 .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 
-            Text("Always allow applies to this tool only. You can review and "
-                + "revoke it in Settings → Experimental.")
+            Text("Always allow applies to this tool only. You can review and revoke it in Settings → Experimental.")
                 .font(.rapid(.caption))
                 .foregroundStyle(.secondary)
 

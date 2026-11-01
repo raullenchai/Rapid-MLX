@@ -223,11 +223,12 @@ struct CommunityBenchmarkScope: Hashable, Sendable {
     /// Names the variant when there is one to name: claiming "no one has
     /// published qwen3.5-9b-4bit" while holding a result for a specific
     /// subfolder or snapshot would be a broader claim than the evidence.
-    var scopeDescription: String {
+    @MainActor var scopeDescription: String {
         let facets = modelIdentity?.distinguishingFacets ?? []
+        let name = ModelDisplayName.name(for: modelAlias)
         let model = facets.isEmpty
-            ? modelAlias
-            : "\(modelAlias) (\(facets.joined(separator: ", ")))"
+            ? name
+            : "\(name) (\(facets.joined(separator: ", ")))"
         return "\(model) · \(workload.displayName) · \(macProfile.displayName)"
     }
 }

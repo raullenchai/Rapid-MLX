@@ -274,7 +274,8 @@ struct CommunityBenchmarkMyResultsView: View {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(RapidTheme.textTertiary)
-                        Text(aliasForRepo(result.repoID))
+                        Text(ModelDisplayName.name(for: aliasForRepo(result.repoID)))
+                    .help(aliasForRepo(result.repoID))
                             .font(RapidFont.bodyEmphasis)
                             .foregroundStyle(RapidTheme.textPrimary)
                             .lineLimit(1)
@@ -288,7 +289,7 @@ struct CommunityBenchmarkMyResultsView: View {
                 .accessibilityLabel(
                     String(
                         format: String(localized: "%1$@, %2$@ details"),
-                        aliasForRepo(result.repoID),
+                        ModelDisplayName.name(for: aliasForRepo(result.repoID)),
                         isExpanded ? String(localized: "hide") : String(localized: "show")
                     )
                 )

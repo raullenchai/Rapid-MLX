@@ -286,7 +286,7 @@ struct CommunityPublishContextRaceTests {
     }
 
     @Test("The celebration describes the published run even after the screen moves")
-    func celebrationUsesTheCapturedContext() async {
+    @MainActor func celebrationUsesTheCapturedContext() async {
         let screen = Screen(scope: Self.scopeA, observations: Self.ready(7))
         let context = CommunityPublicationContext.capture(
             runID: "run-a", resultScope: Self.scopeA,

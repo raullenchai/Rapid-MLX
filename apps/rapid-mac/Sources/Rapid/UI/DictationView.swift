@@ -331,7 +331,7 @@ struct DictationView: View {
             if case .running = downloads.job(for: controller.modelAlias)?.status {
                 return "Downloading the model — dictation can turn on when it finishes."
             }
-            return "Download the model first."
+            return String(localized: "Download the model below to turn dictation on.")
         }
         if missing.microphone == false { return "Microphone access is still needed." }
         if missing.accessibility == false { return "Accessibility access is still needed." }
@@ -483,7 +483,7 @@ struct DictationView: View {
             if case .running = downloads.job(for: controller.modelAlias)?.status {
                 return "Downloading — dictation can turn on when it finishes."
             }
-            return "Not downloaded yet — dictation can turn on once it's on disk."
+            return selectedModelDetails?.summary ?? entry.alias
         }
         var detail = "Ready on disk."
         if let serving = server.servingAlias, !serving.isEmpty, serving != controller.modelAlias {
@@ -828,7 +828,6 @@ private struct TranscriptionModelOptionRow: View {
                         HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.xs) {
                             FlowLayout(spacing: RapidTheme.Space.xs) {
                                 Text(details.displayName).font(RapidFont.body)
-                                pickerBadge("offline")
                                 pickerBadge(details.badge)
                                 if details.isRecommended {
                                     pickerBadge("recommended", emphasized: true)

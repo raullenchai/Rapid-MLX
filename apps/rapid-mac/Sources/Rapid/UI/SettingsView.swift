@@ -599,8 +599,8 @@ struct SettingsView: View {
                 SettingsRowDivider()
                 Toggle(isOn: $communityBenchmarkEnabled) {
                     SettingsRowLabel(
-                        title: String(localized: "Enable Benchmark"),
-                        description: String(localized: "Adds the Benchmark tab for measuring models on this Mac. Nothing runs until you start a benchmark.")
+                        title: String(localized: "Enable Community Benchmark"),
+                        description: String(localized: "Adds the Benchmark tab for measuring models on this Mac and, if you choose, publishing results to the Community Benchmark. Nothing runs until you start a benchmark.")
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())

@@ -102,13 +102,6 @@ enum CommunityBranchUnknownCause: Equatable, Sendable {
 /// stronger comparison is the cross-screen inconsistency this module kept
 /// regressing into.
 enum CommunityBenchmarkCopy {
-    /// "7" for an exact count, "at least 7" for one read from the bounded feed.
-    static func countPhrase(_ count: Int, isAtLeast: Bool) -> String {
-        isAtLeast
-            ? String(format: String(localized: "at least %1$d"), count)
-            : "\(count)"
-    }
-
     // MARK: Coverage
 
     struct Band: Equatable {
@@ -137,7 +130,7 @@ enum CommunityBenchmarkCopy {
         let body: String
     }
 
-    static func readyInvitation(
+    @MainActor static func readyInvitation(
         branch: CommunityContributionBranch,
         scope: CommunityBenchmarkScope
     ) -> ReadyInvitation {
@@ -158,18 +151,7 @@ enum CommunityBenchmarkCopy {
             return ReadyInvitation(
                 eyebrow: String(localized: "COMMUNITY NEEDS ANOTHER RESULT"),
                 headline: String(localized: "Make this comparison stronger"),
-                body: String(
-                    format: String(
-                        localized:
-                            "%1$@ published %2$@ for %3$@ on an %4$@. Run it once to add another reference and tighten the range."
-                    ),
-                    Self.countPhrase(count, isAtLeast: isAtLeast),
-                    count == 1
-                        ? String(localized: "result exists")
-                        : String(localized: "results exist"),
-                    scope.modelAlias,
-                    scope.macProfile.displayName
-                )
+                body: readyStrengthenBody(count: count, isAtLeast: isAtLeast, scope: scope)
             )
         case .unknown:
             // No coverage claim of any kind. The invitation falls back to what
@@ -184,7 +166,7 @@ enum CommunityBenchmarkCopy {
                             "Run a fixed %1$@ workload for %2$@ and keep the result on this Mac. You can publish it to the Community Benchmark afterwards."
                     ),
                     scope.workload.displayName,
-                    scope.modelAlias
+                    ModelDisplayName.name(for: scope.modelAlias)
                 )
             )
         }
@@ -197,7 +179,7 @@ enum CommunityBenchmarkCopy {
         let body: String
     }
 
-    static func publishInvitation(
+    @MainActor static func publishInvitation(
         branch: CommunityContributionBranch,
         scope: CommunityBenchmarkScope
     ) -> PublishInvitation {
@@ -220,7 +202,7 @@ enum CommunityBenchmarkCopy {
                         format: String(
                             localized: "Publish this result to add another observation for %1$@ on an %2$@"
                         ),
-                        scope.modelAlias,
+                        ModelDisplayName.name(for: scope.modelAlias),
                         scope.macProfile.displayName
                     )
                     : String(
@@ -228,19 +210,10 @@ enum CommunityBenchmarkCopy {
                             localized: "Publish this result to add observation %1$d for %2$@ on an %3$@"
                         ),
                         count + 1,
-                        scope.modelAlias,
+                        ModelDisplayName.name(for: scope.modelAlias),
                         scope.macProfile.displayName
                     ),
-                body: String(
-                    format: String(
-                        localized:
-                            "%1$@ %2$@ for this pairing. Yours makes the comparison harder to argue with."
-                    ),
-                    Self.countPhrase(count, isAtLeast: isAtLeast),
-                    count == 1
-                        ? String(localized: "published result exists")
-                        : String(localized: "published results exist")
-                )
+                body: publishStrengthenBody(count: count, isAtLeast: isAtLeast)
             )
         case .unknown:
             return PublishInvitation(
@@ -251,6 +224,26 @@ enum CommunityBenchmarkCopy {
                 )
             )
         }
+    }
+
+    @MainActor private static func readyStrengthenBody(count: Int, isAtLeast: Bool, scope: CommunityBenchmarkScope) -> String {
+        let name = ModelDisplayName.name(for: scope.modelAlias)
+        let mac = scope.macProfile.displayName
+        if isAtLeast {
+            if count == 1 { return String(format: String(localized: "At least 1 published result exists for %1$@ on an %2$@. Run it once to add another reference and tighten the range."), name, mac) }
+            return String(format: String(localized: "At least %1$lld published results exist for %2$@ on an %3$@. Run it once to add another reference and tighten the range."), Int64(count), name, mac)
+        }
+        if count == 1 { return String(format: String(localized: "1 published result exists for %1$@ on an %2$@. Run it once to add another reference and tighten the range."), name, mac) }
+        return String(format: String(localized: "%1$lld published results exist for %2$@ on an %3$@. Run it once to add another reference and tighten the range."), Int64(count), name, mac)
+    }
+
+    private static func publishStrengthenBody(count: Int, isAtLeast: Bool) -> String {
+        if isAtLeast {
+            if count == 1 { return String(localized: "At least 1 published result exists for this pairing. Yours makes the comparison harder to argue with.") }
+            return String(format: String(localized: "At least %lld published results exist for this pairing. Yours makes the comparison harder to argue with."), Int64(count))
+        }
+        if count == 1 { return String(localized: "1 published result exists for this pairing. Yours makes the comparison harder to argue with.") }
+        return String(format: String(localized: "%lld published results exist for this pairing. Yours makes the comparison harder to argue with."), Int64(count))
     }
 
     // MARK: Published
@@ -264,7 +257,7 @@ enum CommunityBenchmarkCopy {
     /// `summaryAfterPublishing` is derived from the receipt. A celebration is
     /// never allowed to claim an ordinal based only on the pre-publish branch:
     /// another contributor can publish before this request commits.
-    static func publishedCelebration(
+    @MainActor static func publishedCelebration(
         branchBeforePublishing: CommunityContributionBranch,
         scope: CommunityBenchmarkScope,
         observationCountAfterPublishing: Int?,
@@ -299,7 +292,7 @@ enum CommunityBenchmarkCopy {
                         format: String(
                             localized: "Your %1$@ result is now part of the public observations for an %2$@."
                         ),
-                        scope.modelAlias,
+                        ModelDisplayName.name(for: scope.modelAlias),
                         scope.macProfile.displayName
                     )
                 )
@@ -312,7 +305,7 @@ enum CommunityBenchmarkCopy {
                             "There are now %1$d published observations for %2$@ on an %3$@, including yours."
                     ),
                     count,
-                    scope.modelAlias,
+                    ModelDisplayName.name(for: scope.modelAlias),
                     scope.macProfile.displayName
                 )
             )
@@ -325,7 +318,7 @@ enum CommunityBenchmarkCopy {
                     format: String(
                         localized: "Your %1$@ result is live on rapidmlx.com."
                     ),
-                    scope.modelAlias
+                    ModelDisplayName.name(for: scope.modelAlias)
                 )
             )
         }
@@ -335,7 +328,7 @@ enum CommunityBenchmarkCopy {
 
     /// The replacement shown where median / range / difference would go when
     /// the branch does not permit comparison statistics.
-    static func comparisonPlaceholder(
+    @MainActor static func comparisonPlaceholder(
         branch: CommunityContributionBranch,
         scope: CommunityBenchmarkScope
     ) -> (title: String, body: String)? {
@@ -350,7 +343,7 @@ enum CommunityBenchmarkCopy {
                         localized:
                             "Medians and observed ranges appear here once more people publish %1$@ results from an %2$@."
                     ),
-                    scope.modelAlias,
+                    ModelDisplayName.name(for: scope.modelAlias),
                     scope.macProfile.displayName
                 )
             )

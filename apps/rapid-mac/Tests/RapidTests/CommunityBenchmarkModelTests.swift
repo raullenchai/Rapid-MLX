@@ -771,7 +771,7 @@ struct CommunityBenchmarkModelTests {
     // MARK: - Running feedback
 
     @Test("Running status names the model, the scope, and the expected duration")
-    func runningStatusCopy() throws {
+    @MainActor func runningStatusCopy() throws {
         let text = try #require(
             CommunityBenchmarkModel.models(from: [
                 ModelEntry(
@@ -782,7 +782,7 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(
             CommunityBenchmarkRunStatus.description(for: text)
-                == "Measuring qwen3.5-9b-4bit · 2 cases × (1 warmup + 5 rounds) · usually 2–5 minutes"
+                == "Measuring \(ModelDisplayName.name(for: "qwen3.5-9b-4bit")) · 2 cases × (1 warmup + 5 rounds) · usually 2–5 minutes"
         )
         let image = try #require(
             CommunityBenchmarkModel.models(from: [
@@ -794,7 +794,7 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(
             CommunityBenchmarkRunStatus.description(for: image)
-                == "Measuring flux2-klein-4b · 1 warmup + 1 measured render · usually 2–10 minutes · plus the download"
+                == "Measuring \(ModelDisplayName.name(for: "flux2-klein-4b")) · 1 warmup + 1 measured render · usually 2–10 minutes · plus the download"
         )
         let start = Date(timeIntervalSince1970: 1_000)
         #expect(CommunityBenchmarkRunStatus.elapsed(from: start, to: start.addingTimeInterval(0)) == "0:00")

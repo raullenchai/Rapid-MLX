@@ -55,11 +55,11 @@ struct ServerStatusPill: View {
     /// surface owns the pill, not to the pill.
     var label: String {
         switch state {
-        case .idle, .stopped: return "Idle"
-        case .missing:        return "Setup needed"
-        case .starting:       return "Starting"
-        case .ready:          return "Ready"
-        case .crashed:        return "Crashed"
+        case .idle, .stopped: return String(localized: "Idle")
+        case .missing:        return String(localized: "Setup needed")
+        case .starting:       return String(localized: "Starting")
+        case .ready:          return String(localized: "Ready")
+        case .crashed:        return String(localized: "Crashed")
         }
     }
 
