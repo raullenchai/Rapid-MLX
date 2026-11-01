@@ -164,10 +164,8 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
     assert by_alias["qwen-image-2.1"]["focus"] is True
-    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 39
-    assert (
-        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "weights_estimate"
-    )
+    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 28
+    assert by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "measured_peak"
     assert all("modality" not in model for model in catalog["models"])
 
 
@@ -252,19 +250,23 @@ def test_runtime_readiness_degrades_probe_faults_to_unknown(
 
 @pytest.mark.catalog_memory_preflight
 @pytest.mark.parametrize("ram", (8, 16, 18, 24, 32, 36, 48, 64, 96, 128))
-def test_catalog_matches_serve_for_text_models(ram, monkeypatch, capsys):
+def test_catalog_matches_serve_for_all_models(ram, monkeypatch, capsys):
     from rapid_mlx.byom import preflight
+    from rapid_mlx.cli import _check_alias_min_memory
     from rapid_mlx.model_aliases import resolve_profile
 
     gib = 1 << 30
     monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: ram * gib)
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
     monkeypatch.setattr(preflight, "_emit_rejection", lambda *args: None)
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=ram * gib)
+    )
     monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
     for model in benchmark_catalog(memory_gib=ram)["models"]:
         alias = model["alias"]
         profile = resolve_profile(alias)
-        if profile is None or profile.modality != "text":
+        if profile is None:
             continue
         args = SimpleNamespace(
             command="serve",
@@ -274,12 +276,71 @@ def test_catalog_matches_serve_for_text_models(ram, monkeypatch, capsys):
             _original_alias=alias,
         )
         try:
+            _check_alias_min_memory(alias)
             preflight._check_catalog_memory_fit(args)
             passed = True
         except SystemExit:
             passed = False
         assert (model["memory_fit"] == "fits") == passed, (ram, alias)
     capsys.readouterr()
+
+
+def test_enforced_floor_catalog_and_plan():
+    alias = "qwen3.8-27b-tensorfold"
+    models = {m["alias"]: m for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert models[alias]["memory_fit"] == "does_not_fit"
+    assert plan_for_alias(alias, memory_gib=36)["model"]["memory_fit"] == "does_not_fit"
+
+
+@pytest.mark.parametrize(
+    "alias, cached, message",
+    [
+        ("qwen3.8-27b-tensorfold", False, "requires at least 48 GB"),
+        ("qwen3.8-27b-tensorfold", True, "requires at least 48 GB"),
+        ("qwen3.6-27b-8bit", False, "needs ~"),
+    ],
+)
+def test_run_memory_refuses_before_loading(monkeypatch, alias, cached, message):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 28 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: cached)
+
+    def reached(*args, **kwargs):
+        pytest.fail("loading or download reached")
+
+    monkeypatch.setattr(local_runner, "_ensure_model_downloaded", reached)
+    monkeypatch.setattr(local_runner, "_text_measurements", reached)
+    monkeypatch.setattr(local_runner, "resolve_provenance", reached)
+    with pytest.raises(ValueError, match=message) as exc:
+        local_runner.run_local(alias, progress=reached)
+    assert "Nothing was downloaded." in str(exc.value)
+
+
+def test_run_non_enforced_floor_message(monkeypatch):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 32 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 24 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: False)
+    with pytest.raises(ValueError, match="needs a Mac with at least 96 GB"):
+        local_runner.refuse_if_memory_does_not_fit("qwen-image-edit", "repo")
+
+
+def test_run_cached_model_passes_memory_gate(monkeypatch):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 28 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: True)
+
+    def reached():
+        raise RuntimeError("passed memory gate")
+
+    monkeypatch.setattr(local_runner, "resolve_provenance", reached)
+    with pytest.raises(RuntimeError, match="passed memory gate"):
+        local_runner.run_local("qwen3.6-27b-8bit")
 
 
 def test_catalog_uses_curated_working_set_and_video_floor():
@@ -6770,3 +6831,20 @@ def test_legacy_run_reads_new_primary_metadata_first(tmp_path: Path) -> None:
     provenance = {"distribution": "source", "revision": "a" * 40}
     archive.save_provenance(run["run_id"], provenance)
     assert archive.provenance(run["run_id"]) == provenance
+
+
+def test_tensorfold_runtime_readiness_missing_package(monkeypatch):
+    from rapid_mlx.speculative import tensorfold_qwen27
+
+    def missing():
+        raise tensorfold_qwen27.TensorFoldUnavailable("package not installed")
+
+    monkeypatch.setattr(tensorfold_qwen27, "require_runtime", missing)
+    result = benchmark_runtime_readiness("qwen3.8-27b-tensorfold", "text_generation")
+    assert result["status"] == "unavailable"
+    assert "TensorFold" in result["message"]
+    assert not result["message"].startswith("  Error: ")
+    assert (
+        benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation")["status"]
+        == "ready"
+    )

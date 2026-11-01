@@ -702,3 +702,29 @@ def test_public_health_probes(api_key):
         assert client.head("/").status_code == 200
     finally:
         reset_config()
+
+
+def test_missing_ddtree_runtime_precedes_experimental_warnings(monkeypatch, capsys):
+    from rapid_mlx.cli import (
+        _normalize_speculative_config_or_exit,
+        _preflight_ddtree_or_exit,
+    )
+
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.ddtree.eligibility.have_runtime", lambda: False
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.ddtree.eligibility.runtime_probe_error", lambda: None
+    )
+    args = _ddtree_cli_args(
+        model="user/Qwen3.5-9B-abliterated-4bit",
+        speculative_config='{"method":"ddtree","model":"user/matching-drafter","num_speculative_tokens":8,"tree_budget":12}',
+    )
+    _normalize_speculative_config_or_exit(args)
+    with pytest.raises(SystemExit):
+        _preflight_ddtree_or_exit(args)
+    output = capsys.readouterr().out.strip()
+    assert output.startswith(
+        "Error: DDTree requires the experimental dtree-mlx runtime"
+    )
+    assert "Experimental DDTree" not in output

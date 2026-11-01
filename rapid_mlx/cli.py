@@ -2096,7 +2096,8 @@ def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
         # remain usable before the accelerator runtime is available.
         import psutil
 
-        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        total_ram_bytes = psutil.virtual_memory().total
+        total_ram_gb = total_ram_bytes / (1024**3)
     except Exception:
         return
     if total_ram_gb <= 0:
@@ -2104,7 +2105,9 @@ def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
     if total_ram_gb >= floor_gb:
         return  # Machine is big enough — silent.
 
-    if getattr(profile, "enforce_min_memory", False):
+    from .byom.preflight import _enforced_memory_floor
+
+    if _enforced_memory_floor(profile, total_ram_bytes):
         print(
             f"\n  Error: '{user_typed}' requires at least {floor_gb:.0f} GB "
             f"of unified memory; this Mac reports {total_ram_gb:.1f} GB.\n"
@@ -4662,8 +4665,8 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
         sys.exit(2)
 
 
-def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
-    """Reject an unusable qualified TensorFold runtime before downloads."""
+def tensorfold_profile_issue(args=None) -> str | None:
+    """Return the qualified TensorFold runtime diagnostic, if unavailable."""
 
     alias_name = (
         (getattr(args, "_original_alias", None) or getattr(args, "model", None))
@@ -4730,12 +4733,18 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
         runtime_probe()
         environment_probe()
     except TensorFoldUnavailable as exc:
-        print(
-            f"\n  Error: the TensorFold {label} profile is unavailable: "
-            f"{exc}.\n\n  {install_hint}\n",
-            file=sys.stderr,
+        return (
+            f"the TensorFold {label} profile is unavailable: {exc}.\n\n  {install_hint}"
         )
-        raise SystemExit(1) from exc
+    return None
+
+
+def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
+    """Reject an unusable qualified TensorFold runtime before downloads."""
+    issue = tensorfold_profile_issue(args)
+    if issue is not None:
+        print(f"\n  Error: {issue}\n", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _preflight_ddtree_or_exit(args):
@@ -4828,9 +4837,6 @@ def _preflight_ddtree_or_exit(args):
     except DDTreeUnavailable as e:
         print(f"\n  Error: {e}\n")
         sys.exit(1)
-    if assessment.warnings:
-        warnings = "; ".join(dict.fromkeys(assessment.warnings))
-        print(f"\n  ⚠ Experimental DDTree: {warnings}.\n")
     if not have_runtime():
         from rapid_mlx.speculative.ddtree.runtime import DDTREE_INSTALL_COMMAND
 
@@ -4841,6 +4847,10 @@ def _preflight_ddtree_or_exit(args):
             f"runtime. Install with: `{DDTREE_INSTALL_COMMAND}`.{detail}\n"
         )
         sys.exit(1)
+
+    if assessment.warnings:
+        warnings = "; ".join(dict.fromkeys(assessment.warnings))
+        print(f"\n  ⚠ Experimental DDTree: {warnings}.\n")
 
     args._ddtree_alias_name = alias_name
     args._ddtree_profile = profile

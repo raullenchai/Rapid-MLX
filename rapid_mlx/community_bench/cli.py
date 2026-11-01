@@ -25,6 +25,7 @@ from .hardware import host_memory_gib
 from .local_runner import (
     LocalBenchmarkError,
     _is_deepseek_v41_benchmark_target,
+    refuse_if_memory_does_not_fit,
     run_local,
 )
 from .publication import PublicationRefused
@@ -534,6 +535,10 @@ def _benchmark_command(args) -> int:
                     plan = plan_for_alias(args.benchmark_model)
                 except (LocalBenchmarkError, KeyError, ValueError):
                     plan = None
+                if plan is not None:
+                    refuse_if_memory_does_not_fit(
+                        args.benchmark_model, plan["model"]["repo_id"]
+                    )
                 if (
                     plan is not None
                     and plan["model"]["task_type"] == "text_generation"

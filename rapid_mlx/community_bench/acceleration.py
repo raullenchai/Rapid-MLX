@@ -166,12 +166,18 @@ def _refuse_engine_method(kwargs, *, allow_auto=False) -> None:
 
 
 def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -> None:
-    from rapid_mlx.cli import serve_acceleration_preflights, serve_runtime_lane
+    from rapid_mlx.cli import (
+        _resolve_dflash_launch_or_exit,
+        serve_acceleration_preflights,
+        serve_runtime_lane,
+    )
 
     with _capture_preflight_exit():
         args = build_serve_args(alias, request)
         serve_acceleration_preflights(args)
         lane = serve_runtime_lane(args)
+        if lane == "dflash":
+            _resolve_dflash_launch_or_exit(args)
     _refuse_unsupported(
         alias,
         lane,
