@@ -188,6 +188,7 @@ def _prepare_prompt(monkeypatch, argv, method):
     monkeypatch.setattr(vc, "_disabled", lambda: False)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda info: "1.0.1")
     monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.1")
     monkeypatch.setattr(
         vc,

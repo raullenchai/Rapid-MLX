@@ -716,6 +716,62 @@ def test_launcher_ownership_requires_distribution_and_active_interpreter(
     assert vc._launcher_belongs_to_running_install(str(launcher)) is False
 
 
+def test_launcher_ownership_distinguishes_sibling_venvs(tmp_path, monkeypatch):
+    for name in ("a", "b"):
+        subprocess.run(
+            [
+                sys._base_executable or sys.executable,
+                "-m",
+                "venv",
+                "--without-pip",
+                str(tmp_path / name),
+            ],
+            check=True,
+        )
+        launcher = tmp_path / name / "bin" / "rapid-mlx"
+        launcher.write_text(f"#!{launcher.parent / 'python'}\n")
+        launcher.chmod(0o755)
+    bin_b = tmp_path / "b" / "bin"
+    python3 = bin_b / "python3"
+    if not python3.exists():
+        python3.symlink_to("python")
+    monkeypatch.setattr(sys, "executable", str(bin_b / "python"))
+    monkeypatch.setattr(
+        vc,
+        "distribution",
+        lambda _: SimpleNamespace(entry_points=[SimpleNamespace(name="rapid-mlx")]),
+    )
+    assert not vc._launcher_belongs_to_running_install(
+        str(tmp_path / "a" / "bin" / "rapid-mlx")
+    )
+    launcher = bin_b / "rapid-mlx"
+    assert vc._launcher_belongs_to_running_install(str(launcher))
+    launcher.write_text(f"#!{python3}\n")
+    assert vc._launcher_belongs_to_running_install(str(launcher))
+
+
+def test_python_environment_falls_back_when_readlink_fails(tmp_path, monkeypatch):
+    target = tmp_path / "python-real"
+    target.touch()
+    path = tmp_path / "python"
+    path.symlink_to(target)
+
+    expected = os.path.normcase(os.path.realpath(path))
+    # Fail the environment probe, then allow realpath to resolve the symlink.
+    real = os.readlink
+    first_call = True
+
+    def readlink(*args, **kwargs):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            raise OSError("cannot read symlink")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(vc.os, "readlink", readlink)
+    assert vc._python_environment(str(path)) == expected
+
+
 def test_active_scripts_symlink_must_target_active_interpreter(tmp_path, monkeypatch):
     scripts = tmp_path / "active" / "bin"
     scripts.mkdir(parents=True)
@@ -1258,6 +1314,7 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
         ),
     )
     fake_result = MagicMock(returncode=0)
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda _: "0.6.62")
     # Empty answer == default Y.
     with (
         patch("builtins.input", return_value=""),
@@ -1265,6 +1322,76 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
     ):
         assert vc.prompt_upgrade_if_available() is True
         run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"], check=False)
+
+
+def test_prompt_successful_command_without_upgrade_continues(
+    monkeypatch, interactive, capsys, tmp_path
+):
+    launcher = tmp_path / "rapid-mlx"
+    launcher.write_text('#!/bin/sh\necho "rapid-mlx 0.6.61"\n')
+    launcher.chmod(0o755)
+    monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "99.0.0")
+    monkeypatch.setattr(vc, "get_release_info", lambda **_: None)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip",
+            upgrade_command="no-op",
+            upgrade_argv=[sys.executable, "-c", "pass"],
+            binary_path=str(launcher),
+        ),
+    )
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert vc.prompt_upgrade_if_available() is False
+    output = capsys.readouterr().out
+    assert "is still 0.6.61" in output
+    assert "expected 99.0.0" in output
+    assert "Upgrade complete" not in output
+
+
+def test_prompt_reports_verified_upgrade(monkeypatch, interactive, capsys):
+    monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "99.0.0")
+    monkeypatch.setattr(vc, "get_release_info", lambda **_: None)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip",
+            upgrade_command="no-op",
+            upgrade_argv=[sys.executable, "-c", "pass"],
+            binary_path=None,
+        ),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda _: "99.0.0")
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert vc.prompt_upgrade_if_available() is True
+    assert "Upgrade complete: rapid-mlx 99.0.0" in capsys.readouterr().out
+
+
+def test_prompt_reports_unverified_upgrade(monkeypatch, interactive, capsys):
+    monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "99.0.0")
+    monkeypatch.setattr(vc, "get_release_info", lambda **_: None)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(
+            method="pip",
+            upgrade_command="no-op",
+            upgrade_argv=[sys.executable, "-c", "pass"],
+            binary_path=None,
+        ),
+    )
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert vc.prompt_upgrade_if_available() is False
+    assert "could not be verified" in capsys.readouterr().out
 
 
 def test_prompt_crosses_minor_boundary(monkeypatch, interactive):
