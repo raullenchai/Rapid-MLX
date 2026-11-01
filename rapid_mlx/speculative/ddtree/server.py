@@ -425,6 +425,9 @@ def _render_prompt(
             content = "".join(text_pieces)
         messages.append({"role": m.role, "content": content})
 
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+    messages, _ = sanitize_template_inputs(messages, None, tokenizer)
     enable_thinking = False if no_thinking else _extract_thinking_from_request(request)
     # DDTree does not run the normal reasoning parser, so thinking tokens
     # would be exposed directly in ``content`` and commonly exhaust the

@@ -1529,6 +1529,14 @@ def _render_prompt(
             if key not in _SERVER_RESOLVED_TEMPLATE_KEYS:
                 template_kwargs[key] = value
 
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+    messages, tools = sanitize_template_inputs(
+        messages, template_kwargs.get("tools"), processor
+    )
+    if "tools" in template_kwargs:
+        template_kwargs["tools"] = tools
+
     return apply_chat_template(
         processor,
         model.config,

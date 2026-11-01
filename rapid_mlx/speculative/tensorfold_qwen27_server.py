@@ -96,6 +96,9 @@ def _prompt_boundaries(
     if not messages:
         return 0, ()
     tokenizer = app.tokenizer
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+    messages, tools = sanitize_template_inputs(messages, tools, tokenizer)
     try:
         with app.tokenizer_lock:
             history = [
@@ -602,6 +605,13 @@ def render_prompt(
         from rapid_mlx.api.tool_calling import convert_tools_for_template
 
         template_kwargs["tools"] = convert_tools_for_template(request.tools)
+    from rapid_mlx.utils.chat_template import sanitize_template_inputs
+
+    messages, tools = sanitize_template_inputs(
+        messages, template_kwargs.get("tools"), processor
+    )
+    if "tools" in template_kwargs:
+        template_kwargs["tools"] = tools
     return cast(
         str,
         processor.apply_chat_template(
