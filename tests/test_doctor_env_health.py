@@ -4070,6 +4070,20 @@ def test_plain_venv_detection_excludes_installer_realpath(tmp_path):
     )
 
 
+def test_plain_venv_detection_treats_unreadable_paths_as_not_a_venv(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "venv"
+    (root / "bin").mkdir(parents=True)
+    (root / "pyvenv.cfg").touch()
+
+    def unreadable(self, *args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(eh.Path, "resolve", unreadable)
+    assert eh._plain_virtualenv_root(str(root / "bin" / "rapid-mlx")) is None
+
+
 def test_running_exe_mismatch_with_path_warns(tmp_path: Path):
     """Issue #2352: PATH resolves a different rapid-mlx than the one actually
     running this doctor (e.g. a venv/bin that precedes a global install) →

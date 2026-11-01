@@ -208,3 +208,25 @@ def test_errors_return_empty_list(fake_metadata, monkeypatch, operation):
 
     monkeypatch.setattr(metadata, operation, fail)
     assert installed_extras() == []
+
+
+def test_no_rapid_mlx_distribution_returns_empty(monkeypatch):
+    def missing(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "distribution", missing)
+    assert installed_extras() == []
+
+
+def test_skips_unparseable_requirements_and_dependencies(fake_metadata):
+    fake_metadata(
+        [
+            "base",
+            "@not-a-name",
+            'broken[; extra == "audio"',
+            'dep; extra == "audio"',
+        ],
+        {"base": "1", "dep": "1"},
+        {"base": ["@not-a-name", "invalid[", "missing-dist"]},
+    )
+    assert installed_extras() == ["audio"]
