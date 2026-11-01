@@ -320,3 +320,11 @@ def test_remove_owned_incomplete_files_tolerates_unreadable_fd_table(monkeypatch
 
     monkeypatch.setattr(cancel.os, "listdir", unreadable)
     cancel._remove_owned_incomplete_files()
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_remove_owned_incomplete_files_each_platform_path(monkeypatch, platform):
+    # Exercise both descriptor-resolution branches on any host; a branch
+    # that cannot resolve descriptors here must still fail closed.
+    monkeypatch.setattr(cancel.sys, "platform", platform)
+    cancel._remove_owned_incomplete_files()
