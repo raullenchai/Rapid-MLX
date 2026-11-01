@@ -1178,6 +1178,50 @@ def _resolve_audio_download_alias(command: str | None, model: str) -> str | None
     return entry.hf_id if entry is not None else None
 
 
+def _prepare_audio_runtime_requirements(model: str) -> None:
+    """Prepare catalog requirements, leaving failure policy to the caller."""
+    from rapid_mlx.audio.registry import runtime_requirements_for
+    from rapid_mlx.audio.runtime_requirements import prepare_runtime_requirement
+
+    for requirement in runtime_requirements_for(model):
+        print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")
+        prepare_runtime_requirement(requirement)
+
+
+def _prepare_serve_audio_runtime_requirements(args, entry) -> None:
+    """Best-effort preparation while online; keep audio engines lazy."""
+    from rapid_mlx import model_downloads
+    from rapid_mlx.audio.registry import runtime_requirements_for
+
+    if model_downloads.disabled():
+        return
+    from huggingface_hub import constants as hf_constants
+
+    if hf_constants.HF_HUB_OFFLINE:
+        return
+    if not runtime_requirements_for(entry.hf_id):
+        return
+    try:
+        from rapid_mlx.audio.runtime_requirements import AudioRuntimePreparationError
+    except ImportError:
+        # The route-level 503 already explains a missing audio extra.
+        return
+
+    shown = getattr(args, "_original_alias", None) or entry.alias
+    try:
+        _prepare_audio_runtime_requirements(entry.hf_id)
+    except AudioRuntimePreparationError as exc:
+        print(
+            f"  Warning: could not prepare the audio runtime for '{shown}': {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "  Requests that need it will return 503 until you run "
+            f"'rapid-mlx pull {shown}' while online.",
+            file=sys.stderr,
+        )
+
+
 def _serve_audio_mode(args, entry) -> None:
     """Bind the audio-only serve path for a resolved registry entry.
 
@@ -1285,6 +1329,7 @@ def _serve_audio_mode(args, entry) -> None:
     # text-only servers). Idempotent — safe even if a future refactor
     # adds a second call site.
     server.register_audio_routes_if_enabled()
+    _prepare_serve_audio_runtime_requirements(args, entry)
 
     # Print the resolution banner so the operator sees what loaded.
     family_tag = f"[audio:{entry.type}]"
@@ -12353,11 +12398,8 @@ def pull_command(args):
         SD35_REPO,
         image_runtime_assets_for,
     )
-    from rapid_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
-    from rapid_mlx.audio.runtime_requirements import (
-        AudioRuntimePreparationError,
-        prepare_runtime_requirement,
-    )
+    from rapid_mlx.audio.registry import runtime_assets_for
+    from rapid_mlx.audio.runtime_requirements import AudioRuntimePreparationError
 
     primary_repo = args.model
     primary_args = args
@@ -12522,23 +12564,21 @@ def pull_command(args):
             allow_patterns_override=list(asset.allow_patterns),
             revision_override=asset.revision,
         )
-    for requirement in runtime_requirements_for(primary_repo):
-        print(f"\n  Runtime requirement: {requirement.kind} {requirement.name}")
-        try:
-            prepare_runtime_requirement(requirement)
-        except AudioRuntimePreparationError as exc:
-            shown = getattr(args, "_original_alias", primary_repo)
-            print(
-                f"\n  Error: Could not prepare audio runtime for '{shown}'.",
-                file=sys.stderr,
-            )
-            print(f"  {exc}", file=sys.stderr)
-            print(
-                "  Install 'rapid-mlx[audio]' in this environment, then rerun "
-                f"'rapid-mlx pull {shown}'.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    try:
+        _prepare_audio_runtime_requirements(primary_repo)
+    except AudioRuntimePreparationError as exc:
+        shown = getattr(args, "_original_alias", primary_repo)
+        print(
+            f"\n  Error: Could not prepare audio runtime for '{shown}'.",
+            file=sys.stderr,
+        )
+        print(f"  {exc}", file=sys.stderr)
+        print(
+            "  Install 'rapid-mlx[audio]' in this environment, then rerun "
+            f"'rapid-mlx pull {shown}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     global _pending_model_pull_event
     _pending_model_pull_event = (
         getattr(primary_args, "_original_alias", None) or primary_repo,
