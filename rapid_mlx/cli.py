@@ -174,8 +174,13 @@ def _configure_bootstrap_logging(log_level: str) -> None:
 
     import logging
 
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
+    quiet_hf_progress_bars_off_terminal()
     normalized = _log_level_choice(log_level)
     quiet_transport_loggers(normalized)
     silence_hf_unauthenticated_warning()
@@ -12195,6 +12200,10 @@ def pull_command(args):
 
     import copy
 
+    from ._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    quiet_hf_progress_bars_off_terminal()
+
     # Every nested runtime-asset pull retries the user's original request,
     # preserving its selected variant and pinned dependency set.
     args._pull_retry_command = _pull_retry_command(args)
@@ -16007,9 +16016,14 @@ def _capture_start_failures(func: Callable):
 
 @_capture_start_failures
 def main():
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
     silence_hf_unauthenticated_warning()
+    quiet_hf_progress_bars_off_terminal()
     quiet_transport_loggers("INFO")
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure) and not sys.stdout.isatty():
