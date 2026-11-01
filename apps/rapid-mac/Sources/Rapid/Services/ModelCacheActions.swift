@@ -334,7 +334,7 @@ enum ModelCacheActions {
 
         /// One sentence for VoiceOver, since the rendered form is two
         /// fragments separated by a middle dot.
-        var accessibilityLabel: String { "\(title), \(countText)" }
+        var accessibilityLabel: String { String(localized: "\(title), \(countText)") }
     }
 
     /// Derive the models-table heading.
@@ -369,7 +369,7 @@ enum ModelCacheActions {
         let narrowed = searching || filter != .all || visibleCount != totalCount
         return ListHeading(
             title: title,
-            countText: narrowed ? "\(visibleCount) of \(totalCount)" : "\(totalCount)"
+            countText: narrowed ? String(localized: "\(visibleCount) of \(totalCount)") : "\(totalCount)"
         )
     }
 
