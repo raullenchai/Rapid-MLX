@@ -111,8 +111,8 @@ struct AgentConnectionInformationArchitectureTests {
         let marker = try #require(full.range(of: "var cardContent: some View"))
         let page = full[marker.lowerBound...]
         let endpoint = try #require(page.range(of: "endpointSection"))
-        let terminal = try #require(page.range(of: "title: \"Terminal agents\""))
-        let editors = try #require(page.range(of: "title: \"Editors and apps\""))
+        let terminal = try #require(page.range(of: "title: String(localized: \"Terminal agents\")"))
+        let editors = try #require(page.range(of: "title: String(localized: \"Editors and apps\")"))
         let settings = try #require(page.range(of: "\"Server settings\""))
 
         #expect(terminal.lowerBound < editors.lowerBound)

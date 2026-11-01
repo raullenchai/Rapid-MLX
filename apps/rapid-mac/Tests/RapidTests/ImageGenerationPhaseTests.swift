@@ -112,4 +112,12 @@ struct ImageGenerationPhaseTests {
         #expect(ImageGenViewModel.seedSteps(for: "sdxl-base") == 30)
         #expect(ImageGenViewModel.seedSteps(for: "flux-schnell") == 4)
     }
+
+    @Test("Warm-up HUD names the model by its friendly name, alias only when unknown")
+    func warmUpHUDUsesFriendlyName() {
+        #expect(ImageGenViewModel.hudDisplayName(for: "bonsai-image-4b-2bit") == "Bonsai Image · 4B · 2-bit")
+        #expect(ImageGenViewModel.hudDisplayName(for: "qwen-image-2.1-turbo") == "Qwen Image 2.1 Turbo")
+        #expect(ImageGenViewModel.hudDisplayName(for: "my-custom-diffuser") == "my-custom-diffuser")
+        #expect(ImageGenViewModel.hudDisplayName(for: "") == String(localized: "the model"))
+    }
 }

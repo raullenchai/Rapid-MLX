@@ -12,6 +12,16 @@
         }
       }
     },
+    " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " Cursor 需要公开的 HTTPS 端点；Cursor 的后端无法访问 localhost。"
+          }
+        }
+      }
+    },
     " Free space %@." : {
       "localizations" : {
         "zh-Hans" : {
@@ -28,6 +38,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : " 应该可以加载，但较长的对话可能会使用内存压缩或交换空间。"
+          }
+        }
+      }
+    },
+    " It writes %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 它会写入 %@。"
           }
         }
       }
@@ -612,6 +632,16 @@
         }
       }
     },
+    "Anthropic-compatible URL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anthropic 兼容 URL"
+          }
+        }
+      }
+    },
     "Approval expired" : {
       "localizations" : {
         "zh-Hans" : {
@@ -862,12 +892,42 @@
         }
       }
     },
+    "Configure this client to use Rapid-MLX." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置此客户端以使用 Rapid-MLX。"
+          }
+        }
+      }
+    },
+    "Connect an agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接智能体"
+          }
+        }
+      }
+    },
     "Connecting to mirror…" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在连接镜像…"
+          }
+        }
+      }
+    },
+    "Connection details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接详情"
           }
         }
       }
@@ -892,12 +952,62 @@
         }
       }
     },
+    "Copied %@ setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已复制 %@ 设置"
+          }
+        }
+      }
+    },
+    "Copy %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制 %@"
+          }
+        }
+      }
+    },
     "Copy %@ command" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制 %@ 命令"
+          }
+        }
+      }
+    },
+    "Copy %@ setup command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制 %@ 设置命令"
+          }
+        }
+      }
+    },
+    "Copy %@ setup guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制 %@ 设置指南"
+          }
+        }
+      }
+    },
+    "Copy command" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制命令"
           }
         }
       }
@@ -912,12 +1022,32 @@
         }
       }
     },
+    "Copy guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制指南"
+          }
+        }
+      }
+    },
     "Copy one-session command" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制单次会话命令"
+          }
+        }
+      }
+    },
+    "Copy setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制设置"
           }
         }
       }
@@ -972,12 +1102,32 @@
         }
       }
     },
+    "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法安全保存本地连接。请检查 ~/.rapid-mlx/connect 的权限后重试。"
+          }
+        }
+      }
+    },
     "Create images locally, then keep generating offline." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "在本地生成图像，离线也能继续创作。"
+          }
+        }
+      }
+    },
+    "Created when the server starts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器启动时创建"
           }
         }
       }
@@ -1058,6 +1208,286 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未完成"
+          }
+        }
+      }
+    },
+    "Editors and apps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑器和应用"
+          }
+        }
+      }
+    },
+    "Gateway API key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gateway API 密钥"
+          }
+        }
+      }
+    },
+    "Gateway URL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gateway URL"
+          }
+        }
+      }
+    },
+    "Hide key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏密钥"
+          }
+        }
+      }
+    },
+    "Launch with an isolated Rapid provider for one session. Your existing Codex provider and shell environment stay unchanged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以独立的 Rapid 提供方启动单次会话。现有的 Codex 提供方和 shell 环境保持不变。"
+          }
+        }
+      }
+    },
+    "Launch with this connection and model for one session. Your shell environment stays unchanged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用此连接和模型启动单次会话。你的 shell 环境保持不变。"
+          }
+        }
+      }
+    },
+    "Launch with this connection for one session. Your configuration files and shell environment stay unchanged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用此连接启动单次会话。你的配置文件和 shell 环境保持不变。"
+          }
+        }
+      }
+    },
+    "Launch with this connection for one session. Your shell environment stays unchanged." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用此连接启动单次会话。你的 shell 环境保持不变。"
+          }
+        }
+      }
+    },
+    "Needs a public HTTPS endpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要公开的 HTTPS 端点"
+          }
+        }
+      }
+    },
+    "Not started yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未启动"
+          }
+        }
+      }
+    },
+    "Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal on this Mac? Use the copy button and run the command yourself." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“在终端中打开”会使用私有配置启动智能体，并已连接到此模型。智能体自身的设置不会被更改。想用这台 Mac 上的其他终端？点按复制按钮，然后自行运行命令。"
+          }
+        }
+      }
+    },
+    "OpenAI-compatible URL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenAI 兼容 URL"
+          }
+        }
+      }
+    },
+    "Paste these values into any app that supports a custom OpenAI or Anthropic provider." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将这些值粘贴到任何支持自定义 OpenAI 或 Anthropic 提供方的应用中。"
+          }
+        }
+      }
+    },
+    "Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打印此适配器针对本地端点的设置指南。Rapid 无法替你启动此客户端。"
+          }
+        }
+      }
+    },
+    "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先运行一个文本模型。随后 Rapid 会创建私有的本地端点和可直接复制的设置命令。"
+          }
+        }
+      }
+    },
+    "Save a private Rapid profile and launch. Existing settings stay untouched. The first reply may take longer while the local prompt loads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存私有的 Rapid 配置并启动。现有设置保持不变。加载本地提示词时，首次回复可能较慢。"
+          }
+        }
+      }
+    },
+    "Server settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器设置"
+          }
+        }
+      }
+    },
+    "Show key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示密钥"
+          }
+        }
+      }
+    },
+    "Start a model to fill in the model name." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型后即可填入模型名称。"
+          }
+        }
+      }
+    },
+    "Start a model to generate a valid key and configuration." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型以生成有效的密钥和配置。"
+          }
+        }
+      }
+    },
+    "Start a model to generate your local endpoint and key." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型以生成本地端点和密钥。"
+          }
+        }
+      }
+    },
+    "Start here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从这里开始"
+          }
+        }
+      }
+    },
+    "Terminal agents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "终端智能体"
+          }
+        }
+      }
+    },
+    "Terminal could not open the agent command." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "终端无法打开智能体命令。"
+          }
+        }
+      }
+    },
+    "Try copying the command instead." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请改为复制命令。"
+          }
+        }
+      }
+    },
+    "Use its official in-app Gateway setup." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用其官方的应用内 Gateway 设置。"
+          }
+        }
+      }
+    },
+    "Use the model running on this Mac from an agent, editor, or any compatible app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在智能体、编辑器或任何兼容应用中使用这台 Mac 上运行的模型。"
+          }
+        }
+      }
+    },
+    "Your API key is created when the local server starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地服务器启动时会创建你的 API 密钥。"
           }
         }
       }
