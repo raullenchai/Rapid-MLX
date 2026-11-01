@@ -305,6 +305,7 @@ def test_runtime_asset_registry_rejects_malformed_metadata(
     monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
     monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
     monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
+    monkeypatch.setattr(registry, "_RUNTIME_REQUIREMENTS", {})
 
     with pytest.raises(ValueError, match=re.escape(error)):
         registry._load_registry()
@@ -395,6 +396,7 @@ def test_concurrent_first_lookup_publishes_runtime_assets_atomically(
     monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
     monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
     monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
+    monkeypatch.setattr(registry, "_RUNTIME_REQUIREMENTS", {})
 
     first_is_parsing = threading.Event()
     release_first = threading.Event()
