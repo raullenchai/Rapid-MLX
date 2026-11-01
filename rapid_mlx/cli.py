@@ -15163,8 +15163,9 @@ def agents_command(args):
         args, "model", None
     )
 
-    # No agent specified → list all profiles
-    if not agent_name:
+    # No agent specified → list all profiles. `list`/`ls` are accepted as the
+    # roster too: the help says this command lists agents, so users try them.
+    if not agent_name or (agent_name in ("list", "ls") and not get_profile(agent_name)):
         profiles = list_profiles()
         # Size the name column to the widest alias so a name that meets or
         # exceeds the old hardcoded 15 (e.g. "deepseek-harness", 16 chars)
