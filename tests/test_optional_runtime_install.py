@@ -968,3 +968,35 @@ def test_video_and_image_install_command_pins_the_base_package(
     assert ("pip", pip_argv, False) in order
     restart_argv = ["/tmp/rapid/bin/python", *sys.orig_argv[1:]]
     assert ("execv", "/tmp/rapid/bin/python", restart_argv) in order
+
+
+@pytest.mark.parametrize(
+    ("method", "prefix"),
+    [
+        ("uv", "uv tool install --force"),
+        ("pipx", "pipx install --force"),
+        ("unknown", "sudo pipx install --global --force"),
+        ("pip", "python -m pip install"),
+        ("install_sh", "python -m pip install"),
+    ],
+)
+@pytest.mark.parametrize("extra", ["embeddings", "audio"])
+def test_extra_repair_preserves_installed_tool_extras(
+    monkeypatch, method, prefix, extra
+):
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(
+            method=method, upgrade_command="sudo pipx upgrade --global rapid-mlx"
+        ),
+    )
+    monkeypatch.setattr(optional_runtime, "installed_extras", lambda: ["audio"])
+    extras = (
+        extra if method in {"pip", "install_sh"} else ",".join(sorted({"audio", extra}))
+    )
+    assert (
+        optional_runtime.optional_extra_repair_command(
+            extra, version="1.0.0", include_paths=False
+        )
+        == f"{prefix} 'rapid-mlx[{extras}]==1.0.0'"
+    )

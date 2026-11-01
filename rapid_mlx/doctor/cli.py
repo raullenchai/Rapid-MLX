@@ -8,7 +8,7 @@ this PR rips out the dispatch and leaves only the env-health surface.
 
 Output is modelled on ``hermes doctor``: sections of one-line ✓/⚠/✗ probes,
 a summary, and an exit code (0 unless any ✗). Built-in I/O is timeout-bounded,
-and the runner targets a twenty-second scheduling budget.
+and the runner targets a sixty-second scheduling budget.
 """
 
 from __future__ import annotations
@@ -26,7 +26,18 @@ from typing import Any
 
 from rapid_mlx import __version__
 
-from .env_health import CheckStatus, Report, Section, run_all
+from .env_health import (
+    _DOCTOR_BUDGET_S,
+    _DOCTOR_DEEP_BUDGET_S,
+    CheckStatus,
+    Report,
+    Section,
+    run_all,
+)
+
+# The isolated JSON collector gets the run budget plus a little slack for
+# interpreter start-up and result publication.
+_COLLECTOR_SLACK_S = 5.0
 
 # Removed tiers — referenced from doctor_command's error message so a user
 # typing the old subcommand sees the canonical replacement, not a bare
@@ -127,7 +138,7 @@ def _collect_report_isolated(
     only: set[str] | None,
     skip: set[str] | None,
     deep: bool = False,
-    timeout_s: float = 25.0,
+    timeout_s: float = _DOCTOR_BUDGET_S + _COLLECTOR_SLACK_S,
 ) -> Report:
     """Collect a report in a fresh executable whose stdout is discarded."""
     with tempfile.TemporaryDirectory(prefix="rapid-mlx-doctor-") as result_dir:
@@ -447,7 +458,8 @@ def doctor_command(args: Any) -> None:
                     only=only,
                     skip=skip,
                     deep=use_deep,
-                    timeout_s=35.0 if use_deep else 25.0,
+                    timeout_s=(_DOCTOR_DEEP_BUDGET_S if use_deep else _DOCTOR_BUDGET_S)
+                    + _COLLECTOR_SLACK_S,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve JSON contract
                 return _collection_failure_report(exc)

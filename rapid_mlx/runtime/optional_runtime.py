@@ -19,7 +19,9 @@ from rapid_mlx.runtime.base_runtime import (
     homebrew_runtime_hint,
     is_base_runtime_extra,
     runtime_install_spec,
+    runtime_install_spec_with_extras,
 )
+from rapid_mlx.runtime.installed_extras import installed_extras
 
 OptionalExtra = Literal["vision", "video", "audio", "image"]
 OptionalRuntimeStatus = Literal["absent", "broken", "incompatible"]
@@ -99,6 +101,10 @@ def optional_extra_repair_command(
     except Exception:  # noqa: BLE001 - repair guidance must never mask the error
         method = "unknown"
         global_pipx = False
+    if (method in {"uv", "pipx"} or global_pipx) and not is_base_runtime_extra(extra):
+        pinned = runtime_install_spec_with_extras(
+            [*installed_extras(), extra], version or __version__
+        )
     if method == "uv":
         if is_base_runtime_extra(extra):
             return "uv tool upgrade --reinstall rapid-mlx"

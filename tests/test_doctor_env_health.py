@@ -3123,9 +3123,9 @@ def test_bounded_timeout_uses_only_one_millisecond_after_deadline(monkeypatch):
 
 def test_deep_doctor_allows_slow_cold_optional_imports(monkeypatch):
     monkeypatch.setattr(eh.time, "monotonic", lambda: 100.0)
-    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 129.9)
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 174.9)
 
-    assert eh._bounded_timeout(eh._IMPORT_PROBE_TIMEOUT_S) == 20.0
+    assert eh._bounded_timeout(eh._IMPORT_PROBE_TIMEOUT_S) == 45.0
 
 
 def test_deep_doctor_timeout_recommends_direct_import_not_same_retry(
@@ -4009,10 +4009,65 @@ def test_rapid_mlx_not_on_path_marks_fail(tmp_path: Path):
     section = eh.section_shell_integration(
         which=lambda name: None,
         rcs=[tmp_path / "missing.zshrc"],
+        running_exe=str(tmp_path / "bin" / "rapid-mlx"),
     )
     path_row = section.checks[0]
     assert path_row.status is eh.CheckStatus.FAIL
     assert "NOT on $PATH" in path_row.label
+
+
+def test_direct_plain_venv_cli_without_path_warns_and_exits_zero(tmp_path):
+    root = tmp_path / "plain venv"
+    (root / "bin").mkdir(parents=True)
+    (root / "pyvenv.cfg").touch()
+    executable = str(root / "bin" / "rapid-mlx")
+    section = eh.section_shell_integration(
+        which=lambda _: None, rcs=[], running_exe=executable
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert f"`source {shlex.quote(str(root / 'bin' / 'activate'))}`" in row.label
+    assert f"`{shlex.quote(str(root / 'bin'))}` to PATH" in row.label
+    assert "shutil.which('rapid-mlx') returned None" in row.detail
+    assert f"running={executable} venv={root}" in row.detail
+    report = eh.Report(sections=[section])
+    assert report.n_fail == 0
+    assert report.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "kind", ["uv", "pipx", "installer", "non-venv", "missing", "not-bin"]
+)
+def test_missing_path_still_fails_outside_plain_venv(tmp_path, monkeypatch, kind):
+    root = tmp_path / ".rapid-mlx" if kind == "installer" else tmp_path / "env"
+    (root / "bin").mkdir(parents=True)
+    if kind != "non-venv":
+        (root / "pyvenv.cfg").touch()
+    if kind in {"uv", "pipx"}:
+        (root / ("uv-receipt.toml" if kind == "uv" else "pipx_metadata.json")).touch()
+    monkeypatch.setattr(eh.Path, "home", lambda: tmp_path)
+    executable = str(root / ("scripts" if kind == "not-bin" else "bin") / "rapid-mlx")
+    if kind == "missing":
+        executable = None
+        monkeypatch.setattr(eh, "_running_cli_exe", lambda: None)
+    section = eh.section_shell_integration(
+        which=lambda _: None, rcs=[], running_exe=executable
+    )
+    assert section.checks[0].status is eh.CheckStatus.FAIL
+    assert section.checks[0].label == "rapid-mlx NOT on $PATH"
+    assert eh.Report(sections=[section]).exit_code == 1
+
+
+def test_plain_venv_detection_excludes_installer_realpath(tmp_path):
+    root = tmp_path / "installer"
+    (root / "bin").mkdir(parents=True)
+    (root / "pyvenv.cfg").touch()
+    alias = tmp_path / "installer-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    assert (
+        eh._plain_virtualenv_root(str(alias / "bin" / "rapid-mlx"), installer_root=root)
+        is None
+    )
 
 
 def test_running_exe_mismatch_with_path_warns(tmp_path: Path):
@@ -5790,12 +5845,51 @@ def test_homebrew_incompatible_mlx_vlm_points_at_the_full_pypi_install(tmp_path)
 
 
 @pytest.mark.parametrize("only_optional", [False, True])
-@pytest.mark.parametrize("import_seconds", [4.5, 17.0, 40.0])
+@pytest.mark.parametrize("import_seconds", [4.5, 17.0, 40.0, 70.0])
 @pytest.mark.parametrize("preceding_seconds", [2.0, 18.0])
 def test_slow_optional_import_preserves_later_diagnostics(
     monkeypatch, import_seconds, preceding_seconds, only_optional
 ):
     """A cold or stuck optional import must not starve unrelated checks."""
+    calls, later_ids, vision = _run_slow_optional_import(
+        monkeypatch, import_seconds, preceding_seconds, only_optional
+    )
+    assert calls == ([] if only_optional else list(later_ids))
+    expected = (
+        eh.CheckStatus.OK
+        if import_seconds
+        <= min(
+            eh._IMPORT_PROBE_TIMEOUT_S,
+            eh._DOCTOR_BUDGET_S
+            - eh._DOCTOR_COMPLETION_HEADROOM_S
+            - (
+                0.0
+                if only_optional
+                else eh._DOCTOR_FOLLOWUP_RESERVE_S + preceding_seconds
+            ),
+        )
+        else eh.CheckStatus.SKIPPED
+    )
+    assert all(c.status is expected for c in vision)
+
+
+def test_default_doctor_verifies_cold_import_after_slow_required_section(monkeypatch):
+    """First doctor after a uv tool / pipx install (no precompiled bytecode).
+
+    Measured cold runs spend 12-15 s in the required-package probes before the
+    vision import starts, and the first vision import itself can take tens of
+    seconds. It must verify, and cache/network/shell checks must still run.
+    """
+    calls, later_ids, vision = _run_slow_optional_import(
+        monkeypatch, import_seconds=30.0, preceding_seconds=15.0, only_optional=False
+    )
+    assert calls == list(later_ids)
+    assert [c.status for c in vision] == [eh.CheckStatus.OK, eh.CheckStatus.OK]
+
+
+def _run_slow_optional_import(
+    monkeypatch, import_seconds, preceding_seconds, only_optional
+):
     clock = [100.0]
     runtime = Path(sys.executable)
     calls = []
@@ -5853,18 +5947,11 @@ def test_slow_optional_import_preserves_later_diagnostics(
 
     report = eh.run_all(only={"packages.optional"} if only_optional else None)
 
-    assert calls == ([] if only_optional else list(later_ids))
     optional_section = report.sections[0 if only_optional else 1]
     vision = [c for c in optional_section.checks if c.label.startswith("mlx-vlm")]
     assert len(vision) == 2
-    expected = (
-        eh.CheckStatus.OK
-        if (only_optional and import_seconds < eh._DOCTOR_BUDGET_S)
-        or (import_seconds == 4.5 and preceding_seconds == 2.0)
-        else eh.CheckStatus.SKIPPED
-    )
-    assert all(c.status is expected for c in vision)
     assert eh._DOCTOR_DEADLINE is None
+    return calls, later_ids, vision
 
 
 @pytest.mark.parametrize("deep", [False, True])
