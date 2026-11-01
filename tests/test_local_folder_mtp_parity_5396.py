@@ -97,6 +97,39 @@ def test_automatic_empty_local_head(model, capsys):
     assert "no usable MTP head" in capsys.readouterr().err
 
 
+def test_automatic_cached_sidecar_kept(model, capsys):
+    args = _args(
+        model=str(model),
+        spec_decode="mtp",
+        enable_mtp=True,
+        mtp_sidecar="/cached/mtp",
+        _speculative_config_explicit=False,
+    )
+    assert cli._drop_unavailable_mtp_head(args) is False
+    assert args.spec_decode == "mtp"
+    assert args.enable_mtp is True
+    assert args.mtp_sidecar == "/cached/mtp"
+    assert not capsys.readouterr().err
+
+
+@pytest.mark.parametrize("served_folder", [False, True])
+def test_shard_fallback_only_for_separate_sidecar(model, served_folder):
+    (model / "a.safetensors").write_bytes(b"")
+    first = model / "b.safetensors"
+    first.write_bytes(b"x")
+    (model / "c.safetensors").write_bytes(b"x")
+    assert cli._local_mtp_head_file(model, served_folder=served_folder) == (
+        None if served_folder else str(first)
+    )
+
+
+def test_empty_fixed_candidate_prevents_shard_fallback(model):
+    (model / "mtp.safetensors").write_bytes(b"")
+    (model / "model.safetensors").write_bytes(b"x")
+    (model / "model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert cli._local_mtp_head_file(model, served_folder=False) is None
+
+
 @pytest.mark.parametrize("sidecar_kind", ["folder", "none", "head", "empty_head"])
 def test_drop_unavailable_head(model, capsys, sidecar_kind):
     if sidecar_kind in ("head", "empty_head"):
@@ -132,6 +165,8 @@ def test_drop_unavailable_head(model, capsys, sidecar_kind):
         ("empty_dir", True),
         ("empty_dir_weights", True),
         ("dir_weights", False),
+        ("sharded_weights", False),
+        ("empty_shard", True),
         ("file_weights", False),
         ("empty_file", True),
     ],
@@ -144,8 +179,12 @@ def test_explicit_separate_local_sidecar(model, capsys, sidecar_kind, unavailabl
     else:
         sidecar.mkdir()
         if sidecar_kind != "empty_dir":
-            (sidecar / "model.safetensors").write_bytes(
-                b"" if sidecar_kind == "empty_dir_weights" else b"x"
+            filename = {
+                "sharded_weights": "model-00001-of-00002.safetensors",
+                "empty_shard": "shard.safetensors",
+            }.get(sidecar_kind, "model.safetensors")
+            (sidecar / filename).write_bytes(
+                b"" if sidecar_kind in ("empty_dir_weights", "empty_shard") else b"x"
             )
     args = _args(
         model=str(model),
@@ -155,6 +194,7 @@ def test_explicit_separate_local_sidecar(model, capsys, sidecar_kind, unavailabl
     cli._normalize_speculative_config_or_exit(args)
     assert args.spec_decode == "mtp"
     assert args.mtp_sidecar == str(sidecar)
+    assert args._speculative_config_explicit is True
     assert cli._drop_unavailable_mtp_head(args) is unavailable
     err = capsys.readouterr().err
     if unavailable:

@@ -3228,7 +3228,11 @@ def _local_mtp_head_file(path, *, served_folder: bool) -> str | None:
     if not os.path.isfile(path):
         if not os.path.isdir(path):
             return None
-        names = ("mtp.safetensors", "model-mtp.safetensors", "mtp/model.safetensors")
+        names: tuple[str, ...] = (
+            "mtp.safetensors",
+            "model-mtp.safetensors",
+            "mtp/model.safetensors",
+        )
         if not served_folder:
             names += ("model.safetensors",)
         for name in names:
@@ -3237,6 +3241,15 @@ def _local_mtp_head_file(path, *, served_folder: bool) -> str | None:
                 path = candidate
                 break
         else:
+            if not served_folder:
+                from pathlib import Path
+
+                for shard in sorted(Path(path).glob("*.safetensors")):
+                    try:
+                        if shard.is_file() and shard.stat().st_size > 0:
+                            return str(shard)
+                    except OSError:
+                        continue
             return None
     # Match the injector's first-file resolution, even if that file is empty.
     try:
@@ -3269,7 +3282,9 @@ def _drop_unavailable_mtp_head(args) -> bool:
             "this local model folder has no usable MTP head "
             "(mtp/model.safetensors is missing or empty)"
         )
-    elif os.path.lexists(sidecar) or sidecar.startswith(("/", "./", "../", "~")):
+    elif getattr(args, "_speculative_config_explicit", False) and (
+        os.path.lexists(sidecar) or sidecar.startswith(("/", "./", "../", "~"))
+    ):
         if _local_mtp_head_file(sidecar, served_folder=False) is not None:
             return False
         reason = (
