@@ -33,7 +33,13 @@ def test_disk_check_uses_decimal_gb(monkeypatch, capsys):
 
 @pytest.mark.parametrize(
     "size, expected",
-    [(16_320_000_000, "16.3 GB"), (1_500_000, "1.5 MB"), (999, "999 B")],
+    [
+        (16_320_000_000, "16.3 GB"),
+        (1_500_000, "1.5 MB"),
+        (999_960_000, "1.0 GB"),
+        (999_960, "1.0 MB"),
+        (999, "999 B"),
+    ],
 )
 def test_download_gate_decimal_sizes(size, expected):
     assert _download_gate._format_size(size) == expected

@@ -176,7 +176,7 @@ def _format_size(num_bytes: int) -> str:
     units = ("B", "KB", "MB", "GB", "TB")
     size = float(num_bytes)
     for unit in units:
-        if size < 1000.0 or unit == units[-1]:
+        if round(size, 1) < 1000.0 or unit == units[-1]:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1000.0
     return f"{size:.1f} TB"  # unreachable, keeps mypy happy

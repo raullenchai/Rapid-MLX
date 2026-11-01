@@ -1533,8 +1533,8 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
         size=1,
     )
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
-    # A gigabyte-sized value must retain a separate modified-time column.
-    monkeypatch.setattr(cli, "_external_tree_size_bytes", lambda _path: 1_073_636_966)
+    # The widest size the decimal formatter produces below 1 TB is 8 characters.
+    monkeypatch.setattr(cli, "_external_tree_size_bytes", lambda _path: 123_449_999_999)
 
     cli._print_cached_models()
     row = next(
@@ -1548,7 +1548,7 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
     # The size column must be parseable on its own, not fused with the
     # modified time.
     assert re.fullmatch(r"[\d.]+ [KMGT]B", columns[2]), columns[2]
-    assert columns[2] == "1.1 GB"
+    assert columns[2] == "123.4 GB"
 
 
 def test_external_repo_identifier_is_never_truncated(tmp_path, monkeypatch, capsys):
