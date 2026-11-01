@@ -194,11 +194,13 @@ def recover(
     if reply.strip().lower() != "y":
         record_outcome("declined")
         return False
+    from rapid_mlx._upgrade_runner import run_upgrade_command
+
     try:
-        result = subprocess.run(argv, check=False)
+        returncode = run_upgrade_command(argv)
     except OSError:
-        result = None
-    if result is None or result.returncode:
+        returncode = None
+    if returncode is None or returncode:
         print(
             "Dependency repair failed; run the command above to inspect the error.",
             file=sys.stderr,

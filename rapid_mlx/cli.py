@@ -15318,9 +15318,8 @@ def _print_point_command(app: str, setup_verb: str, url: str) -> None:
 
 def upgrade_command(args):
     """Detect install method and (optionally) run the right upgrade command."""
-    import subprocess
-
     from rapid_mlx import _version_check as vc
+    from rapid_mlx._upgrade_runner import run_upgrade_command
 
     current = vc._installed_version() or "dev"
     print()
@@ -15418,7 +15417,7 @@ def upgrade_command(args):
         """Run the selected command and probe the installed version on success."""
         try:
             # Use argv form so paths cannot be interpreted as shell syntax.
-            result = subprocess.run(info.upgrade_argv, check=False)
+            returncode = run_upgrade_command(info.upgrade_argv)
         except FileNotFoundError as exc:
             missing = exc.filename or info.upgrade_argv[0]
             print(
@@ -15430,8 +15429,8 @@ def upgrade_command(args):
             print("\n  Interrupted.\n")
             sys.exit(130)
         print()
-        if result.returncode:
-            return result.returncode, None
+        if returncode:
+            return returncode, None
         return 0, vc.installed_version_in_fresh_process(info)
 
     print()
