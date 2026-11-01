@@ -4,6 +4,7 @@ import os
 import pty
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -371,3 +372,61 @@ printf 'selected=%s\\n' "$PYTHON"
     assert f"selected={tmp_path}/.rapid-mlx-python/bin/python3" in result.stdout
     assert "not found" not in result.stdout
     assert "unexpected" not in result.stdout
+
+
+def test_concurrent_installers_serialize_before_python_setup(tmp_path):
+    if not os.access("/usr/bin/perl", os.X_OK):
+        pytest.skip("perl is required for flock")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    scripts = {
+        "uname": 'case "$1" in -m) echo arm64 ;; *) echo Darwin ;; esac',
+        "sw_vers": "echo 15.0",
+        "sysctl": 'case "$2" in hw.memsize) echo 17179869184 ;; hw.optional.arm64) echo 1 ;; esac',
+        "python3": 'case "$1" in -c) echo 3.9 ;; --version) echo "Python 3.9.0" ;; esac',
+        "curl": 'echo "$$" >> "$HOME/curl-calls"; for ((i=0; i<300; i++)); do [ ! -e "$HOME/gate" ] || exit 1; sleep 0.1; done; exit 1',
+    }
+    scripts["python3.12"] = scripts["python3.13"] = scripts["python3"]
+    for name, body in scripts.items():
+        path = stubs / name
+        path.write_text("#!/bin/bash\n" + body + "\n")
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PATH": f"{stubs}:/usr/bin:/bin",
+        "RAPID_MLX_TELEMETRY": "0",
+        "DO_NOT_TRACK": "1",
+    }
+    first = subprocess.Popen(
+        ["bash", str(SCRIPT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "curl-calls").exists() and time.monotonic() < deadline:
+            if first.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert (tmp_path / "curl-calls").exists(), "first installer did not reach curl"
+        second = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+        )
+        assert second.returncode != 0
+        assert "Another Rapid-MLX install is already running" in second.stdout
+        assert len((tmp_path / "curl-calls").read_text().splitlines()) == 1
+    finally:
+        (tmp_path / "gate").touch()
+        try:
+            first.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.communicate()
