@@ -3351,6 +3351,35 @@ def _drop_unavailable_mtp_head(args) -> bool:
             f"the MTP sidecar at {sidecar} has no usable MTP weights "
             "(missing or empty .safetensors)"
         )
+    elif getattr(args, "_speculative_config_explicit", False):
+        if _cached_mtp_sidecar(sidecar) is not None:
+            return False
+        from huggingface_hub import constants
+
+        if constants.HF_HUB_OFFLINE:
+            reason = (
+                f"the MTP sidecar {sidecar} is not downloaded and "
+                "Hugging Face is offline (HF_HUB_OFFLINE=1)"
+            )
+        else:
+            from .spec_decode.mtp import qwen3_5_inject
+
+            # This preflight owns the single fallback line; suppress the
+            # resolver's duplicate warning while retaining other diagnostics.
+            def keep_diagnostic(record):
+                return not record.getMessage().startswith(
+                    "[mtp.inject] could not resolve sidecar "
+                )
+
+            qwen3_5_inject.logger.addFilter(keep_diagnostic)
+            try:
+                if qwen3_5_inject._resolve_sidecar_file(sidecar) is not None:
+                    return False
+            except Exception:  # noqa: BLE001 - unavailable sidecars are optional
+                pass
+            finally:
+                qwen3_5_inject.logger.removeFilter(keep_diagnostic)
+            reason = f"the MTP sidecar {sidecar} could not be downloaded"
     else:
         return False
     import sys
