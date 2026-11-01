@@ -45,6 +45,61 @@ def clean_config():
     reset_config()
 
 
+@pytest.mark.parametrize(
+    "content_length,send_body,expected",
+    [
+        (b"37", True, True),
+        (None, True, True),
+        (b"37", False, False),
+        (b"abc", True, False),
+        (b"-1", True, False),
+    ],
+    ids=[
+        "content-length",
+        "read-until-close",
+        "missing-body",
+        "malformed-content-length",
+        "negative-content-length",
+    ],
+)
+def test_readyz_reads_segmented_response(content_length, send_body, expected):
+    body = b'{"ready": true, "model_loaded": true}'
+    headers = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+    if content_length is not None:
+        headers += b"Content-Length: " + content_length + b"\r\n"
+    headers += b"\r\n"
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(2.0)
+        port = listener.getsockname()[1]
+
+        def respond():
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(2.0)
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    request += chunk
+                connection.sendall(headers)
+                time.sleep(0.05)
+                if send_body:
+                    connection.sendall(body)
+            return request
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            response = executor.submit(respond)
+            ready = _readyz_ready("127.0.0.1", port, require_model_loaded=True)
+            request = response.result(timeout=3)
+
+    assert ready is expected
+    assert b"Connection: close\r\n" in request
+
+
 @contextmanager
 def running_server(app):
     # Hand uvicorn the already-bound socket so no other process can take

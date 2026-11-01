@@ -169,13 +169,14 @@ enum IPPinnedHTTPTransport {
 
 /// Parses the complete HTTP/1.1 bytes collected by ``ResponseReader``.
 enum IPHTTPResponseParser {
+    static let maxHeaderBytes = 128 * 1024
     static func parse(data: Data, url: URL) throws -> (Data, HTTPURLResponse) {
         let headerSeparator = Data("\r\n\r\n".utf8)
         guard let headerEnd = data.range(of: headerSeparator) else {
             throw IPPinnedHTTPTransport.transportError("response ended before HTTP headers completed")
         }
-        guard headerEnd.lowerBound <= 128 * 1024 else {
-            throw IPPinnedHTTPTransport.transportError("HTTP response headers exceeded 128 KB")
+        guard headerEnd.lowerBound <= maxHeaderBytes else {
+            throw IPPinnedHTTPTransport.transportError("HTTP response headers exceeded \(DownloadProgress.formatBytes(Int64(maxHeaderBytes)))")
         }
 
         let rawHeaders = String(decoding: data[..<headerEnd.lowerBound], as: UTF8.self)
@@ -334,7 +335,7 @@ private final class ResponseReader: @unchecked Sendable {
         bufferedData.append(data)
         guard bufferedData.count <= byteLimit else {
             throw IPPinnedHTTPTransport.transportError(
-                "page exceeded \(byteLimit / (1024 * 1024)) MB cap"
+                "page exceeded \(DownloadProgress.formatBytes(Int64(byteLimit))) cap"
             )
         }
     }

@@ -433,6 +433,20 @@ struct CommunityBenchmarkMyResultsView: View {
                     String(localized: "Rapid-MLX"),
                     "\(result.execution.runtime.rapidMLX) · MLX \(result.execution.runtime.mlx)"
                 )
+                if let acceleration = CommunityBenchmarkAcceleration.summary(result.execution.task?.language) {
+                    HStack(alignment: .top, spacing: RapidTheme.Space.md) {
+                        Text(String(localized: "Acceleration"))
+                            .font(RapidFont.secondary)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .frame(width: 90, alignment: .leading)
+                        Text(acceleration)
+                            .font(RapidFont.metric)
+                            .foregroundStyle(RapidTheme.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("CommunityBenchmark.Acceleration.\(result.id)")
+                }
             }
             Spacer(minLength: 0)
         }

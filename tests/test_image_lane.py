@@ -1275,6 +1275,7 @@ def test_generations_uses_engine_default_steps(client, monkeypatch, default_step
     "model_ref",
     ["z-image-turbo", "MLX-COMMUNITY/qwen-image-2.1-mflux-q4"],
 )
+@pytest.mark.usefixtures("isolated_server_model_state")
 def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch, model_ref):
     """An image-gen alias must not run the MLLM-vs-text routing preflight.
 
