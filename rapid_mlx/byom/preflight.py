@@ -1084,6 +1084,8 @@ def _same_task_fitting_pick(
         from rapid_mlx.recommendations import fitting_pick
 
         profile = resolve_profile(alias)
+        if profile is None:
+            return None, None
         caps = _main_capabilities(profile)
         task = caps["task_types"][0]
         ops = set(caps["operation_modes"])
