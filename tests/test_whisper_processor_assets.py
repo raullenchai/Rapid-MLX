@@ -25,6 +25,7 @@ PATTERNS = (
     "special_tokens_map.json",
     "added_tokens.json",
     "normalizer.json",
+    "config.json",
 )
 
 
@@ -187,3 +188,158 @@ def test_offline_processor_falls_back_to_unpinned_cache(monkeypatch):
         ("openai/whisper-base", {"revision": PIN, "local_files_only": True}),
         ("openai/whisper-base", {"local_files_only": True}),
     ]
+
+
+def test_offline_processor_composes_from_cached_parts(monkeypatch, caplog):
+    processor, feature_extractor, tokenizer = object(), object(), object()
+    calls = []
+    constructed = []
+
+    class WhisperProcessor:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            calls.append(("processor", source, kwargs))
+            raise OSError("processor metadata missing")
+
+        def __new__(cls, **kwargs):
+            constructed.append(kwargs)
+            return processor
+
+    def load_part(name, part):
+        def load(source, **kwargs):
+            calls.append((name, source, kwargs))
+            return part
+
+        return SimpleNamespace(from_pretrained=load)
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            WhisperProcessor=WhisperProcessor,
+            WhisperFeatureExtractor=load_part("extractor", feature_extractor),
+            WhisperTokenizerFast=load_part("fast", tokenizer),
+        ),
+    )
+    engine = STTEngine("mlx-community/whisper-base-mlx")
+    engine.model = SimpleNamespace(_processor=None)
+    with caplog.at_level("INFO", logger="rapid_mlx.audio.stt"):
+        engine._ensure_whisper_processor()
+
+    assert engine.model._processor is processor
+    assert constructed == [
+        {"feature_extractor": feature_extractor, "tokenizer": tokenizer}
+    ]
+    assert calls == [
+        (name, "openai/whisper-base", {"revision": PIN, "local_files_only": True})
+        for name in ("processor", "extractor", "fast")
+    ]
+    assert "cached feature extractor and tokenizer" in caplog.text
+
+
+@pytest.mark.parametrize("fast_available", [True, False])
+def test_offline_processor_uses_slow_tokenizer(monkeypatch, fast_available):
+    processor, feature_extractor, tokenizer = object(), object(), object()
+    calls = []
+    constructed = []
+
+    class WhisperProcessor:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            calls.append(("processor", source, kwargs))
+            raise OSError("processor metadata missing")
+
+        def __new__(cls, **kwargs):
+            constructed.append(kwargs)
+            return processor
+
+    def load_part(name, part=None):
+        def load(source, **kwargs):
+            calls.append((name, source, kwargs))
+            if name == "fast":
+                raise OSError("fast tokenizer unavailable")
+            return part
+
+        return SimpleNamespace(from_pretrained=load)
+
+    transformers = SimpleNamespace(
+        WhisperProcessor=WhisperProcessor,
+        WhisperFeatureExtractor=load_part("extractor", feature_extractor),
+        WhisperTokenizer=load_part("slow", tokenizer),
+    )
+    if fast_available:
+        transformers.WhisperTokenizerFast = load_part("fast")
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    engine = STTEngine("mlx-community/whisper-base-mlx")
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+
+    assert engine.model._processor is processor
+    assert constructed == [
+        {"feature_extractor": feature_extractor, "tokenizer": tokenizer}
+    ]
+    names = (
+        ("processor", "extractor", "fast", "slow")
+        if fast_available
+        else ("processor", "extractor", "slow")
+    )
+    assert calls == [
+        (name, "openai/whisper-base", {"revision": PIN, "local_files_only": True})
+        for name in names
+    ]
+
+
+@pytest.mark.parametrize(
+    "failing_part",
+    ["extractor", "slow"],
+    ids=["extractor-missing", "tokenizer-missing"],
+)
+def test_offline_processor_failed_composition_stays_offline(
+    monkeypatch, caplog, failing_part
+):
+    calls = []
+
+    def load_part(name):
+        def load(source, **kwargs):
+            calls.append((name, source, kwargs))
+            if name == "processor":
+                raise OSError("original processor error")
+            if name in ("fast", failing_part):
+                raise OSError("cached part missing")
+            return object()
+
+        return SimpleNamespace(from_pretrained=load)
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            WhisperProcessor=load_part("processor"),
+            WhisperFeatureExtractor=load_part("extractor"),
+            WhisperTokenizerFast=load_part("fast"),
+            WhisperTokenizer=load_part("slow"),
+        ),
+    )
+    engine = STTEngine("mlx-community/whisper-base-mlx")
+    engine.model = SimpleNamespace(_processor=None)
+    engine._ensure_whisper_processor()
+
+    assert engine.model._processor is None
+    names = (
+        ("processor", "extractor")
+        if failing_part == "extractor"
+        else ("processor", "extractor", "fast", "slow")
+    )
+    assert calls == [
+        (name, "openai/whisper-base", kwargs)
+        for kwargs in (
+            {"revision": PIN, "local_files_only": True},
+            {"local_files_only": True},
+        )
+        for name in names
+    ]
+    assert "original processor error" in caplog.text
+    assert "cached part missing" not in caplog.text

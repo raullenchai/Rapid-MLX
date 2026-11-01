@@ -252,6 +252,48 @@ _VAD_LOAD_LOCK = threading.Lock()
 _DEFAULT_WHISPER_PROCESSOR_FALLBACK = "openai/whisper-large-v3"
 
 
+def _load_local_whisper_processor(transformers_module, source, revision_kwargs):
+    """Load cached processor parts if the full loader needs missing metadata."""
+    try:
+        return transformers_module.WhisperProcessor.from_pretrained(
+            source, local_files_only=True, **revision_kwargs
+        )
+    except OSError:
+        extractor_class = getattr(transformers_module, "WhisperFeatureExtractor", None)
+        fast_tokenizer = getattr(transformers_module, "WhisperTokenizerFast", None)
+        slow_tokenizer = getattr(transformers_module, "WhisperTokenizer", None)
+        tokenizer_class = fast_tokenizer or slow_tokenizer
+        if extractor_class is None or tokenizer_class is None:
+            raise
+        try:
+            feature_extractor = extractor_class.from_pretrained(
+                source, local_files_only=True, **revision_kwargs
+            )
+            try:
+                tokenizer = tokenizer_class.from_pretrained(
+                    source, local_files_only=True, **revision_kwargs
+                )
+            except OSError:
+                if fast_tokenizer is None or slow_tokenizer is None:
+                    raise
+                tokenizer = slow_tokenizer.from_pretrained(
+                    source, local_files_only=True, **revision_kwargs
+                )
+            processor = transformers_module.WhisperProcessor(
+                feature_extractor=feature_extractor, tokenizer=tokenizer
+            )
+        except OSError:
+            pass
+        else:
+            logger.info(
+                "Assembled WhisperProcessor from the cached feature extractor "
+                "and tokenizer for %r.",
+                source,
+            )
+            return processor
+        raise
+
+
 def _whisper_processor_source(
     model_name: str, n_mels: int | None, n_vocab: int | None
 ) -> str:
@@ -944,7 +986,7 @@ class STTEngine:
             else {}
         )
         try:
-            from transformers import WhisperProcessor
+            import transformers
         except ImportError:
             logger.warning(
                 "transformers not installed; Whisper processor patch skipped — "
@@ -956,21 +998,21 @@ class STTEngine:
             from .. import model_downloads
 
             try:
-                processor = WhisperProcessor.from_pretrained(
-                    processor_source, local_files_only=True, **revision_kwargs
+                processor = _load_local_whisper_processor(
+                    transformers, processor_source, revision_kwargs
                 )
             except OSError:
                 # Transformers reports missing local processor assets as OSError.
                 try:
                     if not revision_kwargs:
                         raise
-                    processor = WhisperProcessor.from_pretrained(
-                        processor_source, local_files_only=True
+                    processor = _load_local_whisper_processor(
+                        transformers, processor_source, {}
                     )
                 except OSError:
                     if model_downloads.disabled():
                         raise
-                    processor = WhisperProcessor.from_pretrained(
+                    processor = transformers.WhisperProcessor.from_pretrained(
                         processor_source, **revision_kwargs
                     )
         except Exception as e:  # noqa: BLE001
