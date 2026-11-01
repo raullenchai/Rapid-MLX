@@ -445,6 +445,65 @@ def test_tee_keeps_stderr_mirror_when_durable_sink_fails():
     assert result.stderr == b"fatal traceback\nsecond chunk\n"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX signals and flock")
+def test_startup_preserves_crash_file_while_helper_is_writing(tmp_path):
+    setup = (
+        "from pathlib import Path\n"
+        "import rapid_mlx._signal_observability as so\n"
+        f"so._crash_logs_dir = lambda: Path({str(tmp_path)!r})\n"
+        "so._install_crash_file()\n"
+    )
+    script = setup + (
+        "import faulthandler, sys\n"
+        "print(so._crash_tee.pid, so._crash_path, flush=True)\n"
+        "sys.stdin.readline()\n"
+        "faulthandler._sigsegv()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    helper_pid = None
+    try:
+        pid, path = _read_ready_with_timeout(child).strip().split(maxsplit=1)
+        helper_pid = int(pid)
+        crash = Path(path)
+        os.kill(helper_pid, signal.SIGSTOP)
+        child.stdin.write("crash\n")
+        child.stdin.flush()
+        assert child.wait(timeout=10) != 0
+        subprocess.run([sys.executable, "-c", setup], check=True, timeout=10)
+        assert crash.exists()
+        os.kill(helper_pid, signal.SIGCONT)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(helper_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("crash mirror helper did not exit")
+        assert "Fatal Python error" in crash.read_text(encoding="utf-8")
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        if child.stdin is not None:
+            child.stdin.close()
+        if child.stdout is not None:
+            child.stdout.close()
+        if helper_pid is not None:
+            for sig in (signal.SIGCONT, signal.SIGKILL):
+                try:
+                    os.kill(helper_pid, sig)
+                except ProcessLookupError:
+                    break
+
+
 def test_rotation_never_unlinks_live_process_crash_files(monkeypatch, tmp_path):
     from rapid_mlx import _signal_observability as so
 
@@ -2479,3 +2538,52 @@ def test_subprocess_sigterm_default_disposition_still_terminates():
         f" short-circuit must be gated on SIGHUP only;"
         f" stderr={stderr!r}"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires flock")
+def test_crash_file_in_use_reflects_writer_lock(monkeypatch, tmp_path):
+    import fcntl
+
+    from rapid_mlx import _signal_observability as so
+
+    path = tmp_path / "crash-20261031T000000Z-4242.txt"
+    assert so._crash_file_in_use(path) is False  # missing file
+    path.write_text("partial\n", encoding="utf-8")
+    assert so._crash_file_in_use(path) is False
+    holder = os.open(path, os.O_RDWR)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert so._crash_file_in_use(path) is True
+        monkeypatch.setattr(so, "_crash_file_pid", lambda _path: 4242)
+        assert so._crash_file_is_live(path, tmp_path) is True
+    finally:
+        os.close(holder)
+    monkeypatch.setattr(so.os, "name", "nt")
+    try:
+        assert so._crash_file_in_use(path) is False
+    finally:
+        monkeypatch.undo()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires flock")
+def test_crash_file_lock_failure_is_not_fatal(monkeypatch, tmp_path, caplog):
+    import fcntl
+    import logging
+
+    from rapid_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(so, "process_identity", lambda _pid: None)
+
+    def deny(_fd, _flags):
+        raise OSError("locks unsupported")
+
+    monkeypatch.setattr(fcntl, "flock", deny)
+    caplog.set_level(logging.DEBUG, logger=so.logger.name)
+    try:
+        so.install_signal_observability(observed_signals=())
+        assert "could not lock crash file" in caplog.text
+        assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt"))
+    finally:
+        so._reset_for_tests()

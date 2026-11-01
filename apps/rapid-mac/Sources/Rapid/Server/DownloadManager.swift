@@ -212,11 +212,11 @@ final class DownloadManager {
     private let cancellationTracker = DownloadCancellationTracker()
     private var stdoutPipes: [String: Pipe] = [:]
     private var stderrPipes: [String: Pipe] = [:]
-    /// Most recent stderr lines per alias. Bounded so a chatty pull
+    /// Most recent non-progress output lines from both streams per alias. Bounded so a chatty pull
     /// can't blow memory on cancel. Used to compose ``.failed``'s
     /// human message.
     private var stderrTails: [String: [String]] = [:]
-    private let stderrTailCapacity: Int = 12
+    private let stderrTailCapacity: Int = 32
     nonisolated private static let maxOutputChunkBytes = 64 * 1024
     nonisolated private static let maxOutputLineBytes = 8 * 1024
     /// Two minutes without a progress tick or byte growth is long enough to
@@ -814,9 +814,9 @@ final class DownloadManager {
                 job.lastProgressAt = Date()
                 job.isStalled = false
             }
-            if isStderr && !consumed {
+            if !consumed {
                 var tail = stderrTails[alias] ?? []
-                // Scrub before storage — the stderr tail feeds the
+                // Scrub before storage — the output tail feeds the
                 // failure message surfaced in the UI; a leaked HF
                 // token in there ends up in a copy-pasted support
                 // ticket. Audit P1 (ServerManager stderr → log).
@@ -873,7 +873,7 @@ final class DownloadManager {
         case .exit:
             if scheduleAutomaticRetry(
                 job: job, alias: alias,
-                transient: Self.isTransientDownloadError((stderrTails[alias] ?? []).joined(separator: " "))
+                transient: Self.isTransientDownloadError(Self.terminalPullFailure(stderrorLines: stderrTails[alias] ?? []))
             ) { return }
             recordFailure(job: job, alias: alias, signal: false)
         case .uncaughtSignal:
@@ -932,32 +932,36 @@ final class DownloadManager {
     }
 
     private func recordFailure(job: Job, alias: String, signal: Bool) {
-        // The child's stderr tail can carry engine internals (the
+        // The child's output tail can carry engine internals (the
         // "rapid-mlx" name, HTTP codes, Python stack frames). Log it
         // for support, but NEVER surface it to the user — they get a
         // plain, actionable message instead.
-        let tail = (stderrTails[alias] ?? [])
-            .filter { !$0.isEmpty }
-            .suffix(3)
-            .joined(separator: " — ")
-        if !tail.isEmpty {
-            print("[download] \(alias) failed: \(tail)")
+        let lines = (stderrTails[alias] ?? []).filter { !$0.isEmpty }
+        let tail = Self.terminalPullFailure(stderrorLines: lines)
+        let logTail = lines.suffix(3).joined(separator: " — ")
+        if !logTail.isEmpty {
+            print("[download] \(alias) failed: \(logTail)")
         }
-        let kind = signal
-            ? FailureDiagnosis.Kind.downloadFailed
-            : FailureDiagnoser.downloadFailureKind(
-                raw: tail,
-                usingMirror: job.source == .mirror
-            )
+        let classification = Self.classifyPullFailure(tailLines: lines, source: job.source)
+        let kind = signal ? FailureDiagnosis.Kind.downloadFailed : classification.kind
         job.failureKind = kind
         job.failureCause = signal ? .other : FailureDiagnoser.downloadFailureCause(raw: tail, kind: kind)
-        if signal {
-            job.status = .failed(message: "The model download was interrupted. Retry to resume it.")
-        } else {
-            job.status = .failed(message: Self.pullFailureMessage(
-                raw: tail, source: job.source
-            ))
-        }
+        job.status = .failed(message: signal
+            ? "The model download was interrupted. Retry to resume it."
+            : classification.message)
+    }
+
+    nonisolated static func classifyPullFailure(
+        tailLines: [String], source: DownloadSource
+    ) -> (kind: FailureDiagnosis.Kind, message: String) {
+        let raw = terminalPullFailure(stderrorLines: tailLines)
+        return (FailureDiagnoser.downloadFailureKind(raw: raw, usingMirror: source == .mirror),
+                pullFailureMessage(raw: raw, source: source))
+    }
+
+    nonisolated private static func terminalPullFailure(stderrorLines: [String]) -> String {
+        let start = stderrorLines.lastIndex { $0.lowercased().contains("error:") } ?? stderrorLines.startIndex
+        return stderrorLines[start...].joined(separator: " — ")
     }
 
     nonisolated static func pullFailureMessage(raw: String, source: DownloadSource) -> String {
@@ -966,15 +970,18 @@ final class DownloadManager {
             || value.contains("not enough disk space") {
             return "There isn't enough disk space for this model. Free space, then retry to resume."
         }
+        if value.contains("not found on huggingface") {
+            return "This model wasn't found on Hugging Face. Check the model name, then try again."
+        }
         if value.contains("gated") || value.contains("hf auth login")
-            || (source == .huggingFace && (value.contains("401") || value.contains("403"))) {
+            || (source == .huggingFace && FailureDiagnoser.hasDownloadAuthSignal(value)) {
             return "This model needs Hugging Face access. Accept its terms and sign in with hf auth login, then retry."
         }
-        if source == .mirror && !value.contains("could not reach hugging face")
-            && FailureDiagnoser.downloadFailureKind(
-            raw: value, usingMirror: true
-        ) == .downloadSourceUnavailable {
-            return "The mirror could not be reached. Switch to Hugging Face or retry to resume."
+        if FailureDiagnoser.downloadFailureKind(raw: value, usingMirror: source == .mirror) == .downloadSourceUnavailable {
+            if source == .mirror {
+                return "The mirror couldn't be reached. Switch source to download from Hugging Face, or retry."
+            }
+            return "Hugging Face couldn't be reached. Switch source to download from the Rapid-MLX mirror, or retry."
         }
         if Self.isTransientDownloadError(value)
             || value.contains("could not reach hugging face") {
@@ -1251,11 +1258,11 @@ final class DownloadManager {
         return job
     }
 
-    /// Test-only: feed a stderr line to the manager exactly the way
+    /// Test-only: feed an output line to the manager exactly the way
     /// the readability handler would, but synchronously and without
     /// a backing process.
-    internal func _testingIngestStderr(alias: String, line: String) {
-        ingestLines(alias: alias, lines: [line], isStderr: true)
+    internal func _testingIngestStderr(alias: String, line: String, isStderr: Bool = true) {
+        ingestLines(alias: alias, lines: [line], isStderr: isStderr)
     }
 
     /// Test-only: drive the exit branch to one of the terminal

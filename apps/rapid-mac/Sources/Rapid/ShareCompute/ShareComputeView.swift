@@ -152,6 +152,7 @@ struct ShareComputeView: View {
             freeBytes = DiskSpaceProbe.freeBytesForHFCache()
             receipts = store.load()
             selectedReceiptID = receipts.first?.id
+            reconcileSelection()
             applyReviewPresentation()
         }
         .onChange(of: manager.state) { previous, current in
@@ -448,11 +449,14 @@ struct ShareComputeView: View {
     }
 
     private func reconcileSelection() {
-        guard !screen.locksModelSelection else { return }
-        if !shareableModels.contains(where: { $0.id == selectedID }),
-           let first = shareableModels.first {
-            selectedID = first.id
-        }
+        selectedID = Self.reconciledSelectionID(
+            current: selectedID, shareableIDs: shareableModels.map(\.id), locked: screen.locksModelSelection
+        )
+    }
+
+    static func reconciledSelectionID(current: String, shareableIDs: [String], locked: Bool) -> String {
+        guard !locked, !shareableIDs.contains(current) else { return current }
+        return shareableIDs.first ?? current
     }
 
     private func presentConnectionReview() {
@@ -499,6 +503,7 @@ struct ShareComputeView: View {
         guard shareableModels.contains(where: { $0.id == catalogID }) else {
             selectedID = ""
             tab = .share
+            reconcileSelection()
             return
         }
         selectedID = catalogID

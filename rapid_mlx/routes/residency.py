@@ -128,11 +128,15 @@ async def model_residency():
     from ..middleware.activity import activity_tracker
 
     snapshot["audio_lanes"] = audio_worker.snapshot()
+    from ..cua.service import get_cua_service
+    from .agents import active_agent_runs
     from .video import active_video_jobs
 
-    # Video jobs keep generating after their POST returns; while one runs,
-    # keep the idle clock at zero so it restarts when the job ends.
-    background = active_video_jobs()
+    # Video jobs, CUA runs and agent runs (including approval or client tool
+    # waits) outlive their POST. Restart the idle clock when they finish.
+    background = (
+        active_video_jobs() + active_agent_runs() + get_cua_service().active_run_count()
+    )
     if background:
         activity_tracker.touch()
     activity = activity_tracker.snapshot()

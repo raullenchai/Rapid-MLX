@@ -151,7 +151,11 @@ struct ShareComputeShareTab: View {
         if case .failed(let message) = job?.status { failure = message }
         return .decide(hasReady: selected?.isReady == true, hasCandidate: candidate != nil, storage: storage, downloading: candidate.map { downloads.isDownloading($0.model.alias) } ?? false, failure: failure)
     }
-    private func size(_ bytes: Int64?) -> String { bytes.map { "~" + DownloadProgress.formatBytes($0) } ?? "" }
+    private func size(_ bytes: Int64?, entry: ModelEntry?) -> String {
+        guard let bytes else { return "" }
+        let prefix = entry?.displayedModelSize?.byteCount == bytes ? "" : "~"
+        return prefix + DownloadProgress.formatBytes(bytes)
+    }
     private var keyDone: Bool { hasSavedKey || !requiresConnection }
     private var modelDone: Bool { selected?.isReady == true }
     private var current: ShareComputeSetupStep { .current(keyDone: keyDone, modelDone: modelDone) }
@@ -167,7 +171,7 @@ struct ShareComputeShareTab: View {
                         .font(.rapid(size: 12)).foregroundStyle(.secondary)
                 }.padding(RapidTheme.Space.lg)
                 divider
-                setupRow(number: 1, title: "QuickSilver provider key", done: keyDone, step: .key) {
+                setupRow(number: 1, title: String(localized: "QuickSilver provider key"), done: keyDone, step: .key) {
                     if keyDone {
                         Text(savedKeyLabel ?? "Key saved")
                     } else {
@@ -187,15 +191,15 @@ struct ShareComputeShareTab: View {
                     }
                 }
                 divider
-                setupRow(number: 2, title: "Model to share", done: modelDone, step: .model) {
+                setupRow(number: 2, title: String(localized: "Model to share"), done: modelDone, step: .model) {
                     if !catalogLoaded { Text("Checking downloaded models…") }
                     else if models.isEmpty {
                         switch downloadState {
                         case .none: Text("No models can be shared from this Mac right now.")
                         case .insufficient:
-                            if case .notEnoughSpace(_, let required) = storage { Text("Not enough free space (\(size(required)) needed).") }
+                            if case .notEnoughSpace(_, let required) = storage { Text("Not enough free space (\(size(required, entry: candidate?.entry)) needed).") }
                         case .failed(let message): Text(message)
-                        default: Text("Download a model to share. \(size(candidate?.estimatedDownloadBytes))")
+                        default: Text("Download a model to share. \(size(candidate?.estimatedDownloadBytes, entry: candidate?.entry))")
                         }
                     }
                     else if let selected {
@@ -212,10 +216,10 @@ struct ShareComputeShareTab: View {
                         HStack(spacing: 8) {
                             Menu {
                                 ForEach(candidates) { model in
-                                    Button("\(model.title) · \(size(model.estimatedDownloadBytes))") { candidateID = model.id }
+                                    Button("\(model.title) · \(size(model.estimatedDownloadBytes, entry: model.entry))") { candidateID = model.id }
                                         .accessibilityIdentifier("ShareCompute.Setup.DownloadCandidate.\(model.id)")
                                 }
-                            } label: { Text("\(candidate.title) · \(size(candidate.estimatedDownloadBytes))").lineLimit(1) }
+                            } label: { Text("\(candidate.title) · \(size(candidate.estimatedDownloadBytes, entry: candidate.entry))").lineLimit(1) }
                             .frame(maxWidth: 260)
                             .disabled(activeCandidate != nil)
                             .accessibilityIdentifier("ShareCompute.Setup.DownloadPicker")
@@ -233,7 +237,7 @@ struct ShareComputeShareTab: View {
                     } else if catalogLoaded { selector }
                 }
                 divider
-                setupRow(number: 3, title: "Start sharing", done: false, step: .start) {
+                setupRow(number: 3, title: String(localized: "Start sharing"), done: false, step: .start) {
                     Text(canStart ? "This Mac goes online and earns API credits for served tokens." : "Complete the steps above to go online.")
                 } action: {
                     if canStart {

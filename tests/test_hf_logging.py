@@ -207,6 +207,8 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
         logging.getLogger("httpx").info("transport record")
         logging.getLogger(_HF_HTTP_LOGGER).warning(_REAL_ADVISORY)
 
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
     monkeypatch.setattr(cli, "serve_command", serve)
     monkeypatch.setattr(
@@ -230,3 +232,201 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
         for logger, (level, filters) in zip(loggers, saved):
             logger.setLevel(level)
             logger.filters = filters
+
+
+def test_transformers_base_config_mismatch_context(caplog):
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    original_filters = list(logger.filters)
+    msg = "You are using a model of type `%s` to instantiate a model of type `%s`."
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        with suppress_transformers_base_config_mismatch("voxcpm2"):
+            logger.warning(msg, "voxcpm2", "")
+            logger.warning(msg, "other", "")
+            logger.warning(msg, "voxcpm2", "llama")
+            logger.error(msg, "voxcpm2", "")
+        logger.warning(msg, "voxcpm2", "")
+
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.WARNING, msg % ("other", "")),
+        (logging.WARNING, msg % ("voxcpm2", "llama")),
+        (logging.ERROR, msg % ("voxcpm2", "")),
+        (logging.WARNING, msg % ("voxcpm2", "")),
+    ]
+    assert logger.filters == original_filters
+
+
+def test_tts_security_loader_suppresses_base_config_mismatch(
+    tmp_path, monkeypatch, caplog
+):
+    import sys
+    import types
+
+    from rapid_mlx.audio import tts, voxcpm_security
+
+    (tmp_path / "audiovae.pth").touch()
+    model = object()
+    message = (
+        "You are using a model of type `voxcpm2` to instantiate a model of type ``. "
+        "This is not supported for all configurations of models and can yield errors."
+    )
+    logger = logging.getLogger("transformers.configuration_utils")
+
+    def load_checkpoint(_path):
+        logger.warning(message)
+        return model
+
+    generate = types.ModuleType("mlx_audio.tts.generate")
+    generate.load_model = lambda _path: pytest.fail("unexpected loader")
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.generate", generate)
+    monkeypatch.setattr(tts, "_resolve_safe_tts_checkpoint", lambda _name: tmp_path)
+    monkeypatch.setattr(tts.TTSEngine, "_detect_family", lambda _self, _name: "voxcpm")
+    monkeypatch.setattr(voxcpm_security, "load_voxcpm_checkpoint", load_checkpoint)
+    engine = tts.TTSEngine(str(tmp_path))
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        engine.load()
+        assert message not in caplog.messages
+        assert engine.model is model
+        load_checkpoint(tmp_path)
+        assert message in caplog.messages
+
+
+def test_transformers_context_nested_exception_cleanup():
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    original_filters = list(logger.filters)
+    with suppress_transformers_base_config_mismatch("voxcpm2"):
+        outer_filters = list(logger.filters)
+        with (
+            pytest.raises(ValueError),
+            suppress_transformers_base_config_mismatch("voxcpm2"),
+        ):
+            assert len(logger.filters) == len(original_filters) + 2
+            raise ValueError("test cleanup")
+        assert logger.filters == outer_filters
+        assert logger.filters[-1].filter(_record("%d", "abc"))
+    assert logger.filters == original_filters
+
+
+def test_transformers_model_type_is_escaped():
+    from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
+
+    logger = logging.getLogger("transformers.configuration_utils")
+    with suppress_transformers_base_config_mismatch("vox.cpm"):
+        filt = logger.filters[-1]
+        msg = (
+            "You are using a model of type `voxxcpm` to instantiate a model of type ``."
+        )
+        assert filt.filter(_record(msg))
+        assert not filt.filter(_record(msg.replace("voxxcpm", "vox.cpm")))
+
+
+@pytest.mark.parametrize(
+    ("tty", "role", "user_setting", "disabled"),
+    [
+        (False, None, None, True),
+        (True, None, None, False),
+        (False, "desktop-sidecar", None, False),
+        (False, None, "0", False),
+    ],
+)
+def test_quiet_progress_bars(monkeypatch, tty, role, user_setting, disabled):
+    import sys
+
+    from huggingface_hub.utils import are_progress_bars_disabled, enable_progress_bars
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    enable_progress_bars()
+    if role:
+        monkeypatch.setenv("RAPID_MLX_PROCESS_ROLE", role)
+    if user_setting is not None:
+        monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", user_setting)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: tty)
+    try:
+        quiet_hf_progress_bars_off_terminal()
+        quiet_hf_progress_bars_off_terminal()
+        assert are_progress_bars_disabled() is disabled
+    finally:
+        enable_progress_bars()
+
+
+def test_bootstrap_configures_progress_bars(monkeypatch):
+    from rapid_mlx import _hf_logging, cli
+
+    calls = []
+    monkeypatch.setattr(
+        _hf_logging, "quiet_hf_progress_bars_off_terminal", lambda: calls.append(True)
+    )
+    monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: None)
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "setLevel", lambda level: None)
+    cli._configure_bootstrap_logging("INFO")
+    assert calls == [True]
+
+
+def test_non_terminal_disables_hf_progress_bars(monkeypatch):
+    import os
+    import sys
+
+    from huggingface_hub.utils import are_progress_bars_disabled, enable_progress_bars
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    try:
+        quiet_hf_progress_bars_off_terminal()
+        assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+        assert are_progress_bars_disabled() is True
+    finally:
+        enable_progress_bars()
+
+
+def test_non_terminal_disables_progress_before_hub_import(monkeypatch):
+    import os
+    import sys
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.delenv("RAPID_MLX_PROCESS_ROLE", raising=False)
+    monkeypatch.delitem(sys.modules, "huggingface_hub", raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+
+    quiet_hf_progress_bars_off_terminal()
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+
+
+def test_quiet_progress_ignores_desktop_role_error(monkeypatch):
+    import os
+    import sys
+
+    from rapid_mlx._hf_logging import quiet_hf_progress_bars_off_terminal
+    from rapid_mlx.telemetry import consent_runtime
+
+    def fail():
+        raise RuntimeError("role unavailable")
+
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+    monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    monkeypatch.setattr(consent_runtime, "is_desktop_sidecar", fail)
+
+    assert quiet_hf_progress_bars_off_terminal() is None
+    assert "HF_HUB_DISABLE_PROGRESS_BARS" not in os.environ
+
+
+def test_hf_progress_bars_restored_after_previous_test():
+    from huggingface_hub.utils import are_progress_bars_disabled
+
+    assert are_progress_bars_disabled() is False

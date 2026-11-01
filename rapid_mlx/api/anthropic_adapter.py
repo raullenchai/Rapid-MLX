@@ -301,7 +301,13 @@ def anthropic_to_openai(
     # Convert tools
     tools: list[ToolDefinition] | None = None
     if request.tools:
-        tools = [_convert_tool(t) for t in request.tools]
+        tools = []
+        for i, tool in enumerate(request.tools):
+            try:
+                tools.append(_convert_tool(tool))
+            except ValidationError as error:
+                message = error.errors()[0]["msg"].removeprefix("Value error, ")
+                raise AnthropicContentError(f"tools[{i}].{message}") from error
 
     # Convert tool_choice
     tool_choice = None

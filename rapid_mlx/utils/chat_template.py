@@ -2643,6 +2643,11 @@ def _render_chat_template(
             work[0]["tools"] = tools
         for message in work:
             for call in message.get("tool_calls") or []:
+                if not isinstance(call.get("function"), dict):
+                    call["function"] = {
+                        "name": call.get("name"),
+                        "arguments": call.get("arguments"),
+                    }
                 arguments = call["function"].get("arguments")
                 if not isinstance(arguments, str):
                     call["function"]["arguments"] = json.dumps(

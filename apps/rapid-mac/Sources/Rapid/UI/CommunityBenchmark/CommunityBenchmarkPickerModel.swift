@@ -159,7 +159,7 @@ enum CommunityBenchmarkPicker {
     /// it. Never a byte count or percentage — the client has no download
     /// progress phase to read those from.
     ///
-    /// `downloadSizeGB` is the only download figure this row may show.
+    /// The catalog download size takes precedence over the coverage download size.
     /// `estimatedMemoryGib` is the *runtime memory* the model needs while it
     /// executes; printing it under "Not downloaded" said "13 GB to fetch" for
     /// a model whose weights are a different size entirely. When the download
@@ -169,9 +169,9 @@ enum CommunityBenchmarkPicker {
         downloadSizeGB: Double? = nil
     ) -> (title: String, detail: String?) {
         if model.entry.cached {
-            return (String(localized: "Downloaded"), model.entry.size?.displayText)
+            return (String(localized: "Downloaded"), model.entry.displayedModelSize?.displayText)
         }
-        let detail = downloadSizeGB.map { DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: $0 * 1_000_000_000)) }
+        let detail = model.entry.displayedModelSize?.displayText ?? downloadSizeGB.map { DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: $0 * 1_000_000_000)) }
         return (String(localized: "Not downloaded"), detail)
     }
 }

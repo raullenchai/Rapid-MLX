@@ -51,6 +51,7 @@ import json
 import os
 import re
 import sys
+import sysconfig
 import time
 import urllib.error
 import urllib.parse
@@ -607,7 +608,7 @@ def prompt_upgrade_if_available() -> bool:
         if latest is None or latest <= installed:
             return False
 
-        import subprocess
+        from rapid_mlx._upgrade_runner import run_upgrade_command
 
         info = detect_install_method()
         release = get_release_info(need_brew=info.method == "brew")
@@ -646,14 +647,14 @@ def prompt_upgrade_if_available() -> bool:
 
         print()
         try:
-            result = subprocess.run(info.upgrade_argv, check=False)
+            returncode = run_upgrade_command(info.upgrade_argv)
         except FileNotFoundError as e:
             print(f"  Upgrade command not found: {e}\n")
             return False
         except KeyboardInterrupt:
             print("\n  Interrupted.\n")
             return False
-        if result.returncode == 0:
+        if returncode == 0:
             print("\nUpgrade complete. Please re-run your command.\n")
             return True
         # Failed upgrade: return False so the caller continues booting with
@@ -663,7 +664,7 @@ def prompt_upgrade_if_available() -> bool:
         # `serve_command` do ``sys.exit(0)`` and leave the user with no
         # running server and only an error message.
         print(
-            f"\nUpgrade exited with code {result.returncode}; "
+            f"\nUpgrade exited with code {returncode}; "
             f"continuing with rapid-mlx {installed_str}.\n"
         )
         return False
@@ -701,6 +702,18 @@ class InstallInfo:
         self.upgrade_command = upgrade_command
         self.upgrade_argv = upgrade_argv
         self.binary_path = binary_path
+
+
+def install_method_label(info: InstallInfo) -> str:
+    if info.method == "pip" and "--user" in info.upgrade_argv:
+        return "pip --user"
+    return {
+        "brew": "Homebrew",
+        "install_sh": "one-line installer",
+        "uv": "uv tool",
+        "pipx": "pipx",
+        "pip": "pip",
+    }.get(info.method, "unknown")
 
 
 def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list[str]:
@@ -741,9 +754,11 @@ def python_upgrade_instructions(info: InstallInfo, requires_python: str) -> list
         ]
     if info.method == "unknown" and info.upgrade_command.startswith("sudo pipx "):
         return [f"sudo pipx reinstall --global --python python{minor} rapid-mlx"]
+    venv = f"~/.venvs/rapid-mlx-py{minor.replace('.', '')}"
     return [
         f"Install Python {minor} or newer (e.g. `brew install python@{minor}`), then reinstall Rapid-MLX with it, e.g. in a new environment:",
-        f"python{minor} -m venv ~/.venvs/rapid-mlx && ~/.venvs/rapid-mlx/bin/pip install rapid-mlx",
+        f"python{minor} -m venv {venv} && {venv}/bin/pip install rapid-mlx",
+        f"Add {venv}/bin to PATH (or call it directly); remove the old environment only after the new one works.",
         f"or use the one-line installer: `{installer}`",
     ]
 
@@ -799,11 +814,19 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
         argv = [info.binary_path, "--version"]
         pattern = r"\brapid-mlx\s+(\d+\.\d+\.\d+(?:rc\d+|\.[^\s]+)?)"
     else:
+        import site
+
+        extra_paths = []
+        if sys.prefix == sys.base_prefix and site.ENABLE_USER_SITE:
+            extra_paths.append(site.getusersitepackages())
         argv = [
             sys.executable,
             "-I",
             "-c",
-            "import importlib.metadata as m; print(m.version('rapid-mlx'))",
+            "import sys, importlib.metadata as m; "
+            "d = next(m.distributions(name='rapid-mlx', path=sys.argv[1:] + sys.path), None); "
+            "print(d.version if d else '')",
+            *extra_paths,
         ]
         pattern = r"^\s*(\S+)\s*$"
     try:
@@ -817,6 +840,24 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
         return version if version and _parse_version(version) is not None else None
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
+
+
+def launcher_interpreter(first_line: str, second_line: str) -> str | None:
+    """Return the interpreter declared by a console-script launcher."""
+    if not first_line.startswith("#!"):
+        return None
+    if re.fullmatch(r"#!/bin/sh(?:\s+-)?\s*", first_line):
+        match = re.match(
+            r"^'''exec' (?:'([^']+)'|\"([^\"]+)\"|(\S+)) \"\$0\" \"\$@\"",
+            second_line,
+        )
+        if match and match.group(2) and any(c in match.group(2) for c in "$`\\"):
+            return None
+        return (
+            next((group for group in match.groups() if group), None) if match else None
+        )
+    parts = first_line[2:].strip().split(maxsplit=1)
+    return parts[0] if parts else None
 
 
 def _launcher_belongs_to_running_install(binary: str) -> bool:
@@ -841,19 +882,17 @@ def _launcher_belongs_to_running_install(binary: str) -> bool:
             second_line = launcher.readline(4096).decode("utf-8", "replace")
     except OSError:
         return False
-    if not first_line.startswith("#!"):
+    shebang = launcher_interpreter(first_line, second_line)
+    if not shebang:
         return False
-    if re.fullmatch(r"#!/bin/sh(?:\s+-)?\s*", first_line):
-        match = re.match(r"^'''exec' (?:'([^']+)'|(\S+)) \"\$0\" \"\$@\"", second_line)
-        if not match:
-            return False
-        shebang = match.group(1) or match.group(2)
-    else:
-        parts = first_line[2:].strip().split(maxsplit=1)
-        shebang = parts[0] if parts else ""
-    return bool(shebang) and Path(os.path.realpath(shebang)) == Path(
-        os.path.realpath(sys.executable)
-    )
+    return Path(os.path.realpath(shebang)) == Path(os.path.realpath(sys.executable))
+
+
+def _externally_managed() -> bool:
+    try:
+        return (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").is_file()
+    except OSError:
+        return False
 
 
 def detect_install_method() -> InstallInfo:
@@ -1004,6 +1043,8 @@ def detect_install_method() -> InstallInfo:
     package_file = Path(os.path.realpath(rapid_mlx.__file__))
     is_user = sys.prefix == sys.base_prefix and user_site in package_file.parents
     argv = [sys.executable, "-m", "pip", "install"]
+    if is_user and _externally_managed():
+        argv.append("--break-system-packages")
     if is_user:
         argv.append("--user")
     argv.extend(["--upgrade", "rapid-mlx"])

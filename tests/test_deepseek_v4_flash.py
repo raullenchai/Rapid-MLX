@@ -50,6 +50,43 @@ def tokenizer():
     return PreTrainedTokenizerFast(tokenizer_object=backend)
 
 
+@pytest.mark.parametrize("arguments", ['{"city": "Paris"}', {"city": "Paris"}])
+def test_flattened_tool_call_history(arguments, tokenizer):
+    from rapid_mlx.utils.chat_template import apply_chat_template
+
+    call = {"id": "x", "type": "function", "name": "weather", "arguments": arguments}
+    history = [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "x", "content": "sunny"},
+        {"role": "user", "content": "Thanks"},
+    ]
+    nested = [*history]
+    nested[1] = {
+        **history[1],
+        "tool_calls": [
+            {
+                "id": "x",
+                "type": "function",
+                "function": {"name": "weather", "arguments": arguments},
+            }
+        ],
+    }
+    prompt = apply_chat_template(
+        tokenizer, history, model_name="deepseek-v4-flash-2bit"
+    )
+    assert "weather" in prompt
+    assert "Paris" in prompt
+    assert prompt == apply_chat_template(
+        tokenizer, nested, model_name="deepseek-v4-flash-2bit"
+    )
+    prompt_0731 = apply_chat_template(
+        tokenizer, history, model_name="deepseek-v4-flash-0731-mxfp4"
+    )
+    assert "weather" in prompt_0731
+    assert "Paris" in prompt_0731
+
+
 @pytest.mark.parametrize(
     "model",
     [

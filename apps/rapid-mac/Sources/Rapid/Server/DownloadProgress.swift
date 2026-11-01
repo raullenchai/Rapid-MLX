@@ -922,7 +922,7 @@ final class DownloadProgress {
             var parts: [String] = ["\(percent)%", "\(file) (\(doneText)/\(totalText))"]
             if let speed {
                 let value = speed.hasSuffix("/s") ? String(speed.dropLast(2)) : speed
-                if speed.hasSuffix("/s"), let bytes = Self.tqdmBytes(value, speed: true) {
+                if speed.hasSuffix("/s"), let bytes = Self.tqdmBytes(value) {
                     parts.append(Self.formatSpeed(bytesPerSecond: Double(bytes)))
                 } else {
                     parts.append(speed)
@@ -955,11 +955,10 @@ final class DownloadProgress {
         return formatter.string(fromByteCount: max(0, bytes))
     }
 
-    /// tqdm uses a 1024 divisor for bare prefixes; speed adds its own B unit.
-    private nonisolated static func tqdmBytes(_ token: String, speed: Bool = false) -> Int64? {
+    /// tqdm uses decimal prefixes by default; explicit IEC prefixes remain binary.
+    private nonisolated static func tqdmBytes(_ token: String) -> Int64? {
         var value = token
-        if speed, value.hasSuffix("B"), !value.hasSuffix("iB") { value.removeLast() }
-        if let last = value.last, "KMGT".contains(last) { value += "iB" }
+        if let last = value.last, "KMGTi".contains(last) { value += "B" }
         if let last = value.last, last >= "0", last <= "9" { value += "B" }
         return ModelSize.parseBytes(value)
     }
@@ -1068,9 +1067,7 @@ final class DownloadProgress {
     /// * bare numbers (``23.4`` — used by speed scrubber after the
     ///   trailing ``B/s`` is dropped);
     /// * SI-prefixed (``2.10G``, ``2.10GB``);
-    /// * IEC-prefixed (``2.10Gi``, ``2.10GiB``) which is what
-    ///   ``huggingface_hub`` ≥0.20 produces by default thanks to
-    ///   `unit_divisor=1024`.
+    /// * IEC-prefixed (``2.10Gi``, ``2.10GiB``).
     ///
     /// #150: prior to this fix the function only accepted the SI
     /// shapes WITHOUT trailing ``B``, so a per-file tqdm line like

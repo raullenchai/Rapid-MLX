@@ -183,21 +183,22 @@ class DeepSeekV40731ToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         if not hasattr(self, "_stream_calls_emitted"):
             self.reset()
+        previous_safe = self._safe_content_prefix(previous_text)
+        current_safe = self._safe_content_prefix(current_text)
+        newly_safe = current_safe[len(previous_safe) :]
         if self._first_start(current_text) is None:
-            previous_safe = self._safe_content_prefix(previous_text)
-            current_safe = self._safe_content_prefix(current_text)
-            newly_safe = current_safe[len(previous_safe) :]
             return {"content": newly_safe} if newly_safe else None
         if self.END not in current_text:
-            return None
+            return {"content": newly_safe} if newly_safe else None
         result = self.extract_tool_calls(current_text, request)
         if not result.tools_called:
-            return None
+            return {"content": newly_safe} if newly_safe else None
         already = self._stream_calls_emitted
         if len(result.tool_calls) <= already:
-            return None
+            return {"content": newly_safe} if newly_safe else None
         self._stream_calls_emitted = len(result.tool_calls)
         return {
+            "content": newly_safe,
             "tool_calls": [
                 {
                     "index": i,
@@ -209,7 +210,7 @@ class DeepSeekV40731ToolParser(ToolParser):
                     },
                 }
                 for i, call in enumerate(result.tool_calls[already:], start=already)
-            ]
+            ],
         }
 
 

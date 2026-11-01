@@ -494,17 +494,36 @@ enum FailureDiagnoser {
         return .toolFailed
     }
 
+    nonisolated static func hasDownloadAuthSignal(_ value: String) -> Bool {
+        containsAny(value.lowercased(), [
+            "401 client error", "403 client error", "status 401", "status 403",
+            "http 401", "http 403", "error 401", "error 403", "unauthorized", "forbidden",
+        ])
+    }
+
     nonisolated static func downloadFailureKind(
         raw: String,
         usingMirror: Bool
     ) -> FailureDiagnosis.Kind {
-        guard usingMirror else { return .downloadFailed }
         let value = raw.lowercased()
-        let mirrorSignals = offlineSignals + [
+        if containsAny(value, [
+            "no space left on device", "insufficient disk", "not enough disk space", "gated", "hf auth login",
+            "sha256 mismatch", "sha mismatch", "size-mismatch", "size mismatch", "checksum", "integrity", "corrupt",
+        ])
+            || (!usingMirror && hasDownloadAuthSignal(value)) {
+            return .downloadFailed
+        }
+        guard usingMirror else {
+            return containsAny(value, hfUnreachableSignals)
+                ? .downloadSourceUnavailable : .downloadFailed
+        }
+        let mirrorSignals = [
             "mirror", "models.rapidmlx.com", "cloudflare", "bad gateway",
             "service unavailable", "gateway timeout", "status 502", "status 503", "status 504",
         ]
-        return containsAny(value, mirrorSignals) ? .downloadSourceUnavailable : .downloadFailed
+        if containsAny(value, mirrorSignals) { return .downloadSourceUnavailable }
+        if value.contains("could not reach hugging face") { return .downloadFailed }
+        return containsAny(value, offlineSignals) ? .downloadSourceUnavailable : .downloadFailed
     }
 
     nonisolated static func downloadFailureCause(raw: String, kind: FailureDiagnosis.Kind) -> DesktopFunnelReporter.DownloadFailureCause {
@@ -663,6 +682,12 @@ enum FailureDiagnoser {
     nonisolated private static func containsAny(_ value: String, _ signals: [String]) -> Bool {
         signals.contains(where: value.contains)
     }
+
+    nonisolated private static let hfUnreachableSignals = [
+        "could not reach hugging face", "could not resolve host", "cannot find host", "cannot connect",
+        "connection refused", "name resolution", "nodename nor servname", "name or service not known",
+        "network is unreachable", "not connected to the internet",
+    ]
 
     nonisolated private static let offlineSignals = [
         "not connected to the internet", "network is unreachable", "network connection was lost",

@@ -35,6 +35,16 @@ actor StartupModelLinkMaintenanceCoordinator {
 /// server is ready the picker's Start button owns the flow, and a
 /// brand-new user with no model on disk sees the Quickstart card.
 struct ContentView: View {
+    static func communityBenchmarkPreferredAliases(
+        selectedChatAlias: String, servingAlias: String?, lastServedAlias: String?
+    ) -> [String] {
+        var aliases: [String] = []
+        for alias in [selectedChatAlias, servingAlias, lastServedAlias].compactMap({ $0 }) where !alias.isEmpty {
+            if !aliases.contains(alias) { aliases.append(alias) }
+        }
+        return aliases
+    }
+
     private static let startupModelLinkMaintenance =
         StartupModelLinkMaintenanceCoordinator()
     enum RestoredChatAlias: Equatable {
@@ -791,6 +801,20 @@ struct ContentView: View {
                     if server.residency.contains(alias) { return true }
                     if case .ready(let readyAlias) = server.state { return readyAlias == alias }
                     return false
+                },
+                lane: { alias in
+                    guard let entry = catalogEntries.first(where: { $0.alias == alias }) else { return nil }
+                    return ModelSelectionPurpose.allCases.first(where: { $0.accepts(entry) })
+                },
+                isStarting: { alias in
+                    let startingAlias: String?
+                    if case .starting(let alias) = server.state { startingAlias = alias }
+                    else { startingAlias = nil }
+                    return Self.isStartingDownload(
+                        alias: alias, serverStartingAlias: startingAlias,
+                        quickstartVisible: quickstartVisible, quickstartAlias: quickstart.selection.alias,
+                        quickstartPhase: quickstart.phase
+                    )
                 }
             )
             if showLogs {
@@ -1272,8 +1296,8 @@ struct ContentView: View {
     /// land and the user starts it explicitly. Same download-only path the
     /// picker's "Download in background" uses.
     private func downloadModel(_ target: String) {
-        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
-        _ = downloads.startDownload(alias: target, hfPath: hfPath)
+        let entry = catalogEntries.first(where: { $0.alias == target })
+        _ = downloads.startDownload(alias: target, hfPath: entry?.hfRepo, totalBytes: entry?.size?.byteCount)
     }
 
     private func selectChatModel(_ target: String) {
@@ -1386,7 +1410,10 @@ struct ContentView: View {
             if communityBenchmarkEnabled {
                 CommunityBenchmarkView(
                     catalog: catalogEntries,
-                    preferredAlias: server.servingAlias ?? ServerManager.lastServedAlias(),
+                    preferredAliases: Self.communityBenchmarkPreferredAliases(
+                        selectedChatAlias: alias, servingAlias: server.servingAlias,
+                        lastServedAlias: ServerManager.lastServedAlias()
+                    ),
                     binary: server.binaryPath,
                     prepareServer: {
                         try await server.prepareForCommunityBenchmark()
@@ -1602,6 +1629,14 @@ struct ContentView: View {
         // Keep the card up while the user is mid-flow (download / start /
         // waiting to confirm Ready).
         return ContentView.quickstartRetainsSurface(phase: quickstart.phase)
+    }
+
+    static func isStartingDownload(
+        alias: String, serverStartingAlias: String?, quickstartVisible: Bool,
+        quickstartAlias: String, quickstartPhase: QuickstartCoordinator.Phase
+    ) -> Bool {
+        serverStartingAlias == alias || (quickstartVisible && quickstartAlias == alias
+            && (quickstartPhase == .downloading || quickstartPhase == .starting))
     }
 
     /// Does onboarding still own the window in this phase?
@@ -2132,9 +2167,10 @@ struct ContentView: View {
             }
         case .promptDownload(let pending):
             let footprint = ModelSizing.estimate(alias: pending)
-            let sizeText: String? = footprint.paramsBillions == nil
-                ? nil
-                : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30)))
+            let sizeText: String? = catalogEntries.first { $0.alias == pending }?.displayedModelSize?.displayText
+                ?? (footprint.paramsBillions == nil
+                    ? nil
+                    : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30))))
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
             return .noPrimaryLaunch

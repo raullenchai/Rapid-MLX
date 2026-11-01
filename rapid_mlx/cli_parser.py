@@ -1908,7 +1908,7 @@ def _add_serve_parser(
             "it, e.g. a fine-tune or a renamed local copy: qwen3 "
             "(Qwen3-Reranker), bge2 (BGE reranker v2 Gemma), mxbai2 "
             "(mxbai-rerank-v2), roberta (XLM-RoBERTa cross-encoders such as "
-            "bge-reranker-v2-m3) or jina3 (jina-reranker-v3). Default: detect "
+            "bge-reranker-v2-m3) or jina3 (jina-reranker-v3 / v3.5). Default: detect "
             "from the model name and config."
         ),
     )

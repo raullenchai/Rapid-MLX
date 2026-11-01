@@ -44,17 +44,21 @@ from dataclasses import dataclass, field
 from email.parser import Parser
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from rapid_mlx import __version__ as _rapid_mlx_version
+from rapid_mlx._version_check import launcher_interpreter
 from rapid_mlx.runtime.base_runtime import (
     homebrew_runtime_hint,
     is_homebrew_interpreter,
     runtime_install_spec,
 )
+
+if TYPE_CHECKING:
+    from rapid_mlx._version_check import InstallInfo, ReleaseInfo
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -604,23 +608,22 @@ def _runtime_python_path() -> Path:
 
         def _python_from_entrypoint(entry: Path, process: Any) -> Path | None:
             try:
-                shebang = entry.read_text(encoding="utf-8").splitlines()[0]
+                lines = entry.read_text(encoding="utf-8").splitlines()
+                first_line = lines[0]
             except (OSError, UnicodeDecodeError, IndexError):
                 return None
-            if not shebang.startswith("#!"):
-                return _python_sibling(entry)
-            shebang_parts = shebang[2:].strip().split()
-            if len(shebang_parts) >= 1 and Path(shebang_parts[0]).name.startswith(
-                "env"
-            ):
+            interpreter_path = launcher_interpreter(
+                first_line, lines[1] if len(lines) > 1 else ""
+            )
+            if interpreter_path and Path(interpreter_path).name.startswith("env"):
                 process_exe = Path(process.exe()).absolute()
                 if process_exe.is_file() and process_exe.name.lower().startswith(
                     "python"
                 ):
                     return process_exe
                 return _python_sibling(entry)
-            if shebang_parts:
-                interpreter = Path(shebang_parts[0]).absolute()
+            if interpreter_path:
+                interpreter = Path(interpreter_path).absolute()
                 if interpreter.is_file() and interpreter.name.lower().startswith(
                     "python"
                 ):
@@ -2259,6 +2262,7 @@ def section_updates(
     *,
     installed: Callable[[], str | None] | None = None,
     fetch_latest: Callable[[], str | None] | None = None,
+    fetch_release: Callable[[bool], ReleaseInfo | None] | None = None,
     install_info: object | None = None,
 ) -> Section:
     """Is the installed rapid-mlx the latest release?
@@ -2309,13 +2313,62 @@ def section_updates(
     elif pl > pc:
         info = install_info if install_info is not None else vc.detect_install_method()
         cmd = getattr(info, "upgrade_command", None) or "rapid-mlx upgrade"
-        s.add(
-            f"update available: {latest} (installed {cur}) — run `{cmd}`",
-            CheckStatus.WARN,
-            detail=(
+        release: ReleaseInfo | None = None
+        block = None
+        try:
+            if fetch_release is not None:
+                release = fetch_release(getattr(info, "method", None) == "brew")
+            elif fetch_latest is None:
+                release = vc.get_release_info(
+                    need_brew=getattr(info, "method", None) == "brew"
+                )
+            if release is not None and release.latest != latest:
+                release = None
+            if release is not None:
+                block = vc._upgrade_block(cur, release, cast("InstallInfo", info))
+        except Exception:  # noqa: BLE001 — version notices fail open
+            release = None
+            block = None
+        if block == "brew_lag":
+            s.add(
+                f"rapid-mlx {cur} is the newest version Homebrew offers "
+                f"(release {latest} is not in the formula yet)",
+                CheckStatus.OK,
+                detail=(
+                    f"installed={cur} latest={latest} "
+                    f"brew_stable={cast('ReleaseInfo', release).brew_stable} method=brew"
+                ),
+            )
+        elif block == "python":
+            text = vc.format_python_floor_warning(
+                cur,
+                latest,
+                cast(str, cast("ReleaseInfo", release).requires_python),
+                cast("InstallInfo", info),
+            )
+            lines = text.splitlines()
+            s.add(
+                lines[0].lstrip("⚠ ").strip(),
+                CheckStatus.WARN,
+                detail="\n".join(line.strip() for line in lines[1:]),
+            )
+        else:
+            brew_stable = (
+                getattr(release, "brew_stable", None)
+                if getattr(info, "method", None) == "brew"
+                else None
+            )
+            available = brew_stable or latest
+            detail = (
                 f"installed={cur} latest={latest} method={getattr(info, 'method', '?')}"
-            ),
-        )
+            )
+            if brew_stable:
+                detail += f" brew_stable={brew_stable}"
+            s.add(
+                f"update available: {available} (installed {cur}) — run `{cmd}`",
+                CheckStatus.WARN,
+                detail=detail,
+            )
     else:
         s.add(
             f"rapid-mlx {cur} is up to date",
@@ -3331,9 +3384,12 @@ def _service_runtime_version(
             return None
         launcher = executable_path.read_text(encoding="utf-8")
         lines = launcher.splitlines()
-        if not lines or not lines[0].startswith("#!"):
+        interpreter = launcher_interpreter(
+            lines[0] if lines else "", lines[1] if len(lines) > 1 else ""
+        )
+        if not interpreter:
             return None
-        declared_interpreter = Path(lines[0][2:].strip())
+        declared_interpreter = Path(interpreter)
         if (
             not declared_interpreter.is_absolute()
             or declared_interpreter.parent.parent != environment

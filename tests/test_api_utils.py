@@ -905,6 +905,7 @@ class TestMllmBackboneIsHybrid:
         )
         assert mllm_backbone_is_hybrid("any/qwen3.5-like") is True
 
+    @pytest.mark.usefixtures("isolated_server_model_state")
     def test_user_alias_load_resolves_exact_qwen35_checkpoint_before_routing(
         self, monkeypatch, tmp_path
     ):

@@ -32,7 +32,7 @@ enum AudioClientError: Error, LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .fileTooLarge(let maxBytes):
-            return "That file is larger than \(maxBytes / 1024 / 1024) MB. Choose a shorter recording."
+            return "That file is larger than \(DownloadProgress.formatBytes(Int64(maxBytes))). Choose a shorter recording."
         case .unreadableFile(let detail):
             return "The audio file couldn't be read: \(detail)"
         case .http(let status, let message):

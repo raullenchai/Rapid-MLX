@@ -23,6 +23,8 @@ struct DownloadStrip: View {
     @Bindable var downloads: DownloadManager
     var composerOwnedAlias: String? = nil
     var isResident: (String) -> Bool = { _ in false }
+    var lane: (String) -> ModelSelectionPurpose? = { _ in nil }
+    var isStarting: (String) -> Bool = { _ in false }
 
     /// Deep-link channel into Settings, resolved optionally so the strip still
     /// renders in a host that never injected one (previews, the snapshot
@@ -137,7 +139,7 @@ struct DownloadStrip: View {
     private func jobRow(_ job: DownloadManager.Job) -> some View {
         if case .failed(let message) = job.status {
             HStack(spacing: 8) {
-                Text(job.alias)
+                Text(ModelDisplayName.name(for: job.alias))
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -151,12 +153,12 @@ struct DownloadStrip: View {
                 .controlSize(.small)
                 .accessibilityIdentifier("DownloadStrip.SecondaryRecovery.\(job.alias)")
                 if job.failureKind == .downloadSourceUnavailable {
-                    Button("Use Hugging Face") {
+                    Button("Switch source") {
                         handleFailureAction(.switchDownloadSource, for: job)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .accessibilityIdentifier("DownloadStrip.UseHuggingFace.\(job.alias)")
+                    .accessibilityIdentifier("DownloadStrip.SwitchSource.\(job.alias)")
                 }
                 trailingAffordance(for: job)
             }
@@ -165,7 +167,7 @@ struct DownloadStrip: View {
                 statusGlyph(for: job)
                     .font(.system(size: 13))
                     .frame(width: 16)
-                Text(job.alias)
+                Text(ModelDisplayName.name(for: job.alias))
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -258,11 +260,23 @@ struct DownloadStrip: View {
             }
             return detail
         case .completed:
-            return "Downloaded — start from the model picker"
+            return Self.completedDetail(lane: lane(job.alias), isStarting: isStarting(job.alias))
         case .cancelled:
             return String(localized: "Download stopped")
         case .failed(let message):
             return message
+        }
+    }
+
+    static func completedDetail(lane: ModelSelectionPurpose?, isStarting: Bool) -> String {
+        if isStarting { return String(localized: "Downloaded — starting…") }
+        switch lane {
+        case .chat: return String(localized: "Downloaded — choose it in the model picker to start")
+        case .speechToText: return String(localized: "Downloaded — ready in Audio › Speech to Text")
+        case .textToSpeech: return String(localized: "Downloaded — ready in Audio › Text to Speech")
+        case .imageGeneration, .imageEditing: return String(localized: "Downloaded — ready in Images")
+        case .textToVideo, .imageToVideo: return String(localized: "Downloaded — ready in Video")
+        case nil: return String(localized: "Downloaded")
         }
     }
 
@@ -335,7 +349,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Stop download. Cached files are kept for continuing later.")
-            .accessibilityLabel("Stop download of \(job.alias)")
+            .accessibilityLabel("Stop download of \(ModelDisplayName.name(for: job.alias))")
             .accessibilityIdentifier("DownloadStrip.Cancel.\(job.alias)")
         case .completed, .cancelled, .failed:
             Button {
@@ -347,7 +361,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Dismiss")
-            .accessibilityLabel("Dismiss \(job.alias) status")
+            .accessibilityLabel("Dismiss \(ModelDisplayName.name(for: job.alias)) status")
             .accessibilityIdentifier("DownloadStrip.Dismiss.\(job.alias)")
         }
     }
