@@ -1776,3 +1776,20 @@ def test_rm_frees_shared_store_blobs_and_ls_size_matches(tmp_path, monkeypatch, 
     assert not any(
         p.is_file() and len(p.name) == 64 for p in (hub / "blobs").rglob("*")
     )
+
+
+def test_runtime_asset_without_cache_root_counts_as_interrupted(monkeypatch):
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: None)
+    assert cli._runtime_asset_is_interrupted("org/a") is True
+
+
+def test_runtime_asset_unreadable_cache_counts_as_interrupted(monkeypatch):
+    class _Unreadable:
+        def __truediv__(self, _name):
+            return self
+
+        def glob(self, _pattern):
+            raise PermissionError("denied")
+
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: _Unreadable())
+    assert cli._runtime_asset_is_interrupted("org/a") is True
