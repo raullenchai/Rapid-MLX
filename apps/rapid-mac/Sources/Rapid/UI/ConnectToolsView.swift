@@ -830,11 +830,8 @@ private struct ConnectToolRow: View {
     @State private var launchError: String?
 
     var body: some View {
-        HStack(spacing: RapidTheme.Space.sm) {
-            Image(systemName: tool.symbol)
-                .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                .frame(width: 20)
-                .accessibilityHidden(true)
+        HStack(alignment: .center, spacing: RapidTheme.Space.sm) {
+            ConnectToolBadge(id: tool.id, name: tool.name)
             VStack(alignment: .leading, spacing: 1) {
                 Text(tool.name)
                     .font(RapidFont.bodyEmphasis)
@@ -848,10 +845,30 @@ private struct ConnectToolRow: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: RapidTheme.Space.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            trailingActions
+                .fixedSize()
+                .layoutPriority(1)
+        }
+        .padding(.horizontal, RapidTheme.Space.md)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+        .alert("Couldn’t open Terminal", isPresented: Binding(
+            get: { launchError != nil },
+            set: { if !$0 { launchError = nil } }
+        )) {
+            Button("OK") { launchError = nil }
+                .accessibilityIdentifier("Launch.Integration.ErrorDismiss.\(tool.id)")
+        } message: {
+            Text(launchError ?? "Try copying the command instead.")
+        }
+    }
+
+    private var trailingActions: some View {
+        HStack(spacing: RapidTheme.Space.xs) {
             if tool.action == .launch {
                 Button(action: copy) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .frame(width: 14)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -879,7 +896,7 @@ private struct ConnectToolRow: View {
                         }
                     }
                 }
-                Button("Open in Terminal") {
+                Button {
                     do {
                         guard !tool.persistent || onPersistentLaunch() else {
                             throw NSError(domain: "Rapid.AgentLaunch", code: 1,
@@ -887,6 +904,8 @@ private struct ConnectToolRow: View {
                         }
                         try TerminalAgentLauncher.open(command: tool.snippet)
                     } catch { launchError = error.localizedDescription }
+                } label: {
+                    primaryLabel { Text("Open in Terminal") }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -894,7 +913,9 @@ private struct ConnectToolRow: View {
                 .accessibilityIdentifier("Launch.Integration.Run.\(tool.id)")
             } else {
                 Button(action: copy) {
-                    Label(copied ? "Copied" : actionLabel, systemImage: copied ? "checkmark" : "doc.on.doc")
+                    primaryLabel {
+                        Label(copied ? "Copied" : actionLabel(for: tool.action), systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -904,21 +925,21 @@ private struct ConnectToolRow: View {
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
             }
         }
-        .padding(.horizontal, RapidTheme.Space.md)
-        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-        .alert("Couldn’t open Terminal", isPresented: Binding(
-            get: { launchError != nil },
-            set: { if !$0 { launchError = nil } }
-        )) {
-            Button("OK") { launchError = nil }
-                .accessibilityIdentifier("Launch.Integration.ErrorDismiss.\(tool.id)")
-        } message: {
-            Text(launchError ?? "Try copying the command instead.")
+    }
+
+    /// All primary actions reserve the same intrinsic width, including feedback.
+    private func primaryLabel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ZStack {
+            Text("Open in Terminal").hidden().accessibilityHidden(true)
+            Label(actionLabel(for: .rewriteConfig), systemImage: "doc.on.doc").hidden().accessibilityHidden(true)
+            Label(actionLabel(for: .guide), systemImage: "doc.on.doc").hidden().accessibilityHidden(true)
+            Label("Copied", systemImage: "checkmark").hidden().accessibilityHidden(true)
+            content()
         }
     }
 
-    private var actionLabel: String {
-        switch tool.action {
+    private func actionLabel(for action: ConnectTool.Action) -> String {
+        switch action {
         case .launch: return "Copy command"
         case .rewriteConfig: return "Copy setup"
         case .guide: return "Copy guide"
