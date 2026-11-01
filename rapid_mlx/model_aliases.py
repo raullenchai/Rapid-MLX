@@ -227,6 +227,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
             "min_memory_gb",
+            "resident_memory_gb",
             "enforce_min_memory",
             "vision_min_memory_gb",
             "experimental",
@@ -546,6 +547,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         return float(raw)
 
     min_memory_gb = _optional_positive_number("min_memory_gb")
+    resident_memory_gb = _optional_positive_number("resident_memory_gb")
     vision_min_memory_gb = _optional_positive_number("vision_min_memory_gb")
     raw_sampling = value.get("recommended_sampling")
     recommended_sampling: tuple[tuple[str, float], ...] | None
@@ -816,6 +818,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         pflash_keep_ratio=pflash_keep_ratio,
         turboquant_tier=turboquant_tier,
         min_memory_gb=min_memory_gb,
+        resident_memory_gb=resident_memory_gb,
         enforce_min_memory=_strict_bool("enforce_min_memory", False),
         vision_min_memory_gb=vision_min_memory_gb,
         experimental=_strict_bool("experimental", False),
@@ -1488,6 +1491,31 @@ def catalog_alias_for(name: str) -> str | None:
         if profile.hf_path.lower() == lowered:
             return alias
     return None
+
+
+def catalog_identity(name: str) -> str | None:
+    """Resolve catalog, user alias, or Hugging Face cache spelling to an alias."""
+    try:
+        if alias := catalog_alias_for(name):
+            return alias
+        from .user_aliases import validated_user_aliases
+
+        profiles = _load()
+        users = validated_user_aliases(
+            {alias: profile.hf_path for alias, profile in profiles.items()},
+            user_alias_reserved_names(),
+        )
+        if target := users.get(name):
+            if alias := catalog_alias_for(target):
+                return alias
+        for segment in name.replace("\\", "/").split("/"):
+            if segment.startswith("models--"):
+                repo = segment[len("models--") :].replace("--", "/", 1)
+                if alias := catalog_alias_for(repo):
+                    return alias
+        return None
+    except Exception:
+        return None
 
 
 def _family_prefix(name: str) -> str:

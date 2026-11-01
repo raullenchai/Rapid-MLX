@@ -10,6 +10,7 @@
     "schema_version": {"const": 2},
     "alias": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
     "origin": {"enum": ["builtin", "user"], "description": "Provenance gate for curated product behavior; user aliases never inherit builtin trust merely by targeting the same artifact."},
+    "resident_memory_gb": {"type": "number", "exclusiveMinimum": 0, "description": "Qualified peak resident GPU or wired memory in GiB when part of the model weights is offloaded."},
     "presentation": {
       "type": "object", "additionalProperties": false,
       "properties": {

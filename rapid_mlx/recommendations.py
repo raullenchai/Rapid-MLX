@@ -225,7 +225,9 @@ def recommendation_footprint_gb(alias: str) -> float | None:
     custom/unmeasured alias returns ``None`` so the caller can retain its
     conservative fallback.
     """
-    wanted = alias.casefold()
+    from .model_aliases import catalog_identity
+
+    wanted = (catalog_identity(alias) or alias).casefold()
     found: float | None = None
     for tier in load_recommendation_tiers():
         for pick in tier.picks:
