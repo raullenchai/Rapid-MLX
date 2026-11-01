@@ -515,6 +515,9 @@ def _served_stt_default() -> str | None:
     from ..config import get_config
 
     cfg = get_config()
+    local = resolve_audio_alias(getattr(cfg, "model_path", None))
+    if local is not None and local.type == "stt" and local.notes == "local folder":
+        return local.hf_id
     for served in (
         getattr(cfg, "model_alias", None),
         getattr(cfg, "model_name", None),
@@ -530,14 +533,14 @@ def _served_local_request(model: str, kind: str) -> str | None:
     from ..audio.registry import resolve_audio_alias
     from ..config import get_config
 
-    entry = resolve_audio_alias(model)
+    cfg = get_config()
+    entry = None
+    if model in (getattr(cfg, "model_alias", None), getattr(cfg, "model_name", None)):
+        entry = resolve_audio_alias(getattr(cfg, "model_path", None))
+        if entry is not None and (entry.type != kind or entry.notes != "local folder"):
+            entry = None
     if entry is None:
-        cfg = get_config()
-        if model in (
-            getattr(cfg, "model_alias", None),
-            getattr(cfg, "model_name", None),
-        ):
-            entry = resolve_audio_alias(getattr(cfg, "model_path", None))
+        entry = resolve_audio_alias(model)
     if entry is not None and entry.type == kind and entry.notes == "local folder":
         return entry.hf_id
     return None
@@ -3112,6 +3115,9 @@ def _served_tts_default() -> str | None:
     from ..config import get_config
 
     cfg = get_config()
+    local = resolve_audio_alias(getattr(cfg, "model_path", None))
+    if local is not None and local.type == "tts" and local.notes == "local folder":
+        return local.hf_id
     # Check the alias AND the HF id independently, not ``alias or name``: under
     # ``--served-model-name foo`` the alias is the operator's opaque gateway
     # name (which resolves to nothing) while the real TTS model lives on
@@ -3244,6 +3250,15 @@ def _map_openai_preset_voice(
     return default
 
 
+def _capability_model_name(model_name: str) -> str:
+    from ..audio.registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(model_name)
+    if entry is not None and entry.notes == "local folder" and entry.catalog_hf_id:
+        return entry.catalog_hf_id
+    return model_name
+
+
 def _allowed_voices_for(model_name: str) -> list[str]:
     """Return the voice set the route should accept for ``model_name``.
 
@@ -3310,6 +3325,7 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     if dynamic:
         return dynamic
 
+    model_name = _capability_model_name(model_name)
     name_lower = model_name.lower()
     if "kokoro" in name_lower:
         return list(KOKORO_VOICES)
@@ -3398,6 +3414,7 @@ def _is_clone_capable_model(model_name: str) -> bool:
     this returns True for Base the engine also detects ``qwen3_tts`` and
     forwards the reference — the dangerous direction cannot occur.
     """
+    model_name = _capability_model_name(model_name)
     name_lower = model_name.lower()
     if "f5-tts" in name_lower or "f5_tts" in name_lower:
         return True
@@ -3562,7 +3579,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         model_name = _resolve_tts_model(model)
         from ..audio.tts import is_qwen3_voicedesign_model
 
-        if voice_seed is not None and not is_qwen3_voicedesign_model(model_name):
+        capability_name = _capability_model_name(model_name)
+        if voice_seed is not None and not is_qwen3_voicedesign_model(capability_name):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
@@ -3618,7 +3636,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 },
             )
 
-        if is_indextts_model(model_name) and ref_audio is None:
+        if is_indextts_model(capability_name) and ref_audio is None:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -3651,7 +3669,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # decision, and a ``base`` token must be caught wherever it sits
         # (start/middle/end, hyphen or underscore delimited) —
         # ``...-0.6B-Base``, ``..._base_bf16``, etc.
-        _repo = model_name.rsplit("/", 1)[-1].lower()
+        _repo = capability_name.rsplit("/", 1)[-1].lower()
         _tokens = set(re.split(r"[-_]", _repo))
         _is_qwen3 = "qwen3-tts" in _repo or "qwen3_tts" in _repo
         if (
@@ -3747,7 +3765,10 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             # hit to the canonical spelling so ``serena`` / ``ono_anna``
             # aren't rejected as ``invalid_voice``; the engine then receives
             # the canonical form. Other families keep exact-match validation.
-            if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
+            if (
+                "qwen3-tts" in capability_name.lower()
+                or "qwen3_tts" in capability_name.lower()
+            ):
                 _canonical = {v.lower(): v for v in valid_voices}
                 voice = _canonical.get(voice.lower(), voice)
             if voice not in valid_voices:
