@@ -142,22 +142,60 @@ def test_serve_drains_child_log_after_stop(monkeypatch):
         os.close(read_fd)
 
 
-def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
-    real_dup = os.dup
-    real_write = os.write
-    duplicated = []
-    writes = []
-    times = iter([0.0, 0.0, 0.0, 2.0])
+@pytest.fixture
+def deferred_echo_thread(monkeypatch):
+    threads = []
 
     class DeferredThread:
         def __init__(self, *, target, **kwargs):
             self.target = target
+            self.finished = False
+            threads.append(self)
 
         def start(self):
             pass
 
         def join(self, timeout):
             self.target()
+            self.finished = True
+
+    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
+    return threads
+
+
+@pytest.fixture
+def fake_echo_server(monkeypatch):
+    state = SimpleNamespace(logs=[], terminated=[], threads=[], errors=[])
+    real_thread = threading.Thread
+
+    def popen(cmd, **kwargs):
+        state.logs.append(kwargs["stdout"])
+        return state
+
+    def thread(**kwargs):
+        instance = real_thread(**kwargs)
+        state.threads.append(instance)
+        return instance
+
+    monkeypatch.setattr(_server.subprocess, "Popen", popen)
+    monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
+    monkeypatch.setattr(
+        _server, "_terminate", lambda proc, **kwargs: state.terminated.append(proc)
+    )
+    monkeypatch.setattr(_server.threading, "Thread", thread)
+    monkeypatch.setattr(threading, "excepthook", state.errors.append)
+    return state
+
+
+@pytest.mark.parametrize("expired_before_select", [False, True])
+def test_serve_echo_deadline_with_writable_fd(
+    monkeypatch, tmp_path, deferred_echo_thread, expired_before_select
+):
+    real_dup = os.dup
+    real_write = os.write
+    duplicated = []
+    writes = []
+    times = iter([0.0, 2.0] if expired_before_select else [0.0, 0.0, 0.0, 2.0])
 
     def dup(fd):
         duplicated.append(real_dup(fd))
@@ -167,7 +205,6 @@ def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
         writes.append((fd, data))
         return real_write(fd, data)
 
-    monkeypatch.setattr(_server.threading, "Thread", DeferredThread)
     monkeypatch.setattr(_server.subprocess, "Popen", lambda *args, **kwargs: object())
     monkeypatch.setattr(_server, "_wait_for_health", lambda *args: None)
     monkeypatch.setattr(_server, "_terminate", lambda *args, **kwargs: None)
@@ -182,6 +219,8 @@ def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
             with _server.serve("fake", log_path=log_path, echo_log=output):
                 log_path.write_bytes(b"backlog")
             assert writes == []
+            assert len(deferred_echo_thread) == 1
+            assert deferred_echo_thread[0].finished
             assert len(duplicated) == 1 and duplicated[0] != write_fd
             with pytest.raises(OSError):
                 os.fstat(duplicated[0])
@@ -189,6 +228,116 @@ def test_serve_echo_deadline_with_writable_fd(monkeypatch, tmp_path):
             assert os.read(read_fd, 6) == b"usable"
     finally:
         os.close(read_fd)
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_serve_echo_ignores_initial_flush_error(fake_echo_server, error):
+    class FlushErrorStream(io.StringIO):
+        flush_calls = 0
+
+        def flush(self):
+            self.flush_calls += 1
+            if self.flush_calls == 1:
+                raise error("initial flush failed")
+            super().flush()
+
+    output = FlushErrorStream()
+    with _server.serve("fake", echo_log=output):
+        log = fake_echo_server.logs[0]
+        log.write("still echoed\n")
+        log.flush()
+    assert output.getvalue() == "still echoed\n"
+    assert output.flush_calls >= 2
+    assert fake_echo_server.terminated == [fake_echo_server]
+    assert log.closed
+    assert not Path(log.name).exists()
+    assert len(fake_echo_server.threads) == 1
+    assert not fake_echo_server.threads[0].is_alive()
+    assert fake_echo_server.errors == []
+
+
+@pytest.mark.parametrize("failure", ["zero_write", "write_error", "select_error"])
+def test_serve_echo_fd_failure_exits_and_closes_duplicate(
+    monkeypatch, fake_echo_server, failure
+):
+    real_dup = os.dup
+    duplicated = []
+    attempts = []
+
+    def dup(fd):
+        duplicated.append(real_dup(fd))
+        return duplicated[-1]
+
+    def select_output(r, w, x, timeout):
+        if failure == "select_error":
+            attempts.append("select")
+            raise OSError("select failed")
+        return [], w, []
+
+    def write(fd, data):
+        attempts.append((fd, data))
+        if failure == "write_error":
+            raise OSError("write failed")
+        return 0
+
+    monkeypatch.setattr(_server.os, "dup", dup)
+    monkeypatch.setattr(_server.os, "write", write)
+    monkeypatch.setattr(_server.select, "select", select_output)
+    read_fd, write_fd = os.pipe()
+    try:
+        with os.fdopen(write_fd, "w") as output:
+            with _server.serve("fake", echo_log=output):
+                log = fake_echo_server.logs[0]
+                log.write("cannot echo\n")
+                log.flush()
+                thread = fake_echo_server.threads[0]
+                thread.join(timeout=3)
+                assert not thread.is_alive()
+            assert len(attempts) == 1
+            assert len(duplicated) == 1 and duplicated[0] != write_fd
+            with pytest.raises(OSError):
+                os.fstat(duplicated[0])
+            os.fstat(write_fd)  # The caller's stream remains open.
+        assert fake_echo_server.terminated == [fake_echo_server]
+        assert log.closed
+        assert not Path(log.name).exists()
+        assert fake_echo_server.errors == []
+    finally:
+        os.close(read_fd)
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+@pytest.mark.parametrize("tail", [False, True], ids=["live-line", "stopped-tail"])
+def test_serve_echo_text_write_failure_exits(request, fake_echo_server, error, tail):
+    # Only defer the tail case: join runs its target after stop_echo is set.
+    if tail:
+        deferred_echo_thread = request.getfixturevalue("deferred_echo_thread")
+
+    class WriteErrorStream(io.StringIO):
+        attempts = []
+
+        def write(self, text):
+            self.attempts.append(text)
+            raise error("text write failed")
+
+    output = WriteErrorStream()
+    text = "remaining tail" if tail else "live line\n"
+    with _server.serve("fake", echo_log=output):
+        log = fake_echo_server.logs[0]
+        log.write(text)
+        log.flush()
+        if not tail:
+            thread = fake_echo_server.threads[0]
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+    if tail:
+        assert len(deferred_echo_thread) == 1
+        assert deferred_echo_thread[0].finished
+    assert output.attempts == [text]
+    assert fake_echo_server.terminated == [fake_echo_server]
+    assert log.closed
+    assert not Path(log.name).exists()
+    assert fake_echo_server.errors == []
 
 
 def test_serve_stops_echo_when_pipe_is_full(monkeypatch):
