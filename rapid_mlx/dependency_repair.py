@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata as metadata
 import importlib.util
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+from urllib.parse import quote, urlsplit
+from urllib.request import url2pathname
 
 _RETRY = "RAPID_MLX_DEPENDENCY_REPAIR_RETRIED"
 _OUTCOMES = frozenset(
@@ -19,6 +23,7 @@ _MISSING_SYMBOL = re.compile(r"cannot import name ['\"]([^'\"]+)['\"] from")
 _DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _SYMBOL_NAME = re.compile(r"[A-Za-z_]\w*")
 _ALIASES = {
+    "pydantic-ai-slim": "pydantic_ai",
     "pyyaml": "yaml",
     "pillow": "PIL",
     "huggingface-hub": "huggingface_hub",
@@ -93,15 +98,105 @@ def _verification_argv(module: str, symbol: str | None) -> list[str]:
     return [sys.executable, "-c", f"import {module}"]
 
 
-def repair_argv() -> list[str] | None:
+def _reinstall_spec() -> list[str]:
+    """Preserve the installed source when repairing with pip."""
     from rapid_mlx import __version__
+
+    fallback = [f"rapid-mlx=={__version__}" if __version__ != "0.0.0" else "rapid-mlx"]
+    try:
+        direct_text = metadata.distribution("rapid-mlx").read_text("direct_url.json")
+        if direct_text is None:
+            return fallback
+        direct = json.loads(direct_text)
+        url = direct["url"]
+        if not isinstance(url, str):
+            return fallback
+        parsed = urlsplit(url)
+        if not parsed.scheme or not (parsed.netloc or parsed.path):
+            return fallback
+        if parsed.scheme in {"http", "https", "ssh", "git"} and not parsed.netloc:
+            return fallback
+        subdirectory = direct.get("subdirectory", "")
+        if not isinstance(subdirectory, str):
+            return fallback
+        fragment = (
+            f"#subdirectory={quote(subdirectory, safe='/')}" if subdirectory else ""
+        )
+        if "vcs_info" in direct:
+            vcs_info = direct["vcs_info"]
+            vcs = vcs_info["vcs"]
+            revision = vcs_info.get("commit_id") or vcs_info.get("requested_revision")
+            if (
+                not isinstance(vcs, str)
+                or not vcs
+                or not isinstance(revision, str)
+                or not revision
+            ):
+                return fallback
+            return [f"rapid-mlx @ {vcs}+{url}@{revision}{fragment}"]
+        if "dir_info" in direct:
+            directory = direct["dir_info"]
+            if not isinstance(directory, dict):
+                return fallback
+            editable = directory.get("editable", False)
+            if not isinstance(editable, bool):
+                return fallback
+            if editable and parsed.scheme == "file":
+                path = parsed.path
+                if not path:
+                    return fallback
+                path = url2pathname(path)
+                return [
+                    "-e",
+                    os.path.join(path, subdirectory) if subdirectory else path,
+                ]
+        elif "archive_info" in direct:
+            archive = direct["archive_info"]
+            if not isinstance(archive, dict):
+                return fallback
+            algorithm = digest = None
+            if "hashes" in archive:
+                hashes = archive["hashes"]
+                if not isinstance(hashes, dict):
+                    return fallback
+                algorithm = (
+                    "sha256"
+                    if "sha256" in hashes
+                    else next(
+                        (key for key in hashes if key in hashlib.algorithms_guaranteed),
+                        None,
+                    )
+                )
+                digest = hashes.get(algorithm)
+            elif "hash" in archive:
+                legacy_hash = archive["hash"]
+                if not isinstance(legacy_hash, str):
+                    return fallback
+                algorithm, _, digest = legacy_hash.partition("=")
+            if "hashes" in archive or "hash" in archive:
+                if (
+                    algorithm not in hashlib.algorithms_guaranteed
+                    or not isinstance(digest, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]+", digest)
+                ):
+                    return fallback
+                fragment = f"#{algorithm}={digest}" + (
+                    f"&subdirectory={quote(subdirectory, safe='/')}"
+                    if subdirectory
+                    else ""
+                )
+        return [f"rapid-mlx @ {url}{fragment}"]
+    except Exception:
+        return fallback
+
+
+def repair_argv() -> list[str] | None:
     from rapid_mlx._version_check import detect_install_method
     from rapid_mlx.runtime.optional_runtime import _running_in_desktop_sidecar
 
     if _running_in_desktop_sidecar():
         return None
     info = detect_install_method()
-    spec = f"rapid-mlx=={__version__}" if __version__ != "0.0.0" else "rapid-mlx"
     if info.method == "brew":
         return ["brew", "reinstall", "rapid-mlx"]
     if info.method == "uv":
@@ -110,6 +205,7 @@ def repair_argv() -> list[str] | None:
         return ["pipx", "reinstall", "rapid-mlx"]
     if info.upgrade_command.startswith("sudo pipx "):
         return ["sudo", "pipx", "reinstall", "--global", "rapid-mlx"]
+    spec = _reinstall_spec()
     # Preserve install.sh's uv-pip selection when its venv has no pip.
     argv = list(info.upgrade_argv)
     if "install" in argv and "pip" in argv:
@@ -124,17 +220,17 @@ def repair_argv() -> list[str] | None:
                 "-c",
                 "import ensurepip,subprocess,sys; ensurepip.bootstrap(upgrade=True); "
                 "subprocess.check_call([sys.executable,'-m','pip','install',"
-                "'--force-reinstall',sys.argv[1]])",
-                spec,
+                "'--force-reinstall',*sys.argv[1:]])",
+                *spec,
             ]
-        return [*argv[:-1], "--force-reinstall", spec]
+        return [*argv[:-1], "--force-reinstall", *spec]
     return [
         sys.executable,
         "-m",
         "pip",
         "install",
         "--force-reinstall",
-        spec,
+        *spec,
     ]
 
 
