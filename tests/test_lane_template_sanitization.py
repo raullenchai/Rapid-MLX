@@ -2,6 +2,8 @@
 """Dedicated renderers must neutralize untrusted template control tokens."""
 
 import json
+import sys
+import types
 from threading import Lock
 from types import SimpleNamespace
 
@@ -82,18 +84,21 @@ def test_tensorfold_render_and_boundaries(monkeypatch):
 
 def test_dflash(monkeypatch):
     server = pytest.importorskip("rapid_mlx.speculative.dflash.server")
-    prompt_utils = pytest.importorskip("mlx_vlm.prompt_utils")
     from rapid_mlx.api import tool_calling
 
     monkeypatch.setattr(tool_calling, "convert_tools_for_template", lambda tools: tools)
     recorder = Recorder()
-    monkeypatch.setattr(
-        prompt_utils,
-        "apply_chat_template",
-        lambda processor, config, messages, **kwargs: recorder.apply_chat_template(
-            messages, **kwargs
-        ),
+    fake = types.ModuleType("mlx_vlm.prompt_utils")
+    fake.apply_chat_template = lambda processor, config, messages, **kwargs: (
+        recorder.apply_chat_template(messages, **kwargs)
     )
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", fake)
+    try:
+        import mlx_vlm
+    except ImportError:
+        mlx_vlm = types.ModuleType("mlx_vlm")
+        monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(mlx_vlm, "prompt_utils", fake, raising=False)
     server._render_prompt(recorder, SimpleNamespace(config={}), request(TOOLS))
     check(recorder, tools=True)
 
@@ -110,20 +115,23 @@ def test_ddtree():
 
 def test_dspark(monkeypatch):
     server = pytest.importorskip("rapid_mlx.spec_decode.dspark.server")
-    prompt_utils = pytest.importorskip("mlx_vlm.prompt_utils")
     from rapid_mlx.api import utils
 
     monkeypatch.setattr(
         utils, "validate_content_blocks_for_capabilities", lambda *args, **kwargs: None
     )
     recorder = Recorder()
-    monkeypatch.setattr(
-        prompt_utils,
-        "apply_chat_template",
-        lambda processor, config, messages, **kwargs: recorder.apply_chat_template(
-            messages, **kwargs
-        ),
+    fake = types.ModuleType("mlx_vlm.prompt_utils")
+    fake.apply_chat_template = lambda processor, config, messages, **kwargs: (
+        recorder.apply_chat_template(messages, **kwargs)
     )
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", fake)
+    try:
+        import mlx_vlm
+    except ImportError:
+        mlx_vlm = types.ModuleType("mlx_vlm")
+        monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(mlx_vlm, "prompt_utils", fake, raising=False)
     server._prepare_multimodal_prompt(recorder, SimpleNamespace(config={}), request())
     check(recorder)
 
