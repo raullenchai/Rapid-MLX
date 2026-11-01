@@ -12,7 +12,7 @@ import SwiftUI
 /// every copied snippet is correct for the current run. Saved agent
 /// connections reuse their private key and preferred port across restarts.
 struct ConnectToolsView: View {
-    static let terminalFootnote = "Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal on this Mac? Use the copy button and run the command yourself."
+    static var terminalFootnote: String { String(localized: "Open in Terminal starts the agent already connected to this model, using a private profile. Your agent's own settings are not changed. Prefer another terminal on this Mac? Use the copy button and run the command yourself.") }
     let host: String
     let port: Int
     let bearer: String
@@ -90,7 +90,7 @@ struct ConnectToolsView: View {
     private var resolvedModel: String? { ModelDisplayName.configValue(alias: alias) }
 
     /// What the user sees in the `Model` row while nothing is resolved.
-    private var modelDisplay: String { resolvedModel ?? "Not started yet" }
+    private var modelDisplay: String { resolvedModel ?? String(localized: "Not started yet") }
 
     /// The model slot inside a displayed snippet. When nothing is
     /// resolved the snippet shows an obvious angle-bracket placeholder
@@ -152,12 +152,12 @@ struct ConnectToolsView: View {
     /// One concise sentence naming what is missing.
     private var readinessMessage: String {
         if resolvedModel == nil && bearer.isEmpty {
-            return "Start a model to generate your local endpoint and key."
+            return String(localized: "Start a model to generate your local endpoint and key.")
         }
         if bearer.isEmpty {
-            return "Your API key is created when the local server starts."
+            return String(localized: "Your API key is created when the local server starts.")
         }
-        return "Start a model to fill in the model name."
+        return String(localized: "Start a model to fill in the model name.")
     }
 
     var body: some View {
@@ -237,8 +237,8 @@ struct ConnectToolsView: View {
                     .foregroundStyle(RapidTheme.statusWarning)
                     .accessibilityIdentifier("Launch.AgentModelToolWarning")
             }
-            toolsSection(tools.filter { $0.action == .launch }, title: "Terminal agents", terminal: true)
-            toolsSection(tools.filter { $0.action != .launch }, title: "Editors and apps", terminal: false)
+            toolsSection(tools.filter { $0.action == .launch }, title: String(localized: "Terminal agents"), terminal: true)
+            toolsSection(tools.filter { $0.action != .launch }, title: String(localized: "Editors and apps"), terminal: false)
             endpointSection
             claudeDesktopSection
 
@@ -246,7 +246,7 @@ struct ConnectToolsView: View {
                 showsServerSettings.toggle()
             } label: {
                 disclosureLabel(
-                    "Server settings",
+                    String(localized: "Server settings"),
                     systemImage: "gearshape",
                     expanded: showsServerSettings
                 )
@@ -282,8 +282,8 @@ struct ConnectToolsView: View {
     private func stoppedSetup(readiness: ModelReadiness) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
             SectionHeader(
-                "Start here",
-                subtitle: "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands."
+                String(localized: "Start here"),
+                subtitle: String(localized: "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands.")
             )
             // The inline picker lets the user choose a different compatible
             // downloaded model before starting, without leaving the page.
@@ -319,8 +319,8 @@ struct ConnectToolsView: View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 SectionHeader(
-                    "Connect an agent",
-                    subtitle: "Use the model running on this Mac from an agent, editor, or any compatible app.",
+                    String(localized: "Connect an agent"),
+                    subtitle: String(localized: "Use the model running on this Mac from an agent, editor, or any compatible app."),
                     emphasis: .page
                 )
                 // The #1470 "start a chat to generate the key" hint used
@@ -352,8 +352,8 @@ struct ConnectToolsView: View {
     private var endpointSection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             SectionHeader(
-                "Connection details",
-                subtitle: "Paste these values into any app that supports a custom OpenAI or Anthropic provider."
+                String(localized: "Connection details"),
+                subtitle: String(localized: "Paste these values into any app that supports a custom OpenAI or Anthropic provider.")
             )
             VStack(spacing: 0) {
                 HStack(spacing: RapidTheme.Space.sm) {
@@ -393,7 +393,7 @@ struct ConnectToolsView: View {
                     label: "API key",
                     value: bearer,
                     masked: true,
-                    placeholder: "Created when the server starts"
+                    placeholder: String(localized: "Created when the server starts")
                 )
                 rowDivider
                 CopyableRow(
@@ -408,12 +408,12 @@ struct ConnectToolsView: View {
 
     private var claudeDesktopSection: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Claude Desktop", subtitle: "Use its official in-app Gateway setup.")
+            SectionHeader("Claude Desktop", subtitle: String(localized: "Use its official in-app Gateway setup."))
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 CopyableRow(label: "Gateway URL", value: anthropicBaseURL)
                 rowDivider
                 CopyableRow(label: "Gateway API key", value: bearer, masked: true,
-                            placeholder: "Created when the server starts")
+                            placeholder: String(localized: "Created when the server starts"))
                 rowDivider
                 Text("Run the setup command below to enable Rapid's tier mapping, then in Claude Desktop:")
                 Text("1. Help → Troubleshooting → Enable Developer Mode.")
@@ -555,7 +555,7 @@ struct ConnectToolsView: View {
                     id: target.id,
                     name: target.name,
                     symbol: "terminal",
-                    blurb: "Save a private Rapid profile and launch. Existing settings stay untouched. The first reply may take longer while the local prompt loads.",
+                    blurb: String(localized: "Save a private Rapid profile and launch. Existing settings stay untouched. The first reply may take longer while the local prompt loads."),
                     snippet: command,
                     displaySnippet: command,
                     action: .launch,
@@ -569,22 +569,22 @@ struct ConnectToolsView: View {
                     id: target.id,
                     name: target.name,
                     symbol: "terminal",
-                    blurb: "Launch with this connection for one session. Your configuration files and shell environment stay unchanged.",
+                    blurb: String(localized: "Launch with this connection for one session. Your configuration files and shell environment stay unchanged."),
                     snippet: command,
                     displaySnippet: sessionLaunchCommand(id: target.id, key: snippetKeyMasked) ?? command,
                     action: .launch
                 )
             }
             if target.kind == .configWriter {
-                let destination = target.configPath.map { " It writes \($0)." } ?? ""
+                let destination = target.configPath.map { String(localized: " It writes \($0).") } ?? ""
                 let cursorCaveat = target.id == "cursor"
-                    ? " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend."
+                    ? String(localized: " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend.")
                     : ""
                 return ConnectTool(
                     id: target.id,
                     name: target.name,
                     symbol: "slider.horizontal.3",
-                    blurb: "Configure this client to use Rapid-MLX.\(destination)\(cursorCaveat)",
+                    blurb: String(localized: "Configure this client to use Rapid-MLX.") + destination + cursorCaveat,
                     snippet: IntegrationLaunchCommand.configWriter(
                         id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel, cli: cliCommand
                     ),
@@ -592,7 +592,7 @@ struct ConnectToolsView: View {
                         id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel, cli: cliCommand
                     ),
                     action: .rewriteConfig,
-                    caveat: target.id == "cursor" ? "Needs a public HTTPS endpoint" : nil
+                    caveat: target.id == "cursor" ? String(localized: "Needs a public HTTPS endpoint") : nil
                 )
             }
             // Everything else prints setup instructions. The command carries no
@@ -604,7 +604,7 @@ struct ConnectToolsView: View {
                 id: target.id,
                 name: target.name,
                 symbol: "point.3.connected.trianglepath.dotted",
-                blurb: "Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you.",
+                blurb: String(localized: "Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you."),
                 snippet: command,
                 displaySnippet: command,
                 action: .guide
@@ -619,7 +619,7 @@ struct ConnectToolsView: View {
                 id: "claude-code",
                 name: "Claude Code",
                 symbol: "terminal",
-                blurb: "Launch with this connection for one session. Your shell environment stays unchanged.",
+                blurb: String(localized: "Launch with this connection for one session. Your shell environment stays unchanged."),
                 snippet: AgentLaunchCommand.claude(
                     baseURL: anthropicBaseURL, key: snippetKey, model: snippetModel
                 ),
@@ -631,7 +631,7 @@ struct ConnectToolsView: View {
                 id: "codex",
                 name: "Codex",
                 symbol: "chevron.left.forwardslash.chevron.right",
-                blurb: "Launch with an isolated Rapid provider for one session. Your existing Codex provider and shell environment stay unchanged.",
+                blurb: String(localized: "Launch with an isolated Rapid provider for one session. Your existing Codex provider and shell environment stay unchanged."),
                 snippet: AgentLaunchCommand.codex(
                     baseURL: openAIBaseURL, key: snippetKey, model: snippetModel
                 ),
@@ -643,7 +643,7 @@ struct ConnectToolsView: View {
                 id: "hermes",
                 name: "Hermes",
                 symbol: "bolt.horizontal.circle",
-                blurb: "Launch with this connection and model for one session. Your shell environment stays unchanged.",
+                blurb: String(localized: "Launch with this connection and model for one session. Your shell environment stays unchanged."),
                 snippet: AgentLaunchCommand.hermes(
                     baseURL: openAIBaseURL, key: snippetKey, model: snippetModel
                 ),
@@ -859,7 +859,7 @@ private struct ConnectToolRow: View {
             Button("OK") { launchError = nil }
                 .accessibilityIdentifier("Launch.Integration.ErrorDismiss.\(tool.id)")
         } message: {
-            Text(launchError ?? "Try copying the command instead.")
+            Text(launchError ?? String(localized: "Try copying the command instead."))
         }
     }
 
@@ -873,8 +873,8 @@ private struct ConnectToolRow: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!isReady)
-                .help("Copy command — run it in your own terminal")
-                .accessibilityLabel("Copy \(tool.name) command")
+                .help(String(localized: "Copy command — run it in your own terminal"))
+                .accessibilityLabel(String(localized: "Copy \(tool.name) command"))
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
                 .contextMenu {
                     if tool.offersSessionCommand, let sessionSnippet = tool.sessionSnippet {
@@ -900,7 +900,7 @@ private struct ConnectToolRow: View {
                     do {
                         guard !tool.persistent || onPersistentLaunch() else {
                             throw NSError(domain: "Rapid.AgentLaunch", code: 1,
-                                          userInfo: [NSLocalizedDescriptionKey: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."])
+                                          userInfo: [NSLocalizedDescriptionKey: String(localized: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again.")])
                         }
                         try TerminalAgentLauncher.open(command: tool.snippet)
                     } catch { launchError = error.localizedDescription }
@@ -914,14 +914,14 @@ private struct ConnectToolRow: View {
             } else {
                 Button(action: copy) {
                     primaryLabel {
-                        Label(copied ? "Copied" : actionLabel(for: tool.action), systemImage: copied ? "checkmark" : "doc.on.doc")
+                        Label(copied ? String(localized: "Copied") : actionLabel(for: tool.action), systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!isReady)
                 .help(tool.blurb)
-                .accessibilityLabel(copied ? "Copied \(tool.name) setup" : accessibilityActionLabel)
+                .accessibilityLabel(copied ? String(localized: "Copied \(tool.name) setup") : accessibilityActionLabel)
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
             }
         }
@@ -940,17 +940,17 @@ private struct ConnectToolRow: View {
 
     private func actionLabel(for action: ConnectTool.Action) -> String {
         switch action {
-        case .launch: return "Copy command"
-        case .rewriteConfig: return "Copy setup"
-        case .guide: return "Copy guide"
+        case .launch: return String(localized: "Copy command")
+        case .rewriteConfig: return String(localized: "Copy setup")
+        case .guide: return String(localized: "Copy guide")
         }
     }
 
     private var accessibilityActionLabel: String {
         switch tool.action {
-        case .launch: return "Copy \(tool.name) command"
-        case .rewriteConfig: return "Copy \(tool.name) setup command"
-        case .guide: return "Copy \(tool.name) setup guide"
+        case .launch: return String(localized: "Copy \(tool.name) command")
+        case .rewriteConfig: return String(localized: "Copy \(tool.name) setup command")
+        case .guide: return String(localized: "Copy \(tool.name) setup guide")
         }
     }
 
@@ -961,7 +961,7 @@ private struct ConnectToolRow: View {
 
     private func copy() {
         guard !tool.persistent || onPersistentLaunch() else {
-            launchError = "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again."
+            launchError = String(localized: "Couldn’t save the local connection securely. Check ~/.rapid-mlx/connect permissions and try again.")
             return
         }
         NSPasteboard.general.clearContents()
@@ -994,7 +994,7 @@ private enum TerminalAgentLauncher {
         task.waitUntilExit()
         guard task.terminationStatus == 0 else {
             throw NSError(domain: "Rapid.AgentLaunch", code: Int(task.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "Terminal could not open the agent command."])
+                          userInfo: [NSLocalizedDescriptionKey: String(localized: "Terminal could not open the agent command.")])
         }
     }
 }
@@ -1013,6 +1013,10 @@ private struct CopyableRow: View {
 
     private var hasValue: Bool { !value.isEmpty }
 
+    /// `label` stays the English catalog key so accessibility identifiers
+    /// are locale-independent; the visible title is its translation.
+    private var title: String { String(localized: String.LocalizationValue(label)) }
+
     private var shown: String {
         guard hasValue else { return placeholder ?? "—" }
         guard masked, !reveal else { return value }
@@ -1021,7 +1025,7 @@ private struct CopyableRow: View {
 
     var body: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Text(label)
+            Text(title)
                 .font(RapidFont.secondary)
                 .foregroundStyle(.secondary)
                 .frame(width: 132, alignment: .leading)
@@ -1048,7 +1052,7 @@ private struct CopyableRow: View {
             if masked, hasValue {
                 QuietIconButton(
                     symbol: reveal ? "eye.slash" : "eye",
-                    label: reveal ? "Hide key" : "Show key",
+                    label: reveal ? String(localized: "Hide key") : String(localized: "Show key"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     reveal.toggle()
@@ -1057,10 +1061,10 @@ private struct CopyableRow: View {
             }
             QuietIconButton(
                 symbol: copied ? "checkmark" : "doc.on.doc",
-                label: "Copy \(label)",
+                label: String(localized: "Copy \(title)"),
                 help: hasValue
-                    ? "Copy \(label)"
-                    : "Start a model to generate a valid key and configuration.",
+                    ? String(localized: "Copy \(title)")
+                    : String(localized: "Start a model to generate a valid key and configuration."),
                 tint: copied ? RapidTheme.utilityActionSuccess : nil,
                 size: RapidTheme.ControlHeight.mini
             ) {

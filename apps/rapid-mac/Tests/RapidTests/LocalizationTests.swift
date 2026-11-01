@@ -404,6 +404,28 @@ struct LocalizationTests {
         }
     }
 
+    /// Agent page keys the source extractor cannot see: ``CopyableRow``
+    /// resolves its English label at runtime (so accessibility identifiers
+    /// stay locale-independent), and interpolated `String(localized:)`
+    /// calls are skipped by `xcstringstool extract`.
+    @Test("Agent page row labels and interpolated actions carry zh-Hans")
+    func agentPageRuntimeKeysTranslated() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let mustHaveZH = [
+            "OpenAI-compatible URL", "Anthropic-compatible URL", "API key", "Model",
+            "Gateway URL", "Gateway API key", "Copy %@", " It writes %@.",
+            "Copy %@ command", "Copy %@ setup command", "Copy %@ setup guide", "Copied %@ setup",
+        ]
+        for key in mustHaveZH {
+            let entry = try #require(strings[key] as? [String: Any], "Missing catalog entry for key: \(key)")
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(localizations["zh-Hans"] as? [String: Any], "Missing zh-Hans for key: \(key)")
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(!(unit["value"] as? String ?? "").isEmpty, "Empty zh-Hans for key: \(key)")
+        }
+    }
+
     /// The surfaces a Chinese-locale user reported as English: sidebar
     /// destinations, the chat hero and composer, the Settings rail, and the
     /// model list. Each key is spelled exactly as the call site spells it,

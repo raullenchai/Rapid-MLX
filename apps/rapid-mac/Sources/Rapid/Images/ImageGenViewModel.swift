@@ -214,8 +214,13 @@ final class ImageGenViewModel {
 
     /// A readable name for the selected model, shown in the cold-load HUD.
     var selectedDisplayName: String {
-        let alias = inFlightAlias ?? selectedAlias
-        return alias.isEmpty ? String(localized: "the model") : alias
+        Self.hudDisplayName(for: inFlightAlias ?? selectedAlias)
+    }
+
+    /// The friendly catalog name ("Bonsai Image · 4B · 2-bit"); unknown
+    /// aliases fall back to the alias itself.
+    nonisolated static func hudDisplayName(for alias: String) -> String {
+        alias.isEmpty ? String(localized: "the model") : ModelDisplayName.name(for: alias)
     }
 
     // MARK: - Edit
