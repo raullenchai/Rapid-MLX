@@ -3018,7 +3018,7 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             raise RuntimeError("Engine not loaded — call start() first")
         messages, _ = self._prepare_cache_stable_messages(messages)
-        _, images, _ = extract_multimodal_content(messages)
+        _, images, _ = extract_multimodal_content(messages)  # type: ignore[arg-type]
         template_tools = convert_tools_for_template(tools) if tools else None
         # Count template image placeholders, without vision-patch expansion.
         prompt, shared_warm_boundary = self._render_chat_prompt(

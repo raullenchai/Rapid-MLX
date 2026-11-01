@@ -1645,7 +1645,8 @@ async def count_anthropic_tokens(request: Request):
                 else None
             )
             if callable(render_request_prompt):
-                prompt = engine.render_request_prompt(
+                prompt = render_request_prompt(
+                    engine,
                     _ctx_messages,
                     tools=rendered_tools,
                     enable_thinking=effective_thinking,
@@ -1653,7 +1654,7 @@ async def count_anthropic_tokens(request: Request):
                 count = count_prompt_tokens(engine, prompt)
                 if count > 0:
                     total_tokens = count
-            else:
+            elif callable(build_prompt):
                 prompt = build_prompt(
                     _ctx_messages,
                     tools=rendered_tools,
