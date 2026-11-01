@@ -170,8 +170,10 @@ def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
 def validate_processor_code(model_path: str | Path) -> None:
     """Inspect metadata before loaders that force repository-code trust.
 
-    Check the root, up to 64 visible immediate subdirectories, and directory
-    paths named in the root config (including one level inside dictionaries).
+    Check the root plus every folder named by string values in its config.json
+    (including one level inside dictionaries), because loaders open tokenizers
+    from config-named folders with repository-code trust forced. Deduplicate
+    folders by realpath and skip references back to the root.
     Run once at load, never from generation or transcription.
     """
     root = Path(model_path)
@@ -190,15 +192,6 @@ def validate_processor_code(model_path: str | Path) -> None:
             return
         seen.add(resolved)
         _validate_processor_directory(directory, root=root)
-
-    count = 0
-    for directory in root.iterdir():
-        if directory.name.startswith(".") or not directory.is_dir():
-            continue
-        check_directory(directory)
-        count += 1
-        if count == 64:
-            break
 
     for value in config.values():
         values = value.values() if isinstance(value, dict) else (value,)

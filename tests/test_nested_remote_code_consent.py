@@ -157,36 +157,29 @@ def test_inkling_processor_consent_before_vlm_dispatch(
     assert loader.call_count == 2
 
 
-@pytest.mark.parametrize(
-    "filename",
-    [
-        "config.json",
-        "tokenizer_config.json",
-        "processor_config.json",
-        "preprocessor_config.json",
-    ],
-)
-@pytest.mark.parametrize("field", ["auto_map", "model_file"])
-def test_stt_checks_unreferenced_immediate_directories(
-    tmp_path, monkeypatch, stt_loader, filename, field
-):
+def test_stt_ignores_unreferenced_subfolder(tmp_path, monkeypatch, stt_loader):
     engine_class, base = stt_loader
     _write_metadata(tmp_path, "config.json", model_type="fun_asr_nano")
-    _write_metadata(tmp_path / "nested", filename, **{field: "custom.py"})
+    _write_metadata(tmp_path / "archive", auto_map={"AutoTokenizer": ["tok.T", None]})
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    with pytest.raises(RemoteCodeConsentRequired, match="nested"):
-        engine_class(str(tmp_path), enable_vad_pretrim=False).load()
-    base.assert_not_called()
+    engine = engine_class(str(tmp_path), enable_vad_pretrim=False)
+    engine.load()
+    base.assert_called_once_with(model_path=tmp_path)
+    assert engine._loaded
 
 
-def test_directory_scan_bounds_and_realpath_deduplication(tmp_path, monkeypatch):
+def test_configured_directory_realpath_deduplication(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import validate_processor_code
 
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    _write_metadata(tmp_path, "config.json", self_path=".")
-    metadata = {"auto_map": {"AutoTokenizer": ["tok.T", None]}}
-    _write_metadata(tmp_path / ".hidden", **metadata)
-    _write_metadata(tmp_path / "visible" / "grandchild", **metadata)
+    _write_metadata(
+        tmp_path,
+        "config.json",
+        self_path=".",
+        tokenizer_path="visible",
+        text_config={"path": "alias", "root_path": "visible/back_to_root"},
+    )
+    _write_metadata(tmp_path / "visible", tokenizer_class="Qwen2Tokenizer")
     (tmp_path / "visible" / "back_to_root").symlink_to(
         tmp_path, target_is_directory=True
     )
@@ -201,32 +194,17 @@ def test_directory_scan_bounds_and_realpath_deduplication(tmp_path, monkeypatch)
     monkeypatch.setattr(type(tmp_path), "open", open_metadata)
     validate_processor_code(tmp_path)
     assert opened.count((tmp_path / "visible" / "tokenizer_config.json").resolve()) == 1
-
-    # A config-named path is checked even beyond the automatic scan depth.
-    _write_metadata(tmp_path, "config.json", text_config={"path": "visible/grandchild"})
-    with pytest.raises(RemoteCodeConsentRequired, match="visible/grandchild"):
-        validate_processor_code(tmp_path)
+    assert opened.count(tmp_path / "tokenizer_config.json") == 1
 
 
-def test_configured_directory_is_checked_beyond_scan_cap(tmp_path, monkeypatch):
-    from pathlib import Path
-
+def test_configured_deep_directory_is_checked(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import validate_processor_code
 
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    directories = [tmp_path / f"tokenizer-{index}" for index in range(65)]
-    for directory in directories:
-        directory.mkdir()
-    _write_metadata(tmp_path, "config.json", model_type="fun_asr_nano")
-    _write_metadata(directories[-1], auto_map={"AutoTokenizer": ["tok.T", None]})
-    original = Path.iterdir
-    monkeypatch.setattr(
-        Path,
-        "iterdir",
-        lambda path: iter(directories) if path == tmp_path else original(path),
+    _write_metadata(tmp_path, "config.json", text_config={"path": "visible/grandchild"})
+    _write_metadata(
+        tmp_path / "visible" / "grandchild",
+        auto_map={"AutoTokenizer": ["tok.T", None]},
     )
-    validate_processor_code(tmp_path)
-
-    _write_metadata(tmp_path, "config.json", qwen_tokenizer_path=directories[-1].name)
-    with pytest.raises(RemoteCodeConsentRequired, match="tokenizer-64"):
+    with pytest.raises(RemoteCodeConsentRequired, match="visible/grandchild"):
         validate_processor_code(tmp_path)
