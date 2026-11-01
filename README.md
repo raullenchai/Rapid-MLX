@@ -375,7 +375,7 @@ OpenAI SDK works unchanged.
 
 # Text to speech
 rapid-mlx serve kokoro
-curl http://localhost:8000/v1/audio/speech \
+curl --fail http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro","input":"hello from rapid-mlx"}' --output hello.wav
 
@@ -403,7 +403,7 @@ Beyond the basics, three things you may not expect to run locally:
 Also: word-level timestamps on transcription, and local text-to-music at
 `/v1/audio/music`.
 
-→ [All 44 aliases across 13 families](https://rapidmlx.com/docs/models/families/audio.html)
+→ [All 53 aliases across 17 families](https://rapidmlx.com/docs/models/families/audio.html)
 
 ---
 

@@ -1987,8 +1987,32 @@ def _runtime_pip_command(
     runtime: Path | None = None,
 ) -> str:
     """Return an unambiguous repair command for the interpreter under test."""
-    quoted = " ".join(shlex.quote(requirement) for requirement in requirements)
     selected_runtime = runtime or _runtime_python_path()
+    if not _runtime_uses_context(selected_runtime):
+        try:
+            from rapid_mlx._version_check import detect_install_method
+            from rapid_mlx.dependency_repair import repair_argv
+            from rapid_mlx.runtime.base_runtime import is_base_runtime_extra
+            from rapid_mlx.runtime.optional_runtime import optional_extra_repair_command
+
+            info = detect_install_method()
+            if info.method in {"uv", "pipx"} or (
+                info.method == "unknown"
+                and info.upgrade_command.startswith("sudo pipx ")
+            ):
+                extra = (
+                    re.match(r"rapid-mlx\[([^] ,]+)\]", requirements[0])
+                    if requirements
+                    else None
+                )
+                if extra and not is_base_runtime_extra(extra[1]):
+                    return optional_extra_repair_command(extra[1])
+                argv = repair_argv()
+                if argv is not None:
+                    return shlex.join(argv)
+        except Exception:
+            pass
+    quoted = " ".join(shlex.quote(requirement) for requirement in requirements)
     return f"{shlex.quote(str(selected_runtime))} -m pip install --upgrade {quoted}"
 
 
@@ -2378,6 +2402,46 @@ def section_updates(
     return s
 
 
+def _audio_extra_distinct_dists() -> frozenset[str] | None:
+    """Exclude the base dependency closure from the audio extra."""
+    try:
+        from packaging.requirements import Requirement
+
+        def normalize(name: str) -> str:
+            return re.sub(r"[-_.]+", "-", name).lower()
+
+        requirements = _im.requires("rapid-mlx")
+        if requirements is None:
+            return None
+        base: set[str] = set()
+        audio: set[str] = set()
+        for text in requirements:
+            req = Requirement(text)
+            if re.search(r"\bextra\s*==", str(req.marker or "")):
+                if req.marker and req.marker.evaluate({"extra": "audio"}):
+                    audio.add(normalize(req.name))
+            elif req.marker is None or req.marker.evaluate({"extra": ""}):
+                base.add(normalize(req.name))
+        pending = list(base)
+        while pending:
+            name = pending.pop()
+            try:
+                dependencies = _im.requires(name) or []
+            except _im.PackageNotFoundError:
+                continue
+            for text in dependencies:
+                req = Requirement(text)
+                if req.marker and not req.marker.evaluate({"extra": ""}):
+                    continue
+                child = normalize(req.name)
+                if child not in base:
+                    base.add(child)
+                    pending.append(child)
+        return frozenset(audio - base)
+    except Exception:
+        return None
+
+
 def section_optional_packages() -> Section:
     s = Section("Optional Packages")
     runtime = _selected_runtime()[0]
@@ -2475,6 +2539,27 @@ def section_optional_packages() -> Section:
                 )
                 continue
             if dist == "mlx-audio":
+                same_interpreter = (
+                    Path(runtime).absolute() == Path(sys.executable).absolute()
+                )
+                distinct = (
+                    _audio_extra_distinct_dists()
+                    if not bundled and same_interpreter
+                    else None
+                )
+                if distinct and not any(
+                    distribution in distinct
+                    and _module_available(
+                        module, runtime if _runtime_uses_context(runtime) else None
+                    )
+                    for distribution, module in _AUDIO_IMPORTS
+                ):
+                    s.add(
+                        f"audio extras not installed (`{hint}`)",
+                        CheckStatus.WARN,
+                        detail=f"distribution=mlx-audio version={ver} extra=audio selected=false hint={hint}",
+                    )
+                    continue
                 missing: list[str] = []
                 inconclusive: dict[str, _ImportProbeOutcome] = {}
                 for distribution, module in audio_contract:

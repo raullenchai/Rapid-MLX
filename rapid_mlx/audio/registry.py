@@ -121,6 +121,10 @@ _REGISTRY: dict[str, AudioAliasEntry] | None = None
 # ids the same way it answers for short aliases.
 _HF_ID_INDEX: dict[str, str] = {}
 _WHISPER_PROCESSORS: dict[str, AudioRuntimeAsset] = {}
+# Transformers 5 processor loading reads the repo config.json. Optional probes
+# for processor_config.json, chat_template.json, chat_template.jinja, and
+# audio_tokenizer_config.json are absent in all pinned OpenAI Whisper repos
+# and are tolerated when uncached.
 _WHISPER_PROCESSOR_PATTERNS = (
     "preprocessor_config.json",
     "tokenizer.json",
@@ -130,6 +134,7 @@ _WHISPER_PROCESSOR_PATTERNS = (
     "special_tokens_map.json",
     "added_tokens.json",
     "normalizer.json",
+    "config.json",
 )
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
 _RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
