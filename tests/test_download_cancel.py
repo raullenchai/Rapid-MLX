@@ -248,3 +248,75 @@ def test_abort_prompt(monkeypatch, capsys, suggest_pull):
     else:
         assert "  Aborted. Set TEST_AUTO_YES=1 to skip this prompt." in output
         assert "rapid-mlx pull" not in output
+
+
+def test_in_process_cancel_prints_and_exits(monkeypatch, capsys, default_signals):
+    release = threading.Event()
+    real_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "rapid-mlx-download":
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        real_start(thread)
+
+    def failing_abort():
+        raise RuntimeError("no session")
+
+    import huggingface_hub.utils._xet as xet
+
+    monkeypatch.setattr(xet, "abort_xet_session", failing_abort)
+    monkeypatch.setattr(cancel.threading.Thread, "start", start)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            cancel.run_cancellable_download(release.wait, retry_hint="  Retry: x")
+    finally:
+        release.set()
+    assert raised.value.code == 130
+    err = capsys.readouterr().err
+    assert "Cancelling download…" in err
+    assert "Download cancelled. Completed files stay cached." in err
+    assert "  Retry: x" in err
+
+
+def test_all_signals_ignored_calls_directly(default_signals):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    assert (
+        cancel.run_cancellable_download(threading.current_thread, retry_hint="retry")
+        is threading.main_thread()
+    )
+
+
+def test_remove_owned_incomplete_files_only_removes_open_scratch(monkeypatch, tmp_path):
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    owned = blobs / ("a" * 64 + ".1234abcd.incomplete")
+    foreign = blobs / ("b" * 64 + ".abcd1234.incomplete")
+    other = tmp_path / ("c" * 64 + ".1234abcd.incomplete")
+    foreign.write_bytes(b"keep")
+    other.write_bytes(b"keep")
+    fd_root = "/dev/fd" if sys.platform == "darwin" else "/proc/self/fd"
+    real_listdir = os.listdir
+    # A descriptor name that cannot be resolved is skipped.
+    monkeypatch.setattr(
+        cancel.os,
+        "listdir",
+        lambda path: (
+            [*real_listdir(path), "not-a-descriptor"]
+            if path == fd_root
+            else real_listdir(path)
+        ),
+    )
+    with owned.open("wb"), other.open("ab"):
+        cancel._remove_owned_incomplete_files()
+    assert not owned.exists()
+    assert foreign.read_bytes() == b"keep"
+    assert other.read_bytes() == b"keep"
+
+
+def test_remove_owned_incomplete_files_tolerates_unreadable_fd_table(monkeypatch):
+    def unreadable(_path):
+        raise OSError("no fd table")
+
+    monkeypatch.setattr(cancel.os, "listdir", unreadable)
+    cancel._remove_owned_incomplete_files()
