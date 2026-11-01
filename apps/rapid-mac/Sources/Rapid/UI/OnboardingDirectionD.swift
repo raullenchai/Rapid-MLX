@@ -358,11 +358,11 @@ struct OnboardingRailFacts: View {
                 // From Step 2 onward the decision rests on room as well as
                 // memory, so the chip joins the memory line to make space for
                 // it (Paper 05.1 frame 04).
-                Self.row(String(localized: "Memory"), "\(Self.memoryText(hardware)) · \(hardware.brandString)")
+                Self.row(String(localized: "onboarding.rail.memory", defaultValue: "Memory"), "\(Self.memoryText(hardware)) · \(hardware.brandString)")
                 Self.row(String(localized: "Free space"), freeSpace)
             } else {
                 Self.row(String(localized: "Chip"), hardware.brandString)
-                Self.row(String(localized: "Memory"), Self.memoryText(hardware))
+                Self.row(String(localized: "onboarding.rail.memory", defaultValue: "Memory"), Self.memoryText(hardware))
             }
         }
         .padding(.horizontal, 24)

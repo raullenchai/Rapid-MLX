@@ -694,6 +694,10 @@ struct LocalizationTests {
             #expect(zhBundle.localizedString(forKey: key, value: nil, table: nil) == zh)
             #expect(enBundle.localizedString(forKey: key, value: nil, table: nil) == key)
         }
+        // The rail's hardware "Memory" is RAM (内存), not the chat memory
+        // feature that the plain "Memory" key translates as 记忆.
+        #expect(zhBundle.localizedString(forKey: "onboarding.rail.memory", value: nil, table: nil) == "内存")
+        #expect(enBundle.localizedString(forKey: "onboarding.rail.memory", value: nil, table: nil) == "Memory")
         let projectedPercent = 95, memory = "18 GB"
         #expect(String(localized: "Loading it would then put memory use at about \(projectedPercent)% of \(memory).", bundle: zhBundle) == "加载后内存使用率约为 95%，总内存为 18 GB。")
         let hours = 1, minutes = 2

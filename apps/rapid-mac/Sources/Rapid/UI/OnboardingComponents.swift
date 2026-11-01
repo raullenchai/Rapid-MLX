@@ -152,14 +152,33 @@ private enum OnboardingModelAccessibility {
     static func sentences(_ parts: [String]) -> String {
         parts.filter { !$0.isEmpty }.reduce("") { label, part in
             guard !label.isEmpty else { return part }
-            let separator = label.last.map { ".!?".contains($0) } == true ? " " : String(localized: ". ")
+            // A fragment that already ends a sentence needs no second
+            // terminator: Latin ones take a space, CJK ones take nothing.
+            let separator: String
+            if let last = label.last, "。！？".contains(last) {
+                separator = ""
+            } else if let last = label.last, ".!?".contains(last) {
+                separator = " "
+            } else {
+                separator = String(localized: ". ")
+            }
             return label + separator + part
         }
     }
 
-    /// The visual size lane can end with a capability score, not a byte count.
+    /// The visual size lane can end with a bare capability score ("· 92%"),
+    /// not a byte count. A score already rendered through
+    /// ``ModelPickerBar/capabilityText(_:)`` names itself — in Simplified
+    /// Chinese that text ("能力 92%") also ends in "%", so it must not be
+    /// named a second time.
     static func size(_ text: String) -> String {
-        text.hasSuffix("%") ? String(localized: "\(text) capability") : text
+        guard text.hasSuffix("%") else { return text }
+        let digits = text.dropLast().reversed().prefix { $0.isNumber }
+        if let score = Int(String(digits.reversed())),
+           text.hasSuffix(ModelPickerBar.capabilityText(score)) {
+            return text
+        }
+        return String(localized: "\(text) capability")
     }
 }
 
@@ -488,7 +507,7 @@ struct OnboardingCatalogRow: View {
         var parts = [ModelDisplayName.name(for: alias), subtitle]
         parts.append(contentsOf: badges.map(\.text.localizedLowercase))
         if !sizeText.isEmpty { parts.append(sizeText) }
-        return parts.joined(separator: String(localized: ". "))
+        return OnboardingModelAccessibility.sentences(parts)
     }
 
     /// Spoken only for the row that cannot run, because only there is the

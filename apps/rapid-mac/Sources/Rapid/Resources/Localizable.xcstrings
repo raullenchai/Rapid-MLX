@@ -17,7 +17,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : " 可用空间 %@。"
+            "value" : "可用空间 %@。"
           }
         }
       }
@@ -757,7 +757,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法在本机运行。打开只读说明 — 不会下载任何内容。"
+            "value" : "无法在本机运行。将打开说明页面，不会下载任何内容。"
           }
         }
       }
@@ -1978,6 +1978,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "本机运行，适合本机"
+          }
+        }
+      }
+    },
+    "onboarding.rail.memory" : {
+      "comment" : "Onboarding rail hardware fact: the Mac's unified memory (RAM), not the chat memory feature.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memory"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存"
           }
         }
       }
