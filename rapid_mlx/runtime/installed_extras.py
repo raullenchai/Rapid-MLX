@@ -57,16 +57,20 @@ def installed_extras() -> list[str]:
         import importlib.metadata as metadata
         import re
 
-        Requirement: Any
+        Requirement: Any = None
         try:
-            from packaging.requirements import Requirement
+            from packaging.requirements import Requirement as _Requirement
+
+            Requirement = _Requirement
         except ImportError:
             try:
-                from pip._vendor.packaging.requirements import (  # type: ignore[assignment]
-                    Requirement,
+                from pip._vendor.packaging.requirements import (
+                    Requirement as _VendoredRequirement,
                 )
+
+                Requirement = _VendoredRequirement
             except ImportError:
-                Requirement = None
+                pass
 
         def normalize(name):
             return re.sub(r"[-_.]+", "-", name).lower()
