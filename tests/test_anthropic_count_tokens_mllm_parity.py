@@ -192,6 +192,29 @@ def test_zero_rendered_count_uses_legacy_fallback(engine, monkeypatch):
     assert response.json() == {"input_tokens": 2}
 
 
+def test_render_request_prompt_failure_uses_legacy_fallback(engine, monkeypatch):
+    render = Mock(side_effect=RuntimeError("Prompt rendering failed"))
+    monkeypatch.setattr(type(engine), "render_request_prompt", render)
+    response = _client(engine).post(
+        "/v1/messages/count_tokens",
+        json={
+            "system": "shared instructions",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello world"},
+                        {"type": "text", "text": "another three words"},
+                    ],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    render.assert_called_once()
+    assert response.json() == {"input_tokens": 7}
+
+
 def test_shared_system_prompt_fallback_is_preserved(engine, monkeypatch):
     messages = [{"role": "system", "content": "shared instructions"}]
     monkeypatch.setattr(
