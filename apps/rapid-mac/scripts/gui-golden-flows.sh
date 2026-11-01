@@ -2454,8 +2454,8 @@ flow_cached_curated_tradeup() {
     wait_selected Quickstart.CachedModel.qwen3.5-4b-4bit "$OUT/chooser.json"
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.CachedModel.qwen3.5-4b-4bit")
-            | select((.description // "") | contains("on disk 2.9 GB"))
-            | select(((.description // "") | contains("Download 2.9 GB")) | not)' \
+            | select((.description // "") | contains("on this Mac, size 2.9 GB"))
+            | select(((.description // "") | test("\\bdownload\\s+~?[0-9]"; "i")) | not)' \
         "$OUT/chooser.json" >/dev/null \
         || die "cached hardware-fit starter is hidden or advertises a download"
     # Finish the exact 16 GB starter journey without a network pull and

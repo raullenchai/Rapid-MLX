@@ -14,10 +14,10 @@ AXApplication title="Rapid-MLX"
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden restore marker" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXProgressIndicator value=number enabled=true
+          AXProgressIndicator id="Sidebar.Residency.Memory" desc="Model memory" value=number enabled=true
           AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
           AXImage id="Sidebar.ResidentModel.<model>" desc="Lock" enabled=true
-          AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
+          AXStaticText id="Sidebar.ResidentModel.<model>" help="<model>" value=text enabled=true
           AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
