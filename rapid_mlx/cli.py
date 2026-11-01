@@ -3228,6 +3228,104 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     return sidecar, depth
 
 
+def _mtp_catalog_identity(args):
+    return getattr(args, "_original_alias", None) or getattr(args, "model", None)
+
+
+def _local_mtp_head_file(path, *, served_folder: bool) -> str | None:
+    if not os.path.isfile(path):
+        if not os.path.isdir(path):
+            return None
+        names: tuple[str, ...] = (
+            "mtp.safetensors",
+            "model-mtp.safetensors",
+            "mtp/model.safetensors",
+        )
+        if not served_folder:
+            names += ("model.safetensors",)
+        for name in names:
+            candidate = os.path.join(path, name)
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+        else:
+            if not served_folder:
+                from pathlib import Path
+
+                for shard in sorted(Path(path).glob("*.safetensors")):
+                    try:
+                        if shard.is_file() and shard.stat().st_size > 0:
+                            return str(shard)
+                    except OSError:
+                        continue
+            return None
+    # Match the injector's first-file resolution, even if that file is empty.
+    try:
+        return str(path) if os.path.getsize(path) > 0 else None
+    except OSError:
+        return None
+
+
+def _drop_unavailable_mtp_head(args) -> bool:
+    if getattr(args, "spec_decode", None) != "mtp" or getattr(
+        args, "mtp_backend", None
+    ) in ("native", "tensorfold"):
+        return False
+    config, _ = _gather_kv_cache_dtype_inputs(args.model)
+    if not isinstance(config, dict):
+        return False
+    text_config = config.get("text_config")
+    types = {config.get("model_type")}
+    if isinstance(text_config, dict):
+        types.add(text_config.get("model_type"))
+    if not types.intersection({"qwen3_5", "qwen3_5_moe"}):
+        return False
+    sidecar = getattr(args, "mtp_sidecar", None)
+    if not sidecar:
+        reason = "this model has no MTP head and no MTP sidecar was given"
+    elif sidecar == args.model and os.path.isdir(sidecar):
+        if _local_mtp_head_file(sidecar, served_folder=True) is not None:
+            return False
+        reason = (
+            "this local model folder has no usable MTP head "
+            "(mtp/model.safetensors is missing or empty)"
+        )
+    elif getattr(args, "_speculative_config_explicit", False) and (
+        os.path.lexists(sidecar) or sidecar.startswith(("/", "./", "../", "~"))
+    ):
+        if _local_mtp_head_file(sidecar, served_folder=False) is not None:
+            return False
+        reason = (
+            f"the MTP sidecar at {sidecar} has no usable MTP weights "
+            "(missing or empty .safetensors)"
+        )
+    else:
+        return False
+    import sys
+
+    prefix = (
+        "MTP unavailable"
+        if getattr(args, "_speculative_config_explicit", False)
+        else "Automatic MTP skipped"
+    )
+    print(f"{prefix}: {reason}; using plain decode.", file=sys.stderr)
+    for name, value in {
+        "spec_decode": "none",
+        "enable_mtp": False,
+        "mtp_sidecar": None,
+        "mtp_max_k": 1,
+        "mtp_backend": None,
+        "mtp_continuous_batching": False,
+        "mtp_unquantized_cache": False,
+        "mtp_allow_dynamic_membership": False,
+        "_speculative_config": None,
+        "speculative_config": None,
+        "_speculative_config_explicit": False,
+    }.items():
+        setattr(args, name, value)
+    return True
+
+
 def _local_mtp_sidecar_for_served_model(args, sidecar):
     """Use the served directory for a sidecar from the same repository."""
     model = getattr(args, "model", None)
@@ -3556,6 +3654,7 @@ def _normalize_speculative_config_or_exit(args):
     _reject_tensorfold_family_opt_out_or_exit(args)
     raw_config = getattr(args, "speculative_config", None)
     raw_config_was_explicit = raw_config is not None
+    args._speculative_config_explicit = False
     config = None
 
     def _fill_runtime_defaults(*, overwrite: bool) -> None:
@@ -3855,17 +3954,17 @@ def _normalize_speculative_config_or_exit(args):
             # shared lane resolver.  Explicit speculative requests are
             # rejected below instead of being dropped.
             and not getattr(args, "mllm", False)
-            and _alias_native_mtp_capable(getattr(args, "model", None))
-            and _alias_mtp_default_enabled(getattr(args, "model", None))
-            and _native_mtp_runtime_ready(getattr(args, "model", None))
+            and _alias_native_mtp_capable(_mtp_catalog_identity(args))
+            and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
+            and _native_mtp_runtime_ready(_mtp_catalog_identity(args))
         ):
             raw_config = '{"method":"mtp","backend":"native"}'
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
             and not getattr(args, "mllm", False)
-            and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
-            and _alias_mtp_default_enabled(getattr(args, "model", None))
+            and _alias_continuous_mtp_tier(_mtp_catalog_identity(args)) == "verified"
+            and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
         ):
             # Exact artifacts that passed the mixed-workload qualification
             # select their declared MTP preset by default, unless the catalog
@@ -3887,7 +3986,7 @@ def _normalize_speculative_config_or_exit(args):
                 is MTPEligibility.NONE
             ):
                 if hf_cfg is None:
-                    profile = resolve_profile(args.model)
+                    profile = resolve_profile(_mtp_catalog_identity(args))
                     pin = (
                         profile.revision
                         or getattr(profile, "tensorfold_target_revision", None)
@@ -3910,7 +4009,7 @@ def _normalize_speculative_config_or_exit(args):
                         file=sys.stderr,
                     )
             else:
-                sidecar, _ = _alias_mtp_declaration(args.model)
+                sidecar, _ = _alias_mtp_declaration(_mtp_catalog_identity(args))
                 # #5395: a matching external model folder is already local.
                 local_sidecar = _local_mtp_sidecar_for_served_model(args, sidecar)
                 cached_sidecar = (
@@ -3920,12 +4019,19 @@ def _normalize_speculative_config_or_exit(args):
                     if sidecar
                     else None
                 )
-                if sidecar and cached_sidecar is None:
+                if (
+                    local_sidecar != sidecar
+                    and _local_mtp_head_file(local_sidecar, served_folder=True) is None
+                ):
                     print(
-                        "Automatic MTP skipped: sidecar is not cached; "
-                        f"run `rapid-mlx pull {args.model}` and "
-                        f"`rapid-mlx pull {sidecar}` to cache both; "
-                        "using plain decode.",
+                        "Automatic MTP skipped: this local model folder has no usable MTP head "
+                        "(mtp/model.safetensors is missing or empty); using plain decode.",
+                        file=sys.stderr,
+                    )
+                elif sidecar and cached_sidecar is None:
+                    print(
+                        f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
+                        f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
                         file=sys.stderr,
                     )
                 else:
@@ -4003,6 +4109,9 @@ def _normalize_speculative_config_or_exit(args):
         _fill_suffix_defaults()
         return
 
+    args._speculative_config_explicit = (
+        raw_config_was_explicit or legacy_payload is not None
+    )
     _fill_runtime_defaults(overwrite=True)
     args._speculative_config = config
     if config.method == "ddtree":
@@ -4023,7 +4132,7 @@ def _normalize_speculative_config_or_exit(args):
     elif config.method == "mtp":
         args.spec_decode = "mtp"
         args.mtp_backend = config.backend
-        continuous_tier = _alias_continuous_mtp_tier(getattr(args, "model", None))
+        continuous_tier = _alias_continuous_mtp_tier(_mtp_catalog_identity(args))
         args.mtp_continuous_batching_tier = continuous_tier
         continuous_was_explicit = config.continuous_batching is not None
         # Concurrent requests batch through the ordinary decode path: the
@@ -4081,7 +4190,7 @@ def _normalize_speculative_config_or_exit(args):
         # boot, quoting an unrelated model in the remedy. Fill ONLY what the
         # request left unset; an explicit ``model`` /
         # ``num_speculative_tokens`` in the JSON always wins.
-        alias_sidecar, alias_k = _alias_mtp_declaration(getattr(args, "model", None))
+        alias_sidecar, alias_k = _alias_mtp_declaration(_mtp_catalog_identity(args))
         args.mtp_sidecar = config.model or alias_sidecar
         # #5395: native and tensorfold backends require repository IDs.
         if config.backend not in ("native", "tensorfold"):
@@ -7453,6 +7562,8 @@ def serve_command(args):
         _reject_tensorfold_lanes_off_lane_or_exit(args)
         _preflight_native_mtp_or_exit(args)
 
+    _drop_unavailable_mtp_head(args)
+
     # The prefetch above swallows transport errors on purpose ("server will
     # retry"), which is right for a text model — the loader retries and raises
     # something legible. An mflux checkpoint has no such backstop: it loads
@@ -8439,8 +8550,17 @@ def serve_command(args):
         print("Mode: Continuous batching (for multiple concurrent users)")
     if getattr(args, "spec_decode", "none") == "mtp":
         print(
-            "MTP: enabled via --speculative-config, "
-            f"max_k={getattr(args, 'mtp_max_k', 1)}"
+            (
+                "MTP: enabled via --speculative-config, "
+                if getattr(args, "_speculative_config_explicit", False)
+                else "MTP: enabled automatically for this model, "
+            )
+            + f"max_k={getattr(args, 'mtp_max_k', 1)}"
+            + (
+                ""
+                if getattr(args, "_speculative_config_explicit", False)
+                else " (turn off with --no-spec-decode)"
+            )
         )
     if getattr(args, "spec_decode", "none") == "dspark":
         from rapid_mlx.spec_decode.dspark import (
@@ -8466,8 +8586,12 @@ def serve_command(args):
             )
             sys.exit(2)
         print(
-            "DSpark: enabled via --speculative-config, "
-            f"max_k={requested_k}, checkpoint_k={metadata.block_size}"
+            (
+                "DSpark: enabled via --speculative-config, "
+                if getattr(args, "_speculative_config_explicit", False)
+                else "DSpark: enabled automatically for this model, "
+            )
+            + f"max_k={requested_k}, checkpoint_k={metadata.block_size}"
         )
     # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
     # config-only entrypoint is ``--speculative-config '{"method":"mtp"}'``.
