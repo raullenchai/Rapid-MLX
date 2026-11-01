@@ -212,11 +212,11 @@ final class DownloadManager {
     private let cancellationTracker = DownloadCancellationTracker()
     private var stdoutPipes: [String: Pipe] = [:]
     private var stderrPipes: [String: Pipe] = [:]
-    /// Most recent stderr lines per alias. Bounded so a chatty pull
+    /// Most recent non-progress output lines from both streams per alias. Bounded so a chatty pull
     /// can't blow memory on cancel. Used to compose ``.failed``'s
     /// human message.
     private var stderrTails: [String: [String]] = [:]
-    private let stderrTailCapacity: Int = 12
+    private let stderrTailCapacity: Int = 32
     nonisolated private static let maxOutputChunkBytes = 64 * 1024
     nonisolated private static let maxOutputLineBytes = 8 * 1024
     /// Two minutes without a progress tick or byte growth is long enough to
@@ -814,9 +814,9 @@ final class DownloadManager {
                 job.lastProgressAt = Date()
                 job.isStalled = false
             }
-            if isStderr && !consumed {
+            if !consumed {
                 var tail = stderrTails[alias] ?? []
-                // Scrub before storage — the stderr tail feeds the
+                // Scrub before storage — the output tail feeds the
                 // failure message surfaced in the UI; a leaked HF
                 // token in there ends up in a copy-pasted support
                 // ticket. Audit P1 (ServerManager stderr → log).
@@ -932,7 +932,7 @@ final class DownloadManager {
     }
 
     private func recordFailure(job: Job, alias: String, signal: Bool) {
-        // The child's stderr tail can carry engine internals (the
+        // The child's output tail can carry engine internals (the
         // "rapid-mlx" name, HTTP codes, Python stack frames). Log it
         // for support, but NEVER surface it to the user — they get a
         // plain, actionable message instead.
@@ -969,6 +969,9 @@ final class DownloadManager {
         if value.contains("no space left on device") || value.contains("insufficient disk")
             || value.contains("not enough disk space") {
             return "There isn't enough disk space for this model. Free space, then retry to resume."
+        }
+        if value.contains("not found on huggingface") {
+            return "This model wasn't found on Hugging Face. Check the model name, then try again."
         }
         if value.contains("gated") || value.contains("hf auth login")
             || (source == .huggingFace && FailureDiagnoser.hasDownloadAuthSignal(value)) {
@@ -1255,11 +1258,11 @@ final class DownloadManager {
         return job
     }
 
-    /// Test-only: feed a stderr line to the manager exactly the way
+    /// Test-only: feed an output line to the manager exactly the way
     /// the readability handler would, but synchronously and without
     /// a backing process.
-    internal func _testingIngestStderr(alias: String, line: String) {
-        ingestLines(alias: alias, lines: [line], isStderr: true)
+    internal func _testingIngestStderr(alias: String, line: String, isStderr: Bool = true) {
+        ingestLines(alias: alias, lines: [line], isStderr: isStderr)
     }
 
     /// Test-only: drive the exit branch to one of the terminal
