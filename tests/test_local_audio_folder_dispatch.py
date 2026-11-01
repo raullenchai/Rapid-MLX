@@ -111,6 +111,59 @@ def test_collision_transcription(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("served_tts", [False, True], ids=["hub-stt", "local-tts"])
+def test_transcription_served_alias_requires_local_stt(
+    tmp_path, monkeypatch, served_tts
+):
+    from rapid_mlx.audio import probe
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio
+
+    if served_tts:
+        model = "served-speech"
+        folder = local(tmp_path, monkeypatch, "speech-local", {"model_type": "kokoro"})
+        entry = configure(folder, monkeypatch, model)
+        assert entry.type == "tts"
+    else:
+        model = "whisper-base"
+        repo = audio.STT_MODEL_ALIASES[model]
+        monkeypatch.setattr(registry, "_LOCAL_AUDIO_ENTRIES", {})
+        cfg = get_config()
+        for key, value in {
+            "model_alias": model,
+            "model_name": repo,
+            "model_path": repo,
+            "api_key": None,
+        }.items():
+            monkeypatch.setattr(cfg, key, value)
+        entry = registry.resolve_audio_alias(repo)
+        assert entry.type == "stt" and entry.notes != "local folder"
+
+    monkeypatch.setattr(probe, "require_mlx_audio_stt", lambda: None)
+    seen = []
+
+    async def run(*, model, **kwargs):
+        seen.append(audio._resolve_stt_model(model))
+        return {"text": "hi"}
+
+    monkeypatch.setattr(audio, "_run_stt_request", run)
+    app = FastAPI()
+    app.include_router(audio.router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": model},
+            files={"file": ("tone.wav", b"audio", "audio/wav")},
+        )
+    if served_tts:
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"]["error"]["code"] == "model_not_found"
+        assert seen == []
+    else:
+        assert response.status_code == 200, response.text
+        assert seen == [repo]
+
+
 @pytest.mark.parametrize(
     ("config", "clone", "expected"),
     [
