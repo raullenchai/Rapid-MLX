@@ -172,6 +172,12 @@ class TestAlignGuards:
 
 
 class TestAlignSegmentShaping:
+    @pytest.fixture(autouse=True)
+    def _stub_decoded_duration(self, monkeypatch):
+        monkeypatch.setattr(
+            "rapid_mlx.audio.stt._decoded_audio_duration", lambda _path: None
+        )
+
     def test_segments_are_per_unit_dicts(self):
         items = [
             _FakeAlignItem("你", 0.0, 0.5),

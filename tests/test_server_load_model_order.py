@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("isolated_server_model_state")
+
 
 class _StubEngine:
     """Minimal stand-in for `BatchedEngine` — only the surface `load_model`

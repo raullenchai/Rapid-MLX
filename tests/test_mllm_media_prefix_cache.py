@@ -2152,6 +2152,49 @@ def probe():
         gen._media_mrope_restore()
         assert gen._media_mrope_saved is None
 
+    @pytest.mark.parametrize("clone_fails", [True, False])
+    def test_chunked_resume_failed_clone_or_stale_generation(
+        self, monkeypatch, clone_fails
+    ):
+        import rapid_mlx.mllm_batch_generator as module
+
+        gen = _stub_generator()
+        request = _make_request(pixel_values=mx.zeros((1, 2)))
+        ids = _ids(_full_ids())
+        cache = _kv_leaves()
+        original_cache = list(cache)
+        kwargs = {"pixel_values": request.pixel_values}
+        entry = SimpleNamespace(leaves=[], rope_delta=mx.array([1]))
+        generation = getattr(gen, "_media_store_generation", 0) + 1
+        monkeypatch.setattr(
+            gen,
+            "_media_boundary_plan",
+            lambda *_args: ("resume", entry, 64, generation, "key"),
+        )
+        monkeypatch.setattr(
+            module,
+            "_media_clone_leaves",
+            lambda *_args, **_kwargs: None if clone_fails else [],
+        )
+        calls = []
+        sentinel = object()
+
+        def prefill(*args):
+            calls.append(args)
+            yield
+            return sentinel
+
+        monkeypatch.setattr(gen, "_chunked_media_lm_prefill_steps", prefill)
+        misses = gen._media_boundary_misses
+        assert gen._media_forward(request, ids, cache, kwargs, chunked=True) is sentinel
+        assert len(calls) == 1
+        assert all(
+            actual is expected
+            for actual, expected in zip(calls[0], (ids, cache, kwargs))
+        )
+        assert cache == original_cache
+        assert gen._media_boundary_misses == misses + 1
+
     def test_resume_clone_and_split_fail_closed(self, monkeypatch):
         import rapid_mlx.mllm_batch_generator as module
 

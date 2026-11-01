@@ -534,14 +534,8 @@ def _effective_replace_group(
     return derived if derived in _SINGLE_SLOT_MEDIA_GROUPS else None
 
 
-def estimate_model_bytes(model_name: str) -> int:
-    """Conservative fallback charge when the caller has no catalog estimate.
-
-    This mirrors the desktop's weight + runtime + KV shape closely enough for
-    admission, without pretending it is an allocator measurement. Callers that
-    know the downloaded size should pass ``estimated_bytes`` to ``load``.
-    """
-
+def measured_image_estimate_bytes(model_name: str) -> int | None:
+    """Return the known image admission charge, if one matches."""
     folded = model_name.casefold()
     if folded == "qwen-image":
         # The bare alias serves the same full-q4 Qwen Image 2.1 checkpoint as
@@ -617,7 +611,16 @@ def estimate_model_bytes(model_name: str) -> int:
         if token not in folded:
             continue
         return int(gib * _GIB)
+    return None
 
+
+def estimate_model_bytes(model_name: str) -> int:
+    """Return a conservative admission charge, falling back to model heuristics."""
+    measured = measured_image_estimate_bytes(model_name)
+    if measured is not None:
+        return measured
+
+    folded = model_name.casefold()
     params = [float(value) for value in _PARAM_RE.findall(folded)]
     if not params:
         return 4 * _GIB

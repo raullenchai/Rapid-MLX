@@ -99,6 +99,34 @@ def test_generation_cache_limit_stays_bounded_until_last_context_exits(monkeypat
     assert clears == [True]
 
 
+def test_bounded_cache_limit_ignores_initial_set_failure(monkeypatch):
+    from rapid_mlx import _mlx_cache_limit
+
+    calls = []
+
+    def fail_set_cache_limit(limit):
+        calls.append(limit)
+        raise RuntimeError("set cache limit failed")
+
+    mx = ModuleType("mlx.core")
+    mx.set_cache_limit = fail_set_cache_limit
+    mlx = ModuleType("mlx")
+    mlx.core = mx
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+
+    with _mlx_cache_limit.bounded_cache_limit(1024**3):
+        pass
+
+    assert calls == [0]
+    assert _mlx_cache_limit._bound is None
+    assert _mlx_cache_limit._bound_depth == 0
+
+    mx.set_cache_limit = lambda limit: calls.append(limit) or 7
+    assert _mlx_cache_limit.request_cache_limit(2 * 1024**3) == 7
+    assert calls[-1] == 2 * 1024**3
+
+
 def test_generation_cache_restores_limit_when_bound_fails(monkeypatch):
     from rapid_mlx.image.engine import _bounded_generation_cache
 
@@ -207,7 +235,9 @@ def test_generation_cache_ignores_restore_failure(monkeypatch):
         pass
 
     assert limits == [0, 1024**3, original]
-    assert engine._GENERATION_CACHE_PREVIOUS is None
+    from rapid_mlx import _mlx_cache_limit
+
+    assert _mlx_cache_limit._entry_limit is None
     assert engine._GENERATION_CACHE_DEPTH == 0
 
 
@@ -232,3 +262,48 @@ def test_generation_cache_ignores_clear_failure(monkeypatch):
         pass
 
     assert calls == [True]
+
+
+@pytest.mark.parametrize("nested_request", [False, True])
+def test_managed_cache_requests_respect_generation_bound(monkeypatch, nested_request):
+    from pathlib import Path
+
+    from rapid_mlx._mlx_cache_limit import request_cache_limit
+    from rapid_mlx.image.engine import _bounded_generation_cache
+
+    current = 4 * 1024**3
+    clears = []
+
+    def set_cache_limit(limit):
+        nonlocal current
+        previous = current
+        current = limit
+        return previous
+
+    mx = ModuleType("mlx.core")
+    mx.set_cache_limit = set_cache_limit
+    mx.clear_cache = lambda: clears.append(True)
+    mlx = ModuleType("mlx")
+    mlx.core = mx
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+
+    batched_source = (
+        Path(__file__).parents[1] / "rapid_mlx/engine/batched.py"
+    ).read_text()
+    assert "import request_cache_limit" in batched_source
+    assert "request_cache_limit(cache_limit)" in batched_source
+    assert request_cache_limit(5 * 1024**3) == 4 * 1024**3
+    assert current == 5 * 1024**3
+    assert request_cache_limit(4 * 1024**3) == 5 * 1024**3
+    with _bounded_generation_cache():
+        assert request_cache_limit(3 * 1024**3) == 4 * 1024**3
+        assert current == 1024**3
+        if nested_request:
+            with _bounded_generation_cache():
+                assert request_cache_limit(2 * 1024**3) == 3 * 1024**3
+                assert current == 1024**3
+        assert current == 1024**3
+        assert clears == []
+    assert current == (2 if nested_request else 3) * 1024**3
+    assert clears == [True]

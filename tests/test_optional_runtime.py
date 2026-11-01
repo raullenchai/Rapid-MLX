@@ -66,6 +66,7 @@ import sys
 import types
 
 from rapid_mlx import cli
+from rapid_mlx.byom import preflight as _byom_preflight
 from rapid_mlx.telemetry import build_gate
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 
@@ -106,6 +107,7 @@ build_gate.official_build = lambda: ReleaseStamp(
 )
 cli._port_preflight_or_die = lambda *_args, **_kwargs: None
 cli._check_alias_min_memory = lambda *_args, **_kwargs: None
+_byom_preflight._check_catalog_memory_fit = lambda *_args, **_kwargs: None
 cli._check_disk_space = lambda *_args, **_kwargs: None
 cli._check_memory_capacity = lambda *_args, **_kwargs: None
 cli._ensure_model_downloaded = lambda *_args, **_kwargs: None

@@ -332,7 +332,7 @@ struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable
         case tooLarge, tooManyPixels, unsupportedType, animatedGIF
         var errorDescription: String? {
             switch self {
-            case .tooLarge: return "Images must be 20 MB or smaller."
+            case .tooLarge: return "Images must be \(DownloadProgress.formatBytes(Int64(ChatImageAttachment.maxBytes))) or smaller."
             case .tooManyPixels: return "Images must be 64 megapixels or smaller."
             case .unsupportedType: return "Choose a supported still image."
             case .animatedGIF: return "Animated GIFs aren't supported."

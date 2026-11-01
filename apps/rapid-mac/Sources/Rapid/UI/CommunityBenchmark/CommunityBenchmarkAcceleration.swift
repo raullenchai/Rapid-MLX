@@ -12,7 +12,8 @@ enum CommunityBenchmarkAcceleration {
         if let kind = language.runtime?.kind {
             let name = ["native_mtp": "native MTP", "dflash": "DFlash", "companion_dspark": "DSpark"][kind] ?? kind
             let algorithm = language.runtime?.algorithm.map { " \($0)" } ?? ""
-            parts.append("\(name)\(algorithm)\(draft) (dedicated runtime)")
+            let externalDraft = spec?.method == "mtp" && spec?.assistantSource == "external_model" ? ", external draft" : ""
+            parts.append("\(name)\(algorithm)\(draft) (dedicated runtime\(externalDraft))")
         } else if let method = spec?.method, method != "none" {
             let name = method == "mtp" ? "MTP" : method
             let suffix = method == "mtp" && spec?.assistantSource == "external_model" ? " (external draft)" : ""

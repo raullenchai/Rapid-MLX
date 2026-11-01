@@ -70,7 +70,7 @@ private func streamCappedData(
             throw NSError(
                 domain: "RapidWebSearch",
                 code: 413,
-                userInfo: [NSLocalizedDescriptionKey: "response exceeded \(byteCap / 1024) KB cap"]
+                userInfo: [NSLocalizedDescriptionKey: "response exceeded \(DownloadProgress.formatBytes(Int64(byteCap))) cap"]
             )
         }
         data.append(byte)
