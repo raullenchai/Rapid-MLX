@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 if TYPE_CHECKING:
     from rapid_mlx.speculative.serial_benchmark import SerialRuntimeHandle
 
+from rapid_mlx._download_cancel import run_cancellable_download
 from rapid_mlx._env import env_truthy
 from rapid_mlx.cli_parser import (  # noqa: F401 - re-exported CLI API
     _add_pflash_args,
@@ -3029,11 +3030,14 @@ def _ensure_model_downloaded(
         # to the normal HuggingFace download below.
         mirror_out: dict[str, object] = {}
         try:
-            mirror_ok = _try_mirror_prefetch(
-                model_name,
-                on_pull_start=spinner.stop,
-                out=mirror_out,
-                revision=pinned_revision,
+            mirror_ok = run_cancellable_download(
+                lambda: _try_mirror_prefetch(
+                    model_name,
+                    on_pull_start=spinner.stop,
+                    out=mirror_out,
+                    revision=pinned_revision,
+                ),
+                retry_hint="  Run the same command again to continue.",
             )
         except Exception as exc:
             from rapid_mlx.telemetry.model_events import emit_model_pull_failed
@@ -3169,8 +3173,11 @@ def _ensure_model_downloaded(
         download_kwargs: dict[str, object] = {"revision": download_revision}
         if allow_patterns:
             download_kwargs["allow_patterns"] = allow_patterns
-        snapshot_dir = _retry_hub_download(
-            lambda: snapshot_download(model_name, **download_kwargs), model_name
+        snapshot_dir = run_cancellable_download(
+            lambda: _retry_hub_download(
+                lambda: snapshot_download(model_name, **download_kwargs), model_name
+            ),
+            retry_hint="  Run the same command again to continue.",
         )
         after = _model_pull_blob_identifier(model_name)
         if download_revision and catalog_revision is None:
@@ -12119,17 +12126,21 @@ def _pull_repository(
         # A pinned revision goes through the mirror too: the mirror accepts a
         # file for an exact commit only when its bytes are proven identical
         # to that commit, and falls back to HF per file otherwise.
-        mirror_ok = (
-            _try_mirror_prefetch(
-                repo_id,
-                allow_patterns=variant_allow,
-                out=_mirror_out,
-                revision=revision_override,
-            )
-            if revision_override
-            else _try_mirror_prefetch(
-                repo_id, allow_patterns=variant_allow, out=_mirror_out
-            )
+        mirror_ok = run_cancellable_download(
+            lambda: (
+                _try_mirror_prefetch(
+                    repo_id,
+                    allow_patterns=variant_allow,
+                    out=_mirror_out,
+                    revision=revision_override,
+                )
+                if revision_override
+                else _try_mirror_prefetch(
+                    repo_id, allow_patterns=variant_allow, out=_mirror_out
+                )
+            ),
+            retry_hint="  Retry: "
+            + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
         )
     except Exception as exc:
         from rapid_mlx._mirror import MirrorOnlyPullError
@@ -12295,8 +12306,12 @@ def _pull_repository(
         )
         if _allow:
             download_kwargs["allow_patterns"] = _allow
-        path = _retry_hub_download(
-            lambda: snapshot_download(repo_id, **download_kwargs), repo_id
+        path = run_cancellable_download(
+            lambda: _retry_hub_download(
+                lambda: snapshot_download(repo_id, **download_kwargs), repo_id
+            ),
+            retry_hint="  Retry: "
+            + (getattr(args, "_pull_retry_command", None) or _pull_retry_command(args)),
         )
         verify_snapshot(
             repo_id,
@@ -16893,7 +16908,7 @@ def main():
                 _short = args.model.split("/")[-1]
                 with _StatusSpinner(f"Resolving {_short} …"):
                     _size = estimate_download_size_bytes(args.model)
-                confirm_or_abort(args.model, _size)
+                confirm_or_abort(args.model, _size, suggest_pull=args.command != "pull")
     # --- END B2 --------------------------------------------------------
 
     if args.command == "system-one":
