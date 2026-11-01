@@ -21,8 +21,8 @@ enum ImageReadinessPresentation {
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
             details.append("≥\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30)))) RAM")
         }
-        details.append("512² default")
-        details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")
+        details.append(String(localized: "512² default"))
+        details.append(String(localized: "\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps"))
         if let runtime = runtimeName(entry.runtimeAdapter) { details.append(runtime) }
         return ([ModelDisplayName.name(for: entry.alias)] + details).joined(separator: " · ")
     }
@@ -192,13 +192,13 @@ struct ImagesView: View {
     /// composer's aspect and resolution pickers, which own these values.
     private var emptyStage: some View {
         EmptyState(
-            title: "Draw anything",
+            title: String(localized: "Draw anything"),
             message: readiness.isReady
-                ? "Describe what you want to see, then press Generate."
-                : "Create images locally, then keep generating offline.",
+                ? String(localized: "Describe what you want to see, then press Generate.")
+                : String(localized: "Create images locally, then keep generating offline."),
             hint: readiness.isReady
                 ? nil
-                : "Pick a starter below while Rapid gets the model ready.",
+                : String(localized: "Pick a starter below while Rapid gets the model ready."),
             markDiameter: aspectPreviewSize.height,
             marksOnBackplate: false,
             mark: { aspectPreview },
@@ -264,7 +264,7 @@ struct ImagesView: View {
         if server.isResidentLoadInFlight(viewModel.selectedAlias) {
             return .starting(
                 alias: viewModel.selectedAlias,
-                detail: "Downloading or loading the image model…"
+                detail: String(localized: "Downloading or loading the image model…")
             )
         }
         return ModelReadiness.resolve(
@@ -415,15 +415,15 @@ struct ImagesView: View {
                                         : 1
                                 )
                             Text(viewModel.cancelling
-                                 ? "Stopping…"
-                                 : (finalizing ? "Finalizing image…" : "Generating"))
+                                 ? String(localized: "Stopping…")
+                                 : (finalizing ? String(localized: "Finalizing image…") : String(localized: "Generating")))
                                 .font(.rapid(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
                         } else {
                             ProgressView().controlSize(.small)
                             Text(viewModel.cancelling
-                                 ? "Stopping…"
-                                 : "Warming up \(viewModel.selectedDisplayName)")
+                                 ? String(localized: "Stopping…")
+                                 : String(localized: "Warming up \(viewModel.selectedDisplayName)"))
                                 .font(.rapid(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
                                 .lineLimit(1).truncationMode(.middle)
@@ -464,10 +464,10 @@ struct ImagesView: View {
                             .monospacedDigit()
                         Spacer()
                         Text(finalizing
-                             ? "Decoding and saving…"
+                             ? String(localized: "Decoding and saving…")
                              : (denoising
                                 ? etaText(secondsRemaining: viewModel.denoiseETASeconds)
-                                : "First run — only happens once"))
+                                : String(localized: "First run — only happens once")))
                             .font(.rapid(size: 12, weight: .medium))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                             .accessibilityIdentifier("Images.Progress.ETA")
@@ -500,9 +500,9 @@ struct ImagesView: View {
 
     private func etaText(secondsRemaining: TimeInterval?) -> String {
         guard let secondsRemaining, secondsRemaining.isFinite, secondsRemaining > 0 else {
-            return "Estimating…"
+            return String(localized: "Estimating…")
         }
-        return "~\(max(1, Int(secondsRemaining.rounded())))s left"
+        return String(localized: "~\(max(1, Int(secondsRemaining.rounded())))s left")
     }
 
     // MARK: - Filmstrip
@@ -584,8 +584,8 @@ struct ImagesView: View {
         // surface should not carry.)
         .accessibilityLabel(
             selected
-                ? "Image \(ordinal), \(image.prompt), selected"
-                : "Image \(ordinal), \(image.prompt)"
+                ? String(localized: "Image \(ordinal), \(image.prompt), selected")
+                : String(localized: "Image \(ordinal), \(image.prompt)")
         )
     }
 
@@ -694,8 +694,8 @@ struct ImagesView: View {
     private var composerPlaceholder: String {
         guard readiness.isReady else { return readiness.composerPlaceholder }
         return viewModel.isEditing
-            ? "Describe what you want to change…"
-            : "Describe the image you want…"
+            ? String(localized: "Describe what you want to change…")
+            : String(localized: "Describe the image you want…")
     }
 
     private func editSourceBar(_ source: GeneratedImage) -> some View {
@@ -743,8 +743,8 @@ struct ImagesView: View {
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isGenerating)
-        .help(viewModel.isEditing ? "Replace source image" : "Import image to edit")
-        .accessibilityLabel(viewModel.isEditing ? "Replace source image" : "Import image to edit")
+        .help(viewModel.isEditing ? String(localized: "Replace source image") : String(localized: "Import image to edit"))
+        .accessibilityLabel(viewModel.isEditing ? String(localized: "Replace source image") : String(localized: "Import image to edit"))
         .accessibilityIdentifier("Images.Edit.Import")
     }
 
@@ -859,8 +859,8 @@ struct ImagesView: View {
         Menu {
             if viewModel.selectableModels.isEmpty {
                 Text(viewModel.catalogLoaded
-                     ? (viewModel.isEditing ? "No image editing models available" : "No image generation models available")
-                     : "Loading…")
+                     ? (viewModel.isEditing ? String(localized: "No image editing models available") : String(localized: "No image generation models available"))
+                     : String(localized: "Loading…"))
             } else {
                 ForEach(viewModel.selectableModels) { entry in
                     Button {
@@ -920,11 +920,11 @@ struct ImagesView: View {
     }
 
     private var selectedModelHelp: String {
-        guard !viewModel.selectedAlias.isEmpty else { return "Choose a model" }
+        guard !viewModel.selectedAlias.isEmpty else { return String(localized: "Choose a model") }
         guard let entry = viewModel.imageModels.first(where: {
             $0.alias == viewModel.selectedAlias
-        }) else { return "Model: \(viewModel.selectedAlias)" }
-        return "Model: \(ImageReadinessPresentation.rowTitle(entry))"
+        }) else { return String(localized: "Model: \(viewModel.selectedAlias)") }
+        return String(localized: "Model: \(ImageReadinessPresentation.rowTitle(entry))")
     }
 
     /// Submit / stop, styled exactly like ChatView's send button: an amber
@@ -959,16 +959,16 @@ struct ImagesView: View {
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
             .help(readiness.isReady
-                  ? (viewModel.isEditing ? "Edit image" : "Generate")
-                  : "Load the model first")
+                  ? (viewModel.isEditing ? String(localized: "Edit image") : String(localized: "Generate"))
+                  : String(localized: "Load the model first"))
             // `.help(_)` does not reach AXHelp on macOS 26 for this button
             // (it publishes an identifier but no accessibilityLabel), so mirror
             // the readiness tooltip into a hint — the only signal that
             // distinguishes "ready" from "load the model first" while the
             // button is disabled for an empty prompt on both.
             .accessibilityHint(readiness.isReady
-                               ? (viewModel.isEditing ? "Edit image" : "Generate")
-                               : "Load the model first")
+                               ? (viewModel.isEditing ? String(localized: "Edit image") : String(localized: "Generate"))
+                               : String(localized: "Load the model first"))
             .accessibilityIdentifier("Images.Generate")
         }
     }
@@ -995,7 +995,7 @@ struct ImagesView: View {
             try image.pngData.write(to: url)
         } catch {
             // Don't let a disk-full / permission failure look like a success.
-            viewModel.errorMessage = "Couldn't save the image: \(error.localizedDescription)"
+            viewModel.errorMessage = String(localized: "Couldn't save the image: \(error.localizedDescription)")
         }
     }
 
@@ -1039,7 +1039,7 @@ struct ImagesView: View {
                     isEdit: false
                 ))
             } catch {
-                viewModel.errorMessage = "Couldn't import the image: \(error.localizedDescription)"
+                viewModel.errorMessage = String(localized: "Couldn't import the image: \(error.localizedDescription)")
             }
         }
     }
@@ -1053,10 +1053,10 @@ enum ImportedEditImageError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .tooLarge: return "Choose an image smaller than \(DownloadProgress.formatBytes(Int64(ImageClient.maxEditImageBytes)))."
-        case .tooManyPixels: return "Choose an image no larger than 8192 px or 40 megapixels."
-        case .unsupportedType: return "Choose a PNG or JPEG image."
-        case .cannotDecode: return "The selected file isn't a readable image."
+        case .tooLarge: return String(localized: "Choose an image smaller than \(DownloadProgress.formatBytes(Int64(ImageClient.maxEditImageBytes))).")
+        case .tooManyPixels: return String(localized: "Choose an image no larger than 8192 px or 40 megapixels.")
+        case .unsupportedType: return String(localized: "Choose a PNG or JPEG image.")
+        case .cannotDecode: return String(localized: "The selected file isn't a readable image.")
         }
     }
 }

@@ -523,13 +523,18 @@ struct ShareComputeView: View {
 
         // A provider key that was rejected reopens the review rather than
         // leaving the user on a failure with no way forward.
-        if case .failed(let message) = current,
-           message.localizedCaseInsensitiveContains("provider key") {
+        if Self.shouldReopenConnectionReview(state: current, needsProviderKey: manager.failureNeedsProviderKey) {
             showingConnectionReview = true
         }
 
         guard previous.isActive, !current.isActive else { return }
         finishSession()
+    }
+
+    static func shouldReopenConnectionReview(state: ShareComputeManager.State, needsProviderKey: Bool) -> Bool {
+        guard case .failed(let message) = state else { return false }
+        // Engine snapshot messages still identify rejected keys in English.
+        return needsProviderKey || message.localizedCaseInsensitiveContains("provider key")
     }
 
     private func finishSession() {
