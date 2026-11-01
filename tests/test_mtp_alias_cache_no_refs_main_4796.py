@@ -174,6 +174,15 @@ def test_missing_pinned_config_explains_auto_mtp_skip(cache, monkeypatch, capsys
     )
     monkeypatch.setattr(model_aliases, "resolve_profile", lambda _: profile)
     args = _args(ALIAS)
+    before = dict(vars(args))
+    cli._normalize_speculative_config_or_exit(args)
+    assert args._auto_mtp_deferred is True
+    assert capsys.readouterr().err == ""
+    cli._restore_speculative_changes(
+        args, before, cli._speculative_changes(args, before)
+    )
+    args._auto_mtp_retry = True
+    args._auto_mtp_deferred = False
     cli._normalize_speculative_config_or_exit(args)
     assert args._speculative_config is None
     assert capsys.readouterr().err == (

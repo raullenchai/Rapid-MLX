@@ -1850,6 +1850,13 @@ def _resolve_cached_hf_config(
         return None, f"local cache for {repo_id} could not be inspected"
 
 
+def _cached_hf_config_is_absent(repo_id: str, reason: str) -> bool:
+    """Distinguish download-repairable absence from cache inspection failures."""
+    return reason.endswith("is not in the local cache") or reason.startswith(
+        f"local cache for {repo_id} has no config.json at "
+    )
+
+
 def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | None]:
     """Best-effort collect the inputs ``resolve_kv_cache_dtype`` consumes.
 
@@ -3994,9 +4001,9 @@ def _normalize_speculative_config_or_exit(args):
                     )
                     _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
                     reason = reason or "cached target config could not be read"
-                    if not getattr(args, "_auto_mtp_retry", False) and reason.endswith(
-                        "is not in the local cache"
-                    ):
+                    if not getattr(
+                        args, "_auto_mtp_retry", False
+                    ) and _cached_hf_config_is_absent(profile.hf_path, reason):
                         args._auto_mtp_deferred = True
                         reason = None
                 else:
@@ -4029,11 +4036,19 @@ def _normalize_speculative_config_or_exit(args):
                         file=sys.stderr,
                     )
                 elif sidecar and cached_sidecar is None:
-                    print(
-                        f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
-                        f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
-                        file=sys.stderr,
-                    )
+                    profile = resolve_profile(_mtp_catalog_identity(args))
+                    if (
+                        not getattr(args, "_auto_mtp_retry", False)
+                        and sidecar == profile.hf_path
+                    ):
+                        # The upcoming target download also supplies its MTP head.
+                        args._auto_mtp_deferred = True
+                    else:
+                        print(
+                            f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
+                            f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
+                            file=sys.stderr,
+                        )
                 else:
                     raw_config = json.dumps({"method": "mtp", "model": cached_sidecar})
                     args.speculative_config = raw_config
