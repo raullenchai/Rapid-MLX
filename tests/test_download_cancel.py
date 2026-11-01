@@ -85,10 +85,12 @@ def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
+        # Pin the child's starting SIGINT disposition so the test does not
+        # depend on whether the runner itself ignores SIGINT.
         preexec_fn=(
             (lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
             if mode == "serve-sigint-ignored"
-            else None
+            else (lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
         ),
     )
     try:
