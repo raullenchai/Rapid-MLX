@@ -17,9 +17,27 @@ can actually understand.
 
 ## [Unreleased]
 
-### Changed
+## [1.0.1] — 2026-11-01
 
-- The anonymous first-run funnel now says why a model download or the first engine start failed, as one cause from a fixed list (plus the download source). No error text, paths, or model names are sent. (#5401)
+Desktop improves speech models and dictation, download guidance, Community Benchmark, accessibility and Settings.
+
+### Desktop
+
+- **Speech to Text settings**: download other speech models in place, see full names and steadier progress, and start with the recommended model. Dictation continues when a download finishes mid-recording, and older `whisper-1` selections recheck readiness. ([#5374](https://github.com/raullenchai/Rapid-MLX/pull/5374), [#5377](https://github.com/raullenchai/Rapid-MLX/pull/5377), [#5412](https://github.com/raullenchai/Rapid-MLX/pull/5412), [#5500](https://github.com/raullenchai/Rapid-MLX/pull/5500))
+- **Settings**: the “Release model when idle” row is no longer clipped, model search points to matches on other tabs, and model details and Settings show the live context window. ([#5374](https://github.com/raullenchai/Rapid-MLX/pull/5374), [#5495](https://github.com/raullenchai/Rapid-MLX/pull/5495), [#5501](https://github.com/raullenchai/Rapid-MLX/pull/5501))
+- **Consistent model sizes and names**: onboarding, model lists and Settings use system byte formatting, decimal size limits and catalog download totals. Each model has one friendly name and download size. ([#5433](https://github.com/raullenchai/Rapid-MLX/pull/5433), [#5466](https://github.com/raullenchai/Rapid-MLX/pull/5466), [#5501](https://github.com/raullenchai/Rapid-MLX/pull/5501))
+- **Clearer downloads**: failures explain the cause, unavailable sources offer “Switch source”, disk-space checks explain required headroom, and completion messages match the model type. Sizes reported during download use the correct decimal units. ([#5465](https://github.com/raullenchai/Rapid-MLX/pull/5465), [#5496](https://github.com/raullenchai/Rapid-MLX/pull/5496))
+- **Community Benchmark**: defaults to the current chat model, shows saved acceleration settings and external draft models, and displays a checking state while the runtime loads. It respects the CLI memory budget and uses consistent naming and complete Simplified Chinese translations. ([#5413](https://github.com/raullenchai/Rapid-MLX/pull/5413), [#5440](https://github.com/raullenchai/Rapid-MLX/pull/5440), [#5499](https://github.com/raullenchai/Rapid-MLX/pull/5499), [#5490](https://github.com/raullenchai/Rapid-MLX/pull/5490))
+- **Share Compute**: Credits and other labels are translated in Simplified Chinese; key status refreshes after a failed removal, and empty model selections are repaired. ([#5371](https://github.com/raullenchai/Rapid-MLX/pull/5371), [#5493](https://github.com/raullenchai/Rapid-MLX/pull/5493), [#5501](https://github.com/raullenchai/Rapid-MLX/pull/5501))
+- **Accessibility**: VoiceOver reads the memory meter and dictation switch correctly; “Copy one-session command” appears only where supported, and Terminal guidance explains that commands run on this Mac. Long model titles wrap, and sidebar and Settings wording is clearer. ([#5416](https://github.com/raullenchai/Rapid-MLX/pull/5416), [#5494](https://github.com/raullenchai/Rapid-MLX/pull/5494), [#5500](https://github.com/raullenchai/Rapid-MLX/pull/5500))
+- **Simplified Chinese**: the Images tab, Share Compute, the chat window status bar, memory meter and readiness banner are fully translated. Models show their friendly names and one consistent size everywhere. ([#5514](https://github.com/raullenchai/Rapid-MLX/pull/5514), [#5517](https://github.com/raullenchai/Rapid-MLX/pull/5517), [#5515](https://github.com/raullenchai/Rapid-MLX/pull/5515))
+- **First run in Simplified Chinese**: onboarding steps, model choices, loading and completion screens are translated, and the Images model menu shows friendly names. ([#5522](https://github.com/raullenchai/Rapid-MLX/pull/5522))
+- **Agent page**: actions line up in one column across every agent, and each agent shows its own app icon when installed, or a tinted monogram. ([#5526](https://github.com/raullenchai/Rapid-MLX/pull/5526))
+- **Images**: every image model the engine supports has a friendly name in the picker, and generation progress uses the engine's default step count. ([#5525](https://github.com/raullenchai/Rapid-MLX/pull/5525))
+- Small-model tool reminders preserve the existing conversation prefix instead of rewriting it. ([#5495](https://github.com/raullenchai/Rapid-MLX/pull/5495))
+- The anonymous first-run funnel reports why a model download or first engine start failed, as one cause from a fixed list plus the download source. No error text, paths or model names are sent. ([#5404](https://github.com/raullenchai/Rapid-MLX/pull/5404))
+- **New speech models**: Granite Speech, FireRedASR2 and Nemotron ASR appear in Speech to Text. ([#5381](https://github.com/raullenchai/Rapid-MLX/pull/5381))
+- **Faster start from an external model folder**: Qwen3.8-27B models with a built-in MTP head no longer re-download their weights. ([#5396](https://github.com/raullenchai/Rapid-MLX/pull/5396))
 
 ## [1.0.0] — 2026-10-29
 
@@ -4544,7 +4562,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...HEAD
+[1.0.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...rapid-mac-v1.0.1
 [1.0.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v1.0.0
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
 [0.16.8]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.7...rapid-mac-v0.16.8
