@@ -872,6 +872,7 @@ private struct ConnectToolRow: View {
                 // users the same one-session command as a named action.
                 .accessibilityActions {
                     if tool.offersSessionCommand, let sessionSnippet = tool.sessionSnippet {
+                        // ax-exempt: accessibilityActions entries are named actions on the copy button, not separate controls
                         Button("Copy one-session command") {
                             guard isReady else { return }
                             copyToPasteboard(sessionSnippet)
