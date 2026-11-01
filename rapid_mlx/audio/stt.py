@@ -283,7 +283,11 @@ def _load_local_whisper_processor(transformers_module, source, revision_kwargs):
                 feature_extractor=feature_extractor, tokenizer=tokenizer
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug("%s", type(e).__name__)
+            logger.debug(
+                "Could not assemble WhisperProcessor from cached parts for %r: %s",
+                source,
+                type(e).__name__,
+            )
         else:
             logger.info(
                 "Assembled WhisperProcessor from the cached feature extractor "

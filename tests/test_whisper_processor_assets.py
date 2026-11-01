@@ -341,6 +341,41 @@ def test_offline_processor_uses_slow_tokenizer(monkeypatch, fast_available):
     ]
 
 
+def test_offline_processor_single_tokenizer_failure_stays_offline(monkeypatch):
+    calls = []
+
+    def load_part(name):
+        def load(source, **kwargs):
+            calls.append((name, source, kwargs))
+            if name in ("processor", "slow"):
+                raise OSError("cached part missing")
+            return object()
+
+        return SimpleNamespace(from_pretrained=load)
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            WhisperProcessor=load_part("processor"),
+            WhisperFeatureExtractor=load_part("extractor"),
+            WhisperTokenizer=load_part("slow"),
+        ),
+    )
+    engine = STTEngine("local-whisper")
+    engine.model = SimpleNamespace(
+        _processor=None, dims=SimpleNamespace(n_mels=80, n_vocab=51865)
+    )
+    engine._ensure_whisper_processor()
+
+    assert engine.model._processor is None
+    assert calls == [
+        (name, "openai/whisper-base", {"local_files_only": True})
+        for name in ("processor", "extractor", "slow")
+    ]
+
+
 @pytest.mark.parametrize(
     "failing_part",
     ["extractor", "slow"],
