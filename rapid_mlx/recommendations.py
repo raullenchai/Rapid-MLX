@@ -154,21 +154,28 @@ def recommendation_tier(
     return chosen
 
 
+def fitting_picks(
+    ram_gb: float, budget_gb: float, *, exclude: str | None = None
+) -> tuple[str, ...]:
+    """Return recommendations in tier order that fit the GPU budget."""
+    tiers = load_recommendation_tiers(validate_catalog=False)
+    current = recommendation_tier(ram_gb, validate_catalog=False)
+    return tuple(
+        pick.alias
+        for tier in reversed(tiers)
+        if tier.floor_gb <= current.floor_gb
+        for pick in tier.picks
+        if (exclude is None or pick.alias.casefold() != exclude.casefold())
+        and pick.footprint_gb <= budget_gb
+    )
+
+
 def fitting_pick(
     ram_gb: float, budget_gb: float, *, exclude: str | None = None
 ) -> str | None:
     """Return the first recommendation that fits the GPU budget."""
-    tiers = load_recommendation_tiers(validate_catalog=False)
-    current = recommendation_tier(ram_gb, validate_catalog=False)
-    for tier in reversed(tiers):
-        if tier.floor_gb > current.floor_gb:
-            continue
-        for pick in tier.picks:
-            if (exclude is None or pick.alias.casefold() != exclude.casefold()) and (
-                pick.footprint_gb <= budget_gb
-            ):
-                return pick.alias
-    return None
+    picks = fitting_picks(ram_gb, budget_gb, exclude=exclude)
+    return picks[0] if picks else None
 
 
 def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) -> str:

@@ -134,7 +134,7 @@ def test_bonsai_alias_and_repo_are_refused_identically(monkeypatch):
 
 def test_refuses_when_fitting_pick_fails(monkeypatch, capsys):
     with (
-        patch("rapid_mlx.recommendations.fitting_pick", side_effect=RuntimeError),
+        patch("rapid_mlx.recommendations.fitting_picks", side_effect=RuntimeError),
         pytest.raises(SystemExit) as exc,
     ):
         run("qwen3.8-27b-4bit", 24, monkeypatch)
@@ -234,6 +234,115 @@ def test_same_task_pick_prefers_cache_disk_and_small_download(
             <= 15.2e9
         )
     disk_probe.assert_called_once_with()
+
+
+@pytest.mark.parametrize("recommended", [None, 25 * GIB])
+def test_cached_fitting_text_model_wins(monkeypatch, recommended):
+    repo = resolve_profile("gemma-4-26b-4bit").hf_path
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda path: path == repo)
+    disk_probe = Mock(return_value=14.9)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", disk_probe)
+    assert preflight._same_task_fitting_pick(
+        "gemma-4-31b-8bit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=recommended,
+    ) == ("gemma-4-26b-4bit", "text")
+    disk_probe.assert_called_once_with()
+
+
+@pytest.mark.parametrize("free_gb", [14.9, 1000.0, 0.5])
+def test_text_pick_prefers_disk_then_recommendation_order(monkeypatch, free_gb):
+    from rapid_mlx.catalog.legacy import _main_capabilities
+    from rapid_mlx.cli import _DOWNLOAD_DISK_HEADROOM
+    from rapid_mlx.model_sizes import size_bytes
+
+    alias = "gemma-4-31b-8bit"
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: False)
+    disk_probe = Mock(return_value=free_gb)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", disk_probe)
+    pick, label = preflight._same_task_fitting_pick(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=25 * GIB
+    )
+    assert label == "text"
+    if free_gb == 14.9:
+        assert pick != "qwen3.8-27b-4bit"
+        profile = resolve_profile(pick)
+        assert size_bytes(profile.hf_path) * (1 + _DOWNLOAD_DISK_HEADROOM) <= 14.9e9
+        assert "image_understanding" in _main_capabilities(profile)["operation_modes"]
+    else:
+        # Nothing cached and nothing fits disk (0.5 GB) falls back to today's
+        # pick; sub-GB speculative drafters are never suggested as chat models.
+        assert pick == fitting_pick(32, 25, exclude=alias)
+    disk_probe.assert_called_once_with()
+
+
+@pytest.mark.parametrize("free_gb", [0.5, 1000.0, None])
+def test_text_refusal_reports_download_disk_shortfall(monkeypatch, capsys, free_gb):
+    from rapid_mlx.cli import _DOWNLOAD_DISK_HEADROOM
+    from rapid_mlx.model_sizes import size_bytes
+
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: False)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: free_gb)
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 25 * GIB
+    )
+    with pytest.raises(SystemExit):
+        run("gemma-4-31b-8bit", 32, monkeypatch)
+    output = capsys.readouterr().err
+    if free_gb == 0.5:
+        pick = fitting_pick(32, 25, exclude="gemma-4-31b-8bit")
+        required = size_bytes(resolve_profile(pick).hf_path) * (
+            1 + _DOWNLOAD_DISK_HEADROOM
+        )
+        suggestion = f"  A model that fits this Mac: rapid-mlx serve {pick}"
+        assert (
+            suggestion
+            + f"\n  It is not downloaded yet and needs ~{required / 1e9:.1f} "
+            "GB of free disk; 0.5 GB is free."
+        ) in output
+    else:
+        assert "It is not downloaded yet" not in output
+
+
+@pytest.mark.parametrize("state", ["cached", "unknown-size", "probe-error", "image"])
+def test_refusal_download_hint_uses_shared_disk_status(monkeypatch, capsys, state):
+    pick = "flux2-klein-4b"
+    repo = resolve_profile(pick).hf_path
+    monkeypatch.setattr(
+        preflight, "_same_task_fitting_pick", lambda *a, **kw: (pick, "image")
+    )
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 0.5)
+    monkeypatch.setattr(
+        "rapid_mlx.cli._cache_runnability",
+        lambda path: state == "cached" and path == repo,
+    )
+    if state == "unknown-size":
+        from rapid_mlx.model_sizes import size_bytes
+
+        monkeypatch.setattr(
+            "rapid_mlx.model_sizes.size_bytes",
+            lambda path: None if path == repo else size_bytes(path),
+        )
+    elif state == "probe-error":
+        monkeypatch.setattr(
+            "rapid_mlx.cli._recipe_free_disk_gb", Mock(side_effect=OSError)
+        )
+    with pytest.raises(SystemExit) as exc:
+        run("qwen-image-edit", 32, monkeypatch)
+    assert exc.value.code == 1
+    output = capsys.readouterr().err
+    assert ("It is not downloaded yet" in output) == (state == "image")
+
+
+@pytest.mark.parametrize("missing", ["ram", "budget"])
+def test_text_pick_without_memory_details(monkeypatch, missing):
+    if missing == "budget":
+        monkeypatch.setattr(preflight, "_working_set_budget", lambda *a: None)
+    assert preflight._same_task_fitting_pick(
+        "gemma-4-31b-8bit",
+        ram_bytes=None if missing == "ram" else 32 * GIB,
+        recommended_working_set_bytes=None,
+    ) == (None, "text")
 
 
 def test_same_task_pick_treats_cache_probe_fault_as_uncached(monkeypatch):

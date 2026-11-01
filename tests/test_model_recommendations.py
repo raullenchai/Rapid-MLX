@@ -463,3 +463,21 @@ def test_recipe_inaccessible_cache_path_is_unknown(monkeypatch) -> None:
 
     monkeypatch.setattr(Path, "exists", fail_exists)
     assert cli._recipe_free_disk_gb() is None
+
+
+@pytest.mark.parametrize("ram, budget", [(8, 100), (32, 25), (32, 3), (32, 0)])
+def test_fitting_picks_preserves_tier_order_and_filters(ram, budget):
+    tiers = load_recommendation_tiers(validate_catalog=False)
+    current = recommendation_tier(ram, validate_catalog=False)
+    exclude = current.picks[0].alias.upper()
+    expected = tuple(
+        pick.alias
+        for tier in reversed(tiers)
+        if tier.floor_gb <= current.floor_gb
+        for pick in tier.picks
+        if pick.alias.upper() != exclude and pick.footprint_gb <= budget
+    )
+    assert recommendations.fitting_picks(ram, budget, exclude=exclude) == expected
+    assert recommendations.fitting_pick(ram, budget, exclude=exclude) == (
+        expected[0] if expected else None
+    )

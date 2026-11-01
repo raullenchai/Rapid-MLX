@@ -1067,6 +1067,26 @@ def catalog_memory_refusal(
         return None
 
 
+def _candidate_disk_fit(
+    hf_path: str, free_gb: float | None
+) -> tuple[bool, bool, int | None]:
+    """Return cache status, download disk fit, and known download size."""
+    import rapid_mlx.cli as cli_mod
+    from rapid_mlx.model_sizes import size_bytes
+
+    try:
+        cached = cli_mod._cache_runnability(hf_path) is True
+    except Exception:
+        cached = False
+    size = size_bytes(hf_path)
+    disk_fit = cached or (
+        free_gb is not None
+        and size is not None
+        and free_gb * 1e9 >= size * (1 + cli_mod._DOWNLOAD_DISK_HEADROOM)
+    )
+    return cached, disk_fit, size
+
+
 def _same_task_fitting_pick(
     alias: str,
     *,
@@ -1076,16 +1096,21 @@ def _same_task_fitting_pick(
     """Suggest an admitted catalog model for the refused model's primary task.
 
     Memory-fitting candidates rank by: supports the refused model's operations,
-    already cached, fits free disk (download gate headroom), smallest download.
+    already cached, fits free disk, then smallest download. Plain text preserves
+    recommendation order before download size and falls back when disk is full.
     """
     try:
+        from rapid_mlx.api.utils import (
+            DESKTOP_HIDDEN_BROKEN_ALIASES,
+            _is_sidecar_drafter,
+        )
         from rapid_mlx.catalog.legacy import _main_capabilities
         from rapid_mlx.model_aliases import (
             draft_only_conflict,
             list_builtin_aliases,
             resolve_profile,
         )
-        from rapid_mlx.recommendations import fitting_pick
+        from rapid_mlx.recommendations import fitting_pick, fitting_picks
 
         profile = resolve_profile(alias)
         if profile is None:
@@ -1096,26 +1121,26 @@ def _same_task_fitting_pick(
         adapter = caps["runtime_adapter"]
         text_diffusion = adapter == "rapid_mlx/text_diffusion"
         budget = _working_set_budget(ram_bytes, recommended_working_set_bytes)
-        if task == "text_generation" and not text_diffusion:
-            return (
-                fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias)
-                if ram_bytes and budget
-                else None,
-                "text",
-            )
+        plain_text = task == "text_generation" and not text_diffusion
+        if plain_text and not (ram_bytes and budget):
+            return None, "text"
+        rec_ranks = {}
+        if plain_text:
+            for rank, pick in enumerate(
+                fitting_picks(ram_bytes / _GIB, budget / _GIB, exclude=alias)
+            ):
+                rec_ranks.setdefault(pick, rank)
 
         label = task.replace("_", " ")
         if task == "image_generation" and "text_to_image" not in ops:
             label = "image editing"
-        elif text_diffusion:
+        elif text_diffusion or plain_text:
             label = "text"
 
         import rapid_mlx.cli as cli_mod
-        from rapid_mlx.cli import _cache_runnability
-        from rapid_mlx.model_sizes import size_bytes
 
         free_gb = cli_mod._recipe_free_disk_gb()
-        candidates: list[tuple[bool, bool, bool, float, str]] = []
+        candidates: list[tuple[bool, bool, bool, int, float, str]] = []
         for candidate in sorted(list_builtin_aliases()):
             candidate_profile = resolve_profile(candidate)
             if (
@@ -1127,8 +1152,17 @@ def _same_task_fitting_pick(
             ):
                 continue
             candidate_caps = _main_capabilities(candidate_profile)
-            if candidate_caps["task_types"][0] != task or (
-                text_diffusion and candidate_caps["runtime_adapter"] != adapter
+            if (
+                candidate_caps["task_types"][0] != task
+                or (text_diffusion and candidate_caps["runtime_adapter"] != adapter)
+                or (
+                    plain_text
+                    and (
+                        candidate_caps["runtime_adapter"] == "rapid_mlx/text_diffusion"
+                        or candidate in DESKTOP_HIDDEN_BROKEN_ALIASES
+                        or _is_sidecar_drafter(candidate_profile)
+                    )
+                )
             ):
                 continue
             if (
@@ -1147,29 +1181,25 @@ def _same_task_fitting_pick(
                 recommended_working_set_bytes=recommended_working_set_bytes,
             )
             if fit.fits is True:
-                try:
-                    cached = _cache_runnability(candidate_profile.hf_path) is True
-                except Exception:
-                    cached = False
-                size = size_bytes(candidate_profile.hf_path)
-                disk_fit = cached or (
-                    free_gb is not None
-                    and size is not None
-                    and free_gb * 1e9 >= size * (1 + cli_mod._DOWNLOAD_DISK_HEADROOM)
+                cached, disk_fit, size = _candidate_disk_fit(
+                    candidate_profile.hf_path, free_gb
                 )
                 candidates.append(
                     (
                         not ops.issubset(candidate_caps["operation_modes"]),
                         not cached,
                         not disk_fit,
+                        rec_ranks.get(candidate, 1 << 30) if plain_text else 0,
                         size if size is not None else float("inf"),
                         candidate,
                     )
                 )
         if candidates:
             candidates.sort()
-            return candidates[0][4], label
-        if text_diffusion and ram_bytes and budget:
+            best = candidates[0]
+            if not plain_text or not best[1] or not best[2]:
+                return best[-1], label
+        if (plain_text or text_diffusion) and ram_bytes and budget:
             return fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias), label
         return None, label
     except Exception:
@@ -1232,6 +1262,29 @@ def _check_catalog_memory_fit(args: Any) -> None:
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
         print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
+        try:
+            import rapid_mlx.cli as cli_mod
+
+            pick_profile = resolve_profile(pick)
+            free_gb = cli_mod._recipe_free_disk_gb()
+            if pick_profile is not None:
+                cached, disk_fit, size = _candidate_disk_fit(
+                    pick_profile.hf_path, free_gb
+                )
+                if (
+                    not cached
+                    and not disk_fit
+                    and free_gb is not None
+                    and size is not None
+                ):
+                    required = size * (1 + cli_mod._DOWNLOAD_DISK_HEADROOM) / 1e9
+                    print(
+                        f"  It is not downloaded yet and needs ~{required:.1f} GB "
+                        f"of free disk; {free_gb:.1f} GB is free.",
+                        file=sys.stderr,
+                    )
+        except Exception:
+            pass
     elif label is not None and label != "text":
         print(f"  No {label} model in the catalog fits this Mac.", file=sys.stderr)
         print("  See every model and its size: rapid-mlx models", file=sys.stderr)
