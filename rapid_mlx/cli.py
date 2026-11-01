@@ -1195,11 +1195,9 @@ def _prepare_serve_audio_runtime_requirements(args, entry) -> None:
 
     if model_downloads.disabled():
         return
-    try:
-        from huggingface_hub import constants as hf_constants
-    except ImportError:
-        hf_constants = None
-    if getattr(hf_constants, "HF_HUB_OFFLINE", False):
+    from huggingface_hub import constants as hf_constants
+
+    if hf_constants.HF_HUB_OFFLINE:
         return
     if not runtime_requirements_for(entry.hf_id):
         return
