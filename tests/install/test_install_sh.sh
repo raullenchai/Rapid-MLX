@@ -294,6 +294,39 @@ check "ignores conflicting metadata in the current directory" \
     [ "$(cat "$WORK/isolated-spec")" = 'rapid-mlx[audio,chat]==1.0.0' ]
 ) && ok "reinstall ignores conflicting current-directory version" || bad "reinstall ignores conflicting current-directory version"
 check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I -I)"
+
+# Legacy metadata must preserve optional features through the migration rebuild.
+LEGACY_EXTRAS_VENV="$WORK/legacy-extras"; LEGACY_SITE="$WORK/legacy-site"
+mkdir -p "$LEGACY_EXTRAS_VENV/bin" "$LEGACY_SITE/vllm_mlx-0.12.0.dist-info"
+cat > "$LEGACY_EXTRAS_VENV/bin/python" <<EOF
+#!/bin/bash
+mode=()
+if [ "\$1" = -I ]; then mode=(-I); shift; fi
+exec "$REAL_PYTHON" "\${mode[@]}" -c 'import sys; sys.path.insert(1, sys.argv[1]); exec(sys.argv[2])' "$LEGACY_SITE" "\$2"
+EOF
+chmod +x "$LEGACY_EXTRAS_VENV/bin/python"
+cat > "$LEGACY_SITE/vllm_mlx-0.12.0.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: vllm-mlx
+Version: 0.12.0
+Requires-Dist: rmlx-fixture-mlx
+Requires-Dist: rmlx-fixture-gradio; extra == "chat"
+EOF
+for dist in mlx gradio; do
+    cp -R "$SITE/rmlx_fixture_${dist}-1.0.dist-info" "$LEGACY_SITE/"
+done
+LEGACY_PRESERVED_EXTRAS="$(installed_extras_of_venv "$LEGACY_EXTRAS_VENV")"
+check "detects chat from legacy distribution metadata" "$LEGACY_PRESERVED_EXTRAS" "chat"
+(
+    # The rebuilt environment has current distribution metadata.
+    cp -R "$SITE/rapid_mlx-1.0.0.dist-info" "$LEGACY_SITE/"
+    INSTALL_DIR="$LEGACY_EXTRAS_VENV"; PRESERVED_EXTRAS="$LEGACY_PRESERVED_EXTRAS"; TARGET=stable
+    recorder() { printf '%s\n' "$*" > "$WORK/legacy-spec"; }
+    INSTALLER=(recorder)
+    reinstall_preserved_extras >/dev/null
+    [ "$(cat "$WORK/legacy-spec")" = 'rapid-mlx[chat]==1.0.0' ]
+) && ok "reinstalls chat preserved from legacy metadata" || bad "reinstalls chat preserved from legacy metadata"
+
 if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null ||
    "$REAL_PYTHON" -I -c 'from pip._vendor.packaging.requirements import Requirement' 2>/dev/null; then
     printf 'Requires-Dist: rmlx-fixture-incompatible<0.6; extra == "incompatible"\n' >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"
@@ -486,51 +519,106 @@ done
     [ "$FAIL" -eq 0 ]
 ) || bad "recovery removes committed discard"
 
-# Lock tests use separate fixtures and isolate exits and traps in subshells.
-(
-    INSTALL_LOCK="$WORK/acquire.install-lock"
+# Exercise locks in independent shells, including migration from old locks.
+LOCK_HOME="$WORK/lock-home"
+mkdir -p "$LOCK_HOME"
+lock="$LOCK_HOME/.rapid-mlx.lock"
+ln -s target "$lock"
+if output=$(HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock' _ "$INSTALL_SH" 2>&1); then
+    bad "symlink lock rejects acquisition and remains in place"
+elif [[ "$output" == *"The Rapid-MLX install lock $lock is a symlink. Remove it and re-run."* ]] && [ -L "$lock" ]; then
+    ok "symlink lock rejects acquisition and remains in place"
+else bad "symlink lock rejects acquisition and remains in place"; fi
+rm -f "$lock"
+if HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; release_install_lock' _ "$INSTALL_SH" &&
+   HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; release_install_lock' _ "$INSTALL_SH"; then
+    ok "released lock can be acquired by another process"
+else bad "released lock can be acquired by another process"; fi
+HOME="$LOCK_HOME" bash -c '
+    RAPID_INSTALL_LIB=1 source "$1"
+    trap release_install_lock EXIT
     acquire_install_lock
-    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
-    release_install_lock
-    [ ! -L "$INSTALL_LOCK" ] && [ ! -e "$INSTALL_LOCK" ] || exit 1
-) && ok "lock acquisition links to our pid and release removes it" || bad "lock acquisition and release"
-
-sleep 30 &
-live_pid=$!
-LOCK_FIXTURE="$WORK/live.install-lock"
-ln -s "$live_pid" "$LOCK_FIXTURE"
-if output=$(INSTALL_LOCK="$LOCK_FIXTURE"; acquire_install_lock 2>&1); then
-    bad "live lock rejects another installer"
-else
-    case "$output" in
-        *"Another Rapid-MLX install is already running (pid $live_pid)."*) ok "live lock rejects another installer" ;;
-        *) bad "live lock reports the running installer" ;;
-    esac
-fi
-kill "$live_pid" 2>/dev/null || true
-wait "$live_pid" 2>/dev/null || true
-(
-    INSTALL_LOCK="$LOCK_FIXTURE"
-    acquire_install_lock
-    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
-    rm -f "$INSTALL_LOCK"
-    ln -s different-owner "$INSTALL_LOCK"
-    release_install_lock
-    [ "$(readlink "$INSTALL_LOCK")" = different-owner ] || exit 1
-    rm -f "$INSTALL_LOCK"
-    ln -s "$$" "$INSTALL_LOCK"
-    release_install_lock
-    [ ! -L "$INSTALL_LOCK" ] || exit 1
-) && ok "stale lock is taken over and only its owner can release it" || bad "stale lock takeover and ownership"
-
-(
-    INSTALL_LOCK="$WORK/legacy.install-lock"
-    mkdir "$INSTALL_LOCK"
-    printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
-    acquire_install_lock
-    [ -L "$INSTALL_LOCK" ] && [ "$(readlink "$INSTALL_LOCK")" = "$$" ] || exit 1
-    release_install_lock
-) && ok "legacy lock directory is taken over" || bad "legacy lock directory takeover"
+    touch "$2"
+    while [ ! -e "$3" ]; do sleep 0.1; done
+' _ "$INSTALL_SH" "$WORK/ready" "$WORK/release" &
+lock_holder=$!
+for ((i=0; i<100; i++)); do [ ! -e "$WORK/ready" ] || break; sleep 0.1; done
+if [ -L "$LOCK_HOME/.rapid-mlx.install-lock" ] &&
+   [ "$(readlink "$LOCK_HOME/.rapid-mlx.install-lock")" = "$lock_holder" ]; then
+    ok "held lock exposes the holder pid to older installers"
+else bad "held lock exposes the holder pid to older installers"; fi
+if [ -e "$WORK/ready" ] && output=$(HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock' _ "$INSTALL_SH" 2>&1); then
+    bad "held lock rejects another process"
+elif [[ "$output" == *"Another Rapid-MLX install is already running"* ]]; then ok "held lock rejects another process"
+else bad "held lock rejects another process"; fi
+touch "$WORK/release"
+wait "$lock_holder"
+if [ ! -L "$LOCK_HOME/.rapid-mlx.install-lock" ]; then
+    ok "release removes the legacy lock"
+else bad "release removes the legacy lock"; fi
+# Exercise explicit mode selection independently of Perl on PATH.
+for lock_mode in flock dir; do
+    [ "$lock_mode" != flock ] || [ -x /usr/bin/perl ] || continue
+    if HOME="$WORK/mode-$lock_mode" bash -c '
+        RAPID_INSTALL_LIB=1 source "$1"
+        mkdir -p "$HOME"
+        perl() { return 99; }
+        if [ "$2" = dir ]; then RAPID_INSTALL_PERL="$HOME/missing-perl"; fi
+        acquire_install_lock
+        [ "$INSTALL_LOCK_MODE" = "$2" ]
+        [ "$LEGACY_LOCK_OWNED" = 1 ]
+        [ -L "$LEGACY_INSTALL_LOCK" ]
+        [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]
+        release_install_lock
+        [ -z "$LEGACY_LOCK_OWNED" ]
+        [ ! -L "$LEGACY_INSTALL_LOCK" ]
+        [ ! -d "${INSTALL_LOCK}.d" ]
+    ' _ "$INSTALL_SH" "$lock_mode"; then
+        ok "$lock_mode mode owns and releases the legacy lock independently of PATH Perl"
+    else bad "$lock_mode mode owns and releases the legacy lock independently of PATH Perl"; fi
+done
+LOCK_HOME="$WORK/legacy-home"
+mkdir -p "$LOCK_HOME"
+legacy="$LOCK_HOME/.rapid-mlx.install-lock"
+ln -s 99999999 "$legacy"
+if HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ -L "$LEGACY_INSTALL_LOCK" ]; [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]; release_install_lock' _ "$INSTALL_SH" &&
+   mkdir "$legacy" && printf '99999999\n' > "$legacy/pid" &&
+   HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ -L "$LEGACY_INSTALL_LOCK" ]; [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]; release_install_lock' _ "$INSTALL_SH"; then
+    ok "stale legacy symlink and directory are removed"
+else bad "stale legacy symlink and directory are removed"; fi
+rm -rf "$legacy"
+ln -s "$$" "$legacy"
+if output=$(HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock' _ "$INSTALL_SH" 2>&1); then
+    bad "live legacy lock rejects acquisition"
+elif [[ "$output" == *"Another Rapid-MLX install is already running"* ]]; then ok "live legacy lock rejects acquisition"
+else bad "live legacy lock rejects acquisition"; fi
+rm -f "$legacy"
+RACE="$WORK/race"
+mkdir -p "$RACE"
+ln -s 99999999 "$RACE/.rapid-mlx.install-lock"
+for n in 1 2; do
+    HOME="$RACE" bash -c '
+        RAPID_INSTALL_LIB=1 source "$1"
+        race_dir="$2" race_id="$3"
+        kill() {
+            touch "$race_dir/marker.$race_id"
+            for ((i=0; i<50; i++)); do
+                [ -e "$race_dir/marker.1" ] && [ -e "$race_dir/marker.2" ] && break
+                sleep 0.1
+            done
+            # Let the first process finish its takeover so a second takeover would delete a live lock.
+            [ "$race_id" = 1 ] || sleep 0.5
+            command kill "$@"
+        }
+        acquire_install_lock
+        echo acquired
+        sleep 2
+    ' _ "$INSTALL_SH" "$RACE" "$n" >"$RACE/out.$n" 2>&1 &
+    sleep 0.1
+done
+wait
+if [ "$(cat "$RACE"/out.* | grep -c '^acquired$')" = 1 ]; then ok "concurrent stale lock permits one installer"
+else bad "concurrent stale lock permits one installer"; fi
 
 # Recovery covers both a completed stash and an interruption partway through it.
 (
@@ -748,13 +836,23 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
 ) && ok "validated standalone Python replaces the existing runtime without leftovers" || bad "validated standalone Python replaces the existing runtime without leftovers"
 (
     HOME="$WORK/hints-home" RAPID_INSTALL_LAUNCH_DAEMONS_DIR="$WORK/daemons"
-    mkdir -p "$HOME/Library/LaunchAgents" "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR"
+    INSTALL_DIR="$HOME/.rapid-mlx" BIN_DIR="$HOME/.local/bin"
+    mkdir -p "$HOME/Library/LaunchAgents" "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR" "$INSTALL_DIR/bin"
+    hint_python="$REAL_PYTHON"
+    if [ -x "$REPO_ROOT/.venv/bin/python" ]; then hint_python="$REPO_ROOT/.venv/bin/python"; fi
+    ln -s "$hint_python" "$INSTALL_DIR/bin/python"
     [ -z "$(restart_service_hints upgrade)" ] || exit 1
+    "$REAL_PYTHON" -c 'import plistlib,sys; plistlib.dump({"Label":"com.example.rapid","ProgramArguments":[sys.argv[2],"service","run"]}, open(sys.argv[1],"wb"))' "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR/custom.plist" "$BIN_DIR/rapid-mlx"
+    "$REAL_PYTHON" -c 'import plistlib,sys; plistlib.dump({"Label":"foreign.label","ProgramArguments":["/usr/bin/true"]}, open(sys.argv[1],"wb"))' "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR/foreign.plist"
+    printf invalid > "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR/invalid.plist"
+    output="$(restart_service_hints upgrade)"
+    [[ "$output" == *'Background services still run the previous version until restarted:'*'sudo rapid-mlx service restart --label com.example.rapid'* ]] || exit 1
+    [[ "$output" != *foreign.label* ]] || exit 1
     touch "$RAPID_INSTALL_LAUNCH_DAEMONS_DIR/com.rapidmlx.server.plist" "$HOME/Library/LaunchAgents/com.quicksilver.node.abc.plist"
     [ -z "$(restart_service_hints create)" ] || exit 1
     for action in upgrade rebuild; do
         output="$(restart_service_hints "$action")"
-        case "$output" in *'Background services still run the previous version until restarted:'*'sudo rapid-mlx service restart'*'launchctl kickstart -k gui/$(id -u)/com.quicksilver.node.abc'*) ;; *) exit 1 ;; esac
+        case "$output" in *'Background services still run the previous version until restarted:'*'sudo rapid-mlx service restart'*'sudo rapid-mlx service restart --label com.example.rapid'*'launchctl kickstart -k gui/$(id -u)/com.quicksilver.node.abc'*) ;; *) exit 1 ;; esac
     done
 ) && ok "service hints only follow upgrades and rebuilds with existing services" || bad "service hints only follow upgrades and rebuilds with existing services"
 

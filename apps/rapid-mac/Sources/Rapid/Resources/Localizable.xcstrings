@@ -2,6 +2,26 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Provider status" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提供商状态"
+          }
+        }
+      }
+    },
+    "Model to share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要分享的模型"
+          }
+        }
+      }
+    },
     "%@ download." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15203,7 +15223,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "立即请求"
+            "value" : "当前请求数"
           }
         }
       }
@@ -16863,7 +16883,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "工人"
+            "value" : "工作节点"
           }
         }
       }

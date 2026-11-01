@@ -1166,6 +1166,49 @@ struct DictationTests {
     }
 
     @MainActor
+    @Test("completed downloads do not interrupt active dictation", arguments: [
+        DictationController.Phase.recording, .starting, .transcribing,
+    ])
+    func completedDownloadPreservesActiveDictation(phase: DictationController.Phase) async {
+        var prewarmCount = 0
+        let controller = readinessController(
+            phase: phase,
+            serverState: .ready(alias: "another-model"),
+            prewarm: { prewarmCount += 1; return true },
+            hotkeyStart: { true }
+        )
+        await controller.modelDownloadDidFinish(alias: controller.modelAlias)
+        #expect(controller.phase == phase)
+        #expect(prewarmCount == 0)
+    }
+
+    @Test("download status key tracks a selected compatibility alias")
+    func downloadStatusKeyTracksSelectedAlias() {
+        let running = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-large-v3"]
+        ) { $0 == "whisper-1" ? .running : nil }
+        let completed = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-large-v3"]
+        ) { $0 == "whisper-1" ? .completed : nil }
+        #expect(running != completed)
+        #expect(completed == "whisper-1|whisper-1#completed|whisper-large-v3#none")
+
+        let deduplicated = DictationDownloadReplay.downloadStatusKey(
+            selected: "whisper-1", pickerAliases: ["whisper-1", "whisper-1"]
+        ) { _ in .completed }
+        #expect(deduplicated == "whisper-1|whisper-1#completed")
+    }
+
+    @Test("selected download completions are notified once per selection")
+    func selectedDownloadReplay() {
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: nil))
+        #expect(!DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: "a"))
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: true, lastNotified: nil))
+        #expect(DictationDownloadReplay.shouldNotifySelected(selected: "b", selectedCompleted: true, lastNotified: "a"))
+        #expect(!DictationDownloadReplay.shouldNotifySelected(selected: "a", selectedCompleted: false, lastNotified: nil))
+    }
+
+    @MainActor
     @Test("a failed optional weight probe still arms a serving model")
     func failedWeightProbeStillArmsServingModel() async {
         var hotkeyStartCount = 0

@@ -21,16 +21,14 @@ struct ShareComputeLocalModel: Identifiable, Hashable, Sendable {
     /// Downloaded and ready to serve right now.
     var isReady: Bool { entry?.cached == true }
 
-    /// MEASURED on-disk size, straight from `rapid-mlx ls`. `nil` rather than
-    /// an estimate — a ready model shows what it really occupies, matching
-    /// Settings → Models so the two surfaces can never print different numbers
-    /// for the same model.
+    /// Catalog download size, falling back to the measured or legacy size.
     var onDiskSize: String? {
-        entry?.size?.displayText
+        entry?.displayedModelSize?.displayText
     }
 
     var estimatedDownloadBytes: Int64? {
         guard !isReady else { return nil }
+        if let bytes = entry?.displayedModelSize?.byteCount, bytes > 0 { return bytes }
         let footprint = ModelSizing.estimate(alias: model.alias)
         guard footprint.weightsGB > 0 else { return nil }
         return DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30))

@@ -28,6 +28,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .._mlx_cache_limit import request_cache_limit
 from ..api.errors import GuidedGenerationCancelledError, GuidedTokenLimitError
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import (
@@ -2594,7 +2595,7 @@ class BatchedEngine(BaseEngine):
             try:
                 mx.set_memory_limit(effective_limit)
                 cache_limit = _compute_metal_cache_limit(effective_limit)
-                mx.set_cache_limit(cache_limit)
+                request_cache_limit(cache_limit)
                 logger.info(
                     f"Metal memory limits set ({plan.mode}): "
                     f"allocation_limit={effective_limit / 1e9:.1f}GB "

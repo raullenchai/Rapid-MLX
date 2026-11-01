@@ -85,7 +85,8 @@ struct CommunityBenchmarkResultView: View {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                     HStack(spacing: RapidTheme.Space.md) {
                         resultBadge
-                        Text(modelAlias)
+                        Text(ModelDisplayName.name(for: modelAlias))
+                            .help(modelAlias)
                             .font(.rapid(size: 16, weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -101,7 +102,8 @@ struct CommunityBenchmarkResultView: View {
             } else {
                 HStack(spacing: RapidTheme.Space.md) {
                     resultBadge
-                    Text(modelAlias)
+                    Text(ModelDisplayName.name(for: modelAlias))
+                            .help(modelAlias)
                         .font(.rapid(size: 16, weight: .semibold))
                         .lineLimit(1)
                         .truncationMode(.tail)

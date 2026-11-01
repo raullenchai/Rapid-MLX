@@ -318,7 +318,7 @@ final class QuickstartCoordinator {
             alias: "qwen3.8-27b-4bit",
             displayName: "Qwen 3.8 · 27B",
             hfRepo: nil,
-            blurb: "Currently the hottest open-weights model. Strong all-rounder on a 32 GB+ Mac.",
+            blurb: "The strongest all-rounder here. Best on Macs with 32 GB or more.",
             tier: .tradeUp,
             minRAMGB: 32
         ),
@@ -2213,7 +2213,8 @@ struct QuickstartView: View {
     static func comparisonColumns(
         selection: String,
         tradeUps: [QuickstartModelChoice],
-        hardware: MacHardware
+        hardware: MacHardware,
+        catalog: [ModelEntry] = []
     ) -> [OnboardingComparisonTable.Column] {
         let titles = comparisonColumnTitles(for: tradeUps)
         return tradeUps.enumerated().map { index, choice in
@@ -2222,7 +2223,7 @@ struct QuickstartView: View {
             return OnboardingComparisonTable.Column(
                 title: titles[index],
                 isPicked: choice.alias == selection,
-                download: sizeText(for: choice),
+                download: catalog.first { $0.alias == choice.alias }?.displayedModelSize?.displayText ?? sizeText(for: choice),
                 memory: footprint.totalGB > 0 ? "≈ \(preciseGB(footprint.totalGB))" : "Unknown",
                 fit: fitText(fit),
                 fitIsWarning: fit != .recommended
@@ -2277,7 +2278,7 @@ struct QuickstartView: View {
             alias: coordinator.selection.alias,
             cachedModels: cachedModels,
             comparableTradeUps: list.tradeUps,
-            cachedRowCount: list.cachedDecisionCount
+            cachedRowCount: list.onThisMacCount
         )
         step2Scaffold {
             step2Columns(
@@ -2293,7 +2294,8 @@ struct QuickstartView: View {
                         columns: Self.comparisonColumns(
                             selection: coordinator.selection.alias,
                             tradeUps: list.tradeUps,
-                            hardware: hardware
+                            hardware: hardware,
+                            catalog: cachedModels
                         ),
                         fitLabel: "Fit on \(Self.wholeGB(hardware.physicalRAMGB))"
                     )
@@ -2310,7 +2312,7 @@ struct QuickstartView: View {
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == entry.alias,
-                                sizeText: entry.size?.displayText ?? "",
+                                sizeText: entry.displayedModelSize?.displayText ?? "",
                                 isCached: true,
                                 secondaryText: Self.cachedRowSecondaryText(for: choice),
                                 onActivate: { activatePrimary(in: .shortlist) }
@@ -2345,7 +2347,7 @@ struct QuickstartView: View {
                                     QuickstartCompactCard(
                                         choice: choice,
                                         selected: coordinator.selection.alias == entry.alias,
-                                        sizeText: entry.size?.displayText ?? "",
+                                        sizeText: entry.displayedModelSize?.displayText ?? "",
                                         isCached: true,
                                         secondaryText: Self.cachedRowSecondaryText(for: choice),
                                         onActivate: { activatePrimary(in: .shortlist) }
@@ -2369,7 +2371,8 @@ struct QuickstartView: View {
                             sizeText: Self.shortlistSizeText(
                                 for: choice,
                                 cached: cached,
-                                recommendedForPhysicalRAMGB: nil
+                                recommendedForPhysicalRAMGB: nil,
+                                catalogEntry: cachedModels.first { $0.alias == choice.alias }
                             ),
                             isCached: cached != nil,
                             onActivate: { activatePrimary(in: .shortlist) }
@@ -2394,7 +2397,8 @@ struct QuickstartView: View {
                                 sizeText: Self.shortlistSizeText(
                                     for: choice,
                                     cached: cached,
-                                    recommendedForPhysicalRAMGB: hardware.physicalRAMGB
+                                    recommendedForPhysicalRAMGB: hardware.physicalRAMGB,
+                                    catalogEntry: cachedModels.first { $0.alias == choice.alias }
                                 ),
                                 isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
@@ -2416,7 +2420,8 @@ struct QuickstartView: View {
                                 sizeText: Self.shortlistSizeText(
                                     for: choice,
                                     cached: cached,
-                                    recommendedForPhysicalRAMGB: nil
+                                    recommendedForPhysicalRAMGB: nil,
+                                catalogEntry: cachedModels.first { $0.alias == choice.alias }
                                 ),
                                 isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
@@ -2435,7 +2440,7 @@ struct QuickstartView: View {
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: cached?.size?.displayText ?? Self.sizeText(for: choice),
+                                sizeText: cachedModels.first { $0.alias == choice.alias }?.displayedModelSize?.displayText ?? Self.sizeText(for: choice),
                                 isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
@@ -2936,7 +2941,7 @@ struct QuickstartView: View {
                     // the memory note takes the slot instead. One line under
                     // the table either way — the composition does not change.
                     if let footnote = runsHere
-                        ? Self.reviewFootnote(alias: alias, cached: cached)
+                        ? Self.reviewFootnote(alias: alias, cached: cached, catalog: cachedModels)
                         : Self.memoryHeadroomFootnote(hardware: hardware) {
                         Text(footnote)
                             .scaledSystemFont(12)
@@ -2988,7 +2993,8 @@ struct QuickstartView: View {
                         sizeText: Self.shortlistSizeText(
                             for: choice,
                             cached: cached,
-                            recommendedForPhysicalRAMGB: nil
+                            recommendedForPhysicalRAMGB: nil,
+                                catalogEntry: cachedModels.first { $0.alias == choice.alias }
                         ),
                         isCached: cached != nil,
                         onActivate: { activatePrimary(in: .review) }
@@ -3012,7 +3018,8 @@ struct QuickstartView: View {
                             sizeText: Self.shortlistSizeText(
                                 for: choice,
                                 cached: cached,
-                                recommendedForPhysicalRAMGB: hardware.physicalRAMGB
+                                recommendedForPhysicalRAMGB: hardware.physicalRAMGB,
+                                    catalogEntry: cachedModels.first { $0.alias == choice.alias }
                             ),
                             isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
@@ -3033,7 +3040,8 @@ struct QuickstartView: View {
                             sizeText: Self.shortlistSizeText(
                                 for: choice,
                                 cached: cached,
-                                recommendedForPhysicalRAMGB: nil
+                                recommendedForPhysicalRAMGB: nil,
+                                catalogEntry: cachedModels.first { $0.alias == choice.alias }
                             ),
                             isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
@@ -3048,7 +3056,7 @@ struct QuickstartView: View {
                         QuickstartCompactCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: cached?.size?.displayText ?? Self.sizeText(for: choice),
+                            sizeText: cachedModels.first { $0.alias == choice.alias }?.displayedModelSize?.displayText ?? Self.sizeText(for: choice),
                             isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
                         ) { coordinator.select(choice) }
@@ -3103,8 +3111,8 @@ struct QuickstartView: View {
                 identifier: "Quickstart.Review.Alias"
             ),
             OnboardingFactRow(
-                cached == nil ? "Download" : "Size on disk",
-                reviewDownloadText(alias: alias, cached: cached),
+                "Download size",
+                reviewDownloadText(alias: alias, cached: cached, catalog: cachedModels),
                 identifier: "Quickstart.Review.Size"
             ),
             OnboardingFactRow(
@@ -3163,7 +3171,8 @@ struct QuickstartView: View {
     /// starter read "~633 MB" on the card and "~563 MB" two clicks later,
     /// because the card uses the pinned figure and the generic path falls back
     /// to the parameter-derived estimate. One model, one number.
-    static func reviewDownloadText(alias: String, cached: ModelEntry?) -> String {
+    static func reviewDownloadText(alias: String, cached: ModelEntry?, catalog: [ModelEntry] = []) -> String {
+        if let size = (cached ?? catalog.first { $0.alias == alias })?.displayedModelSize?.displayText { return size }
         if cached == nil,
            let choice = QuickstartCoordinator.onboardingChoices.first(where: { $0.alias == alias }),
            choice.downloadBytes != nil {
@@ -3174,9 +3183,9 @@ struct QuickstartView: View {
 
     /// The line under the fact table. Only offered for a download that has not
     /// happened yet — for a cached model there is no cost to frame.
-    static func reviewFootnote(alias: String, cached: ModelEntry?) -> String? {
+    static func reviewFootnote(alias: String, cached: ModelEntry?, catalog: [ModelEntry] = []) -> String? {
         guard cached == nil else { return nil }
-        let size = reviewDownloadText(alias: alias, cached: nil)
+        let size = reviewDownloadText(alias: alias, cached: nil, catalog: catalog)
         guard size != "Unknown" else {
             return "One download, once. After that this model starts in seconds and needs no network."
         }
@@ -3250,6 +3259,7 @@ struct QuickstartView: View {
         /// Distinct cached decisions before compaction, so the headline still
         /// counts what is on this Mac rather than what is expanded.
         var cachedDecisionCount: Int = 0
+        var onThisMacCount: Int = 0
         var starters: [QuickstartModelChoice] = []
         /// The RAM-aware "RECOMMENDED FOR YOUR N GB MAC" row — SSOT picks for
         /// this Mac's RAM, deduplicated against the starter and the authored
@@ -3389,6 +3399,10 @@ struct QuickstartView: View {
                 !laneAliases.contains($0.alias)
             },
             cachedDecisionCount: cachedDecisionCount,
+            onThisMacCount: Set(catalog.filter { $0.cached }.map(\.alias)).intersection(
+                Set(existing.map(\.alias) + cachedPresentation.alternates.map(\.alias) + Array(laneAliases)
+                    + (native.contains(selection) ? [] : onboardingCatalogModels(catalog).filter { $0.alias == selection }.map(\.alias)))
+            ).count,
             starters: starters,
             recommended: recommended,
             lowMemory: lowMemory,
@@ -3429,27 +3443,12 @@ struct QuickstartView: View {
             }
             return QuickstartModelChoice(
                 alias: pick.alias,
-                displayName: beautifiedDisplayName(for: pick.alias),
+                displayName: ModelDisplayName.name(for: pick.alias),
                 hfRepo: nil,
                 blurb: pick.caveat ?? "Recommended for this Mac's memory and speed.",
                 tier: .tradeUp
             )
         }
-    }
-
-    /// Human-friendly model name from a raw alias, for recommended picks the
-    /// wizard doesn't author a label for — e.g. ``bonsai-27b-2bit`` →
-    /// "bonsai · 27B". Splits off the leading ``<n>b`` size token; anything
-    /// without one keeps the alias verbatim (matching the rest of the wizard's
-    /// treatment of uncurated aliases).
-    static func beautifiedDisplayName(for alias: String) -> String {
-        let parts = alias.split(separator: "-")
-        guard let size = parts.first(where: { $0.hasSuffix("b") }),
-              let idx = parts.firstIndex(of: size), idx > 0 else {
-            return alias
-        }
-        let brand = parts[..<idx].joined(separator: "-")
-        return "\(brand) · \(size.uppercased())"
     }
 
     private var shortlist: Shortlist {
@@ -3594,7 +3593,7 @@ struct QuickstartView: View {
     /// Measured runtime footprint and capability for a recommended card.
     static func recommendationSizeText(from pick: RAMBucketedDefault.Pick) -> String {
         let size = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))
-        return "\(size) · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
+        return "\(size) memory · \(ModelPickerBar.capabilityText(pick.capabilityPct))"
     }
 
     /// Size lane for a recommended card, looked up from the SSOT by alias so
@@ -3632,30 +3631,22 @@ struct QuickstartView: View {
     static func shortlistSizeText(
         for choice: QuickstartModelChoice,
         cached: ModelEntry?,
-        recommendedForPhysicalRAMGB physicalRAMGB: Double?
+        recommendedForPhysicalRAMGB physicalRAMGB: Double?,
+        catalogEntry: ModelEntry? = nil
     ) -> String {
         let capability = physicalRAMGB.flatMap { gb in
             RAMBucketedDefault.picks(forPhysicalRAMGB: gb)
                 .first { $0.alias == choice.alias }?
                 .capabilityPct
         }
-        if let onDisk = cached?.size?.displayText, !onDisk.isEmpty {
+        if let onDisk = (catalogEntry ?? cached)?.displayedModelSize?.displayText, !onDisk.isEmpty {
             guard let capability else { return onDisk }
             return "\(onDisk) · \(ModelPickerBar.capabilityText(capability))"
         }
-        // Cached, but we could not measure what it occupies. Falling through
-        // to the download estimate here is what codex caught on this PR: the
-        // caller has already decided this row is on this Mac, so the estimate
-        // would be rendered — and spoken — as an on-disk figure for a model
-        // that is not being downloaded at all. An unknown size is better said
-        // by saying nothing; the ON THIS MAC badge still carries the fact
-        // that matters, and the accessibility label already degrades to a
-        // bare "on disk" when the size text is empty.
-        // A percentage in the size slot would be spoken as "on disk 65%",
-        // which is the same defect one layer along, so say nothing at all.
+        // A cached row with no known size must not present a download estimate
+        // as its on-disk size; its cached badge still communicates its status.
         if cached != nil { return "" }
-        guard let physicalRAMGB else { return sizeText(for: choice) }
-        return sizeText(forRecommended: choice, physicalRAMGB: physicalRAMGB)
+        return sizeText(for: choice)
     }
 
     /// Stable, bounded presentation for models already on disk. The catalogue
@@ -3762,8 +3753,7 @@ struct QuickstartView: View {
     static func choice(forCachedModel entry: ModelEntry) -> QuickstartModelChoice {
         QuickstartModelChoice(
             alias: entry.alias,
-            displayName: QuickstartCoordinator.onboardingChoices
-                .first { $0.alias == entry.alias }?.displayName ?? entry.alias,
+            displayName: ModelDisplayName.name(for: entry.alias),
             hfRepo: entry.hfRepo,
             blurb: entry.isUncataloged ? "Already on this Mac · not catalog-tested."
                 : entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
@@ -3782,7 +3772,7 @@ struct QuickstartView: View {
         guard !entry.cached else { return choice(forCachedModel: entry) }
         return QuickstartModelChoice(
             alias: entry.alias,
-            displayName: entry.alias,
+            displayName: ModelDisplayName.name(for: entry.alias),
             hfRepo: entry.hfRepo,
             blurb: "",
             tier: .tradeUp
@@ -3798,7 +3788,7 @@ struct QuickstartView: View {
     /// The size a catalogue row shows: what it occupies if it is here, what it
     /// would cost if it is not.
     static func rowSizeText(for entry: ModelEntry) -> String {
-        if entry.cached, let onDisk = entry.size?.displayText, !onDisk.isEmpty {
+        if let onDisk = entry.displayedModelSize?.displayText, !onDisk.isEmpty {
             return onDisk
         }
         return sizeText(for: entry.alias)
@@ -3828,7 +3818,7 @@ struct QuickstartView: View {
     /// the same model. Returns an explicit "Unknown" rather than an empty row
     /// when there is no estimate — a blank would read as "free".
     static func reviewSizeText(alias: String, cached: ModelEntry?) -> String {
-        if let cached, let onDisk = cached.size?.displayText, !onDisk.isEmpty {
+        if let cached, let onDisk = cached.displayedModelSize?.displayText, !onDisk.isEmpty {
             return onDisk
         }
         let estimate = sizeText(for: alias)
@@ -4608,6 +4598,7 @@ struct QuickstartView: View {
                 started = downloads.startDownload(
                     alias: coordinator.selection.alias,
                     hfPath: coordinator.selection.hfRepo,
+                    totalBytes: coordinator.selection.downloadBytes,
                     source: alternate
                 )
             }
@@ -4816,7 +4807,7 @@ struct QuickstartView: View {
         let started = downloads.startDownload(
             alias: coordinator.selection.alias,
             hfPath: coordinator.selection.hfRepo,
-            totalBytes: coordinator.selection.downloadBytes
+            totalBytes: cachedModels.first { $0.alias == coordinator.selection.alias }?.displayedModelSize?.byteCount ?? coordinator.selection.downloadBytes
         )
         if started {
             DesktopFunnelReporter.enqueue(

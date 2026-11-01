@@ -255,7 +255,7 @@ struct VideoView: View {
                 }
             } else if !model.cached {
                 Button("Download \(model.alias)") {
-                    _ = downloads.startDownload(alias: model.alias, hfPath: model.hfRepo)
+                    _ = downloads.startDownload(alias: model.alias, hfPath: model.hfRepo, totalBytes: model.size?.byteCount)
                 }
                 .buttonStyle(.rapidPrimary)
                 .disabled(!viewModel.isSelectedModelEligible)
