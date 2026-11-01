@@ -82,20 +82,56 @@ def mlx_vlm_token_stream(model, processor, *, stream_generate_fn, generation_kwa
     return token_stream
 
 
-def cached_snapshot_path(repo, revision):
-    """Return the local snapshot when it can be resolved without a download."""
+def pinned_cached_snapshot(repo: str, revision: str | None = None) -> str | None:
+    """Find a cached snapshot directly, without validating its contents or networking."""
     from pathlib import Path
+
+    from huggingface_hub import constants
+
+    from rapid_mlx import model_aliases
 
     if Path(repo).is_dir():
         return str(Path(repo).resolve())
-    from rapid_mlx import model_downloads
-
-    try:
-        return model_downloads.snapshot_download(
-            repo, revision=revision, local_files_only=True
-        )
-    except (OSError, ValueError):
+    pin = model_aliases.resolve_revision(repo)
+    hub_repo = model_aliases.resolve_hub_model(repo) if pin else repo
+    cache = Path(constants.HF_HUB_CACHE) / ("models--" + hub_repo.replace("/", "--"))
+    revision = pin if revision is None else revision
+    if revision is None:
+        try:
+            revision = (cache / "refs" / "main").read_text().strip()
+        except OSError:
+            return None
+        if (
+            not revision
+            or revision in {".", ".."}
+            or "/" in revision
+            or "\\" in revision
+        ):
+            return None
+    if (
+        not revision
+        or "\\" in revision
+        or Path(revision).is_absolute()
+        or any(part in {"", ".", ".."} for part in revision.split("/"))
+    ):
         return None
+    ref = cache / "refs" / revision
+    if ref.is_file():
+        try:
+            revision = ref.read_text().strip()
+        except OSError:
+            return None
+    if not revision or revision in {".", ".."} or "/" in revision or "\\" in revision:
+        return None
+    snapshot = cache / "snapshots" / revision
+    if snapshot.resolve().parent != (cache / "snapshots").resolve():
+        return None
+    return str(snapshot) if snapshot.is_dir() else None
+
+
+def cached_snapshot_path(repo, revision):
+    """Return the local snapshot when it can be resolved without a download."""
+    return pinned_cached_snapshot(repo, revision)
 
 
 def _runtime_handle(lane, model, processor, runtime, kwargs_fn, facts, target_path):
@@ -318,6 +354,14 @@ def tensorfold_runtime_handle(
         finally:
             executor.shutdown(wait=wait)
 
+    context_window = getattr(backend._app, "context_window", None)
+    if (
+        isinstance(context_window, bool)
+        or not isinstance(context_window, int)
+        or context_window <= 0
+    ):
+        context_window = None
+
     handle = SerialRuntimeHandle(
         lane=lane,
         tokenizer=backend._app.tokenizer,
@@ -333,7 +377,7 @@ def tensorfold_runtime_handle(
             "lanes": lanes,
         },
         target_path=target_path,
-        context_length=None,
+        context_length=context_window,
         close=close,
     )
     return handle

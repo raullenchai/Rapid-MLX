@@ -357,6 +357,11 @@ class VideoEngine:
     is_mllm = False
     _loaded = True
 
+    @property
+    def requires_input_reference(self) -> bool:
+        """Whether the loaded Wan checkpoint only accepts image-to-video."""
+        return getattr(self._wan_engine, "model_type", None) == "i2v"
+
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
 

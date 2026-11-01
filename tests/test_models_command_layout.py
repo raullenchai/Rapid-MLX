@@ -208,7 +208,8 @@ def test_modality_video_gen_shows_video_section(capsys):
     the text chat table + image section."""
     out = _capture(capsys, modality="video-gen")
     assert "Models [video-gen]" in out
-    assert "Video models" in out
+    assert "Video models" not in out
+    assert "[video:gen]" in out
     # Image section must not be present (only the requested modality).
     assert "Image models" not in out
     # A text chat alias must not leak in.
@@ -220,7 +221,8 @@ def test_modality_image_gen_shows_image_section(capsys):
     the text chat table + video section."""
     out = _capture(capsys, modality="image-gen")
     assert "Models [image-gen]" in out
-    assert "Image models" in out
+    assert "Image models" not in out
+    assert "[image:" in out
     # Video section must not be present (only the requested modality).
     assert "Video models" not in out
     # A text chat alias must not leak in.
@@ -366,9 +368,9 @@ def test_filters_do_not_silently_noop_on_other_views(capsys, other_flag, filter_
 @pytest.mark.parametrize(
     "modality,section",
     [
-        ("audio", "Audio models"),
-        ("video-gen", "Video models"),
-        ("image-gen", "Image models"),
+        ("audio", "[audio:"),
+        ("video-gen", "[video:gen]"),
+        ("image-gen", "[image:"),
     ],
 )
 def test_non_text_modality_omits_text_table(capsys, modality, section):

@@ -17,6 +17,7 @@ struct DictationView: View {
     @State private var fixTarget: DictationHistory.Entry?
     @State private var showModelPicker = false
     @State private var handledCompletedDownloads: Set<String> = []
+    @State private var notifiedSelectedCompletion: String?
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -67,14 +68,20 @@ struct DictationView: View {
             } else {
                 selectedCompleted = false
             }
-            guard !pending.isEmpty || selectedCompleted else { return }
+            if !selectedCompleted { notifiedSelectedCompletion = nil }
+            let shouldNotify = DictationDownloadReplay.shouldNotifySelected(
+                selected: selected, selectedCompleted: selectedCompleted,
+                lastNotified: notifiedSelectedCompletion
+            )
+            guard !pending.isEmpty || shouldNotify else { return }
             if !pending.isEmpty {
                 await viewModel.refreshCatalog()
             }
             guard !Task.isCancelled else { return }
             // Selecting an already-handled model must still update the active session.
-            if selectedCompleted {
+            if shouldNotify {
                 await controller.modelDownloadDidFinish(alias: selected)
+                notifiedSelectedCompletion = selected
             }
             for alias in pending {
                 guard !Task.isCancelled else { return }
@@ -217,7 +224,7 @@ struct DictationView: View {
                 .buttonStyle(.plain)
                 .disabled(!audioReadinessState.allowsModelSelection)
                 .accessibilityLabel("Model")
-                .accessibilityValue(controller.modelAlias)
+                .accessibilityValue(ModelDisplayName.name(for: controller.modelAlias))
                 .accessibilityIdentifier("Dictation.Model")
                 .popover(isPresented: $showModelPicker, arrowEdge: .top) {
                     transcriptionModelPicker
@@ -356,7 +363,7 @@ struct DictationView: View {
             alias: alias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedModelEntry?.cached,
-            sizeText: selectedModelEntry?.size?.displayText,
+            sizeText: selectedModelEntry?.displayedModelSize?.displayText,
             download: AudioReadinessState.downloadSnapshot(
                 alias: alias,
                 job: downloads.job(for: alias)
@@ -426,18 +433,11 @@ struct DictationView: View {
     /// Alias + job status folded into one value so `.task(id:)` re-fires on
     /// any transition (same pattern as Quickstart's download watcher).
     private var modelDownloadStatusKey: String {
-        let statuses = viewModel.transcriptionModels.map(\.alias).sorted().map { alias in
-            let status: String
-            switch downloads.job(for: alias)?.status {
-            case .running: status = "running"
-            case .completed: status = "completed"
-            case .failed: status = "failed"
-            case .cancelled: status = "cancelled"
-            case nil: status = "none"
-            }
-            return "\(alias)#\(status)"
-        }
-        return ([controller.modelAlias] + statuses).joined(separator: "|")
+        DictationDownloadReplay.downloadStatusKey(
+            selected: controller.modelAlias,
+            pickerAliases: viewModel.transcriptionModels.map(\.alias),
+            status: { downloads.job(for: $0)?.status }
+        )
     }
 
     /// Download state for the selected model, resolved through the same
@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: entry.size?.byteCount
+            totalBytes: entry.displayedModelSize?.byteCount
         )
     }
 
@@ -835,7 +835,7 @@ private struct TranscriptionModelOptionRow: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            if let size = entry.size?.displayText {
+                            if let size = entry.displayedModelSize?.displayText {
                                 Text(size)
                                     .font(RapidFont.caption)
                                     .foregroundStyle(.tertiary)
@@ -938,7 +938,7 @@ private struct TranscriptionModelOptionRow: View {
         } else {
             parts.append(entry.cached ? "Downloaded" : "Not downloaded")
         }
-        if let size = entry.size?.displayText { parts.append(size) }
+        if let size = entry.displayedModelSize?.displayText { parts.append(size) }
         parts.append(details.summary)
         return parts.joined(separator: ", ")
     }
@@ -1044,30 +1044,74 @@ private struct DictationFixSheet: View {
     }
 }
 
+enum DictationDownloadReplay {
+    static func downloadStatusKey(
+        selected: String,
+        pickerAliases: [String],
+        status: (String) -> DownloadManager.Job.Status?
+    ) -> String {
+        var aliases = Set(pickerAliases)
+        if !selected.isEmpty { aliases.insert(selected) }
+        let statuses = aliases.sorted().map { alias in
+            let label: String
+            switch status(alias) {
+            case .running: label = "running"
+            case .completed: label = "completed"
+            case .failed: label = "failed"
+            case .cancelled: label = "cancelled"
+            case nil: label = "none"
+            }
+            return "\(alias)#\(label)"
+        }
+        return ([selected] + statuses).joined(separator: "|")
+    }
+
+    static func shouldNotifySelected(selected: String, selectedCompleted: Bool, lastNotified: String?) -> Bool {
+        selectedCompleted && lastNotified != selected
+    }
+}
+
 /// Minimal wrapping layout for chips. `LazyVGrid` cannot do variable-width
 /// items, and a plain `HStack` overflows once a few long names are added.
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     var spacing: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
+    static func frames(
+        maxWidth: CGFloat,
+        spacing: CGFloat,
+        measure: [(ProposedViewSize) -> CGSize]
+    ) -> (frames: [CGRect], size: CGSize) {
+        var frames: [CGRect] = []
         var origin = CGPoint.zero
         var lineHeight: CGFloat = 0
-        var total = CGSize.zero
+        var width: CGFloat = 0
+        var lineIsEmpty = true
 
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if origin.x + size.width > maxWidth, origin.x > 0 {
+        for measureSubview in measure {
+            var size = measureSubview(.unspecified)
+            if maxWidth.isFinite, size.width > maxWidth {
+                size = measureSubview(ProposedViewSize(width: maxWidth, height: nil))
+                size.width = min(size.width, maxWidth)
+            }
+            if !lineIsEmpty, origin.x + spacing + size.width > maxWidth {
                 origin.x = 0
                 origin.y += lineHeight + spacing
                 lineHeight = 0
+                lineIsEmpty = true
             }
-            origin.x += size.width + spacing
+            if !lineIsEmpty { origin.x += spacing }
+            frames.append(CGRect(origin: origin, size: size))
+            origin.x += size.width
             lineHeight = max(lineHeight, size.height)
-            total.width = max(total.width, min(origin.x - spacing, maxWidth))
+            width = max(width, origin.x)
+            lineIsEmpty = false
         }
-        total.height = origin.y + lineHeight
-        return total
+        return (frames, CGSize(width: width, height: origin.y + lineHeight))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        Self.frames(maxWidth: proposal.width ?? .infinity, spacing: spacing,
+                    measure: subviews.map { subview in { subview.sizeThatFits($0) } }).size
     }
 
     func placeSubviews(
@@ -1076,19 +1120,11 @@ private struct FlowLayout: Layout {
         subviews: Subviews,
         cache: inout ()
     ) {
-        var origin = bounds.origin
-        var lineHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if origin.x + size.width > bounds.maxX, origin.x > bounds.minX {
-                origin.x = bounds.minX
-                origin.y += lineHeight + spacing
-                lineHeight = 0
-            }
-            subview.place(at: origin, proposal: ProposedViewSize(size))
-            origin.x += size.width + spacing
-            lineHeight = max(lineHeight, size.height)
+        let frames = Self.frames(maxWidth: bounds.width, spacing: spacing,
+                                 measure: subviews.map { subview in { subview.sizeThatFits($0) } }).frames
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          proposal: ProposedViewSize(width: frame.width, height: frame.height))
         }
     }
 }

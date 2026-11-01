@@ -65,6 +65,8 @@ from rapid_mlx.runtime.optional_runtime import (
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+_DOWNLOAD_DISK_HEADROOM = 0.10
+
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
 DEFAULT_SYSTEM_ONE_PORT = 8700
@@ -172,8 +174,13 @@ def _configure_bootstrap_logging(log_level: str) -> None:
 
     import logging
 
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
+    quiet_hf_progress_bars_off_terminal()
     normalized = _log_level_choice(log_level)
     quiet_transport_loggers(normalized)
     silence_hf_unauthenticated_warning()
@@ -1434,8 +1441,7 @@ def _serve_retrieval_only_mode(args) -> None:
     print()
     sys.stdout.flush()
 
-    # The default ready banner advertises chat endpoints and a primary model.
-    _run_uvicorn(app, args, uvicorn_log_level, on_server_accepting=lambda: None)
+    _run_uvicorn(app, args, uvicorn_log_level)
     _hard_exit_after_serve()
 
 
@@ -1748,7 +1754,7 @@ def _check_disk_space(
         available_bytes = stat.f_bavail * stat.f_frsize
 
         # ~10% headroom for temp files during xet_get / move-into-place.
-        required_bytes = int(model_size_bytes * 1.1)
+        required_bytes = int(model_size_bytes * (1 + _DOWNLOAD_DISK_HEADROOM))
         if available_bytes >= required_bytes:
             return
 
@@ -1756,25 +1762,33 @@ def _check_disk_space(
         available_gb = available_bytes / (1024**3)
         need_to_free_gb = (required_bytes - available_bytes) / (1024**3)
 
-        print()
-        print("  Error: Insufficient disk space for download.")
-        print(f"    Download size: {model_size_gb:>7.1f} GB")
-        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
-        print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
-        print()
-        print("  Suggestions:")
-        print("    - Free disk space, or set HF_HOME to a drive with more room")
-        print("    - Pick a smaller variant: rapid-mlx models")
+        print(file=sys.stderr)
+        print("  Error: Insufficient disk space for download.", file=sys.stderr)
+        print(f"    Download size: {model_size_gb:>7.1f} GB", file=sys.stderr)
+        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})", file=sys.stderr)
+        print(
+            f"    Need to free:  {need_to_free_gb:>7.1f} GB  "
+            f"(includes {_DOWNLOAD_DISK_HEADROOM:.0%} working space for the download)",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
+        print("  Suggestions:", file=sys.stderr)
+        print(
+            "    - Free disk space, or set HF_HOME to a drive with more room",
+            file=sys.stderr,
+        )
+        print("    - Pick a smaller variant: rapid-mlx models", file=sys.stderr)
         if not force:
             print(
                 "    - Bypass this check (download will likely fail mid-way): "
-                "--force-disk-check"
+                "--force-disk-check",
+                file=sys.stderr,
             )
-            print()
+            print(file=sys.stderr)
             sys.exit(1)
         # ``force=True``: warn loudly, let the user proceed at their own risk.
-        print("  --force-disk-check set — proceeding anyway.")
-        print()
+        print("  --force-disk-check set — proceeding anyway.", file=sys.stderr)
+        print(file=sys.stderr)
     except SystemExit:
         raise
     except Exception:
@@ -2087,7 +2101,8 @@ def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
         # remain usable before the accelerator runtime is available.
         import psutil
 
-        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        total_ram_bytes = psutil.virtual_memory().total
+        total_ram_gb = total_ram_bytes / (1024**3)
     except Exception:
         return
     if total_ram_gb <= 0:
@@ -2095,7 +2110,9 @@ def _check_alias_min_memory(user_typed: str, *, stream=None) -> None:
     if total_ram_gb >= floor_gb:
         return  # Machine is big enough — silent.
 
-    if getattr(profile, "enforce_min_memory", False):
+    from .byom.preflight import _enforced_memory_floor
+
+    if _enforced_memory_floor(profile, total_ram_bytes):
         print(
             f"\n  Error: '{user_typed}' requires at least {floor_gb:.0f} GB "
             f"of unified memory; this Mac reports {total_ram_gb:.1f} GB.\n"
@@ -4561,8 +4578,10 @@ def _resolve_dflash_launch_or_exit(args):
     except DFlashUnavailable as e:
         print(f"\n  Error: {e}\n")
         sys.exit(1)
-    for _warning in _assessment.warnings:
-        print(f"\n  ⚠ Experimental DFlash: {_warning}.\n")
+    if _assessment.warnings:
+        warnings = "; ".join(dict.fromkeys(_assessment.warnings))
+        print(f"\n  ⚠ Experimental DFlash: {warnings}.\n")
+        args._dflash_warning_shown = True
     args._dflash_profile = _profile
     args._dflash_drafter_repo = _drafter
     args._dflash_experimental = _assessment.recommendation != "verified"
@@ -4651,8 +4670,8 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
         sys.exit(2)
 
 
-def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
-    """Reject an unusable qualified TensorFold runtime before downloads."""
+def tensorfold_profile_issue(args=None) -> str | None:
+    """Return the qualified TensorFold runtime diagnostic, if unavailable."""
 
     alias_name = (
         (getattr(args, "_original_alias", None) or getattr(args, "model", None))
@@ -4719,12 +4738,18 @@ def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
         runtime_probe()
         environment_probe()
     except TensorFoldUnavailable as exc:
-        print(
-            f"\n  Error: the TensorFold {label} profile is unavailable: "
-            f"{exc}.\n\n  {install_hint}\n",
-            file=sys.stderr,
+        return (
+            f"the TensorFold {label} profile is unavailable: {exc}.\n\n  {install_hint}"
         )
-        raise SystemExit(1) from exc
+    return None
+
+
+def _preflight_tensorfold_qwen27_or_exit(args=None) -> None:
+    """Reject an unusable qualified TensorFold runtime before downloads."""
+    issue = tensorfold_profile_issue(args)
+    if issue is not None:
+        print(f"\n  Error: {issue}\n", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def _preflight_ddtree_or_exit(args):
@@ -4817,8 +4842,6 @@ def _preflight_ddtree_or_exit(args):
     except DDTreeUnavailable as e:
         print(f"\n  Error: {e}\n")
         sys.exit(1)
-    for warning in assessment.warnings:
-        print(f"\n  ⚠ Experimental DDTree: {warning}.\n")
     if not have_runtime():
         from rapid_mlx.speculative.ddtree.runtime import DDTREE_INSTALL_COMMAND
 
@@ -4829,6 +4852,10 @@ def _preflight_ddtree_or_exit(args):
             f"runtime. Install with: `{DDTREE_INSTALL_COMMAND}`.{detail}\n"
         )
         sys.exit(1)
+
+    if assessment.warnings:
+        warnings = "; ".join(dict.fromkeys(assessment.warnings))
+        print(f"\n  ⚠ Experimental DDTree: {warnings}.\n")
 
     args._ddtree_alias_name = alias_name
     args._ddtree_profile = profile
@@ -6164,6 +6191,7 @@ def _dflash_load_kwargs(args):
         drafter_repo=drafter,
         drafter_revision=draft_rev,
         experimental_opt_in=getattr(args, "_dflash_experimental", False),
+        experimental_warning_shown=getattr(args, "_dflash_warning_shown", False),
         expected_algorithm=_resolve_dflash_expected_algorithm(profile, drafter),
     )
 
@@ -6380,7 +6408,12 @@ def resolve_serve_pflash_config(args, *, resolve_auto_config):
 
 
 def resolve_serve_kv_cache(
-    args, *, auto_config, auto_config_resolved, resolve_auto_config
+    args,
+    *,
+    auto_config,
+    auto_config_resolved,
+    resolve_auto_config,
+    generative_media_lane=False,
 ):
     turboquant_detection = {}
     if auto_config_resolved:
@@ -6461,7 +6494,8 @@ def resolve_serve_kv_cache(
                 "profile's int8 memory optimization is not applied to the "
                 "artifact's qualified MTP cache contract."
             )
-        log_kv_cache_decision(kv_cache_decision, model_name=args.model)
+        if not generative_media_lane:
+            log_kv_cache_decision(kv_cache_decision, model_name=args.model)
         quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
         # Mutate args so the existing SchedulerConfig wiring picks up
         # the resolved values without a second code path.
@@ -6730,6 +6764,52 @@ def resolve_serve_acceleration(args) -> ServeAccelerationPlan:
     return ServeAccelerationPlan(lane, kwargs, is_mllm, prefill, decision)
 
 
+def _print_text_lane_runtime_summary(args, enable_prefix_cache, generative_media_lane):
+    if generative_media_lane:
+        return
+    print(f"Stream interval: {args.stream_interval} tokens")
+    if args.use_paged_cache:
+        # Echo the REQUEST, not an active cache: lane and layout capability
+        # are validated at engine startup and fail closed (#2955), so this
+        # line must not read as a running paged cache.
+        print(
+            f"Paged cache requested: block_size={args.paged_cache_block_size}, "
+            f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
+        )
+    elif enable_prefix_cache and not args.no_memory_aware_cache:
+        cache_info = (
+            f"{args.cache_memory_mb}MB"
+            if args.cache_memory_mb
+            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
+        )
+        index_choice = getattr(args, "prefix_cache_index", "radix")
+        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
+        if args.kv_cache_turboquant:
+            mode = args.kv_cache_turboquant
+            if mode == "k8v4":
+                print(
+                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
+                    f"group_size={args.kv_cache_turboquant_group_size}"
+                )
+            else:
+                bits_str = (
+                    str(args.kv_cache_turboquant_bits)
+                    if args.kv_cache_turboquant_bits
+                    else "auto"
+                )
+                print(
+                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
+                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
+                )
+        elif args.kv_cache_quantization:
+            print(
+                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
+                f"group_size={args.kv_cache_quantization_group_size}"
+            )
+    elif enable_prefix_cache:
+        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -6883,6 +6963,10 @@ def serve_command(args):
 
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
+    )
+    _generative_media_lane = _serve_profile is not None and _serve_profile.modality in (
+        "image-gen",
+        "video-gen",
     )
     if _serve_profile is not None and (
         _serve_profile.modality == "image-gen"
@@ -8194,6 +8278,7 @@ def serve_command(args):
         auto_config=auto_config,
         auto_config_resolved=auto_config_resolved,
         resolve_auto_config=resolve_auto_config,
+        generative_media_lane=_generative_media_lane,
     )
 
     from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
@@ -8350,7 +8435,8 @@ def serve_command(args):
         ),
     )
 
-    print("Mode: Continuous batching (for multiple concurrent users)")
+    if not _generative_media_lane:
+        print("Mode: Continuous batching (for multiple concurrent users)")
     if getattr(args, "spec_decode", "none") == "mtp":
         print(
             "MTP: enabled via --speculative-config, "
@@ -8468,47 +8554,7 @@ def serve_command(args):
             f"max_suffix={args.suffix_max_suffix_len}, "
             f"min_conf={args.suffix_min_confidence}"
         )
-    print(f"Stream interval: {args.stream_interval} tokens")
-    if args.use_paged_cache:
-        # Echo the REQUEST, not an active cache: lane and layout capability
-        # are validated at engine startup and fail closed (#2955), so this
-        # line must not read as a running paged cache.
-        print(
-            f"Paged cache requested: block_size={args.paged_cache_block_size}, "
-            f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
-        )
-    elif enable_prefix_cache and not args.no_memory_aware_cache:
-        cache_info = (
-            f"{args.cache_memory_mb}MB"
-            if args.cache_memory_mb
-            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
-        )
-        index_choice = getattr(args, "prefix_cache_index", "radix")
-        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
-        if args.kv_cache_turboquant:
-            mode = args.kv_cache_turboquant
-            if mode == "k8v4":
-                print(
-                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
-                    f"group_size={args.kv_cache_turboquant_group_size}"
-                )
-            else:
-                bits_str = (
-                    str(args.kv_cache_turboquant_bits)
-                    if args.kv_cache_turboquant_bits
-                    else "auto"
-                )
-                print(
-                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
-                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
-                )
-        elif args.kv_cache_quantization:
-            print(
-                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
-                f"group_size={args.kv_cache_quantization_group_size}"
-            )
-    elif enable_prefix_cache:
-        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
+    _print_text_lane_runtime_summary(args, enable_prefix_cache, _generative_media_lane)
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable
@@ -11184,10 +11230,15 @@ def models_command(args):
             24, max((len(e.alias) for e in audio_entries), default=0) + 2
         )
         print()
-        print(f"  Audio models ({len(audio_entries)} aliases)")
+        if modality != "audio":
+            print(f"  Audio models ({len(audio_entries)} aliases)")
+        kind_width = max(
+            len("Kind"), max(len(f"[audio:{e.type}]") for e in audio_entries)
+        )
+        family_width = max(len("Family"), max(len(e.family) for e in audio_entries))
         audio_header = (
-            f"  {'Alias':<{audio_alias_width}} {'Size':<10} {'Kind':<10} "
-            f"{'Family':<12} {'HF id':<40}"
+            f"  {'Alias':<{audio_alias_width}} {'Size':<10} {'Kind':<{kind_width}} "
+            f"{'Family':<{family_width}} {'HF id':<40}"
         )
         # Size the rule to THIS table's header, not the text table's width —
         # the text table's Tools/Reasoning columns are data-sized now (#1999),
@@ -11200,8 +11251,8 @@ def models_command(args):
             kind_tag = f"[audio:{entry.type}]"
             print(
                 f"  {entry.alias:<{audio_alias_width}} "
-                f"{format_size(entry.hf_id):<10} {kind_tag:<10} "
-                f"{entry.family:<12} {entry.hf_id:<40}"
+                f"{format_size(entry.hf_id):<10} {kind_tag:<{kind_width}} "
+                f"{entry.family:<{family_width}} {entry.hf_id:<40}"
             )
         print(audio_sep)
 
@@ -11215,7 +11266,8 @@ def models_command(args):
             24, max((len(a) for a in video_profiles), default=0) + 2
         )
         print()
-        print(f"  Video models ({len(video_profiles)} aliases)")
+        if modality != "video-gen":
+            print(f"  Video models ({len(video_profiles)} aliases)")
         video_header = (
             f"  {'Alias':<{video_alias_width}} {'Size':<10} {'Kind':<11} "
             f"{'Runtime':<13} {'HF id':<40}"
@@ -11247,34 +11299,37 @@ def models_command(args):
             24, max((len(a) for a in image_profiles), default=0) + 2
         )
         print()
-        print(f"  Image models ({len(image_profiles)} aliases)")
-        image_header = (
-            f"  {'Alias':<{image_alias_width}} {'Size':<10} {'Kind':<11} {'HF id':<40}"
-        )
-        image_sep = "  " + "─" * (len(image_header) - 2)
-        print(image_sep)
-        print(image_header)
-        print(image_sep)
-        for alias in sorted(image_profiles):
-            p = image_profiles[alias]
-            folded_path = p.hf_path.casefold().replace("_", "-")
+        if modality != "image-gen":
+            print(f"  Image models ({len(image_profiles)} aliases)")
+        image_kinds = {}
+        for alias, profile in image_profiles.items():
+            folded_path = profile.hf_path.casefold().replace("_", "-")
             if (
                 "flux2" in folded_path
                 or "flux.2" in folded_path
                 or "klein" in folded_path
                 or (
                     "qwen-image-2.1" in folded_path
-                    and not is_qwen_image_21_turbo(p.hf_path)
+                    and not is_qwen_image_21_turbo(profile.hf_path)
                 )
             ):
-                kind_tag = "[image:both]"
+                image_kinds[alias] = "[image:both]"
             elif "qwen-image-edit" in folded_path:
-                kind_tag = "[image:edit]"
+                image_kinds[alias] = "[image:edit]"
             else:
-                kind_tag = "[image:gen]"
+                image_kinds[alias] = "[image:gen]"
+        image_kind_width = max(len("Kind"), max(map(len, image_kinds.values())))
+        image_header = f"  {'Alias':<{image_alias_width}} {'Size':<10} {'Kind':<{image_kind_width}} {'HF id':<40}"
+        image_sep = "  " + "─" * (len(image_header) - 2)
+        print(image_sep)
+        print(image_header)
+        print(image_sep)
+        for alias in sorted(image_profiles):
+            p = image_profiles[alias]
+            kind_tag = image_kinds[alias]
             print(
                 f"  {alias:<{image_alias_width}} "
-                f"{format_size(p.hf_path):<10} {kind_tag:<12} "
+                f"{format_size(p.hf_path):<10} {kind_tag:<{image_kind_width}} "
                 f"{p.hf_path:<40}"
             )
         print(image_sep)
@@ -11289,7 +11344,8 @@ def models_command(args):
     print("  Pick a model: run `rapid-mlx recipe` for RAM-fit recommendations")
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
-    print("       `rapid-mlx chat <alias>` for an interactive REPL")
+    if modality not in ("audio", "video-gen", "image-gen"):
+        print("       `rapid-mlx chat <alias>` for an interactive REPL")
     print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
     if audio_entries:
         print("       `rapid-mlx serve kokoro|whisper-large-v3|parakeet` for audio")
@@ -11803,19 +11859,24 @@ def _pull_repository(
             )
         )
     except ValueError as e:
-        print(f"\n  Error: {e}")
+        print(f"\n  Error: {e}", file=sys.stderr)
         sys.exit(1)
     except VariantNotFoundError as e:
         shown = getattr(args, "_original_alias", repo_id)
-        print(f"\n  Error: '{shown}' has no '{e.requested}' variant.")
+        print(f"\n  Error: '{shown}' has no '{e.requested}' variant.", file=sys.stderr)
         if e.available:
-            print("  Available variant folder(s): " + ", ".join(e.available) + ".")
+            print(
+                "  Available variant folder(s): " + ", ".join(e.available) + ".",
+                file=sys.stderr,
+            )
         else:
             print(
-                "  The repo exposes no variant folders — it is a single-variant repo."
+                "  The repo exposes no variant folders — it is a single-variant repo.",
+                file=sys.stderr,
             )
         print(
-            "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector."
+            "  Pick one with --bits <N> or --format <name>, or pull the repo without a selector.",
+            file=sys.stderr,
         )
         sys.exit(1)
     except Exception as exc:
@@ -12069,7 +12130,8 @@ def _pull_repository(
         shown = getattr(args, "_original_alias", repo_id)
         print(
             f"\n  Error: '{shown}' is not a valid HuggingFace repo id "
-            "(expected ``namespace/name``)."
+            "(expected ``namespace/name``).",
+            file=sys.stderr,
         )
         _print_unknown_model_help(
             shown, full_path_example="mlx-community/Qwen3.5-9B-4bit"
@@ -12096,7 +12158,9 @@ def _pull_repository(
         )
         if is_404:
             shown = getattr(args, "_original_alias", repo_id)
-            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
+            print(
+                f"\n  Error: Model '{shown}' not found on HuggingFace.", file=sys.stderr
+            )
             print(_hub_not_found_hint(shown), end="")
             print(
                 "  Use an exact `namespace/repository-name` ID, for example "
@@ -12135,6 +12199,10 @@ def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
 
     import copy
+
+    from ._hf_logging import quiet_hf_progress_bars_off_terminal
+
+    quiet_hf_progress_bars_off_terminal()
 
     # Every nested runtime-asset pull retries the user's original request,
     # preserving its selected variant and pinned dependency set.
@@ -12321,11 +12389,15 @@ def pull_command(args):
             prepare_runtime_requirement(requirement)
         except AudioRuntimePreparationError as exc:
             shown = getattr(args, "_original_alias", primary_repo)
-            print(f"\n  Error: Could not prepare audio runtime for '{shown}'.")
-            print(f"  {exc}")
+            print(
+                f"\n  Error: Could not prepare audio runtime for '{shown}'.",
+                file=sys.stderr,
+            )
+            print(f"  {exc}", file=sys.stderr)
             print(
                 "  Install 'rapid-mlx[audio]' in this environment, then rerun "
-                f"'rapid-mlx pull {shown}'."
+                f"'rapid-mlx pull {shown}'.",
+                file=sys.stderr,
             )
             sys.exit(1)
     global _pending_model_pull_event
@@ -15283,9 +15355,8 @@ def _print_point_command(app: str, setup_verb: str, url: str) -> None:
 
 def upgrade_command(args):
     """Detect install method and (optionally) run the right upgrade command."""
-    import subprocess
-
     from rapid_mlx import _version_check as vc
+    from rapid_mlx._upgrade_runner import run_upgrade_command
 
     current = vc._installed_version() or "dev"
     print()
@@ -15326,7 +15397,9 @@ def upgrade_command(args):
         print(
             f"  Homebrew offers {target} now; {latest} will follow once the formula is updated."
         )
-    print(f"  Install:  {info.method} ({info.binary_path or 'unknown path'})")
+    print(
+        f"  Install:  {vc.install_method_label(info)} ({info.binary_path or sys.executable})"
+    )
     print(f"  Command:  {info.upgrade_command}")
     print()
 
@@ -15381,7 +15454,7 @@ def upgrade_command(args):
         """Run the selected command and probe the installed version on success."""
         try:
             # Use argv form so paths cannot be interpreted as shell syntax.
-            result = subprocess.run(info.upgrade_argv, check=False)
+            returncode = run_upgrade_command(info.upgrade_argv)
         except FileNotFoundError as exc:
             missing = exc.filename or info.upgrade_argv[0]
             print(
@@ -15393,8 +15466,8 @@ def upgrade_command(args):
             print("\n  Interrupted.\n")
             sys.exit(130)
         print()
-        if result.returncode:
-            return result.returncode, None
+        if returncode:
+            return returncode, None
         return 0, vc.installed_version_in_fresh_process(info)
 
     print()
@@ -15943,9 +16016,14 @@ def _capture_start_failures(func: Callable):
 
 @_capture_start_failures
 def main():
-    from ._hf_logging import quiet_transport_loggers, silence_hf_unauthenticated_warning
+    from ._hf_logging import (
+        quiet_hf_progress_bars_off_terminal,
+        quiet_transport_loggers,
+        silence_hf_unauthenticated_warning,
+    )
 
     silence_hf_unauthenticated_warning()
+    quiet_hf_progress_bars_off_terminal()
     quiet_transport_loggers("INFO")
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure) and not sys.stdout.isatty():
@@ -16418,7 +16496,8 @@ def main():
                 # suggestions instead of letting the request hit
                 # HuggingFace and 404 with a 30-line stack trace.
                 print(
-                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path.",
+                    file=sys.stderr if args.command == "pull" else sys.stdout,
                 )
                 _print_unknown_model_help(
                     args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"

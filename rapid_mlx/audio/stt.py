@@ -34,6 +34,107 @@ DEFAULT_SENSEVOICE_MODEL = "mlx-community/SenseVoiceSmall"
 # See mlx_audio/stt/models/sensevoice/README.md.
 _SENSEVOICE_LANGUAGES = frozenset({"auto", "zh", "en", "ja", "ko", "yue", "nospeech"})
 
+_LANGUAGE_NAMES = dict(
+    zh="Chinese",
+    zho="Chinese",
+    cmn="Chinese",
+    yue="Cantonese",
+    en="English",
+    ja="Japanese",
+    ko="Korean",
+    ar="Arabic",
+    de="German",
+    fr="French",
+    es="Spanish",
+    pt="Portuguese",
+    id="Indonesian",
+    it="Italian",
+    ru="Russian",
+    th="Thai",
+    vi="Vietnamese",
+    tr="Turkish",
+    hi="Hindi",
+    ms="Malay",
+    nl="Dutch",
+    sv="Swedish",
+    da="Danish",
+    fi="Finnish",
+    pl="Polish",
+    cs="Czech",
+    fil="Filipino",
+    tl="Filipino",
+    fa="Persian",
+    el="Greek",
+    ro="Romanian",
+    hu="Hungarian",
+    mk="Macedonian",
+)
+
+
+def _native_language_hint(model, language: str | None, *, names: bool = False):
+    if language is None or not language.strip():
+        return language
+    prompts = getattr(model, "prompt_dictionary", None)
+    if isinstance(prompts, dict):
+        if language in prompts:
+            return language
+        lowered = language.lower()
+        for key in prompts:
+            if isinstance(key, str) and key.lower() == lowered:
+                return key
+        if "-" not in language and "_" not in language:
+            for key in prompts:
+                if isinstance(key, str) and key.lower().startswith(lowered + "-"):
+                    return key
+        return language
+    if names:
+        base = language.lower().replace("_", "-").split("-", 1)[0]
+        return _LANGUAGE_NAMES.get(base, language)
+    return language
+
+
+def _is_cjk(char: str) -> bool:
+    code = ord(char)
+    return (
+        0x3400 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0x3040 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+        or 0x20000 <= code <= 0x3134F
+    )
+
+
+def _transcribe_firered_chunks(model, audio, kwargs):
+    import numpy as np
+
+    rate, frame, window = 16000, 320, 60 * 16000
+    segments = []
+    start = 0
+    while start < len(audio):
+        end = min(start + window, len(audio))
+        if end < len(audio):
+            search = audio[end - 5 * rate : end]
+            frames = np.asarray(search, dtype=np.float64).reshape(-1, frame)
+            end = (
+                end
+                - 5 * rate
+                + (int(np.argmin(np.mean(frames * frames, axis=1))) + 1) * frame
+            )
+        result = model.generate(audio[start:end], **kwargs)
+        text = getattr(result, "text", str(result)) if result else ""
+        text = str(text).strip()
+        if text:
+            segments.append({"text": text, "start": start / rate, "end": end / rate})
+        start = end
+    text = ""
+    for segment in segments:
+        part = segment["text"]
+        if text and not (_is_cjk(text[-1]) and _is_cjk(part[0])):
+            text += " "
+        text += part
+    return text, segments
+
+
 # ---------------------------------------------------------------------------
 # F-K-WHISPER-961: VAD pre-trim guard (see #961)
 # ---------------------------------------------------------------------------
@@ -1017,7 +1118,9 @@ class STTEngine:
                 )
             elif not self._is_parakeet:
                 if language:
-                    kwargs["language"] = language
+                    kwargs["language"] = _native_language_hint(
+                        self.model, language, names=self._is_qwen3_asr
+                    )
                 if task:
                     kwargs["task"] = task
 
@@ -1053,12 +1156,46 @@ class STTEngine:
             else:
                 audio_input = audio_path
 
-            result = self.model.generate(audio_input, **kwargs)
+            model_type = str(
+                getattr(getattr(self.model, "config", None), "model_type", "")
+            ).lower()
+            is_firered = (
+                model_type == "fireredasr2" or "firered" in self.model_name.lower()
+            )
+            chunked = None
+            if is_firered:
+                from mlx_audio.stt.utils import load_audio
+
+                waveform = load_audio(audio_path, sr=16000)
+                if len(waveform) > 60 * 16000:
+                    chunked = _transcribe_firered_chunks(self.model, waveform, kwargs)
+                else:
+                    audio_input = waveform
+            result = (
+                self.model.generate(audio_input, **kwargs) if chunked is None else None
+            )
 
             # Extract text and metadata from result
             text = getattr(result, "text", str(result)) if result else ""
             segments = getattr(result, "segments", None)
             detected_lang = getattr(result, "language", None)
+            if chunked is not None:
+                text, segments = chunked
+            elif not segments and getattr(result, "sentences", None):
+                segments = [
+                    {
+                        "text": sentence.text.strip(),
+                        "start": float(sentence.start),
+                        "end": float(sentence.end),
+                    }
+                    for sentence in result.sentences
+                    if sentence.text.strip()
+                ]
+            if (
+                model_type == "granite_speech5_ctc"
+                or "granite-speech" in self.model_name.lower()
+            ):
+                detected_lang = language or None
 
             # mlx-audio Whisper occasionally keeps decoding the zero-padded
             # 30-second window after a short recording ends.  Reject only
@@ -1165,6 +1302,7 @@ class STTEngine:
             self.load()
 
         try:
+            language = _native_language_hint(self.model, language, names=True)
             result = self.model.generate(
                 audio=str(audio_path), text=text, language=language
             )
@@ -1177,12 +1315,16 @@ class STTEngine:
                 }
                 for it in items
             ]
-            duration = segments[-1]["end"] if segments else None
+            duration = _audio_duration_seconds(str(audio_path), allow_decode=True)
+            duration_from_segments = duration is None and bool(segments)
+            if duration_from_segments:
+                duration = segments[-1]["end"]
             return TranscriptionResult(
                 text=getattr(result, "text", text) or text,
                 language=language,
                 duration=duration,
                 segments=segments,
+                duration_from_segments=duration_from_segments,
             )
         except Exception as e:
             logger.error(f"Forced alignment failed: {e}")

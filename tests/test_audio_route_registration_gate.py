@@ -794,6 +794,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
                 f"register_hook must run BEFORE uvicorn; call order: {call_order}"
             )
 
+    @pytest.mark.usefixtures("isolated_server_model_state")
     def test_load_model_invokes_register_hook(self, monkeypatch):
         """``load_model`` is the SHARED loader between
         ``rapid-mlx serve`` and ``python -m rapid_mlx.server``. Stub

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import statistics
 import sys
@@ -24,6 +25,7 @@ from .hardware import host_memory_gib
 from .local_runner import (
     LocalBenchmarkError,
     _is_deepseek_v41_benchmark_target,
+    refuse_if_memory_does_not_fit,
     run_local,
 )
 from .publication import PublicationRefused
@@ -457,12 +459,39 @@ def _print_failure(args, exc: Exception) -> int:
 
 
 def benchmark_command(args) -> int:
-    action = args.benchmark_action
-    if action == "run":
-        from ..cli import _configure_bootstrap_logging, _resolve_serve_log_level
+    if args.benchmark_action != "run":
+        return _benchmark_command(args)
 
-        level = _resolve_serve_log_level(getattr(args, "log_level", None), "WARNING")
-        _configure_bootstrap_logging(level)
+    from ..cli import (
+        LOG_LEVEL_ENV_VAR,
+        _configure_bootstrap_logging,
+        _resolve_serve_log_level,
+    )
+
+    flag_level = getattr(args, "log_level", None)
+    level = _resolve_serve_log_level(flag_level, "WARNING")
+    _configure_bootstrap_logging(level)
+    echo_var = "RAPID_MLX_BENCH_SERVER_LOG_ECHO"
+    previous = {key: os.environ.get(key) for key in (LOG_LEVEL_ENV_VAR, echo_var)}
+    try:
+        os.environ[LOG_LEVEL_ENV_VAR] = level
+        if (
+            flag_level is not None or previous[LOG_LEVEL_ENV_VAR] is not None
+        ) and not args.json:
+            os.environ[echo_var] = "1"
+        else:
+            os.environ.pop(echo_var, None)
+        return _benchmark_command(args)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _benchmark_command(args) -> int:
+    action = args.benchmark_action
     archive = LocalRunArchive.default()
     try:
         if action == "catalog":
@@ -506,6 +535,10 @@ def benchmark_command(args) -> int:
                     plan = plan_for_alias(args.benchmark_model)
                 except (LocalBenchmarkError, KeyError, ValueError):
                     plan = None
+                if plan is not None:
+                    refuse_if_memory_does_not_fit(
+                        args.benchmark_model, plan["model"]["repo_id"]
+                    )
                 if (
                     plan is not None
                     and plan["model"]["task_type"] == "text_generation"

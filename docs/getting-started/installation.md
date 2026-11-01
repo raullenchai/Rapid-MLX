@@ -69,7 +69,7 @@ Python environment and install the repository in editable mode.
 ## Upgrading from Python 3.10 or 3.11
 
 Rapid-MLX 1.0.1 requires Python 3.12 or newer, so an older Python environment cannot upgrade to it.
-Check `rapid-mlx --version` and `python3 --version`; for a pip install, check the Python interpreter in that environment.
+Check `rapid-mlx --version`, then run `rapid-mlx doctor --only python`: its first check line (for example `✓ Python 3.11.9`) is the Python your install actually runs.
 
 - **One-line installer:** rerun `curl -fsSL https://rapidmlx.com/install.sh | bash`. It rebuilds `~/.rapid-mlx` using a supported Python (installing Python 3.12 if needed), reinstalls optional features it finds, and keeps settings, credentials, and working `~/.local/bin` symlinks.
 - **uv:** `uv tool upgrade --python 3.12 rapid-mlx`.

@@ -32,6 +32,12 @@ from typing import Any
 
 import requests
 
+from ..byom.preflight import (
+    _gb,
+    catalog_memory_refusal,
+    mlx_recommended_working_set_bytes,
+    physical_ram_bytes,
+)
 from ..client_header import RAPID_CLIENT_BENCH
 from ..http_auth import rapid_mlx_client_headers
 from .acceleration import (
@@ -132,7 +138,15 @@ def _raise_for_status(response: requests.Response, *, phase: str) -> None:
         try:
             body = response.json()
             if isinstance(body, dict):
-                detail = body.get("detail") or body.get("error")
+                for candidate in (body.get("detail"), body.get("error")):
+                    if isinstance(candidate, dict):
+                        nested = candidate.get("error")
+                        candidate = (
+                            nested.get("message") if isinstance(nested, dict) else None
+                        ) or candidate.get("message")
+                    if isinstance(candidate, str) and candidate.strip():
+                        detail = candidate
+                        break
         except (requests.exceptions.JSONDecodeError, ValueError):
             detail = None
         if not isinstance(detail, str) or not detail.strip():
@@ -681,6 +695,9 @@ def _run_image(
         alias,
         boot_timeout_s=600,
         isolate_process_group=isolate_process_group,
+        echo_log=sys.stderr
+        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+        else None,
     ) as server:
         _stage_finished(progress, boot_started, "Server ready")
         endpoint = f"{server['base_url']}/images/generations"
@@ -765,6 +782,9 @@ def _run_video(
         # delegates to a backend default that may change between releases.
         extra_env={"RAPID_MLX_WAN_STEPS": str(case["steps"])},
         isolate_process_group=isolate_process_group,
+        echo_log=sys.stderr
+        if os.environ.get("RAPID_MLX_BENCH_SERVER_LOG_ECHO") == "1"
+        else None,
     ) as server:
         _stage_finished(progress, boot_started, "Server ready")
         _report(progress, f"{case['case_id']:<16} round 1/1  generating...")
@@ -1423,6 +1443,12 @@ def _sidecar_in_target_repo(target_identity, sidecar_repo, sidecar_snapshot):
         return False
     if repo.lower() != sidecar_repo.lower():
         return False
+    if sidecar_snapshot:
+        from pathlib import Path
+
+        snapshot = Path(sidecar_snapshot)
+        if snapshot.parent.name == "snapshots":
+            return revision == snapshot.name
     source = unresolved_model_identity(
         sidecar_repo, "text_generation", snapshot_path=sidecar_snapshot
     )["components"][0]["source"]
@@ -1460,7 +1486,7 @@ async def _load_serving_engine(model_id, scheduler_config, serve_args):
     from rapid_mlx import server
 
     server.load_model(
-        model_id,
+        getattr(serve_args, "_original_alias", None) or model_id,
         scheduler_config=scheduler_config,
         force_mllm=serve_args.mllm,
         force_text=serve_args.no_mllm,
@@ -1529,7 +1555,9 @@ def _sidecar_identity(sidecar):
     from pathlib import Path
 
     from rapid_mlx.catalog import rcj_digest
+    from rapid_mlx.speculative.serial_benchmark import pinned_cached_snapshot
 
+    sidecar = pinned_cached_snapshot(sidecar) or sidecar
     parts = Path(sidecar).parts
     if "snapshots" in parts:
         index = len(parts) - 1 - parts[::-1].index("snapshots")
@@ -1777,7 +1805,14 @@ async def _text_measurements(
                 loaded_source = loaded[2] if len(loaded) > 2 else ""
         _stage_finished(progress, load_started, "Model loaded")
         if serving_engine is not None and not loaded_source:
-            # The serving loaders do not retain their resolved checkpoint path.
+            from pathlib import Path
+
+            # BatchedEngine retains the checkpoint path passed by the server.
+            concrete = getattr(serving_engine, "_model_name", None)
+            if isinstance(concrete, (str, os.PathLike)) and Path(concrete).is_dir():
+                loaded_source = str(concrete)
+        if serving_engine is not None and not loaded_source:
+            # Some serving loaders do not retain their resolved checkpoint path.
             # Reuse their offline catalog-pin resolver, never refs/main or a
             # download, when the loader did not return a concrete source.
             from rapid_mlx.model_metadata import resolve_pinned_cached_snapshot
@@ -1842,6 +1877,14 @@ async def _text_measurements(
                 context_length = get_model_max_context(
                     context_source if context_source is not None else engine.engine
                 )
+            if serving_engine is not None and not acceleration.baseline:
+                live_scheduler = _engine_scheduler(serving_engine)
+                if (
+                    live_scheduler is not None
+                    and getattr(live_scheduler.config, "spec_decode", None) == "mtp"
+                    and live_scheduler.config.mtp_sidecar
+                ):
+                    _sidecar_identity(live_scheduler.config.mtp_sidecar)
             result = await run_standardized_bench(
                 engine,
                 tokenizer,
@@ -2033,6 +2076,48 @@ def _announce_plan(
         _report(progress, f"  {describe_case(case)}")
 
 
+def refuse_if_memory_does_not_fit(alias: str, repo_id: str) -> None:
+    refusal = catalog_memory_refusal(
+        alias,
+        ram_bytes=physical_ram_bytes(),
+        recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+        cached=model_is_cached(repo_id) is True,
+    )
+    if refusal is not None:
+        ram_bytes = refusal.ram_bytes
+        ram_gb = (
+            f"{ram_bytes / (1 << 30):.1f} GB" if ram_bytes is not None else "unknown"
+        )
+        if refusal.kind == "memory_floor":
+            from rapid_mlx.model_aliases import resolve_profile
+
+            profile = resolve_profile(alias)
+            if profile is not None and not profile.enforce_min_memory:
+                raise ValueError(
+                    f"{alias} needs a Mac with at least {refusal.floor_gb:g} GB of "
+                    f"unified memory; this Mac has {ram_gb}. "
+                    "Nothing was downloaded."
+                )
+            raise ValueError(
+                f"{alias} requires at least {refusal.floor_gb:.0f} GB of unified memory; "
+                f"this Mac reports {ram_gb}. "
+                "Nothing was downloaded."
+            )
+        footprint_bytes = refusal.footprint_bytes
+        budget_bytes = refusal.budget_bytes
+        if footprint_bytes is None or budget_bytes is None:
+            raise ValueError(
+                f"{alias} does not fit this Mac's GPU memory. Nothing was downloaded. "
+                "Pick a model that fits: rapid-mlx benchmark catalog"
+            )
+        raise ValueError(
+            f"{alias} needs ~{_gb(footprint_bytes)} of GPU memory; "
+            f"this Mac's GPU can use about {_gb(budget_bytes)} of its "
+            f"{_gb(ram_bytes) if ram_bytes is not None else 'unknown'}. "
+            "Nothing was downloaded. Pick a model that fits: rapid-mlx benchmark catalog"
+        )
+
+
 def run_local(
     alias: str,
     *,
@@ -2063,6 +2148,7 @@ def run_local(
         plan = plan_for_alias(alias)
     except Exception as exc:
         raise LocalBenchmarkError(str(exc), None, saved=False) from exc
+    refuse_if_memory_does_not_fit(alias, plan["model"]["repo_id"])
     model = plan["model"]
     task_type = model["task_type"]
     acceleration = acceleration or AccelerationRequest()

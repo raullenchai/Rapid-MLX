@@ -704,7 +704,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         var errorDescription: String? {
             switch self {
             case .tooLarge:
-                return "PDF, CSV, TXT, and DOCX files must be 100 MB or smaller."
+                return "PDF, CSV, TXT, and DOCX files must be \(DownloadProgress.formatBytes(Int64(ChatFileAttachment.maxSourceBytes))) or smaller."
             case .emptyFile:
                 return "This file is empty."
             case .unsupportedType:

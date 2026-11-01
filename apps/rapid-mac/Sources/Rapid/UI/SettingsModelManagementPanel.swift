@@ -822,7 +822,7 @@ struct SettingsModelManagementPanel: View {
         // the number in the heading and the rows under it can never
         // describe different sets.
         let entries = visibleEntries
-        let kindEntries = catalog.filter { $0.supports(capability) }
+        let kindEntries = entriesForCapability
         let heading = ModelCacheActions.listHeading(
             filter: filterMode,
             query: query,
@@ -930,9 +930,20 @@ struct SettingsModelManagementPanel: View {
     }
 
     private func contextLabel(_ alias: String) -> String? {
-        guard let ctx = ModelInfoCatalog.familyAndContext(for: alias).contextWindow else { return nil }
+        Self.contextLabel(alias, profile: server.activeModelProfile)
+    }
+
+    nonisolated static func contextLabel(_ alias: String, profile: ServerModelProfile?) -> String? {
+        guard let ctx = ModelInfoCatalog.info(
+            for: alias, hfRepo: nil,
+            serverContextWindow: ModelPickerBar.liveContextWindow(for: alias, profile: profile)
+        ).contextWindow else { return nil }
         if ctx >= 1024, ctx % 1024 == 0 { return "\(ctx / 1024)k" }
         return "\(ctx)"
+    }
+
+    nonisolated static func downloadTotalBytes(_ entry: ModelEntry) -> Int64? {
+        entry.size?.byteCount
     }
 
     /// Catalog byte counts from the manifest or cache inventory are formatted once
@@ -941,7 +952,7 @@ struct SettingsModelManagementPanel: View {
     /// is only a fallback because it underestimates some repos (Qwen3 ASR 0.6B
     /// 5-bit: ~0.3 GB versus 787,276,896 bytes).
     nonisolated static func downloadSizeLabel(_ entry: ModelEntry) -> String? {
-        if let size = entry.size?.displayText { return size }
+        if let size = entry.displayedModelSize?.displayText { return size }
         let fp = ModelSizing.estimate(alias: entry.alias)
         guard fp.weightsGB > 0 else { return nil }
         return DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: fp.weightsGB * Double(1 << 30)))
@@ -1121,7 +1132,7 @@ struct SettingsModelManagementPanel: View {
                     size: RapidTheme.ControlHeight.mini,
                     symbolSize: 14
                 ) {
-                    _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                    _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
                 }
                 .accessibilityIdentifier("Settings.ModelManagement.Download.\(entry.alias)")
             }
@@ -1138,7 +1149,7 @@ struct SettingsModelManagementPanel: View {
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Retry")
             }
@@ -1149,8 +1160,13 @@ struct SettingsModelManagementPanel: View {
 
     // MARK: - List
 
+    private var entriesForCapability: [ModelEntry] {
+        let entries = catalog.filter { $0.supports(capability) }
+        return capability == .audio ? AudioViewModel.stablyDeduplicatedTranscriptionModels(entries) : entries
+    }
+
     private var visibleEntries: [ModelEntry] {
-        let byCapability = catalog.filter { $0.supports(capability) }
+        let byCapability = entriesForCapability
         let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: query)
         let sorted = ModelCacheActions.sorted(filtered, order: sortOrder)
         return ModelFavorites.favoritesFirst(sorted, favorites: favorites)
@@ -1261,7 +1277,7 @@ struct SettingsModelManagementPanel: View {
         HStack(spacing: RapidTheme.Space.sm) {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text(entry.alias)
+                Text(capability == .audio ? ModelDisplayName.name(for: entry.alias) : entry.alias)
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
@@ -1386,7 +1402,7 @@ struct SettingsModelManagementPanel: View {
                 .foregroundStyle(RapidTheme.statusReady)
         case .notCached:
             Button {
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Download")
             }
@@ -1403,7 +1419,7 @@ struct SettingsModelManagementPanel: View {
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
-                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
             } label: {
                 Text("Retry")
             }

@@ -50,10 +50,21 @@ struct DownloadProgressTests {
         #expect(eta == "02:09")
     }
 
-    @Test("tqdm fallback converts binary prefixes before formatting")
-    func tqdmBinaryFallback() {
+    @Test("tqdm fallback converts decimal prefixes before formatting")
+    func tqdmDecimalFallback() {
         let progress = DownloadProgress()
         progress.ingest("model.safetensors:  28%|██▊       | 1.20G/4.30G [01:28<02:09, 12.3MB/s]")
+        let done = DownloadProgress.formatBytes(Int64(1.20e9))
+        let total = DownloadProgress.formatBytes(Int64(4.30e9))
+        let speed = DownloadProgress.formatSpeed(bytesPerSecond: 12.3e6)
+        #expect(progress.progressSubtitle?.contains("\(done)/\(total)") == true)
+        #expect(progress.progressSubtitle?.contains(speed) == true)
+    }
+
+    @Test("tqdm fallback preserves explicit IEC prefixes")
+    func tqdmIECFallback() {
+        let progress = DownloadProgress()
+        progress.ingest("model.safetensors:  28%|██▊       | 1.20GiB/4.30GiB [01:28<02:09, 12.3MiB/s]")
         let done = DownloadProgress.formatBytes(Int64(1.20 * Double(1 << 30)))
         let total = DownloadProgress.formatBytes(Int64(4.30 * Double(1 << 30)))
         let speed = DownloadProgress.formatSpeed(bytesPerSecond: Double(Int64(12.3 * Double(1 << 20))))
@@ -66,7 +77,7 @@ struct DownloadProgressTests {
         let progress = DownloadProgress()
         progress.ingest("model.safetensors:  0%|          | 0.00/4.20G [00:00<?, ?it/s]")
         let done = DownloadProgress.formatBytes(0)
-        let total = DownloadProgress.formatBytes(Int64(4.20 * Double(1 << 30)))
+        let total = DownloadProgress.formatBytes(Int64(4.20e9))
         #expect(progress.progressSubtitle?.contains("(\(done)/\(total))") == true)
     }
 

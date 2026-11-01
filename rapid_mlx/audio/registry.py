@@ -107,6 +107,10 @@ class AudioAliasEntry:
     languages: str | None = None
     notes: str = ""
     revision: str | None = None
+    catalog_hf_id: str | None = None
+
+
+_LOCAL_MODEL_TYPE_FAMILIES = {"voxcpm2": "voxcpm", "chatterbox_turbo": "chatterbox"}
 
 
 # Lazy cache. Populated on first call to :func:`_load_registry`. Reset
@@ -388,19 +392,30 @@ def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:
     try:
         if not os.path.isdir(path):
             return None
-        with open(os.path.join(path, "config.json"), "rb") as config_file:
-            if os.fstat(config_file.fileno()).st_size > 1024 * 1024:
-                return None
-            data = config_file.read(1024 * 1024)
-        config = json.loads(data)
+        try:
+            with open(os.path.join(path, "config.json"), "rb") as config_file:
+                if os.fstat(config_file.fileno()).st_size > 1024 * 1024:
+                    return None
+                data = config_file.read(1024 * 1024)
+            config = json.loads(data)
+            configless = False
+        except FileNotFoundError:
+            config = {}
+            configless = True
         if not isinstance(config, dict):
             return None
         families = {
             e.family.lower().replace("_", "-"): e for e in _load_registry().values()
         }
         model_type = config.get("model_type")
+        normalized_type = (
+            model_type.lower().replace("-", "_") if isinstance(model_type, str) else ""
+        )
+        normalized_type = _LOCAL_MODEL_TYPE_FAMILIES.get(
+            normalized_type, normalized_type
+        )
         template = (
-            families.get(model_type.lower().replace("_", "-"))
+            families.get(normalized_type.replace("_", "-"))
             if isinstance(model_type, str)
             else None
         )
@@ -438,6 +453,42 @@ def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:
         if len(matches) != 1:
             return None
         template = matches[0]
+        if configless and (
+            template.family != "f5"
+            or not os.path.isfile(os.path.join(path, "vocab.txt"))
+            or not any(
+                os.path.isfile(os.path.join(path, name))
+                and name.endswith(".safetensors")
+                for name in os.listdir(path)
+            )
+        ):
+            return None
+        if template.family == "qwen3_tts":
+            subtype = config.get("tts_model_type", "")
+            subtype = (
+                re.sub(r"[-_ .]", "", subtype.lower())
+                if isinstance(subtype, str)
+                else ""
+            )
+            variants = ("customvoice", "base", "voicedesign")
+            if subtype not in variants:
+                folder = re.sub(
+                    r"[-_ .]", "", os.path.basename(os.path.normpath(path)).lower()
+                )
+                subtype = next(
+                    (variant for variant in variants if variant in folder), ""
+                )
+            if subtype:
+                template = next(
+                    (
+                        entry
+                        for entry in _load_registry().values()
+                        if entry.family == "qwen3_tts"
+                        and subtype
+                        in re.split(r"[-_.]", entry.hf_id.rsplit("/", 1)[-1].lower())
+                    ),
+                    template,
+                )
         real_path = os.path.realpath(path)
         alias = (
             re.sub(
@@ -453,6 +504,7 @@ def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:
             default_voice=template.default_voice,
             languages=template.languages,
             notes="local folder",
+            catalog_hf_id=template.hf_id,
         )
     except Exception:
         return None

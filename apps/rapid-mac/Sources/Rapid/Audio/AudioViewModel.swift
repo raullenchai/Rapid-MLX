@@ -394,7 +394,7 @@ final class AudioViewModel {
         let deduplicated = stablyDeduplicatedTranscriptionModels(entries)
         let position = Dictionary(
             uniqueKeysWithValues: deduplicated.enumerated().map {
-                let key = $1.hfRepo?.lowercased() ?? "alias:\($1.alias.lowercased())"
+                let key = transcriptionModelKey($1)
                 return (key, $0)
             }
         )
@@ -407,20 +407,20 @@ final class AudioViewModel {
             ).isRecommended
             if lhsRecommended != rhsRecommended { return lhsRecommended }
             if lhs.cached != rhs.cached { return lhs.cached }
-            let lhsKey = lhs.hfRepo?.lowercased() ?? "alias:\(lhs.alias.lowercased())"
-            let rhsKey = rhs.hfRepo?.lowercased() ?? "alias:\(rhs.alias.lowercased())"
+            let lhsKey = transcriptionModelKey(lhs)
+            let rhsKey = transcriptionModelKey(rhs)
             return position[lhsKey, default: .max] < position[rhsKey, default: .max]
         }
     }
 
-    private static func stablyDeduplicatedTranscriptionModels(
+    static func stablyDeduplicatedTranscriptionModels(
         _ entries: [ModelEntry]
     ) -> [ModelEntry] {
-        var order: [String] = []
-        var representative: [String: ModelEntry] = [:]
+        var order: [[String]] = []
+        var representative: [[String]: ModelEntry] = [:]
 
         for entry in entries {
-            let key = entry.hfRepo?.lowercased() ?? "alias:\(entry.alias.lowercased())"
+            let key = transcriptionModelKey(entry)
             guard let current = representative[key] else {
                 order.append(key)
                 representative[key] = entry
@@ -432,6 +432,11 @@ final class AudioViewModel {
             }
         }
         return order.compactMap { representative[$0] }
+    }
+
+    private static func transcriptionModelKey(_ entry: ModelEntry) -> [String] {
+        ["\(entry.kind)", entry.hfRepo?.lowercased() ?? "alias:\(entry.alias.lowercased())",
+         entry.sourceSubfolder ?? ""]
     }
 
     private static func transcriptionAliasPriority(_ alias: String) -> Int {

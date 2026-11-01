@@ -188,7 +188,7 @@ def test_empty_selector_errors_cleanly(capsys, variant_snapshot):
         pytest.raises(SystemExit),
     ):
         cli.pull_command(args)
-    assert "empty" in capsys.readouterr().out
+    assert "empty" in capsys.readouterr().err
 
 
 def test_missing_variant_shows_available_folders(capsys, variant_snapshot):
@@ -203,7 +203,7 @@ def test_missing_variant_shows_available_folders(capsys, variant_snapshot):
         pytest.raises(SystemExit),
     ):
         cli.pull_command(args)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "no 'awq' variant" in out
     assert "4bit" in out  # lists an available folder
     assert "8bit" in out
@@ -226,7 +226,7 @@ def test_missing_variant_uses_original_alias(capsys, variant_snapshot):
         pytest.raises(SystemExit),
     ):
         cli.pull_command(args)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "my-alias" in out
     assert "has no 'awq' variant" in out
 
@@ -242,7 +242,7 @@ def test_missing_variant_no_folders(capsys, variant_snapshot):
         pytest.raises(SystemExit),
     ):
         cli.pull_command(args)
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "single-variant repo" in out
 
 

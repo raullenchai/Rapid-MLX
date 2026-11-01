@@ -25,21 +25,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import os
+import select
 import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TextIO
 
 from ..doctor.runner import REPO_ROOT, python_executable
 
 _BOOT_LOG_TAIL_LINES = 30
+_ECHO_JOIN_TIMEOUT_S = 2.0
 
 
 class ServerStartFailed(RuntimeError):  # noqa: N818 — domain-specific error name
@@ -83,6 +88,7 @@ def serve(
     model_path: str | Path | None = None,
     extra_env: Mapping[str, str] | None = None,
     isolate_process_group: bool = True,
+    echo_log: TextIO | None = None,
 ):
     """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
 
@@ -182,7 +188,119 @@ def serve(
             tmp_log.unlink(missing_ok=True)
         raise
 
+    stop_echo = threading.Event()
+    echo_thread = None
     try:
+        if echo_log is not None:
+            try:
+                echo_log.flush()
+            except (OSError, ValueError):
+                pass
+
+            if log_path is not None:
+                echo_source = log_path
+            else:
+                assert tmp_log is not None
+                echo_source = tmp_log
+
+            def echo_output() -> None:
+                try:
+                    fd = os.dup(echo_log.fileno())
+                except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+                    fd = None
+
+                if fd is not None:
+                    drain_deadline: float | None = None
+
+                    def start_drain() -> None:
+                        nonlocal drain_deadline
+                        if drain_deadline is None:
+                            drain_deadline = time.monotonic() + 1.0
+
+                    def write_bytes(data: bytes) -> bool:
+                        try:
+                            written = 0
+                            while written < len(data):
+                                while True:
+                                    if stop_echo.is_set():
+                                        start_drain()
+                                    if (
+                                        drain_deadline is not None
+                                        and time.monotonic() >= drain_deadline
+                                    ):
+                                        return False
+                                    if drain_deadline is None:
+                                        timeout = 0.2
+                                    else:
+                                        remaining = drain_deadline - time.monotonic()
+                                        timeout = max(0.0, min(0.2, remaining))
+                                    writable = select.select([], [fd], [], timeout)[1]
+                                    if writable:
+                                        if (
+                                            drain_deadline is not None
+                                            and time.monotonic() >= drain_deadline
+                                        ):
+                                            return False
+                                        break
+                                    if (
+                                        drain_deadline is not None
+                                        and time.monotonic() >= drain_deadline
+                                    ):
+                                        return False
+                                chunk = data[
+                                    written : written + getattr(select, "PIPE_BUF", 512)
+                                ]
+                                count = os.write(fd, chunk)
+                                if count <= 0:
+                                    return False
+                                written += count
+                        except (OSError, ValueError):
+                            return False
+                        return True
+
+                    try:
+                        with open(echo_source, "rb") as reader:
+                            while not stop_echo.is_set():
+                                position = reader.tell()
+                                line = reader.readline()
+                                if line.endswith(b"\n"):
+                                    if not write_bytes(line):
+                                        return
+                                else:
+                                    reader.seek(position)
+                                    stop_echo.wait(0.2)
+                            start_drain()
+                            write_bytes(reader.read())
+                        return
+                    finally:
+                        os.close(fd)
+
+                with open(echo_source, errors="replace") as text_reader:
+                    while not stop_echo.is_set():
+                        position = text_reader.tell()
+                        text_line = text_reader.readline()
+                        if text_line.endswith("\n"):
+                            try:
+                                echo_log.write(text_line)
+                                echo_log.flush()
+                            except (OSError, ValueError):
+                                return
+                        else:
+                            text_reader.seek(position)
+                            stop_echo.wait(0.2)
+                    remaining = text_reader.read()
+                    if remaining:
+                        try:
+                            echo_log.write(remaining)
+                            echo_log.flush()
+                        except (OSError, ValueError):
+                            return
+
+            echo_thread = threading.Thread(
+                target=echo_output, name="rapid-mlx-bench-log-echo", daemon=True
+            )
+            echo_thread.start()
+
         try:
             _wait_for_health(health_url, proc, boot_timeout_s)
         except ServerStartFailed as exc:
@@ -225,9 +343,14 @@ def serve(
                 grace_s=2 if cancelled else 10,
             )
         finally:
-            log_fh.close()
-            if tmp_log is not None:
-                tmp_log.unlink(missing_ok=True)
+            try:
+                if echo_thread is not None:
+                    stop_echo.set()
+                    echo_thread.join(timeout=_ECHO_JOIN_TIMEOUT_S)
+            finally:
+                log_fh.close()
+                if tmp_log is not None:
+                    tmp_log.unlink(missing_ok=True)
 
 
 def _read_log_tail(log_path: Path | None, max_lines: int) -> str:

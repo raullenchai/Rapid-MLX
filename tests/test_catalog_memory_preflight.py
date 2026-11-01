@@ -16,9 +16,10 @@ _REAL_PROBE = preflight._mlx_recommended_working_set_bytes
 
 
 @pytest.fixture(autouse=True)
-def offline_preflight(monkeypatch):
+def offline_preflight(monkeypatch, request):
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
-    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
+    if request.node.name != "test_cached_mflux_snapshot_keeps_floor_warning":
+        monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
     calls = []
 
     def reject(name):
@@ -282,6 +283,207 @@ def test_catalog_fit_uses_measured_footprint_when_weights_lookup_fails():
     assert result.fits is False
     assert result.fit_basis == "gpu_budget"
     assert result.estimate_source == "curated_footprint"
+
+
+def test_image_fit_uses_admission_charge():
+    result = preflight.catalog_memory_fit(
+        "flux-schnell", ram_bytes=32 * GIB, recommended_working_set_bytes=24 * GIB
+    )
+    assert result.estimate_bytes == int(21.4 * GIB)
+    assert result.estimate_source == "measured_peak"
+
+
+@pytest.mark.parametrize("alias", ["qwen-image", "qwen-image-2.1"])
+def test_image_fit_uses_admission_charge_instead_of_weights(alias):
+    kwargs = dict(ram_bytes=16 * GIB, recommended_working_set_bytes=int(10.67 * GIB))
+    result = preflight.catalog_memory_fit(alias, **kwargs)
+    assert result.fits is True
+    assert result.estimate_bytes == 6 * GIB
+    assert result.estimate_source == "measured_peak"
+    assert preflight.catalog_memory_refusal(alias, cached=False, **kwargs) is None
+
+
+def test_image_bf16_uses_admission_charge():
+    result = preflight.catalog_memory_fit(
+        "qwen-image-2.1-bf16", ram_bytes=64 * GIB, recommended_working_set_bytes=None
+    )
+    assert result.estimate_bytes == 28 * GIB
+    assert result.estimate_source == "measured_peak"
+
+
+def test_image_at_floor_refuses_when_weights_exceed_gpu_budget(monkeypatch):
+    alias = "flux-schnell"
+    weights = 20 * GIB
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: weights)
+    result = preflight.catalog_memory_fit(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=8 * GIB
+    )
+    assert (result.fits, result.fit_basis) == (False, "memory_floor")
+    refusal = preflight.catalog_memory_refusal(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=8 * GIB, cached=False
+    )
+    assert refusal.kind == "gpu_budget"
+    assert refusal.footprint_bytes == result.estimate_bytes
+
+
+def test_image_at_floor_refuses_when_admission_charge_exceeds_gpu_budget(monkeypatch):
+    alias = "flux-schnell"
+    estimate = 20 * GIB
+    monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _: 4 * GIB)
+    monkeypatch.setattr(
+        "rapid_mlx.runtime.resident_models.measured_image_estimate_bytes",
+        lambda _: estimate,
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.recommendations.recommendation_footprint_gb", lambda _: None
+    )
+    result = preflight.catalog_memory_fit(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB
+    )
+    assert result.estimate_bytes == estimate
+    assert result.fits is False
+    refusal = preflight.catalog_memory_refusal(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=12 * GIB, cached=False
+    )
+    assert refusal.kind == "gpu_budget"
+    assert refusal.footprint_bytes == estimate
+
+
+def test_image_below_floor_refusal():
+    refusal = preflight.catalog_memory_refusal(
+        "qwen-image-edit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=24 * GIB,
+        cached=False,
+    )
+    assert refusal.kind == "memory_floor"
+
+
+@pytest.mark.parametrize(
+    "estimate_bytes, budget_bytes",
+    [(20 * GIB, None), (None, 12 * GIB)],
+    ids=["missing-budget", "missing-footprint"],
+)
+def test_catalog_refusal_passes_when_gpu_fit_details_missing(
+    estimate_bytes, budget_bytes
+):
+    result = preflight.CatalogMemoryFit(
+        estimate_bytes=estimate_bytes,
+        estimate_source="unknown",
+        budget_bytes=budget_bytes,
+        ram_bytes=16 * GIB,
+        fits=False,
+        fit_basis="gpu_budget",
+        floor_gib=None,
+    )
+    with patch.object(preflight, "catalog_memory_fit", return_value=result) as fit:
+        refusal = preflight.catalog_memory_refusal(
+            "qwen3.8-27b-4bit",
+            ram_bytes=16 * GIB,
+            recommended_working_set_bytes=12 * GIB,
+            cached=False,
+        )
+    assert refusal is None
+    fit.assert_called_once_with(
+        "qwen3.8-27b-4bit",
+        ram_bytes=16 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+
+
+def test_catalog_refusal_swallows_fit_exception():
+    with patch.object(
+        preflight, "catalog_memory_fit", side_effect=RuntimeError("fit failed")
+    ) as fit:
+        refusal = preflight.catalog_memory_refusal(
+            "qwen3.8-27b-4bit",
+            ram_bytes=16 * GIB,
+            recommended_working_set_bytes=12 * GIB,
+            cached=False,
+        )
+    assert refusal is None
+    fit.assert_called_once_with(
+        "qwen3.8-27b-4bit",
+        ram_bytes=16 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+
+
+@pytest.mark.parametrize("alias", ["diffusion-gemma-26b-8bit", "qwen-image-edit"])
+def test_non_text_refuses_before_download(alias, monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 24 * GIB
+    )
+    with pytest.raises(SystemExit):
+        run(alias, 32, monkeypatch)
+    output = capsys.readouterr().err
+    assert "Nothing was downloaded" in output
+    assert "proceeding anyway" not in output
+
+
+def test_cached_mflux_snapshot_keeps_floor_warning(tmp_path, monkeypatch):
+    import huggingface_hub.file_download as file_download
+
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    profile = resolve_profile("qwen-image-edit")
+    repo = profile.hf_path
+    repo_root = tmp_path / f"models--{repo.replace('/', '--')}"
+    revision = IMAGE_MODEL_REVISIONS[repo]
+    snap = repo_root / "snapshots" / revision
+    (snap / "tokenizer").mkdir(parents=True)
+    (snap / "tokenizer" / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae"):
+        directory = snap / component
+        directory.mkdir()
+        (directory / "model.safetensors.index.json").write_text(
+            '{"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}}'
+        )
+        for shard in ("0.safetensors", "1.safetensors"):
+            (directory / shard).write_bytes(b"weights")
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text(revision)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(file_download, "HF_HUB_CACHE", str(tmp_path), raising=False)
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 64 * GIB)
+    monkeypatch.setattr(
+        preflight, "mlx_recommended_working_set_bytes", lambda: 48 * GIB
+    )
+    preflight._check_catalog_memory_fit(
+        SimpleNamespace(command="serve", model="qwen-image-edit")
+    )
+
+
+def test_cached_image_keeps_floor_warning(monkeypatch, capsys):
+    from rapid_mlx.cli import _check_alias_min_memory
+
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: True)
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=32 * GIB)
+    )
+    run("qwen-image-edit", 32, monkeypatch)
+    _check_alias_min_memory("qwen-image-edit")
+    assert "proceeding anyway" in capsys.readouterr().out
+
+
+def test_cached_alias_below_enforced_floor_exits(monkeypatch):
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: True)
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 36 * GIB)
+    args = SimpleNamespace(command="serve", model="qwen3.8-27b-tensorfold")
+    with pytest.raises(SystemExit):
+        preflight._check_catalog_memory_fit(args)
+
+
+@pytest.mark.parametrize("ram, fits", [(36, False), (48, True), (64, True)])
+def test_catalog_fit_enforced_floor(ram, fits):
+    result = preflight.catalog_memory_fit(
+        "qwen3.8-27b-tensorfold",
+        ram_bytes=ram * GIB,
+        recommended_working_set_bytes=None,
+    )
+    assert (result.fits, result.fit_basis) == (fits, "memory_floor")
 
 
 @pytest.mark.parametrize("raises", [False, True])

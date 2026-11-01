@@ -52,6 +52,7 @@ from fastapi.responses import StreamingResponse
 from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
+    ChatCompletionChunkDelta,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ModelInfo,
@@ -1786,13 +1787,13 @@ async def _stream_completion(
 
             if event.finish_reason is not None:
                 finish_reason = event.finish_reason
-            delta: dict[str, Any] = {}
-            if event.content:
-                delta["content"] = event.content
-            if event.reasoning:
-                delta["reasoning_content"] = event.reasoning
-            if event.tool_calls:
-                delta["tool_calls"] = event.tool_calls
+            if not (event.content or event.reasoning or event.tool_calls):
+                return
+            delta = ChatCompletionChunkDelta(
+                content=event.content or None,
+                reasoning_content=event.reasoning or None,
+                tool_calls=event.tool_calls or None,
+            ).model_dump(exclude_none=True)
             if not delta:
                 return
             piece = {
@@ -2587,6 +2588,7 @@ def load_dflash_runtime(
     drafter_revision: str | None,
     experimental_opt_in: bool,
     expected_algorithm: str | None,
+    experimental_warning_shown: bool = False,
 ):
     if not have_runtime():
         from rapid_mlx.runtime.optional_runtime import optional_extra_install_hint
@@ -2618,7 +2620,8 @@ def load_dflash_runtime(
                 "no speedup or may be slower than autoregressive decoding."
             )
         if not registry_verified_pair:
-            logger.warning(
+            log = logger.debug if experimental_warning_shown else logger.warning
+            log(
                 "Experimental DFlash: this 4-bit target/drafter pair has not "
                 "been performance-validated by Rapid-MLX and may be slower"
             )
@@ -2688,6 +2691,7 @@ def run_dflash_server(
     default_reasoning_effort: str | None = None,
     experimental_opt_in: bool = False,
     expected_algorithm: str | None = None,
+    experimental_warning_shown: bool = False,
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -2716,6 +2720,7 @@ def run_dflash_server(
         drafter_revision=drafter_revision,
         experimental_opt_in=experimental_opt_in,
         expected_algorithm=expected_algorithm,
+        experimental_warning_shown=experimental_warning_shown,
     )
 
     app = _build_app(

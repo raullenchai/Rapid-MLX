@@ -242,7 +242,7 @@ struct QuickstartRecommendedCard: View {
         parts.append("recommended starter")
         parts.append(choice.blurb)
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? "on this Mac" : "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
             parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
         }
@@ -309,7 +309,7 @@ struct QuickstartLowMemoryCard: View {
     ) -> String {
         var parts = [choice.displayName, "Lowest memory", choice.blurb]
         if isCached {
-            parts.append(sizeText.isEmpty ? "On disk" : "On disk \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? "On this Mac" : "On this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
             parts.append("Download \(OnboardingModelAccessibility.size(sizeText))")
         }
@@ -356,7 +356,6 @@ struct QuickstartCompactCard: View {
                         Text(choice.blurb)
                             .scaledSystemFont(12)
                             .foregroundStyle(RapidTheme.textSecondary)
-                            .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -388,7 +387,7 @@ struct QuickstartCompactCard: View {
         if let secondaryText, !secondaryText.isEmpty { parts.append(secondaryText) }
         if !choice.blurb.isEmpty { parts.append(choice.blurb) }
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? "on this Mac" : "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
         } else if !sizeText.isEmpty {
             parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
         }

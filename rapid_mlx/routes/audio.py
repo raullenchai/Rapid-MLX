@@ -36,9 +36,49 @@ from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 from ..model_downloads import ModelDownloadsDisabledError
 from ..runtime.audio_worker import require_audio_worker_available
+from ..utils.model_file_guard import RemoteCodeConsentRequired
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
+
+
+def _remote_code_consent_error(exc: Exception) -> HTTPException | None:
+    """Find consent refusals in a bounded exception chain."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    for _ in range(6):
+        if current is None:
+            break
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, RemoteCodeConsentRequired):
+            logger.warning("Model repository code consent required: %s", current)
+            return HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "message": (
+                            "This model ships executable repository code "
+                            "(auto_map/model_file), which Rapid-MLX does not run "
+                            "without consent. Review the model's code, then "
+                            "restart the server with RAPID_MLX_TRUST_REMOTE_CODE=1 "
+                            "to allow it."
+                        ),
+                        "type": "permission_error",
+                        "code": "remote_code_consent_required",
+                        "param": "model",
+                    }
+                },
+            )
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif not current.__suppress_context__:
+            current = current.__context__
+        else:
+            break
+    return None
+
 
 router = APIRouter()
 _AUDIO_POST_DEPENDENCIES = [
@@ -475,6 +515,9 @@ def _served_stt_default() -> str | None:
     from ..config import get_config
 
     cfg = get_config()
+    local = resolve_audio_alias(getattr(cfg, "model_path", None))
+    if local is not None and local.type == "stt" and local.notes == "local folder":
+        return local.hf_id
     for served in (
         getattr(cfg, "model_alias", None),
         getattr(cfg, "model_name", None),
@@ -490,14 +533,14 @@ def _served_local_request(model: str, kind: str) -> str | None:
     from ..audio.registry import resolve_audio_alias
     from ..config import get_config
 
-    entry = resolve_audio_alias(model)
+    cfg = get_config()
+    entry = None
+    if model in (getattr(cfg, "model_alias", None), getattr(cfg, "model_name", None)):
+        entry = resolve_audio_alias(getattr(cfg, "model_path", None))
+        if entry is not None and (entry.type != kind or entry.notes != "local folder"):
+            entry = None
     if entry is None:
-        cfg = get_config()
-        if model in (
-            getattr(cfg, "model_alias", None),
-            getattr(cfg, "model_name", None),
-        ):
-            entry = resolve_audio_alias(getattr(cfg, "model_path", None))
+        entry = resolve_audio_alias(model)
     if entry is not None and entry.type == kind and entry.notes == "local folder":
         return entry.hf_id
     return None
@@ -518,13 +561,19 @@ def _resolve_stt_model(model: str | None) -> str:
 
     R-03: ``"default"`` is the OpenAI-spec placeholder LangChain /
     LlamaIndex / openai-python emit when the caller hasn't picked a
-    specific model id. Map it to :data:`DEFAULT_STT_ALIAS` so drop-in
-    OpenAI-SDK code works against ``/v1/audio/transcriptions`` —
+    specific model id. Use the served STT model when available, otherwise
+    :data:`DEFAULT_STT_ALIAS`. ``"whisper-1"`` also uses the served STT
+    model when available, and otherwise retains its normal alias mapping.
+    This lets drop-in OpenAI-SDK code work against ``/v1/audio/transcriptions`` —
     rejecting ``"default"`` here breaks every OpenAI tutorial without
     a manual ``model=`` argument.
     """
     if model is None or model == "default":
         return _served_stt_default() or STT_MODEL_ALIASES[DEFAULT_STT_ALIAS]
+    if model == "whisper-1":
+        served = _served_stt_default()
+        if served is not None:
+            return served
     if not isinstance(model, str) or not model:
         raise HTTPException(
             status_code=400,
@@ -649,8 +698,8 @@ def _reject_non_whisper_for_translation(
     from ..audio.registry import resolve_audio_alias
 
     target = (
-        _resolve_stt_model("default")
-        if model == "default"
+        _resolve_stt_model(model)
+        if model in ("default", "whisper-1")
         else (_served_local_request(model, "stt") or model)
     )
     entry = resolve_audio_alias(target)
@@ -731,8 +780,8 @@ def _reject_word_timestamps_for_non_whisper(
     from ..audio.registry import resolve_audio_alias
 
     target = (
-        _resolve_stt_model("default")
-        if model == "default"
+        _resolve_stt_model(model)
+        if model in ("default", "whisper-1")
         else (_served_local_request(model, "stt") or model)
     )
     entry = resolve_audio_alias(target)
@@ -1110,6 +1159,7 @@ def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
     keys; future backends may report a dataclass. Walk both shapes and
     fall back to a single cue covering ``result.duration`` (or 0..0)
     when no segments are present so the SRT/VTT body is still valid.
+    Untimed segments collapse into one cue when a positive finite duration is available.
     """
     segments = getattr(result, "segments", None) or []
     out: list[tuple[float, float, str, Any]] = []
@@ -1125,6 +1175,12 @@ def _segments_with_sources(result) -> list[tuple[float, float, str, Any]]:
         if not text:
             continue
         out.append((start, end, text, seg))
+    if out and not any(end > 0 for _, end, _, _ in out):
+        duration = _finite_or_none(getattr(result, "duration", None))
+        if duration is not None and duration > 0:
+            text = str(getattr(result, "text", "") or "").strip()
+            source = out[0][3] if len(out) == 1 else None
+            out = [(0.0, duration, text or " ".join(seg[2] for seg in out), source)]
     if not out:
         duration = float(getattr(result, "duration", 0.0) or 0.0)
         text = str(getattr(result, "text", "") or "").strip()
@@ -1902,6 +1958,9 @@ async def _run_stt_request(
         # via the catch-all below.
         raise
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # R6-H3: corrupted upload (raw garbage bytes, wrong codec,
         # truncated header) is a CLIENT error — surface a 400 with
         # the OpenAI-shape envelope so callers don't have to retry
@@ -2518,6 +2577,9 @@ async def _run_alignment_request(
     except (HTTPException, ModelDownloadsDisabledError):
         raise
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # ONE handler, classified inside — deliberately not a chain of
         # ``except ValueError`` / ``except Exception`` clauses. A bare
         # ``raise`` in the narrower clause exits the whole try statement
@@ -3053,6 +3115,9 @@ def _served_tts_default() -> str | None:
     from ..config import get_config
 
     cfg = get_config()
+    local = resolve_audio_alias(getattr(cfg, "model_path", None))
+    if local is not None and local.type == "tts" and local.notes == "local folder":
+        return local.hf_id
     # Check the alias AND the HF id independently, not ``alias or name``: under
     # ``--served-model-name foo`` the alias is the operator's opaque gateway
     # name (which resolves to nothing) while the real TTS model lives on
@@ -3149,6 +3214,51 @@ def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
     return entry.default_voice
 
 
+_OPENAI_PRESET_VOICES = frozenset(
+    {
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "fable",
+        "nova",
+        "onyx",
+        "sage",
+        "shimmer",
+        "verse",
+        "marin",
+        "cedar",
+    }
+)
+
+
+def _map_openai_preset_voice(
+    model_name: str, voice: str, valid_voices: list[str]
+) -> str:
+    """Map an OpenAI preset to a matching model voice or the model default."""
+    preset = voice.lower()
+    if preset not in _OPENAI_PRESET_VOICES or voice in valid_voices:
+        return voice
+    for prefix in ("af", "am", "bf", "bm"):
+        candidate = f"{prefix}_{preset}"
+        if candidate in valid_voices:
+            return candidate
+    default = _resolve_default_voice_literal(model_name, "default")
+    if default == "default" and default not in valid_voices:
+        return voice
+    return default
+
+
+def _capability_model_name(model_name: str) -> str:
+    from ..audio.registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(model_name)
+    if entry is not None and entry.notes == "local folder" and entry.catalog_hf_id:
+        return entry.catalog_hf_id
+    return model_name
+
+
 def _allowed_voices_for(model_name: str) -> list[str]:
     """Return the voice set the route should accept for ``model_name``.
 
@@ -3215,6 +3325,7 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     if dynamic:
         return dynamic
 
+    model_name = _capability_model_name(model_name)
     name_lower = model_name.lower()
     if "kokoro" in name_lower:
         return list(KOKORO_VOICES)
@@ -3303,6 +3414,7 @@ def _is_clone_capable_model(model_name: str) -> bool:
     this returns True for Base the engine also detects ``qwen3_tts`` and
     forwards the reference — the dangerous direction cannot occur.
     """
+    model_name = _capability_model_name(model_name)
     name_lower = model_name.lower()
     if "f5-tts" in name_lower or "f5_tts" in name_lower:
         return True
@@ -3467,7 +3579,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         model_name = _resolve_tts_model(model)
         from ..audio.tts import is_qwen3_voicedesign_model
 
-        if voice_seed is not None and not is_qwen3_voicedesign_model(model_name):
+        capability_name = _capability_model_name(model_name)
+        if voice_seed is not None and not is_qwen3_voicedesign_model(capability_name):
             from rapid_mlx.telemetry.inference import emit_capability_rejected
 
             emit_capability_rejected(
@@ -3523,7 +3636,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 },
             )
 
-        if is_indextts_model(model_name) and ref_audio is None:
+        if is_indextts_model(capability_name) and ref_audio is None:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -3556,7 +3669,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # decision, and a ``base`` token must be caught wherever it sits
         # (start/middle/end, hyphen or underscore delimited) —
         # ``...-0.6B-Base``, ``..._base_bf16``, etc.
-        _repo = model_name.rsplit("/", 1)[-1].lower()
+        _repo = capability_name.rsplit("/", 1)[-1].lower()
         _tokens = set(re.split(r"[-_]", _repo))
         _is_qwen3 = "qwen3-tts" in _repo or "qwen3_tts" in _repo
         if (
@@ -3628,8 +3741,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 
             # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
             # model's known voice set BEFORE we load weights. Pre-fix an
-            # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
-            # ``nova`` / typo'd ``af_hart``) fell through to
+            # unknown name (such as typo'd ``af_hart``) fell through to
             # ``mlx_audio.load_safetensors`` which 500'd on the missing
             # ``voices/<name>.safetensors`` file. The 500 envelope hid the
             # actual cause from the operator log AND from the caller. The
@@ -3638,13 +3750,25 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             # the ``kokoro`` short alias — both go through the same model
             # family check.
             valid_voices = _allowed_voices_for(model_name)
+            mapped_voice = _map_openai_preset_voice(model_name, voice, valid_voices)
+            if mapped_voice != voice:
+                logger.info(
+                    "voice %r mapped to %r for model %r",
+                    voice,
+                    mapped_voice,
+                    model_name,
+                )
+            voice = mapped_voice
             # Qwen3-TTS matches speaker names case-INsensitively (its engine
             # lowercases before the ``spk_id`` lookup) and the upstream docs
             # mix case ("serena" vs "Serena"). Normalize a case-insensitive
             # hit to the canonical spelling so ``serena`` / ``ono_anna``
             # aren't rejected as ``invalid_voice``; the engine then receives
             # the canonical form. Other families keep exact-match validation.
-            if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
+            if (
+                "qwen3-tts" in capability_name.lower()
+                or "qwen3_tts" in capability_name.lower()
+            ):
                 _canonical = {v.lower(): v for v in valid_voices}
                 voice = _canonical.get(voice.lower(), voice)
             if voice not in valid_voices:
@@ -3807,6 +3931,9 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             ),
         )
     except Exception as e:
+        consent_error = _remote_code_consent_error(e)
+        if consent_error is not None:
+            raise consent_error from e
         # R7-H3: ``logger.exception`` writes the FULL traceback to the
         # operator log so future regressions in mlx_audio (or any other
         # upstream backend) leave enough breadcrumbs to root-cause from

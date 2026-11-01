@@ -254,21 +254,25 @@ struct ChatStreamClient {
                 }
             }
             self.imageMessageID = imageMessageIndex.map { modelMessages[$0].id }
-            let wireMessages = modelMessages.enumerated().flatMap { index, message -> [Wire.Message] in
+            let size = ModelSizing.estimate(alias: alias).paramsBillions
+            let toolNames = alias == Self.glm53TensorFoldAlias ? [] : (tools ?? []).map(\.function.name)
+            var hasEarlierAssistant = false
+            self.messages = modelMessages.enumerated().flatMap { index, message -> [Wire.Message] in
                 var rows: [Wire.Message] = []
                 if let prelude = message.wirePrelude,
                     !prelude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     rows.append(Wire.Message(from: ChatMessage(role: .user, content: prelude), includeImages: false))
                 }
-                rows.append(Wire.Message(from: message, includeImages: index == imageMessageIndex))
+                var row = Wire.Message(from: message, includeImages: index == imageMessageIndex)
+                if message.role == .user && hasEarlierAssistant {
+                    row = Wire.addingSmallModelToolReminder(
+                        to: row, toolNames: toolNames, isSmallModel: size.map { $0 <= 4 } ?? false
+                    )
+                }
+                if message.role == .assistant { hasEarlierAssistant = true }
+                rows.append(row)
                 return rows
             }
-            let size = ModelSizing.estimate(alias: alias).paramsBillions
-            self.messages = Wire.addingSmallModelToolReminder(
-                to: wireMessages,
-                toolNames: alias == Self.glm53TensorFoldAlias ? [] : (tools ?? []).map(\.function.name),
-                isSmallModel: size.map { $0 <= 4 } ?? false
-            )
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
@@ -918,21 +922,17 @@ enum ChatStreamError: LocalizedError {
 enum Wire {
     /// Modify only the outgoing copy, leaving the transcript and stored history intact.
     static func addingSmallModelToolReminder(
-        to messages: [Message], toolNames: [String], isSmallModel: Bool
-    ) -> [Message] {
-        guard isSmallModel, !toolNames.isEmpty,
-              let index = messages.lastIndex(where: { $0.role == "user" }),
-              messages[..<index].contains(where: { $0.role == "assistant" }) else {
-            return messages
-        }
+        to message: Message, toolNames: [String], isSmallModel: Bool
+    ) -> Message {
+        guard isSmallModel, !toolNames.isEmpty else { return message }
         let reminder = "(Tools available: \(toolNames.joined(separator: ", ")). Call a tool when this question needs current or external information, including recent events your training may not cover, instead of answering from memory; for writing, math or translation, answer directly unless the user asks you to use a tool.)"
-        var result = messages
-        switch result[index].content {
+        var result = message
+        switch result.content {
         case .text(let text):
-            result[index].content = .text(text + "\n\n" + reminder)
+            result.content = .text(text + "\n\n" + reminder)
         case .parts(var parts):
             parts.append(.init(type: "text", text: "\n\n" + reminder, image_url: nil))
-            result[index].content = .parts(parts)
+            result.content = .parts(parts)
         }
         return result
     }
