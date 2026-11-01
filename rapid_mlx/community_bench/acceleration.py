@@ -368,8 +368,14 @@ def acceleration_summary(language: Mapping[str, Any]) -> str:
             "companion_dspark": "DSpark",
         }.get(runtime["kind"], runtime["kind"])
         algorithm = f" {runtime['algorithm']}" if runtime.get("algorithm") else ""
+        external_draft = (
+            ", external draft"
+            if spec.get("method") == "mtp"
+            and spec.get("assistant_source") == "external_model"
+            else ""
+        )
         parts.append(
-            f"{name}{algorithm} k={spec['max_draft_tokens']} (dedicated runtime)"
+            f"{name}{algorithm} k={spec['max_draft_tokens']} (dedicated runtime{external_draft})"
         )
     elif spec["method"] == "mtp":
         suffix = (
