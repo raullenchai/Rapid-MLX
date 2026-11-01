@@ -6097,6 +6097,14 @@ def test_audio_distinct_distributions_exclude_transitive_base(monkeypatch):
     assert eh._audio_extra_distinct_dists() == frozenset({"f5-tts-mlx"})
 
 
+def test_audio_distinct_distributions_missing_requirements(monkeypatch):
+    requires = mock.Mock(return_value=None)
+    monkeypatch.setattr(eh._im, "requires", requires)
+
+    assert eh._audio_extra_distinct_dists() is None
+    requires.assert_called_once_with("rapid-mlx")
+
+
 @pytest.mark.parametrize(
     "failure", [eh._im.PackageNotFoundError(), ValueError("invalid metadata")]
 )

@@ -921,6 +921,36 @@ def test_reinstall_spec_missing_direct_url_uses_running_version(monkeypatch):
     distribution.read_text.assert_called_once_with("direct_url.json")
 
 
+@pytest.mark.parametrize(
+    "direct",
+    [
+        pytest.param({"url": "relative/path"}, id="missing-scheme"),
+        pytest.param({"url": "https:///x.whl"}, id="https-missing-netloc"),
+        pytest.param(
+            {"url": "file:///tmp/source", "dir_info": []}, id="non-dict-dir-info"
+        ),
+        pytest.param(
+            {"url": "file:///tmp/source", "dir_info": {"editable": "yes"}},
+            id="non-bool-editable",
+        ),
+        pytest.param(
+            {"url": "file://host", "dir_info": {"editable": True}},
+            id="editable-missing-path",
+        ),
+    ],
+)
+def test_reinstall_spec_invalid_source_uses_running_version(monkeypatch, direct):
+    import rapid_mlx
+
+    monkeypatch.setattr(rapid_mlx, "__version__", "9.8.7")
+    distribution = Mock()
+    distribution.read_text.return_value = json.dumps(direct)
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+
+    assert repair._reinstall_spec() == ["rapid-mlx==9.8.7"]
+    distribution.read_text.assert_called_once_with("direct_url.json")
+
+
 def test_reinstall_spec_unknown_version_uses_bare_spec(monkeypatch):
     import rapid_mlx
 
