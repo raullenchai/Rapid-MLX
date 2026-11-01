@@ -11,11 +11,26 @@ struct CommunityBenchmarkModelTests {
         let image = ModelEntry(alias: "a-image", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.imageGeneration], operationModes: [.textToImage])
         let chat = ModelEntry(alias: "z-chat", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.textGeneration])
         let models = CommunityBenchmarkModel.models(from: [image, chat])
-        #expect(CommunityBenchmarkModel.reconciledSelection(current: image.alias, models: models, preferred: chat.alias) == image.alias)
-        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: chat.alias) == chat.alias)
-        #expect(CommunityBenchmarkModel.reconciledSelection(current: "missing", models: models, preferred: "missing") == chat.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: image.alias, models: models, preferred: [chat.alias]) == image.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: [chat.alias]) == chat.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "missing", models: models, preferred: ["missing"]) == chat.alias)
         #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: CommunityBenchmarkModel.models(from: [image])) == image.alias)
         #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: []) == "")
+    }
+
+    @Test("Selection prefers the selected chat model over the serving model")
+    func selectedChatModelPreference() {
+        let primary = ModelEntry(alias: "A", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.textGeneration])
+        let secondary = ModelEntry(alias: "B", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.textGeneration])
+        let models = CommunityBenchmarkModel.models(from: [primary, secondary])
+        func preferences(_ selected: String) -> [String] {
+            ContentView.communityBenchmarkPreferredAliases(selectedChatAlias: selected, servingAlias: primary.alias, lastServedAlias: primary.alias)
+        }
+        #expect(preferences(secondary.alias) == [secondary.alias, primary.alias])
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: preferences(secondary.alias)) == secondary.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: preferences("")) == primary.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: "", models: models, preferred: preferences("missing")) == primary.alias)
+        #expect(CommunityBenchmarkModel.reconciledSelection(current: primary.alias, models: models, preferred: preferences(secondary.alias)) == primary.alias)
     }
 
     @Test("Atomic tasks select a protocol without modality tabs")

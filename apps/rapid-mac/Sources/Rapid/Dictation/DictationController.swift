@@ -924,6 +924,9 @@ final class DictationController {
         guard completedAlias == modelAlias else { return }
         await refreshModelCacheState()
         guard completedAlias == modelAlias else { return }
+        // A replayed completion must not interrupt an active or starting recording.
+        guard beginRecordingTask == nil, phase != .starting, phase != .recording,
+              phase != .transcribing else { return }
         if isEnabled {
             // DownloadManager retains its completed job. A recreated view can
             // replay that completion, but a hot same-alias session must keep

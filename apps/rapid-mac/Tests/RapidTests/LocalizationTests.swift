@@ -482,6 +482,38 @@ struct LocalizationTests {
         #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least \(DownloadProgress.formatMemory(Int64(48) * (1 << 30))) unified memory; this Mac has 32 GB.")
     }
 
+    @Test("Share Compute checklist and session labels resolve before String view helpers")
+    func compiledShareComputeLabels() async throws {
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["xcstringstool", "compile", try catalogURL().path, "--output-directory", output.path, "--serialization-format", "binary"])
+        #expect(compiler.terminationStatus == 0)
+        let zhBundle = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        let checklist = try String(contentsOf: rapidSource("ShareCompute/ShareComputeShareTab.swift"), encoding: .utf8)
+        #expect(checklist.contains("String(localized: \"QuickSilver provider key\")"))
+        #expect(String(localized: "QuickSilver provider key", bundle: zhBundle) == "QuickSilver 提供商密钥")
+        #expect(checklist.contains("String(localized: \"Model to share\")"))
+        #expect(String(localized: "Model to share", bundle: zhBundle) == "要分享的模型")
+        #expect(checklist.contains("String(localized: \"Start sharing\")"))
+        #expect(String(localized: "Start sharing", bundle: zhBundle) == "开始分享")
+        let session = try String(contentsOf: rapidSource("ShareCompute/ShareComputeSessionViews.swift"), encoding: .utf8)
+        #expect(session.contains("String(localized: \"Time shared\")"))
+        #expect(String(localized: "Time shared", bundle: zhBundle) == "共享时间")
+        #expect(session.contains("String(localized: \"Requests now\")"))
+        #expect(String(localized: "Requests now", bundle: zhBundle) == "当前请求数")
+        #expect(session.contains("String(localized: \"Provider status\")"))
+        #expect(String(localized: "Provider status", bundle: zhBundle) == "提供商状态")
+        #expect(session.contains("String(localized: \"Worker\")"))
+        #expect(String(localized: "Worker", bundle: zhBundle) == "工作节点")
+        #expect(session.contains("String(localized: \"Model after sharing\")"))
+        #expect(String(localized: "Model after sharing", bundle: zhBundle) == "分享结束后的模型状态")
+        #expect(session.contains("String(localized: \"Reconnecting\")"))
+        #expect(String(localized: "Reconnecting", bundle: zhBundle) == "重新连接")
+        #expect(session.contains("String(localized: \"Connected\")"))
+        #expect(String(localized: "Connected", bundle: zhBundle) == "已连接")
+    }
+
     @Test("Share Compute Credits captions resolve against the compiled zh-Hans table")
     func compiledShareComputeCreditsCopy() async throws {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)

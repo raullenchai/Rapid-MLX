@@ -1681,7 +1681,9 @@ def _sidecar_identity(sidecar):
     from pathlib import Path
 
     from rapid_mlx.catalog import rcj_digest
+    from rapid_mlx.speculative.serial_benchmark import pinned_cached_snapshot
 
+    sidecar = pinned_cached_snapshot(sidecar) or sidecar
     parts = Path(sidecar).parts
     if "snapshots" in parts:
         index = len(parts) - 1 - parts[::-1].index("snapshots")
@@ -2001,6 +2003,14 @@ async def _text_measurements(
                 context_length = get_model_max_context(
                     context_source if context_source is not None else engine.engine
                 )
+            if serving_engine is not None and not acceleration.baseline:
+                live_scheduler = _engine_scheduler(serving_engine)
+                if (
+                    live_scheduler is not None
+                    and getattr(live_scheduler.config, "spec_decode", None) == "mtp"
+                    and live_scheduler.config.mtp_sidecar
+                ):
+                    _sidecar_identity(live_scheduler.config.mtp_sidecar)
             result = await run_standardized_bench(
                 engine,
                 tokenizer,

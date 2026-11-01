@@ -17,7 +17,7 @@ from rapid_mlx.community_bench.acceleration import (
 )
 
 
-def test_alias_wins_over_pulled_variant(monkeypatch, tmp_path):
+def test_alias_wins_over_pulled_variant(monkeypatch, tmp_path, request):
     import sys
 
     import huggingface_hub.constants as constants
@@ -44,6 +44,9 @@ def test_alias_wins_over_pulled_variant(monkeypatch, tmp_path):
     ):
         monkeypatch.setattr(module, name, lambda: None)
     from rapid_mlx import server
+
+    # Preserve the optional-runtime import stubs above before loading the fixture.
+    request.getfixturevalue("isolated_server_model_state")
     from rapid_mlx._download_gate import persist_pulled_variant
     from rapid_mlx.model_aliases import resolve_profile
 

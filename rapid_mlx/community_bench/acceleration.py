@@ -165,6 +165,27 @@ def _refuse_engine_method(kwargs, *, allow_auto=False) -> None:
         )
 
 
+def _requests_suffix(args, scheduler_kwargs=None) -> bool:
+    from rapid_mlx.speculative.tensorfold_families import profile_for
+
+    config = getattr(args, "_speculative_config", None)
+    profile = profile_for(getattr(args, "_original_alias", None) or args.model)
+    kwargs = scheduler_kwargs or {}
+    return bool(
+        getattr(args, "spec_decode", None) == "suffix"
+        or getattr(args, "suffix_decoding", False)
+        or kwargs.get("spec_decode") == "suffix"
+        or kwargs.get("enable_suffix_decoding")
+        or getattr(config, "method", None) == "suffix"
+        or (
+            config is None
+            and getattr(args, "mtp_backend", None) == "tensorfold"
+            and profile is not None
+            and profile.method == "suffix"
+        )
+    )
+
+
 def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -> None:
     from rapid_mlx.cli import (
         _resolve_dflash_launch_or_exit,
@@ -181,8 +202,7 @@ def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -
     _refuse_unsupported(
         alias,
         lane,
-        getattr(args, "spec_decode", None) == "suffix"
-        or getattr(args, "suffix_decoding", False),
+        _requests_suffix(args),
         args,
     )
     if lane == "engine":
@@ -198,8 +218,7 @@ def resolve_benchmark_acceleration(alias: str, request: AccelerationRequest):
     _refuse_unsupported(
         alias,
         plan.lane,
-        plan.scheduler_kwargs.get("spec_decode") == "suffix"
-        or bool(plan.scheduler_kwargs.get("enable_suffix_decoding")),
+        _requests_suffix(serve_args, plan.scheduler_kwargs),
         serve_args,
     )
     if plan.lane == "engine":
@@ -349,8 +368,14 @@ def acceleration_summary(language: Mapping[str, Any]) -> str:
             "companion_dspark": "DSpark",
         }.get(runtime["kind"], runtime["kind"])
         algorithm = f" {runtime['algorithm']}" if runtime.get("algorithm") else ""
+        external_draft = (
+            ", external draft"
+            if spec.get("method") == "mtp"
+            and spec.get("assistant_source") == "external_model"
+            else ""
+        )
         parts.append(
-            f"{name}{algorithm} k={spec['max_draft_tokens']} (dedicated runtime)"
+            f"{name}{algorithm} k={spec['max_draft_tokens']} (dedicated runtime{external_draft})"
         )
     elif spec["method"] == "mtp":
         suffix = (

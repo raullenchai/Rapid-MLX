@@ -8,7 +8,9 @@ set -euo pipefail
 TARGET="${1:-stable}"  # stable (PyPI) | latest (explicit Git commit) | x.y.z (specific version)
 
 INSTALL_DIR="${HOME}/.rapid-mlx"
-INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+INSTALL_LOCK="${INSTALL_DIR}.lock"
+LEGACY_INSTALL_LOCK="${INSTALL_DIR}.install-lock"
+INSTALL_LOCK_MODE=""
 BIN_DIR="${HOME}/.local/bin"
 PYPI_PACKAGE="rapid-mlx"
 GITHUB_REPO="https://github.com/raullenchai/Rapid-MLX.git"
@@ -153,7 +155,13 @@ except ImportError:
 def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
-requirements = metadata.distribution("rapid-mlx").requires or []
+try:
+    requirements = metadata.distribution("rapid-mlx").requires or []
+except metadata.PackageNotFoundError:
+    try:
+        requirements = metadata.distribution("vllm-mlx").requires or []
+    except metadata.PackageNotFoundError:
+        raise SystemExit(0)
 installed = {normalize(d.metadata["Name"]): d.version for d in metadata.distributions() if d.metadata.get("Name")}
 base = set()
 extras = {}
@@ -311,34 +319,89 @@ finish_rebuild() {
 }
 
 acquire_install_lock() {
-    local pid=""
-    if { [ -d "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; } || ! ln -s "$$" "$INSTALL_LOCK" 2>/dev/null; then
-        pid=$(readlink "$INSTALL_LOCK" 2>/dev/null) || pid=""
+    local pid="" status=0 perl="${RAPID_INSTALL_PERL:-/usr/bin/perl}"
+    if [ -L "$INSTALL_LOCK" ]; then
+        err "The Rapid-MLX install lock $INSTALL_LOCK is a symlink. Remove it and re-run."
+        exit 1
+    fi
+    if [ -x "$perl" ]; then
+        if ! { exec 9>>"$INSTALL_LOCK"; } 2>/dev/null; then
+            err "Could not open the Rapid-MLX install lock at $INSTALL_LOCK."
+            exit 1
+        fi
+        "$perl" -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1; exit 0' || status=$?
+        case "$status" in
+            0) INSTALL_LOCK_MODE=flock ;;
+            1) err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."; exit 1 ;;
+            *) err "Could not acquire the Rapid-MLX install lock. Re-run the installer."; exit 1 ;;
+        esac
+    elif mkdir "${INSTALL_LOCK}.d" 2>/dev/null; then
+        printf '%s\n' "$$" > "${INSTALL_LOCK}.d/pid"
+        INSTALL_LOCK_MODE=dir
+    else
+        pid=$(cat "${INSTALL_LOCK}.d/pid" 2>/dev/null) || pid=""
         case "$pid" in
             ''|*[!0-9]*|0) ;;
             *) if kill -0 "$pid" 2>/dev/null; then
-                err "Another Rapid-MLX install is already running (pid $pid). Wait for it to finish and re-run."
+                err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."
                 exit 1
             fi ;;
         esac
-        if [ -d "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; then
-            rm -rf "$INSTALL_LOCK"
-        else
-            rm -f "$INSTALL_LOCK"
-        fi
-        if ! ln -s "$$" "$INSTALL_LOCK" 2>/dev/null; then
-            err "Could not acquire the Rapid-MLX install lock. Re-run the installer."
-            exit 1
-        fi
+        err "A previous Rapid-MLX install did not finish. If no installer is running, remove ${INSTALL_LOCK}.d and re-run."
+        exit 1
     fi
+    if [ -L "$LEGACY_INSTALL_LOCK" ] || [ -d "$LEGACY_INSTALL_LOCK" ]; then
+        if [ -L "$LEGACY_INSTALL_LOCK" ]; then
+            pid=$(readlink "$LEGACY_INSTALL_LOCK" 2>/dev/null) || pid=""
+        else
+            pid=$(cat "$LEGACY_INSTALL_LOCK/pid" 2>/dev/null) || pid=""
+        fi
+        case "$pid" in
+            ''|*[!0-9]*|0) ;;
+            *) if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+                err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."
+                release_install_lock
+                exit 1
+            fi ;;
+        esac
+        if [ -L "$LEGACY_INSTALL_LOCK" ]; then rm -f "$LEGACY_INSTALL_LOCK"; else rm -rf "$LEGACY_INSTALL_LOCK"; fi
+    fi
+    if ! ln -s "$$" "$LEGACY_INSTALL_LOCK" 2>/dev/null; then
+        if [ -L "$LEGACY_INSTALL_LOCK" ]; then
+            pid=$(readlink "$LEGACY_INSTALL_LOCK" 2>/dev/null) || pid=""
+        else
+            pid=$(cat "$LEGACY_INSTALL_LOCK/pid" 2>/dev/null) || pid=""
+        fi
+        case "$pid" in
+            ''|*[!0-9]*|0) ;;
+            *) if kill -0 "$pid" 2>/dev/null; then
+                err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."
+                release_install_lock
+                exit 1
+            fi ;;
+        esac
+        err "Could not acquire the Rapid-MLX install lock. Re-run the installer."
+        release_install_lock
+        exit 1
+    fi
+    LEGACY_LOCK_OWNED=1
 }
 
 release_install_lock() {
-    local pid
-    pid=$(readlink "$INSTALL_LOCK" 2>/dev/null) || return 0
-    if [ "$pid" = "$$" ]; then
-        rm -f "$INSTALL_LOCK"
+    local pid=""
+    if [ "${LEGACY_LOCK_OWNED:-}" = 1 ]; then
+        pid=$(readlink "$LEGACY_INSTALL_LOCK" 2>/dev/null) || pid=""
+        [ "$pid" != "$$" ] || rm -f "$LEGACY_INSTALL_LOCK"
     fi
+    LEGACY_LOCK_OWNED=""
+    case "${INSTALL_LOCK_MODE:-}" in
+        flock) exec 9>&- ;;
+        dir)
+            pid=$(cat "${INSTALL_LOCK}.d/pid" 2>/dev/null) || pid=""
+            [ "$pid" != "$$" ] || rm -rf "${INSTALL_LOCK}.d"
+            ;;
+    esac
+    INSTALL_LOCK_MODE=""
 }
 
 on_installer_exit() {
@@ -711,6 +774,39 @@ restart_service_hints() {
         found=1
         dim 'sudo rapid-mlx service restart'
     fi
+    if [ -x "$INSTALL_DIR/bin/python" ]; then
+        local hint
+        while IFS= read -r hint; do
+            [ -n "$hint" ] || continue
+            if [ "$found" = 0 ]; then
+                warn "Background services still run the previous version until restarted:"
+                found=1
+            fi
+            dim "$hint"
+        done < <("$INSTALL_DIR/bin/python" -I -c '
+import os, plistlib, shlex, sys
+install, bin_dir, *paths = sys.argv[1:]
+root = os.path.realpath(install)
+for path in paths:
+    if os.path.basename(path) == "com.rapidmlx.server.plist":
+        continue
+    try:
+        with open(path, "rb") as f:
+            plist = plistlib.load(f)
+        if not isinstance(plist, dict):
+            continue
+        args = plist.get("ProgramArguments")
+        if not isinstance(args, list) or not args or not isinstance(args[0], str):
+            continue
+        program = args[0]
+        owned = program == os.path.join(bin_dir, "rapid-mlx") or os.path.commonpath([root, os.path.realpath(program)]) == root
+        label = plist.get("Label")
+        if owned and isinstance(label, str) and label != "com.rapidmlx.server":
+            print("sudo rapid-mlx service restart --label " + shlex.quote(label))
+    except Exception:
+        continue
+' "$INSTALL_DIR" "$BIN_DIR" "${RAPID_INSTALL_LAUNCH_DAEMONS_DIR:-/Library/LaunchDaemons}"/*.plist 2>/dev/null || true)
+    fi
     for agent in "$HOME"/Library/LaunchAgents/com.quicksilver.node.*.plist; do
         [ -f "$agent" ] || continue
         if [ "$found" = 0 ]; then
@@ -785,6 +881,10 @@ dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
 
 # ── 3. Find or install Python 3.12 or 3.13 ──────────────────────────────────
 
+acquire_install_lock
+trap on_installer_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 PYTHON="$(select_python || true)"
 
 STANDALONE_DIR="${HOME}/.rapid-mlx-python"
@@ -852,10 +952,6 @@ fi
 
 # ── 5. Create or update venv + install ───────────────────────────────────────
 
-acquire_install_lock
-trap on_installer_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 echo ""
 recover_interrupted_rebuild
 # The directory doubles as shared state, so create-vs-upgrade turns on whether a
