@@ -152,14 +152,33 @@ private enum OnboardingModelAccessibility {
     static func sentences(_ parts: [String]) -> String {
         parts.filter { !$0.isEmpty }.reduce("") { label, part in
             guard !label.isEmpty else { return part }
-            let separator = label.last.map { ".!?".contains($0) } == true ? " " : ". "
+            // A fragment that already ends a sentence needs no second
+            // terminator: Latin ones take a space, CJK ones take nothing.
+            let separator: String
+            if let last = label.last, "。！？".contains(last) {
+                separator = ""
+            } else if let last = label.last, ".!?".contains(last) {
+                separator = " "
+            } else {
+                separator = String(localized: ". ")
+            }
             return label + separator + part
         }
     }
 
-    /// The visual size lane can end with a capability score, not a byte count.
+    /// The visual size lane can end with a bare capability score ("· 92%"),
+    /// not a byte count. A score already rendered through
+    /// ``ModelPickerBar/capabilityText(_:)`` names itself — in Simplified
+    /// Chinese that text ("能力 92%") also ends in "%", so it must not be
+    /// named a second time.
     static func size(_ text: String) -> String {
-        text.hasSuffix("%") ? "\(text) capability" : text
+        guard text.hasSuffix("%") else { return text }
+        let digits = text.dropLast().reversed().prefix { $0.isNumber }
+        if let score = Int(String(digits.reversed())),
+           text.hasSuffix(ModelPickerBar.capabilityText(score)) {
+            return text
+        }
+        return String(localized: "\(text) capability")
     }
 }
 
@@ -188,9 +207,9 @@ struct QuickstartRecommendedCard: View {
                         Text(choice.displayName)
                             .scaledSystemFont(15, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
-                        OnboardingBadge(text: "START HERE", tone: .ink)
+                        OnboardingBadge(text: String(localized: "START HERE"), tone: .ink)
                         if isCached {
-                            OnboardingBadge(text: "ON THIS MAC", tone: .ready)
+                            OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
                         Spacer(minLength: 8)
                         if !sizeText.isEmpty {
@@ -205,8 +224,8 @@ struct QuickstartRecommendedCard: View {
                         .foregroundStyle(RapidTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 7) {
-                        OnboardingAttributePill(text: "On-device")
-                        OnboardingAttributePill(text: "Fits this Mac")
+                        OnboardingAttributePill(text: String(localized: "On-device"))
+                        OnboardingAttributePill(text: String(localized: "Fits this Mac"))
                     }
                     .padding(.top, 2)
                 }
@@ -237,16 +256,16 @@ struct QuickstartRecommendedCard: View {
         // visual START HERE badge must not erase the capability trade-off that
         // this same row announces when it is an optional fallback.
         if choice.alias == QuickstartCoordinator.lowMemoryChoice.alias {
-            parts.append("Lowest memory")
+            parts.append(String(localized: "Lowest memory"))
         }
-        parts.append("recommended starter")
+        parts.append(String(localized: "recommended starter"))
         parts.append(choice.blurb)
         if isCached {
-            parts.append(sizeText.isEmpty ? "on this Mac" : "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? String(localized: "on this Mac") : String(localized: "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))"))
         } else if !sizeText.isEmpty {
-            parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(String(localized: "download \(OnboardingModelAccessibility.size(sizeText))"))
         }
-        parts.append("on-device, fits this Mac")
+        parts.append(String(localized: "on-device, fits this Mac"))
         return OnboardingModelAccessibility.sentences(parts)
     }
 }
@@ -274,9 +293,9 @@ struct QuickstartLowMemoryCard: View {
                         Text(choice.displayName)
                             .scaledSystemFont(14, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
-                        OnboardingBadge(text: "LOWEST MEMORY", tone: .ready)
+                        OnboardingBadge(text: String(localized: "LOWEST MEMORY"), tone: .ready)
                         if isCached {
-                            OnboardingBadge(text: "ON THIS MAC", tone: .ready)
+                            OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
                         Spacer(minLength: 8)
                         if !sizeText.isEmpty {
@@ -307,11 +326,11 @@ struct QuickstartLowMemoryCard: View {
         sizeText: String,
         isCached: Bool = false
     ) -> String {
-        var parts = [choice.displayName, "Lowest memory", choice.blurb]
+        var parts = [choice.displayName, String(localized: "Lowest memory"), choice.blurb]
         if isCached {
-            parts.append(sizeText.isEmpty ? "On this Mac" : "On this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? String(localized: "On this Mac") : String(localized: "On this Mac, size \(OnboardingModelAccessibility.size(sizeText))"))
         } else if !sizeText.isEmpty {
-            parts.append("Download \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(String(localized: "Download \(OnboardingModelAccessibility.size(sizeText))"))
         }
         return OnboardingModelAccessibility.sentences(parts)
     }
@@ -343,7 +362,7 @@ struct QuickstartCompactCard: View {
                             .foregroundStyle(RapidTheme.textPrimary)
                             .lineLimit(1)
                         if isCached {
-                            OnboardingBadge(text: "ON THIS MAC", tone: .ready)
+                            OnboardingBadge(text: String(localized: "ON THIS MAC"), tone: .ready)
                         }
                     }
                     if let secondaryText, !secondaryText.isEmpty {
@@ -387,9 +406,9 @@ struct QuickstartCompactCard: View {
         if let secondaryText, !secondaryText.isEmpty { parts.append(secondaryText) }
         if !choice.blurb.isEmpty { parts.append(choice.blurb) }
         if isCached {
-            parts.append(sizeText.isEmpty ? "on this Mac" : "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(sizeText.isEmpty ? String(localized: "on this Mac") : String(localized: "on this Mac, size \(OnboardingModelAccessibility.size(sizeText))"))
         } else if !sizeText.isEmpty {
-            parts.append("download \(OnboardingModelAccessibility.size(sizeText))")
+            parts.append(String(localized: "download \(OnboardingModelAccessibility.size(sizeText))"))
         }
         return OnboardingModelAccessibility.sentences(parts)
     }
@@ -488,7 +507,7 @@ struct OnboardingCatalogRow: View {
         var parts = [ModelDisplayName.name(for: alias), subtitle]
         parts.append(contentsOf: badges.map(\.text.localizedLowercase))
         if !sizeText.isEmpty { parts.append(sizeText) }
-        return parts.joined(separator: ". ")
+        return OnboardingModelAccessibility.sentences(parts)
     }
 
     /// Spoken only for the row that cannot run, because only there is the
@@ -504,6 +523,6 @@ struct OnboardingCatalogRow: View {
     private var accessibilityHint: String {
         isAvailable
             ? ""
-            : "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded."
+            : String(localized: "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded.")
     }
 }

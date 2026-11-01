@@ -1068,7 +1068,7 @@ struct Step2ModelSelectionBehaviorTests {
         // already does.
         let directionD = Self.stripped(try Self.directionDSource())
         #expect(directionD.contains(".keyboardShortcut(.cancelAction).accessibilityIdentifier(\"Quickstart.Footer.Back\")"))
-        #expect(body.contains(#"backTitle:"←Backtorecommendedmodels""#))
+        #expect(body.contains(#"backTitle:String(localized:"←Backtorecommendedmodels")"#))
         #expect(body.contains(#""←Backtoallmodels""#))
         let footers = body.components(separatedBy: "OnboardingStepFooter(").count - 1
         #expect(footers >= 4, "each Step 2 micro-stage must carry its own footer, found \(footers)")

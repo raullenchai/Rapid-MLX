@@ -2,6 +2,136 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    " Close some apps or pick a smaller model before loading it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 请关闭一些应用，或在加载前选择更小的模型。"
+          }
+        }
+      }
+    },
+    " Free space %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用空间 %@。"
+          }
+        }
+      }
+    },
+    " It should load but may use memory compression or swap under longer chats." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 应该可以加载，但较长的对话可能会使用内存压缩或交换空间。"
+          }
+        }
+      }
+    },
+    " That is more memory than this Mac has. Free about %@ by closing some apps, or pick a smaller model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 这超过了本机的内存容量。请关闭一些应用以释放约 %@，或选择更小的模型。"
+          }
+        }
+      }
+    },
+    " There is now enough memory to load it normally." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " 目前已有足够内存正常加载。"
+          }
+        }
+      }
+    },
+    "%@ available" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用 %@"
+          }
+        }
+      }
+    },
+    "%@ capability" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 能力"
+          }
+        }
+      }
+    },
+    "%@ free on the volume that holds your Hugging Face cache. Setup asks for at least %@ free before any download — a flat floor, not the size of %@. Continue anyway?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hugging Face 缓存所在磁盘有 %@ 可用空间。下载前至少需要 %@ 可用空间 — 这是固定下限，并非 %@ 的大小。仍要继续吗？"
+          }
+        }
+      }
+    },
+    "%@ is a tight fit right now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 目前可用内存紧张"
+          }
+        }
+      }
+    },
+    "%@ is already on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已在本机。"
+          }
+        }
+      }
+    },
+    "%@ is ready to load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已准备好加载"
+          }
+        }
+      }
+    },
+    "%@ is ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 已就绪。"
+          }
+        }
+      }
+    },
+    "%@ may crash your Mac right now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 目前可能导致 Mac 崩溃"
+          }
+        }
+      }
+    },
     "%@ memory" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22,12 +152,122 @@
         }
       }
     },
+    "%@ memory · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 内存 · %@"
+          }
+        }
+      }
+    },
+    "%@ needs about %@, and about %@ is free right now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 需要约 %@，当前可用约 %@。"
+          }
+        }
+      }
+    },
+    "%@ · PICKED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · 已选择"
+          }
+        }
+      }
+    },
+    "%@, %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，%@"
+          }
+        }
+      }
+    },
+    "%@. %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@。%@"
+          }
+        }
+      }
+    },
+    "%@: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：%@"
+          }
+        }
+      }
+    },
     "%@s" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ 秒"
+          }
+        }
+      }
+    },
+    "%lld are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 %lld 个模型。"
+          }
+        }
+      }
+    },
+    "%lld h %lld min left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %lld 小时 %lld 分钟"
+          }
+        }
+      }
+    },
+    "%lld h left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %lld 小时"
+          }
+        }
+      }
+    },
+    "%lld min left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %lld 分钟"
+          }
+        }
+      }
+    },
+    "%lld of %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld，共 %lld"
           }
         }
       }
@@ -78,6 +318,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld 秒"
+          }
+        }
+      }
+    },
+    ". " : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "。"
+          }
+        }
+      }
+    },
+    ". Completed: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "。已完成：%@"
           }
         }
       }
@@ -152,12 +412,52 @@
         }
       }
     },
+    "< 1 min left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余不足 1 分钟"
+          }
+        }
+      }
+    },
+    "> 24 h left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余超过 24 小时"
+          }
+        }
+      }
+    },
+    "A lighter everyday model chosen to fit lower-memory Macs." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更轻量的日常模型，适合内存较小的 Mac。"
+          }
+        }
+      }
+    },
     "A short newsletter: new models, what fits your RAM, one command to run them." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "简短的新闻通讯：新模型、适合你内存的模型，以及运行它们的命令。"
+          }
+        }
+      }
+    },
+    "Action: %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "操作：%@。"
           }
         }
       }
@@ -232,12 +532,82 @@
         }
       }
     },
+    "Already downloaded and ready to start." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载，可以启动。"
+          }
+        }
+      }
+    },
+    "Already downloaded by another MLX app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已由其他 MLX 应用下载。"
+          }
+        }
+      }
+    },
+    "ALREADY ON THIS MAC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在本机"
+          }
+        }
+      }
+    },
+    "Already on this Mac · not catalog-tested." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在本机 · 未经目录测试。"
+          }
+        }
+      }
+    },
+    "Already on this Mac — nothing will be downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在本机 — 无需下载任何内容。"
+          }
+        }
+      }
+    },
     "Always allow applies to this tool only. You can review and revoke it in Settings → Experimental." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "“始终允许”仅适用于此工具。你可以在“设置 → 实验性功能”中查看和撤销。"
+          }
+        }
+      }
+    },
+    "Another MLX app already downloaded these models into the shared Hugging Face cache. Picking one of them skips the download entirely." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他 MLX 应用已将这些模型下载到共享的 Hugging Face 缓存。选择其中一个即可跳过下载。"
+          }
+        }
+      }
+    },
+    "Another MLX app already downloaded this model into the shared Hugging Face cache. Picking it skips the download entirely." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他 MLX 应用已将此模型下载到共享的 Hugging Face 缓存。选择它即可跳过下载。"
           }
         }
       }
@@ -302,12 +672,122 @@
         }
       }
     },
+    "Back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回"
+          }
+        }
+      }
+    },
+    "Back to all models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回所有模型"
+          }
+        }
+      }
+    },
+    "Back to recommended models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回推荐模型"
+          }
+        }
+      }
+    },
+    "Basic chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "基础对话"
+          }
+        }
+      }
+    },
+    "Bigger, and\nwhat it costs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更大的模型，\n需要多少资源"
+          }
+        }
+      }
+    },
+    "BROWSE ALL MODELS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "浏览所有模型"
+          }
+        }
+      }
+    },
     "Built-in Agent Harness (Experimental)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "内置智能体框架（实验性）"
+          }
+        }
+      }
+    },
+    "Cancel download stops the transfer. The model is not installed, and you can retry it or choose a different one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消下载会停止传输，模型不会安装。你可以重试或选择其他模型。"
+          }
+        }
+      }
+    },
+    "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法在本机运行。将打开说明页面，不会下载任何内容。"
+          }
+        }
+      }
+    },
+    "CHECKING THIS MAC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查本机"
+          }
+        }
+      }
+    },
+    "Chip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "芯片"
+          }
+        }
+      }
+    },
+    "CHOOSE A MODEL" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择模型"
           }
         }
       }
@@ -342,12 +822,32 @@
         }
       }
     },
+    "Choose your\nfirst model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择你的\n第一个模型"
+          }
+        }
+      }
+    },
     "Codex can stall on tool calls with this model. Choose a recommended Qwen model for coding agents." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codex 使用此模型时可能在工具调用中卡住。请为编程智能体选择推荐的 Qwen 模型。"
+          }
+        }
+      }
+    },
+    "Comfortable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "充裕"
           }
         }
       }
@@ -362,12 +862,32 @@
         }
       }
     },
+    "Connecting to mirror…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接镜像…"
+          }
+        }
+      }
+    },
     "Connectors are programs running on this Mac. Only allow tools from servers you set up yourself." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "连接器是在这台 Mac 上运行的程序。请仅允许来自你自行设置的服务器的工具。"
+          }
+        }
+      }
+    },
+    "Continue setup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续设置"
           }
         }
       }
@@ -408,6 +928,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法导入图像：%@"
+          }
+        }
+      }
+    },
+    "COULDN'T LOAD" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载"
+          }
+        }
+      }
+    },
+    "Couldn't load the model catalogue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载模型目录"
           }
         }
       }
@@ -512,6 +1052,36 @@
         }
       }
     },
+    "DIDN'T FINISH" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未完成"
+          }
+        }
+      }
+    },
+    "download %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载 %@"
+          }
+        }
+      }
+    },
+    "Download & start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载并启动"
+          }
+        }
+      }
+    },
     "Download a model to share. %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -532,6 +1102,16 @@
         }
       }
     },
+    "Download didn't finish. Retry to try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载未完成。请重试。"
+          }
+        }
+      }
+    },
     "Download full app" : {
       "localizations" : {
         "zh-Hans" : {
@@ -548,6 +1128,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "需要下载"
+          }
+        }
+      }
+    },
+    "Download size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载大小"
+          }
+        }
+      }
+    },
+    "DOWNLOAD STOPPED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载已停止"
           }
         }
       }
@@ -622,6 +1222,16 @@
         }
       }
     },
+    "DOWNLOADING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载"
+          }
+        }
+      }
+    },
     "Downloading or loading the image model…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -638,6 +1248,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "随心绘制"
+          }
+        }
+      }
+    },
+    "Eight are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 8 个模型。"
           }
         }
       }
@@ -672,12 +1292,52 @@
         }
       }
     },
+    "ETA %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预计剩余 %@"
+          }
+        }
+      }
+    },
     "Everything rapid-mlx can serve on this Mac. Your shortlist pick stays selected." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "rapid-mlx 可在这台 Mac 上运行的所有模型。你在推荐列表中的选择仍会保留。"
+          }
+        }
+      }
+    },
+    "Experimental 9B chat and tools for comparing model behavior." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于对比模型表现的实验性 9B 对话与工具模型。"
+          }
+        }
+      }
+    },
+    "File: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件：%@"
+          }
+        }
+      }
+    },
+    "FINDING THE BEST FIT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在寻找最合适的模型"
           }
         }
       }
@@ -692,6 +1352,76 @@
         }
       }
     },
+    "Fit on %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 %@ 内存上的适用情况"
+          }
+        }
+      }
+    },
+    "Five are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 5 个模型。"
+          }
+        }
+      }
+    },
+    "For basic chat only; less accurate and not recommended for tools." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅适合基础对话，准确性较低，不建议用于工具调用。"
+          }
+        }
+      }
+    },
+    "Four are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 4 个模型。"
+          }
+        }
+      }
+    },
+    "FREE NOW" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前可用"
+          }
+        }
+      }
+    },
+    "Free on cache volume" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缓存所在磁盘的可用空间"
+          }
+        }
+      }
+    },
+    "Free space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用空间"
+          }
+        }
+      }
+    },
     "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds." : {
       "localizations" : {
         "zh-Hans" : {
@@ -702,12 +1432,32 @@
         }
       }
     },
+    "Get started" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始使用"
+          }
+        }
+      }
+    },
     "Hugging Face endpoint" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hugging Face 端点"
+          }
+        }
+      }
+    },
+    "Hugging Face is rate-limiting downloads right now. Try again in a minute." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hugging Face 目前限制了下载频率，请稍后重试。"
           }
         }
       }
@@ -742,12 +1492,132 @@
         }
       }
     },
+    "Keep this window open. Setup finishes on its own and opens chat as soon as the files land." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请保持此窗口打开。文件下载完成后，设置会自动完成并打开对话。"
+          }
+        }
+      }
+    },
     "Key saved" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "密钥已保存"
+          }
+        }
+      }
+    },
+    "LEAVING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离开窗口"
+          }
+        }
+      }
+    },
+    "Load anyway (risky)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然加载（有风险）"
+          }
+        }
+      }
+    },
+    "Load model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载模型"
+          }
+        }
+      }
+    },
+    "Loading into memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载到内存。"
+          }
+        }
+      }
+    },
+    "Loading it would then put memory use at about %lld%% of %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载后内存使用率约为 %lld%%，总内存为 %@。"
+          }
+        }
+      }
+    },
+    "Loading models…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载模型…"
+          }
+        }
+      }
+    },
+    "Low disk space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "磁盘空间不足"
+          }
+        }
+      }
+    },
+    "Low disk space warning. %@ free on the volume that holds your Hugging Face cache; setup asks for at least %@ free before any download, which is a flat floor rather than the size of %@. Choose Continue anyway to start the download, or Cancel to go back." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "磁盘空间不足警告。Hugging Face 缓存所在磁盘有 %@ 可用空间；下载前至少需要 %@ 可用空间，这是固定下限，并非 %@ 的大小。选择“仍然继续”开始下载，或选择“取消”返回。"
+          }
+        }
+      }
+    },
+    "LOWEST MEMORY" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存占用最低"
+          }
+        }
+      }
+    },
+    "Lowest memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存占用最低"
+          }
+        }
+      }
+    },
+    "macOS keeps about a fifth of unified memory for itself, so a %@ Mac has roughly %@ to give a model. Rapid keeps some of that free for your conversation, so it offers models needing up to about %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "macOS 会保留约五分之一的统一内存，因此 %@ 内存的 Mac 约有 %@ 可供模型使用。Rapid 还会为对话预留一部分内存，因此提供的模型最多需要约 %@。"
           }
         }
       }
@@ -762,12 +1632,52 @@
         }
       }
     },
+    "Matching models to %@…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在为 %@ 内存匹配模型…"
+          }
+        }
+      }
+    },
     "Measuring %@" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在测量 %@"
+          }
+        }
+      }
+    },
+    "Memory conditions changed to %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存状况已变为 %@。"
+          }
+        }
+      }
+    },
+    "Memory is now safe. Load model is available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存现已充足，可以加载模型。"
+          }
+        }
+      }
+    },
+    "Memory when loaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载后内存占用"
           }
         }
       }
@@ -802,6 +1712,76 @@
         }
       }
     },
+    "NEED THE LIGHTEST OPTION?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要最轻量的选择？"
+          }
+        }
+      }
+    },
+    "NEEDED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所需空间"
+          }
+        }
+      }
+    },
+    "NEEDS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所需内存"
+          }
+        }
+      }
+    },
+    "Needs more memory than this Mac has" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所需内存超过本机容量"
+          }
+        }
+      }
+    },
+    "Needs ≈ %@ of memory. This Mac has %@, of which roughly %@ is usable for a model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要约 %@ 内存。本机共有 %@，其中约 %@ 可供模型使用。"
+          }
+        }
+      }
+    },
+    "Needs ≈ %@ · this Mac has %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要约 %@ · 本机有 %@"
+          }
+        }
+      }
+    },
+    "Network error during download. Check your connection and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载时发生网络错误。请检查连接并重试。"
+          }
+        }
+      }
+    },
     "Never" : {
       "localizations" : {
         "zh-Hans" : {
@@ -832,6 +1812,66 @@
         }
       }
     },
+    "Nine are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 9 个模型。"
+          }
+        }
+      }
+    },
+    "No download needed — moving straight to starting it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无需下载 — 即将直接启动。"
+          }
+        }
+      }
+    },
+    "No models match" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配的模型"
+          }
+        }
+      }
+    },
+    "No models on this Mac yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机尚无模型"
+          }
+        }
+      }
+    },
+    "Not downloaded yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未下载"
+          }
+        }
+      }
+    },
+    "Not enough disk space to download the model. Free ~3 GB and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "磁盘空间不足，无法下载模型。请释放约 3 GB 空间后重试。"
+          }
+        }
+      }
+    },
     "Not enough free space (%@ needed)." : {
       "localizations" : {
         "zh-Hans" : {
@@ -842,12 +1882,160 @@
         }
       }
     },
+    "NOT ENOUGH MEMORY" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存不足"
+          }
+        }
+      }
+    },
+    "Not for coding" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不适合编程"
+          }
+        }
+      }
+    },
     "Not now" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "暂不"
+          }
+        }
+      }
+    },
+    "Nothing has been downloaded. Switch to All to choose your first model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未下载任何模型。切换到“全部”以选择你的第一个模型。"
+          }
+        }
+      }
+    },
+    "ON THIS MAC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已在本机"
+          }
+        }
+      }
+    },
+    "on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本机"
+          }
+        }
+      }
+    },
+    "On this Mac, size %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本机，大小 %@"
+          }
+        }
+      }
+    },
+    "on this Mac, size %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在本机，大小 %@"
+          }
+        }
+      }
+    },
+    "On-device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机运行"
+          }
+        }
+      }
+    },
+    "on-device, fits this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机运行，适合本机"
+          }
+        }
+      }
+    },
+    "onboarding.rail.memory" : {
+      "comment" : "Onboarding rail hardware fact: the Mac's unified memory (RAM), not the chat memory feature.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memory"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存"
+          }
+        }
+      }
+    },
+    "One %@ pull, once. After that this model starts in seconds and needs no network." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只需下载一次，大小为 %@。之后此模型几秒即可启动，无需网络。"
+          }
+        }
+      }
+    },
+    "One download,\nthen it's yours." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载一次，\n随时可用。"
+          }
+        }
+      }
+    },
+    "One download, once. After that this model starts in seconds and needs no network." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "只需下载一次。之后此模型几秒即可启动，无需网络。"
+          }
+        }
+      }
+    },
+    "One is already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 1 个模型。"
           }
         }
       }
@@ -882,12 +2070,52 @@
         }
       }
     },
+    "Open Web Search Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开网页搜索设置"
+          }
+        }
+      }
+    },
+    "OPTIONAL — MORE CAPABLE, USES MORE MEMORY" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可选 — 能力更强，内存占用更多"
+          }
+        }
+      }
+    },
+    "OR PICK A BIGGER ONE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "或选择更大的模型"
+          }
+        }
+      }
+    },
     "Pick a starter below while Rapid gets the model ready." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rapid 准备模型期间，可以先从下方选一个示例。"
+          }
+        }
+      }
+    },
+    "PREPARING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备"
           }
         }
       }
@@ -932,6 +2160,46 @@
         }
       }
     },
+    "Quickstart didn't finish" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速入门未完成"
+          }
+        }
+      }
+    },
+    "Quickstart didn't finish. %@ Action: Open Startup Log." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速入门未完成。%@ 操作：打开启动日志。"
+          }
+        }
+      }
+    },
+    "QUITTING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出应用"
+          }
+        }
+      }
+    },
+    "Quitting Rapid-MLX stops the transfer. Setup is not marked finished, so it runs again on the next launch." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出 Rapid-MLX 会停止传输。设置不会标记为完成，下次启动时将再次运行。"
+          }
+        }
+      }
+    },
     "Rapid couldn't start Share Compute." : {
       "localizations" : {
         "zh-Hans" : {
@@ -972,6 +2240,26 @@
         }
       }
     },
+    "Rapid-MLX checks the chip, the unified memory and the free space on the volume that holds your Hugging Face cache. Nothing is uploaded — the read is local." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 会检查芯片、统一内存，以及 Hugging Face 缓存所在磁盘的可用空间。检查在本机进行，不会上传任何内容。"
+          }
+        }
+      }
+    },
+    "Rapid-MLX is reading the model catalogue to see which models are already on this Mac and how much each one would download. The short list below is fixed; only the “already downloaded” part depends on this read." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 正在读取模型目录，检查本机已有的模型及各模型的下载大小。下方候选列表固定，仅“已下载”部分取决于此次读取结果。"
+          }
+        }
+      }
+    },
     "Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud." : {
       "localizations" : {
         "zh-Hans" : {
@@ -998,6 +2286,76 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rapid-MLX 的本地引擎不可用。"
+          }
+        }
+      }
+    },
+    "Reading the catalogue from the engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在从引擎读取模型目录。"
+          }
+        }
+      }
+    },
+    "Reading this Mac…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在读取本机信息…"
+          }
+        }
+      }
+    },
+    "RECOMMENDED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推荐"
+          }
+        }
+      }
+    },
+    "Recommended for this Mac's memory and speed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "根据本机内存和速度推荐。"
+          }
+        }
+      }
+    },
+    "RECOMMENDED FOR YOUR %@ MAC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适合你这台 %@ 内存 Mac 的推荐模型"
+          }
+        }
+      }
+    },
+    "recommended starter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推荐入门模型"
+          }
+        }
+      }
+    },
+    "RECONNECTING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在重新连接"
           }
         }
       }
@@ -1032,6 +2390,26 @@
         }
       }
     },
+    "REVIEW DOWNLOAD" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看下载详情"
+          }
+        }
+      }
+    },
+    "Review download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看下载详情"
+          }
+        }
+      }
+    },
     "Reviewed domain: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1048,6 +2426,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "运行下方设置命令以启用 Rapid 的层级映射，然后在 Claude Desktop 中："
+          }
+        }
+      }
+    },
+    "safe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安全"
           }
         }
       }
@@ -1072,12 +2460,42 @@
         }
       }
     },
+    "SETUP COMPLETE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置完成"
+          }
+        }
+      }
+    },
     "Setup didn't finish last time. Nothing was carried over — choose a model and it downloads from here." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "上次设置未完成，没有保留之前的内容。请选择模型，系统将在此处下载。"
+          }
+        }
+      }
+    },
+    "Setup progress, step %lld of %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置进度，第 %lld 步，共 %lld 步"
+          }
+        }
+      }
+    },
+    "Seven are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 7 个模型。"
           }
         }
       }
@@ -1112,6 +2530,36 @@
         }
       }
     },
+    "Six are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 6 个模型。"
+          }
+        }
+      }
+    },
+    "SOURCE UNAVAILABLE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载源不可用"
+          }
+        }
+      }
+    },
+    "STALLED" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停滞"
+          }
+        }
+      }
+    },
     "Standard (no speed-ups)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1132,12 +2580,112 @@
         }
       }
     },
+    "Start existing model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动已有模型"
+          }
+        }
+      }
+    },
+    "START HERE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从这里开始"
+          }
+        }
+      }
+    },
+    "Start small — you can download bigger models anytime in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从小模型开始 — 随时可以在设置中下载更大的模型。"
+          }
+        }
+      }
+    },
+    "STEP %lld OF %lld · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 步，共 %lld 步 · %@"
+          }
+        }
+      }
+    },
+    "STEP %lld OF %lld · BEFORE LOADING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 步，共 %lld 步 · 加载前"
+          }
+        }
+      }
+    },
+    "STEP %lld OF %lld · BEFORE THE DOWNLOAD" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 步，共 %lld 步 · 下载前"
+          }
+        }
+      }
+    },
+    "STEP %lld OF %lld · NOTHING TO DOWNLOAD" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %lld 步，共 %lld 步 · 无需下载"
+          }
+        }
+      }
+    },
     "Step %lld · limit %lld: %@" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "第 %lld 步 · 上限 %lld 步：%@"
+          }
+        }
+      }
+    },
+    "STOPPING" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止下载"
+          }
+        }
+      }
+    },
+    "Strong all-rounder if you have the RAM to spare." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存充裕时的强大全能之选。"
+          }
+        }
+      }
+    },
+    "Strong everyday chat and tools, chosen for a reliable first conversation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "擅长日常对话和工具使用，让第一次对话更可靠。"
           }
         }
       }
@@ -1162,6 +2710,16 @@
         }
       }
     },
+    "Ten are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 10 个模型。"
+          }
+        }
+      }
+    },
     "That model is not available in the QuickSilver pool." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1172,12 +2730,72 @@
         }
       }
     },
+    "The current download source couldn't be reached. Switch source and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法连接当前下载源。请切换下载源后重试。"
+          }
+        }
+      }
+    },
+    "The difference is download size and how much memory the model holds while it runs, against this Mac's %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "区别在于下载大小，以及模型运行时占用的内存；本机共有 %@ 内存。"
+          }
+        }
+      }
+    },
+    "The engine didn't return a model list. You can still start with a recommended model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎未返回模型列表。你仍可从推荐模型开始。"
+          }
+        }
+      }
+    },
+    "The fast pick for very high-RAM Macs — same footprint, great speed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大内存 Mac 的高速之选 — 相同内存占用，出色速度。"
+          }
+        }
+      }
+    },
     "The image model isn't running yet." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "图像模型尚未运行。"
+          }
+        }
+      }
+    },
+    "The local engine isn't running. Restart it, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地引擎未运行。请重新启动后重试。"
+          }
+        }
+      }
+    },
+    "The model download didn't finish. Check your connection, then try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型下载未完成。请检查网络连接后重试。"
           }
         }
       }
@@ -1232,12 +2850,42 @@
         }
       }
     },
+    "The strongest all-rounder here. Best on Macs with 32 GB or more." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这里最强的全能模型，最适合内存不低于 32 GB 的 Mac。"
+          }
+        }
+      }
+    },
+    "The switch accounts for about %@ released from the previous model. " : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换时已计入上一个模型释放的约 %@ 内存。"
+          }
+        }
+      }
+    },
     "The weights are on disk. They are being loaded into Metal and the model is warming up — usually 5 to 15 seconds, longer the first time a model runs." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "权重已保存到磁盘，正在加载到 Metal 并预热模型，通常需要 5 到 15 秒，首次运行可能更久。"
+          }
+        }
+      }
+    },
+    "This downloads once and then runs entirely on your Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载一次后，即可完全在你的 Mac 上运行。"
           }
         }
       }
@@ -1252,12 +2900,152 @@
         }
       }
     },
+    "This Mac. Chip %@. Memory %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机。芯片 %@。内存 %@。"
+          }
+        }
+      }
+    },
+    "This model cannot run on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型无法在本机运行。"
+          }
+        }
+      }
+    },
+    "This model couldn't load. Check the model files or choose another model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载此模型。请检查模型文件或选择其他模型。"
+          }
+        }
+      }
+    },
+    "This model needs about %@ free. Free up memory or choose a smaller model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型需要约 %@ 可用内存。请释放内存，或选择更小的模型。"
+          }
+        }
+      }
+    },
+    "This model needs more free memory. Free up memory or choose a smaller model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型需要更多可用内存。请释放内存或选择更小的模型。"
+          }
+        }
+      }
+    },
+    "This model needs more memory than this Mac has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型所需的内存超过本机容量。"
+          }
+        }
+      }
+    },
+    "Three are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 3 个模型。"
+          }
+        }
+      }
+    },
+    "Tight" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "紧张"
+          }
+        }
+      }
+    },
+    "Try a different search, or clear it to see everything." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尝试其他搜索词，或清空搜索以查看全部模型。"
+          }
+        }
+      }
+    },
+    "Two are already\nhere." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机已有 2 个模型。"
+          }
+        }
+      }
+    },
+    "Unavailable. %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不可用。%@"
+          }
+        }
+      }
+    },
+    "Unified memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "统一内存"
+          }
+        }
+      }
+    },
+    "unsafe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不安全"
+          }
+        }
+      }
+    },
     "Up to %lld steps" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "最多 %lld 步"
+          }
+        }
+      }
+    },
+    "Usable for a model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型可用内存"
           }
         }
       }
@@ -1278,6 +3066,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "使用兼容 Hugging Face 的地址，例如 https://hf-mirror.com。留空则使用默认地址。新下载会使用此地址；重新启动服务器后，加载模型也会使用此地址。现有下载仍使用原地址。"
+          }
+        }
+      }
+    },
+    "Welcome" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "欢迎"
+          }
+        }
+      }
+    },
+    "WON'T FIT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法容纳"
+          }
+        }
+      }
+    },
+    "Won't fit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法容纳"
+          }
+        }
+      }
+    },
+    "You stopped this download, so the model isn't installed. Download it again, or choose a different model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你已停止下载，因此模型尚未安装。请重新下载或选择其他模型。"
           }
         }
       }
@@ -11127,6 +12955,16 @@
         }
       }
     },
+    "YOUR PICK" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的选择"
+          }
+        }
+      }
+    },
     "~%llds left" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19477,6 +21315,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "安全保存在这台 Mac 的钥匙串中。停止分享后再次上线，无需重新粘贴。同一个密钥也用于“积分”页——这是 Rapid 唯一的 QuickSilver 凭证，那里无需额外粘贴任何内容。"
+          }
+        }
+      }
+    },
+    "← Back to all models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "← 返回所有模型"
+          }
+        }
+      }
+    },
+    "← Back to recommended models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "← 返回推荐模型"
+          }
+        }
+      }
+    },
+    "← Back to review download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "← 返回下载详情"
+          }
+        }
+      }
+    },
+    "≈ %@ of %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "约 %@，共 %@"
           }
         }
       }

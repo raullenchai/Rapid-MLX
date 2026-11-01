@@ -5,6 +5,32 @@ import Testing
 @MainActor
 @Suite("Model presentation consistency")
 struct ModelPresentationConsistencyTests {
+    @Test func imageAliasesHaveExactFriendlyNames() {
+        let names = [
+            "flux2-klein-4b": "FLUX.2 Klein · 4B",
+            "flux2-klein-4b-bf16": "FLUX.2 Klein · 4B · BF16",
+            "flux-schnell": "FLUX.1 Schnell",
+            "z-image-turbo": "Z-Image Turbo",
+            "qwen-image": "Qwen Image",
+            "qwen-image-2.1": "Qwen Image 2.1",
+            "qwen-image-2.1-bf16": "Qwen Image 2.1 · BF16",
+            "qwen-image-2.1-turbo": "Qwen Image 2.1 Turbo",
+            "qwen-image-edit": "Qwen Image Edit",
+            "hidream-o1-dev": "HiDream O1 Dev",
+            "sdxl-base": "SDXL Base",
+            "sd35-large-4bit": "Stable Diffusion 3.5 Large"
+        ]
+        for (alias, name) in names {
+            #expect(ModelDisplayName.name(for: alias) == name)
+            #expect(ModelDisplayName.name(for: alias) != alias)
+            #expect(ModelDisplayName.name(for: alias.uppercased()) == name)
+            #expect(ModelDisplayName.name(for: alias + "-unknown") != name)
+        }
+        let image = ModelEntry(alias: "flux2-klein-4b", hfRepo: nil, sizeOnDisk: nil, cached: false)
+        #expect(ImageReadinessPresentation.rowTitle(image).hasPrefix("FLUX.2 Klein · 4B"))
+        #expect(QuickstartCoordinator.choice(forAlias: "flux2-klein-4b").displayName == "FLUX.2 Klein · 4B")
+    }
+
     @Test nonisolated func readinessUsesFriendlyNamesWithoutChangingIdentity() {
         let alias = "lfm2.5-1b-4bit"
         let name = ModelDisplayName.name(for: alias)

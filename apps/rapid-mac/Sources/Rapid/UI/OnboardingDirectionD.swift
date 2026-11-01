@@ -147,10 +147,10 @@ extension QuickstartCoordinator.Step {
     /// owned there; what the rail calls each step is this file's business.
     var railTitle: String {
         switch self {
-        case .welcome:     return "Welcome"
-        case .chooseModel: return "Choose a model"
-        case .download:    return "Download"
-        case .start:       return "Start"
+        case .welcome:     return String(localized: "Welcome")
+        case .chooseModel: return String(localized: "Choose a model")
+        case .download:    return String(localized: "Download")
+        case .start:       return String(localized: "Start")
         }
     }
 }
@@ -248,7 +248,7 @@ struct OnboardingSetupRail: View {
     /// put it there. Anything richer belongs in the value below, where it can
     /// grow without breaking the pin.
     static func progressAccessibilityLabel(current: QuickstartCoordinator.Step) -> String {
-        "Setup progress, step \(current.displayNumber) of \(QuickstartCoordinator.Step.total)"
+        String(localized: "Setup progress, step \(current.displayNumber) of \(QuickstartCoordinator.Step.total)")
     }
 
     /// What the rail says beyond its position: the step's name, and which
@@ -260,7 +260,7 @@ struct OnboardingSetupRail: View {
             .map(\.railTitle)
         var value = current.railTitle
         if !done.isEmpty {
-            value += ". Completed: \(done.joined(separator: ", "))"
+            value += String(localized: ". Completed: \(done.joined(separator: String(localized: ", ")))")
         }
         return value
     }
@@ -358,11 +358,11 @@ struct OnboardingRailFacts: View {
                 // From Step 2 onward the decision rests on room as well as
                 // memory, so the chip joins the memory line to make space for
                 // it (Paper 05.1 frame 04).
-                Self.row("Memory", "\(Self.memoryText(hardware)) · \(hardware.brandString)")
-                Self.row("Free space", freeSpace)
+                Self.row(String(localized: "onboarding.rail.memory", defaultValue: "Memory"), "\(Self.memoryText(hardware)) · \(hardware.brandString)")
+                Self.row(String(localized: "Free space"), freeSpace)
             } else {
-                Self.row("Chip", hardware.brandString)
-                Self.row("Memory", Self.memoryText(hardware))
+                Self.row(String(localized: "Chip"), hardware.brandString)
+                Self.row(String(localized: "onboarding.rail.memory", defaultValue: "Memory"), Self.memoryText(hardware))
             }
         }
         .padding(.horizontal, 24)
@@ -399,8 +399,8 @@ struct OnboardingRailFacts: View {
     /// The footer read aloud as one sentence, so VoiceOver gets the machine
     /// facts in one stop rather than three unlabelled fragments.
     static func spokenFacts(hardware: MacHardware, freeSpace: String?) -> String {
-        var text = "This Mac. Chip \(hardware.brandString). Memory \(memoryText(hardware))."
-        if let freeSpace { text += " Free space \(freeSpace)." }
+        var text = String(localized: "This Mac. Chip \(hardware.brandString). Memory \(memoryText(hardware)).")
+        if let freeSpace { text += String(localized: " Free space \(freeSpace).") }
         return text
     }
 }
@@ -1000,7 +1000,7 @@ struct OnboardingComparisonTable: View {
             HStack(alignment: .bottom, spacing: 0) {
                 Color.clear.frame(width: labelWidth, height: 1)
                 ForEach(columns) { column in
-                    Text(column.isPicked ? "\(column.title) · PICKED" : column.title)
+                    Text(column.isPicked ? String(localized: "\(column.title) · PICKED") : column.title)
                         .scaledSystemFont(10, relativeTo: .caption2, weight: .semibold, design: .monospaced)
                         .tracking(OnboardingD.Tracking.groupLabel)
                         .foregroundStyle(column.isPicked ? RapidTheme.textPrimary : RapidTheme.textTertiary)
@@ -1012,8 +1012,8 @@ struct OnboardingComparisonTable: View {
                 Rectangle().fill(RapidTheme.hairlineStrong).frame(height: 1)
             }
 
-            row("Download") { $0.download }
-            row("Memory when loaded") { $0.memory }
+            row(String(localized: "Download")) { $0.download }
+            row(String(localized: "Memory when loaded")) { $0.memory }
             row(fitLabel, isFit: true) { $0.fit }
         }
         .accessibilityElement(children: .combine)
@@ -1345,7 +1345,7 @@ struct OnboardingFactTable: View {
                 .padding(.bottom, index == rows.count - 1 ? 0 : 11)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier(row.identifier ?? "")
-                .accessibilityLabel("\(row.label): \(row.value)")
+                .accessibilityLabel(String(localized: "\(row.label): \(row.value)"))
             }
         }
     }
@@ -1483,7 +1483,7 @@ struct OnboardingStepFooter: View {
     var primaryEnabled: Bool = true
     /// Back's label, named for its destination ("← Back to all models") so the
     /// control says where it goes rather than only that it goes back.
-    var backTitle: String = "Back"
+    var backTitle: String = String(localized: "Back")
     /// Spoken form of ``backTitle``, without the arrow glyph.
     var backAccessibilityLabel: String?
     /// Spoken form of the primary. Defaults to ``primaryTitle`` so the AX
@@ -1540,6 +1540,6 @@ struct OnboardingStat: View {
                 .foregroundStyle(tone)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
+        .accessibilityLabel(String(localized: "\(label): \(value)"))
     }
 }

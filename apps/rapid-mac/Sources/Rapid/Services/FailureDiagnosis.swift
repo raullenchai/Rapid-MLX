@@ -175,11 +175,11 @@ struct FailureDiagnosis: Equatable, Sendable {
 
         var title: String {
             switch self {
-            case .retry: return "Retry"
-            case .restart: return "Restart"
-            case .openModelManagement: return "Open Model Management"
-            case .switchDownloadSource: return "Switch source"
-            case .openWebSearchSettings: return "Open Web Search Settings"
+            case .retry: return String(localized: "Retry")
+            case .restart: return String(localized: "Restart")
+            case .openModelManagement: return String(localized: "Open Model Management")
+            case .switchDownloadSource: return String(localized: "Switch source")
+            case .openWebSearchSettings: return String(localized: "Open Web Search Settings")
             }
         }
 
@@ -297,16 +297,16 @@ enum FailureDiagnoser {
             if let modelAlias,
                ModelSizing.estimate(alias: modelAlias).paramsBillions != nil {
                 let required = ModelSizing.estimate(alias: modelAlias).totalGB
-                message = "This model needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: ceil(required * 10) / 10 * Double(1 << 30)))) free. Free up memory or choose a smaller model."
+                message = String(localized: "This model needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: ceil(required * 10) / 10 * Double(1 << 30)))) free. Free up memory or choose a smaller model.")
             } else {
-                message = "This model needs more free memory. Free up memory or choose a smaller model."
+                message = String(localized: "This model needs more free memory. Free up memory or choose a smaller model.")
             }
             action = .openModelManagement
         case .modelLoadFailed:
-            message = "This model couldn't load. Check the model files or choose another model."
+            message = String(localized: "This model couldn't load. Check the model files or choose another model.")
             action = .openModelManagement
         case .engineNotRunning:
-            message = "The local engine isn't running. Restart it, then try again."
+            message = String(localized: "The local engine isn't running. Restart it, then try again.")
             action = .restart
         case .webSearchOffline:
             message = "Web search couldn't connect. Turn on network access, then try again."
@@ -381,7 +381,7 @@ enum FailureDiagnoser {
             message = "You didn't allow this, so there's nothing to show. Ask again if you change your mind."
             action = nil
         case .downloadFailed:
-            message = "The model download didn't finish. Check your connection, then try again."
+            message = String(localized: "The model download didn't finish. Check your connection, then try again.")
             action = .retry
         case .downloadCancelled:
             // States what the user did, what it left behind, and what the one
@@ -391,10 +391,10 @@ enum FailureDiagnoser {
             // property of the downloader, not a promise this app is in a
             // position to make. See Paper 05.1 state 10 — "No Pause and no
             // resume."
-            message = "You stopped this download, so the model isn't installed. Download it again, or choose a different model."
+            message = String(localized: "You stopped this download, so the model isn't installed. Download it again, or choose a different model.")
             action = .retry
         case .downloadSourceUnavailable:
-            message = "The current download source couldn't be reached. Switch source and try again."
+            message = String(localized: "The current download source couldn't be reached. Switch source and try again.")
             action = .switchDownloadSource
         case .requestFailed:
             message = "Rapid couldn't finish that request. Try again, or restart the model."

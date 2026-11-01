@@ -981,8 +981,8 @@ final class DownloadProgress {
         guard rate > 0, bytesRemaining > 0 else { return nil }
         let seconds = Double(bytesRemaining) / rate
         guard seconds.isFinite else { return nil }
-        if seconds < 60 { return "< 1 min left" }
-        if seconds >= 24 * 3600 { return "> 24 h left" }
+        if seconds < 60 { return String(localized: "< 1 min left") }
+        if seconds >= 24 * 3600 { return String(localized: "> 24 h left") }
         // Compute minutes first, then carry into hours so values that
         // round up to 60 don't render as "60 min left" or "1 h 60 min
         // left". E.g. ``seconds = 7170`` (1h 59.5m) used to render as
@@ -993,9 +993,9 @@ final class DownloadProgress {
             hours += 1
             minutes = 0
         }
-        if hours == 0 { return "\(minutes) min left" }
-        if minutes == 0 { return "\(hours) h left" }
-        return "\(hours) h \(minutes) min left"
+        if hours == 0 { return String(localized: "\(minutes) min left") }
+        if minutes == 0 { return String(localized: "\(hours) h left") }
+        return String(localized: "\(hours) h \(minutes) min left")
     }
 
     private nonisolated static func speedToken(in tail: String) -> String? {

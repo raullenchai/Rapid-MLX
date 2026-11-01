@@ -935,9 +935,9 @@ struct OnboardingRecoveryBehaviorTests {
         // the failure summary.
         let changesPhaseAndAnnounces = body.contains(
             "coordinator.enterFailed(message:message,origin:origin)"
-                + "ifletstartupFailure{VoiceOverAnnouncer.announce("
+                + "ifletstartupFailure{VoiceOverAnnouncer.announce(String(localized:"
                 + "\"Quickstartdidn'tfinish.\\(startupFailure.message)"
-                + "Action:OpenStartupLog.\")}"
+                + "Action:OpenStartupLog.\"))}"
                 + "else{VoiceOverAnnouncer.announce("
                 + "Self.recoveryAnnouncement(for:kind))}"
         )
@@ -1028,12 +1028,12 @@ struct OnboardingRecoveryBehaviorTests {
         #expect(
             body.contains(
                 #".accessibilityIdentifier("Quickstart.Download.Cancel")"#
-                + #".accessibilityLabel("Canceldownloadof\(coordinator.selection.displayName)")"#
+                + #".accessibilityLabel(String(localized:"Canceldownloadof\(coordinator.selection.displayName)"))"#
             ),
             "the cancel control must name WHICH download it stops"
         )
         #expect(
-            body.contains(#".accessibilityHint("Stopsthedownload.Themodelwillnotbeinstalled.")"#),
+            body.contains(#".accessibilityHint(String(localized:"Stopsthedownload.Themodelwillnotbeinstalled."))"#),
             "the hint must state the consequence"
         )
         // No keyboard shortcut on a destructive control: Return is the most

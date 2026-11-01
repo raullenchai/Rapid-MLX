@@ -659,6 +659,71 @@ struct LocalizationTests {
         #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least \(DownloadProgress.formatMemory(Int64(48) * (1 << 30))) unified memory; this Mac has 32 GB.")
     }
 
+    @Test("Onboarding copy resolves against compiled zh-Hans")
+    func compiledOnboardingCopy() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["xcstringstool", "compile", try catalogURL().path,
+                        "--output-directory", output.path, "--serialization-format", "binary"]
+        )
+        try #require(compiler.terminationStatus == 0)
+        let zhBundle = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        let enBundle = try #require(Bundle(url: output.appendingPathComponent("en.lproj", isDirectory: true)))
+        let labels = [
+            "Welcome": "欢迎",
+            "Choose a model": "选择模型",
+            "Download": "下载",
+            "Start": "启动",
+            "Get started": "开始使用",
+            "Back": "返回",
+            "Start existing model": "启动已有模型",
+            "Download & start": "下载并启动",
+            "ON THIS MAC": "已在本机",
+            "LOWEST MEMORY": "内存占用最低",
+            "STARTING": "启动中",
+            "Loading into memory.": "正在加载到内存。",
+            "SETUP COMPLETE": "设置完成",
+            "The strongest all-rounder here. Best on Macs with 32 GB or more.": "这里最强的全能模型，最适合内存不低于 32 GB 的 Mac。",
+            "For basic chat only; less accurate and not recommended for tools.": "仅适合基础对话，准确性较低，不建议用于工具调用。"
+        ]
+        for (key, zh) in labels {
+            #expect(zhBundle.localizedString(forKey: key, value: nil, table: nil) == zh)
+            #expect(enBundle.localizedString(forKey: key, value: nil, table: nil) == key)
+        }
+        // The rail's hardware "Memory" is RAM (内存), not the chat memory
+        // feature that the plain "Memory" key translates as 记忆.
+        #expect(zhBundle.localizedString(forKey: "onboarding.rail.memory", value: nil, table: nil) == "内存")
+        #expect(enBundle.localizedString(forKey: "onboarding.rail.memory", value: nil, table: nil) == "Memory")
+        let projectedPercent = 95, memory = "18 GB"
+        #expect(String(localized: "Loading it would then put memory use at about \(projectedPercent)% of \(memory).", bundle: zhBundle) == "加载后内存使用率约为 95%，总内存为 18 GB。")
+        let hours = 1, minutes = 2
+        #expect(String(localized: "\(hours) h \(minutes) min left", bundle: zhBundle) == "剩余 1 小时 2 分钟")
+        let step = 2, total = 4, count = 11
+        let name = "LFM2.5 · 1.2B"
+        #expect(String(localized: "STEP \(step) OF \(total)", bundle: zhBundle) == "第 2 步，共 4 步")
+        #expect(String(localized: "\(count) are already\nhere.", bundle: zhBundle) == "本机已有 11 个模型。")
+        #expect(String(localized: "\(name) is ready.", bundle: zhBundle) == "LFM2.5 · 1.2B 已就绪。")
+        #expect(String(localized: "STEP \(step) OF \(total)", bundle: enBundle) == "STEP 2 OF 4")
+        #expect(String(localized: "\(count) are already\nhere.", bundle: enBundle) == "11 are already\nhere.")
+        #expect(String(localized: "Two are already\nhere.", bundle: enBundle) == "Two are already\nhere.")
+        #expect(String(localized: "Two are already\nhere.", bundle: zhBundle) == "本机已有 2 个模型。")
+        #expect(String(localized: "\(name) is ready.", bundle: enBundle) == "LFM2.5 · 1.2B is ready.")
+        let rail = try String(contentsOf: rapidSource("UI/OnboardingDirectionD.swift"), encoding: .utf8)
+        #expect(rail.contains(#"String(localized: "Welcome")"#))
+        #expect(rail.contains(#"String(localized: "Back")"#))
+        let quickstart = try String(contentsOf: rapidSource("UI/QuickstartView.swift"), encoding: .utf8)
+        #expect(quickstart.contains(#"String(localized: "Get started")"#))
+        #expect(quickstart.contains(#"String(localized: "The strongest all-rounder here. Best on Macs with 32 GB or more.")"#))
+        #expect(quickstart.contains(#"String(localized: "\(coordinator.selection.displayName) is ready.")"#))
+        // Both the full rail and compact band must share the friendly-name path.
+        #expect(quickstart.components(separatedBy: "identity: ModelDisplayName.name(for: coordinator.selection.alias)").count == 3)
+        #expect(!quickstart.contains("identity: coordinator.selection.alias"))
+    }
+
     @Test("Chat chrome String labels resolve against compiled zh-Hans")
     func compiledChatChromeLabels() async throws {
         let output = FileManager.default.temporaryDirectory

@@ -164,7 +164,7 @@ struct ImageCatalogTests {
         )
         #expect(
             ImageReadinessPresentation.rowTitle(entry)
-                == "sdxl-base · \(DownloadProgress.formatBytes(Int64(6.5 * Double(1 << 30)))) · ≥\(DownloadProgress.formatMemory(16 * (1 << 30))) RAM · 512² default · 30 steps · Rapid MLX"
+                == "SDXL Base · \(DownloadProgress.formatBytes(Int64(6.5 * Double(1 << 30)))) · ≥\(DownloadProgress.formatMemory(16 * (1 << 30))) RAM · 512² default · 30 steps · Rapid MLX"
         )
     }
 

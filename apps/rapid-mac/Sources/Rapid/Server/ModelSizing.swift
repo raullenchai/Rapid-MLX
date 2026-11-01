@@ -384,11 +384,11 @@ enum ModelSizing {
         var title: String {
             switch severity {
             case .unsafe:
-                return "\(ModelDisplayName.name(for: alias)) may crash your Mac right now"
+                return String(localized: "\(ModelDisplayName.name(for: alias)) may crash your Mac right now")
             case .tight:
-                return "\(ModelDisplayName.name(for: alias)) is a tight fit right now"
+                return String(localized: "\(ModelDisplayName.name(for: alias)) is a tight fit right now")
             case .safe:
-                return "\(ModelDisplayName.name(for: alias)) is ready to load"
+                return String(localized: "\(ModelDisplayName.name(for: alias)) is ready to load")
             }
         }
 
@@ -399,8 +399,8 @@ enum ModelSizing {
             let need = size(footprintGB)
             let free = size(freeGB)
             guard totalGB > 0 else {
-                let facts = "\(ModelDisplayName.name(for: alias)) needs about \(need), and about \(free) is free right now."
-                return facts + " Close some apps or pick a smaller model before loading it."
+                let facts = String(localized: "\(ModelDisplayName.name(for: alias)) needs about \(need), and about \(free) is free right now.")
+                return facts + String(localized: " Close some apps or pick a smaller model before loading it.")
             }
             let usedGB = max(0, totalGB - freeGB)
             let projectedPercent = Int(((usedGB + footprintGB) / totalGB * 100).rounded())
@@ -408,24 +408,24 @@ enum ModelSizing {
             let toFree = max(0, usedGB + footprintGB - threshold / 100 * totalGB)
             let freeAction = size(max(1, toFree.rounded(.up)))
             let release = plannedReleaseGB > 0
-                ? "The switch accounts for about \(size(plannedReleaseGB)) released from the previous model. "
+                ? String(localized: "The switch accounts for about \(size(plannedReleaseGB)) released from the previous model. ")
                 : ""
-            let facts = "Loading it would then put memory use at about \(projectedPercent)% of \(size(totalGB))."
+            let facts = String(localized: "Loading it would then put memory use at about \(projectedPercent)% of \(size(totalGB)).")
             switch severity {
             case .unsafe:
-                return release + facts + " That is more memory than this Mac has. Free about \(freeAction) by closing some apps, or pick a smaller model."
+                return release + facts + String(localized: " That is more memory than this Mac has. Free about \(freeAction) by closing some apps, or pick a smaller model.")
             case .tight:
-                return release + facts + " It should load but may use memory compression or swap under longer chats."
+                return release + facts + String(localized: " It should load but may use memory compression or swap under longer chats.")
             case .safe:
-                return facts + " There is now enough memory to load it normally."
+                return facts + String(localized: " There is now enough memory to load it normally.")
             }
         }
 
         /// The confirm button title — worded to match the risk.
         var confirmTitle: String {
             switch severity {
-            case .unsafe: "Load anyway (risky)"
-            case .tight, .safe: "Load model"
+            case .unsafe: String(localized: "Load anyway (risky)")
+            case .tight, .safe: String(localized: "Load model")
             }
         }
     }
