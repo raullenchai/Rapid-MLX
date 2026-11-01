@@ -1053,7 +1053,7 @@ enum ImportedEditImageError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .tooLarge: return "Choose an image smaller than 25 MB."
+        case .tooLarge: return "Choose an image smaller than \(DownloadProgress.formatBytes(Int64(ImageClient.maxEditImageBytes)))."
         case .tooManyPixels: return "Choose an image no larger than 8192 px or 40 megapixels."
         case .unsupportedType: return "Choose a PNG or JPEG image."
         case .cannotDecode: return "The selected file isn't a readable image."

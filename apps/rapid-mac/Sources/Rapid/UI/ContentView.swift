@@ -1296,8 +1296,8 @@ struct ContentView: View {
     /// land and the user starts it explicitly. Same download-only path the
     /// picker's "Download in background" uses.
     private func downloadModel(_ target: String) {
-        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
-        _ = downloads.startDownload(alias: target, hfPath: hfPath)
+        let entry = catalogEntries.first(where: { $0.alias == target })
+        _ = downloads.startDownload(alias: target, hfPath: entry?.hfRepo, totalBytes: entry?.size?.byteCount)
     }
 
     private func selectChatModel(_ target: String) {

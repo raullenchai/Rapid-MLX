@@ -1255,7 +1255,7 @@ struct ModelPickerBar: View {
             if !entry.cached
                 && !downloads.isDownloading(entry.alias) {
                 Button {
-                    downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
+                    downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: entry.size?.byteCount)
                 } label: {
                     Text("Download in background")
                 }
@@ -1655,9 +1655,9 @@ struct ModelPickerBar: View {
         // lands (``selectedAliasIsCached``). Matches the readiness banner's
         // ``download`` action.
         if !selectedAliasIsCached {
-            let hfPath = catalog.first(where: { $0.alias == trimmed })?.hfRepo
+            let entry = catalog.first(where: { $0.alias == trimmed })
             if !downloads.isDownloading(trimmed) {
-                _ = downloads.startDownload(alias: trimmed, hfPath: hfPath)
+                _ = downloads.startDownload(alias: trimmed, hfPath: entry?.hfRepo, totalBytes: entry?.size?.byteCount)
             }
             return
         }
