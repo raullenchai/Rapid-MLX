@@ -93,7 +93,7 @@ struct ComposerLoadStatus: Equatable {
                 phase: .downloading,
                 title: String(localized: "Downloading the model…"),
                 percentText: percentText(for: clamped),
-                detail: joined(alias, bytesText(progress)),
+                detail: joined(ModelDisplayName.name(for: alias), bytesText(progress)),
                 etaText: progress?.etaText,
                 progress: clamped.map(Progress.determinate) ?? .indeterminate,
                 action: nil
@@ -107,7 +107,7 @@ struct ComposerLoadStatus: Equatable {
                 phase: .loading,
                 title: loadingTitle(for: progress?.activity),
                 percentText: nil,
-                detail: alias,
+                detail: ModelDisplayName.name(for: alias),
                 etaText: nil,
                 progress: .indeterminate,
                 action: nil
@@ -131,7 +131,7 @@ struct ComposerLoadStatus: Equatable {
     private static func stoppedStatus(alias: String?) -> ComposerLoadStatus {
         ComposerLoadStatus(
             phase: .stopped, title: String(localized: "Download stopped"),
-            percentText: nil, detail: alias, etaText: nil,
+            percentText: nil, detail: alias.map { ModelDisplayName.name(for: $0) }, etaText: nil,
             progress: .none, action: nil
         )
     }

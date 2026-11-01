@@ -2,6 +2,16 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%@ memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 内存"
+          }
+        }
+      }
+    },
     "%1$lld published results exist for %2$@ on an %3$@. Run it once to add another reference and tighten the range." : {
       "localizations" : {
         "zh-Hans" : {

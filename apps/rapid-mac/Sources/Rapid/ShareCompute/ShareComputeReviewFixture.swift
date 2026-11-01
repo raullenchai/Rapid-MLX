@@ -73,7 +73,7 @@ enum ShareComputeReviewFixture {
     /// Matches the model the screenshot script's fake catalog marks as
     /// cached, so the reviewable stages and the ready workbench name the same
     /// model.
-    static let modelTitle = "Qwen3.8 27B · 4-bit"
+    static let modelTitle = "Qwen 3.8 · 27B · TensorFold"
     static let catalogID = "qwen3.8-27b"
     static let worker = "Lori-Mac"
     static let nodeID = "qs-node-a8c1"

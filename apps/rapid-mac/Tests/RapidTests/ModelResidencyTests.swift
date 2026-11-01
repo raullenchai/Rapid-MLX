@@ -185,7 +185,7 @@ struct ModelResidencyTests {
         #expect(busy?.activeRequests == 2)
         #expect(
             busy?.title
-                == "Model qwen3.5-4b-4bit is serving 2 active requests. Switch anyway?"
+                == "Model \(ModelDisplayName.name(for: "qwen3.5-4b-4bit")) is serving 2 active requests. Switch anyway?"
         )
 
         #expect(ModelSwitchRisk.evaluate(

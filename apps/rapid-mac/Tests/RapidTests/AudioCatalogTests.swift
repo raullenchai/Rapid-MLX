@@ -225,7 +225,7 @@ struct AudioCatalogTests {
         #expect(source.contains("controller.isHotkeyArmed"))
         #expect(source.contains("Listening — press"))
         #expect(source.contains("Listening paused — press \\(controller.trigger.label) to reconnect"))
-        #expect(source.contains("Rapid will load \\(controller.modelAlias) when you next use dictation."))
+        #expect(source.contains("Rapid will load \\(ModelDisplayName.name(for: controller.modelAlias)) when you next use dictation."))
     }
 
     @Test("parser extracts audio rows and preserves subtype, family, size, and repo")
@@ -305,9 +305,9 @@ struct AudioCatalogTests {
         let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
 
         #expect(source.contains("ModelPickerBar.cacheGlyph(cached: entry.cached)"))
-        #expect(source.contains(".map(\\.alias) ?? \"Choose a model\""))
+        #expect(source.contains(".map { ModelDisplayName.name(for: $0.alias) } ?? \"Choose a model\""))
         #expect(!source.contains("private func modelTitle(_ entry: ModelEntry)"),
-                "Keep visible audio model labels to the alias; the icon owns cache state.")
+                "Keep visible audio model labels friendly; the icon owns cache state.")
     }
 
     @Test("uncached audio ignores the lazy server's early ready signal")

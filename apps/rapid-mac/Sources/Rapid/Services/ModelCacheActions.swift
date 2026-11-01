@@ -166,9 +166,9 @@ enum ModelCacheActions {
     ) -> DeletionConfirmation {
         let title: String
         if let size = entry.size?.displayText {
-            title = String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
+            title = String(localized: "Delete \"\(ModelDisplayName.name(for: entry.alias))\"? This frees \(size).")
         } else {
-            title = String(localized: "Delete \"\(entry.alias)\"?")
+            title = String(localized: "Delete \"\(ModelDisplayName.name(for: entry.alias))\"?")
         }
         let suffix = entry.size.map { $0.displayText }.map { String(localized: " Frees \($0).") } ?? ""
         let stopPrefix = isServing ? String(localized: "Stops the currently serving model first. ") : ""
@@ -195,13 +195,13 @@ enum ModelCacheActions {
             freedLabel = ""
         }
         if freedLabel.isEmpty {
-            return String(localized: "Deleted \(alias).")
+            return String(localized: "Deleted \(ModelDisplayName.name(for: alias)).")
         }
-        return String(localized: "Deleted \(alias) — freed \(freedLabel).")
+        return String(localized: "Deleted \(ModelDisplayName.name(for: alias)) — freed \(freedLabel).")
     }
 
     static func failureMessage(alias: String, error: String) -> String {
-        String(localized: "Couldn't delete \(alias): \(error)")
+        String(localized: "Couldn't delete \(ModelDisplayName.name(for: alias)): \(error)")
     }
 
     // MARK: - Run delete
@@ -238,7 +238,7 @@ enum ModelCacheActions {
         // present and future delete path has to pass.
         guard !entry.isExternal else {
             return .failure(
-                message: String(localized: "\(entry.alias) was downloaded by another app. Rapid can't remove it — delete it where it was installed.")
+                message: String(localized: "\(ModelDisplayName.name(for: entry.alias)) was downloaded by another app. Rapid can't remove it — delete it where it was installed.")
             )
         }
         // Audio (and image) snapshots list as `(unmapped)`, so pass the

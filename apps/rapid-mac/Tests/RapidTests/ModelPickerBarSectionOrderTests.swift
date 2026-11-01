@@ -177,10 +177,10 @@ struct ModelPickerBarSectionOrderTests {
                 "Recommended section must render BEFORE All models in the picker dropdown")
     }
 
-    @Test("Quickstart section row title carries the alias + subtitle")
+    @Test("Quickstart section row title carries the friendly name + subtitle")
     func quickstartRowTitleShape() {
         let title = ModelPickerBar.quickstartRowTitle(alias: QuickstartCoordinator.defaultChoice.alias)
-        #expect(title.contains(QuickstartCoordinator.defaultChoice.alias))
+        #expect(title.contains(ModelDisplayName.name(for: QuickstartCoordinator.defaultChoice.alias)))
         #expect(title.contains(ModelPickerBar.quickstartSubtitle))
     }
 
@@ -194,13 +194,13 @@ struct ModelPickerBarSectionOrderTests {
                 "Quickstart subtitle is too long for the picker row: '\(ModelPickerBar.quickstartSubtitle)' (\(ModelPickerBar.quickstartSubtitle.count) chars)")
     }
 
-    @Test("Quickstart row accessibility label includes alias + cached state + subtitle")
+    @Test("Quickstart row accessibility label includes name + cached state + subtitle")
     func quickstartRowAccessibility() {
         let labelUncached = ModelPickerBar.quickstartRowAccessibilityLabel(
             alias: QuickstartCoordinator.defaultChoice.alias,
             cached: false
         )
-        #expect(labelUncached.contains(QuickstartCoordinator.defaultChoice.alias))
+        #expect(labelUncached.contains(ModelDisplayName.name(for: QuickstartCoordinator.defaultChoice.alias)))
         #expect(labelUncached.contains("not downloaded"))
         #expect(labelUncached.contains(ModelPickerBar.quickstartSubtitle))
 

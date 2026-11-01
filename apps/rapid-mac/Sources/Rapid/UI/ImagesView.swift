@@ -24,7 +24,7 @@ enum ImageReadinessPresentation {
         details.append("512² default")
         details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")
         if let runtime = runtimeName(entry.runtimeAdapter) { details.append(runtime) }
-        return ([entry.alias] + details).joined(separator: " · ")
+        return ([ModelDisplayName.name(for: entry.alias)] + details).joined(separator: " · ")
     }
 }
 
@@ -882,7 +882,7 @@ struct ImagesView: View {
                 Image(systemName: viewModel.isEditing ? "pencil.and.scribble" : "photo")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
-                Text(viewModel.selectedAlias.isEmpty ? "Choose a model" : viewModel.selectedAlias)
+                Text(viewModel.selectedAlias.isEmpty ? String(localized: "Choose a model") : ModelDisplayName.name(for: viewModel.selectedAlias))
                     .font(RapidFont.secondary)
                     .foregroundStyle(viewModel.selectedAlias.isEmpty ? .secondary : .primary)
                     .lineLimit(1)

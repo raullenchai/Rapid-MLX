@@ -53,7 +53,7 @@ struct DictationEnablePolicyTests {
         #expect(!DictationEnablePolicy.showsErrorBanner(lastError: "", modelAlias: alias, modelDownloadRowVisible: false))
         #expect(DictationEnablePolicy.evaluate(.init(microphone: true, accessibility: true, modelSelected: true,
             modelOnDisk: false, modelAlias: alias)) == .reject(
-                message: "whisper-small isn't downloaded yet. Download it in the Model row, then turn dictation on.",
+                message: "Whisper Small isn't downloaded yet. Download it in the Model row, then turn dictation on.",
                 disableIntent: true))
     }
 

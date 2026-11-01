@@ -106,15 +106,15 @@ struct ModelCacheActionsTests {
     func deletionConfirmationSized() {
         let e = entry("qwen3.5-4b-4bit", cached: true, size: "2.3 GB")
         let copy = ModelCacheActions.deletionConfirmation(for: e)
-        #expect(copy.title == "Delete \"qwen3.5-4b-4bit\"? This frees 2.3 GB.")
+        #expect(copy.title == "Delete \"\(ModelDisplayName.name(for: "qwen3.5-4b-4bit"))\"? This frees 2.3 GB.")
         #expect(copy.message.contains("Frees 2.3 GB"))
     }
 
-    @Test("deletionConfirmation: unsized entry still names the alias")
+    @Test("deletionConfirmation: unsized entry still names the model")
     func deletionConfirmationUnsized() {
         let e = entry("phi-4-4bit", cached: true, size: nil)
         let copy = ModelCacheActions.deletionConfirmation(for: e)
-        #expect(copy.title == "Delete \"phi-4-4bit\"?")
+        #expect(copy.title == "Delete \"\(ModelDisplayName.name(for: "phi-4-4bit"))\"?")
         // Body must NOT say "Frees " with no number — we deliberately
         // skip the freed-line when we don't have one.
         #expect(!copy.message.contains("Frees "))
@@ -157,9 +157,9 @@ struct ModelCacheActionsTests {
         )
         // ByteCountFormatter for ~2.4 GB at .file produces "2.4 GB"
         // on macOS — we don't pin the exact formatted token (locale
-        // could shift), only that the alias + a freed-X clause is
+        // could shift), only that the model name + a freed-X clause is
         // present.
-        #expect(msg.hasPrefix("Deleted qwen3.5-4b-4bit — freed "))
+        #expect(msg.hasPrefix("Deleted \(ModelDisplayName.name(for: "qwen3.5-4b-4bit")) — freed "))
     }
 
     @Test("successMessage: falls back to ls size when no bytes")
@@ -169,7 +169,7 @@ struct ModelCacheActionsTests {
             freedBytes: nil,
             fallbackSize: "5.1 GB"
         )
-        #expect(msg == "Deleted phi-4-4bit — freed 5.1 GB.")
+        #expect(msg == "Deleted \(ModelDisplayName.name(for: "phi-4-4bit")) — freed 5.1 GB.")
     }
 
     @Test("successMessage: bare deletion when neither bytes nor fallback")
@@ -179,7 +179,7 @@ struct ModelCacheActionsTests {
             freedBytes: nil,
             fallbackSize: nil
         )
-        #expect(msg == "Deleted phi-4-4bit.")
+        #expect(msg == "Deleted \(ModelDisplayName.name(for: "phi-4-4bit")).")
     }
 
     @Test("successMessage: zero bytes falls back to size string")
@@ -191,14 +191,14 @@ struct ModelCacheActionsTests {
             freedBytes: 0,
             fallbackSize: "5.1 GB"
         )
-        #expect(msg == "Deleted phi-4-4bit — freed 5.1 GB.")
+        #expect(msg == "Deleted \(ModelDisplayName.name(for: "phi-4-4bit")) — freed 5.1 GB.")
     }
 
-    @Test("failureMessage: surfaces alias + error")
+    @Test("failureMessage: surfaces model name + error")
     func failureMessageShape() {
         #expect(
             ModelCacheActions.failureMessage(alias: "phi-4-4bit", error: "rapid-mlx not found.")
-                == "Couldn't delete phi-4-4bit: rapid-mlx not found."
+                == "Couldn't delete \(ModelDisplayName.name(for: "phi-4-4bit")): rapid-mlx not found."
         )
     }
 

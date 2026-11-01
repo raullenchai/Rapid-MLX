@@ -5,6 +5,58 @@ import Testing
 @MainActor
 @Suite("Model presentation consistency")
 struct ModelPresentationConsistencyTests {
+    @Test nonisolated func readinessUsesFriendlyNamesWithoutChangingIdentity() {
+        let alias = "lfm2.5-1b-4bit"
+        let name = ModelDisplayName.name(for: alias)
+        #expect(name == "LFM2.5 · 1.2B")
+        #expect(ModelReadiness.ready(alias: alias).emptyStateSubtitle == "Chatting with LFM2.5 · 1.2B")
+        let stopped = ModelReadiness.needsStart(alias: alias)
+        #expect(stopped.composerPlaceholder == "Start \(name) first")
+        #expect(stopped.sendTooltip == "Start \(name) before sending.")
+        #expect(stopped.composerSendTooltip(hasDraft: false) == "Type a message, then Start & Send to start \(name).")
+        #expect(stopped.alias == alias)
+        #expect(stopped.action == .start(alias: alias))
+        #expect(stopped.headline(displayName: "Custom title") == "Custom title isn't running")
+        #expect(stopped.accessibilityLabel(displayName: "Custom title").hasPrefix("Custom title isn't running"))
+        #expect(ModelDisplayName.conversational(alias: alias, state: .ready(alias: alias)) == name)
+        for readiness in [stopped, .unknownModel(alias: alias), .needsDownload(alias: alias, sizeText: nil),
+                          .downloading(alias: alias, detail: nil, fraction: nil), .starting(alias: alias, detail: nil),
+                          .ready(alias: alias), .failed(alias: alias, message: "Failed", action: nil)] {
+            #expect(readiness.headline.contains(name))
+            #expect(readiness.accessibilityLabel.contains(name))
+            #expect(!readiness.emptyStateSubtitle.contains(alias))
+            #expect(!readiness.sendTooltip.contains(alias))
+        }
+    }
+
+    @Test func pickerImageAndAudioNames() {
+        let alias = "lfm2.5-1b-4bit"
+        let name = ModelDisplayName.name(for: alias)
+        #expect(ModelPickerBar.aliasButtonTitle(alias: alias, bucket: .small).hasPrefix(name + " · "))
+        #expect(ModelPickerBar.quickstartRowTitle(alias: alias).hasPrefix(name))
+        #expect(ModelPickerBar.recommendedRowMenuTitle(label: "Best pick", alias: alias) == "Best pick — \(name)")
+        let image = ModelEntry(alias: "bonsai-image-4b-2bit", hfRepo: nil, sizeOnDisk: nil, cached: false)
+        #expect(ImageReadinessPresentation.rowTitle(image).hasPrefix(ModelDisplayName.name(for: image.alias)))
+        #expect(!ImageReadinessPresentation.rowTitle(image).hasPrefix(image.alias))
+        #expect(SidebarView.audioLaneDisplayName(model: "mlx-community/whisper-large-v3-turbo", lane: "stt", catalog: []) == "Whisper Large v3 Turbo")
+    }
+
+    @Test func tensorFoldHasDistinctName() throws {
+        let alias = "qwen3.8-27b-tensorfold"
+        #expect(ModelSizing.parseBitsPerWeight(alias) == 4)
+        #expect(ModelDisplayName.name(for: alias) == "Qwen 3.8 · 27B · TensorFold")
+        #expect(ModelDisplayName.name(for: alias) != ModelDisplayName.name(for: "qwen3.8-27b-4bit"))
+        let model = try #require(ShareComputeModel.desktopSharing.first)
+        #expect(model.alias == alias)
+        #expect(model.title == ModelDisplayName.name(for: alias))
+        #expect(ShareComputeReviewFixture.modelTitle == model.title)
+    }
+
+    @Test func recommendedStatsLabelPeakMemory() throws {
+        let pick = try #require(RAMBucketedDefault.picks(forPhysicalRAMGB: 32).first)
+        #expect(SettingsModelManagementPanel.pickStatsLine(pick).contains("memory"))
+    }
+
     @Test func namesAndCachedVariant() {
         #expect(ModelDisplayName.name(for: "qwen3.5-4b-4bit") == "Qwen 3.5 · 4B")
         #expect(ModelDisplayName.name(for: "whisper-large-v3-turbo") == "Whisper Large v3 Turbo")
@@ -48,6 +100,13 @@ struct ModelPresentationConsistencyTests {
         let expected = DownloadProgress.formatBytes(bytes)
         #expect(expected == "16.32 GB")
         for entry in [original, cached] {
+            #expect(SettingsModelManagementPanel.downloadSizeLabel(entry) == expected)
+            #expect(SettingsModelManagementPanel.downloadTotalBytes(entry) == bytes)
+            let progress = DownloadProgress()
+            progress.setTotalBytes(SettingsModelManagementPanel.downloadTotalBytes(entry))
+            progress.applyDiskObservation(bytes: 1_000_000_000)
+            #expect(progress.progressSubtitle?.contains(" / \(expected) · ") == true)
+            #expect(DownloadStrip.detail(phase: progress.phase, bytesSubtitle: progress.progressSubtitle).contains(expected))
             #expect(QuickstartView.rowSizeText(for: entry) == expected)
             #expect(QuickstartView.shortlistSizeText(for: choice, cached: entry.cached ? entry : nil, recommendedForPhysicalRAMGB: nil, catalogEntry: entry) == expected)
             let model = ShareComputeModel(catalogID: "test", alias: alias, title: "Test", detail: "")

@@ -1070,7 +1070,7 @@ enum ModelDisplayName {
     /// model is being prepared, not that you are talking to it.
     static func conversational(alias: String, state: ServerState) -> String {
         if case .starting = state { return "Preparing your local model…" }
-        return isUnresolved(alias) ? "your local model" : alias
+        return isUnresolved(alias) ? "your local model" : name(for: alias)
     }
 
     /// The name to show in a config value slot (Connect Tools' `Model`

@@ -212,7 +212,7 @@ struct ModelSizingTests {
             severity: .unsafe, footprintGB: 5.9, freeGB: 0.8, totalGB: 24.0,
             plannedReleaseGB: 6.3
         )
-        #expect(w.title.contains("gemma-4-12b"))
+        #expect(w.title.contains(ModelDisplayName.name(for: "gemma-4-12b")))
         #expect(w.message.contains("121%"))
         #expect(w.message.contains("accounts for about \(DownloadProgress.formatMemory(Int64(6.3 * Double(1 << 30)))) released"))
         #expect(w.message.contains("more memory than this Mac has"))

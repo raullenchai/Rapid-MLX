@@ -913,7 +913,7 @@ struct DictationTests {
         #expect(hotkeyStartCount == 0)
         #expect(
             controller.lastError
-                == "whisper-small couldn't finish preparing for dictation. Try again."
+                == "Whisper Small couldn't finish preparing for dictation. Try again."
         )
         #expect(controller.lastError?.localizedCaseInsensitiveContains("memory") == false)
     }

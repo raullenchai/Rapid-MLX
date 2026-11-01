@@ -2482,7 +2482,7 @@ flow_cached_curated_tradeup() {
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
-    assert_tree_text "$OUT/ready.json" "Chatting with qwen3.5-4b-4bit"
+    assert_tree_text "$OUT/ready.json" "Chatting with Qwen 3.5 · 4B"
     cleanup_persona
 }
 
@@ -2719,7 +2719,7 @@ flow_settings_mtp() {
     wait_identifier Settings.Performance.SpeculativeDecoding.Enabled "$OUT/performance-mtp-on.json"
     jq -e '.data.ui_elements[]?
            | select(.identifier == "Settings.Performance.ModelPicker"
-                    and .value == "qwen3.8-27b-4bit")' \
+                    and .value == "Qwen 3.8 · 27B")' \
         "$OUT/performance-mtp-on.json" >/dev/null \
         || die "Performance did not select the cached Qwen3.8 MTP fixture"
     jq -e '.data.ui_elements[]?

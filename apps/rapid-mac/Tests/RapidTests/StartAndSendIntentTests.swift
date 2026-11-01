@@ -228,7 +228,7 @@ struct StartAndSendIntentTests {
         let stopped = ModelReadiness.needsStart(alias: alias)
         #expect(stopped.startAndSendAlias == alias)
         #expect(!stopped.sendAllowed)
-        let emptyDraftHelp = String(localized: "Type a message, then Start & Send to start \(alias).")
+        let emptyDraftHelp = String(localized: "Type a message, then Start & Send to start \(ModelDisplayName.name(for: alias)).")
         #expect(stopped.composerSendTooltip(hasDraft: false) == emptyDraftHelp)
         #expect(stopped.composerSendHint(hasDraft: false) == emptyDraftHelp)
         #expect(stopped.composerSendTooltip(hasDraft: true) == String(localized: "Start & Send"))

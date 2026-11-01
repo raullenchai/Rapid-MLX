@@ -478,7 +478,7 @@ enum ModelReadiness: Equatable {
 
     func headline(displayName: String?) -> String {
         let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        func shown(_ alias: String) -> String { name.flatMap { $0.isEmpty ? nil : $0 } ?? alias }
+        func shown(_ alias: String) -> String { name.flatMap { $0.isEmpty ? nil : $0 } ?? ModelDisplayName.name(for: alias) }
         switch self {
         case .sharingCompute: return String(localized: "Local chat paused for sharing")
         case .engineMissing:
@@ -551,9 +551,9 @@ enum ModelReadiness: Equatable {
         case .sharingCompute: return String(localized: "Stop sharing to use local chat")
         case .engineMissing:            return String(localized: "Setup didn't finish")
         case .noModel:                  return String(localized: "Choose a model first")
-        case .needsDownload(let a, _):  return String(localized: "Download \(a) first")
+        case .needsDownload(let a, _):  return String(localized: "Download \(ModelDisplayName.name(for: a)) first")
         case .needsStart(let a),
-             .unknownModel(let a):      return String(localized: "Start \(a) first")
+             .unknownModel(let a):      return String(localized: "Start \(ModelDisplayName.name(for: a)) first")
         // The composer's load status already names the model and the step
         // directly above the field; the placeholder says the other half —
         // that typing is fine now.
@@ -572,7 +572,7 @@ enum ModelReadiness: Equatable {
     /// Explain the empty draft before offering to start and send.
     func composerSendTooltip(hasDraft: Bool) -> String {
         if case .needsStart(let a) = self, !hasDraft {
-            return String(localized: "Type a message, then Start & Send to start \(a).")
+            return String(localized: "Type a message, then Start & Send to start \(ModelDisplayName.name(for: a)).")
         }
         return startAndSendAlias == nil ? sendTooltip : String(localized: "Start & Send")
     }
@@ -595,17 +595,17 @@ enum ModelReadiness: Equatable {
         case .noModel:
             return String(localized: "Choose a model before sending.")
         case .needsDownload(let a, _):
-            return String(localized: "Download \(a) before sending.")
+            return String(localized: "Download \(ModelDisplayName.name(for: a)) before sending.")
         case .needsStart(let a), .unknownModel(let a):
-            return String(localized: "Start \(a) before sending.")
+            return String(localized: "Start \(ModelDisplayName.name(for: a)) before sending.")
         case .downloading(let a, _, _):
-            return String(localized: "\(a) is still downloading.")
+            return String(localized: "\(ModelDisplayName.name(for: a)) is still downloading.")
         case .starting(let a, _):
-            return String(localized: "\(a) is still starting.")
+            return String(localized: "\(ModelDisplayName.name(for: a)) is still starting.")
         case .ready:
             return String(localized: "Send")
         case .failed(let a, _, _):
-            return a.map { String(localized: "\($0) isn't running — retry to continue.") }
+            return a.map { String(localized: "\(ModelDisplayName.name(for: $0)) isn't running — retry to continue.") }
                 ?? String(localized: "Not ready to send yet.")
         }
     }
@@ -622,17 +622,17 @@ enum ModelReadiness: Equatable {
         case .noModel:
             return String(localized: "Choose a model to start")
         case .needsDownload(let a, _):
-            return String(localized: "Download \(a) to start")
+            return String(localized: "Download \(ModelDisplayName.name(for: a)) to start")
         case .needsStart(let a), .unknownModel(let a):
-            return String(localized: "Start \(a) to begin")
+            return String(localized: "Start \(ModelDisplayName.name(for: a)) to begin")
         case .downloading:
             return String(localized: "Downloading your local model…")
         case .starting:
             return String(localized: "Preparing your local model…")
         case .ready(let a):
-            return String(localized: "Chatting with \(a)")
+            return String(localized: "Chatting with \(ModelDisplayName.name(for: a))")
         case .failed(let a, _, _):
-            return a.map { String(localized: "Couldn't start \($0)") } ?? String(localized: "Something went wrong")
+            return a.map { String(localized: "Couldn't start \(ModelDisplayName.name(for: $0))") } ?? String(localized: "Something went wrong")
         }
     }
 

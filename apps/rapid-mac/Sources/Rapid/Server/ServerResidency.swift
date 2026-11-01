@@ -93,7 +93,7 @@ struct ResidentReplacementProjection: Codable, Sendable, Equatable {
             ? "Rapid can release about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: released))) from the current model, but "
             : ""
         return release
-            + "\(alias) would still need about \(DownloadProgress.formatMemory(Int64(clamping: projectedBytes))) "
+            + "\(ModelDisplayName.name(for: alias)) would still need about \(DownloadProgress.formatMemory(Int64(clamping: projectedBytes))) "
             + "of the \(DownloadProgress.formatMemory(Int64(clamping: limitBytes))) model-memory budget."
     }
 }
@@ -318,7 +318,7 @@ struct ModelSwitchRisk: Equatable, Sendable {
 
     var title: String {
         let noun = activeRequests == 1 ? "request" : "requests"
-        return "Model \(currentAlias) is serving \(activeRequests) active \(noun). Switch anyway?"
+        return "Model \(ModelDisplayName.name(for: currentAlias)) is serving \(activeRequests) active \(noun). Switch anyway?"
     }
 }
 

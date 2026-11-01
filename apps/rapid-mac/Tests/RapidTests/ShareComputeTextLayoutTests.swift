@@ -26,7 +26,7 @@ struct ShareComputeTextLayoutTests {
         }
         let values: [(ShareComputeLedgerLayout.Column, String, CGFloat, NSFont.Weight)] = [
             (.window, "Sep 30 · 11:59 PM", 11, .regular),
-            (.model, "Qwen3.8 27B · 4-bit", 12, .medium),
+            (.model, "Qwen 3.8 · 27B · TensorFold", 12, .medium),
             (.model, "Model unavailable", 12, .medium),
             (.requests, "9999999", 12, .regular),
             (.tokens, "999.9k / 999.9k", 11, .regular),

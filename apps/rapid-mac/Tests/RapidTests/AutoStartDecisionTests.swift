@@ -261,7 +261,7 @@ struct AutoStartDecisionTests {
             alias: "qwen3.5-122b-8bit",
             sizeText: "~65 GB"
         )
-        #expect(copy == "Click Start to download qwen3.5-122b-8bit (~65 GB).")
+        #expect(copy == "Click Start to download Qwen 3.5 · 122B · 8-bit (~65 GB).")
     }
 
     @Test("promptDownloadCaption: missing size degrades to size-less variant")
@@ -270,7 +270,7 @@ struct AutoStartDecisionTests {
             alias: "qwen3.5-4b-4bit",
             sizeText: nil
         )
-        #expect(copy == "Click Start to download qwen3.5-4b-4bit.")
+        #expect(copy == "Click Start to download Qwen 3.5 · 4B.")
     }
 
     @Test("promptDownloadCaption: empty-string size also degrades cleanly")
@@ -279,7 +279,7 @@ struct AutoStartDecisionTests {
             alias: "qwen3.5-4b-4bit",
             sizeText: ""
         )
-        #expect(copy == "Click Start to download qwen3.5-4b-4bit.")
+        #expect(copy == "Click Start to download Qwen 3.5 · 4B.")
     }
 
     // MARK: - Codex r1 MAJOR: cached-fallback fit rejection

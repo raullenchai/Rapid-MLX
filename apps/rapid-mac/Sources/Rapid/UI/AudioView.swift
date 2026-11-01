@@ -449,13 +449,13 @@ struct AudioView: View {
                     selection.wrappedValue = entry.alias
                 } label: {
                     Label(
-                        entry.alias,
+                        ModelDisplayName.name(for: entry.alias),
                         systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
                     )
                 }
                 .accessibilityIdentifier("\(identifier).\(entry.alias)")
                 .accessibilityLabel(
-                    "\(entry.alias), \(entry.cached ? "Downloaded" : "Not downloaded")"
+                    "\(ModelDisplayName.name(for: entry.alias)), \(entry.cached ? "Downloaded" : "Not downloaded")"
                 )
                 .accessibilityAddTraits(
                     selection.wrappedValue == entry.alias ? .isSelected : []
@@ -464,7 +464,7 @@ struct AudioView: View {
         } label: {
             popupControlLabel(
                 entries.first(where: { $0.alias == selection.wrappedValue })
-                    .map(\.alias) ?? "Choose a model"
+                    .map { ModelDisplayName.name(for: $0.alias) } ?? "Choose a model"
             )
         }
         .menuStyle(.button)
@@ -472,7 +472,7 @@ struct AudioView: View {
         .menuIndicator(.hidden)
         .disabled(viewModel.isBusy)
         .accessibilityLabel(title)
-        .accessibilityValue(selection.wrappedValue)
+        .accessibilityValue(ModelDisplayName.name(for: selection.wrappedValue))
         .accessibilityIdentifier(identifier)
     }
 

@@ -1049,11 +1049,11 @@ struct SidebarView: View {
             guard let repo = entry.hfRepo, let last = repo.split(separator: "/").last else { return false }
             return String(last).caseInsensitiveCompare(basename) == .orderedSame
         }
-        guard let entry = exactMatch ?? basenameMatch else { return basename }
+        guard let entry = exactMatch ?? basenameMatch else { return ModelDisplayName.name(for: basename) }
         if lane.lowercased() == "stt" {
             return AudioViewModel.transcriptionDetails(alias: entry.alias, family: entry.audioFamily).displayName
         }
-        return entry.alias
+        return ModelDisplayName.name(for: entry.alias)
     }
 
     nonisolated static func memoryAccessibilityValue(usedBytes: UInt64, limitBytes: UInt64) -> String {

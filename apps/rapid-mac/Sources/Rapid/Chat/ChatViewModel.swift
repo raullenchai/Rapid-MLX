@@ -1748,7 +1748,7 @@ final class ChatViewModel {
             event: .abandoned,
             epoch: conversationEpoch
         )
-        let genericMessage = "Couldn't start \(alias). Try again, or pick a different model in the box below."
+        let genericMessage = "Couldn't start \(ModelDisplayName.name(for: alias)). Try again, or pick a different model in the box below."
         let message: String
         if let server,
            let startupFailure = server.startupFailure,
