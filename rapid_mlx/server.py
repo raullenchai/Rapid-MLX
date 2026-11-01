@@ -1280,8 +1280,9 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
 
 
 def _ready_audio_is_aligner(entry):
-    return entry.family == "qwen3_aligner" or any(
-        "aligner" in name.lower() for name in (entry.alias, entry.hf_id)
+    return getattr(entry, "family", None) == "qwen3_aligner" or any(
+        "aligner" in name.lower()
+        for name in (getattr(entry, "alias", "") or "", entry.hf_id)
     )
 
 
@@ -1319,7 +1320,11 @@ def _ready_lane_rows(cfg, ep, audio_entry):
 
     model = ep.model or ""
     if audio_entry and audio_entry.notes != "local folder":
-        model = audio_entry.hf_id
+        from rapid_mlx.audio.registry import resolve_audio_alias
+
+        served_entry = resolve_audio_alias(model) if model else None
+        if not served_entry or served_entry.hf_id != audio_entry.hf_id:
+            model = audio_entry.hf_id
     if audio_entry and audio_entry.type == "stt":
         if _ready_audio_is_aligner(audio_entry):
             return [
@@ -1345,7 +1350,8 @@ def _ready_lane_rows(cfg, ep, audio_entry):
                 placeholder += "_"
             body = {"model": model, "input": "Hello", "ref_audio": placeholder}
             if needs_text or not any(
-                name in model.lower() for name in ("indextts", "index-tts")
+                name in (ep.model or model).lower()
+                for name in ("indextts", "index-tts")
             ):
                 body["ref_text"] = "Exact transcript of reference.wav"
             payload = json.dumps(body, ensure_ascii=True, separators=(",", ":"))

@@ -11,6 +11,7 @@ import pytest
 
 import rapid_mlx.server as server
 from rapid_mlx.api.models import AudioSpeechRequest
+from rapid_mlx.audio.registry import resolve_audio_alias
 from rapid_mlx.config import get_config
 
 
@@ -68,7 +69,13 @@ def test_reference_speech_commands(
     (tmp_path / "reference.wav").write_bytes(audio)
     argv, payload = run_reference_speech(output, tmp_path)
     assert argv[argv.index("--data-binary") + 1] == "@-"
-    assert payload["model"] == (served_alias or model)
+    served_name = served_alias or model
+    expected_model = (
+        served_name
+        if resolve_audio_alias(served_name)
+        else resolve_audio_alias(model).hf_id
+    )
+    assert payload["model"] == expected_model
     assert base64.b64decode(payload["ref_audio"], validate=True) == audio
     if model == "qwen3-tts-clone" or served_alias == "gateway-tts":
         assert payload["ref_text"].strip()
@@ -86,7 +93,7 @@ def test_reference_speech_preserves_placeholder_in_model(monkeypatch, capsys, tm
 
     _, payload = run_reference_speech(output, tmp_path)
 
-    assert payload["model"] == served_name
+    assert payload["model"] == resolve_audio_alias("indextts").hf_id
     assert payload["ref_audio"] == base64.b64encode(audio).decode("ascii")
 
 
@@ -109,3 +116,17 @@ def test_whisper_transcription_command(monkeypatch, capsys):
     output = banner(monkeypatch, capsys, "whisper-base")
     assert "text=" not in command(output, "Transcribe")
     assert "Align" not in output
+
+
+@pytest.mark.parametrize("served_alias", ["gateway-stt", "whisper-tiny"])
+def test_transcription_model_name(monkeypatch, capsys, served_alias):
+    import shlex
+
+    output = banner(monkeypatch, capsys, "whisper-tiny", served_alias)
+    args = shlex.split(command(output, "Transcribe"))
+    expected_model = (
+        "whisper-tiny"
+        if served_alias == "whisper-tiny"
+        else resolve_audio_alias("whisper-tiny").hf_id
+    )
+    assert f"model={expected_model}" in args
