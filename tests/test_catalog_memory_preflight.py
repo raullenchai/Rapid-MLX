@@ -1,7 +1,7 @@
 import sys
 from contextlib import nullcontext
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -166,6 +166,8 @@ def test_refusal_suggests_fitting_same_task_model(
 ):
     from rapid_mlx.catalog.legacy import _main_capabilities
 
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda _: False)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 1000.0)
     monkeypatch.setattr(
         preflight, "_mlx_recommended_working_set_bytes", lambda: 25 * GIB
     )
@@ -181,6 +183,57 @@ def test_refusal_suggests_fitting_same_task_model(
     if expected_pick is not None:
         assert pick == expected_pick
     run(pick, 32, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("alias", "cached_repo", "free_gb", "expected_pick"),
+    [
+        (
+            "qwen-image-edit",
+            "mlx-community/Qwen-Image-2.1-mflux-q4",
+            15.2,
+            "qwen-image",
+        ),
+        ("qwen-image-edit", None, 15.2, "flux2-klein-4b"),
+        ("qwen-image-edit", None, 1.0, "flux2-klein-4b"),
+        ("qwen-image-edit", None, None, "flux2-klein-4b"),
+        (
+            "qwen-image-2.1-bf16",
+            "bonsai-image-4b-2bit",
+            100.0,
+            "flux2-klein-4b",
+        ),
+        ("qwen-image-edit", "bonsai-image-4b-2bit", 100.0, "flux2-klein-4b"),
+    ],
+)
+def test_same_task_pick_prefers_cache_disk_and_small_download(
+    alias, cached_repo, free_gb, expected_pick, monkeypatch
+):
+    from rapid_mlx.cli import _DOWNLOAD_DISK_HEADROOM
+    from rapid_mlx.model_sizes import size_bytes
+
+    if cached_repo == "bonsai-image-4b-2bit":
+        cached_repo = resolve_profile(cached_repo).hf_path
+    monkeypatch.setattr(
+        "rapid_mlx.cli._cache_runnability", lambda repo: repo == cached_repo
+    )
+    disk_probe = Mock(return_value=free_gb)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", disk_probe)
+    pick, label = preflight._same_task_fitting_pick(
+        alias, ram_bytes=32 * GIB, recommended_working_set_bytes=25 * GIB
+    )
+    if cached_repo == "mlx-community/Qwen-Image-2.1-mflux-q4":
+        assert resolve_profile(pick).hf_path == cached_repo
+        assert label == "image editing"
+    else:
+        assert pick == expected_pick
+    if free_gb == 15.2 and cached_repo is None:
+        assert pick != "flux2-klein-4b-bf16"
+        assert (
+            size_bytes(resolve_profile(pick).hf_path) * (1 + _DOWNLOAD_DISK_HEADROOM)
+            <= 15.2e9
+        )
+    disk_probe.assert_called_once_with()
 
 
 def test_text_diffusion_falls_back_to_text_pick():
