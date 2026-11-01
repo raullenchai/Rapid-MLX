@@ -112,9 +112,9 @@ def run_cancellable_download(operation: Callable[[], T], *, retry_hint: str) -> 
 
     previous = {sig: signal.getsignal(sig) for sig in owned}
     try:
-        for sig in previous:
-            signal.signal(sig, handle_signal)
         try:
+            for sig in previous:
+                signal.signal(sig, handle_signal)
             threading.Thread(
                 target=worker, daemon=True, name="rapid-mlx-download"
             ).start()
