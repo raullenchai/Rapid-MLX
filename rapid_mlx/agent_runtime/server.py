@@ -2761,6 +2761,13 @@ class AgentServerService:
         self._store_lock = RLock()
         self._closed = False
 
+    def active_run_count(self) -> int:
+        with self._store_lock:
+            return sum(
+                entry.run.status not in _TERMINAL_STATUSES
+                for entry in self._runs.values()
+            )
+
     async def create(
         self,
         request: AgentRunCreateRequest,

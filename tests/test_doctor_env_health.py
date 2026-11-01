@@ -4231,6 +4231,118 @@ def test_update_available_marks_warn_with_upgrade_command():
     assert "brew upgrade rapid-mlx" in row.label
 
 
+def test_update_homebrew_formula_lag_marks_ok():
+    from rapid_mlx import _version_check as vc
+
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+    release = vc.ReleaseInfo("1.0.1", None, "1.0.0")
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.1",
+        fetch_release=lambda need_brew: release,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.OK
+    assert "Homebrew" in row.label
+    assert "brew upgrade" not in row.label
+    assert row.detail == "installed=1.0.0 latest=1.0.1 brew_stable=1.0.0 method=brew"
+
+
+def test_update_default_fetchers_homebrew_formula_lag_marks_ok(monkeypatch):
+    from rapid_mlx import _version_check as vc
+
+    need_brew_values = []
+
+    def get_release_info(*, need_brew):
+        need_brew_values.append(need_brew)
+        return vc.ReleaseInfo("1.0.1", None, "1.0.0")
+
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.1")
+    monkeypatch.setattr(vc, "get_release_info", get_release_info)
+
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        install_info=mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew"),
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.OK
+    assert "Homebrew" in row.label
+    assert len(need_brew_values) == 1
+    assert need_brew_values[0] is True
+
+
+def test_update_homebrew_reports_available_formula_version():
+    from rapid_mlx import _version_check as vc
+
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+    release = vc.ReleaseInfo("1.0.2", None, "1.0.1")
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.2",
+        fetch_release=lambda need_brew: release,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 1.0.1" in row.label
+    assert "brew_stable=1.0.1" in row.detail
+
+
+def test_update_homebrew_ignores_mismatched_release_metadata():
+    from rapid_mlx import _version_check as vc
+
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+    release = vc.ReleaseInfo("1.0.2", None, "1.0.0")
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.1",
+        fetch_release=lambda need_brew: release,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 1.0.1" in row.label
+
+
+def test_update_python_floor_reports_block():
+    from rapid_mlx import _version_check as vc
+
+    info = mock.Mock(
+        upgrade_command="python -m pip install --upgrade rapid-mlx", method="pip"
+    )
+    release = vc.ReleaseInfo("1.0.1", ">=9.0", None)
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.1",
+        fetch_release=lambda need_brew: release,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "requires Python >=9.0" in row.label
+    assert info.upgrade_command not in row.label
+    assert not row.label.startswith("⚠")
+
+
+def test_update_release_lookup_failure_falls_back():
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+
+    def fail_lookup(need_brew):
+        raise RuntimeError("lookup failed")
+
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        fetch_latest=lambda: "1.0.1",
+        fetch_release=fail_lookup,
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 1.0.1" in row.label
+    assert info.upgrade_command in row.label
+
+
 def test_update_available_from_rc_to_final_marks_warn():
     """Doctor reuses the shared parser, so its existing Updates section is
     the single user-visible RC-to-final notice; the command entry point must

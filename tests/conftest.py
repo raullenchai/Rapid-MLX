@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import copy
+import importlib
 import importlib.util
 import ipaddress
 import os
@@ -74,6 +75,26 @@ def _aaa_env_leak_guard(request):
 
 
 @pytest.fixture(autouse=True)
+def _restore_hf_progress_bar_states():
+    """Keep Hugging Face's process-global progress settings test-local."""
+    env_before = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    try:
+        tqdm_module = importlib.import_module("huggingface_hub.utils.tqdm")
+        states = getattr(tqdm_module, "progress_bar_states", None)
+    except ImportError:
+        states = None
+    before = dict(states) if states is not None else None
+    yield
+    if states is not None:
+        states.clear()
+        states.update(before)
+    if env_before is None:
+        os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+    else:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = env_before
+
+
+@pytest.fixture(autouse=True)
 def _disable_catalog_memory_preflight(request, monkeypatch):
     """Disable the host-dependent check unless a test opts in.
 
@@ -84,6 +105,17 @@ def _disable_catalog_memory_preflight(request, monkeypatch):
         from rapid_mlx.byom import preflight
 
         monkeypatch.setattr(preflight, "_check_catalog_memory_fit", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
+def _benchmark_host_memory(request, monkeypatch):
+    if "bench" in request.node.path.name:
+        from rapid_mlx.community_bench import local_runner
+
+        monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 1 << 40)
+        monkeypatch.setattr(
+            local_runner, "mlx_recommended_working_set_bytes", lambda: None
+        )
 
 
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()

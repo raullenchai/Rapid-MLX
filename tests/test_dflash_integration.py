@@ -4482,7 +4482,13 @@ def test_public_health_probes(api_key):
             "model_type": "llm",
             "engine_type": healthz["engine"],
         }
-        assert client.get("/health/ready").json() == {"status": "ok", "ready": True}
+        assert client.get("/health/ready").json() == {
+            "status": "ok",
+            "ready": True,
+            "state": "ready",
+            "model_loaded": True,
+            "model": "test-model",
+        }
         assert client.get("/").json() == {"status": "ok"}
         assert client.head("/").status_code == 200
     finally:

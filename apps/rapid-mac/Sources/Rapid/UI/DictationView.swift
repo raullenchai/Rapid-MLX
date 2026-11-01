@@ -217,7 +217,7 @@ struct DictationView: View {
                 .buttonStyle(.plain)
                 .disabled(!audioReadinessState.allowsModelSelection)
                 .accessibilityLabel("Model")
-                .accessibilityValue(controller.modelAlias)
+                .accessibilityValue(ModelDisplayName.name(for: controller.modelAlias))
                 .accessibilityIdentifier("Dictation.Model")
                 .popover(isPresented: $showModelPicker, arrowEdge: .top) {
                     transcriptionModelPicker
@@ -356,7 +356,7 @@ struct DictationView: View {
             alias: alias,
             catalogLoaded: viewModel.catalogLoaded,
             cached: selectedModelEntry?.cached,
-            sizeText: selectedModelEntry?.size?.displayText,
+            sizeText: selectedModelEntry?.displayedModelSize?.displayText,
             download: AudioReadinessState.downloadSnapshot(
                 alias: alias,
                 job: downloads.job(for: alias)
@@ -468,7 +468,7 @@ struct DictationView: View {
         }
         _ = downloads.startDownload(
             alias: alias, hfPath: entry.hfRepo,
-            totalBytes: entry.size?.byteCount
+            totalBytes: entry.displayedModelSize?.byteCount
         )
     }
 
@@ -835,7 +835,7 @@ private struct TranscriptionModelOptionRow: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            if let size = entry.size?.displayText {
+                            if let size = entry.displayedModelSize?.displayText {
                                 Text(size)
                                     .font(RapidFont.caption)
                                     .foregroundStyle(.tertiary)
@@ -938,7 +938,7 @@ private struct TranscriptionModelOptionRow: View {
         } else {
             parts.append(entry.cached ? "Downloaded" : "Not downloaded")
         }
-        if let size = entry.size?.displayText { parts.append(size) }
+        if let size = entry.displayedModelSize?.displayText { parts.append(size) }
         parts.append(details.summary)
         return parts.joined(separator: ", ")
     }
