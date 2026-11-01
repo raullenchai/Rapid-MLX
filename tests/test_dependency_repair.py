@@ -661,3 +661,147 @@ def test_unreadable_prompt_is_no_answer(environment, monkeypatch):
     monkeypatch.setattr(sys.stdin, "readline", Mock(side_effect=OSError()))
     assert not repair.recover()
     assert environment == ["no_answer"]
+
+
+def test_base_requirement_import_names_match_installed_distributions(monkeypatch):
+    import re
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+
+    dependencies = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    )["project"]["dependencies"]
+    owners = repair.metadata.packages_distributions()
+    normalize = lambda name: re.sub(r"[-_.]+", "-", name).lower()
+    for text in dependencies:
+        req = Requirement(text)
+        if req.marker and not req.marker.evaluate({"extra": ""}):
+            continue
+        try:
+            repair.metadata.distribution(req.name)
+        except repair.metadata.PackageNotFoundError:
+            continue
+        modules = {
+            module
+            for module, distributions in owners.items()
+            if any(normalize(dist) == normalize(req.name) for dist in distributions)
+        }
+        monkeypatch.setattr(repair.metadata, "requires", lambda _, text=text: [text])
+        declared = repair.declared_modules()
+        assert len(declared) == 1, text
+        assert declared <= modules, text
+
+
+def test_pydantic_ai_slim_import_alias(environment, monkeypatch):
+    monkeypatch.setattr(
+        repair.metadata, "requires", lambda _: ["pydantic-ai-slim[openai]==2.61.0"]
+    )
+    monkeypatch.setattr(
+        repair.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "pydantic_ai" else None,
+    )
+    assert repair.missing_modules() == []
+
+
+@pytest.mark.parametrize("bootstrap", [False, True])
+@pytest.mark.parametrize(
+    "direct,expected",
+    [
+        (
+            '{"url":"https://example.org/repo.git","vcs_info":{"vcs":"git","commit_id":"abc123","requested_revision":"main"},"subdirectory":"python"}',
+            ["rapid-mlx @ git+https://example.org/repo.git@abc123#subdirectory=python"],
+        ),
+        (
+            '{"url":"file:///tmp/source%20tree","dir_info":{"editable":true}}',
+            ["-e", "/tmp/source tree"],
+        ),
+        (
+            '{"url":"https://example.org/rapid.whl","archive_info":{}}',
+            ["rapid-mlx @ https://example.org/rapid.whl"],
+        ),
+        (None, None),
+        ("{broken", None),
+        (
+            '{"url":"https://example.org/repo.git","vcs_info":{"vcs":"git","requested_revision":"release"}}',
+            ["rapid-mlx @ git+https://example.org/repo.git@release"],
+        ),
+        ('{"url":"https://example.org/repo.git","vcs_info":{"vcs":"git"}}', None),
+        ('{"url":7}', None),
+        (
+            '{"url":"file:///tmp/source","dir_info":{}}',
+            ["rapid-mlx @ file:///tmp/source"],
+        ),
+    ],
+)
+def test_pip_repair_preserves_source(
+    environment, monkeypatch, direct, expected, bootstrap
+):
+    import rapid_mlx
+
+    distribution = Mock()
+    distribution.read_text.return_value = direct
+    monkeypatch.setattr(
+        repair.metadata, "distribution", Mock(return_value=distribution)
+    )
+    monkeypatch.setattr(
+        repair.importlib.util, "find_spec", lambda _: None if bootstrap else object()
+    )
+    expected = expected or [f"rapid-mlx=={rapid_mlx.__version__}"]
+    argv = repair.repair_argv()
+    distribution.read_text.assert_called_once_with("direct_url.json")
+    if bootstrap:
+        assert argv[3:] == expected
+        ensurepip = types.ModuleType("ensurepip")
+        ensurepip.bootstrap = Mock()
+        monkeypatch.setitem(sys.modules, "ensurepip", ensurepip)
+        monkeypatch.setattr(sys, "argv", ["-c", *expected])
+        call = Mock()
+        monkeypatch.setattr(subprocess, "check_call", call)
+        exec(argv[2], {})
+        call.assert_called_once_with(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", *expected]
+        )
+    else:
+        assert argv == [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            *expected,
+        ]
+
+
+def test_pip_repair_unreadable_source_uses_running_version(environment, monkeypatch):
+    import rapid_mlx
+
+    distribution = Mock()
+    distribution.read_text.side_effect = OSError("unreadable")
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+    assert repair.repair_argv()[-1] == f"rapid-mlx=={rapid_mlx.__version__}"
+
+
+def test_pip_fallback_preserves_editable_source(environment, monkeypatch):
+    distribution = Mock()
+    distribution.read_text.return_value = (
+        '{"url":"file:///tmp/source","dir_info":{"editable":true}}'
+    )
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+    monkeypatch.setattr(
+        version_check,
+        "detect_install_method",
+        lambda: version_check.InstallInfo("unknown", "", []),
+    )
+    assert repair.repair_argv() == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "-e",
+        "/tmp/source",
+    ]

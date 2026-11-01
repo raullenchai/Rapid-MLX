@@ -5919,3 +5919,194 @@ def test_service_runtime_version_pip_trampoline(tmp_path):
         f"../../../bin/rapid-mlx,sha256={digest},{len(content)}\n"
     )
     assert eh._service_runtime_version(str(launcher)) == "1.2.3"
+
+
+@pytest.mark.parametrize("method", ["uv", "pipx", "pip"])
+def test_missing_embeddings_hint_uses_install_manager(monkeypatch, method):
+    from rapid_mlx import _version_check
+
+    monkeypatch.setattr(
+        _version_check,
+        "detect_install_method",
+        lambda: _version_check.InstallInfo(method, "", []),
+    )
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+    monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
+    monkeypatch.setattr(eh, "is_homebrew_interpreter", lambda _: False)
+    monkeypatch.setattr(eh, "_safe_version", lambda _: None)
+    section = eh.section_optional_packages()
+    row = next(c for c in section.checks if c.label.startswith("mlx-embeddings"))
+    if method == "pip":
+        assert " -m pip install --upgrade 'rapid-mlx[embeddings]'" in row.label
+    else:
+        prefix = "uv tool" if method == "uv" else "pipx"
+        expected = (
+            f"{prefix} install --force 'rapid-mlx[embeddings]=={eh._rapid_mlx_version}'"
+        )
+        assert f"`{expected}`" in row.label
+        assert " -m pip " not in row.label
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_audio_extra_selection_excludes_base_modules(monkeypatch, selected):
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+    monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
+    monkeypatch.setattr(
+        eh, "_safe_version", lambda dist: "0.5.9" if dist == "mlx-audio" else None
+    )
+    distinct = frozenset({"f5-tts-mlx", "numba"})
+    monkeypatch.setattr(eh, "_audio_extra_distinct_dists", lambda: distinct)
+    absent = {"numba"} if selected else {"numba", "f5_tts_mlx"}
+    monkeypatch.setattr(
+        eh, "_module_available", lambda module, *args, **kwargs: module not in absent
+    )
+    monkeypatch.setattr(
+        eh,
+        "_import_probe_outcome",
+        lambda *args, **kwargs: eh._ImportProbeOutcome.BROKEN,
+    )
+    section = eh.section_optional_packages()
+    row = next(c for c in section.checks if "distribution=mlx-audio" in c.detail)
+    assert row.status is eh.CheckStatus.WARN
+    if selected:
+        assert "incomplete — missing: numba (`" in row.label
+        assert "f5-tts-mlx" not in row.label
+    else:
+        assert row.label.startswith("audio extras not installed")
+        assert "extra=audio selected=false hint=" in row.detail
+        assert all("incomplete" not in c.label for c in section.checks)
+
+
+@pytest.mark.parametrize("distinct", [None, frozenset()])
+@pytest.mark.parametrize("missing", [False, True])
+def test_audio_extra_unknown_selection_preserves_grading(
+    monkeypatch, distinct, missing
+):
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+    monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
+    monkeypatch.setattr(
+        eh, "_safe_version", lambda dist: "0.5.9" if dist == "mlx-audio" else None
+    )
+    monkeypatch.setattr(eh, "_audio_extra_distinct_dists", lambda: distinct)
+    monkeypatch.setattr(
+        eh,
+        "_module_available",
+        lambda module, *args, **kwargs: not (missing and module == "f5_tts_mlx"),
+    )
+    monkeypatch.setattr(
+        eh,
+        "_import_probe_outcome",
+        lambda runtime, module, *args, **kwargs: (
+            eh._ImportProbeOutcome.BROKEN
+            if missing and module == "f5_tts_mlx"
+            else eh._ImportProbeOutcome.VERIFIED
+        ),
+    )
+    monkeypatch.setattr(eh, "_module_visibility", lambda *args: (True, True))
+
+    section = eh.section_optional_packages()
+    row = next(c for c in section.checks if "distribution=mlx-audio" in c.detail)
+
+    assert row.status is (eh.CheckStatus.WARN if missing else eh.CheckStatus.OK)
+    assert "audio extras not installed" not in row.label
+    if missing:
+        assert "incomplete — missing: f5-tts-mlx (`" in row.label
+
+
+def test_audio_distinct_distributions_exclude_transitive_base(monkeypatch):
+    metadata = {
+        "rapid-mlx": [
+            "mlx-audio",
+            "soundfile",
+            "base_dep; python_version >= '3'",
+            'scipy; extra == "audio"',
+            'f5_tts_mlx; extra == "audio"',
+            'soundfile; extra == "audio"',
+            'ignored; extra == "vision"',
+            'inactive; python_version < "0"',
+            'inactive-audio; extra == "audio" and python_version < "0"',
+        ],
+        "base-dep": [
+            "SciPy",
+            "ignored; extra == 'audio'",
+            "inactive; python_version < '0'",
+        ],
+        "scipy": ["base-dep"],
+    }
+    monkeypatch.setattr(eh._im, "requires", lambda name: metadata.get(name, []))
+    assert eh._audio_extra_distinct_dists() == frozenset({"f5-tts-mlx"})
+
+
+@pytest.mark.parametrize(
+    "failure", [eh._im.PackageNotFoundError(), ValueError("invalid metadata")]
+)
+def test_audio_distinct_distributions_metadata_failure(monkeypatch, failure):
+    monkeypatch.setattr(eh._im, "requires", mock.Mock(side_effect=failure))
+    assert eh._audio_extra_distinct_dists() is None
+
+
+@pytest.mark.parametrize(
+    "method,upgrade,expected",
+    [
+        ("uv", "", "uv tool upgrade --reinstall rapid-mlx"),
+        ("pipx", "", "pipx reinstall rapid-mlx"),
+        (
+            "unknown",
+            "sudo pipx upgrade --global rapid-mlx",
+            "sudo pipx reinstall --global rapid-mlx",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "requirement", ["rapid-mlx", "rapid-mlx[vision]", "transformers>=5,<6"]
+)
+def test_base_runtime_hint_uses_tool_repair(
+    monkeypatch, method, upgrade, expected, requirement
+):
+    from rapid_mlx import _version_check
+    from rapid_mlx.runtime import optional_runtime
+
+    monkeypatch.setattr(
+        _version_check,
+        "detect_install_method",
+        lambda: _version_check.InstallInfo(method, upgrade, []),
+    )
+    monkeypatch.setattr(optional_runtime, "_running_in_desktop_sidecar", lambda: False)
+    assert eh._runtime_pip_command(requirement) == expected
+
+
+@pytest.mark.parametrize("case", ["other-runtime", "detection-failure", "no-repair"])
+def test_runtime_pip_hint_fallback(monkeypatch, case):
+    from rapid_mlx import _version_check, dependency_repair
+
+    runtime = Path("/tmp/doctor-runtime/bin/python")
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: case == "other-runtime")
+    detection = mock.Mock(return_value=_version_check.InstallInfo("uv", "", []))
+    if case == "detection-failure":
+        detection.side_effect = RuntimeError("unavailable")
+    monkeypatch.setattr(_version_check, "detect_install_method", detection)
+    monkeypatch.setattr(dependency_repair, "repair_argv", lambda: None)
+    assert (
+        eh._runtime_pip_command("rapid-mlx", runtime=runtime)
+        == f"{runtime} -m pip install --upgrade rapid-mlx"
+    )
+    if case == "other-runtime":
+        detection.assert_not_called()
+
+
+def test_runtime_pip_hint_resolves_implicit_context_runtime(monkeypatch):
+    from rapid_mlx import _version_check
+
+    runtime = Path("/tmp/server-runtime/bin/python")
+    monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)
+    uses_context = mock.Mock(side_effect=lambda selected: selected == runtime)
+    monkeypatch.setattr(eh, "_runtime_uses_context", uses_context)
+    detection = mock.Mock(return_value=_version_check.InstallInfo("uv", "", []))
+    monkeypatch.setattr(_version_check, "detect_install_method", detection)
+
+    assert (
+        eh._runtime_pip_command("rapid-mlx", runtime=None)
+        == f"{runtime} -m pip install --upgrade rapid-mlx"
+    )
+    uses_context.assert_called_once_with(runtime)
+    detection.assert_not_called()
