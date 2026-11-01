@@ -2971,6 +2971,73 @@ class BatchedEngine(BaseEngine):
         )
         return prepared
 
+    def _render_chat_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        template_tools: list[dict] | None,
+        *,
+        num_images: int,
+        enable_thinking: bool | None,
+        chat_template_kwargs: dict | None,
+    ) -> tuple[str | list[int], int]:
+        """Render a chat prompt, including the shared-prefix warm-up fallback."""
+        # Agent warm-up may contain only the shared system and tools. Some
+        # templates require a user turn; render two probes internally and
+        # prefill only their common token prefix plus one disposable token.
+        # The latter lets the scheduler snapshot the complete shared prefix.
+        shared_warm_boundary = 0
+        prompt: str | list[int]
+        try:
+            prompt = self._apply_chat_template(
+                messages,
+                template_tools,
+                num_images=num_images,
+                enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+        except Exception as exc:
+            if not (
+                len(messages) == 1
+                and messages[0].get("role") == "system"
+                and "No user query found in messages" in str(exc)
+            ):
+                raise
+            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
+                messages, template_tools, enable_thinking, chat_template_kwargs
+            )
+        return prompt, shared_warm_boundary
+
+    def render_request_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        enable_thinking: bool | None = None,
+        chat_template_kwargs: dict | None = None,
+    ) -> str | list[int]:
+        """Render the generation prompt without starting generation."""
+        if not self._loaded:
+            raise RuntimeError("Engine not loaded — call start() first")
+        messages, _ = self._prepare_cache_stable_messages(messages)
+        _, images, _ = extract_multimodal_content(messages)
+        template_tools = convert_tools_for_template(tools) if tools else None
+        # Count template image placeholders, without vision-patch expansion.
+        prompt, shared_warm_boundary = self._render_chat_prompt(
+            messages,
+            template_tools,
+            num_images=len(images),
+            enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
+        )
+        if not shared_warm_boundary:
+            assert isinstance(prompt, str)
+            prompt, _ = self._prepare_harmony_no_thinking_prompt(
+                prompt,
+                enable_thinking=enable_thinking,
+                has_tools=bool(template_tools),
+                as_token_ids=True,
+            )
+        return prompt
+
     def _apply_chat_template(
         self,
         messages: list[dict[str, Any]],
@@ -3775,30 +3842,13 @@ class BatchedEngine(BaseEngine):
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        # Agent warm-up may contain only the shared system and tools. Some
-        # templates require a user turn; render two probes internally and
-        # prefill only their common token prefix plus one disposable token.
-        # The latter lets the scheduler snapshot the complete shared prefix.
-        shared_warm_boundary = 0
-        prompt: str | list[int]
-        try:
-            prompt = self._apply_chat_template(
-                messages,
-                template_tools,
-                num_images=len(all_images),
-                enable_thinking=enable_thinking,
-                chat_template_kwargs=chat_template_kwargs,
-            )
-        except Exception as exc:
-            if not (
-                len(messages) == 1
-                and messages[0].get("role") == "system"
-                and "No user query found in messages" in str(exc)
-            ):
-                raise
-            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
-                messages, template_tools, enable_thinking, chat_template_kwargs
-            )
+        prompt, shared_warm_boundary = self._render_chat_prompt(
+            messages,
+            template_tools,
+            num_images=len(all_images),
+            enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
+        )
         output_router_seed = None
         if not shared_warm_boundary:
             assert isinstance(prompt, str)
@@ -4720,26 +4770,13 @@ class BatchedEngine(BaseEngine):
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
 
-        shared_warm_boundary = 0
-        prompt: str | list[int]
-        try:
-            prompt = self._apply_chat_template(
-                messages,
-                template_tools,
-                num_images=len(all_images),
-                enable_thinking=enable_thinking,
-                chat_template_kwargs=chat_template_kwargs,
-            )
-        except Exception as exc:
-            if not (
-                len(messages) == 1
-                and messages[0].get("role") == "system"
-                and "No user query found in messages" in str(exc)
-            ):
-                raise
-            prompt, shared_warm_boundary = self._shared_system_tools_prompt(
-                messages, template_tools, enable_thinking, chat_template_kwargs
-            )
+        prompt, shared_warm_boundary = self._render_chat_prompt(
+            messages,
+            template_tools,
+            num_images=len(all_images),
+            enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
+        )
         output_router_seed = None
         if not shared_warm_boundary:
             assert isinstance(prompt, str)

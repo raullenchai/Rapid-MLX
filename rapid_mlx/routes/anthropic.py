@@ -1543,7 +1543,7 @@ async def count_anthropic_tokens(request: Request):
     #
     # Single source of truth: build the same ``AnthropicRequest`` →
     # ``ChatCompletionRequest`` adapter chain that ``/v1/messages``
-    # uses, then run the engine's ``build_prompt`` so the chat template
+    # uses, then run the engine's request renderer so the chat template
     # renders the full conversation (system + messages + tools). The
     # tokenizer encode that follows uses ``count_prompt_tokens`` with
     # BOS-aware ``add_special_tokens`` handling.
@@ -1602,20 +1602,32 @@ async def count_anthropic_tokens(request: Request):
     # implementation that omits it) reach the documented fallback
     # path instead of 500-ing here. Mirrors the same defensive
     # pattern in ``count_anthropic_tokens``'s fallback branch.
+    render_request_prompt = getattr(type(engine), "render_request_prompt", None)
     try:
-        _ctx_messages, _, _ = extract_multimodal_content(
-            openai_request.messages,
-            preserve_native_format=getattr(
-                engine, "preserve_native_tool_format", False
-            ),
-            telemetry_model=_served_telemetry_id,
-            caller_agent=_caller_agent,
-            caller_client=_caller_client,
-        )
+        if callable(render_request_prompt):
+            _ctx_messages, _, _ = _prepare_anthropic_engine_messages(
+                openai_request,
+                engine,
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
+        else:
+            _ctx_messages, _, _ = extract_multimodal_content(
+                openai_request.messages,
+                preserve_native_format=getattr(
+                    engine, "preserve_native_tool_format", False
+                ),
+                telemetry_model=_served_telemetry_id,
+                caller_agent=_caller_agent,
+                caller_client=_caller_client,
+            )
     except Exception:
         _ctx_messages = None
     build_prompt = getattr(engine, "build_prompt", None)
-    if _ctx_messages is not None and callable(build_prompt):
+    if _ctx_messages is not None and (
+        callable(render_request_prompt) or callable(build_prompt)
+    ):
         # Match the ``enable_thinking`` precedence ``/v1/messages``
         # uses (resolved via shared helper). On qwen3-shaped templates
         # this adds an opening ``<think>\n`` prefix to the assistant
@@ -1632,15 +1644,25 @@ async def count_anthropic_tokens(request: Request):
                 if openai_request.tools
                 else None
             )
-            prompt = build_prompt(
-                _ctx_messages,
-                tools=rendered_tools,
-                enable_thinking=effective_thinking,
-            )
+            if callable(render_request_prompt):
+                prompt = engine.render_request_prompt(
+                    _ctx_messages,
+                    tools=rendered_tools,
+                    enable_thinking=effective_thinking,
+                )
+                count = count_prompt_tokens(engine, prompt)
+                if count > 0:
+                    total_tokens = count
+            else:
+                prompt = build_prompt(
+                    _ctx_messages,
+                    tools=rendered_tools,
+                    enable_thinking=effective_thinking,
+                )
+                if isinstance(prompt, str) and prompt:
+                    total_tokens = count_prompt_tokens(engine, prompt)
         except Exception:
-            prompt = None
-        if isinstance(prompt, str) and prompt:
-            total_tokens = count_prompt_tokens(engine, prompt)
+            pass
 
     # Legacy fallback path — only fires when the adapter / template
     # render failed. Keeps the endpoint useful on test stubs that don't
