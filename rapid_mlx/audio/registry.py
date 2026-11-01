@@ -120,6 +120,17 @@ _REGISTRY: dict[str, AudioAliasEntry] | None = None
 # forward index so :func:`resolve_audio_alias` can answer for full HF
 # ids the same way it answers for short aliases.
 _HF_ID_INDEX: dict[str, str] = {}
+_WHISPER_PROCESSORS: dict[str, AudioRuntimeAsset] = {}
+_WHISPER_PROCESSOR_PATTERNS = (
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "normalizer.json",
+)
 _RUNTIME_ASSETS: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
 _RUNTIME_REQUIREMENTS: dict[str, tuple[AudioRuntimeRequirement, ...]] = {}
 _REGISTRY_LOCK = threading.Lock()
@@ -180,6 +191,29 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
     path = _registry_path()
     with open(path) as f:
         raw = json.load(f)
+
+    raw_processors = raw.get("_whisper_processors", {})
+    if not isinstance(raw_processors, dict):
+        raise ValueError("audio aliases.json: _whisper_processors must be an object")
+    processors: dict[str, AudioRuntimeAsset] = {}
+    for hf_id, asset in raw_processors.items():
+        if (
+            not isinstance(hf_id, str)
+            or hf_id.count("/") != 1
+            or not isinstance(asset, dict)
+        ):
+            raise ValueError("audio aliases.json: invalid Whisper processor entry")
+        repo_id = asset.get("repo_id")
+        revision = _revision(asset)
+        if not isinstance(repo_id, str) or repo_id.count("/") != 1 or revision is None:
+            raise ValueError(
+                "audio aliases.json: Whisper processors require a repo and revision"
+            )
+        if hf_id.lower() in processors:
+            raise ValueError("audio aliases.json: duplicate Whisper processor entry")
+        processors[hf_id.lower()] = AudioRuntimeAsset(
+            repo_id, _WHISPER_PROCESSOR_PATTERNS, revision
+        )
 
     runtime_assets: dict[str, tuple[AudioRuntimeAsset, ...]] = {}
     raw_runtime_assets = raw.get("_runtime_assets", {})
@@ -341,6 +375,8 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
     # Publish one coherent snapshot while holding _REGISTRY_LOCK.  Readers use
     # _REGISTRY as the ready flag, so it must become visible only after every
     # companion index contains the matching data.
+    _WHISPER_PROCESSORS.clear()
+    _WHISPER_PROCESSORS.update(processors)
     _HF_ID_INDEX.clear()
     _HF_ID_INDEX.update(hf_id_index)
     _RUNTIME_ASSETS.clear()
@@ -561,7 +597,17 @@ def runtime_assets_for(name: str | None) -> tuple[AudioRuntimeAsset, ...]:
     entry = resolve_audio_alias(name)
     if entry is None:
         return ()
-    return _RUNTIME_ASSETS.get(entry.family, ())
+    assets = _RUNTIME_ASSETS.get(entry.family, ())
+    processor = (
+        whisper_processor_asset(entry.hf_id) if entry.family == "whisper" else None
+    )
+    return assets + (processor,) if processor else assets
+
+
+def whisper_processor_asset(hf_id: str) -> AudioRuntimeAsset | None:
+    """Return the pinned processor for a registered Whisper model ID."""
+    _load_registry()
+    return _WHISPER_PROCESSORS.get(hf_id.lower())
 
 
 def runtime_requirements_for(
