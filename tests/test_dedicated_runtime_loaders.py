@@ -338,6 +338,30 @@ def test_cached_snapshot_resolves_named_revision(monkeypatch, tmp_path):
     assert cached_snapshot_path("org/model", "main") == str(snapshot)
 
 
+def test_cached_snapshot_returns_none_when_ref_read_fails(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from huggingface_hub import constants
+
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    cache = tmp_path / "models--org--model"
+    ref = cache / "refs" / "main"
+    ref.parent.mkdir(parents=True)
+    ref.write_text("abc123\n")
+    (cache / "snapshots" / "abc123").mkdir(parents=True)
+    original_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == ref:
+            raise OSError("Cannot read cached revision")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert cached_snapshot_path("org/model", "main") is None
+
+
 @pytest.mark.parametrize(
     "revision", ["../outside", "/abs/path", "..", "", ".", "a//b", "a/../b", "a\\b"]
 )
