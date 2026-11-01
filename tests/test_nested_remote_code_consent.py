@@ -157,29 +157,71 @@ def test_inkling_processor_consent_before_vlm_dispatch(
     assert loader.call_count == 2
 
 
-def test_stt_ignores_unreferenced_subfolder(tmp_path, monkeypatch, stt_loader):
+def test_z_image_tokenizer_consent_before_vlm_dispatch(tmp_path, monkeypatch):
+    from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
+
+    vlm = ModuleType("mlx_vlm")
+    vlm.__path__ = []
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda path, **kwargs: path
+
+    def load_config(path, **kwargs):
+        with (tmp_path / "config.json").open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    utils.load_config = load_config
+    monkeypatch.setitem(sys.modules, "mlx_vlm", vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    _write_metadata(tmp_path, "config.json", model_type="z_image")
+    _write_metadata(tmp_path / "tokenizer", auto_map={"AutoTokenizer": ["tok.T", None]})
+    loader = Mock(
+        return_value=(
+            SimpleNamespace(config=SimpleNamespace()),
+            SimpleNamespace(tokenizer=SimpleNamespace()),
+        )
+    )
+    vlm.load = loader
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    with pytest.raises(RemoteCodeConsentRequired, match="auto_map"):
+        load_vlm_with_policy(tmp_path, loader=loader)
+    loader.assert_not_called()
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+    load_vlm_with_policy(tmp_path, loader=loader)
+    loader.assert_called_once_with(str(tmp_path), trust_remote_code=True)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "config.json",
+        "tokenizer_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+    ],
+)
+@pytest.mark.parametrize("field", ["auto_map", "model_file"])
+def test_stt_checks_unreferenced_immediate_directories(
+    tmp_path, monkeypatch, stt_loader, filename, field
+):
     engine_class, base = stt_loader
     _write_metadata(tmp_path, "config.json", model_type="fun_asr_nano")
-    _write_metadata(tmp_path / "archive", auto_map={"AutoTokenizer": ["tok.T", None]})
+    _write_metadata(tmp_path / "nested", filename, **{field: "custom.py"})
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    engine = engine_class(str(tmp_path), enable_vad_pretrim=False)
-    engine.load()
-    base.assert_called_once_with(model_path=tmp_path)
-    assert engine._loaded
+    with pytest.raises(RemoteCodeConsentRequired, match="nested"):
+        engine_class(str(tmp_path), enable_vad_pretrim=False).load()
+    base.assert_not_called()
 
 
-def test_configured_directory_realpath_deduplication(tmp_path, monkeypatch):
+def test_directory_scan_bounds_and_realpath_deduplication(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import validate_processor_code
 
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    _write_metadata(
-        tmp_path,
-        "config.json",
-        self_path=".",
-        tokenizer_path="visible",
-        text_config={"path": "alias", "root_path": "visible/back_to_root"},
-    )
-    _write_metadata(tmp_path / "visible", tokenizer_class="Qwen2Tokenizer")
+    _write_metadata(tmp_path, "config.json", self_path=".")
+    metadata = {"auto_map": {"AutoTokenizer": ["tok.T", None]}}
+    _write_metadata(tmp_path / ".hidden", **metadata)
+    _write_metadata(tmp_path / "visible" / "grandchild", **metadata)
     (tmp_path / "visible" / "back_to_root").symlink_to(
         tmp_path, target_is_directory=True
     )
@@ -194,17 +236,32 @@ def test_configured_directory_realpath_deduplication(tmp_path, monkeypatch):
     monkeypatch.setattr(type(tmp_path), "open", open_metadata)
     validate_processor_code(tmp_path)
     assert opened.count((tmp_path / "visible" / "tokenizer_config.json").resolve()) == 1
-    assert opened.count(tmp_path / "tokenizer_config.json") == 1
+
+    # A config-named path is checked even beyond the automatic scan depth.
+    _write_metadata(tmp_path, "config.json", text_config={"path": "visible/grandchild"})
+    with pytest.raises(RemoteCodeConsentRequired, match="visible/grandchild"):
+        validate_processor_code(tmp_path)
 
 
-def test_configured_deep_directory_is_checked(tmp_path, monkeypatch):
+def test_configured_directory_is_checked_beyond_scan_cap(tmp_path, monkeypatch):
+    from pathlib import Path
+
     from rapid_mlx.utils.model_file_guard import validate_processor_code
 
     monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    _write_metadata(tmp_path, "config.json", text_config={"path": "visible/grandchild"})
-    _write_metadata(
-        tmp_path / "visible" / "grandchild",
-        auto_map={"AutoTokenizer": ["tok.T", None]},
+    directories = [tmp_path / f"tokenizer-{index}" for index in range(65)]
+    for directory in directories:
+        directory.mkdir()
+    _write_metadata(tmp_path, "config.json", model_type="fun_asr_nano")
+    _write_metadata(directories[-1], auto_map={"AutoTokenizer": ["tok.T", None]})
+    original = Path.iterdir
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda path: iter(directories) if path == tmp_path else original(path),
     )
-    with pytest.raises(RemoteCodeConsentRequired, match="visible/grandchild"):
+    validate_processor_code(tmp_path)
+
+    _write_metadata(tmp_path, "config.json", qwen_tokenizer_path=directories[-1].name)
+    with pytest.raises(RemoteCodeConsentRequired, match="tokenizer-64"):
         validate_processor_code(tmp_path)

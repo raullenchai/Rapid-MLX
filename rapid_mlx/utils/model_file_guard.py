@@ -16,7 +16,8 @@ from typing import Any
 
 from .._env import env_falsey, env_truthy
 
-FORCED_TRUST_VLM_MODEL_TYPES = frozenset({"inkling"})
+# inkling's processor forces trust on the model-root tokenizer; z_image's pipeline forces trust on the hard-coded 'tokenizer' subfolder (covered by the immediate-subdirectory scan).
+FORCED_TRUST_VLM_MODEL_TYPES = frozenset({"inkling", "z_image"})
 
 
 class RemoteCodeConsentRequired(ValueError):  # noqa: N818
@@ -170,10 +171,8 @@ def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
 def validate_processor_code(model_path: str | Path) -> None:
     """Inspect metadata before loaders that force repository-code trust.
 
-    Check the root plus every folder named by string values in its config.json
-    (including one level inside dictionaries), because loaders open tokenizers
-    from config-named folders with repository-code trust forced. Deduplicate
-    folders by realpath and skip references back to the root.
+    Check the root, up to 64 visible immediate subdirectories, and directory
+    paths named in the root config (including one level inside dictionaries).
     Run once at load, never from generation or transcription.
     """
     root = Path(model_path)
@@ -192,6 +191,15 @@ def validate_processor_code(model_path: str | Path) -> None:
             return
         seen.add(resolved)
         _validate_processor_directory(directory, root=root)
+
+    count = 0
+    for directory in root.iterdir():
+        if directory.name.startswith(".") or not directory.is_dir():
+            continue
+        check_directory(directory)
+        count += 1
+        if count == 64:
+            break
 
     for value in config.values():
         values = value.values() if isinstance(value, dict) else (value,)
