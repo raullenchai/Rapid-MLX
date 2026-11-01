@@ -3,6 +3,7 @@
 
 import builtins
 import importlib.metadata as metadata
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,64 @@ from types import SimpleNamespace
 
 import pytest
 
-from rapid_mlx.runtime.installed_extras import installed_extras
+from rapid_mlx.runtime.installed_extras import installed_extras, recorded_tool_extras
+
+
+@pytest.mark.parametrize("name", ["rapid-mlx", "Rapid_MLX", "vllm.mlx"])
+def test_recorded_uv_extras(tmp_path, name):
+    (tmp_path / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{name = "{name}", '
+        'extras = ["Audio_Feature", "audio.feature", "embeddings", '
+        '"dev", "test", "all", "CI_GPU"], specifier = "==1.0.0"}]\n'
+    )
+    assert recorded_tool_extras(tmp_path) == ["audio-feature", "embeddings"]
+
+
+def test_recorded_uv_extras_ignores_other_packages(tmp_path):
+    (tmp_path / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name = "other", extras = ["audio"]}]\n'
+    )
+    assert recorded_tool_extras(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("rapid-mlx[audio]==1.0.0", ["audio"]),
+        (
+            "rapid-mlx[audio,embeddings] @ git+https://example.invalid/r.git@abc",
+            ["audio", "embeddings"],
+        ),
+        ("git+https://example.invalid/r.git@abc", []),
+        ("/tmp/rapid-mlx", []),
+        ("other[audio]==1.0.0", []),
+        ("VLLM_MLX[Audio_Feature,dev,test,all,ci_GPU]==1.0.0", ["audio-feature"]),
+        ("rapid-mlx[audio] @", ["audio"]),
+    ],
+)
+def test_recorded_pipx_extras(tmp_path, spec, expected):
+    (tmp_path / "pipx_metadata.json").write_text(
+        json.dumps({"main_package": {"package_or_url": spec}})
+    )
+    assert recorded_tool_extras(tmp_path) == expected
+
+
+@pytest.mark.parametrize("filename", ["uv-receipt.toml", "pipx_metadata.json"])
+def test_recorded_extras_malformed_receipt(tmp_path, filename):
+    (tmp_path / filename).write_text("{invalid")
+    assert recorded_tool_extras(tmp_path) == []
+
+
+def test_recorded_extras_no_receipts(tmp_path):
+    assert recorded_tool_extras(tmp_path) == []
+
+
+def test_recorded_extras_defaults_to_running_prefix(tmp_path, monkeypatch):
+    (tmp_path / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name = "rapid-mlx", extras = ["audio"]}]\n'
+    )
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    assert recorded_tool_extras() == ["audio"]
 
 
 def test_installed_extras_matches_installer():

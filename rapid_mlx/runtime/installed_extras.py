@@ -1,5 +1,57 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Infer installed optional features from distribution metadata."""
+"""Detect installed optional features from tool receipts and distribution metadata."""
+
+import json
+import os
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+
+def recorded_tool_extras(prefix: str | os.PathLike | None = None) -> list[str]:
+    """Read requested extras even when their dependencies are missing or broken."""
+    try:
+        root = Path(sys.prefix if prefix is None else prefix)
+
+        def normalize(name):
+            return re.sub(r"[-_.]+", "-", name).lower()
+
+        package_names = {"rapid-mlx", "vllm-mlx"}
+        extras = set()
+        receipt = root / "uv-receipt.toml"
+        if receipt.exists():
+            data = tomllib.loads(receipt.read_text())
+            for requirement in data.get("tool", {}).get("requirements", []):
+                if normalize(requirement.get("name", "")) in package_names:
+                    extras.update(requirement.get("extras", []))
+
+        metadata = root / "pipx_metadata.json"
+        if metadata.exists():
+            data = json.loads(metadata.read_text())
+            spec = data.get("main_package", {}).get("package_or_url", "")
+            try:
+                from packaging.requirements import Requirement
+
+                requirement = Requirement(spec)
+            except Exception:
+                match = re.match(r"^\s*(?:rapid|vllm)[-_.]+mlx\[([^\]]+)\]", spec, re.I)
+                if match:
+                    extras.update(part.strip() for part in match.group(1).split(","))
+            else:
+                if normalize(requirement.name) in package_names:
+                    extras.update(requirement.extras)
+
+        normalized = {normalize(extra) for extra in extras}
+        return sorted(
+            extra
+            for extra in normalized
+            if extra
+            and extra not in {"dev", "test", "all"}
+            and not extra.startswith("ci-")
+        )
+    except Exception:
+        return []
 
 
 def installed_extras() -> list[str]:

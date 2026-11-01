@@ -991,6 +991,7 @@ def test_extra_repair_preserves_installed_tool_extras(
         ),
     )
     monkeypatch.setattr(optional_runtime, "installed_extras", lambda: ["audio"])
+    monkeypatch.setattr(optional_runtime, "recorded_tool_extras", lambda: [])
     extras = (
         extra if method in {"pip", "install_sh"} else ",".join(sorted({"audio", extra}))
     )
@@ -999,4 +1000,29 @@ def test_extra_repair_preserves_installed_tool_extras(
             extra, version="1.0.0", include_paths=False
         )
         == f"{prefix} 'rapid-mlx[{extras}]==1.0.0'"
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "prefix"),
+    [
+        ("uv", "uv tool install --force"),
+        ("pipx", "pipx install --force"),
+        ("unknown", "sudo pipx install --global --force"),
+    ],
+)
+def test_extra_repair_preserves_recorded_broken_tool_extras(
+    monkeypatch, method, prefix
+):
+    monkeypatch.setattr(
+        "rapid_mlx._version_check.detect_install_method",
+        lambda: SimpleNamespace(
+            method=method, upgrade_command="sudo pipx upgrade --global rapid-mlx"
+        ),
+    )
+    monkeypatch.setattr(optional_runtime, "installed_extras", lambda: [])
+    monkeypatch.setattr(optional_runtime, "recorded_tool_extras", lambda: ["audio"])
+    assert (
+        optional_runtime.optional_extra_repair_command("embeddings", version="1.0.0")
+        == f"{prefix} 'rapid-mlx[audio,embeddings]==1.0.0'"
     )
