@@ -2334,6 +2334,7 @@ def confirm_or_abort(
     threshold_bytes: int = 10 * 1024**3,  # 10 GiB
     auto_yes_env: str = "RAPID_MLX_AUTO_PULL",
     logfile_hint: str | None = None,
+    suggest_pull: bool = True,
 ) -> bool:
     """Interactive gate before a large model download begins.
 
@@ -2403,6 +2404,8 @@ def confirm_or_abort(
         print(
             f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
             f"or set {auto_yes_env}=1 to skip this prompt."
+            if suggest_pull
+            else f"  Aborted. Set {auto_yes_env}=1 to skip this prompt."
         )
         sys.exit(1)
     return True

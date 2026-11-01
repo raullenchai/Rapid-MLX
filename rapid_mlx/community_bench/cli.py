@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import atexit
+import atexit  # noqa: F401 - tests patch atexit through this module
 import json
 import os
 import signal
@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
+from .._download_cancel import _cancel_backstop, _hard_exit_cancelled
 from ..byom.preflight import _gb, mlx_recommended_working_set_bytes
 from ..leaderboard_links import run_url
 from .acceleration import (
@@ -44,27 +45,6 @@ _CONTRIBUTOR_BASE_URL = f"{_LEADERBOARD_URL}/contributors"
 
 
 _CANCEL_BACKSTOP_SECONDS = 15
-
-
-def _hard_exit_cancelled(code: int) -> None:
-    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-    try:
-        atexit._run_exitfuncs()  # noqa: SLF001
-    except BaseException:  # noqa: BLE001
-        pass
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except BaseException:  # noqa: BLE001
-            pass
-    os._exit(code)
-
-
-def _cancel_backstop(code: int) -> None:
-    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-    os._exit(code)
 
 
 def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
