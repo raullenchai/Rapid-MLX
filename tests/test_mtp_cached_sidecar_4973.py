@@ -137,6 +137,15 @@ def test_missing_target_catalog_pin_explains_skip(cached_target, monkeypatch, ca
         ),
     )
     args = _args(ALIAS)
+    before = dict(vars(args))
+    cli._normalize_speculative_config_or_exit(args)
+    assert args._auto_mtp_deferred is True
+    assert capsys.readouterr().err == ""
+    cli._restore_speculative_changes(
+        args, before, cli._speculative_changes(args, before)
+    )
+    args._auto_mtp_retry = True
+    args._auto_mtp_deferred = False
     cli._normalize_speculative_config_or_exit(args)
     assert args.spec_decode == "none"
     assert f"revision {OTHER_SHA}" in capsys.readouterr().err
