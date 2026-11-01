@@ -39,6 +39,11 @@ _METADATA_UNSET = object()
 _single_model_metadata_cache: tuple[object, str, dict | None] | None = None
 
 
+def active_agent_runs() -> int:
+    with _service_lock:
+        return 0 if _service is None else _service.active_run_count()
+
+
 def get_agent_service() -> AgentServerService:
     global _service
     with _service_lock:
