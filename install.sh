@@ -319,17 +319,17 @@ finish_rebuild() {
 }
 
 acquire_install_lock() {
-    local pid="" status=0
+    local pid="" status=0 perl="${RAPID_INSTALL_PERL:-/usr/bin/perl}"
     if [ -L "$INSTALL_LOCK" ]; then
         err "The Rapid-MLX install lock $INSTALL_LOCK is a symlink. Remove it and re-run."
         exit 1
     fi
-    if command -v perl >/dev/null 2>&1; then
+    if [ -x "$perl" ]; then
         if ! { exec 9>>"$INSTALL_LOCK"; } 2>/dev/null; then
             err "Could not open the Rapid-MLX install lock at $INSTALL_LOCK."
             exit 1
         fi
-        perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1; exit 0' || status=$?
+        "$perl" -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1; exit 0' || status=$?
         case "$status" in
             0) INSTALL_LOCK_MODE=flock ;;
             1) err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."; exit 1 ;;
@@ -366,10 +366,34 @@ acquire_install_lock() {
         esac
         if [ -L "$LEGACY_INSTALL_LOCK" ]; then rm -f "$LEGACY_INSTALL_LOCK"; else rm -rf "$LEGACY_INSTALL_LOCK"; fi
     fi
+    if ! ln -s "$$" "$LEGACY_INSTALL_LOCK" 2>/dev/null; then
+        if [ -L "$LEGACY_INSTALL_LOCK" ]; then
+            pid=$(readlink "$LEGACY_INSTALL_LOCK" 2>/dev/null) || pid=""
+        else
+            pid=$(cat "$LEGACY_INSTALL_LOCK/pid" 2>/dev/null) || pid=""
+        fi
+        case "$pid" in
+            ''|*[!0-9]*|0) ;;
+            *) if kill -0 "$pid" 2>/dev/null; then
+                err "Another Rapid-MLX install is already running. Wait for it to finish and re-run."
+                release_install_lock
+                exit 1
+            fi ;;
+        esac
+        err "Could not acquire the Rapid-MLX install lock. Re-run the installer."
+        release_install_lock
+        exit 1
+    fi
+    LEGACY_LOCK_OWNED=1
 }
 
 release_install_lock() {
     local pid=""
+    if [ "${LEGACY_LOCK_OWNED:-}" = 1 ]; then
+        pid=$(readlink "$LEGACY_INSTALL_LOCK" 2>/dev/null) || pid=""
+        [ "$pid" != "$$" ] || rm -f "$LEGACY_INSTALL_LOCK"
+    fi
+    LEGACY_LOCK_OWNED=""
     case "${INSTALL_LOCK_MODE:-}" in
         flock) exec 9>&- ;;
         dir)

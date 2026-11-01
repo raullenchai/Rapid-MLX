@@ -2,7 +2,6 @@
 
 import os
 import pty
-import shutil
 import subprocess
 import sys
 import time
@@ -376,7 +375,7 @@ printf 'selected=%s\\n' "$PYTHON"
 
 
 def test_concurrent_installers_serialize_before_python_setup(tmp_path):
-    if not shutil.which("perl", path="/usr/bin:/bin"):
+    if not os.access("/usr/bin/perl", os.X_OK):
         pytest.skip("perl is required for flock")
     stubs = tmp_path / "stubs"
     stubs.mkdir()

@@ -534,23 +534,56 @@ if HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_l
    HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; release_install_lock' _ "$INSTALL_SH"; then
     ok "released lock can be acquired by another process"
 else bad "released lock can be acquired by another process"; fi
-HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; touch "$2"; sleep 30' _ "$INSTALL_SH" "$WORK/ready" &
+HOME="$LOCK_HOME" bash -c '
+    RAPID_INSTALL_LIB=1 source "$1"
+    trap release_install_lock EXIT
+    acquire_install_lock
+    touch "$2"
+    while [ ! -e "$3" ]; do sleep 0.1; done
+' _ "$INSTALL_SH" "$WORK/ready" "$WORK/release" &
 lock_holder=$!
 for ((i=0; i<100; i++)); do [ ! -e "$WORK/ready" ] || break; sleep 0.1; done
+if [ -L "$LOCK_HOME/.rapid-mlx.install-lock" ] &&
+   [ "$(readlink "$LOCK_HOME/.rapid-mlx.install-lock")" = "$lock_holder" ]; then
+    ok "held lock exposes the holder pid to older installers"
+else bad "held lock exposes the holder pid to older installers"; fi
 if [ -e "$WORK/ready" ] && output=$(HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock' _ "$INSTALL_SH" 2>&1); then
     bad "held lock rejects another process"
 elif [[ "$output" == *"Another Rapid-MLX install is already running"* ]]; then ok "held lock rejects another process"
 else bad "held lock rejects another process"; fi
-kill "$lock_holder" 2>/dev/null || true
-wait "$lock_holder" 2>/dev/null || true
-# The holder's sleep inherits fd 9; wait for it to exit before reuse.
+touch "$WORK/release"
+wait "$lock_holder"
+if [ ! -L "$LOCK_HOME/.rapid-mlx.install-lock" ]; then
+    ok "release removes the legacy lock"
+else bad "release removes the legacy lock"; fi
+# Exercise explicit mode selection independently of Perl on PATH.
+for lock_mode in flock dir; do
+    [ "$lock_mode" != flock ] || [ -x /usr/bin/perl ] || continue
+    if HOME="$WORK/mode-$lock_mode" bash -c '
+        RAPID_INSTALL_LIB=1 source "$1"
+        mkdir -p "$HOME"
+        perl() { return 99; }
+        if [ "$2" = dir ]; then RAPID_INSTALL_PERL="$HOME/missing-perl"; fi
+        acquire_install_lock
+        [ "$INSTALL_LOCK_MODE" = "$2" ]
+        [ "$LEGACY_LOCK_OWNED" = 1 ]
+        [ -L "$LEGACY_INSTALL_LOCK" ]
+        [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]
+        release_install_lock
+        [ -z "$LEGACY_LOCK_OWNED" ]
+        [ ! -L "$LEGACY_INSTALL_LOCK" ]
+        [ ! -d "${INSTALL_LOCK}.d" ]
+    ' _ "$INSTALL_SH" "$lock_mode"; then
+        ok "$lock_mode mode owns and releases the legacy lock independently of PATH Perl"
+    else bad "$lock_mode mode owns and releases the legacy lock independently of PATH Perl"; fi
+done
 LOCK_HOME="$WORK/legacy-home"
 mkdir -p "$LOCK_HOME"
 legacy="$LOCK_HOME/.rapid-mlx.install-lock"
 ln -s 99999999 "$legacy"
-if HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ ! -L "$LEGACY_INSTALL_LOCK" ]; release_install_lock' _ "$INSTALL_SH" &&
+if HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ -L "$LEGACY_INSTALL_LOCK" ]; [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]; release_install_lock' _ "$INSTALL_SH" &&
    mkdir "$legacy" && printf '99999999\n' > "$legacy/pid" &&
-   HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ ! -e "$LEGACY_INSTALL_LOCK" ]; release_install_lock' _ "$INSTALL_SH"; then
+   HOME="$LOCK_HOME" bash -c 'RAPID_INSTALL_LIB=1 source "$1"; acquire_install_lock; [ -L "$LEGACY_INSTALL_LOCK" ]; [ "$(readlink "$LEGACY_INSTALL_LOCK")" = "$$" ]; release_install_lock' _ "$INSTALL_SH"; then
     ok "stale legacy symlink and directory are removed"
 else bad "stale legacy symlink and directory are removed"; fi
 rm -rf "$legacy"
