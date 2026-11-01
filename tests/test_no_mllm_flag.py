@@ -496,6 +496,7 @@ def test_force_text_and_force_mllm_mutually_exclusive_in_load_model():
         )
 
 
+@pytest.mark.usefixtures("isolated_server_model_state")
 def test_is_text_only_alias_plus_explicit_mllm_raises_loudly():
     """An ``is_text_only`` alias pins ``force_text=True`` inside
     ``load_model``. An operator who ALSO passes ``--mllm`` (force_mllm)
@@ -519,6 +520,7 @@ def test_is_text_only_alias_plus_explicit_mllm_raises_loudly():
         load_model("bonsai-27b-2bit", force_mllm=True)
 
 
+@pytest.mark.usefixtures("isolated_server_model_state")
 def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
     """Integration guard (codex #1116): calling the ordinary
     ``load_model("bonsai-27b-2bit")`` with NO routing overrides must

@@ -382,7 +382,7 @@ struct DOCXTextExtractorTests {
         #expect(ChatFileAttachment.ValidationError.docxEncrypted.errorDescription == "This Word document is password-protected or in an older format. Remove the password or save it as PDF or TXT, then attach that file.")
         #expect(ChatFileAttachment.ValidationError.invalidDOCX.errorDescription == "This Word document couldn't be read. Save it as PDF or TXT, then attach that file.")
         #expect(ChatFileAttachment.ValidationError.noExtractableText(.docx).errorDescription == "This Word document contains no readable text.")
-        #expect(ChatFileAttachment.ValidationError.tooLarge.errorDescription == "PDF, CSV, TXT, and DOCX files must be 100 MB or smaller.")
+        #expect(ChatFileAttachment.ValidationError.tooLarge.errorDescription == "PDF, CSV, TXT, and DOCX files must be \(DownloadProgress.formatBytes(Int64(ChatFileAttachment.maxSourceBytes))) or smaller.")
         #expect(ChatFileAttachment.ValidationError.unsupportedType.errorDescription == "Choose a PDF, CSV, TXT, or DOCX file.")
     }
 }

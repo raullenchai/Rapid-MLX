@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import copy
+import importlib
 import importlib.util
 import ipaddress
 import os
@@ -74,6 +75,26 @@ def _aaa_env_leak_guard(request):
 
 
 @pytest.fixture(autouse=True)
+def _restore_hf_progress_bar_states():
+    """Keep Hugging Face's process-global progress settings test-local."""
+    env_before = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    try:
+        tqdm_module = importlib.import_module("huggingface_hub.utils.tqdm")
+        states = getattr(tqdm_module, "progress_bar_states", None)
+    except ImportError:
+        states = None
+    before = dict(states) if states is not None else None
+    yield
+    if states is not None:
+        states.clear()
+        states.update(before)
+    if env_before is None:
+        os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+    else:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = env_before
+
+
+@pytest.fixture(autouse=True)
 def _disable_catalog_memory_preflight(request, monkeypatch):
     """Disable the host-dependent check unless a test opts in.
 
@@ -84,6 +105,17 @@ def _disable_catalog_memory_preflight(request, monkeypatch):
         from rapid_mlx.byom import preflight
 
         monkeypatch.setattr(preflight, "_check_catalog_memory_fit", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
+def _benchmark_host_memory(request, monkeypatch):
+    if "bench" in request.node.path.name:
+        from rapid_mlx.community_bench import local_runner
+
+        monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 1 << 40)
+        monkeypatch.setattr(
+            local_runner, "mlx_recommended_working_set_bytes", lambda: None
+        )
 
 
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
@@ -376,6 +408,70 @@ def _isolate_server_serve_config():
                     setattr(module, name, value)
             for name, value in limiter_config.items():
                 setattr(limiter, name, value)
+
+
+@pytest.fixture
+def isolated_server_model_state(monkeypatch):
+    """Restore real load_model calls, including their in-place singleton writes.
+
+    Opt in only where the real server loader runs: importing here keeps the
+    optional server stack out of conftest import and unrelated unit tests.
+    """
+    from rapid_mlx import response_cache, server
+    from rapid_mlx.routes.audio import _AUDIO_REGISTRATION_SENTINEL
+
+    # Every global assigned by load_model, even on a partially failed load.
+    for name in (
+        "_engine",
+        "_model_alias",
+        "_model_name",
+        "_model_path",
+        "_served_model_name_set",
+        "_default_max_tokens",
+        "_default_max_tokens_is_explicit",
+        "_tool_parser_instance",
+        "_alias_recommended_sampling",
+        "_generation_config_sampling",
+        # Serving entrypoints/lifespan can also publish residency state.
+        "_resident_memory_limit_bytes",
+        "_resident_idle_ttl_seconds",
+        "_resident_gpu_memory_utilization",
+        "_primary_lazy_load",
+        "_primary_idle_unload_seconds",
+        "_prefix_cache_load_task",
+        "_telemetry_model_served_state",
+        "_telemetry_audio_model_served_state",
+        "_telemetry_embedding_model_served_state",
+        "_telemetry_rerank_model_served_state",
+    ):
+        monkeypatch.setattr(server, name, getattr(server, name))
+
+    # Saving references alone cannot undo registry.add() or manager/lifecycle
+    # mutations. Give the test its own registry and no pre-existing owners.
+    monkeypatch.setattr(server, "_model_registry", type(server._model_registry)())
+    monkeypatch.setattr(server, "_residency_manager", None)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+
+    # _sync_config and the runtime-config publication overwrite fields on the
+    # existing config object; preserve those fields without copying engines.
+    cfg = server.get_config()
+    for name, value in vars(cfg).items():
+        monkeypatch.setattr(cfg, name, value)
+    monkeypatch.setattr(cfg, "model_registry", server._model_registry)
+    monkeypatch.setattr(cfg, "residency_manager", None)
+    monkeypatch.setattr(cfg, "primary_model_lifecycle", None)
+    monkeypatch.setattr(
+        response_cache, "_response_cache", response_cache.ResponseCache(capacity=0)
+    )
+
+    # The loader's audio registration hook can append routes and stamp the app.
+    monkeypatch.setattr(server.app.router, "routes", list(server.app.router.routes))
+    monkeypatch.setattr(
+        server.app,
+        _AUDIO_REGISTRATION_SENTINEL,
+        getattr(server.app, _AUDIO_REGISTRATION_SENTINEL, False),
+        raising=False,
+    )
 
 
 @pytest.fixture(autouse=True)

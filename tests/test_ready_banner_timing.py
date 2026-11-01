@@ -392,7 +392,7 @@ def test_audio_ready_banner_resolves_model_with_opaque_served_alias(
     server.print_ready_banner()
     out = capsys.readouterr().out
     assert "Transcribe" in out and "/audio/transcriptions" in out
-    assert "model=gateway-stt" in out
+    assert "model=mlx-community/whisper-base-mlx" in out
     assert "launch codex" not in out
 
 
@@ -475,3 +475,231 @@ def test_rerank_only_ready_banner_without_primary_model(monkeypatch, capsys):
     assert "Model:     rank-model" in out
     assert "(not yet loaded)" not in out
     assert "curl http://localhost:8765/v1/rerank" in out
+
+
+def _banner_form(out, path):
+    import shlex
+
+    line = next(line for line in out.splitlines() if "curl " in line and path in line)
+    words = shlex.split(line[line.index("curl ") :])
+    fields = [words[i + 1] for i, word in enumerate(words) if word == "-F"]
+    return dict(field.split("=", 1) for field in fields)
+
+
+def _png_bytes():
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), "red").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _banner_setup(monkeypatch, engine, model):
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "bind_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "bind_port", 18732)
+    monkeypatch.setattr(cfg, "model_alias", model)
+    monkeypatch.setattr(cfg, "model_name", model)
+    monkeypatch.setattr(cfg, "engine", engine)
+    monkeypatch.setattr(cfg, "model_registry", None)
+    monkeypatch.setattr(cfg, "api_key", None)
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(server, "_served_model_name_set", False)
+
+
+def test_edit_banner_command_passes_route(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    png = _png_bytes()
+    engine = SimpleNamespace(
+        is_image_gen=True,
+        supports_generation=False,
+        supports_editing=True,
+        generate=lambda **kwargs: png,
+    )
+    _banner_setup(monkeypatch, engine, "edit-model")
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    assert "/v1/images/generations" not in out
+    fields = _banner_form(out, "/v1/images/edits")
+    assert fields.pop("image") == "@input.png"
+    response = TestClient(server.app).post(
+        "/v1/images/edits",
+        data=fields,
+        files={"image": ("input.png", png, "image/png")},
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize(
+    "family,wan_type",
+    [
+        ("ltx-2.3", None),
+        ("ltx-2.5", None),
+        ("wan", "t2v"),
+        ("wan", "ti2v"),
+        ("wan", "i2v"),
+        ("minimax-h3", None),
+        ("cogvideox-fun", None),
+    ],
+)
+def test_video_banner_commands_pass_route(
+    monkeypatch, capsys, tmp_path, family, wan_type
+):
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.routes import video
+    from rapid_mlx.runtime.video_lane import VideoEngine, validate_video_request
+    from rapid_mlx.video.minimax_h3 import MiniMaxH3VideoEngine
+    from rapid_mlx.video.wan import WanVideoEngine
+
+    engine = VideoEngine.__new__(VideoEngine)
+    engine.model_name = "test-video-model"
+    engine.video_family = family
+    engine._wan_engine = None
+    engine._cog_engine = None
+    engine._minimax_engine = None
+    if wan_type:
+        wan = WanVideoEngine.__new__(WanVideoEngine)
+        wan.config = {"model_type": wan_type, "sample_fps": 24, "max_area": 901120}
+        wan.model_name = "Wan2.2"
+        engine._wan_engine = wan
+    if family == "minimax-h3":
+        engine._minimax_engine = MiniMaxH3VideoEngine.__new__(MiniMaxH3VideoEngine)
+    _banner_setup(monkeypatch, engine, engine.model_name)
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+    monkeypatch.setattr(video, "_jobs_root", tmp_path)
+    monkeypatch.setattr(video, "_jobs", {})
+    monkeypatch.setattr(video, "_tasks", {})
+    monkeypatch.setattr(video, "_accepting_jobs", True)
+
+    async def no_generation(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(video, "_run_job", no_generation)
+    server.print_ready_banner()
+    fields = _banner_form(capsys.readouterr().out, "/v1/videos")
+    if wan_type == "i2v":
+        assert fields.get("input_reference") == "@start.png"
+    if family == "cogvideox-fun":
+        assert fields.get("seconds") == "1" and fields.get("size") == "672x384"
+    files = {}
+    if "input_reference" in fields:
+        assert fields.pop("input_reference") == "@start.png"
+        files["input_reference"] = ("start.png", _png_bytes(), "image/png")
+    response = TestClient(server.app).post("/v1/videos", data=fields, files=files)
+    assert response.status_code == 200, response.text
+    if family == "minimax-h3":
+        job = response.json()
+        validate_video_request(
+            engine, width=768, height=512, num_frames=job["frames"], image=None
+        )
+
+
+def test_audio_banner_custom_alias_uses_resolvable_ids(monkeypatch, capsys):
+    import json
+    import shlex
+
+    from fastapi import HTTPException
+
+    from rapid_mlx.audio.registry import resolve_audio_alias
+    from rapid_mlx.routes.audio import _resolve_stt_model, _resolve_tts_model
+
+    cfg = get_config()
+    for alias, catalog, kind in [
+        ("gateway-stt", "whisper-base", "stt"),
+        ("gateway-tts", "kokoro", "tts"),
+    ]:
+        entry = resolve_audio_alias(catalog)
+        _banner_setup(monkeypatch, None, alias)
+        monkeypatch.setattr(cfg, "model_name", entry.hf_id)
+        server.print_ready_banner()
+        out = capsys.readouterr().out
+        if kind == "stt":
+            model = _banner_form(out, "/v1/audio/transcriptions")["model"]
+            assert model == entry.hf_id
+            assert _resolve_stt_model(model) == entry.hf_id
+            with pytest.raises(HTTPException) as exc:
+                _resolve_stt_model(alias)
+            assert exc.value.status_code == 404
+        else:
+            line = next(
+                line
+                for line in out.splitlines()
+                if "curl " in line and "/audio/speech" in line
+            )
+            words = shlex.split(line[line.index("curl ") :])
+            model = json.loads(words[words.index("-d") + 1])["model"]
+            assert model == entry.hf_id
+            assert _resolve_tts_model(model) == entry.hf_id
+
+
+@pytest.mark.parametrize("kind", ["stt", "tts"])
+def test_local_audio_banner_keeps_served_name(monkeypatch, capsys, kind):
+    import json
+    import shlex
+    from types import SimpleNamespace
+
+    from rapid_mlx.audio import registry
+
+    entry = SimpleNamespace(
+        type=kind,
+        notes="local folder",
+        hf_id="/local/model",
+        family=None,
+        alias="local-audio",
+    )
+    monkeypatch.setattr(registry, "resolve_audio_alias", lambda name: entry)
+    _banner_setup(monkeypatch, None, "local-audio")
+    server.print_ready_banner()
+    out = capsys.readouterr().out
+    if kind == "stt":
+        assert _banner_form(out, "/v1/audio/transcriptions")["model"] == "local-audio"
+    else:
+        line = next(
+            line
+            for line in out.splitlines()
+            if "curl " in line and "/audio/speech" in line
+        )
+        words = shlex.split(line[line.index("curl ") :])
+        assert json.loads(words[words.index("-d") + 1])["model"] == "local-audio"
+
+
+def test_retrieval_only_startup_emits_embedding_banner(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from rapid_mlx import _uvicorn, _version_check, cli, update_refresh
+
+    cfg = get_config()
+    monkeypatch.setattr(server, "configure_logging", lambda level: "info")
+    monkeypatch.setattr(
+        cli, "_configure_engineless_server_security", lambda *args: None
+    )
+    monkeypatch.setattr(server, "_sync_config", lambda: None)
+    monkeypatch.setattr(cfg, "model_name", None)
+    monkeypatch.setattr(cfg, "model_alias", None)
+    monkeypatch.setattr(cfg, "api_key", None)
+    monkeypatch.setattr(cfg, "rerank_engine", None)
+    monkeypatch.setattr(cfg, "rerank_model_locked", None)
+    monkeypatch.setattr(cfg, "embedding_engine", object())
+    monkeypatch.setattr(cfg, "embedding_model_locked", "embed-model")
+    monkeypatch.setattr(cli, "_load_embedding_model_or_exit", lambda args, load: None)
+    monkeypatch.setattr(
+        _version_check, "print_staleness_warning_if_any", lambda **kw: False
+    )
+    monkeypatch.setattr(update_refresh, "start", lambda **kw: None)
+    monkeypatch.setattr(
+        _uvicorn, "run_uvicorn", lambda app, **kw: kw["on_server_accepting"]()
+    )
+    monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
+    args = SimpleNamespace(
+        embedding_model="embed-model",
+        host="127.0.0.1",
+        port=8123,
+        listen_fd=None,
+        log_level="info",
+    )
+    cli._serve_retrieval_only_mode(args)
+    assert "curl http://127.0.0.1:8123/v1/embeddings" in capsys.readouterr().out

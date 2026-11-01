@@ -4,6 +4,7 @@ import os
 import pty
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -279,3 +280,153 @@ def test_uv_pyproject_spellings(tmp_path, content, absent):
         capture_output=True,
     )
     assert (result.returncode == 0) == absent
+
+
+def test_reinstall_extras_filters_pip_warning(tmp_path):
+    result = run_bash(
+        """
+INSTALL_DIR="$1" PRESERVED_EXTRAS=chat TARGET=stable
+run_install_command() {
+    if [ "$1" = "$INSTALL_DIR/bin/python" ]; then echo 1.0; else "$@"; fi
+}
+pip_stub() {
+    printf '%s\n' "$*" >> "$INSTALL_DIR/pip-calls"
+    echo "WARNING: transformers 5.16.0 does not provide the extra 'tokenizers'" >&2
+}
+INSTALLER=(pip_stub)
+reinstall_preserved_extras
+""",
+        tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "rapid-mlx[chat]==1.0" in (tmp_path / "pip-calls").read_text()
+
+
+def test_reinstall_extras_uses_uv_metadata(tmp_path):
+    result = run_bash(
+        """
+unset UV_CONFIG_FILE UV_NO_CONFIG XDG_CONFIG_DIRS
+export XDG_CONFIG_HOME="$1/config"
+cd "$1"
+INSTALL_DIR="$1" PRESERVED_EXTRAS=chat TARGET=stable
+run_install_command() {
+    if [ "$1" = "$INSTALL_DIR/bin/python" ]; then echo 1.0; else "$@"; fi
+}
+uv() { cat "$UV_CONFIG_FILE"; }
+INSTALLER=(uv pip install)
+reinstall_preserved_extras
+""",
+        tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert 'name = "mlx-video-with-audio"' in result.stdout
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_quick_start_chat_hint(tmp_path, available):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python = bin_dir / "python"
+    python.write_text(f"#!/bin/bash\nexit {0 if available else 1}\n")
+    python.chmod(0o755)
+    result = run_bash(
+        'INSTALL_DIR="$1"; RECOMMENDED_MODEL=model RECOMMENDED_FLAGS= RAM_GB=16; print_quick_start_commands',
+        tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    line = next(line for line in result.stdout.splitlines() if "rapid-mlx-chat" in line)
+    assert ("first:" not in line) == available
+
+
+def test_reusable_standalone_takes_precedence(tmp_path):
+    source = SCRIPT.read_text()
+    flow = source[
+        source.index('PYTHON="$(select_python || true)"') : source.index(
+            '\ndim "Python:', source.index('PYTHON="$(select_python || true)"')
+        )
+    ]
+    result = run_bash(
+        """
+select_python() { return 1; }
+standalone_python_reusable() { return 0; }
+brew() { echo unexpected-brew; return 1; }
+install_standalone_python() { echo unexpected-download; return 1; }
+eval "$2"
+printf 'selected=%s\\n' "$PYTHON"
+""",
+        tmp_path,
+        flow,
+        env={"HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "Using Python 3.12.13 from ~/.rapid-mlx-python" in result.stdout
+    assert f"selected={tmp_path}/.rapid-mlx-python/bin/python3" in result.stdout
+    assert "not found" not in result.stdout
+    assert "unexpected" not in result.stdout
+
+
+def test_concurrent_installers_serialize_before_python_setup(tmp_path):
+    if not os.access("/usr/bin/perl", os.X_OK):
+        pytest.skip("perl is required for flock")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    scripts = {
+        "uname": 'case "$1" in -m) echo arm64 ;; *) echo Darwin ;; esac',
+        "sw_vers": "echo 15.0",
+        "sysctl": 'case "$2" in hw.memsize) echo 17179869184 ;; hw.optional.arm64) echo 1 ;; esac',
+        "python3": 'case "$1" in -c) echo 3.9 ;; --version) echo "Python 3.9.0" ;; esac',
+        "curl": 'echo "$$" >> "$HOME/curl-calls"; for ((i=0; i<300; i++)); do [ ! -e "$HOME/gate" ] || exit 1; sleep 0.1; done; exit 1',
+    }
+    scripts["python3.12"] = scripts["python3.13"] = scripts["python3"]
+    for name, body in scripts.items():
+        path = stubs / name
+        path.write_text("#!/bin/bash\n" + body + "\n")
+        path.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PATH": f"{stubs}:/usr/bin:/bin",
+        "RAPID_MLX_TELEMETRY": "0",
+        "DO_NOT_TRACK": "1",
+    }
+    first = subprocess.Popen(
+        ["bash", str(SCRIPT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not (tmp_path / "curl-calls").exists() and time.monotonic() < deadline:
+            if first.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert (tmp_path / "curl-calls").exists(), "first installer did not reach curl"
+        second = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+        )
+        assert second.returncode != 0
+        assert "Another Rapid-MLX install is already running" in second.stdout
+        assert len((tmp_path / "curl-calls").read_text().splitlines()) == 1
+    finally:
+        (tmp_path / "gate").touch()
+        try:
+            first.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.communicate()

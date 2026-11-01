@@ -1279,6 +1279,22 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         maybe_print_newsletter_hint(update_notice_shown=update_notice_shown)
 
 
+def _ready_audio_is_aligner(entry):
+    return getattr(entry, "family", None) == "qwen3_aligner" or any(
+        "aligner" in name.lower()
+        for name in (getattr(entry, "alias", "") or "", entry.hf_id)
+    )
+
+
+def _ready_audio_needs_reference_text(entry):
+    import re
+
+    tokens = set(re.split(r"[-_]", entry.hf_id.rsplit("/", 1)[-1].lower()))
+    return (
+        entry.family == "qwen3_tts" and "base" in tokens and "customvoice" not in tokens
+    )
+
+
 def _ready_lane_rows(cfg, ep, audio_entry):
     """Build copyable examples for servers without a chat lane."""
     import json
@@ -1293,27 +1309,70 @@ def _ready_lane_rows(cfg, ep, audio_entry):
     def url(path):
         return shlex.quote(ep.openai_url + path)
 
-    def json_command(path, body):
+    def json_command(path, body, *, fail=False):
         payload = shlex.quote(
             json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         )
         return (
-            f"curl {url(path)}{auth} -H 'Content-Type: application/json' -d {payload}"
+            f"curl{' --fail' if fail else ''} {url(path)}{auth} "
+            f"-H 'Content-Type: application/json' -d {payload}"
         )
 
     model = ep.model or ""
+    if audio_entry and audio_entry.notes != "local folder":
+        from rapid_mlx.audio.registry import resolve_audio_alias
+
+        served_entry = resolve_audio_alias(model) if model else None
+        if not served_entry or served_entry.hf_id != audio_entry.hf_id:
+            model = audio_entry.hf_id
     if audio_entry and audio_entry.type == "stt":
+        if _ready_audio_is_aligner(audio_entry):
+            return [
+                (
+                    "Align",
+                    f"curl {url('/audio/transcriptions')}{auth} "
+                    f"-F {shlex.quote('model=' + model)} -F file=@audio.wav "
+                    f"-F {shlex.quote('text=Exact transcript of audio.wav')}",
+                )
+            ]
         return [
             (
                 "Transcribe",
-                f"curl {url('/audio/transcriptions')}{auth} -F {shlex.quote('model=' + model)} -F file=@audio.wav",
+                f"curl {url('/audio/transcriptions')}{auth} "
+                f"-F {shlex.quote('model=' + model)} -F file=@audio.wav",
             )
         ]
     if audio_entry and audio_entry.type == "tts":
+        needs_text = _ready_audio_needs_reference_text(audio_entry)
+        if audio_entry.family == "indextts" or needs_text:
+            placeholder = "__RAPID_MLX_REFERENCE_AUDIO__"
+            while placeholder in model:
+                placeholder += "_"
+            body = {"model": model, "input": "Hello", "ref_audio": placeholder}
+            if needs_text or not any(
+                name in (ep.model or model).lower()
+                for name in ("indextts", "index-tts")
+            ):
+                body["ref_text"] = "Exact transcript of reference.wav"
+            payload = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
+            for char in ("\\", '"', "$", "`"):
+                payload = payload.replace(char, "\\" + char)
+            payload = payload.replace(placeholder, "$REF_AUDIO")
+            return [
+                ("Reference", "REF_AUDIO=$(base64 < reference.wav | tr -d '\\n')"),
+                (
+                    "Speak",
+                    f"printf '%s' \"{payload}\" | curl --fail {url('/audio/speech')}{auth} "
+                    "-H 'Content-Type: application/json' --data-binary @- "
+                    "-o speech.wav",
+                ),
+            ]
         return [
             (
                 "Speak",
-                json_command("/audio/speech", {"model": model, "input": "Hello"})
+                json_command(
+                    "/audio/speech", {"model": model, "input": "Hello"}, fail=True
+                )
                 + " -o speech.wav",
             )
         ]
@@ -1345,6 +1404,13 @@ def _ready_lane_rows(cfg, ep, audio_entry):
             )
         return rows
     if image:
+        if getattr(_engine, "supports_generation", True) is False:
+            return [
+                (
+                    "Edit",
+                    f"curl {url('/images/edits')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=Add a red hat')} -F image=@input.png",
+                )
+            ]
         return [
             (
                 "Generate",
@@ -1353,10 +1419,15 @@ def _ready_lane_rows(cfg, ep, audio_entry):
                 ),
             )
         ]
+    video_fields = ""
+    if getattr(_engine, "requires_input_reference", False):
+        video_fields += " -F input_reference=@start.png"
+    if getattr(_engine, "video_family", "") == "cogvideox-fun":
+        video_fields += " -F seconds=1 -F size=672x384"
     return [
         (
             "Generate",
-            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}",
+            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}{video_fields}",
         )
     ]
 

@@ -27,9 +27,7 @@ def test_not_ready_probe(details, message, state):
     install_health_probes(app, "test-model", healthz)
     client = TestClient(app)
 
-    response = client.get("/health/ready")
-    assert response.status_code == 503
-    assert response.json() == {
+    expected = {
         "error": {
             "message": message,
             "type": "service_unavailable",
@@ -37,7 +35,14 @@ def test_not_ready_probe(details, message, state):
         },
         "ready": False,
         "state": state,
+        "model_loaded": False,
     }
+    for path in ("/health/ready", "/readyz"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json() == expected
+    # Liveness is process-only and stays up while the model loads or fails.
+    assert client.get("/livez").json() == {"status": "alive"}
     health = client.get("/health")
     assert health.status_code == 200
     assert health.json()["status"] == "healthy"
@@ -53,9 +58,17 @@ def test_ready_and_basic_probes():
     install_health_probes(app, "test-model", healthz)
     client = TestClient(app)
 
-    response = client.get("/health/ready")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "ready": True}
+    for path in ("/health/ready", "/readyz"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "ready": True,
+            "state": "ready",
+            "model_loaded": True,
+            "model": "test-model",
+        }
+    assert client.get("/livez").json() == {"status": "alive"}
     assert client.get("/health").json() == {
         "status": "healthy",
         "engine": "fake",
@@ -99,6 +112,8 @@ def test_ddtree_probes_bypass_api_key_without_mlx(monkeypatch):
         client.get("/v1/models", headers={"Authorization": "Bearer secret"}).status_code
         == 200
     )
-    response = client.get("/health/ready")
-    assert response.status_code == 503
-    assert response.json()["error"]["code"] == "model_not_ready"
+    for path in ("/health/ready", "/readyz"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "model_not_ready"
+    assert client.get("/livez").status_code == 200

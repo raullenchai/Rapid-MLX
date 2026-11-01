@@ -139,7 +139,7 @@ struct DownloadStrip: View {
     private func jobRow(_ job: DownloadManager.Job) -> some View {
         if case .failed(let message) = job.status {
             HStack(spacing: 8) {
-                Text(job.alias)
+                Text(ModelDisplayName.name(for: job.alias))
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -167,7 +167,7 @@ struct DownloadStrip: View {
                 statusGlyph(for: job)
                     .font(.system(size: 13))
                     .frame(width: 16)
-                Text(job.alias)
+                Text(ModelDisplayName.name(for: job.alias))
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -349,7 +349,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Stop download. Cached files are kept for continuing later.")
-            .accessibilityLabel("Stop download of \(job.alias)")
+            .accessibilityLabel("Stop download of \(ModelDisplayName.name(for: job.alias))")
             .accessibilityIdentifier("DownloadStrip.Cancel.\(job.alias)")
         case .completed, .cancelled, .failed:
             Button {
@@ -361,7 +361,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Dismiss")
-            .accessibilityLabel("Dismiss \(job.alias) status")
+            .accessibilityLabel("Dismiss \(ModelDisplayName.name(for: job.alias)) status")
             .accessibilityIdentifier("DownloadStrip.Dismiss.\(job.alias)")
         }
     }

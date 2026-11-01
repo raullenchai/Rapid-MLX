@@ -94,6 +94,45 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
                         "Runtime readiness could not be verified; run will check again."
                     ),
                 }
+        try:
+            from rapid_mlx.speculative.tensorfold_families import profile_for
+
+            if (
+                profile is not None
+                and (
+                    profile.dflash_backend == "tensorfold"
+                    or profile.tensorfold_mtp
+                    or profile.tensorfold_kernel
+                )
+            ) or profile_for(alias) is not None:
+                from rapid_mlx.cli import (
+                    _normalize_speculative_config_or_exit,
+                    serve_runtime_lane,
+                    tensorfold_profile_issue,
+                )
+
+                from .acceleration import (
+                    AccelerationRequest,
+                    _capture_preflight_exit,
+                    build_serve_args,
+                )
+
+                with _capture_preflight_exit():
+                    args = build_serve_args(alias, AccelerationRequest())
+                    _normalize_speculative_config_or_exit(args)
+                    lane = serve_runtime_lane(args)
+                    issue = (
+                        tensorfold_profile_issue(args)
+                        if lane.startswith("tensorfold_")
+                        else None
+                    )
+                if issue is not None:
+                    return {"status": "unavailable", "message": issue}
+        except Exception:
+            return {
+                "status": "unknown",
+                "message": "Runtime readiness could not be verified; run will check again.",
+            }
         return {"status": "ready", "message": None}
     if task_type == "image_generation":
         from rapid_mlx.runtime.image_lane import image_runtime_issue

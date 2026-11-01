@@ -333,10 +333,10 @@ struct ShareComputeOnlineView: View {
             }
             HStack(alignment: .top, spacing: 12) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    sessionMetric("Time shared", poolJoinedAt.map { ShareComputeDuration.clock(context.date.timeIntervalSince($0)) } ?? "—")
+                    sessionMetric(String(localized: "Time shared"), poolJoinedAt.map { ShareComputeDuration.clock(context.date.timeIntervalSince($0)) } ?? "—")
                 }
-                sessionMetric("Requests now", inflight.map(String.init) ?? "—")
-                sessionMetric("Provider status", isReconnecting ? "Reconnecting" : "Connected")
+                sessionMetric(String(localized: "Requests now"), inflight.map(String.init) ?? "—")
+                sessionMetric(String(localized: "Provider status"), isReconnecting ? String(localized: "Reconnecting") : String(localized: "Connected"))
             }
             Text(([modelTitle, worker] + (nodeID.map { [$0] } ?? [])).joined(separator: " · "))
                 .font(.rapid(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
@@ -384,9 +384,9 @@ struct ShareComputeSessionCompleteView: View {
                     .accessibilityIdentifier("ShareCompute.ShareAgain")
             }
             HStack(alignment: .top, spacing: 12) {
-                sessionMetric("Time shared", ShareComputeDuration.clock(receipt.duration))
-                sessionMetric("Worker", receipt.worker)
-                sessionMetric("Model after sharing", receipt.restoreStatus.title)
+                sessionMetric(String(localized: "Time shared"), ShareComputeDuration.clock(receipt.duration))
+                sessionMetric(String(localized: "Worker"), receipt.worker)
+                sessionMetric(String(localized: "Model after sharing"), receipt.restoreStatus.title)
             }
             Text(([receipt.modelTitle, receipt.worker] + (receipt.nodeID.map { [$0] } ?? [])).joined(separator: " · "))
                 .font(.rapid(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

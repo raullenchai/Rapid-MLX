@@ -97,9 +97,10 @@ IndexTTS does not require a transcript of that clip.
 rapid-mlx serve indextts
 
 REF_AUDIO=$(base64 < reference.wav | tr -d '\n')
-curl -s http://localhost:8000/v1/audio/speech \
+printf '%s' "{\"model\":\"indextts\",\"input\":\"Hello in the cloned voice.\",\"ref_audio\":\"$REF_AUDIO\"}" | \
+  curl -s http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"indextts\",\"input\":\"Hello in the cloned voice.\",\"ref_audio\":\"$REF_AUDIO\"}" \
+  --data-binary @- \
   --output cloned.wav
 ```
 
@@ -151,9 +152,10 @@ across a whole channel:
 rapid-mlx serve qwen3-tts-clone
 
 REF_AUDIO=$(base64 < reference.wav | tr -d '\n')
-curl -s http://localhost:8000/v1/audio/speech \
+printf '%s' "{\"model\":\"qwen3-tts-clone\",\"input\":\"新的一集开始了。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" | \
+  curl -s http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"qwen3-tts-clone\",\"input\":\"新的一集开始了。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" \
+  --data-binary @- \
   --output cloned.wav
 ```
 
@@ -168,9 +170,10 @@ English-only. With no reference it falls back to a packaged default voice.
 rapid-mlx serve f5-tts-zh
 
 REF_AUDIO=$(base64 < reference_24k.wav | tr -d '\n')
-curl -s http://localhost:8000/v1/audio/speech \
+printf '%s' "{\"model\":\"f5-tts-zh\",\"input\":\"这是克隆出来的声音。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" | \
+  curl -s http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"f5-tts-zh\",\"input\":\"这是克隆出来的声音。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" \
+  --data-binary @- \
   --output f5.wav
 ```
 

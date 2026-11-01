@@ -181,6 +181,7 @@ def test_audit_detects_synthetic_drift(tmp_path):
     )
 
 
+@pytest.mark.usefixtures("isolated_server_model_state")
 def test_load_model_prefill_step_size_back_compat_translation(monkeypatch):
     """back-compat — load_model(prefill_step_size=X) must still be ACCEPTED
     (no TypeError) and must translate the value into scheduler_config so it

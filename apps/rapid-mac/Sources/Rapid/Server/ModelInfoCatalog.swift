@@ -201,6 +201,7 @@ enum ModelInfoCatalog {
         if a.hasPrefix("lfm3-") { return ("LFM3", nil) }
         if a.hasPrefix("lfm2.5-") { return ("LFM2.5", nil) }
         // Bonsai (small / experimental)
+        if a.contains("bonsai2") { return ("Bonsai 2", 4_096) }
         if a.contains("bonsai") { return ("Bonsai", 4_096) }
         return ("Unknown", nil)
     }
