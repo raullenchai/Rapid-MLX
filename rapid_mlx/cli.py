@@ -3224,12 +3224,25 @@ def _mtp_catalog_identity(args):
     return getattr(args, "_original_alias", None) or getattr(args, "model", None)
 
 
-def _embedded_mtp_head_file(directory) -> str | None:
-    for name in ("mtp.safetensors", "model-mtp.safetensors", "mtp/model.safetensors"):
-        path = os.path.join(directory, name)
-        if os.path.isfile(path):
-            return path
-    return None
+def _local_mtp_head_file(path, *, served_folder: bool) -> str | None:
+    if not os.path.isfile(path):
+        if not os.path.isdir(path):
+            return None
+        names = ("mtp.safetensors", "model-mtp.safetensors", "mtp/model.safetensors")
+        if not served_folder:
+            names += ("model.safetensors",)
+        for name in names:
+            candidate = os.path.join(path, name)
+            if os.path.isfile(candidate):
+                path = candidate
+                break
+        else:
+            return None
+    # Match the injector's first-file resolution, even if that file is empty.
+    try:
+        return str(path) if os.path.getsize(path) > 0 else None
+    except OSError:
+        return None
 
 
 def _drop_unavailable_mtp_head(args) -> bool:
@@ -3249,12 +3262,20 @@ def _drop_unavailable_mtp_head(args) -> bool:
     sidecar = getattr(args, "mtp_sidecar", None)
     if not sidecar:
         reason = "this model has no MTP head and no MTP sidecar was given"
-    elif (
-        sidecar == args.model
-        and os.path.isdir(sidecar)
-        and not _embedded_mtp_head_file(sidecar)
-    ):
-        reason = "this local model folder has no MTP head (mtp/model.safetensors)"
+    elif sidecar == args.model and os.path.isdir(sidecar):
+        if _local_mtp_head_file(sidecar, served_folder=True) is not None:
+            return False
+        reason = (
+            "this local model folder has no usable MTP head "
+            "(mtp/model.safetensors is missing or empty)"
+        )
+    elif os.path.exists(sidecar):
+        if _local_mtp_head_file(sidecar, served_folder=False) is not None:
+            return False
+        reason = (
+            f"the MTP sidecar at {sidecar} has no usable MTP weights "
+            "(missing or empty .safetensors)"
+        )
     else:
         return False
     import sys
@@ -3975,12 +3996,13 @@ def _normalize_speculative_config_or_exit(args):
                     if sidecar
                     else None
                 )
-                if local_sidecar != sidecar and not _embedded_mtp_head_file(
-                    local_sidecar
+                if (
+                    local_sidecar != sidecar
+                    and _local_mtp_head_file(local_sidecar, served_folder=True) is None
                 ):
                     print(
-                        "Automatic MTP skipped: this local model folder has no MTP head "
-                        "(mtp/model.safetensors); using plain decode.",
+                        "Automatic MTP skipped: this local model folder has no usable MTP head "
+                        "(mtp/model.safetensors is missing or empty); using plain decode.",
                         file=sys.stderr,
                     )
                 elif sidecar and cached_sidecar is None:

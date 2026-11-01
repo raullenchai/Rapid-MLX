@@ -56,7 +56,7 @@ def model(tmp_path, monkeypatch):
 def _head(model):
     path = model / "mtp" / "model.safetensors"
     path.parent.mkdir()
-    path.touch()
+    path.write_bytes(b"x")
 
 
 def test_automatic_local_and_repo_parity(model):
@@ -84,14 +84,25 @@ def test_automatic_missing_local_head(model, capsys):
     args = _args(model=str(model), _original_alias=ALIAS)
     cli._normalize_speculative_config_or_exit(args)
     assert args.spec_decode == "none"
-    assert "this local model folder has no MTP head" in capsys.readouterr().err
+    assert "this local model folder has no usable MTP head" in capsys.readouterr().err
     assert args._speculative_config_explicit is False
 
 
-@pytest.mark.parametrize("sidecar_kind", ["folder", "none", "head"])
+def test_automatic_empty_local_head(model, capsys):
+    _head(model)
+    (model / "mtp" / "model.safetensors").write_bytes(b"")
+    args = _args(model=str(model), _original_alias=ALIAS)
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.spec_decode == "none"
+    assert "no usable MTP head" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("sidecar_kind", ["folder", "none", "head", "empty_head"])
 def test_drop_unavailable_head(model, capsys, sidecar_kind):
-    if sidecar_kind == "head":
+    if sidecar_kind in ("head", "empty_head"):
         _head(model)
+        if sidecar_kind == "empty_head":
+            (model / "mtp" / "model.safetensors").write_bytes(b"")
     args = _args(
         model=str(model),
         spec_decode="mtp",
@@ -111,8 +122,49 @@ def test_drop_unavailable_head(model, capsys, sidecar_kind):
         assert (
             "no MTP sidecar was given"
             if sidecar_kind == "none"
-            else "this local model folder has no MTP head"
+            else "this local model folder has no usable MTP head"
         ) in err
+
+
+@pytest.mark.parametrize(
+    ("sidecar_kind", "unavailable"),
+    [
+        ("empty_dir", True),
+        ("empty_dir_weights", True),
+        ("dir_weights", False),
+        ("file_weights", False),
+        ("empty_file", True),
+    ],
+)
+def test_explicit_separate_local_sidecar(model, capsys, sidecar_kind, unavailable):
+    _head(model)
+    sidecar = model / "separate_sidecar"
+    if sidecar_kind in ("file_weights", "empty_file"):
+        sidecar.write_bytes(b"" if sidecar_kind == "empty_file" else b"x")
+    else:
+        sidecar.mkdir()
+        if sidecar_kind != "empty_dir":
+            (sidecar / "model.safetensors").write_bytes(
+                b"" if sidecar_kind == "empty_dir_weights" else b"x"
+            )
+    args = _args(
+        model=str(model),
+        _original_alias=ALIAS,
+        speculative_config=json.dumps({"method": "mtp", "model": str(sidecar)}),
+    )
+    cli._normalize_speculative_config_or_exit(args)
+    assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar == str(sidecar)
+    assert cli._drop_unavailable_mtp_head(args) is unavailable
+    err = capsys.readouterr().err
+    if unavailable:
+        assert args.spec_decode == "none"
+        assert len(err.splitlines()) == 1
+        assert err.startswith("MTP unavailable:")
+        assert f"the MTP sidecar at {sidecar} has no usable MTP weights" in err
+    else:
+        assert args.spec_decode == "mtp"
+        assert not err
 
 
 def test_missing_sidecar_copy(model, monkeypatch, capsys):
