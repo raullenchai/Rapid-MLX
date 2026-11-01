@@ -10013,6 +10013,13 @@ def _dir_size_bytes(path: str) -> int:
       A dangling link therefore costs nothing and raises nothing, and
       a link cannot be descended into, so the walk neither loops nor
       leaves the tree it was pointed at.
+    * One exception: a direct child of ``<repo>/blobs/`` that links into
+      the hub-wide shared store (``<hub>/blobs/<xx>/<sha256>``, used by
+      huggingface_hub 1.x to deduplicate Xet files across repos) is
+      followed and counted, because that store is where the repo's bytes
+      actually live. Skipping it made ``ls`` report Kokoro as 38 KB.
+      Like ``CachedRepoInfo.size_on_disk``, a shared blob is attributed
+      to every repo that references it. Any other link stays skipped.
     * Files are deduped by ``(st_dev, st_ino)``, so a hardlinked layout
       (``cp -al`` cache clones, restored CI caches, older hub versions)
       and a blob shared by several revisions each contribute once. When
@@ -10052,12 +10059,18 @@ def _dir_size_bytes(path: str) -> int:
     (``O_DIRECTORY | O_NOFOLLOW`` plus ``dir_fd``) would close it and is
     not worth the fd bookkeeping here.
     """
+    import re
+
     total = 0
     seen: set[tuple[int, int]] = set()
     # Resolve once, up front, so the walk starts inside a real directory
     # and every subdirectory below is reached without crossing a link.
     try:
         root = os.path.realpath(path)
+        shared_stores = {
+            os.path.realpath(os.path.join(os.path.dirname(repo_root), "blobs"))
+            for repo_root in (root, os.path.abspath(path))
+        }
     except OSError:
         return 0
     stack = [root]
@@ -10074,11 +10087,19 @@ def _dir_size_bytes(path: str) -> int:
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(entry.path)
                     continue
-                if not entry.is_file(follow_symlinks=False):
-                    # Symlink, fifo, socket, device — nothing this
-                    # directory owns on disk.
+                shared_blob = False
+                if current == os.path.join(root, "blobs") and entry.is_symlink():
+                    target = os.path.realpath(entry.path)
+                    name = os.path.basename(target)
+                    prefix = os.path.dirname(target)
+                    shared_blob = (
+                        re.fullmatch(r"[0-9a-f]{64}", name) is not None
+                        and os.path.basename(prefix) == name[:2]
+                        and os.path.dirname(prefix) in shared_stores
+                    )
+                if not entry.is_file(follow_symlinks=shared_blob):
                     continue
-                st = entry.stat(follow_symlinks=False)
+                st = entry.stat(follow_symlinks=shared_blob)
             except OSError:
                 continue
             # A few network/FUSE mounts report ``st_ino == 0`` for every
@@ -10487,6 +10508,50 @@ def _cached_catalog_profiles() -> dict[str, ModelProfile]:
     return profiles
 
 
+def _runtime_asset_owners() -> dict[str, list[str]]:
+    """Map companion repo IDs to the catalog aliases that need them offline."""
+    try:
+        from rapid_mlx._download_gate import IMAGE_MODEL_RUNTIME_ASSETS
+        from rapid_mlx.audio.registry import list_audio_aliases, runtime_assets_for
+        from rapid_mlx.video.minimax_h3 import REPO, TURBO_REPO
+
+        owners: dict[str, set[str]] = {}
+        for entry in list_audio_aliases():
+            for asset in runtime_assets_for(entry.alias):
+                if asset.repo_id.lower() != entry.hf_id.lower():
+                    owners.setdefault(asset.repo_id.lower(), set()).add(entry.alias)
+        profiles = _cached_catalog_profiles()
+        dependencies = {
+            primary: [asset_repo for asset_repo, _, _ in assets]
+            for primary, assets in IMAGE_MODEL_RUNTIME_ASSETS.items()
+        }
+        dependencies.setdefault(REPO, []).append(TURBO_REPO)
+        for primary, assets in dependencies.items():
+            aliases = {
+                alias
+                for alias, profile in profiles.items()
+                if profile.hf_path.lower() == primary.lower()
+            } or {primary}
+            for asset_repo in assets:
+                owners.setdefault(asset_repo.lower(), set()).update(aliases)
+        return {repo: sorted(aliases) for repo, aliases in owners.items()}
+    except Exception:
+        return {}
+
+
+def _runtime_asset_is_interrupted(repo: str) -> bool:
+    """Partial blobs or snapshots without any files still mean incomplete."""
+    root = _hf_cache_root(repo)
+    if root is None:
+        return True
+    try:
+        return any((root / "blobs").glob("*.incomplete")) or not any(
+            path.is_file() for path in (root / "snapshots").glob("*/**/*")
+        )
+    except OSError:
+        return True
+
+
 def _print_cached_models() -> None:
     """Render the ``--cached`` view: locally-downloaded HF cache entries
     cross-referenced against the alias registry.
@@ -10557,6 +10622,8 @@ def _print_cached_models() -> None:
 
     now = _time.time()
     total_bytes = 0
+    asset_owners = _runtime_asset_owners()
+    runtime_rows: dict[str, list[str]] = {}
     # Sort by size descending so the biggest-disk-hog row is first — the
     # most useful ordering for "what do I rm to free space?".
     for repo, size, mtime, is_external_row in sorted(
@@ -10582,6 +10649,9 @@ def _print_cached_models() -> None:
         # The desktop deliberately rejects `(incomplete)` status rows.
         elif not _cached_repository_is_runnable(repo):
             alias = "(incomplete)"
+            if repo.lower() in asset_owners and not _runtime_asset_is_interrupted(repo):
+                alias = "(runtime-files)"
+                runtime_rows[repo] = asset_owners[repo.lower()]
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:
             mod = "?"
@@ -10603,6 +10673,11 @@ def _print_cached_models() -> None:
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
+    if runtime_rows:
+        print("  Note: (runtime-files) rows hold files that other models need offline:")
+        for repo, owners in sorted(runtime_rows.items()):
+            print(f"        {repo} -> {', '.join(owners)}")
+        print("        Removing them breaks those models until you pull them again.")
     if external_rows:
         print(
             "  Note: total is logical model size; shared external weights may repeat."

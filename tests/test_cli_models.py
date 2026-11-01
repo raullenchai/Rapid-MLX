@@ -802,6 +802,130 @@ def _make_hf_cache_repo(root, blobs: dict[str, int]):
     return blob_dir
 
 
+def _make_shared_blob_repo(hub, name="models--org--a", size=2 * 1024 * 1024):
+    shared = hub / "blobs" / "ab" / ("ab" + "0" * 62)
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    with shared.open("wb") as blob:
+        blob.truncate(size)
+    repo = hub / name
+    blobs = _make_hf_cache_repo(repo, {"config": 64})
+    (blobs / "etag").symlink_to(os.path.relpath(shared, blobs))
+    for revision in ("rev1", "rev2"):
+        snapshot = repo / "snapshots" / revision
+        snapshot.mkdir(parents=True)
+        (snapshot / "weights").symlink_to("../../blobs/etag")
+    return repo
+
+
+def test_dir_size_counts_shared_store_blobs_once_per_repo(tmp_path):
+    hub = tmp_path / "hub"
+    first = _make_shared_blob_repo(hub)
+    second = _make_shared_blob_repo(hub, "models--org--b")
+    # A second repo-local reference must also share the inode dedupe set.
+    (first / "blobs" / "another-etag").symlink_to(os.readlink(first / "blobs" / "etag"))
+    for repo in (first, second):
+        assert cli._dir_size_bytes(str(repo)) == 2 * 1024 * 1024 + 64
+
+
+@pytest.mark.parametrize("store_at_original_root", [False, True])
+def test_dir_size_shared_store_with_symlinked_repo_root(
+    tmp_path, store_at_original_root
+):
+    hub = tmp_path / "hub"
+    repo = _make_shared_blob_repo(hub)
+    relocated = tmp_path / "relocated" / repo.name
+    relocated.parent.mkdir()
+    repo.rename(relocated)
+    repo.symlink_to(relocated, target_is_directory=True)
+    shared_root = hub if store_at_original_root else relocated.parent
+    if not store_at_original_root:
+        (hub / "blobs").rename(shared_root / "blobs")
+    blob_link = relocated / "blobs" / "etag"
+    blob_link.unlink()
+    blob_link.symlink_to(
+        os.path.relpath(
+            shared_root / "blobs" / "ab" / ("ab" + "0" * 62), blob_link.parent
+        )
+    )
+    assert cli._dir_size_bytes(str(repo)) == 2 * 1024 * 1024 + 64
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "elsewhere/ab/" + "ab" * 32,
+        "blobs/zz/notdigest",
+        "blobs/cd/" + "ab" * 32,
+        "models--org--other/blobs/etag",
+    ],
+)
+def test_dir_size_skips_blob_links_outside_shared_digest_layout(tmp_path, target):
+    hub = tmp_path / "hub"
+    repo = hub / "models--org--a"
+    blobs = _make_hf_cache_repo(repo, {"config": 64})
+    outside = hub / target
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"x" * 4096)
+    (blobs / "etag").symlink_to(os.path.relpath(outside, blobs))
+    assert cli._dir_size_bytes(str(repo)) == 64
+
+
+@pytest.mark.parametrize(
+    "interrupted", [None, "incomplete-blob", "empty-snapshots", "no-snapshots"]
+)
+def test_cached_view_runtime_assets(tmp_path, monkeypatch, capsys, interrupted):
+    import shutil
+
+    from huggingface_hub import constants
+
+    hub = tmp_path / "hub"
+    repo = _make_shared_blob_repo(hub)
+    _make_hf_cache_repo(hub / "models--org--unknown", {"config": 64})
+    if interrupted == "incomplete-blob":
+        (repo / "blobs" / "etag.incomplete").touch()
+    elif interrupted in ("empty-snapshots", "no-snapshots"):
+        shutil.rmtree(repo / "snapshots")
+        if interrupted == "empty-snapshots":
+            (repo / "snapshots" / "rev1").mkdir(parents=True)
+    else:
+        # Runtime assets may have files only in nested component directories.
+        for snapshot in (repo / "snapshots").iterdir():
+            (snapshot / "component").mkdir()
+            (snapshot / "weights").unlink()
+            (snapshot / "component" / "weights").symlink_to("../../../blobs/etag")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
+    monkeypatch.setattr(
+        cli, "_runtime_asset_owners", lambda: {"org/a": ["owner-a", "owner-b"]}
+    )
+    monkeypatch.setattr(cli, "_cached_catalog_profiles", lambda: {})
+    monkeypatch.setattr(cli, "_cached_repository_is_runnable", lambda _repo: False)
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    asset_row = next(line for line in out.splitlines() if "org/a" in line)
+    unknown_row = next(line for line in out.splitlines() if "org/unknown" in line)
+    assert "2.1 MB" in asset_row
+    assert "(incomplete)" in unknown_row
+    if interrupted:
+        assert "(incomplete)" in asset_row
+        assert "(runtime-files)" not in out
+    else:
+        assert asset_row.split()[0] == "(runtime-files)"
+        assert (
+            "Note: (runtime-files) rows hold files that other models need offline:"
+            in out
+        )
+        assert "org/a -> owner-a, owner-b" in out
+        assert "Removing them breaks those models until you pull them again." in out
+
+
+def test_runtime_asset_owners_recognizes_whisper_processor():
+    owners = cli._runtime_asset_owners()
+    assert "whisper-small" in owners["openai/whisper-small"]
+    assert owners["openai/whisper-small"] == sorted(set(owners["openai/whisper-small"]))
+
+
 def test_dir_size_counts_snapshot_symlinks_once(tmp_path):
     """A blob plus its snapshot symlink is one file's worth of bytes."""
     repo = tmp_path / "models--acme--Widget-4bit"
@@ -1607,3 +1731,46 @@ def test_staleness_call_site_is_invoked(command_factory, args_factory):
         command_factory()(args_factory())
 
     assert calls == [1], "staleness helper must fire exactly once"
+
+
+def test_rm_frees_shared_store_blobs_and_ls_size_matches(tmp_path, monkeypatch, capsys):
+    """``rm`` must drop a repo's bytes from the hub-wide shared store, and
+    ``ls`` must report the same size ``rm`` offers to free."""
+    import argparse
+    import functools
+
+    import huggingface_hub
+    from huggingface_hub.utils import _shared_blobs
+
+    hub = tmp_path / "hub"
+    repo = hub / "models--org--a"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "cfg").write_bytes(b"{}")
+    etag = "e" * 64
+    payload = blobs / etag
+    payload.write_bytes(b"w" * 300_000)
+    assert _shared_blobs.publish_blob_to_shared_store(
+        blob_path=str(payload),
+        xet_hash="ab" + "1" * 62,
+        cache_dir=hub,
+        expected_size=300_000,
+    )
+    assert payload.is_symlink()
+    snapshot = repo / "snapshots" / ("c" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").symlink_to(f"../../blobs/{etag}")
+    (snapshot / "config.json").symlink_to("../../blobs/cfg")
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(hub))
+    scan = functools.partial(huggingface_hub.scan_cache_dir, cache_dir=hub)
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", scan)
+
+    (cached,) = scan().repos
+    assert cli._dir_size_bytes(str(repo)) == cached.size_on_disk == 300_002
+
+    cli.rm_command(argparse.Namespace(model="org/a", yes=True))
+    assert "Freed 300.0 KB" in capsys.readouterr().out
+    assert not repo.exists()
+    assert not any(
+        p.is_file() and len(p.name) == 64 for p in (hub / "blobs").rglob("*")
+    )
