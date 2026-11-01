@@ -4247,6 +4247,29 @@ def test_update_homebrew_formula_lag_marks_ok():
     assert row.detail == "installed=1.0.0 latest=1.0.1 brew_stable=1.0.0 method=brew"
 
 
+def test_update_default_fetchers_homebrew_formula_lag_marks_ok(monkeypatch):
+    from rapid_mlx import _version_check as vc
+
+    need_brew_values = []
+
+    def get_release_info(*, need_brew):
+        need_brew_values.append(need_brew)
+        return vc.ReleaseInfo("1.0.1", None, "1.0.0")
+
+    monkeypatch.setattr(vc, "get_latest_version", lambda: "1.0.1")
+    monkeypatch.setattr(vc, "get_release_info", get_release_info)
+
+    section = eh.section_updates(
+        installed=lambda: "1.0.0",
+        install_info=mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew"),
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.OK
+    assert "Homebrew" in row.label
+    assert len(need_brew_values) == 1
+    assert need_brew_values[0] is True
+
+
 def test_update_homebrew_reports_available_formula_version():
     from rapid_mlx import _version_check as vc
 
