@@ -31,7 +31,7 @@ AXApplication title="Rapid-MLX"
             AXButton id="Audio.Speech.VoicePicker" desc="Voice" value=empty enabled=false
             AXStaticText value=text enabled=true
             AXGroup enabled=true
-              AXSlider id="Audio.Speech.Speed" value=number enabled=true
+              AXSlider id="Audio.Speech.Speed" desc="Speed" value=number enabled=true
                 AXValueIndicator value=number
               AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true

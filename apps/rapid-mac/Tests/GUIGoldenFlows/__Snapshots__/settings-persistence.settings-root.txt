@@ -74,6 +74,16 @@ AXApplication title="Rapid-MLX"
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Model Management, Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space." enabled=true
+        AXGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
+          AXButton desc="Chat models" enabled=true
+          AXButton desc="Image models" enabled=true
+          AXButton desc="Audio models" enabled=true
+        AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
+        AXPopUpButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
+        AXGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
+          AXButton desc="All" enabled=true
+          AXButton desc="Cached" enabled=true
+          AXButton desc="Not cached" enabled=true
         AXHeading desc="Models folder" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText id="Settings.ModelManagement.FolderPath" value=text enabled=true
@@ -96,16 +106,6 @@ AXApplication title="Rapid-MLX"
           AXLink id="https://hf-mirror.com" desc="https://hf-mirror.com" enabled=false
         AXButton id="Settings.ModelManagement.SaveDownloadEndpoint" desc="Save" enabled=true
         AXButton id="Settings.ModelManagement.ResetDownloadEndpoint" desc="Use default" enabled=true
-        AXGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
-          AXButton desc="Chat models" enabled=true
-          AXButton desc="Image models" enabled=true
-          AXButton desc="Audio models" enabled=true
-        AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
-        AXPopUpButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
-        AXGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
-          AXButton desc="All" enabled=true
-          AXButton desc="Cached" enabled=true
-          AXButton desc="Not cached" enabled=true
         AXHeading id="Settings.ModelManagement.RecommendedHeader" desc="Recommended for your <size> · <chip>" enabled=true
         AXGroup id="Settings.ModelManagement.Recommended.primary" enabled=true
           AXStaticText value=text enabled=true
@@ -124,7 +124,7 @@ AXApplication title="Rapid-MLX"
         AXStaticText value=text enabled=true
         AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin LFM2.5 · 1.2B" enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText help="lfm2.5-1b-4bit" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: 45, below average" enabled=true
@@ -133,7 +133,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Settings.ModelManagement.Download.<model>" desc="Download LFM2.5 · 1.2B" help="Download" enabled=true
         AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin LFM2.5 · 2.6B" enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText help="lfm2.5-2.6b-4bit" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: 65, good" enabled=true
@@ -142,7 +142,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Settings.ModelManagement.Download.<model>" desc="Download LFM2.5 · 2.6B" help="Download" enabled=true
         AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin <model>" enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText help="<model>" value=text enabled=true
           AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: untested" enabled=true
           AXUnknown desc="Speed: untested" enabled=true
@@ -150,7 +150,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Settings.ModelManagement.Delete.<model>" desc="Delete <model> from disk" help="Delete from disk" enabled=true
         AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin fake-external-alias" enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText help="fake-external-alias" value=text enabled=true
           AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: untested" enabled=true
           AXUnknown desc="Speed: untested" enabled=true

@@ -6,15 +6,15 @@ AXApplication title="Rapid-MLX"
       AXStaticText value=text enabled=true
       AXUnknown id="Quickstart.Progress" desc="Setup progress, step 2 of 4" enabled=true
       AXStaticText value=text enabled=true
-      AXButton id="Quickstart.CachedModel.fixture/Local-Chat" desc="fixture/Local-Chat. Already on this Mac · not catalog-tested. on disk <size>" enabled=true
+      AXButton id="Quickstart.CachedModel.fixture/Local-Chat" desc="fixture/Local-Chat. Already on this Mac · not catalog-tested. on this Mac, size <size>" enabled=true
       AXStaticText id="Quickstart.Step2.Kicker" value=text enabled=true
-      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. recommended starter. Strong everyday chat and tools, chosen for a reliable first conversation. download <size>. on-device, fits this Mac" enabled=true
+      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. recommended starter. Strong everyday chat and tools, chosen for a reliable first conversation. download ~<size>. on-device, fits this Mac" enabled=true
       AXStaticText value=text enabled=true
       AXStaticText value=text enabled=true
       AXStaticText value=text enabled=true
       AXButton id="Quickstart.Choice.<model>" desc="LFM2.5 · 1.2B. Lowest memory. For basic chat only; less accurate and not recommended for tools. Download ~<size>" enabled=true
       AXStaticText value=text enabled=true
-      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare. download <size>" enabled=true
+      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare. download ~<size>" enabled=true
       AXButton id="Quickstart.BrowseAll" desc="Browse all models" enabled=true
       AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
       AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
