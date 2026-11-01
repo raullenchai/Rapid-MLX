@@ -250,7 +250,7 @@ def test_cached_fitting_text_model_wins(monkeypatch, recommended):
     disk_probe.assert_called_once_with()
 
 
-@pytest.mark.parametrize("free_gb", [14.9, 1000.0, 0.5])
+@pytest.mark.parametrize("free_gb", [14.9, 1000.0, 0.25])
 def test_text_pick_prefers_disk_then_recommendation_order(monkeypatch, free_gb):
     from rapid_mlx.catalog.legacy import _main_capabilities
     from rapid_mlx.cli import _DOWNLOAD_DISK_HEADROOM
@@ -270,13 +270,13 @@ def test_text_pick_prefers_disk_then_recommendation_order(monkeypatch, free_gb):
         assert size_bytes(profile.hf_path) * (1 + _DOWNLOAD_DISK_HEADROOM) <= 14.9e9
         assert "image_understanding" in _main_capabilities(profile)["operation_modes"]
     else:
-        # Nothing cached and nothing fits disk (0.5 GB) falls back to today's
-        # pick; sub-GB speculative drafters are never suggested as chat models.
+        # Plentiful disk keeps today's pick. At 0.25 GB only sub-GB speculative
+        # drafters would download; they are never suggested, so it falls back.
         assert pick == fitting_pick(32, 25, exclude=alias)
     disk_probe.assert_called_once_with()
 
 
-@pytest.mark.parametrize("free_gb", [0.5, 1000.0, None])
+@pytest.mark.parametrize("free_gb", [0.1, 1000.0, None])
 def test_text_refusal_reports_download_disk_shortfall(monkeypatch, capsys, free_gb):
     from rapid_mlx.cli import _DOWNLOAD_DISK_HEADROOM
     from rapid_mlx.model_sizes import size_bytes
@@ -289,7 +289,7 @@ def test_text_refusal_reports_download_disk_shortfall(monkeypatch, capsys, free_
     with pytest.raises(SystemExit):
         run("gemma-4-31b-8bit", 32, monkeypatch)
     output = capsys.readouterr().err
-    if free_gb == 0.5:
+    if free_gb == 0.1:
         pick = fitting_pick(32, 25, exclude="gemma-4-31b-8bit")
         required = size_bytes(resolve_profile(pick).hf_path) * (
             1 + _DOWNLOAD_DISK_HEADROOM
@@ -298,7 +298,7 @@ def test_text_refusal_reports_download_disk_shortfall(monkeypatch, capsys, free_
         assert (
             suggestion
             + f"\n  It is not downloaded yet and needs ~{required / 1e9:.1f} "
-            "GB of free disk; 0.5 GB is free."
+            "GB of free disk; 0.1 GB is free."
         ) in output
     else:
         assert "It is not downloaded yet" not in output
@@ -332,6 +332,19 @@ def test_refusal_download_hint_uses_shared_disk_status(monkeypatch, capsys, stat
     assert exc.value.code == 1
     output = capsys.readouterr().err
     assert ("It is not downloaded yet" in output) == (state == "image")
+
+
+def test_text_pick_prefers_cached_over_undownloadable_full_match(monkeypatch):
+    # Every vision candidate needs a download that does not fit 0.5 GB, so the
+    # cached text-only model is suggested instead of an undownloadable match.
+    repo = resolve_profile("qwen3.5-4b-4bit").hf_path
+    monkeypatch.setattr("rapid_mlx.cli._cache_runnability", lambda path: path == repo)
+    monkeypatch.setattr("rapid_mlx.cli._recipe_free_disk_gb", lambda: 0.5)
+    assert preflight._same_task_fitting_pick(
+        "gemma-4-31b-8bit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=25 * GIB,
+    ) == ("qwen3.5-4b-4bit", "text")
 
 
 @pytest.mark.parametrize("missing", ["ram", "budget"])

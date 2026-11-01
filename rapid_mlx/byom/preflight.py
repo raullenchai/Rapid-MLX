@@ -1124,8 +1124,8 @@ def _same_task_fitting_pick(
         plain_text = task == "text_generation" and not text_diffusion
         if plain_text and not (ram_bytes and budget):
             return None, "text"
-        rec_ranks = {}
-        if plain_text:
+        rec_ranks: dict[str, int] = {}
+        if plain_text and ram_bytes and budget:
             for rank, pick in enumerate(
                 fitting_picks(ram_bytes / _GIB, budget / _GIB, exclude=alias)
             ):
@@ -1194,11 +1194,12 @@ def _same_task_fitting_pick(
                         candidate,
                     )
                 )
-        if candidates:
-            candidates.sort()
-            best = candidates[0]
-            if not plain_text or not best[1] or not best[2]:
-                return best[-1], label
+        candidates.sort()
+        for entry in candidates:
+            # Plain text suggests the best cached or downloadable candidate.
+            not_cached, no_disk_fit = entry[1], entry[2]
+            if not plain_text or not (not_cached and no_disk_fit):
+                return entry[-1], label
         if (plain_text or text_diffusion) and ram_bytes and budget:
             return fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias), label
         return None, label
