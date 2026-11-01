@@ -3269,7 +3269,7 @@ def _drop_unavailable_mtp_head(args) -> bool:
             "this local model folder has no usable MTP head "
             "(mtp/model.safetensors is missing or empty)"
         )
-    elif os.path.exists(sidecar):
+    elif os.path.lexists(sidecar) or sidecar.startswith(("/", "./", "../", "~")):
         if _local_mtp_head_file(sidecar, served_folder=False) is not None:
             return False
         reason = (

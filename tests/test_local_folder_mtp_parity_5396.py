@@ -167,6 +167,37 @@ def test_explicit_separate_local_sidecar(model, capsys, sidecar_kind, unavailabl
         assert not err
 
 
+@pytest.mark.parametrize(
+    ("sidecar_kind", "unavailable"),
+    [("dangling_symlink", True), ("missing_absolute", True), ("repo", False)],
+)
+def test_explicit_missing_sidecar_path(model, capsys, sidecar_kind, unavailable):
+    _head(model)
+    sidecar = model / "missing_sidecar"
+    if sidecar_kind == "dangling_symlink":
+        sidecar.symlink_to(model / "missing_target")
+    elif sidecar_kind == "repo":
+        sidecar = "mlx-community/Qwen3.5-9B-MTP-4bit"
+    args = _args(
+        model=str(model),
+        spec_decode="mtp",
+        mtp_backend=None,
+        mtp_sidecar=str(sidecar),
+        _speculative_config_explicit=True,
+    )
+    assert cli._drop_unavailable_mtp_head(args) is unavailable
+    err = capsys.readouterr().err
+    if unavailable:
+        assert args.spec_decode == "none"
+        assert len(err.splitlines()) == 1
+        assert err.startswith("MTP unavailable:")
+        assert f"the MTP sidecar at {sidecar} has no usable MTP weights" in err
+    else:
+        assert args.spec_decode == "mtp"
+        assert args.mtp_sidecar == str(sidecar)
+        assert not err
+
+
 def test_missing_sidecar_copy(model, monkeypatch, capsys):
     alias = "qwen3.5-9b-4bit"
     sidecar, _ = cli._alias_mtp_declaration(alias)
