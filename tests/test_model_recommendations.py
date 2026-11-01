@@ -351,7 +351,7 @@ def test_recipe_rounding_does_not_reject_a_download_that_really_fits(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
-    monkeypatch.setattr(cli, "_recipe_free_disk_gb", lambda: 18.0)
+    monkeypatch.setattr(cli, "_recipe_free_disk_gb", lambda: 17.97)
 
     cli.recipe_command(Namespace(max_ram=32, json=False))
 
