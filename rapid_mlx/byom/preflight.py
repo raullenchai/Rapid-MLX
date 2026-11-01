@@ -1073,7 +1073,11 @@ def _same_task_fitting_pick(
     ram_bytes: int | None,
     recommended_working_set_bytes: int | None,
 ) -> tuple[str | None, str | None]:
-    """Suggest an admitted catalog model for the refused model's primary task."""
+    """Suggest an admitted catalog model for the refused model's primary task.
+
+    Memory-fitting candidates rank by: supports the refused model's operations,
+    already cached, fits free disk (download gate headroom), smallest download.
+    """
     try:
         from rapid_mlx.catalog.legacy import _main_capabilities
         from rapid_mlx.model_aliases import (
@@ -1106,7 +1110,12 @@ def _same_task_fitting_pick(
         elif text_diffusion:
             label = "text"
 
-        candidates: list[tuple[bool, int, str]] = []
+        import rapid_mlx.cli as cli_mod
+        from rapid_mlx.cli import _cache_runnability
+        from rapid_mlx.model_sizes import size_bytes
+
+        free_gb = cli_mod._recipe_free_disk_gb()
+        candidates: list[tuple[bool, bool, bool, float, str]] = []
         for candidate in sorted(list_builtin_aliases()):
             candidate_profile = resolve_profile(candidate)
             if (
@@ -1138,16 +1147,28 @@ def _same_task_fitting_pick(
                 recommended_working_set_bytes=recommended_working_set_bytes,
             )
             if fit.fits is True:
+                try:
+                    cached = _cache_runnability(candidate_profile.hf_path) is True
+                except Exception:
+                    cached = False
+                size = size_bytes(candidate_profile.hf_path)
+                disk_fit = cached or (
+                    free_gb is not None
+                    and size is not None
+                    and free_gb * 1e9 >= size * (1 + cli_mod._DOWNLOAD_DISK_HEADROOM)
+                )
                 candidates.append(
                     (
-                        ops.issubset(candidate_caps["operation_modes"]),
-                        fit.estimate_bytes or 0,
+                        not ops.issubset(candidate_caps["operation_modes"]),
+                        not cached,
+                        not disk_fit,
+                        size if size is not None else float("inf"),
                         candidate,
                     )
                 )
         if candidates:
-            candidates.sort(key=lambda item: (not item[0], -item[1], item[2]))
-            return candidates[0][2], label
+            candidates.sort()
+            return candidates[0][4], label
         if text_diffusion and ram_bytes and budget:
             return fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias), label
         return None, label
