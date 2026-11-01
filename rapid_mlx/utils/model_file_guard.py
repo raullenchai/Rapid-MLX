@@ -10,10 +10,17 @@ untrusted code.
 from __future__ import annotations
 
 import json
+from os.path import relpath
 from pathlib import Path
 from typing import Any
 
 from .._env import env_falsey, env_truthy
+
+# inkling's processor forces trust on the model-root tokenizer; z_image's pipeline
+# forces trust on the hard-coded 'tokenizer' subfolder.
+FORCED_TRUST_VLM_MODEL_TYPES = frozenset({"inkling", "z_image"})
+# Subfolder names that forced-trust loaders open without any config reference.
+FORCED_TRUST_SUBFOLDERS = ("tokenizer",)
 
 
 class RemoteCodeConsentRequired(ValueError):  # noqa: N818
@@ -126,13 +133,14 @@ def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) 
         )
 
 
-def validate_processor_code(model_path: str | Path) -> None:
-    """Inspect local metadata before loaders that force repository-code trust.
-
-    Run once at model load, never from generation or transcription. Inspect the
-    same snapshot handed to the loader; catalog pins are not code consent.
-    """
-    root = Path(model_path)
+def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
+    """Check one metadata directory and return its model config for path discovery."""
+    model_config = {}
+    location = (
+        f"Model metadata in '{relpath(directory, root)}'"
+        if directory != root
+        else "Model processor"
+    )
     for name in (
         "config.json",
         "tokenizer_config.json",
@@ -140,20 +148,74 @@ def validate_processor_code(model_path: str | Path) -> None:
         "preprocessor_config.json",
     ):
         try:
-            with (root / name).open(encoding="utf-8") as handle:
+            with (directory / name).open(encoding="utf-8") as handle:
                 config = json.load(handle)
         except FileNotFoundError:
             continue
         if not isinstance(config, dict):
             raise ValueError(f"{name} must contain an object")
-        validate_model_code(config)
+        if name == "config.json":
+            model_config = config
+        try:
+            validate_model_code(config)
+        except RemoteCodeConsentRequired as exc:
+            if directory == root:
+                raise
+            raise RemoteCodeConsentRequired(f"{location}: {exc}") from exc
         if config.get("auto_map") and not remote_code_enabled():
             raise RemoteCodeConsentRequired(
-                "Model processor declares auto_map (executable Python). "
+                f"{location} declares auto_map (executable Python). "
                 "Review the repository code, then explicitly opt in with "
                 "RAPID_MLX_TRUST_REMOTE_CODE=1."
             )
+    return model_config
+
+
+def validate_processor_code(model_path: str | Path) -> None:
+    """Inspect metadata before loaders that force repository-code trust.
+
+    Check the root, forced-trust subfolders, up to 64 visible immediate
+    subdirectories, and directory paths named in the root config (including
+    one level inside dictionaries).
+    Run once at load, never from generation or transcription.
+    """
+    root = Path(model_path)
+    config = _validate_processor_directory(root, root=root)
     validate_local_model_file(root)
+    if not root.is_dir():
+        return
+
+    seen = {root.resolve()}
+
+    def check_directory(directory: Path) -> None:
+        try:
+            if not directory.is_dir():
+                return
+            resolved = directory.resolve()
+        except (OSError, ValueError):
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        _validate_processor_directory(directory, root=root)
+
+    for name in FORCED_TRUST_SUBFOLDERS:
+        check_directory(root / name)
+
+    count = 0
+    for directory in root.iterdir():
+        if directory.name.startswith(".") or not directory.is_dir():
+            continue
+        check_directory(directory)
+        count += 1
+        if count == 64:
+            break
+
+    for value in config.values():
+        values = value.values() if isinstance(value, dict) else (value,)
+        for path in values:
+            if isinstance(path, str):
+                check_directory(root / path)
 
 
 def checked_stt_loader(loader):
@@ -235,6 +297,8 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
         raise ValueError("Model config must contain an object")
     config = {**config, **(kwargs.get("model_config") or {})}
     validate_model_code(config, trust_remote_code=trust)
+    if not trust and config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES:
+        validate_processor_code(model_path)
     if config.get("model_file"):
         validate_local_model_file(model_path, model_config=config)
     if config.get("model_type") == "kimi_k25" and not config.get("model_file"):
