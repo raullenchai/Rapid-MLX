@@ -359,6 +359,56 @@ def test_image_below_floor_refusal():
     assert refusal.kind == "memory_floor"
 
 
+@pytest.mark.parametrize(
+    "estimate_bytes, budget_bytes",
+    [(20 * GIB, None), (None, 12 * GIB)],
+    ids=["missing-budget", "missing-footprint"],
+)
+def test_catalog_refusal_passes_when_gpu_fit_details_missing(
+    estimate_bytes, budget_bytes
+):
+    result = preflight.CatalogMemoryFit(
+        estimate_bytes=estimate_bytes,
+        estimate_source="unknown",
+        budget_bytes=budget_bytes,
+        ram_bytes=16 * GIB,
+        fits=False,
+        fit_basis="gpu_budget",
+        floor_gib=None,
+    )
+    with patch.object(preflight, "catalog_memory_fit", return_value=result) as fit:
+        refusal = preflight.catalog_memory_refusal(
+            "qwen3.8-27b-4bit",
+            ram_bytes=16 * GIB,
+            recommended_working_set_bytes=12 * GIB,
+            cached=False,
+        )
+    assert refusal is None
+    fit.assert_called_once_with(
+        "qwen3.8-27b-4bit",
+        ram_bytes=16 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+
+
+def test_catalog_refusal_swallows_fit_exception():
+    with patch.object(
+        preflight, "catalog_memory_fit", side_effect=RuntimeError("fit failed")
+    ) as fit:
+        refusal = preflight.catalog_memory_refusal(
+            "qwen3.8-27b-4bit",
+            ram_bytes=16 * GIB,
+            recommended_working_set_bytes=12 * GIB,
+            cached=False,
+        )
+    assert refusal is None
+    fit.assert_called_once_with(
+        "qwen3.8-27b-4bit",
+        ram_bytes=16 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+
+
 @pytest.mark.parametrize("alias", ["diffusion-gemma-26b-8bit", "qwen-image-edit"])
 def test_non_text_refuses_before_download(alias, monkeypatch, capsys):
     monkeypatch.setattr(

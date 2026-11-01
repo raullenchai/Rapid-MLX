@@ -1381,6 +1381,32 @@ def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fall
     assert primary["source"]["resolved_revision"] == pinned_revision
 
 
+@pytest.mark.parametrize(
+    "footprint_bytes, budget_bytes",
+    [(None, None), (None, 12 << 30), (20 << 30, None)],
+    ids=["missing-both", "missing-footprint", "missing-budget"],
+)
+def test_memory_refusal_with_missing_gpu_details(
+    monkeypatch, footprint_bytes, budget_bytes
+):
+    from rapid_mlx.byom.preflight import MemoryRefusal
+    from rapid_mlx.community_bench import local_runner
+
+    refusal = MemoryRefusal("gpu_budget", None, 16 << 30, footprint_bytes, budget_bytes)
+    monkeypatch.setattr(
+        local_runner, "catalog_memory_refusal", lambda *a, **kw: refusal
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: False)
+
+    with pytest.raises(ValueError) as exc:
+        local_runner.refuse_if_memory_does_not_fit("qwen3.8-27b-4bit", "org/model")
+
+    assert str(exc.value) == (
+        "qwen3.8-27b-4bit does not fit this Mac's GPU memory. Nothing was downloaded. "
+        "Pick a model that fits: rapid-mlx benchmark catalog"
+    )
+
+
 def test_memory_refusal_precedes_acceleration_preflight(monkeypatch, capsys):
     from rapid_mlx.cli_parser import build_parser
     from rapid_mlx.community_bench import cli, local_runner
