@@ -98,7 +98,9 @@ struct ImageGenerationPhaseTests {
         // total; a turbo-sized seed on a 20-step model makes the bar slam to
         // full and sit there. Values mirror _DEFAULT_STEPS_BY_FAMILY in
         // rapid_mlx/image/engine.py.
-        #expect(ImageGenViewModel.seedSteps(for: "qwen-image") == 20)
+        // `qwen-image` is the compatibility alias for the Qwen-Image 2.1 q4
+        // checkpoint, so it shares the 2.1 family default.
+        #expect(ImageGenViewModel.seedSteps(for: "qwen-image") == 40)
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image-edit") == 20)
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image-2.1") == 40)
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image-2.1-turbo") == 8)

@@ -191,25 +191,24 @@ final class ImageGenViewModel {
     private var denoiseETA = ImageDenoiseETA()
 
     /// Steps the bar should assume before the server reports a live total.
-    /// Derived from the selected model family (turbo Z-Image wants ~8, the
-    /// distilled Klein/schnell 4) so the bar is sensibly scaled from step one.
+    /// Prefer catalog defaults, falling back to engine family defaults.
     var estimatedSteps: Int {
-        progress?.total ?? Self.seedSteps(for: inFlightAlias ?? selectedAlias)
+        let alias = inFlightAlias ?? selectedAlias
+        return progress?.total ?? imageModels.first { $0.alias == alias }?.imageDefaultSteps ?? Self.seedSteps(for: alias)
     }
 
+    /// Engine family defaults, including the Qwen-Image 2.1 compatibility alias.
     nonisolated static func seedSteps(for alias: String) -> Int {
-        // Non-distilled Qwen-Image denoises for ~20 steps (both the base
-        // text-to-image model and the edit variant) — matching the engine's
-        // per-family default, so the bar isn't scaled for a 4-step turbo run
-        // that is actually a 20-step one.
         // The distilled Qwen-Image 2.1 Turbo checkpoint runs its eight-step schedule.
         if alias.localizedCaseInsensitiveContains("qwen-image-2.1-turbo") { return 8 }
-        if alias.localizedCaseInsensitiveContains("qwen-image-2.1") { return 40 }
+        if alias.lowercased() == "qwen-image"
+            || alias.localizedCaseInsensitiveContains("qwen-image-2.1") { return 40 }
         if alias.localizedCaseInsensitiveContains("qwen-image") { return 20 }
         if alias.localizedCaseInsensitiveContains("hidream-o1") { return 28 }
         if alias.localizedCaseInsensitiveContains("sd35")
             || alias.localizedCaseInsensitiveContains("stable-diffusion-3.5") { return 28 }
         if alias.localizedCaseInsensitiveContains("sdxl") { return 30 }
+        if alias.localizedCaseInsensitiveContains("bonsai-image") { return 4 }
         return alias.localizedCaseInsensitiveContains("z-image") ? 8 : 4
     }
 
