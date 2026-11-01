@@ -57,6 +57,14 @@ struct ModelPresentationConsistencyTests {
         #expect(SettingsModelManagementPanel.pickStatsLine(pick).contains("memory"))
     }
 
+    @Test nonisolated func numericFamilyLookalikesKeepRawAliases() {
+        let diffusion = "diffusion-gemma-26b-4bit"
+        #expect(!ModelDisplayName.name(for: diffusion).contains("Gemma 2"))
+        #expect(ModelDisplayName.name(for: diffusion) == diffusion)
+        let embedding = "embeddinggemma-300m-6bit"
+        #expect(ModelDisplayName.name(for: embedding) == embedding)
+    }
+
     @Test func namesAndCachedVariant() {
         #expect(ModelDisplayName.name(for: "qwen3.5-4b-4bit") == "Qwen 3.5 · 4B")
         #expect(ModelDisplayName.name(for: "whisper-large-v3-turbo") == "Whisper Large v3 Turbo")
