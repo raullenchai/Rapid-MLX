@@ -7,6 +7,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 
 def recorded_tool_extras(prefix: str | os.PathLike | None = None) -> list[str]:
@@ -56,11 +57,14 @@ def installed_extras() -> list[str]:
         import importlib.metadata as metadata
         import re
 
+        Requirement: Any
         try:
             from packaging.requirements import Requirement
         except ImportError:
             try:
-                from pip._vendor.packaging.requirements import Requirement
+                from pip._vendor.packaging.requirements import (  # type: ignore[assignment]
+                    Requirement,
+                )
             except ImportError:
                 Requirement = None
 
@@ -79,11 +83,11 @@ def installed_extras() -> list[str]:
             for d in metadata.distributions()
             if d.metadata.get("Name")
         }
-        base = set()
-        extras = {}
+        base: set[str] = set()
+        extras: dict[str, list[tuple[str, Any]]] = {}
         for requirement in requirements:
-            name = re.match(r"[A-Za-z0-9._-]+", requirement)
-            if not name:
+            name_match = re.match(r"[A-Za-z0-9._-]+", requirement)
+            if not name_match:
                 continue
             marker = requirement.partition(";")[2]
             extra = re.search(
@@ -107,18 +111,18 @@ def installed_extras() -> list[str]:
                     re.I,
                 ):
                     continue
-            name = normalize(name.group())
+            requirement_name = normalize(name_match.group())
             if extra:
                 extras.setdefault(normalize(extra.group(1)), []).append(
-                    (name, req if Requirement is not None else None)
+                    (requirement_name, req if Requirement is not None else None)
                 )
             else:
-                base.add(name)
+                base.add(requirement_name)
         pending = list(base)
         while pending:
-            name = pending.pop()
+            current = pending.pop()
             try:
-                dependencies = metadata.requires(name) or []
+                dependencies = metadata.requires(current) or []
             except metadata.PackageNotFoundError:
                 continue
             for dependency in dependencies:
@@ -136,23 +140,25 @@ def installed_extras() -> list[str]:
                 if child not in base:
                     base.add(child)
                     pending.append(child)
-        selected = []
-        for extra, requirements in extras.items():
-            distinct = [(name, req) for name, req in requirements if name not in base]
+        selected: list[str] = []
+        for extra_name, extra_requirements in extras.items():
+            distinct = [
+                (dist, spec) for dist, spec in extra_requirements if dist not in base
+            ]
             if (
-                extra not in {"dev", "test", "all"}
-                and not extra.startswith("ci-")
+                extra_name not in {"dev", "test", "all"}
+                and not extra_name.startswith("ci-")
                 and distinct
                 and all(
-                    name in installed
+                    dist in installed
                     and (
-                        req is None
-                        or req.specifier.contains(installed[name], prereleases=True)
+                        spec is None
+                        or spec.specifier.contains(installed[dist], prereleases=True)
                     )
-                    for name, req in distinct
+                    for dist, spec in distinct
                 )
             ):
-                selected.append(extra)
+                selected.append(extra_name)
         return sorted(selected)
     except Exception:
         return []
