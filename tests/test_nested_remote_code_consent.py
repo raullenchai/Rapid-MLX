@@ -214,6 +214,14 @@ def test_stt_checks_unreferenced_immediate_directories(
     base.assert_not_called()
 
 
+def test_processor_code_accepts_nonexistent_path(tmp_path):
+    from rapid_mlx.utils.model_file_guard import validate_processor_code
+
+    missing = tmp_path / "missing-checkpoint"
+    assert not missing.exists()
+    assert validate_processor_code(missing) is None
+
+
 def test_directory_scan_bounds_and_realpath_deduplication(tmp_path, monkeypatch):
     from rapid_mlx.utils.model_file_guard import validate_processor_code
 

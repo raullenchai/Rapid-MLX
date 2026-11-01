@@ -100,6 +100,69 @@ def test_video_path(tmp_path, monkeypatch):
 # =============================================================================
 
 
+def test_inkling_processor_consent_before_vlm_dispatch(tmp_path, monkeypatch):
+    """Forced-trust processors require consent before the VLM loader runs."""
+    import json
+    from types import ModuleType
+    from unittest.mock import Mock
+
+    # Import the real runtime before installing loader doubles so unsupported
+    # hosts skip without leaving fake runtime modules in sys.modules.
+    pytest.importorskip("mlx.core", exc_type=ImportError)
+    pytest.importorskip("mlx_vlm", exc_type=ImportError)
+    mllm = pytest.importorskip("rapid_mlx.models.mllm", exc_type=ImportError)
+    from rapid_mlx.patches import (
+        glm5_next_forget_gate_quant,
+        glm5_next_processor,
+        glm5_next_runtime,
+    )
+    from rapid_mlx.utils.model_file_guard import RemoteCodeConsentRequired
+
+    monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
+    monkeypatch.setattr(
+        glm5_next_runtime, "install_glm5_next_runtime_fix", lambda: None
+    )
+    monkeypatch.setattr(
+        glm5_next_processor, "install_glm5_next_processor_patch", lambda: None
+    )
+    monkeypatch.setattr(
+        glm5_next_forget_gate_quant,
+        "install_glm5_next_forget_gate_quant_fix",
+        lambda: None,
+    )
+
+    vlm = ModuleType("mlx_vlm")
+    vlm.__path__ = []
+    vlm.load = Mock()
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda path, **kwargs: path
+
+    def load_config(path, **kwargs):
+        with (Path(path) / "config.json").open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    utils.load_config = load_config
+    monkeypatch.setitem(sys.modules, "mlx_vlm", vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "inkling"}), encoding="utf-8"
+    )
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"auto_map": {"AutoTokenizer": ["tok.T", None]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    model = mllm.MLXMultimodalLM(
+        str(tmp_path), trust_remote_code=False, enable_cache=False
+    )
+
+    with pytest.raises(RemoteCodeConsentRequired, match="auto_map"):
+        model.load()
+
+    vlm.load.assert_not_called()
+    assert not model._loaded
+
+
 @apple_silicon_only
 class TestMLLMHelperFunctions:
     """Test helper functions that don't require model loading."""
