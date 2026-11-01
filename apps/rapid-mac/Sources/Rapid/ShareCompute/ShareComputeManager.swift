@@ -31,7 +31,11 @@ final class ShareComputeManager {
         }
     }
 
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle {
+        didSet { failureNeedsProviderKey = false }
+    }
+    /// Set only by local key failures, independently of their localized text.
+    private(set) var failureNeedsProviderKey = false
     private(set) var snapshot: ShareComputeStatusSnapshot?
     private(set) var activeModel: ShareComputeModel?
 
@@ -230,6 +234,7 @@ final class ShareComputeManager {
         if let providerKey, !providerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard saveProviderKey(providerKey) else {
                 state = .failed(providerKeyMessage ?? String(localized: "The provider key couldn't be saved."))
+                failureNeedsProviderKey = true
                 return
             }
         }
@@ -238,6 +243,7 @@ final class ShareComputeManager {
             guard case .found(let key) = providerStore.load() else {
                 refreshProviderKey()
                 state = .failed(providerKeyMessage ?? String(localized: "Save your QuickSilver provider key to connect this Mac."))
+                failureNeedsProviderKey = true
                 return
             }
             registrationKey = key.rawValue

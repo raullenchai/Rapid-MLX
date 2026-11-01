@@ -210,6 +210,64 @@ struct ShareComputeProviderTests {
         #expect(server.servingAlias == "personal-model")
     }
 
+    @Test("Join marks missing and unreadable saved keys, then clears recovery on later states", arguments: ["missing", "unavailable", "corrupted"])
+    func joinKeyFailureRecovery(kind: String) async {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("share-key-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let keychain = ShareComputeTestKeychain()
+        keychain.unavailable = kind == "unavailable"
+        if kind == "corrupted" { keychain.values[ShareComputeProviderKeyStore.account] = "corrupted" }
+        let server = ServerManager(testingState: .ready(alias: "personal-model"), binaryPath: URL(fileURLWithPath: "/usr/bin/false"))
+        let manager = ShareComputeManager(server: server, providerStore: ShareComputeProviderKeyStore(keychain: keychain), home: home)
+
+        await manager.join(model: ShareComputeModel.desktopSharing[0], worker: "test-mac")
+        guard case .failed = manager.state else {
+            Issue.record("A missing or unreadable key must fail before preparation")
+            return
+        }
+        #expect(manager.failureNeedsProviderKey)
+        // The same signal must reopen review even when the failure is translated.
+        #expect(ShareComputeView.shouldReopenConnectionReview(
+            state: .failed("请保存提供商密钥以连接此 Mac。"), needsProviderKey: manager.failureNeedsProviderKey
+        ))
+        #expect(server.servingAlias == "personal-model")
+
+        await manager.join(model: ShareComputeModel.supported[1], worker: "test-mac")
+        guard case .failed = manager.state else {
+            Issue.record("An unsupported model must fail")
+            return
+        }
+        #expect(!manager.failureNeedsProviderKey)
+        #expect(!ShareComputeView.shouldReopenConnectionReview(state: manager.state, needsProviderKey: manager.failureNeedsProviderKey))
+
+        await manager.join(model: ShareComputeModel.desktopSharing[0], worker: "test-mac")
+        #expect(manager.failureNeedsProviderKey)
+        manager.leave()
+        #expect(manager.state == .idle)
+        #expect(!manager.failureNeedsProviderKey)
+    }
+
+    @Test("Join marks provider key save failures for recovery")
+    func joinKeySaveFailureRecovery() async {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("share-key-save-recovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let keychain = ShareComputeTestKeychain()
+        keychain.failWrite = true
+        let server = ServerManager(testingState: .ready(alias: "personal-model"), binaryPath: URL(fileURLWithPath: "/usr/bin/false"))
+        let manager = ShareComputeManager(server: server, providerStore: ShareComputeProviderKeyStore(keychain: keychain), home: home)
+        await manager.join(model: ShareComputeModel.desktopSharing[0], worker: "test-mac", providerKey: Self.firstKey)
+        #expect(manager.failureNeedsProviderKey)
+        #expect(ShareComputeView.shouldReopenConnectionReview(state: manager.state, needsProviderKey: manager.failureNeedsProviderKey))
+        #expect(server.servingAlias == "personal-model")
+    }
+
+    @Test("Review recovery preserves English engine failures and ignores unrelated states")
+    func connectionReviewRecoveryDecision() {
+        #expect(ShareComputeView.shouldReopenConnectionReview(state: .failed("Invalid PROVIDER KEY"), needsProviderKey: false))
+        #expect(!ShareComputeView.shouldReopenConnectionReview(state: .failed("连接失败"), needsProviderKey: false))
+        #expect(!ShareComputeView.shouldReopenConnectionReview(state: .online, needsProviderKey: true))
+    }
+
     @Test("providerKeyRevision bumps on a same-redacted-label replacement, not on a mere refresh")
     func providerKeyRevisionBumpsOnReplacement() throws {
         let keychain = ShareComputeTestKeychain()
