@@ -1,10 +1,14 @@
 """Pinned Whisper processors are prepared during pull and used offline."""
 
 import argparse
+import json
+import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import huggingface_hub
+import pytest
 
 from rapid_mlx import cli, model_downloads
 from rapid_mlx.audio import registry
@@ -22,6 +26,73 @@ PATTERNS = (
     "added_tokens.json",
     "normalizer.json",
 )
+
+
+@pytest.mark.parametrize(
+    "processors,error",
+    [
+        pytest.param(
+            [],
+            "_whisper_processors must be an object",
+            id="not-an-object",
+        ),
+        pytest.param(
+            {"invalid": {"repo_id": "openai/whisper-base", "revision": PIN}},
+            "invalid Whisper processor entry",
+            id="hf-id-without-slash",
+        ),
+        pytest.param(
+            {"owner/model/extra": {"repo_id": "openai/whisper-base", "revision": PIN}},
+            "invalid Whisper processor entry",
+            id="hf-id-with-extra-slash",
+        ),
+        pytest.param(
+            {"mlx-community/whisper-base-mlx": []},
+            "invalid Whisper processor entry",
+            id="asset-not-an-object",
+        ),
+        pytest.param(
+            {"mlx-community/whisper-base-mlx": {"revision": PIN}},
+            "Whisper processors require a repo and revision",
+            id="missing-repo-id",
+        ),
+        pytest.param(
+            {"mlx-community/whisper-base-mlx": {"repo_id": "openai/whisper-base"}},
+            "Whisper processors require a repo and revision",
+            id="missing-revision",
+        ),
+        pytest.param(
+            {
+                "mlx-community/whisper-base-mlx": {
+                    "repo_id": "openai/whisper-base",
+                    "revision": PIN,
+                },
+                "MLX-COMMUNITY/WHISPER-BASE-MLX": {
+                    "repo_id": "openai/whisper-base",
+                    "revision": PIN,
+                },
+            },
+            "duplicate Whisper processor entry",
+            id="case-insensitive-duplicate",
+        ),
+    ],
+)
+def test_whisper_processor_registry_rejects_malformed_metadata(
+    monkeypatch, tmp_path, processors, error
+):
+    raw = json.loads(Path(registry._registry_path()).read_text())
+    raw["_whisper_processors"] = processors
+    registry_file = tmp_path / "aliases.json"
+    registry_file.write_text(json.dumps(raw))
+    monkeypatch.setattr(registry, "_registry_path", lambda: str(registry_file))
+    monkeypatch.setattr(registry, "_REGISTRY", None)
+    monkeypatch.setattr(registry, "_HF_ID_INDEX", {})
+    monkeypatch.setattr(registry, "_WHISPER_PROCESSORS", {})
+    monkeypatch.setattr(registry, "_RUNTIME_ASSETS", {})
+    monkeypatch.setattr(registry, "_RUNTIME_REQUIREMENTS", {})
+
+    with pytest.raises(ValueError, match=re.escape(f"audio aliases.json: {error}")):
+        registry._load_registry()
 
 
 def test_whisper_aliases_declare_processors():
