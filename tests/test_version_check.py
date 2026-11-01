@@ -1303,8 +1303,11 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
 
 
 def test_prompt_successful_command_without_upgrade_continues(
-    monkeypatch, interactive, capsys
+    monkeypatch, interactive, capsys, tmp_path
 ):
+    launcher = tmp_path / "rapid-mlx"
+    launcher.write_text('#!/bin/sh\necho "rapid-mlx 0.6.61"\n')
+    launcher.chmod(0o755)
     monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
     monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "99.0.0")
@@ -1316,13 +1319,13 @@ def test_prompt_successful_command_without_upgrade_continues(
             method="pip",
             upgrade_command="no-op",
             upgrade_argv=[sys.executable, "-c", "pass"],
-            binary_path=None,
+            binary_path=str(launcher),
         ),
     )
     monkeypatch.setattr("builtins.input", lambda _: "y")
     assert vc.prompt_upgrade_if_available() is False
     output = capsys.readouterr().out
-    assert "is still" in output
+    assert "is still 0.6.61" in output
     assert "expected 99.0.0" in output
     assert "Upgrade complete" not in output
 
