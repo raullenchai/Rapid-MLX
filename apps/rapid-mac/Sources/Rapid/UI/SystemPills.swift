@@ -41,7 +41,7 @@ struct CPUPill: View {
     private var content: some View {
         let pressure = CPUProbe.Pressure.classify(percent: displayedPercent)
         MetricChip(
-            label: "CPU \(CPUProbe.formatLabel(percent: displayedPercent))",
+            label: String(localized: "CPU \(CPUProbe.formatLabel(percent: displayedPercent))"),
             level: Self.level(for: pressure)
         )
         .help(Self.tooltip(percent: displayedPercent, pressure: pressure))
@@ -96,11 +96,11 @@ struct CPUPill: View {
     static func tooltip(percent: Double, pressure: CPUProbe.Pressure) -> String {
         let header: String
         switch pressure {
-        case .normal:   header = "CPU: light load"
-        case .warning:  header = "CPU: heavy load"
-        case .critical: header = "CPU: pegged — other apps may stutter"
+        case .normal:   header = String(localized: "CPU: light load")
+        case .warning:  header = String(localized: "CPU: heavy load")
+        case .critical: header = String(localized: "CPU: pegged — other apps may stutter")
         }
-        return "\(header)\n\(Int(percent.rounded()))% busy across all cores."
+        return String(localized: "\(header)\n\(Int(percent.rounded()))% busy across all cores.")
     }
 }
 
@@ -225,23 +225,23 @@ struct TokensPerSecondPill: View {
 
     private var tooltip: String {
         guard let resolved = resolvedTokensPerSecond else {
-            return "Inference throughput\n\nNo completed assistant turn in this session yet — send a message to see tok/s."
+            return String(localized: "Inference throughput\n\nNo completed assistant turn in this session yet — send a message to see tok/s.")
         }
         let header: String
         switch pressure {
-        case .fast:     header = "Inference: fast"
-        case .moderate: header = "Inference: moderate"
-        case .slow:     header = "Inference: slow — model may be too big for this GPU or memory pressure is forcing swap"
-        case .unknown:  header = "Inference throughput"
+        case .fast:     header = String(localized: "Inference: fast")
+        case .moderate: header = String(localized: "Inference: moderate")
+        case .slow:     header = String(localized: "Inference: slow — model may be too big for this GPU or memory pressure is forcing swap")
+        case .unknown:  header = String(localized: "Inference throughput")
         }
         let detail: String
         let formatted = String(format: "%.1f tok/s", resolved.value)
         if resolved.isEstimated {
-            detail = "~\(formatted) (estimated from char count — server did not emit usage)"
+            detail = String(localized: "~\(formatted) (estimated from char count — server did not emit usage)")
         } else {
             detail = formatted
         }
-        return "\(header)\n\nLast assistant turn: \(detail)"
+        return String(localized: "\(header)\n\nLast assistant turn: \(detail)")
     }
 
     private var accessibilityLabel: String {
@@ -249,9 +249,9 @@ struct TokensPerSecondPill: View {
             // "not available" reads as a failure to VoiceOver users;
             // "no data yet" matches the visual em-dash and the
             // tooltip's "send a message to see tok/s" phrasing.
-            return "Tokens per second: no data yet"
+            return String(localized: "Tokens per second: no data yet")
         }
-        return "Tokens per second: \(Int(resolved.value.rounded()))"
+        return String(localized: "Tokens per second: \(Int(resolved.value.rounded()))")
     }
 }
 
@@ -286,7 +286,7 @@ struct GPUPill: View {
         if let snap = snapshot {
             let pressure = GPUProbe.Pressure.classify(percent: snap.percent)
             MetricChip(
-                label: "GPU \(GPUProbe.formatLabel(percent: snap.percent))",
+                label: String(localized: "GPU \(GPUProbe.formatLabel(percent: snap.percent))"),
                 level: Self.level(for: pressure)
             )
             .help(Self.tooltip(percent: snap.percent, pressure: pressure))
@@ -294,7 +294,7 @@ struct GPUPill: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("GPU \(Int(snap.percent.rounded())) percent")
         } else {
-            MetricChip(label: "GPU n/a", level: .noData)
+            MetricChip(label: String(localized: "GPU n/a"), level: .noData)
                 .help("GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation.")
         }
     }
@@ -330,10 +330,10 @@ struct GPUPill: View {
     static func tooltip(percent: Double, pressure: GPUProbe.Pressure) -> String {
         let header: String
         switch pressure {
-        case .normal:   header = "GPU: idle / light"
-        case .warning:  header = "GPU: heavy load"
-        case .critical: header = "GPU: pegged — model is fully saturating the GPU"
+        case .normal:   header = String(localized: "GPU: idle / light")
+        case .warning:  header = String(localized: "GPU: heavy load")
+        case .critical: header = String(localized: "GPU: pegged — model is fully saturating the GPU")
         }
-        return "\(header)\n\(Int(percent.rounded()))% utilisation."
+        return String(localized: "\(header)\n\(Int(percent.rounded()))% utilisation.")
     }
 }

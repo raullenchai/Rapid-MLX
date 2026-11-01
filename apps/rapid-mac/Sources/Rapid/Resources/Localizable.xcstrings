@@ -1823,6 +1823,16 @@
         }
       }
     },
+    "critical" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "严重不足"
+          }
+        }
+      }
+    },
     "done" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1839,6 +1849,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下一步"
+          }
+        }
+      }
+    },
+    "normal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正常"
           }
         }
       }
@@ -2303,6 +2323,26 @@
         }
       }
     },
+    "Tokens per second: %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每秒 token 数：%lld"
+          }
+        }
+      }
+    },
+    "Tokens per second: no data yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每秒 token 数：暂无数据"
+          }
+        }
+      }
+    },
     "Too large": {
       "localizations": {
         "zh-Hans": {
@@ -2419,6 +2459,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "通过文件名匹配 — %@"
+          }
+        }
+      }
+    },
+    "%@\n\nLast assistant turn: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@\n\n上次助手回复：%@"
+          }
+        }
+      }
+    },
+    "%@\n%@ in use (%lld%%), %@ free." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@\n已用 %@（%lld%%），可用 %@。"
+          }
+        }
+      }
+    },
+    "%@\n%lld%% busy across all cores." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@\n所有核心的总体使用率为 %lld%%。"
+          }
+        }
+      }
+    },
+    "%@\n%lld%% utilisation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@\n使用率为 %lld%%。"
           }
         }
       }
@@ -3829,6 +3909,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示或隐藏服务器日志"
+          }
+        }
+      }
+    },
+    "Export a privacy-scrubbed diagnostics bundle for support" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出已清除隐私信息的诊断包，以便获取支持"
           }
         }
       }
@@ -5395,12 +5485,52 @@
         }
       }
     },
+    "CPU %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU %@"
+          }
+        }
+      }
+    },
     "CPU %lld percent" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "CPU 占用 %lld%%"
+          }
+        }
+      }
+    },
+    "CPU: heavy load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU：高负载"
+          }
+        }
+      }
+    },
+    "CPU: light load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU：轻负载"
+          }
+        }
+      }
+    },
+    "CPU: pegged — other apps may stutter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CPU：满载 — 其他应用可能卡顿"
           }
         }
       }
@@ -7011,6 +7141,16 @@
         }
       }
     },
+    "GPU %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU %@"
+          }
+        }
+      }
+    },
     "GPU %lld percent" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7021,12 +7161,52 @@
         }
       }
     },
+    "GPU n/a" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU 不可用"
+          }
+        }
+      }
+    },
     "GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法探测 GPU：Intel Mac 和沙盒应用不提供 AGXAccelerator 利用率。"
+          }
+        }
+      }
+    },
+    "GPU: heavy load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU：高负载"
+          }
+        }
+      }
+    },
+    "GPU: idle / light" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU：空闲 / 轻负载"
+          }
+        }
+      }
+    },
+    "GPU: pegged — model is fully saturating the GPU" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU：满载 — 模型已占满 GPU"
           }
         }
       }
@@ -7277,6 +7457,56 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "应用内更新需要签名的正式版本；请手动下载此版本。"
+          }
+        }
+      }
+    },
+    "Inference throughput" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理吞吐量"
+          }
+        }
+      }
+    },
+    "Inference throughput\n\nNo completed assistant turn in this session yet — send a message to see tok/s." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理吞吐量\n\n此会话尚无已完成的助手回复 — 发送消息后即可查看 tok/s。"
+          }
+        }
+      }
+    },
+    "Inference: fast" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理：快"
+          }
+        }
+      }
+    },
+    "Inference: moderate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理：适中"
+          }
+        }
+      }
+    },
+    "Inference: slow — model may be too big for this GPU or memory pressure is forcing swap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理：慢 — 模型可能超出此 GPU 的承载能力，或内存压力正迫使系统使用交换空间"
           }
         }
       }
@@ -7611,12 +7841,52 @@
         }
       }
     },
+    "Memory %@: %@ used out of %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存%@：已用 %@，共 %@"
+          }
+        }
+      }
+    },
     "Memory probe failed — host_statistics64 returned an error." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "内存探测失败：host_statistics64 返回了错误。"
+          }
+        }
+      }
+    },
+    "Memory: comfortable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存：充裕"
+          }
+        }
+      }
+    },
+    "Memory: critical — model loads may fail or trigger swap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存：严重不足 — 加载模型可能失败或触发交换"
+          }
+        }
+      }
+    },
+    "Memory: tight" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存：紧张"
           }
         }
       }
@@ -8447,6 +8717,26 @@
         }
       }
     },
+    "Rapid-MLX %@ is available (you're on %@). Click to install." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX %@ 已可用（当前版本为 %@）。点击安装。"
+          }
+        }
+      }
+    },
+    "Rapid-MLX %@ is the latest release. Click to open Settings → App." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX %@ 已是最新版本。点击打开“设置 → 应用”。"
+          }
+        }
+      }
+    },
     "Rapid-MLX %@ · up to date" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9273,6 +9563,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "设置…"
+          }
+        }
+      }
+    },
+    "SETUP COULDN'T RUN" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置无法运行"
           }
         }
       }
@@ -10787,6 +11087,16 @@
         }
       }
     },
+    "tight" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "紧张"
+          }
+        }
+      }
+    },
     "took %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11433,6 +11743,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "助手会在多次对话中了解你的偏好。数据绝不会离开这台 Mac。"
+          }
+        }
+      }
+    },
+    "The bundled engine is missing or could not be verified. Install the full Rapid-MLX Desktop app, then reopen it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内置引擎缺失或无法验证。请安装完整版 Rapid-MLX Desktop 应用，然后重新打开。"
+          }
+        }
+      }
+    },
+    "The engine is unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎不可用"
           }
         }
       }
@@ -16168,6 +16498,16 @@
         }
       }
     },
+    "Rapid-MLX %@. Click to open Settings → App." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX %@。点击打开“设置 → 应用”。"
+          }
+        }
+      }
+    },
     "Rapid-MLX Desktop has Screen Recording access, and its bundled helper has Accessibility access for Computer Use." : {
       "localizations" : {
         "zh-Hans" : {
@@ -18654,6 +18994,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "结束…"
+          }
+        }
+      }
+    },
+    "~%@ (estimated from char count — server did not emit usage)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "~%@（根据字符数估算 — 服务器未提供用量数据）"
           }
         }
       }

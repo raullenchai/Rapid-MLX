@@ -1800,10 +1800,9 @@ struct ContentView: View {
             OnboardingOutcomeBlock(
                 glyph: "exclamationmark.octagon",
                 tone: .error,
-                kicker: "SETUP COULDN'T RUN",
-                title: "The engine is unavailable",
-                message: "The bundled engine is missing or could not be verified. "
-                    + "Install the full Rapid-MLX Desktop app, then reopen it."
+                kicker: String(localized: "SETUP COULDN'T RUN"),
+                title: String(localized: "The engine is unavailable"),
+                message: String(localized: "The bundled engine is missing or could not be verified. Install the full Rapid-MLX Desktop app, then reopen it.")
             ) {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
                     // Same two branches, same actions, same ordering as
@@ -1944,8 +1943,8 @@ struct ContentView: View {
                     .foregroundStyle(showLogs ? RapidTheme.brand : Color.secondary)
             }
             .buttonStyle(.borderless)
-            .help(showLogs ? "Hide logs" : "Show logs")
-            .accessibilityLabel(showLogs ? "Hide logs" : "Show logs")
+            .help(showLogs ? String(localized: "Hide logs") : String(localized: "Show logs"))
+            .accessibilityLabel(showLogs ? String(localized: "Hide logs") : String(localized: "Show logs"))
             .accessibilityIdentifier("ContentView.ToggleLogs")
             Spacer(minLength: 8)
             footerReadouts
@@ -2643,11 +2642,11 @@ struct DesktopVersionPill: View {
     private var tooltip: String {
         switch state {
         case .upToDate(let version):
-            return "Rapid-MLX \(version) is the latest release. Click to open Settings → App."
+            return String(localized: "Rapid-MLX \(version) is the latest release. Click to open Settings → App.")
         case .updateAvailable(let current, let latest):
-            return "Rapid-MLX \(latest) is available (you're on \(current)). Click to install."
+            return String(localized: "Rapid-MLX \(latest) is available (you're on \(current)). Click to install.")
         case .unknown(let version):
-            return "Rapid-MLX \(version). Click to open Settings → App."
+            return String(localized: "Rapid-MLX \(version). Click to open Settings → App.")
         }
     }
 }
