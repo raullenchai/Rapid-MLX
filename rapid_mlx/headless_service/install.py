@@ -350,12 +350,43 @@ def _readyz_ready(
             sock.settimeout(1.0)
             authority = http_probe_authority(probe_host, port)
             sock.sendall(
-                f"GET /readyz HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii")
+                (
+                    f"GET /readyz HTTP/1.1\r\nHost: {authority}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("ascii")
             )
-            data = sock.recv(4096)
-    except OSError:
+            data = bytearray()
+            content_length = None
+            headers_parsed = False
+            response_complete = False
+            # Headers and body can arrive in separate TCP segments.
+            while len(data) < 64 * 1024:
+                chunk = sock.recv(min(4096, 64 * 1024 - len(data)))
+                if not chunk:
+                    response_complete = True
+                    break
+                data.extend(chunk)
+                head, separator, rest = data.partition(b"\r\n\r\n")
+                if separator and not headers_parsed:
+                    headers_parsed = True
+                    for header in head.split(b"\r\n")[1:]:
+                        name, colon, value = header.partition(b":")
+                        if colon and name.strip().lower() == b"content-length":
+                            content_length = int(value.strip())
+                            if content_length < 0:
+                                return False
+                if content_length is not None and len(rest) >= content_length:
+                    response_complete = True
+                    break
+    except (OSError, ValueError):
+        return False
+    if not response_complete or not headers_parsed:
         return False
     head, _, rest = data.partition(b"\r\n\r\n")
+    if content_length is not None:
+        if len(rest) < content_length:
+            return False
+        rest = rest[:content_length]
     if b"200" not in head:
         return False
     # Compact JSON separators or pretty-printed — compare whitespace-free.
