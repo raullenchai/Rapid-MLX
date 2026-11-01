@@ -1740,7 +1740,9 @@ def test_rm_frees_shared_store_blobs_and_ls_size_matches(tmp_path, monkeypatch, 
     import functools
 
     import huggingface_hub
-    from huggingface_hub.utils import _shared_blobs
+
+    # The shared store ships with newer 1.x hub releases only.
+    _shared_blobs = pytest.importorskip("huggingface_hub.utils._shared_blobs")
 
     hub = tmp_path / "hub"
     repo = hub / "models--org--a"
