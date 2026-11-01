@@ -39,6 +39,9 @@ def test_disk_check_uses_decimal_gb(monkeypatch, capsys):
         (999_960_000, "1.0 GB"),
         (999_960, "1.0 MB"),
         (999, "999 B"),
+        (2_500_000_000_000, "2.5 TB"),
+        (-5, "0 B"),
+        (0, "0 B"),
     ],
 )
 def test_download_gate_decimal_sizes(size, expected):
