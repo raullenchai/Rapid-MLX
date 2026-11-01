@@ -927,3 +927,48 @@ def test_text_download_follows_resolved_lane(
             lr._text_measurements("example", acceleration=AccelerationRequest())
         )
     assert calls == (["org/model"] if expected_download else [])
+
+
+def test_partial_pinned_target_snapshot_dedicated(
+    fake_dedicated, monkeypatch, tmp_path
+):
+    import huggingface_hub
+    from huggingface_hub import constants, errors
+
+    from rapid_mlx import model_downloads
+    from rapid_mlx.speculative.serial_benchmark import cached_snapshot_path
+
+    def unavailable(*args, **kwargs):
+        raise errors.LocalEntryNotFoundError("partial cache")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", unavailable)
+    monkeypatch.setattr(model_downloads, "snapshot_download", unavailable)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    revision = "a" * 40
+    snapshot = tmp_path / "models--org--model" / "snapshots" / revision
+    snapshot.mkdir(parents=True, exist_ok=True)
+    (snapshot / "config.json").write_text("{}")
+    path = cached_snapshot_path("org/model", revision)
+    assert path == str(snapshot)
+    fake_dedicated.handle.target_path = path
+    workload = {
+        "cases": [
+            {
+                "case_id": "short",
+                "target_prompt_tokens": 512,
+                "target_output_tokens": 128,
+            },
+            {
+                "case_id": "long",
+                "target_prompt_tokens": 2048,
+                "target_output_tokens": 512,
+            },
+        ]
+    }
+    _, _, identity, _ = asyncio.run(
+        fake_dedicated.lr._measure_dedicated(
+            fake_dedicated.handle, "org/model", "example", workload, None
+        )
+    )
+    assert identity["components"][0]["source"]["resolved_revision"] == revision
