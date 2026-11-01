@@ -294,6 +294,39 @@ check "ignores conflicting metadata in the current directory" \
     [ "$(cat "$WORK/isolated-spec")" = 'rapid-mlx[audio,chat]==1.0.0' ]
 ) && ok "reinstall ignores conflicting current-directory version" || bad "reinstall ignores conflicting current-directory version"
 check "both metadata snippets request isolated Python" "$(cat "$WORK/python-args")" "$(printf '%s\n' -I -I -I -I)"
+
+# Legacy metadata must preserve optional features through the migration rebuild.
+LEGACY_EXTRAS_VENV="$WORK/legacy-extras"; LEGACY_SITE="$WORK/legacy-site"
+mkdir -p "$LEGACY_EXTRAS_VENV/bin" "$LEGACY_SITE/vllm_mlx-0.12.0.dist-info"
+cat > "$LEGACY_EXTRAS_VENV/bin/python" <<EOF
+#!/bin/bash
+mode=()
+if [ "\$1" = -I ]; then mode=(-I); shift; fi
+exec "$REAL_PYTHON" "\${mode[@]}" -c 'import sys; sys.path.insert(1, sys.argv[1]); exec(sys.argv[2])' "$LEGACY_SITE" "\$2"
+EOF
+chmod +x "$LEGACY_EXTRAS_VENV/bin/python"
+cat > "$LEGACY_SITE/vllm_mlx-0.12.0.dist-info/METADATA" <<'EOF'
+Metadata-Version: 2.1
+Name: vllm-mlx
+Version: 0.12.0
+Requires-Dist: rmlx-fixture-mlx
+Requires-Dist: rmlx-fixture-gradio; extra == "chat"
+EOF
+for dist in mlx gradio; do
+    cp -R "$SITE/rmlx_fixture_${dist}-1.0.dist-info" "$LEGACY_SITE/"
+done
+LEGACY_PRESERVED_EXTRAS="$(installed_extras_of_venv "$LEGACY_EXTRAS_VENV")"
+check "detects chat from legacy distribution metadata" "$LEGACY_PRESERVED_EXTRAS" "chat"
+(
+    # The rebuilt environment has current distribution metadata.
+    cp -R "$SITE/rapid_mlx-1.0.0.dist-info" "$LEGACY_SITE/"
+    INSTALL_DIR="$LEGACY_EXTRAS_VENV"; PRESERVED_EXTRAS="$LEGACY_PRESERVED_EXTRAS"; TARGET=stable
+    recorder() { printf '%s\n' "$*" > "$WORK/legacy-spec"; }
+    INSTALLER=(recorder)
+    reinstall_preserved_extras >/dev/null
+    [ "$(cat "$WORK/legacy-spec")" = 'rapid-mlx[chat]==1.0.0' ]
+) && ok "reinstalls chat preserved from legacy metadata" || bad "reinstalls chat preserved from legacy metadata"
+
 if "$REAL_PYTHON" -I -c 'from packaging.requirements import Requirement' 2>/dev/null ||
    "$REAL_PYTHON" -I -c 'from pip._vendor.packaging.requirements import Requirement' 2>/dev/null; then
     printf 'Requires-Dist: rmlx-fixture-incompatible<0.6; extra == "incompatible"\n' >> "$SITE/rapid_mlx-1.0.0.dist-info/METADATA"

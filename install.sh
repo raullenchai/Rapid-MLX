@@ -155,7 +155,13 @@ except ImportError:
 def normalize(name):
     return re.sub(r"[-_.]+", "-", name).lower()
 
-requirements = metadata.distribution("rapid-mlx").requires or []
+try:
+    requirements = metadata.distribution("rapid-mlx").requires or []
+except metadata.PackageNotFoundError:
+    try:
+        requirements = metadata.distribution("vllm-mlx").requires or []
+    except metadata.PackageNotFoundError:
+        raise SystemExit(0)
 installed = {normalize(d.metadata["Name"]): d.version for d in metadata.distributions() if d.metadata.get("Name")}
 base = set()
 extras = {}
