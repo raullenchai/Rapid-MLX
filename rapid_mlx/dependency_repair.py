@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata as metadata
 import importlib.util
 import json
@@ -148,6 +149,41 @@ def _reinstall_spec() -> list[str]:
                     "-e",
                     os.path.join(path, subdirectory) if subdirectory else path,
                 ]
+        elif "archive_info" in direct:
+            archive = direct["archive_info"]
+            if not isinstance(archive, dict):
+                return fallback
+            algorithm = digest = None
+            if "hashes" in archive:
+                hashes = archive["hashes"]
+                if not isinstance(hashes, dict):
+                    return fallback
+                algorithm = (
+                    "sha256"
+                    if "sha256" in hashes
+                    else next(
+                        (key for key in hashes if key in hashlib.algorithms_guaranteed),
+                        None,
+                    )
+                )
+                digest = hashes.get(algorithm)
+            elif "hash" in archive:
+                legacy_hash = archive["hash"]
+                if not isinstance(legacy_hash, str):
+                    return fallback
+                algorithm, _, digest = legacy_hash.partition("=")
+            if "hashes" in archive or "hash" in archive:
+                if (
+                    algorithm not in hashlib.algorithms_guaranteed
+                    or not isinstance(digest, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]+", digest)
+                ):
+                    return fallback
+                fragment = f"#{algorithm}={digest}" + (
+                    f"&subdirectory={quote(subdirectory, safe='/')}"
+                    if subdirectory
+                    else ""
+                )
         return [f"rapid-mlx @ {url}{fragment}"]
     except Exception:
         return fallback

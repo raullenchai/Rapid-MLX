@@ -830,6 +830,73 @@ def test_reinstall_spec_preserves_subdirectory(
     assert repair._reinstall_spec() == expected
 
 
+@pytest.mark.parametrize(
+    "archive,subdirectory,fragment",
+    [
+        ({"hashes": {"sha256": "ab" * 32}}, "", "sha256=" + "ab" * 32),
+        (
+            {"hashes": {"sha256": "ab" * 32}},
+            "python",
+            "sha256=" + "ab" * 32 + "&subdirectory=python",
+        ),
+        (
+            {"hashes": {"sha256": "ab" * 32}},
+            "python/pkg #&%",
+            "sha256=" + "ab" * 32 + "&subdirectory=python/pkg%20%23%26%25",
+        ),
+        ({"hash": "sha256=" + "ab" * 32}, "", "sha256=" + "ab" * 32),
+        (
+            {"hashes": {"sha512": "cd" * 64, "sha256": "ab" * 32}},
+            "",
+            "sha256=" + "ab" * 32,
+        ),
+        (
+            {"hashes": {"unknown": "ab", "sha512": "cd" * 64, "sha1": "ef" * 20}},
+            "",
+            "sha512=" + "cd" * 64,
+        ),
+        (None, "", None),
+        ([], "", None),
+        ({"hashes": None}, "", None),
+        ({"hashes": []}, "", None),
+        ({"hashes": {}}, "", None),
+        ({"hashes": {"unknown": "ab"}}, "", None),
+        ({"hashes": {"sha256": None}}, "", None),
+        ({"hashes": {"sha256": 42}}, "", None),
+        ({"hashes": {"sha256": ""}}, "", None),
+        ({"hashes": {"sha256": "not-hex"}}, "", None),
+        ({"hashes": {"sha256": "ab&subdirectory=other"}}, "", None),
+        ({"hash": None}, "", None),
+        ({"hash": 42}, "", None),
+        ({"hash": "sha256"}, "", None),
+        ({"hash": "unknown=ab"}, "", None),
+        ({"hash": "sha256="}, "", None),
+        ({"hash": "sha256=not-hex"}, "", None),
+    ],
+)
+def test_reinstall_spec_preserves_archive_hash(
+    monkeypatch, archive, subdirectory, fragment
+):
+    import rapid_mlx
+
+    distribution = Mock()
+    distribution.read_text.return_value = json.dumps(
+        {
+            "url": "https://example.org/rapid.whl",
+            "archive_info": archive,
+            "subdirectory": subdirectory,
+        }
+    )
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+
+    expected = (
+        f"rapid-mlx @ https://example.org/rapid.whl#{fragment}"
+        if fragment is not None
+        else f"rapid-mlx=={rapid_mlx.__version__}"
+    )
+    assert repair._reinstall_spec() == [expected]
+
+
 def test_pip_repair_unreadable_source_uses_running_version(environment, monkeypatch):
     import rapid_mlx
 
