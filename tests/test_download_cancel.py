@@ -1,5 +1,6 @@
 """Offline cancellation coverage with real executor workers and signals."""
 
+import logging
 import os
 import selectors
 import signal
@@ -133,6 +134,19 @@ def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
     assert not owned.exists()
     for path in (foreign, legacy, part):
         assert path.read_bytes() == b"keep"
+
+
+@pytest.fixture(autouse=True)
+def _contain_in_process_cancel(monkeypatch):
+    # An in-process cancel arms a 2 s backstop timer and silences the Hub
+    # logger. The timer outlives the test; once a later test runs pytest
+    # in-process, PYTEST_CURRENT_TEST is briefly unset and the backstop
+    # would os._exit the whole test session.
+    monkeypatch.setattr(cancel, "_cancel_backstop", lambda code: None)
+    hub_logger = logging.getLogger("huggingface_hub")
+    level = hub_logger.level
+    yield
+    hub_logger.setLevel(level)
 
 
 @pytest.fixture
