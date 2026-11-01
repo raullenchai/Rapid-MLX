@@ -125,8 +125,8 @@ struct ComposerLoadStatusView: View {
             }
             QuietIconButton(
                 symbol: "stethoscope",
-                label: "Export diagnostics…",
-                help: "Export a privacy-scrubbed diagnostics bundle for support",
+                label: String(localized: "Export diagnostics…"),
+                help: String(localized: "Export a privacy-scrubbed diagnostics bundle for support"),
                 action: onExportDiagnostics
             )
             .accessibilityIdentifier("Readiness.ExportDiagnostics")

@@ -659,6 +659,54 @@ struct LocalizationTests {
         #expect(ExperimentalSurfaceCopy.videoMemory(minimum: 48, available: 32, bundle: enBundle) == "Needs at least \(DownloadProgress.formatMemory(Int64(48) * (1 << 30))) unified memory; this Mac has 32 GB.")
     }
 
+    @Test("Chat chrome String labels resolve against compiled zh-Hans")
+    func compiledChatChromeLabels() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["xcstringstool", "compile", try catalogURL().path,
+                        "--output-directory", output.path, "--serialization-format", "binary"]
+        )
+        try #require(compiler.terminationStatus == 0)
+        let zhBundle = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        for path in ["UI/ReadinessBanner.swift", "UI/Components/ComposerLoadStatusView.swift"] {
+            let source = try String(contentsOf: rapidSource(path), encoding: .utf8)
+            #expect(source.contains(#"String(localized: "Export diagnostics…")"#))
+        }
+        let pills = try String(contentsOf: rapidSource("UI/SystemPills.swift"), encoding: .utf8)
+        #expect(pills.contains(#"String(localized: "Tokens per second: no data yet")"#))
+        let content = try String(contentsOf: rapidSource("UI/ContentView.swift"), encoding: .utf8)
+        #expect(content.contains(#"String(localized: "The engine is unavailable")"#))
+        #expect(String(localized: "The engine is unavailable", bundle: zhBundle) == "引擎不可用")
+        #expect(String(localized: "Export diagnostics…", bundle: zhBundle) == "导出诊断…")
+        #expect(String(localized: "Tokens per second: no data yet", bundle: zhBundle) == "每秒 token 数：暂无数据")
+        #expect(String(localized: "Memory: comfortable", bundle: zhBundle) == "内存：充裕")
+        let state = String(localized: "normal", bundle: zhBundle)
+        let used = "8 GB"
+        let total = "16 GB"
+        #expect(String(localized: "Memory \(state): \(used) used out of \(total)", bundle: zhBundle) == "内存正常：已用 8 GB，共 16 GB")
+        let header = String(localized: "Memory: comfortable", bundle: zhBundle)
+        let percent = 50
+        #expect(String(localized: "\(header)\n\(used) in use (\(percent)%), \(used) free.", bundle: zhBundle) == "内存：充裕\n已用 8 GB（50%），可用 8 GB。")
+    }
+
+    @Test("Memory pill keeps its English accessibility and tooltip copy")
+    func memoryPillEnglishCopy() {
+        let snap = MemoryProbe.Snapshot(totalBytes: 16 * UInt64(1 << 30), usedBytes: 8 * UInt64(1 << 30))
+        let cases: [(MemoryProbe.Pressure, String, String)] = [
+            (.normal, "normal", "Memory: comfortable"),
+            (.warning, "tight", "Memory: tight"),
+            (.critical, "critical", "Memory: critical — model loads may fail or trigger swap")
+        ]
+        for (pressure, state, header) in cases {
+            #expect(MemoryPill.accessibilityLabel(snap: snap, pressure: pressure) == "Memory \(state): 8 GB used out of 16 GB")
+            #expect(MemoryPill.tooltip(snap: snap, pressure: pressure) == "\(header)\n8 GB in use (50%), 8 GB free.")
+        }
+    }
+
     @Test("Share Compute checklist and session labels resolve before String view helpers")
     func compiledShareComputeLabels() async throws {
         let output = FileManager.default.temporaryDirectory.appendingPathComponent("rapid-localization-\(UUID().uuidString)", isDirectory: true)
