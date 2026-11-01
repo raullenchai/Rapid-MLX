@@ -745,15 +745,15 @@ def test_cached_view_renders_complete_mflux_alias(monkeypatch, capsys):
 def test_format_bytes_unit_selection():
     """``_format_bytes`` picks the largest unit where value >= 1.
 
-    Suffixes are IEC base-1024 (KiB/MiB/GiB) — aligned with
+    Suffixes are decimal (KB/MB/GB) — aligned with
     ``_format_size`` in ``rapid_mlx._download_gate`` so the same byte
     count is rendered identically by ``ls --cached`` and the B2 prompt
     (DeepSeek round-3 NIT #4)."""
     assert cli._format_bytes(0) == "0 B"
     assert cli._format_bytes(512) == "512 B"
-    assert cli._format_bytes(2048) == "2.0 KiB"
-    assert cli._format_bytes(5 * 1024 * 1024) == "5.0 MiB"
-    assert cli._format_bytes(int(2.5 * 1024**3)) == "2.5 GiB"
+    assert cli._format_bytes(2048) == "2.0 KB"
+    assert cli._format_bytes(5 * 1024 * 1024) == "5.2 MB"
+    assert cli._format_bytes(int(2.5 * 1024**3)) == "2.7 GB"
 
 
 def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):
@@ -1533,7 +1533,7 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
         size=1,
     )
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
-    # Exactly 10 characters: the old padding-dependent separator collapsed.
+    # A gigabyte-sized value must retain a separate modified-time column.
     monkeypatch.setattr(cli, "_external_tree_size_bytes", lambda _path: 1_073_636_966)
 
     cli._print_cached_models()
@@ -1547,8 +1547,8 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
     assert len(columns) == 4, f"columns merged: {columns}"
     # The size column must be parseable on its own, not fused with the
     # modified time.
-    assert re.fullmatch(r"[\d.]+ [KMGT]iB", columns[2]), columns[2]
-    assert columns[2] == "1023.9 MiB"
+    assert re.fullmatch(r"[\d.]+ [KMGT]B", columns[2]), columns[2]
+    assert columns[2] == "1.1 GB"
 
 
 def test_external_repo_identifier_is_never_truncated(tmp_path, monkeypatch, capsys):

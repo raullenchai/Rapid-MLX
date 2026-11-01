@@ -89,7 +89,7 @@ def test_best_pick_is_the_smart_pick():
 def test_quick_start_size_label(monkeypatch):
     assert fd.quick_start_size_label() == "~3 GB"
     monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _p: 9 * (1 << 30))
-    assert fd.quick_start_size_label() == "~9 GB"
+    assert fd.quick_start_size_label() == "~10 GB"
     monkeypatch.setattr("rapid_mlx.model_sizes.size_bytes", lambda _p: None)
     assert fd.quick_start_size_label() == "~3 GB"
     monkeypatch.setattr(
@@ -105,7 +105,7 @@ def test_18gb_screen_labels_quick_start_and_best(monkeypatch):
     assert state.selected == "qwen3.5-4b-4bit"
     text = fd.render_screen(state)
     assert "Ready to chat: qwen3.5-4b-4bit (quick start · ~3 GB download)" in text
-    assert "Best for this Mac: qwen3.5-9b-4bit (Smart, 5.6 GB) — press b" in text
+    assert "Best for this Mac: qwen3.5-9b-4bit (Smart, 6.0 GB) — press b" in text
 
 
 def test_default_priority_server_then_last_used_then_cached_recipe_then_quick():
