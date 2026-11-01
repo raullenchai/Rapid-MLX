@@ -6393,7 +6393,12 @@ def resolve_serve_pflash_config(args, *, resolve_auto_config):
 
 
 def resolve_serve_kv_cache(
-    args, *, auto_config, auto_config_resolved, resolve_auto_config
+    args,
+    *,
+    auto_config,
+    auto_config_resolved,
+    resolve_auto_config,
+    generative_media_lane=False,
 ):
     turboquant_detection = {}
     if auto_config_resolved:
@@ -6474,7 +6479,8 @@ def resolve_serve_kv_cache(
                 "profile's int8 memory optimization is not applied to the "
                 "artifact's qualified MTP cache contract."
             )
-        log_kv_cache_decision(kv_cache_decision, model_name=args.model)
+        if not generative_media_lane:
+            log_kv_cache_decision(kv_cache_decision, model_name=args.model)
         quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
         # Mutate args so the existing SchedulerConfig wiring picks up
         # the resolved values without a second code path.
@@ -6743,6 +6749,52 @@ def resolve_serve_acceleration(args) -> ServeAccelerationPlan:
     return ServeAccelerationPlan(lane, kwargs, is_mllm, prefill, decision)
 
 
+def _print_text_lane_runtime_summary(args, enable_prefix_cache, generative_media_lane):
+    if generative_media_lane:
+        return
+    print(f"Stream interval: {args.stream_interval} tokens")
+    if args.use_paged_cache:
+        # Echo the REQUEST, not an active cache: lane and layout capability
+        # are validated at engine startup and fail closed (#2955), so this
+        # line must not read as a running paged cache.
+        print(
+            f"Paged cache requested: block_size={args.paged_cache_block_size}, "
+            f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
+        )
+    elif enable_prefix_cache and not args.no_memory_aware_cache:
+        cache_info = (
+            f"{args.cache_memory_mb}MB"
+            if args.cache_memory_mb
+            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
+        )
+        index_choice = getattr(args, "prefix_cache_index", "radix")
+        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
+        if args.kv_cache_turboquant:
+            mode = args.kv_cache_turboquant
+            if mode == "k8v4":
+                print(
+                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
+                    f"group_size={args.kv_cache_turboquant_group_size}"
+                )
+            else:
+                bits_str = (
+                    str(args.kv_cache_turboquant_bits)
+                    if args.kv_cache_turboquant_bits
+                    else "auto"
+                )
+                print(
+                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
+                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
+                )
+        elif args.kv_cache_quantization:
+            print(
+                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
+                f"group_size={args.kv_cache_quantization_group_size}"
+            )
+    elif enable_prefix_cache:
+        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -6896,6 +6948,10 @@ def serve_command(args):
 
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
+    )
+    _generative_media_lane = _serve_profile is not None and _serve_profile.modality in (
+        "image-gen",
+        "video-gen",
     )
     if _serve_profile is not None and (
         _serve_profile.modality == "image-gen"
@@ -8207,6 +8263,7 @@ def serve_command(args):
         auto_config=auto_config,
         auto_config_resolved=auto_config_resolved,
         resolve_auto_config=resolve_auto_config,
+        generative_media_lane=_generative_media_lane,
     )
 
     from .kv_cache_dtype import KVCacheQuantizationUnsupportedError
@@ -8363,7 +8420,8 @@ def serve_command(args):
         ),
     )
 
-    print("Mode: Continuous batching (for multiple concurrent users)")
+    if not _generative_media_lane:
+        print("Mode: Continuous batching (for multiple concurrent users)")
     if getattr(args, "spec_decode", "none") == "mtp":
         print(
             "MTP: enabled via --speculative-config, "
@@ -8481,47 +8539,7 @@ def serve_command(args):
             f"max_suffix={args.suffix_max_suffix_len}, "
             f"min_conf={args.suffix_min_confidence}"
         )
-    print(f"Stream interval: {args.stream_interval} tokens")
-    if args.use_paged_cache:
-        # Echo the REQUEST, not an active cache: lane and layout capability
-        # are validated at engine startup and fail closed (#2955), so this
-        # line must not read as a running paged cache.
-        print(
-            f"Paged cache requested: block_size={args.paged_cache_block_size}, "
-            f"max_blocks={args.max_cache_blocks} (validated at engine startup)"
-        )
-    elif enable_prefix_cache and not args.no_memory_aware_cache:
-        cache_info = (
-            f"{args.cache_memory_mb}MB"
-            if args.cache_memory_mb
-            else f"{_cache_memory_percent(args) * 100:.0f}% of RAM"
-        )
-        index_choice = getattr(args, "prefix_cache_index", "radix")
-        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
-        if args.kv_cache_turboquant:
-            mode = args.kv_cache_turboquant
-            if mode == "k8v4":
-                print(
-                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
-                    f"group_size={args.kv_cache_turboquant_group_size}"
-                )
-            else:
-                bits_str = (
-                    str(args.kv_cache_turboquant_bits)
-                    if args.kv_cache_turboquant_bits
-                    else "auto"
-                )
-                print(
-                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
-                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
-                )
-        elif args.kv_cache_quantization:
-            print(
-                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
-                f"group_size={args.kv_cache_quantization_group_size}"
-            )
-    elif enable_prefix_cache:
-        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
+    _print_text_lane_runtime_summary(args, enable_prefix_cache, _generative_media_lane)
 
     # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
     # Fires BEFORE _check_disk_space so the user sees the actionable

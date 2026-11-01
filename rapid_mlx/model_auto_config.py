@@ -1433,7 +1433,9 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     if profile is not None:
         _log_resolution_once(
             model_path,
-            f"Resolved alias profile for '{model_path}' → "
+            f"Resolved alias profile for '{model_path}' → modality={profile.modality}"
+            if profile.modality in ("image-gen", "video-gen")
+            else f"Resolved alias profile for '{model_path}' → "
             f"tool_call_parser={profile.tool_call_parser}, "
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
