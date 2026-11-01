@@ -21,7 +21,14 @@ def test_recorded_uv_extras(tmp_path, name):
         'extras = ["Audio_Feature", "audio.feature", "embeddings", '
         '"dev", "test", "all", "CI_GPU"], specifier = "==1.0.0"}]\n'
     )
-    assert recorded_tool_extras(tmp_path) == ["audio-feature", "embeddings"]
+    assert recorded_tool_extras(tmp_path) == [
+        "all",
+        "audio-feature",
+        "ci-gpu",
+        "dev",
+        "embeddings",
+        "test",
+    ]
 
 
 def test_recorded_uv_extras_ignores_other_packages(tmp_path):
@@ -42,7 +49,10 @@ def test_recorded_uv_extras_ignores_other_packages(tmp_path):
         ("git+https://example.invalid/r.git@abc", []),
         ("/tmp/rapid-mlx", []),
         ("other[audio]==1.0.0", []),
-        ("VLLM_MLX[Audio_Feature,dev,test,all,ci_GPU]==1.0.0", ["audio-feature"]),
+        (
+            "VLLM_MLX[Audio_Feature,all]==1.0.0",
+            ["all", "audio-feature"],
+        ),
         ("rapid-mlx[audio] @", ["audio"]),
     ],
 )

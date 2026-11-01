@@ -1011,8 +1011,12 @@ def test_extra_repair_preserves_installed_tool_extras(
         ("unknown", "sudo pipx install --global --force"),
     ],
 )
+@pytest.mark.parametrize(
+    ("recorded", "expected"),
+    [(["audio"], "audio,embeddings"), (["all"], "all,embeddings")],
+)
 def test_extra_repair_preserves_recorded_broken_tool_extras(
-    monkeypatch, method, prefix
+    monkeypatch, method, prefix, recorded, expected
 ):
     monkeypatch.setattr(
         "rapid_mlx._version_check.detect_install_method",
@@ -1021,8 +1025,8 @@ def test_extra_repair_preserves_recorded_broken_tool_extras(
         ),
     )
     monkeypatch.setattr(optional_runtime, "installed_extras", lambda: [])
-    monkeypatch.setattr(optional_runtime, "recorded_tool_extras", lambda: ["audio"])
+    monkeypatch.setattr(optional_runtime, "recorded_tool_extras", lambda: recorded)
     assert (
         optional_runtime.optional_extra_repair_command("embeddings", version="1.0.0")
-        == f"{prefix} 'rapid-mlx[audio,embeddings]==1.0.0'"
+        == f"{prefix} 'rapid-mlx[{expected}]==1.0.0'"
     )

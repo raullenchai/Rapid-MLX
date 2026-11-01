@@ -42,14 +42,10 @@ def recorded_tool_extras(prefix: str | os.PathLike | None = None) -> list[str]:
                 if normalize(requirement.name) in package_names:
                     extras.update(requirement.extras)
 
-        normalized = {normalize(extra) for extra in extras}
-        return sorted(
-            extra
-            for extra in normalized
-            if extra
-            and extra not in {"dev", "test", "all"}
-            and not extra.startswith("ci-")
-        )
+        # Keep every extra the user asked the tool manager for (including
+        # umbrella extras such as ``all``): a forced reinstall must not narrow
+        # the original selection.
+        return sorted({normalize(extra) for extra in extras if extra})
     except Exception:
         return []
 
