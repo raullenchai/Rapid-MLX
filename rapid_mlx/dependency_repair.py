@@ -11,7 +11,7 @@ import re
 import shlex
 import subprocess
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import url2pathname
 
 _RETRY = "RAPID_MLX_DEPENDENCY_REPAIR_RETRIED"
@@ -114,6 +114,12 @@ def _reinstall_spec() -> list[str]:
             return fallback
         if parsed.scheme in {"http", "https", "ssh", "git"} and not parsed.netloc:
             return fallback
+        subdirectory = direct.get("subdirectory", "")
+        if not isinstance(subdirectory, str):
+            return fallback
+        fragment = (
+            f"#subdirectory={quote(subdirectory, safe='/')}" if subdirectory else ""
+        )
         if "vcs_info" in direct:
             vcs_info = direct["vcs_info"]
             vcs = vcs_info["vcs"]
@@ -125,14 +131,7 @@ def _reinstall_spec() -> list[str]:
                 or not revision
             ):
                 return fallback
-            spec = f"rapid-mlx @ {vcs}+{url}@{revision}"
-            subdirectory = direct.get("subdirectory")
-            if subdirectory is not None:
-                if not isinstance(subdirectory, str):
-                    return fallback
-                if subdirectory:
-                    spec += f"#subdirectory={subdirectory}"
-            return [spec]
+            return [f"rapid-mlx @ {vcs}+{url}@{revision}{fragment}"]
         if "dir_info" in direct:
             directory = direct["dir_info"]
             if not isinstance(directory, dict):
@@ -142,8 +141,14 @@ def _reinstall_spec() -> list[str]:
                 return fallback
             if editable and parsed.scheme == "file":
                 path = parsed.path
-                return ["-e", url2pathname(path)] if path else fallback
-        return [f"rapid-mlx @ {url}"]
+                if not path:
+                    return fallback
+                path = url2pathname(path)
+                return [
+                    "-e",
+                    os.path.join(path, subdirectory) if subdirectory else path,
+                ]
+        return [f"rapid-mlx @ {url}{fragment}"]
     except Exception:
         return fallback
 

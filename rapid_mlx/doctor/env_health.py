@@ -2539,7 +2539,14 @@ def section_optional_packages() -> Section:
                 )
                 continue
             if dist == "mlx-audio":
-                distinct = _audio_extra_distinct_dists() if not bundled else None
+                same_interpreter = (
+                    Path(runtime).absolute() == Path(sys.executable).absolute()
+                )
+                distinct = (
+                    _audio_extra_distinct_dists()
+                    if not bundled and same_interpreter
+                    else None
+                )
                 if distinct and not any(
                     distribution in distinct
                     and _module_available(

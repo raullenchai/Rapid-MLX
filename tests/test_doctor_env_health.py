@@ -5948,11 +5948,21 @@ def test_missing_embeddings_hint_uses_install_manager(monkeypatch, method):
 
 
 @pytest.mark.parametrize("selected", [False, True])
-def test_audio_extra_selection_excludes_base_modules(monkeypatch, selected):
-    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+@pytest.mark.parametrize("captured_context", [False, True])
+def test_audio_extra_selection_excludes_base_modules(
+    monkeypatch, tmp_path, selected, captured_context
+):
+    runtime = Path(sys.executable).absolute()
+    monkeypatch.setattr(eh, "_selected_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(
+        eh, "_RUNTIME_CONTEXTS", {runtime: (tmp_path, {})} if captured_context else {}
+    )
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args, **kwargs: {"packages": {}})
     monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
     monkeypatch.setattr(
-        eh, "_safe_version", lambda dist: "0.5.9" if dist == "mlx-audio" else None
+        eh,
+        "_safe_version",
+        lambda dist, runtime=None: "0.5.9" if dist == "mlx-audio" else None,
     )
     distinct = frozenset({"f5-tts-mlx", "numba"})
     monkeypatch.setattr(eh, "_audio_extra_distinct_dists", lambda: distinct)
@@ -5975,6 +5985,56 @@ def test_audio_extra_selection_excludes_base_modules(monkeypatch, selected):
         assert row.label.startswith("audio extras not installed")
         assert "extra=audio selected=false hint=" in row.detail
         assert all("incomplete" not in c.label for c in section.checks)
+
+
+@pytest.mark.parametrize("case", ["other-path", "resolve-error", "shared-base"])
+def test_audio_extra_other_interpreter_preserves_grading(monkeypatch, tmp_path, case):
+    runtime = tmp_path / "other-runtime" / "bin" / "python"
+    if case == "shared-base":
+        base_python = tmp_path / "base-python"
+        base_python.touch()
+        doctor_python = tmp_path / "doctor-runtime" / "bin" / "python"
+        for python in (runtime, doctor_python):
+            python.parent.mkdir(parents=True)
+            python.symlink_to(base_python)
+        monkeypatch.setattr(sys, "executable", str(doctor_python))
+        assert runtime.resolve() == doctor_python.resolve()
+        assert runtime.absolute() != doctor_python.absolute()
+    monkeypatch.setattr(eh, "_selected_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args, **kwargs: {"packages": {}})
+    monkeypatch.setattr(
+        eh,
+        "_runtime_pip_command",
+        lambda *args, **kwargs: "pip install rapid-mlx[audio]",
+    )
+    monkeypatch.setattr(
+        eh,
+        "_safe_version",
+        lambda dist, runtime=None: "0.5.9" if dist == "mlx-audio" else None,
+    )
+    distinct = mock.Mock(return_value=frozenset({"f5-tts-mlx"}))
+    monkeypatch.setattr(eh, "_audio_extra_distinct_dists", distinct)
+    monkeypatch.setattr(
+        eh, "_module_available", lambda module, *args, **kwargs: module != "f5_tts_mlx"
+    )
+    monkeypatch.setattr(
+        eh,
+        "_import_probe_outcome",
+        lambda *args, **kwargs: eh._ImportProbeOutcome.BROKEN,
+    )
+    if case == "resolve-error":
+        monkeypatch.setattr(
+            Path, "resolve", mock.Mock(side_effect=OSError("unavailable"))
+        )
+
+    section = eh.section_optional_packages()
+    row = next(c for c in section.checks if "distribution=mlx-audio" in c.detail)
+
+    distinct.assert_not_called()
+    assert row.status is eh.CheckStatus.WARN
+    assert "incomplete — missing: f5-tts-mlx (`" in row.label
+    assert "audio extras not installed" not in row.label
 
 
 @pytest.mark.parametrize("distinct", [None, frozenset()])

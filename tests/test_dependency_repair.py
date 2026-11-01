@@ -2,6 +2,7 @@
 """No-model simulations of broken installs and the recovery consent boundary."""
 
 import io
+import json
 import subprocess
 import sys
 import types
@@ -774,6 +775,59 @@ def test_pip_repair_preserves_source(
             "--force-reinstall",
             *expected,
         ]
+
+
+@pytest.mark.parametrize(
+    "source,url,info,prefix",
+    [
+        (
+            "archive_info",
+            "https://example.org/x.zip",
+            {},
+            "rapid-mlx @ https://example.org/x.zip",
+        ),
+        (
+            "dir_info",
+            "file:///tmp/source%20tree",
+            {},
+            "rapid-mlx @ file:///tmp/source%20tree",
+        ),
+        ("dir_info", "file:///tmp/source%20tree", {"editable": True}, None),
+        (
+            "vcs_info",
+            "https://example.org/repo.git",
+            {"vcs": "git", "commit_id": "abc123"},
+            "rapid-mlx @ git+https://example.org/repo.git@abc123",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "subdirectory,encoded",
+    [
+        ("python", "python"),
+        ("python/pkg #&%", "python/pkg%20%23%26%25"),
+        (42, None),
+        (None, None),
+    ],
+)
+def test_reinstall_spec_preserves_subdirectory(
+    monkeypatch, source, url, info, prefix, subdirectory, encoded
+):
+    import rapid_mlx
+
+    distribution = Mock()
+    distribution.read_text.return_value = json.dumps(
+        {"url": url, source: info, "subdirectory": subdirectory}
+    )
+    monkeypatch.setattr(repair.metadata, "distribution", lambda _: distribution)
+
+    if encoded is None:
+        expected = [f"rapid-mlx=={rapid_mlx.__version__}"]
+    elif prefix is None:
+        expected = ["-e", f"/tmp/source tree/{subdirectory}"]
+    else:
+        expected = [f"{prefix}#subdirectory={encoded}"]
+    assert repair._reinstall_spec() == expected
 
 
 def test_pip_repair_unreadable_source_uses_running_version(environment, monkeypatch):
