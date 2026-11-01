@@ -2586,3 +2586,19 @@ def test_continue_rejects_invalid_legacy_model_list(fake_home):
     path.write_text('{"models": 1}')
     with pytest.raises(ValueError, match="models must contain a list"):
         continue_dev.saved_model()
+
+
+def test_server_wait_uses_elapsed_time_and_reports_progress(monkeypatch, capsys):
+    import time
+
+    from rapid_mlx.agents import isolated
+
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    monkeypatch.setattr(isolated, "connection_status", lambda *_: "stopped")
+    assert launch_cli._wait_for_server(1234, "key", "model") == "stopped"
+    assert clock[0] == 300
+    assert "Starting local server… loading model" in capsys.readouterr().out

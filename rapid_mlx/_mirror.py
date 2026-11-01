@@ -263,6 +263,9 @@ class _ProgressTracker:
         self._done = 0
         self._total = max(0, int(total))
         self._last_emit = 0.0
+        self._front_door_start = time.monotonic()
+        self._last_file_emit = 0.0
+        self._last_file_name: str | None = None
         # Capture the stream once so the isatty() decision and every write
         # target the same object even if sys.stdout is later swapped.
         self._out = sys.stdout
@@ -280,6 +283,34 @@ class _ProgressTracker:
         # Render state — guarded by ``_io_lock`` (never ``_lock``).
         self._bar_live = False  # a bar is currently drawn on the TTY row
         self._last_line_len = 0  # width of the current row (no-ANSI erase)
+
+    def file_progress(self, name: str, done: int, total: int, started: float) -> None:
+        if not (self._is_tty and os.environ.get("RAPID_MLX_FRONT_DOOR_PULL") and total):
+            return
+        from rapid_mlx.front_door_tui import progress
+
+        with self._io_lock:
+            now = time.monotonic()
+            if (
+                name == self._last_file_name
+                and done < total
+                and now - self._last_file_emit < _PROGRESS_HEARTBEAT_SECONDS
+            ):
+                return
+            self._last_file_emit = now
+            self._last_file_name = name
+            elapsed = max(now - started, 0.001)
+            self._inplace(
+                progress(
+                    _safe_display_name(name),
+                    done,
+                    total,
+                    done / elapsed,
+                    self._terminal_width(),
+                ),
+                False,
+            )
+            self._bar_live = True
 
     def add(self, delta: int) -> None:
         if delta <= 0:
@@ -402,6 +433,15 @@ class _ProgressTracker:
         minimum it's dropped for a compact percentage + bytes readout; and the
         line is hard-capped at the column count as a final backstop.
         """
+        if os.environ.get("RAPID_MLX_FRONT_DOOR_PULL"):
+            from rapid_mlx.front_door_tui import progress
+
+            elapsed = max(time.monotonic() - self._front_door_start, 0.001)
+            self._inplace(
+                progress("model", done, total, done / elapsed, self._terminal_width()),
+                newline,
+            )
+            return
         pct = int(done * 100 / total) if total else 0
         head = f"  ↓ {pct:3d}%  "
         tail = f"  {done / 1e6:.0f}/{total / 1e6:.0f} MB"
@@ -1062,6 +1102,7 @@ def _do_r2_download(
             # ``existing`` is the post-200/206 reconciled count: the 200
             # branch above already zeroed it when the proxy ignored
             # ``Range``.
+            file_started = time.monotonic()
             if existing > 0 and progress_tracker is not None:
                 progress_tracker.add(existing)
                 chunks_credited += existing
@@ -1099,6 +1140,9 @@ def _do_r2_download(
                     # v0.7.10 "stuck at 83%" UX bug).
                     if progress_tracker is not None:
                         progress_tracker.add(len(chunk))
+                        progress_tracker.file_progress(
+                            target.name, existing + read, final_size, file_started
+                        )
                         chunks_credited += len(chunk)
                     # Bail to HF when the mirror throttles this shard below the
                     # floor (issue #2010): a slow trickle never trips the socket
@@ -1564,7 +1608,9 @@ def _silent_hf_tqdm_class():
     return _SilentTqdm
 
 
-def _tracking_hf_tqdm_class(*, suppress_progress: bool):
+def _tracking_hf_tqdm_class(
+    *, suppress_progress: bool, filename: str = "model", tracker=None
+):
     """Return a per-call tqdm class that records whether a transfer began.
 
     Hugging Face constructs the class only after it has decided the cache
@@ -1582,9 +1628,26 @@ def _tracking_hf_tqdm_class(*, suppress_progress: bool):
         def __init__(self, *args, **kwargs):
             with self._started_lock:
                 type(self).started = True
-            if suppress_progress:
+            self._front_is_bytes = kwargs.get("unit") == "B"
+            self._front_started = time.monotonic()
+            self._front_done = kwargs.get("initial", 0) or 0
+            self._front_total = kwargs.get("total", 0) or 0
+            if suppress_progress or (
+                tracker and os.environ.get("RAPID_MLX_FRONT_DOOR_PULL")
+            ):
                 kwargs["disable"] = True
             super().__init__(*args, **kwargs)
+
+        def update(self, n=1):
+            self._front_done += n
+            if tracker and self._front_is_bytes:
+                tracker.file_progress(
+                    filename,
+                    self._front_done,
+                    self.total or self._front_total,
+                    self._front_started,
+                )
+            return super().update(n)
 
     return _TrackingTqdm
 
@@ -1614,6 +1677,7 @@ def _hf_fallback_one(
     cache_dir: Path | None = None,
     suppress_progress: bool = False,
     out: dict[str, object] | None = None,
+    progress_tracker=None,
 ) -> tuple[bool, str | None]:
     """Download a single file from HuggingFace into the standard cache.
 
@@ -1656,7 +1720,11 @@ def _hf_fallback_one(
     }
     tracking_tqdm = None
     if _hf_supports_tqdm_class():
-        tracking_tqdm = _tracking_hf_tqdm_class(suppress_progress=suppress_progress)
+        tracking_tqdm = _tracking_hf_tqdm_class(
+            suppress_progress=suppress_progress,
+            filename=filename,
+            tracker=progress_tracker,
+        )
         kwargs["tqdm_class"] = tracking_tqdm
 
     try:
@@ -2467,6 +2535,7 @@ def download_with_mirror_fallback(
             cache_dir=cache_root,
             suppress_progress=_should_suppress_hf_bar(fname, expected_size),
             out=hf_transfer,
+            progress_tracker=progress_tracker,
         )
         if ok:
             if mirror_only and not (

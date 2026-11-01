@@ -268,3 +268,29 @@ def chat_agent_tip_text() -> str:
     return (
         "Tip: start a stable server with rapid-mlx serve <model>; then rapid-mlx agents"
     )
+
+
+def front_door_preferences() -> dict:
+    """Read optional launcher preferences without affecting other first-run state."""
+    import json
+
+    try:
+        data = json.loads(
+            (_state_dir() / "front_door.json").read_text(encoding="utf-8")
+        )
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_front_door_preferences(data: dict) -> None:
+    import json
+
+    try:
+        target = _state_dir() / "front_door.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError:
+        pass

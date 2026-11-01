@@ -12310,6 +12310,12 @@ def _pull_repository(
         )
         if _allow:
             download_kwargs["allow_patterns"] = _allow
+        if os.environ.get("RAPID_MLX_FRONT_DOOR_PULL"):
+            from rapid_mlx._mirror import _ProgressTracker, _tracking_hf_tqdm_class
+
+            download_kwargs["tqdm_class"] = _tracking_hf_tqdm_class(
+                suppress_progress=True, tracker=_ProgressTracker()
+            )
         path = _retry_hub_download(
             lambda: snapshot_download(repo_id, **download_kwargs), repo_id
         )

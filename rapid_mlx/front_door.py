@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -42,7 +43,35 @@ PRODUCT_LINE = "Local OpenAI- and Anthropic-compatible LLM server for Apple Sili
 DOCS_URL = "https://rapidmlx.com/docs/"
 DEFAULT_PORT = 8000
 _PORT_SEARCH_SPAN = 100
-_PICKER_LIMIT = 7
+_PICKER_LIMIT = 5
+# Keep in sync with landing/scripts/build_zh_memory_table.py on the site.
+# Values are (chat, coding), indexed by minimum RAM in GB.
+_MEMORY_LADDER = {
+    8: ("qwen3-8b-4bit", "qwen3-8b-4bit"),
+    16: ("qwen3.5-9b-4bit", "deepseek-coder-v2-lite-16b-4bit"),
+    24: ("qwen3.5-27b-4bit", "qwen3-coder-30b-4bit"),
+    32: ("qwen3.8-27b-4bit", "qwen3-coder-30b-4bit"),
+    48: ("qwen3.6-35b-4bit", "qwen3-coder-30b-4bit"),
+    64: ("qwen3.6-35b-optiq-4bit", "qwen3-coder-30b-4bit"),
+    96: ("gpt-oss-120b", "qwen3-coder-next-80b-4bit"),
+    128: ("qwen3.5-122b-mxfp4", "qwen3-coder-next-80b-4bit"),
+    192: ("minimax-m2.7-mxfp4", "qwen3-coder-next-80b-8bit"),
+}
+# Measured decode speeds: docs/benchmarks/model-recommendation-measurements.json.
+# Newer families precede older ones; quick start is reserved as a fallback.
+_MEASURED_PICKER_MODELS = (
+    "qwen3.8-27b-4bit",
+    "qwen3.6-35b-4bit",
+    "qwen3.6-27b-4bit",
+    "qwen3.5-35b-4bit",
+    "qwen3.5-9b-4bit",
+    "gemma-4-26b-4bit",
+    "gemma-4-12b-4bit",
+    "lfm2.5-8b-a1b-4bit",
+    "lfm2.5-2.6b-4bit",
+    "lfm2.5-1b-4bit",
+    QUICK_START_MODEL,
+)
 _ROLE_LABELS = {"smart": "Smart", "fast": "Fast"}
 _AGENT_LABELS = {
     "claude-code": "Claude Code",
@@ -384,50 +413,101 @@ def render_screen(state: FrontDoorState) -> str:
     return "\n".join(lines)
 
 
-def picker_entries(state: FrontDoorState) -> list[tuple[str, str]]:
-    """``[(alias, facts), ...]``: the policy picks, then downloaded models."""
-    from rapid_mlx.run.cli import _fits_host
+def picker_entries(
+    state: FrontDoorState, *, coding: bool = False
+) -> list[tuple[str, str]]:
+    """Recommend catalog chat models whose weights leave 35% memory headroom."""
+    from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
+    from rapid_mlx.model_sizes import size_bytes
 
-    def fit_mark(alias: str) -> str:
-        if state.ram_gb <= 0:
-            return ""
-        try:
-            fits = _fits_host(alias, state.ram_gb)
-        except Exception:
-            return ""
-        if fits is None:
-            return ""
-        return "fits this Mac" if fits else "too big for this Mac"
-
-    entries: list[tuple[str, str]] = []
-    for pick in state.picks:
-        facts = [_pick_facts(pick)]
-        mark = fit_mark(pick["alias"])
-        if mark:
-            facts.append(mark)
-        entries.append((pick["alias"], " · ".join(facts)))
-    seen = {alias for alias, _ in entries}
-    if QUICK_START_MODEL not in seen:
-        seen.add(QUICK_START_MODEL)
-        facts = [_quick_start_facts(state)]
-        mark = fit_mark(QUICK_START_MODEL)
-        if mark:
-            facts.append(mark)
-        entries.append((QUICK_START_MODEL, " · ".join(facts)))
-    for alias in state.cached:
-        if alias in seen or len(entries) >= _PICKER_LIMIT:
+    candidates = {}
+    tool_capable = set()
+    for alias, profile in list_profiles().items():
+        name = alias.lower()
+        if (
+            profile.modality != "text"
+            or profile.experimental
+            or draft_only_conflict(alias)
+            or re.search(
+                r"(?:^|[-_.])(mtp|draft|assistant|safeguard|embed(?:ding)?|rerank|image|audio|speech|tts|asr)(?:[-_.]|$)",
+                name,
+            )
+        ):
             continue
-        seen.add(alias)
-        facts = ["downloaded"]
-        mark = fit_mark(alias)
-        if mark:
-            facts.append(mark)
-        entries.append((alias, " · ".join(facts)))
+        size = size_bytes(profile.hf_path)
+        if not size or state.ram_gb <= 0 or size > state.ram_gb * 0.65 * (1 << 30):
+            continue
+        if profile.tool_call_parser and profile.agentic_coverage:
+            tool_capable.add(alias)
+        elif coding:
+            continue
+        candidates[alias] = size
+
+    def low_quality(alias):
+        return bool(
+            re.search(
+                r"(?:^|[-_.])(?:[123]bit|ternary|[12](?:\.\d+)?bpw|3(?:\.0+)?bpw)(?:[-_.]|$)",
+                alias,
+            )
+        )
+
+    good = {alias: size for alias, size in candidates.items() if not low_quality(alias)}
+    candidates = good or candidates
+    tier = max((tier for tier in _MEMORY_LADDER if tier <= state.ram_gb), default=None)
+    ladder = _MEMORY_LADDER[tier] if tier is not None else ()
+    preferred = list(reversed(ladder)) if coding else list(ladder)
+    ranked: list[str] = []
+    cached = set(state.cached)
+    cached.update(p["alias"] for p in state.picks if p.get("cached"))
+
+    def add(alias):
+        if alias in candidates and alias not in ranked and len(ranked) < _PICKER_LIMIT:
+            ranked.append(alias)
+
+    if state.last_used in cached:
+        add(state.last_used)
+    for i, alias in enumerate(preferred):
+        if i == 0 or alias in tool_capable:
+            add(alias)
+    fallback = (
+        QUICK_START_MODEL
+        if QUICK_START_MODEL in candidates and QUICK_START_MODEL in tool_capable
+        else None
+    )
+    for alias in _MEASURED_PICKER_MODELS:
+        if (
+            alias in tool_capable
+            and alias != fallback
+            and len(ranked) < _PICKER_LIMIT - bool(fallback and fallback not in ranked)
+        ):
+            add(alias)
+    if fallback and fallback in tool_capable:
+        add(fallback)
+    if not good and not ranked:
+        for alias in sorted(candidates):
+            add(alias)
+    entries = []
+    for i, alias in enumerate(ranked):
+        if alias == state.last_used and alias in cached:
+            label = "Last used"
+        elif i == 0:
+            label = "Best for coding on this Mac" if coding else "Best for this Mac"
+        elif alias == fallback:
+            label = "Fast, lighter"
+        else:
+            label = (
+                "Coding model"
+                if re.search(r"coder|coding|code", alias)
+                else "General model"
+            )
+        facts = f"{label} · {candidates[alias] / (1 << 30):.1f} GB"
+        facts += " · downloaded" if alias in cached else " · (not downloaded)"
+        entries.append((alias, facts))
     return entries
 
 
 def render_picker(entries: Sequence[tuple[str, str]]) -> str:
-    width = max(len(alias) for alias, _ in entries) + 3
+    width = max((len(alias) for alias, _ in entries), default=0) + 3
     lines = ["Choose a model (press its number · Esc to go back)"]
     for index, (alias, facts) in enumerate(entries, start=1):
         lines.append(f"  {index}  {alias:<{width}}{facts}")
@@ -440,7 +520,7 @@ def render_non_tty(
 ) -> str:
     """Deterministic text for a bare invocation without a terminal."""
     quick = QUICK_START_MODEL
-    best = best_pick(picks)
+    best = best_pick(picks) if picks else {"alias": quick}
     ram = f" ({_gb(round(ram_gb, 1))} GB)" if ram_gb > 0 else ""
     recipe = " · ".join(f"{p['alias']} ({p.get('role', '')})" for p in picks)
     return "\n".join(
@@ -613,43 +693,213 @@ def choose_model(
 def run_interactive(
     state: FrontDoorState,
     *,
-    key_reader: Callable[[], str] = read_key,
+    key_reader: Callable[[], str] | None = None,
     out: Callable[[str], None] = print,
     free_port: Callable[[], int | None] = first_free_port,
 ) -> Plan | None:
-    """Show the screen and wait for an action key. ``None`` means quit."""
-    out(_styled_screen(render_screen(state)))
-    while True:
-        try:
-            key = key_reader()
-        except KeyboardInterrupt:
-            return None
-        if key in (KEY_QUIT, "q"):
-            return None
-        if key == KEY_ENTER:
-            return plan_chat(state)
-        if key == "b":
-            return plan_chat(state, best_pick(state.picks)["alias"])
-        if key == "s" or (key == "c" and state.agent is not None):
-            port = state.attach_port if key == "c" else None
-            if port is None:
-                port = free_port()
-            if port is None:
-                out(
-                    f"No free port in {DEFAULT_PORT}-"
-                    f"{DEFAULT_PORT + _PORT_SEARCH_SPAN - 1}; stop a server "
-                    "(rapid-mlx ps) and try again."
+    """Run the launcher; actions delegate to the existing CLI paths."""
+    import shutil
+
+    from rapid_mlx import first_run
+    from rapid_mlx import front_door_tui as tui
+
+    read = key_reader or tui.read_key
+    width, height = shutil.get_terminal_size((80, 24))
+    saved = first_run.front_door_preferences()
+    tools = [
+        ("claude-code", "Launch Claude Code", "Anthropic's coding tool"),
+        ("opencode", "Launch OpenCode", "An open source coding agent"),
+        ("codex", "Launch Codex", "OpenAI's coding agent"),
+        ("hermes", "Launch Hermes Agent", "A local AI assistant"),
+    ]
+    tools.sort(
+        key=lambda item: (
+            not bool(shutil.which(item[0] if item[0] != "claude-code" else "claude"))
+        )
+    )
+    items = tools + [
+        ("chat", "Chat in this terminal", "Talk to a local model right here"),
+        ("more", "More...", "Start an API server, other tools, all commands"),
+    ]
+    more_items = [
+        ("serve", "Start an API server", "Serve a model for your own tools"),
+        ("other", "Other coding tools", "Goose, aider, pi, qwen-code, crush"),
+        ("chat", "Choose a different model to chat", "Talk to a local model"),
+        ("help", "All commands", "Show command help"),
+        ("back", "Back", "Return to the launcher"),
+    ]
+    other_items = [
+        (n, f"Launch {label}", "Connect a coding tool")
+        for n, label in [
+            ("goose", "Goose"),
+            ("aider", "aider"),
+            ("pi", "pi"),
+            ("qwen-code", "qwen-code"),
+            ("crush", "crush"),
+        ]
+    ] + [("back", "Back", "Return to More...")]
+    main_items = items
+    menu = "main"
+    cursor = next(
+        (i for i, item in enumerate(items) if item[0] == saved.get("selection")), 0
+    )
+    models = saved.get("models", {})
+    if not isinstance(models, dict):
+        models = {}
+
+    def draw(text: str) -> None:
+        out(_CLEAR_SCREEN + text)
+
+    try:
+        if not saved.get("welcome"):
+            draw(_styled_screen(tui.welcome(width), width))
+            while True:
+                key = read()
+                if key == KEY_QUIT:
+                    return None
+                if key == KEY_ENTER:
+                    saved["welcome"] = True
+                    first_run.save_front_door_preferences(saved)
+                    break
+        while True:
+            hardware = " · ".join(
+                x
+                for x in [
+                    state.chip or "Apple Silicon",
+                    f"{_gb(state.ram_gb)} GB" if state.ram_gb else "",
+                ]
+                if x
+            )
+            server = (
+                f"Server running on :{state.server.port} with {state.server.model}"
+                if state.server
+                else ""
+            )
+            draw(
+                tui.launcher(
+                    f"Rapid-MLX {state.version}",
+                    hardware,
+                    items,
+                    cursor,
+                    server,
+                    width,
+                    height,
+                    True,
+                )
+            )
+            key = read()
+            if key in (KEY_QUIT, "left"):
+                if menu == "main":
+                    return None
+                menu, items, cursor = (
+                    ("more", more_items, 0)
+                    if menu == "other"
+                    else ("main", main_items, 0)
                 )
                 continue
-            if key == "s":
-                return plan_serve(state, port=port)
-            return plan_connect(state, port=port)
-        if key == "m":
-            try:
-                choose_model(state, key_reader=key_reader, out=out)
-            except KeyboardInterrupt:
-                return None
-            out(_CLEAR_SCREEN + _styled_screen(render_screen(state)))
+            if key in ("up", "down"):
+                cursor = (cursor + (-1 if key == "up" else 1)) % len(items)
+                continue
+            if key not in (KEY_ENTER, "right"):
+                continue
+            name, label, _ = items[cursor]
+            if name in ("more", "other", "back"):
+                if name == "more":
+                    menu, items = "more", more_items
+                elif name == "other":
+                    menu, items = "other", other_items
+                else:
+                    menu, items = (
+                        ("more", more_items)
+                        if menu == "other"
+                        else ("main", main_items)
+                    )
+                cursor = 0
+                continue
+            if name == "help":
+                return Plan([["--help"]])
+            entries = picker_entries(state, coding=name not in ("chat", "serve"))
+            query = ""
+            selected = models.get(name) or state.last_used or state.selected
+            index = next(
+                (i for i, entry in enumerate(entries) if entry[0] == selected), 0
+            )
+            while True:
+                filtered = [
+                    entry
+                    for entry in entries
+                    if query.lower() in (entry[0] + " " + entry[1]).lower()
+                ]
+                filtered = filtered[:_PICKER_LIMIT]
+                index = min(index, max(0, len(filtered) - 1))
+                draw(
+                    tui.picker(
+                        label.removeprefix("Launch "),
+                        filtered,
+                        index,
+                        query,
+                        width,
+                        height,
+                        True,
+                    )
+                )
+                k = read()
+                if k in ("left", KEY_QUIT):
+                    break
+                if k in ("up", "down") and filtered:
+                    index = (index + (-1 if k == "up" else 1)) % len(filtered)
+                elif k == "backspace":
+                    query = query[:-1]
+                    index = 0
+                elif k == KEY_ENTER and filtered:
+                    model = filtered[index][0]
+                    models[name] = model
+                    saved.update(selection=name, models=models)
+                    first_run.save_front_door_preferences(saved)
+                    if key == "right":
+                        break
+                    if (
+                        model != state.local_default
+                        and model not in state.cached
+                        and not any(
+                            p.get("alias") == model and p.get("cached")
+                            for p in state.picks
+                        )
+                    ):
+                        yes = True
+                        while True:
+                            draw(_styled_screen(tui.confirm(model, yes, width), width))
+                            choice = read()
+                            if choice in ("left", "right"):
+                                yes = not yes
+                            elif choice == KEY_QUIT:
+                                yes = False
+                                break
+                            elif choice == KEY_ENTER:
+                                break
+                        if not yes:
+                            break
+                        steps = [["pull", model]]
+                    else:
+                        steps = []
+                    if name == "chat":
+                        steps.extend(plan_chat(state, model).steps)
+                    elif name == "serve":
+                        port = free_port()
+                        if port is None:
+                            out("No free port available")
+                            break
+                        state.selected = model
+                        plan = plan_serve(state, port=port)
+                        return Plan(steps + plan.steps, note=plan.note)
+                    else:
+                        steps.append(["launch", name, "--model", model])
+                    return Plan(steps)
+                elif len(k) == 1 and k.isprintable():
+                    query += k
+                    index = 0
+    except KeyboardInterrupt:
+        return None
 
 
 def _cli_command() -> list[str]:
@@ -756,6 +1006,15 @@ def run_bare(
     plan = run_interactive(state)
     if plan is None:
         return 0
+    if plan.steps and plan.steps[0][0] == "pull" and plan.steps[-1][0] == "launch":
+        from rapid_mlx.agents import get_profile
+        from rapid_mlx.agents.cli_preflight import missing_agent_cli
+
+        profile = get_profile(plan.steps[-1][1])
+        message = missing_agent_cli(profile) if profile else None
+        if message:
+            print(message, file=sys.stderr)
+            return 1
     for index, argv in enumerate(plan.steps):
         print(echo_command(argv))
         if plan.note and index == len(plan.steps) - 1:
@@ -772,7 +1031,18 @@ def run_bare(
                     _run_after_ready, plan.after_ready, follow, dispatch
                 ),
             )
-        dispatch(full)
+        if argv[0] == "pull":
+            previous = os.environ.get("RAPID_MLX_FRONT_DOOR_PULL")
+            os.environ["RAPID_MLX_FRONT_DOOR_PULL"] = "1"
+            try:
+                dispatch(full)
+            finally:
+                if previous is None:
+                    os.environ.pop("RAPID_MLX_FRONT_DOOR_PULL", None)
+                else:
+                    os.environ["RAPID_MLX_FRONT_DOOR_PULL"] = previous
+        else:
+            dispatch(full)
     return 0
 
 

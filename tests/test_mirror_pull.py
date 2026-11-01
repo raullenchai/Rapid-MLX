@@ -4515,8 +4515,9 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
         cache_dir=None,
         suppress_progress=False,
         out=None,
+        progress_tracker=None,
     ):
-        del out
+        del out, progress_tracker
         suppress_seen[filename] = suppress_progress
         snap = (
             Path(cache_dir)

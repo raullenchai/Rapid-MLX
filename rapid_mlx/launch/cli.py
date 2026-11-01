@@ -133,6 +133,26 @@ def _start_server_background(model: str, port: int, api_key: str | None = None) 
     return proc.pid
 
 
+def _wait_for_server(port: int, key: str, model: str) -> str:
+    """Poll readiness against a wall-clock deadline, showing ongoing progress."""
+    import time
+
+    from rapid_mlx.agents.isolated import connection_status
+
+    deadline = time.monotonic() + 300
+    next_update = time.monotonic() + 10
+    status = "stopped"
+    while time.monotonic() < deadline:
+        status = connection_status(port, key, model)
+        if status not in {"stopped", "server-error"}:
+            return status
+        if time.monotonic() >= next_update:
+            print("  Starting local server… loading model…", flush=True)
+            next_update = time.monotonic() + 10
+        time.sleep(1)
+    return status
+
+
 def _stop_failed_start(pid: int | None) -> None:
     """Stop a detached model load when launch is cancelled or fails."""
     if not isinstance(pid, int):
@@ -506,21 +526,14 @@ def launch_command(args: argparse.Namespace) -> None:
                 from rapid_mlx.model_aliases import resolve_model
 
                 _ensure_model_downloaded(resolve_model(model))
-                print(f"  Loading {model}; waiting for readiness…", flush=True)
+                print(f"  Starting local server… loading model {model}…", flush=True)
                 server_pid = _start_server_background(model, port, api_key=key)
-                import time
 
                 try:
-                    for second in range(600):
-                        status = connection_status(port, key, model)
-                        if status not in {"stopped", "server-error"}:
-                            break
-                        if second and second % 10 == 0:
-                            print(f"  Preparing local model… {second}s", flush=True)
-                        time.sleep(1)
+                    status = _wait_for_server(port, key, model)
                     if status in {"stopped", "server-error"}:
                         print(
-                            f"  Local server did not become ready. Retry: {start_hint}"
+                            f"  Local server did not become ready within 5 minutes. Retry: {start_hint}"
                         )
                         raise SystemExit(1)
                     if status != "ready":
