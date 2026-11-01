@@ -675,12 +675,27 @@ def _detect_hybrid_for_warmup(engine) -> bool:
     return False
 
 
+def _is_generative_media_engine(engine: BaseEngine) -> bool:
+    import sys
+
+    for module_name, class_name in (
+        ("rapid_mlx.runtime.image_lane", "ImageEngine"),
+        ("rapid_mlx.runtime.video_lane", "VideoEngine"),
+    ):
+        module = sys.modules.get(module_name)
+        engine_type = getattr(module, class_name, None)
+        if engine_type is not None and isinstance(engine, engine_type):
+            return True
+    return False
+
+
 async def _warmup_primary_engine(engine: BaseEngine) -> None:
     """Compile the configured engine on its model-owning worker."""
 
     import time as _time
 
-    logger.info("Warming up (compiling Metal shaders)...")
+    if not _is_generative_media_engine(engine):
+        logger.info("Warming up (compiling Metal shaders)...")
     warmup_start = _time.monotonic()
     try:
         is_hybrid = _detect_hybrid_for_warmup(engine)
@@ -706,7 +721,8 @@ async def _warmup_primary_engine(engine: BaseEngine) -> None:
                 logger.debug("Hybrid warmup error (non-fatal): %s", exc)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Warmup failed (non-fatal): %s", exc)
-    logger.info("Warmup complete (%.1fs)", _time.monotonic() - warmup_start)
+    if not _is_generative_media_engine(engine):
+        logger.info("Warmup complete (%.1fs)", _time.monotonic() - warmup_start)
 
 
 async def _finish_primary_demand_load() -> None:
@@ -1201,6 +1217,12 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         if _served_model_name_set
         else (_cfg.model_alias or _cfg.model_name)
     )
+    if _cfg.retrieval_only and not _banner_model:
+        _banner_model = ", ".join(
+            model
+            for model in (_cfg.embedding_model_locked, _cfg.rerank_model_locked)
+            if model
+        )
     _ep = endpoints_from_bind(
         _cfg.bind_host,
         _cfg.bind_port,
@@ -1257,6 +1279,21 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         maybe_print_newsletter_hint(update_notice_shown=update_notice_shown)
 
 
+def _ready_audio_is_aligner(entry):
+    return entry.family == "qwen3_aligner" or any(
+        "aligner" in name.lower() for name in (entry.alias, entry.hf_id)
+    )
+
+
+def _ready_audio_needs_reference_text(entry):
+    import re
+
+    tokens = set(re.split(r"[-_]", entry.hf_id.rsplit("/", 1)[-1].lower()))
+    return (
+        entry.family == "qwen3_tts" and "base" in tokens and "customvoice" not in tokens
+    )
+
+
 def _ready_lane_rows(cfg, ep, audio_entry):
     """Build copyable examples for servers without a chat lane."""
     import json
@@ -1271,27 +1308,65 @@ def _ready_lane_rows(cfg, ep, audio_entry):
     def url(path):
         return shlex.quote(ep.openai_url + path)
 
-    def json_command(path, body):
+    def json_command(path, body, *, fail=False):
         payload = shlex.quote(
             json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         )
         return (
-            f"curl {url(path)}{auth} -H 'Content-Type: application/json' -d {payload}"
+            f"curl{' --fail' if fail else ''} {url(path)}{auth} "
+            f"-H 'Content-Type: application/json' -d {payload}"
         )
 
     model = ep.model or ""
+    if audio_entry and audio_entry.notes != "local folder":
+        model = audio_entry.hf_id
     if audio_entry and audio_entry.type == "stt":
+        if _ready_audio_is_aligner(audio_entry):
+            return [
+                (
+                    "Align",
+                    f"curl {url('/audio/transcriptions')}{auth} "
+                    f"-F {shlex.quote('model=' + model)} -F file=@audio.wav "
+                    f"-F {shlex.quote('text=Exact transcript of audio.wav')}",
+                )
+            ]
         return [
             (
                 "Transcribe",
-                f"curl {url('/audio/transcriptions')}{auth} -F {shlex.quote('model=' + model)} -F file=@audio.wav",
+                f"curl {url('/audio/transcriptions')}{auth} "
+                f"-F {shlex.quote('model=' + model)} -F file=@audio.wav",
             )
         ]
     if audio_entry and audio_entry.type == "tts":
+        needs_text = _ready_audio_needs_reference_text(audio_entry)
+        if audio_entry.family == "indextts" or needs_text:
+            placeholder = "__RAPID_MLX_REFERENCE_AUDIO__"
+            while placeholder in model:
+                placeholder += "_"
+            body = {"model": model, "input": "Hello", "ref_audio": placeholder}
+            if needs_text or not any(
+                name in model.lower() for name in ("indextts", "index-tts")
+            ):
+                body["ref_text"] = "Exact transcript of reference.wav"
+            payload = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
+            for char in ("\\", '"', "$", "`"):
+                payload = payload.replace(char, "\\" + char)
+            payload = payload.replace(placeholder, "$REF_AUDIO")
+            return [
+                ("Reference", "REF_AUDIO=$(base64 < reference.wav | tr -d '\\n')"),
+                (
+                    "Speak",
+                    f"printf '%s' \"{payload}\" | curl --fail {url('/audio/speech')}{auth} "
+                    "-H 'Content-Type: application/json' --data-binary @- "
+                    "-o speech.wav",
+                ),
+            ]
         return [
             (
                 "Speak",
-                json_command("/audio/speech", {"model": model, "input": "Hello"})
+                json_command(
+                    "/audio/speech", {"model": model, "input": "Hello"}, fail=True
+                )
                 + " -o speech.wav",
             )
         ]
@@ -1323,6 +1398,13 @@ def _ready_lane_rows(cfg, ep, audio_entry):
             )
         return rows
     if image:
+        if getattr(_engine, "supports_generation", True) is False:
+            return [
+                (
+                    "Edit",
+                    f"curl {url('/images/edits')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=Add a red hat')} -F image=@input.png",
+                )
+            ]
         return [
             (
                 "Generate",
@@ -1331,10 +1413,15 @@ def _ready_lane_rows(cfg, ep, audio_entry):
                 ),
             )
         ]
+    video_fields = ""
+    if getattr(_engine, "requires_input_reference", False):
+        video_fields += " -F input_reference=@start.png"
+    if getattr(_engine, "video_family", "") == "cogvideox-fun":
+        video_fields += " -F seconds=1 -F size=672x384"
     return [
         (
             "Generate",
-            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}",
+            f"curl {url('/videos')}{auth} -F {shlex.quote('model=' + model)} -F {shlex.quote('prompt=A cat')}{video_fields}",
         )
     ]
 
@@ -3145,7 +3232,8 @@ def load_model(
         except Exception as e:
             logger.warning(f"Failed to set up tool logits bias: {e}")
 
-    logger.info(f"Default max tokens: {_default_max_tokens}")
+    if _profile_modality not in ("image-gen", "video-gen"):
+        logger.info(f"Default max tokens: {_default_max_tokens}")
 
     # Register in multi-model registry
     aliases = set()

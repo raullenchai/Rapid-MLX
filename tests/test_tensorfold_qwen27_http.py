@@ -1130,8 +1130,11 @@ def test_runtime_refusals_answer_as_client_errors(monkeypatch) -> None:
     assert client.post("/v1/chat/completions", json=body).status_code == 500
 
 
+@pytest.mark.parametrize("tool_choice", [None, "auto"], ids=["omitted", "auto"])
 @pytest.mark.parametrize("pool_worker", [False, True])
-def test_http_stream_and_nonstream_use_provider_and_accept_tools(pool_worker) -> None:
+def test_http_stream_and_nonstream_use_provider_and_accept_tools(
+    pool_worker, tool_choice
+) -> None:
     from fastapi.testclient import TestClient
 
     from rapid_mlx.speculative.dflash.server import _build_app
@@ -1205,6 +1208,8 @@ def test_http_stream_and_nonstream_use_provider_and_accept_tools(pool_worker) ->
     assert "data: [DONE]" in wire
 
     tools_body = {**body, "tools": [{"type": "function", "function": {"name": "x"}}]}
+    if tool_choice is not None:
+        tools_body["tool_choice"] = tool_choice
     for stream in (False, True):
         response = client.post(
             "/v1/chat/completions", json={**tools_body, "stream": stream}
@@ -1215,6 +1220,31 @@ def test_http_stream_and_nonstream_use_provider_and_accept_tools(pool_worker) ->
     invalid = client.post("/v1/chat/completions", json={**body, "messages": []})
     assert invalid.status_code == 400
     assert client.post("/v1/chat/completions", json=body).status_code == 200
+
+
+@pytest.mark.parametrize("pool_worker", [False, True])
+@pytest.mark.parametrize(
+    "tool_choice,supports_tools",
+    [
+        ("required", True),
+        ({"type": "function", "function": {"name": "x"}}, True),
+        ("auto", False),
+    ],
+)
+def test_http_gate_rejects_unsupported_tool_choice(
+    pool_worker, tool_choice, supports_tools
+) -> None:
+    from fastapi import HTTPException
+
+    request = SimpleNamespace(
+        messages=[SimpleNamespace(content="hi")],
+        tool_choice=tool_choice,
+    )
+    with pytest.raises(HTTPException, match="tool_choice") as exc:
+        validate_http_request(
+            request, pool_worker=pool_worker, supports_tools=supports_tools
+        )
+    assert exc.value.status_code == (503 if pool_worker else 400)
 
 
 def test_glm_desktop_payload_crosses_tensorfold_route_without_weakening_gates() -> None:

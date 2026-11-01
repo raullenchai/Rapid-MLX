@@ -37,10 +37,7 @@ def test_language_override_and_legacy_validate():
     jsonschema.validate(execution, SCHEMA)
     language["pflash"]["threshold"] = 0
     assert execution["task"]["language"]["pflash"]["threshold"] == 1024
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            execution_config("text_generation", language=language), SCHEMA
-        )
+    jsonschema.validate(execution_config("text_generation", language=language), SCHEMA)
 
 
 def test_scheme_is_for_quantized_cache_only():
@@ -822,7 +819,7 @@ def test_serving_sidecar_repository_classification(monkeypatch, tmp_path, same_r
     if same_repo:
         snapshot = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
         (snapshot / "mtp").mkdir(parents=True)
-        (snapshot / "config.json").write_text("{}")
+        (snapshot / "mtp" / "config.json").write_text("{}")
         original_scheduler = lr._engine_scheduler
 
         def scheduler(engine):
@@ -1382,3 +1379,93 @@ def test_pinned_serving_snapshot_identity_beats_main(monkeypatch, tmp_path, fall
     )
     primary = next(c for c in identity["components"] if c["role"] == "primary")
     assert primary["source"]["resolved_revision"] == pinned_revision
+
+
+@pytest.mark.parametrize(
+    "footprint_bytes, budget_bytes",
+    [(None, None), (None, 12 << 30), (20 << 30, None)],
+    ids=["missing-both", "missing-footprint", "missing-budget"],
+)
+def test_memory_refusal_with_missing_gpu_details(
+    monkeypatch, footprint_bytes, budget_bytes
+):
+    from rapid_mlx.byom.preflight import MemoryRefusal
+    from rapid_mlx.community_bench import local_runner
+
+    refusal = MemoryRefusal("gpu_budget", None, 16 << 30, footprint_bytes, budget_bytes)
+    monkeypatch.setattr(
+        local_runner, "catalog_memory_refusal", lambda *a, **kw: refusal
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: False)
+
+    with pytest.raises(ValueError) as exc:
+        local_runner.refuse_if_memory_does_not_fit("qwen3.8-27b-4bit", "org/model")
+
+    assert str(exc.value) == (
+        "qwen3.8-27b-4bit does not fit this Mac's GPU memory. Nothing was downloaded. "
+        "Pick a model that fits: rapid-mlx benchmark catalog"
+    )
+
+
+def test_memory_refusal_precedes_acceleration_preflight(monkeypatch, capsys):
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli, local_runner
+
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(local_runner, "mlx_recommended_working_set_bytes", lambda: None)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.8-27b-tensorfold",
+            "--speculative-config",
+            '{"method":"dflash","backend":"tensorfold"}',
+        ]
+    )
+    assert cli.benchmark_command(args) == 1
+    output = capsys.readouterr().err
+    assert "48 GB" in output
+    assert "runtime" not in output.lower()
+
+
+def test_dflash_preflight_requires_drafter(monkeypatch):
+    from rapid_mlx.community_bench.acceleration import (
+        AccelerationConfigError,
+        AccelerationRequest,
+        preflight_benchmark_acceleration,
+    )
+
+    monkeypatch.setattr(
+        "rapid_mlx.speculative.dflash.eligibility.have_runtime", lambda: True
+    )
+    request = AccelerationRequest(
+        overrides={"speculative_config": '{"method":"dflash"}'}
+    )
+    with pytest.raises(AccelerationConfigError, match="(?i)draft"):
+        preflight_benchmark_acceleration("qwen3.5-4b-4bit", request)
+
+
+def test_benchmark_host_memory_fixture():
+    from rapid_mlx.community_bench import local_runner
+
+    assert local_runner.physical_ram_bytes() == 1 << 40
+    assert local_runner.mlx_recommended_working_set_bytes() is None
+
+
+def test_text_measurements_prefers_loaded_engine_checkpoint(monkeypatch, tmp_path):
+    import asyncio
+
+    lr = _fake_live_serving_scheduler(monkeypatch, tmp_path, None)
+    load = lr._load_serving_engine
+    checkpoint = tmp_path / "models--org--model" / "snapshots" / ("a" * 40)
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+
+    async def load_with_path(*args):
+        engine = await load(*args)
+        engine._model_name = str(checkpoint)
+        return engine
+
+    monkeypatch.setattr(lr, "_load_serving_engine", load_with_path)
+    _, _, identity, _ = asyncio.run(lr._text_measurements("org/model"))
+    assert identity["components"][0]["source"]["resolved_revision"] == "a" * 40

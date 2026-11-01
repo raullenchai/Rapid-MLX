@@ -1097,8 +1097,17 @@ def test_jina_checkpoint_limits(monkeypatch, caplog, mode):
     )
 
     engine = rerank.RerankEngine("fake/checkpoint")
-    engine.load()
+    with caplog.at_level("INFO", logger="rapid_mlx.rerank"):
+        engine.load()
     v35 = mode in ("v35", "derived")
+    if v35:
+        assert engine.family.label == "jina-reranker-v3.5"
+        assert (
+            "Loading rerank model: fake/checkpoint (jina-reranker-v3.5)" in caplog.text
+        )
+    else:
+        assert engine.family.label == "jina-reranker-v3"
+        assert "(jina-reranker-v3)" in caplog.text
     assert engine.max_length == (8192 if v35 else 2048)
     assert engine.family.max_query_tokens == (1024 if v35 else 512)
     if not v35:
@@ -1145,6 +1154,54 @@ def _manual_jina_backbone(backbone, ids, windows):
             mask = mask & (k > q - window)
         h = layer(h, mask, None)
     return backbone.norm(h)
+
+
+def test_jina_sliding_layers_match_full_mask_on_long_input():
+    import mlx.core as mx
+
+    from rapid_mlx import rerank
+
+    config = _tiny_jina_config()
+    mx.random.seed(42)
+    model_class, args_class = rerank._jina_model_classes(config)
+    model = model_class(args_class.from_dict(config))
+    ids = mx.array([list(range(23))])
+    actual = model.model(ids)
+    expected = _manual_jina_backbone(model.model, ids, [4, None, 4])
+    assert mx.allclose(actual, expected, atol=1e-5).item()
+
+
+def test_jina_long_block_never_builds_quadratic_mask(monkeypatch):
+    import mlx.core as mx
+    from mlx_lm.models import base
+
+    from rapid_mlx import rerank
+
+    mask_shapes = []
+    create_causal_mask = base.create_causal_mask
+    attention = mx.fast.scaled_dot_product_attention
+
+    def record_mask(mask):
+        if isinstance(mask, mx.array):
+            mask_shapes.append(mask.shape)
+
+    def causal_wrapper(*args, **kwargs):
+        mask = create_causal_mask(*args, **kwargs)
+        record_mask(mask)
+        return mask
+
+    def attention_wrapper(*args, **kwargs):
+        record_mask(kwargs.get("mask"))
+        return attention(*args, **kwargs)
+
+    monkeypatch.setattr(base, "create_causal_mask", causal_wrapper)
+    monkeypatch.setattr(mx.fast, "scaled_dot_product_attention", attention_wrapper)
+    config = _tiny_jina_config()
+    model_class, args_class = rerank._jina_model_classes(config)
+    model = model_class(args_class.from_dict(config))
+    mx.eval(model.model(mx.array([list(range(40))])))
+    assert mask_shapes
+    assert all(len(shape) < 2 or min(shape[-2:]) <= 8 for shape in mask_shapes)
 
 
 @pytest.mark.parametrize(
@@ -1808,7 +1865,12 @@ def test_retrieval_only_mode_loads_both_models(monkeypatch):
         "_load_rerank_model_or_exit",
         lambda args, fn: events.append(("rerank", fn is stub_server.load_rerank_model)),
     )
-    monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_k: events.append("run"))
+
+    def run_uvicorn(*_args, **kwargs):
+        assert kwargs.get("on_server_accepting") is None
+        events.append("run")
+
+    monkeypatch.setattr(cli, "_run_uvicorn", run_uvicorn)
     monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     args = types.SimpleNamespace(
         embedding_model="embed",

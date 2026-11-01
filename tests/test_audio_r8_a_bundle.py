@@ -17,8 +17,7 @@ Four findings:
   translates to a 400 envelope. Content-Type now matches the actual
   bytes via :data:`rapid_mlx.routes.audio._TTS_CONTENT_TYPES`.
 
-* **R8-M4** — Invalid ``voice`` (e.g. ``"alloy"`` from drop-in OpenAI
-  SDK code) 500'd inside ``mlx_audio.load_safetensors``. The route
+* **R8-M4** — Invalid ``voice`` (e.g. a misspelled model voice) 500'd inside ``mlx_audio.load_safetensors``. The route
   now pre-flights ``voice`` against the model's known voice list and
   emits a 400 ``invalid_request_error`` with ``param="voice"`` listing
   the available voices.
@@ -471,9 +470,6 @@ class TestVoiceValidation:
         "bad_voice",
         [
             "not_a_real_voice",
-            "alloy",  # OpenAI default voice name
-            "nova",
-            "shimmer",
             "af_hart",  # typo for af_heart
         ],
     )

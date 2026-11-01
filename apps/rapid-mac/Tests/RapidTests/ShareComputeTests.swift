@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Share Compute")
 struct ShareComputeTests {
+    @Test("Selection reconciliation preserves valid and locked choices")
+    @MainActor
+    func reconciledSelection() {
+        #expect(ShareComputeView.reconciledSelectionID(current: "", shareableIDs: ["m1"], locked: false) == "m1")
+        #expect(ShareComputeView.reconciledSelectionID(current: "gone", shareableIDs: ["m1"], locked: false) == "m1")
+        #expect(ShareComputeView.reconciledSelectionID(current: "gone", shareableIDs: ["m1"], locked: true) == "gone")
+        #expect(ShareComputeView.reconciledSelectionID(current: "m2", shareableIDs: ["m1", "m2"], locked: false) == "m2")
+        #expect(ShareComputeView.reconciledSelectionID(current: "gone", shareableIDs: [], locked: false) == "gone")
+    }
+
     private static func hardware(memoryGB: Double) -> MacHardware {
         MacHardware(
             brandString: "Apple M3 Pro",

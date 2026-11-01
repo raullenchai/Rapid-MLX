@@ -27,9 +27,10 @@ import numpy as np
 from .time_stretch import time_stretch
 
 # These mlx-audio families accept but ignore speed, or lack a native tempo
-# control. All other families (including Kokoro and F5) keep native handling.
+# control, including VoxCPM and VibeVoice. All other families (including Kokoro
+# and F5) keep native handling.
 _POST_STRETCH_FAMILIES = frozenset(
-    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano"}
+    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano", "voxcpm", "vibevoice"}
 )
 
 logger = logging.getLogger(__name__)
@@ -135,19 +136,63 @@ F5_MIN_REF_RMS = 1e-4
 # before the downmix. Mono and stereo are the only realistic reference formats.
 F5_MAX_REF_CHANNELS = 2
 
-# Available voices per model family
+# Mirrors the full voices/ inventory of the Kokoro-82M repos so cold-start
+# validation and OpenAI preset mapping match the cached snapshot.
 KOKORO_VOICES = [
     "af_heart",
+    "af_alloy",
+    "af_aoede",
     "af_bella",
+    "af_jessica",
+    "af_kore",
     "af_nicole",
+    "af_nova",
+    "af_river",
     "af_sarah",
     "af_sky",
     "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
     "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
     "bf_emma",
     "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
     "bm_george",
     "bm_lewis",
+    "ef_dora",
+    "em_alex",
+    "em_santa",
+    "ff_siwis",
+    "hf_alpha",
+    "hf_beta",
+    "hm_omega",
+    "hm_psi",
+    "if_sara",
+    "im_nicola",
+    "jf_alpha",
+    "jf_gongitsune",
+    "jf_nezumi",
+    "jf_tebukuro",
+    "jm_kumo",
+    "pf_dora",
+    "pm_alex",
+    "pm_santa",
+    "zf_xiaobei",
+    "zf_xiaoni",
+    "zf_xiaoxiao",
+    "zf_xiaoyi",
+    "zm_yunjian",
+    "zm_yunxi",
+    "zm_yunxia",
+    "zm_yunyang",
 ]
 
 CHATTERBOX_VOICES = ["default"]  # Uses reference audio for voice
@@ -753,6 +798,8 @@ class TTSEngine:
         try:
             from mlx_audio.tts.generate import load_model
 
+            from .._hf_logging import suppress_transformers_base_config_mismatch
+
             kokoro_pipeline = None
             if self._model_family == "kokoro":
                 from mlx_audio.tts.models.kokoro import pipeline
@@ -760,15 +807,16 @@ class TTSEngine:
                 kokoro_pipeline = pipeline
             model_path = Path(_resolve_safe_tts_checkpoint(self.model_name))
             legacy_vae = model_path / "audiovae.pth"
-            if legacy_vae.exists() or legacy_vae.is_symlink():
-                from .voxcpm_security import load_voxcpm_checkpoint
+            with suppress_transformers_base_config_mismatch("voxcpm2"):
+                if legacy_vae.exists() or legacy_vae.is_symlink():
+                    from .voxcpm_security import load_voxcpm_checkpoint
 
-                self.model = load_voxcpm_checkpoint(model_path)
-            elif kokoro_pipeline is not None:
-                with _scoped_snapshot_download(kokoro_pipeline):
+                    self.model = load_voxcpm_checkpoint(model_path)
+                elif kokoro_pipeline is not None:
+                    with _scoped_snapshot_download(kokoro_pipeline):
+                        self.model = load_model(model_path)
+                else:
                     self.model = load_model(model_path)
-            else:
-                self.model = load_model(model_path)
             if self._model_family == "moss_tts_nano":
                 from .registry import runtime_assets_for
 

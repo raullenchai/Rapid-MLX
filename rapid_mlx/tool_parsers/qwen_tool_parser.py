@@ -229,6 +229,10 @@ class QwenToolParser(ToolParser):
                 return {"content": safe_current[len(safe_previous) :]}
             return None
 
+        starts = [current_text.find(s) for s in self._STREAMING_SENTINELS]
+        start = min(i for i in starts if i >= 0)
+        pending = current_text[:start][len(self._safe_content_prefix(previous_text)) :]
+
         # Use the count of *successfully parsed* tool calls in previous_text
         # as the dedup offset, not raw close-marker count. If a malformed
         # tool call slips past the close-marker counter but fails JSON parse,
@@ -241,20 +245,21 @@ class QwenToolParser(ToolParser):
         cur_close_count = current_text.count("</tool_call>") + current_text.count(")]")
 
         if cur_close_count <= prev_close_count:
-            return None
+            return {"content": pending} if pending else None
 
         result = self.extract_tool_calls(current_text, request)
         if not result.tools_called:
-            return None
+            return {"content": pending} if pending else None
 
         prev_result = self.extract_tool_calls(previous_text, request)
         prev_emitted = len(prev_result.tool_calls) if prev_result.tools_called else 0
 
         new_calls = result.tool_calls[prev_emitted:]
         if not new_calls:
-            return None
+            return {"content": pending} if pending else None
 
         return {
+            "content": pending,
             "tool_calls": [
                 {
                     "index": prev_emitted + i,
@@ -266,5 +271,5 @@ class QwenToolParser(ToolParser):
                     },
                 }
                 for i, tc in enumerate(new_calls)
-            ]
+            ],
         }

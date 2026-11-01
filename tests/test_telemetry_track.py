@@ -1019,7 +1019,9 @@ import sys
 from rapid_mlx import cli
 
 if os.environ.get("RAPID_MLX_TEST_PREFLIGHT_EXIT") == "1":
+    from rapid_mlx.byom import preflight as _byom_preflight
     from rapid_mlx.runtime import video_lane
+    _byom_preflight._check_catalog_memory_fit = lambda *_args, **_kwargs: None
     video_lane._default_video_runtime_requirements = lambda _model: [
         "the mlx-video runtime"
     ]

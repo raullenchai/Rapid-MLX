@@ -51,6 +51,7 @@ from .mllm_cache import MLLMCacheManager  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .repetition_guard import detect_repeated_token_suffix  # noqa: E402
 from .request import (  # noqa: E402
+    ENGINE_ABORT_CODE_ENGINE_ABORTED,
     ENGINE_ABORT_CODES,
     ClientRequestError,
     RequestOutput,
@@ -1491,10 +1492,21 @@ class MLLMScheduler:
             try:
                 responses = self.batch_generator.next()
             except (ValueError, RuntimeError) as e:
-                # Oversized prompt or other unrecoverable error — fail all
-                # running requests instead of retrying forever.
+                # Fail the requests involved in this step instead of retrying forever.
                 err_msg = str(e)
-                error_ids = set(self.running.keys())
+                get_step_uids = getattr(self.batch_generator, "failed_step_uids", None)
+                step_uids = get_step_uids() if callable(get_step_uids) else None
+                if not isinstance(step_uids, (frozenset, set)):
+                    step_uids = None
+                error_ids = (
+                    {
+                        rid
+                        for rid in self.running
+                        if self.request_id_to_uid.get(rid) in step_uids
+                    }
+                    if step_uids is not None
+                    else set()
+                ) or set(self.running.keys())
                 failed_requests = [self.running[rid] for rid in error_ids]
                 is_client_error = isinstance(e, ClientRequestError)
                 # Do not collapse the only actionable copy of a backend
@@ -1504,14 +1516,15 @@ class MLLMScheduler:
                 # paths to API clients.
                 if is_client_error:
                     logger.warning(
-                        "MLLM batch rejected client input (requests=%s error=%s)",
+                        "MLLM batch rejected client input (requests=%s error=%s preserved=%d)",
                         sorted(error_ids),
                         err_msg,
+                        len(self.running) - len(error_ids),
                     )
                 else:
                     logger.exception(
                         "MLLM batch generation failed "
-                        "(exception=%s requests=%s active_rows=%d waiting=%d)",
+                        "(exception=%s requests=%s active_rows=%d waiting=%d preserved=%d)",
                         type(e).__name__,
                         sorted(error_ids),
                         len(
@@ -1522,6 +1535,7 @@ class MLLMScheduler:
                             )
                         ),
                         len(self.waiting),
+                        len(self.running) - len(error_ids),
                     )
 
                 # Remove from batch generator BEFORE scheduler cleanup so
@@ -1722,6 +1736,10 @@ class MLLMScheduler:
         # (#3564). The code rides on ``error_kind``; ``stream_outputs`` keys on
         # it to raise ``InferenceAbortedError`` (see the dispatch below).
         err_kind = classify_engine_abort(exc)
+        get_step_uids = getattr(self.batch_generator, "failed_step_uids", None)
+        step_uids = get_step_uids() if callable(get_step_uids) else None
+        if not isinstance(step_uids, (frozenset, set)):
+            step_uids = None
 
         output = MLLMSchedulerOutput(
             finished_request_ids=request_ids,
@@ -1736,7 +1754,12 @@ class MLLMScheduler:
                     # this compatibility literal for a successful truncation.
                     finish_reason="length",
                     error=err_text,
-                    error_kind=err_kind,
+                    error_kind=(
+                        err_kind
+                        if step_uids is None
+                        or self.request_id_to_uid.get(request_id) in step_uids
+                        else ENGINE_ABORT_CODE_ENGINE_ABORTED
+                    ),
                 )
                 for request_id in request_ids
             ],

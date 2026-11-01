@@ -168,9 +168,9 @@ def _move_fd_above_stdio(fd: int) -> int:
 
 
 def _crash_logs_dir() -> Path:
-    from rapid_mlx.telemetry.state import _default_telemetry_dir
+    from rapid_mlx.first_run import _state_dir
 
-    return _default_telemetry_dir() / "logs"
+    return _state_dir() / "logs"
 
 
 def _crash_files(log_dir: Path) -> list[Path]:
@@ -259,10 +259,38 @@ def _marker_for_pid(log_dir: Path, pid: int) -> dict[str, object] | None:
     return marker if isinstance(marker, dict) and marker_identity(marker) else None
 
 
+def _crash_file_in_use(path: Path) -> bool:
+    if os.name == "nt":
+        return False
+    import fcntl
+
+    try:
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+
+
 def _crash_file_is_live(path: Path, log_dir: Path) -> bool:
     pid = _crash_file_pid(path)
     if pid is None:
         return False
+    if _crash_file_in_use(path):
+        return True
     marker = _marker_for_pid(log_dir, pid)
     if marker is not None:
         return marker.get("pid") == pid and is_same_process(marker)
@@ -529,6 +557,13 @@ def _install_crash_file() -> None:
         file_stat = os.fstat(fd)
         if not stat.S_ISREG(file_stat.st_mode):
             raise OSError("crash sink is not a regular file")
+        if os.name != "nt":
+            import fcntl
+
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                logger.debug("could not lock crash file: %s", exc)
         if os.name == "nt":
             _warn_tee_fallback(OSError("crash mirror helper is unavailable on Windows"))
         else:

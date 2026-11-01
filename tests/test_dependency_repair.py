@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from rapid_mlx import _upgrade_runner as upgrade_runner
 from rapid_mlx import _version_check as version_check
 from rapid_mlx import dependency_repair as repair
 from rapid_mlx.runtime import optional_runtime
@@ -16,6 +17,12 @@ from rapid_mlx.runtime import optional_runtime
 
 @pytest.fixture
 def environment(monkeypatch):
+    # Existing unit tests stub subprocess.run; keep pip installs isolated too.
+    monkeypatch.setattr(
+        upgrade_runner,
+        "_run_filtered",
+        lambda argv: subprocess.run(argv, check=False).returncode,
+    )
     monkeypatch.setenv("RAPID_MLX_DEPENDENCY_REPAIR_RETRIED", "")
     monkeypatch.delenv("RAPID_MLX_DEPENDENCY_REPAIR_RETRIED", raising=False)
     monkeypatch.setattr(

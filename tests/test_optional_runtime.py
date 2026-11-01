@@ -66,6 +66,7 @@ import sys
 import types
 
 from rapid_mlx import cli
+from rapid_mlx.byom import preflight as _byom_preflight
 from rapid_mlx.telemetry import build_gate
 from rapid_mlx.telemetry.build_gate import ReleaseStamp
 
@@ -106,6 +107,7 @@ build_gate.official_build = lambda: ReleaseStamp(
 )
 cli._port_preflight_or_die = lambda *_args, **_kwargs: None
 cli._check_alias_min_memory = lambda *_args, **_kwargs: None
+_byom_preflight._check_catalog_memory_fit = lambda *_args, **_kwargs: None
 cli._check_disk_space = lambda *_args, **_kwargs: None
 cli._check_memory_capacity = lambda *_args, **_kwargs: None
 cli._ensure_model_downloaded = lambda *_args, **_kwargs: None
@@ -367,10 +369,11 @@ def _reset_one_shot_state():
         model_events._reset_for_tests()
 
 
-def test_telemetry_state_uses_per_test_root(tmp_path) -> None:
+def test_telemetry_state_uses_per_test_root(tmp_path, monkeypatch) -> None:
     from rapid_mlx.telemetry import state, store
 
     root = tmp_path / ".rapid-mlx"
+    monkeypatch.setenv("RAPID_MLX_STATE_DIR", str(root))
     assert state.client_id_path() == root / "telemetry-client-id"
     assert state.consent_path() == root / "telemetry-consent.yaml"
     assert store.db_path() == root / "telemetry.db"

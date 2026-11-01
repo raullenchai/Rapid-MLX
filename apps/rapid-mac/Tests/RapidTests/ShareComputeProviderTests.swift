@@ -7,6 +7,7 @@ final class ShareComputeTestKeychain: KeychainStoring, @unchecked Sendable {
     var unavailable = false
     var failWrite = false
     var failDelete = false
+    var tombstoneOnFailedDelete = false
     var writes = 0
 
     func read(account: String) -> String? { values[account] }
@@ -22,7 +23,10 @@ final class ShareComputeTestKeychain: KeychainStoring, @unchecked Sendable {
         return true
     }
     func delete(account: String) -> Bool {
-        if failDelete { return false }
+        if failDelete {
+            if tombstoneOnFailedDelete { values[account] = "" }
+            return false
+        }
         values.removeValue(forKey: account)
         return true
     }
@@ -119,9 +123,11 @@ struct ShareComputeProviderTests {
         let manager = ShareComputeManager(server: server, providerStore: store, home: home)
         #expect(!manager.needsRegistration(for: model, worker: "test-mac"))
 
+        let revision = manager.providerKeyRevision
         let succeeded = removing ? manager.removeProviderKey() : manager.saveProviderKey(Self.secondKey)
 
         #expect(!succeeded)
+        #expect(manager.providerKeyRevision == revision + 1)
         #expect(store.load() == .found(try #require(ShareComputeProviderKey.validate(Self.firstKey))))
         // Invalidate before secret mutation: even a failed switch must never
         // reuse a possibly stale payout binding. The private node cache survives.
@@ -131,6 +137,31 @@ struct ShareComputeProviderTests {
         #expect(server.servingAlias == "personal-model")
         #expect(manager.canEditProviderKey)
         #expect(manager.providerKeyMessage != nil)
+    }
+
+    @Test("Failed removal refreshes a tombstoned provider key")
+    func failedRemovalWithTombstone() {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("share-key-tombstone-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let keychain = ShareComputeTestKeychain()
+        let manager = ShareComputeManager(
+            server: ServerManager(testingState: .idle),
+            providerStore: ShareComputeProviderKeyStore(keychain: keychain), home: home
+        )
+        #expect(manager.saveProviderKey(Self.firstKey))
+        let ledger = ShareComputeLedgerCoordinator(keychain: keychain, fixture: nil)
+        let revision = manager.providerKeyRevision
+        keychain.failDelete = true
+        keychain.tombstoneOnFailedDelete = true
+        #expect(!manager.removeProviderKey())
+        #expect(manager.providerKeyRevision == revision + 1)
+        #expect(!manager.providerKeyIsStored)
+        #expect(manager.savedProviderKeyLabel == nil)
+        #expect(manager.providerKeyMessage == "This Mac couldn't remove the provider key. Unlock your Keychain and try again.")
+        // The view forwards this revision change to the ledger.
+        ledger.providerKeyChanged()
+        #expect(ledger.state == .noKey)
+        #expect(ledger.savedKeyLabel == nil)
     }
 
     @Test("Locked, corrupt and read-only credentials remain distinct")

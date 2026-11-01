@@ -80,6 +80,8 @@ def _build_app(
             ("HEAD", "/"),
             ("GET", "/health"),
             ("GET", "/health/ready"),
+            ("GET", "/readyz"),
+            ("GET", "/livez"),
         }:
             return None
         return await verify_api_key(request, credentials)

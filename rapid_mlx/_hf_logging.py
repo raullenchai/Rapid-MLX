@@ -47,7 +47,11 @@ than once, even concurrently, adds exactly one filter.
 from __future__ import annotations
 
 import logging
+import os
+import re
+import sys
 import threading
+from contextlib import contextmanager
 
 # The logger huggingface_hub's ``_warn_on_warning_headers`` emits from:
 # ``logging.get_logger(__name__)`` where ``__name__`` is this module.
@@ -123,8 +127,63 @@ def silence_hf_unauthenticated_warning() -> None:
         logger.addFilter(filt)
 
 
+class _DropTransformersBaseConfigMismatch(logging.Filter):
+    """Hide the empty base-config target warning for one model type."""
+
+    def __init__(self, model_type: str) -> None:
+        super().__init__()
+        self._pattern = re.compile(
+            rf"You are using a model of type `{re.escape(model_type)}` "
+            r"to instantiate a model of type ``\."
+        )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.WARNING:
+            return True
+        try:
+            return self._pattern.search(record.getMessage()) is None
+        except Exception:
+            return True
+
+
+@contextmanager
+def suppress_transformers_base_config_mismatch(model_type: str):
+    """Suppress the base-config warning when voxcpm2 AutoTokenizer falls back."""
+    logger = logging.getLogger("transformers.configuration_utils")
+    filt = _DropTransformersBaseConfigMismatch(model_type)
+    logger.addFilter(filt)
+    try:
+        yield
+    finally:
+        logger.removeFilter(filt)
+
+
 def quiet_transport_loggers(level_name: str) -> None:
     """Suppress transport chatter unless debug logging was requested."""
     target = logging.NOTSET if level_name.upper() == "DEBUG" else logging.WARNING
     for name in ("httpx", "httpcore", "urllib3", "huggingface_hub"):
         logging.getLogger(name).setLevel(target)
+
+
+def quiet_hf_progress_bars_off_terminal() -> None:
+    """Disable redirected Hub bars early, including in child processes.
+
+    Preserve explicit settings, terminal output and Desktop sidecar progress.
+    Avoid importing the Hub solely to configure a future import.
+    """
+    if "HF_HUB_DISABLE_PROGRESS_BARS" in os.environ:
+        return
+    try:
+        from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+
+        if sys.stderr.isatty() or is_desktop_sidecar():
+            return
+        if "huggingface_hub" not in sys.modules:
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+            return
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    except Exception:
+        pass

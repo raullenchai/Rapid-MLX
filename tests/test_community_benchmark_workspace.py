@@ -165,10 +165,8 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen3.5-9b-4bit"]["focus"] is True
     assert by_alias["gemma-4-e4b-4bit"]["focus"] is True
     assert by_alias["qwen-image-2.1"]["focus"] is True
-    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 39
-    assert (
-        by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "weights_estimate"
-    )
+    assert by_alias["qwen-image-2.1-bf16"]["estimated_memory_gib"] == 28
+    assert by_alias["qwen-image-2.1-bf16"]["memory_estimate_source"] == "measured_peak"
     assert all("modality" not in model for model in catalog["models"])
 
 
@@ -253,19 +251,23 @@ def test_runtime_readiness_degrades_probe_faults_to_unknown(
 
 @pytest.mark.catalog_memory_preflight
 @pytest.mark.parametrize("ram", (8, 16, 18, 24, 32, 36, 48, 64, 96, 128))
-def test_catalog_matches_serve_for_text_models(ram, monkeypatch, capsys):
+def test_catalog_matches_serve_for_all_models(ram, monkeypatch, capsys):
     from rapid_mlx.byom import preflight
+    from rapid_mlx.cli import _check_alias_min_memory
     from rapid_mlx.model_aliases import resolve_profile
 
     gib = 1 << 30
     monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: ram * gib)
     monkeypatch.setattr(preflight, "_mlx_recommended_working_set_bytes", lambda: None)
     monkeypatch.setattr(preflight, "_emit_rejection", lambda *args: None)
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=ram * gib)
+    )
     monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _: False)
     for model in benchmark_catalog(memory_gib=ram)["models"]:
         alias = model["alias"]
         profile = resolve_profile(alias)
-        if profile is None or profile.modality != "text":
+        if profile is None:
             continue
         args = SimpleNamespace(
             command="serve",
@@ -275,12 +277,71 @@ def test_catalog_matches_serve_for_text_models(ram, monkeypatch, capsys):
             _original_alias=alias,
         )
         try:
+            _check_alias_min_memory(alias)
             preflight._check_catalog_memory_fit(args)
             passed = True
         except SystemExit:
             passed = False
         assert (model["memory_fit"] == "fits") == passed, (ram, alias)
     capsys.readouterr()
+
+
+def test_enforced_floor_catalog_and_plan():
+    alias = "qwen3.8-27b-tensorfold"
+    models = {m["alias"]: m for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert models[alias]["memory_fit"] == "does_not_fit"
+    assert plan_for_alias(alias, memory_gib=36)["model"]["memory_fit"] == "does_not_fit"
+
+
+@pytest.mark.parametrize(
+    "alias, cached, message",
+    [
+        ("qwen3.8-27b-tensorfold", False, "requires at least 48 GB"),
+        ("qwen3.8-27b-tensorfold", True, "requires at least 48 GB"),
+        ("qwen3.6-27b-8bit", False, "needs ~"),
+    ],
+)
+def test_run_memory_refuses_before_loading(monkeypatch, alias, cached, message):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 28 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: cached)
+
+    def reached(*args, **kwargs):
+        pytest.fail("loading or download reached")
+
+    monkeypatch.setattr(local_runner, "_ensure_model_downloaded", reached)
+    monkeypatch.setattr(local_runner, "_text_measurements", reached)
+    monkeypatch.setattr(local_runner, "resolve_provenance", reached)
+    with pytest.raises(ValueError, match=message) as exc:
+        local_runner.run_local(alias, progress=reached)
+    assert "Nothing was downloaded." in str(exc.value)
+
+
+def test_run_non_enforced_floor_message(monkeypatch):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 32 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 24 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: False)
+    with pytest.raises(ValueError, match="needs a Mac with at least 96 GB"):
+        local_runner.refuse_if_memory_does_not_fit("qwen-image-edit", "repo")
+
+
+def test_run_cached_model_passes_memory_gate(monkeypatch):
+    monkeypatch.setattr(local_runner, "physical_ram_bytes", lambda: 36 << 30)
+    monkeypatch.setattr(
+        local_runner, "mlx_recommended_working_set_bytes", lambda: 28 << 30
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda _: True)
+
+    def reached():
+        raise RuntimeError("passed memory gate")
+
+    monkeypatch.setattr(local_runner, "resolve_provenance", reached)
+    with pytest.raises(RuntimeError, match="passed memory gate"):
+        local_runner.run_local("qwen3.6-27b-8bit")
 
 
 def test_catalog_uses_curated_working_set_and_video_floor():
@@ -325,8 +386,9 @@ def test_catalog_uses_curated_working_set_and_video_floor():
     [
         (
             32,
-            "fits (32 GB+ profile)",
-            "fits this Mac (profile qualified for Macs with 32 GB or more)",
+            "fits (32 GB+ profile)*",
+            "fits this Mac (profile qualified for Macs with 32 GB or more — for this "
+            "model the tested profile decides the fit, not the weight-size estimate)",
         ),
         (
             24,
@@ -360,6 +422,105 @@ def test_gpu_budget_plan_wording(fit):
     assert community_cli._memory_line(model, 16, 12) == (
         f"~6.0 GB working set; {verdict} this Mac (GPU can use about 12 GB of 16 GB)"
     )
+
+
+def test_non_weights_profile_explanation_for_plan_and_catalog(capsys):
+    model = {
+        "alias": "curated",
+        "task_type": "image_generation",
+        "focus": True,
+        "estimated_memory_gb": 37,
+        "memory_estimate_source": "curated_footprint",
+        "memory_fit": "fits",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 32,
+    }
+    line = community_cli._memory_line(model, 36, 28)
+    assert "the tested profile decides the fit, not this estimate" in line
+    assert "weight-size" not in line and "weight size" not in line
+
+    weights_model = {
+        **model,
+        "alias": "weights",
+        "memory_estimate_source": "weights_estimate",
+    }
+    catalog = {
+        "memory_gib": 36,
+        "memory_budget_gib": 28,
+        "models": [weights_model, model],
+    }
+    community_cli._print_catalog(catalog, show_all=True)
+    output = capsys.readouterr().out
+    assert output.count("fits (32 GB+ profile)*") == 2
+    footnote = next(line for line in output.splitlines() if line.startswith("* Fit"))
+    assert footnote == (
+        "* Fit comes from the model's tested memory profile; the size estimate shown is not used for this model."
+    )
+    assert "weight-size" not in footnote and "weight size" not in footnote
+
+
+def test_catalog_and_plan_use_same_raw_estimate_and_profile_explanation(capsys):
+    model = {
+        "alias": "example",
+        "task_type": "image_generation",
+        "focus": True,
+        "estimated_memory_bytes": 40015654594,
+        "estimated_memory_gb": 37.3,
+        "memory_estimate_source": "weights_estimate",
+        "memory_fit": "fits",
+        "memory_fit_basis": "memory_floor",
+        "memory_floor_gib": 32,
+    }
+    line = community_cli._memory_line(model, 36, 28)
+    assert line == (
+        "~37 GB working set (estimated from weight size); fits this Mac "
+        "(profile qualified for Macs with 32 GB or more — for this model "
+        "the tested profile decides the fit, not the weight-size estimate)"
+    )
+    catalog = {"memory_gib": 36, "memory_budget_gib": 28, "models": [model]}
+    community_cli._print_catalog(catalog, show_all=False)
+    output = capsys.readouterr().out
+    assert "~37 GB  fits (32 GB+ profile)*" in output
+    assert (
+        "* Fit comes from the model's tested memory profile; the size estimate is computed from weight size and is not used for this model."
+        in output
+    )
+    model["focus"] = False
+    community_cli._print_catalog(catalog, show_all=False)
+    assert "* Fit comes" not in capsys.readouterr().out
+    community_cli._print_catalog(catalog, show_all=True)
+    assert "* Fit comes" in capsys.readouterr().out
+    model["memory_fit"] = "does_not_fit"
+    community_cli._print_catalog(catalog, show_all=True)
+    assert "* Fit comes" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cached", [True, False, None])
+def test_catalog_downloaded_marker(cached, capsys):
+    model = {
+        "alias": "example",
+        "task_type": "text_generation",
+        "focus": True,
+        "memory_fit": "fits",
+        "estimated_memory_gb": 6,
+        "model_cached": cached,
+    }
+    community_cli._print_catalog({"memory_gib": 16, "models": [model]}, show_all=False)
+    assert ("  downloaded" in capsys.readouterr().out) is (cached is True)
+
+
+def test_catalog_cache_probe_is_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "rapid_mlx.community_bench.workspace.model_is_cached",
+        lambda repo: calls.append(repo) or True,
+    )
+    default = benchmark_catalog()["models"]
+    assert default and all("model_cached" not in model for model in default)
+    assert not calls
+    checked = benchmark_catalog(check_cache=True)["models"]
+    assert all(model["model_cached"] is True for model in checked)
+    assert len(calls) == len(checked)
 
 
 @pytest.mark.parametrize("fit", ["fits", "does_not_fit"])
@@ -516,6 +677,87 @@ def test_plan_rejects_draft_only_model() -> None:
     assert "draft checkpoint" in str(error.value)
     assert "Benchmark '" in str(error.value)
     assert "Serve '" not in str(error.value)
+
+
+def test_image_catalog_excludes_incompatible_registered_workload() -> None:
+    aliases = {m["alias"] for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert "bonsai-image-4b-2bit" not in aliases
+    assert "flux2-klein-4b" in aliases
+
+
+def test_image_protocol_issue_ignores_engine_import_failure(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "rapid_mlx.image.engine", None)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+
+
+@pytest.mark.parametrize("failure_stage", ("construction", "validation"))
+def test_image_protocol_issue_ignores_unexpected_engine_errors(
+    monkeypatch, failure_stage
+) -> None:
+    from rapid_mlx.image import engine
+
+    calls = []
+
+    class FailingEngine:
+        def __init__(self, model):
+            calls.append("construction")
+            if failure_stage == "construction":
+                raise RuntimeError("construction failed")
+
+        def validate_request(self, **kwargs):
+            calls.append("validation")
+            raise RuntimeError("validation failed")
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", FailingEngine)
+    assert (
+        workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
+        is None
+    )
+    assert calls == (
+        ["construction"]
+        if failure_stage == "construction"
+        else ["construction", "validation"]
+    )
+
+
+def test_plan_rejects_excluded_image_without_protocol_issue(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workspace_module, "benchmark_catalog", lambda **kwargs: {"models": []}
+    )
+    calls = []
+    monkeypatch.setattr(
+        workspace_module,
+        "benchmark_protocol_issue",
+        lambda alias, task: calls.append((alias, task)),
+    )
+    with pytest.raises(ValueError, match="unknown or unsupported benchmark model"):
+        plan_for_alias("bonsai-image-4b-2bit")
+    assert calls == [("bonsai-image-4b-2bit", "image_generation")]
+
+
+def test_plan_rejects_incompatible_image_schedule() -> None:
+    with pytest.raises(ValueError, match="4-step schedule"):
+        plan_for_alias("bonsai-image-4b-2bit")
+
+
+def test_cli_rejects_incompatible_image_before_server(monkeypatch, capsys) -> None:
+    import rapid_mlx.cli as top_cli
+
+    monkeypatch.setattr(
+        _server, "serve", lambda *a, **kw: pytest.fail("server started")
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["rapid-mlx", "benchmark", "run", "bonsai-image-4b-2bit"]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        top_cli.main()
+    assert excinfo.value.code == 1
+    error = capsys.readouterr().err
+    assert "Benchmark command failed:" in error
+    assert "4-step schedule" in error
 
 
 def test_run_local_rejects_draft_before_loading_or_archiving(
@@ -2364,6 +2606,26 @@ def test_inherit_process_group_verification_matches_real_topology(
     assert "model-that-does-not-exist" in dedicated
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_image_server_log_echo(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("RAPID_MLX_BENCH_SERVER_LOG_ECHO", "1")
+    else:
+        monkeypatch.delenv("RAPID_MLX_BENCH_SERVER_LOG_ECHO", raising=False)
+
+    class CapturedError(Exception):
+        pass
+
+    def serve(alias, **kwargs):
+        assert kwargs["echo_log"] is (sys.stderr if enabled else None)
+        raise CapturedError
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr("rapid_mlx.cli._check_alias_min_memory", lambda *a, **kw: None)
+    with pytest.raises(CapturedError):
+        local_runner._run_image("example-image")
+
+
 def test_run_local_stops_when_image_warmup_is_cancelled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2587,6 +2849,37 @@ def test_local_request_failure_uses_bounded_fallback_for_non_json_error() -> Non
     ):
         local_runner._raise_for_status(
             NonJSONErrorResponse({}), phase="video benchmark request"
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "detail": {
+                "error": {
+                    "message": "Bonsai Image supports its published 4-step schedule only."
+                }
+            }
+        },
+        {
+            "detail": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+        {
+            "error": {
+                "message": "Bonsai Image supports its published 4-step schedule only."
+            }
+        },
+    ],
+)
+def test_local_request_failure_preserves_nested_message(body) -> None:
+    with pytest.raises(
+        RuntimeError, match="Bonsai Image supports its published 4-step schedule only"
+    ):
+        local_runner._raise_for_status(
+            _HTTPErrorResponse(body), phase="image benchmark request"
         )
 
 
@@ -3416,6 +3709,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "text_generation",
                     "memory_fit": "does_not_fit",
                     "estimated_memory_gib": 64,
+                    "estimated_memory_gb": 64,
                     "focus": True,
                 },
                 {
@@ -3423,6 +3717,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "text_generation",
                     "memory_fit": "fits",
                     "estimated_memory_gib": 6,
+                    "estimated_memory_gb": 6,
                     "focus": True,
                 },
                 {
@@ -3430,6 +3725,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "task_type": "image_generation",
                     "memory_fit": "fits",
                     "estimated_memory_gib": 4,
+                    "estimated_memory_gb": 4,
                     "focus": False,
                 },
                 {
@@ -3462,7 +3758,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     # long tail is summarised, not dumped, unless --all is passed.
     assert "Recommended" in out
     assert "★ focus-model" in out
-    assert "~6 GB  fits" in out
+    assert "~6.0 GB  fits" in out
     assert "big-focus-model" not in out
     # Memory is known, so a focus model with no estimate is not a verified
     # fit and must not be recommended as one.
@@ -3551,17 +3847,26 @@ def test_cli_catalog_defaults_memory_to_this_mac(
     )
 
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": 48, "recommended_working_set_bytes": None}
+    assert seen == {
+        "memory_gib": 48,
+        "recommended_working_set_bytes": None,
+        "check_cache": True,
+    }
     assert "This Mac: 48 GB unified memory" in capsys.readouterr().out
 
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: None)
     assert community_cli.benchmark_command(args) == 0
-    assert seen == {"memory_gib": None, "recommended_working_set_bytes": None}
+    assert seen == {
+        "memory_gib": None,
+        "recommended_working_set_bytes": None,
+        "check_cache": True,
+    }
     assert "memory unknown; pass --memory-gib" in capsys.readouterr().out
 
     args_json = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=True)
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
     assert community_cli.benchmark_command(args_json) == 0
+    assert seen["check_cache"] is True
     payload = json.loads(capsys.readouterr().out)
     assert (payload["memory_gib"], payload["memory_source"]) == (48, "host")
 
@@ -6676,3 +6981,20 @@ def test_legacy_run_reads_new_primary_metadata_first(tmp_path: Path) -> None:
     provenance = {"distribution": "source", "revision": "a" * 40}
     archive.save_provenance(run["run_id"], provenance)
     assert archive.provenance(run["run_id"]) == provenance
+
+
+def test_tensorfold_runtime_readiness_missing_package(monkeypatch):
+    from rapid_mlx.speculative import tensorfold_qwen27
+
+    def missing():
+        raise tensorfold_qwen27.TensorFoldUnavailable("package not installed")
+
+    monkeypatch.setattr(tensorfold_qwen27, "require_runtime", missing)
+    result = benchmark_runtime_readiness("qwen3.8-27b-tensorfold", "text_generation")
+    assert result["status"] == "unavailable"
+    assert "TensorFold" in result["message"]
+    assert not result["message"].startswith("  Error: ")
+    assert (
+        benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation")["status"]
+        == "ready"
+    )

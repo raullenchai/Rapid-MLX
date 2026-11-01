@@ -20,6 +20,7 @@ from rapid_mlx.model_aliases import draft_only_conflict, raise_if_draft_only_mod
 from .benchmark_contracts import (
     BenchmarkRunValidator,
     SubmissionReceiptValidator,
+    public_prompt,
     registered_workload,
 )
 from .provenance_schema import ProvenanceInvalid
@@ -93,6 +94,45 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
                         "Runtime readiness could not be verified; run will check again."
                     ),
                 }
+        try:
+            from rapid_mlx.speculative.tensorfold_families import profile_for
+
+            if (
+                profile is not None
+                and (
+                    profile.dflash_backend == "tensorfold"
+                    or profile.tensorfold_mtp
+                    or profile.tensorfold_kernel
+                )
+            ) or profile_for(alias) is not None:
+                from rapid_mlx.cli import (
+                    _normalize_speculative_config_or_exit,
+                    serve_runtime_lane,
+                    tensorfold_profile_issue,
+                )
+
+                from .acceleration import (
+                    AccelerationRequest,
+                    _capture_preflight_exit,
+                    build_serve_args,
+                )
+
+                with _capture_preflight_exit():
+                    args = build_serve_args(alias, AccelerationRequest())
+                    _normalize_speculative_config_or_exit(args)
+                    lane = serve_runtime_lane(args)
+                    issue = (
+                        tensorfold_profile_issue(args)
+                        if lane.startswith("tensorfold_")
+                        else None
+                    )
+                if issue is not None:
+                    return {"status": "unavailable", "message": issue}
+        except Exception:
+            return {
+                "status": "unknown",
+                "message": "Runtime readiness could not be verified; run will check again.",
+            }
         return {"status": "ready", "message": None}
     if task_type == "image_generation":
         from rapid_mlx.runtime.image_lane import image_runtime_issue
@@ -128,8 +168,39 @@ def _primary_task(task_types: list[str]) -> str | None:
     return None
 
 
+def benchmark_protocol_issue(alias: str, task_type: str) -> str | None:
+    """Return an authoritative request rejection without loading model weights."""
+    if task_type != "image_generation":
+        return None
+    try:
+        from rapid_mlx.image.engine import ImageGenerationEngine, ImageRequestError
+        from rapid_mlx.local_model_path import resolved_model_ref
+        from rapid_mlx.model_aliases import resolve_model
+    except Exception:
+        return None
+    try:
+        engine = ImageGenerationEngine(resolve_model(resolved_model_ref(alias)))
+        for case in registered_workload(task_type)["cases"]:
+            engine.validate_request(
+                prompt=public_prompt(case["case_id"]),
+                width=case["width"],
+                height=case["height"],
+                num_inference_steps=case["steps"],
+                seed=case["seed"],
+                guidance=case["guidance_millionths"] / 1_000_000,
+            )
+    except ImageRequestError as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
+
+
 def benchmark_catalog(
-    *, memory_gib: int | None = None, recommended_working_set_bytes: int | None = None
+    *,
+    memory_gib: int | None = None,
+    recommended_working_set_bytes: int | None = None,
+    check_cache: bool = False,
 ) -> dict[str, Any]:
     """Project the atomic catalog into the model-first benchmark picker."""
 
@@ -148,6 +219,8 @@ def benchmark_catalog(
             continue
         operations = alias["capabilities"]["operation_modes"]
         if task == "image_generation" and "text_to_image" not in operations:
+            continue
+        if benchmark_protocol_issue(alias["alias"], task) is not None:
             continue
         # rapid-video-speed-v1 is deliberately a Wan protocol. LTX and
         # CogVideoX use different native step/resolution contracts and need
@@ -184,6 +257,7 @@ def benchmark_catalog(
                 "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
+                "estimated_memory_bytes": result.estimate_bytes,
                 "estimated_memory_gb": round(result.estimate_bytes / (1 << 30), 1)
                 if result.estimate_bytes is not None
                 else None,
@@ -196,6 +270,8 @@ def benchmark_catalog(
                 "runtime": benchmark_runtime_readiness(alias["alias"], task),
             }
         )
+        if check_cache:
+            entries[-1]["model_cached"] = model_is_cached(entries[-1]["repo_id"])
     entries.sort(key=lambda item: (not item["focus"], item["alias"]))
     return {
         "schema_version": 1,
@@ -297,6 +373,22 @@ def plan_for_alias(
             if check_cache:
                 plan["model_cached"] = model_is_cached(entry["repo_id"])
             return plan
+    for alias in build_legacy_catalog_snapshot()["aliases"]:
+        if (
+            alias["alias"] == alias_name
+            and _primary_task(alias["capabilities"]["task_types"]) == "image_generation"
+            and "text_to_image" in alias["capabilities"]["operation_modes"]
+        ):
+            issue = benchmark_protocol_issue(alias_name, "image_generation")
+            if issue is not None:
+                case = registered_workload("image_generation")["cases"][0]
+                guidance = case["guidance_millionths"] / 1_000_000
+                raise ValueError(
+                    f"{alias_name} cannot run the registered image benchmark "
+                    f"({case['width']}x{case['height']}, {case['steps']} steps, "
+                    f"guidance {guidance:g}): {issue}"
+                )
+            break
     raise ValueError(f"unknown or unsupported benchmark model {alias_name!r}")
 
 

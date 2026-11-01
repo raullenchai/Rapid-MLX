@@ -64,6 +64,11 @@ def validate_request(
         raise AccelerationConfigError(
             "This model always runs its qualified runtime; acceleration flags and --baseline cannot change it."
         )
+    ratio = request.overrides.get("pflash_keep_ratio")
+    if ratio is not None and ratio < 0.000001:
+        raise AccelerationConfigError(
+            "--pflash-keep-ratio must be at least 0.000001 for a benchmark run so the recorded setting matches what ran."
+        )
     if "speculative_config" in request.overrides:
         try:
             config = json.loads(request.overrides["speculative_config"])
@@ -161,12 +166,18 @@ def _refuse_engine_method(kwargs, *, allow_auto=False) -> None:
 
 
 def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -> None:
-    from rapid_mlx.cli import serve_acceleration_preflights, serve_runtime_lane
+    from rapid_mlx.cli import (
+        _resolve_dflash_launch_or_exit,
+        serve_acceleration_preflights,
+        serve_runtime_lane,
+    )
 
     with _capture_preflight_exit():
         args = build_serve_args(alias, request)
         serve_acceleration_preflights(args)
         lane = serve_runtime_lane(args)
+        if lane == "dflash":
+            _resolve_dflash_launch_or_exit(args)
     _refuse_unsupported(
         alias,
         lane,

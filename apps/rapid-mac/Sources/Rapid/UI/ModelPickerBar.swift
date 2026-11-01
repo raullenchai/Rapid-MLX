@@ -45,6 +45,10 @@ import SwiftUI
 /// fully clickable regardless of fit. Chat owns model lifecycle now;
 /// this component only owns selection and model details.
 struct ModelPickerBar: View {
+    nonisolated static func liveContextWindow(for alias: String, profile: ServerModelProfile?) -> Int? {
+        guard let profile, profile.id.caseInsensitiveCompare(alias) == .orderedSame else { return nil }
+        return profile.contextWindow
+    }
     @Bindable var server: ServerManager
     /// v0.5.7: side-car downloader so right-clicking an UN-cached
     /// row can offer "Download in background" without disrupting the
@@ -690,7 +694,8 @@ struct ModelPickerBar: View {
             ModelInfoPopover(
                 info: ModelInfoCatalog.info(
                     for: alias,
-                    hfRepo: catalog.first(where: { $0.alias == alias })?.hfRepo
+                    hfRepo: catalog.first(where: { $0.alias == alias })?.hfRepo,
+                    serverContextWindow: Self.liveContextWindow(for: alias, profile: server.activeModelProfile)
                 )
             )
             .padding(16)

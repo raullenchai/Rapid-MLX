@@ -12,10 +12,14 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 from rapid_mlx import cli, server
-from rapid_mlx.routes import video
+from rapid_mlx.middleware.activity import activity_tracker
+from rapid_mlx.middleware.auth import verify_api_key
+from rapid_mlx.routes import residency, video
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +39,56 @@ async def _wait_for_completion(video_id: str) -> dict:
             return current
         await asyncio.sleep(0.01)
     raise AssertionError(f"video job {video_id} did not complete")
+
+
+@pytest.mark.asyncio
+async def test_completed_video_restarts_idle_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingEngine:
+        model_name = "notapalindrome/ltx23-mlx-av-q4"
+
+        def generate(self, *, output_path: Path, **kwargs) -> None:
+            started.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError("generation was not released")
+            output_path.write_bytes(b"generated-mp4")
+
+    monkeypatch.setattr(video, "_video_engine", lambda: BlockingEngine())
+    monkeypatch.setattr(
+        residency, "_manager", lambda: SimpleNamespace(snapshot=lambda: {"models": []})
+    )
+    app = FastAPI()
+    app.include_router(video.router)
+    app.include_router(residency.router)
+    app.dependency_overrides[verify_api_key] = lambda: None
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/videos",
+            data={"prompt": "Ocean waves", "seconds": "1", "size": "512x512"},
+        )
+        assert response.status_code == 200, response.text
+        video_id = response.json()["id"]
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            response = await client.get("/v1/models/residency")
+            assert response.status_code == 200
+            assert response.json()["activity"]["idle_seconds"] == 0
+            with activity_tracker._lock:
+                activity_tracker._last_activity -= 600
+            release.set()
+            await _wait_for_completion(video_id)
+            response = await client.get("/v1/models/residency")
+            assert response.status_code == 200
+            assert response.json()["activity"]["idle_seconds"] < 5
+        finally:
+            release.set()
 
 
 def _completed_job(job_id: str, *, created_at: int = 1) -> video._VideoJob:

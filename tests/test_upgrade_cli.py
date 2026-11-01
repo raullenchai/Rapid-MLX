@@ -432,3 +432,32 @@ def test_upgrade_interrupt_exits_130(monkeypatch, capsys):
         upgrade_command(SimpleNamespace(yes=True, dry_run=False))
     assert exc.value.code == 130
     assert "Interrupted." in capsys.readouterr().out
+
+
+def test_upgrade_routes_through_runner(monkeypatch):
+    _stub_brew_with_upgrade_available(monkeypatch)
+    run = MagicMock(return_value=0)
+    monkeypatch.setattr("rapid_mlx._upgrade_runner.run_upgrade_command", run)
+    with pytest.raises(SystemExit) as exc:
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"])
+    assert exc.value.code == 0
+
+
+@pytest.mark.parametrize(
+    ("method", "binary", "label"),
+    [("install_sh", "/some/bin/rapid-mlx", "one-line installer"), ("pip", None, "pip")],
+)
+def test_upgrade_install_display(monkeypatch, capsys, method, binary, label):
+    import sys
+
+    _stub_brew_with_upgrade_available(monkeypatch)
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo(method, "upgrade", ["upgrade"], binary),
+    )
+    upgrade_command(SimpleNamespace(yes=False, dry_run=True))
+    out = capsys.readouterr().out
+    assert f"  Install:  {label} ({binary or sys.executable})" in out
+    assert "unknown path" not in out

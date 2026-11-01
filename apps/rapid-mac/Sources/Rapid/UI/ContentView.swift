@@ -791,6 +791,20 @@ struct ContentView: View {
                     if server.residency.contains(alias) { return true }
                     if case .ready(let readyAlias) = server.state { return readyAlias == alias }
                     return false
+                },
+                lane: { alias in
+                    guard let entry = catalogEntries.first(where: { $0.alias == alias }) else { return nil }
+                    return ModelSelectionPurpose.allCases.first(where: { $0.accepts(entry) })
+                },
+                isStarting: { alias in
+                    let startingAlias: String?
+                    if case .starting(let alias) = server.state { startingAlias = alias }
+                    else { startingAlias = nil }
+                    return Self.isStartingDownload(
+                        alias: alias, serverStartingAlias: startingAlias,
+                        quickstartVisible: quickstartVisible, quickstartAlias: quickstart.selection.alias,
+                        quickstartPhase: quickstart.phase
+                    )
                 }
             )
             if showLogs {
@@ -1604,6 +1618,14 @@ struct ContentView: View {
         return ContentView.quickstartRetainsSurface(phase: quickstart.phase)
     }
 
+    static func isStartingDownload(
+        alias: String, serverStartingAlias: String?, quickstartVisible: Bool,
+        quickstartAlias: String, quickstartPhase: QuickstartCoordinator.Phase
+    ) -> Bool {
+        serverStartingAlias == alias || (quickstartVisible && quickstartAlias == alias
+            && (quickstartPhase == .downloading || quickstartPhase == .starting))
+    }
+
     /// Does onboarding still own the window in this phase?
     ///
     /// Pure so the one rule that decides whether setup is on screen can be
@@ -2132,9 +2154,10 @@ struct ContentView: View {
             }
         case .promptDownload(let pending):
             let footprint = ModelSizing.estimate(alias: pending)
-            let sizeText: String? = footprint.paramsBillions == nil
-                ? nil
-                : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30)))
+            let sizeText: String? = catalogEntries.first { $0.alias == pending }?.displayedModelSize?.displayText
+                ?? (footprint.paramsBillions == nil
+                    ? nil
+                    : "~" + DownloadProgress.formatBytes(DownloadProgress.bytes(fromDouble: footprint.weightsGB * Double(1 << 30))))
             autoStartPendingDownload = (alias: pending, sizeText: sizeText)
             alias = pending
             return .noPrimaryLaunch

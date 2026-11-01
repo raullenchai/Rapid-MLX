@@ -802,17 +802,12 @@ _SHARED_PREFIX_STORE_MIN_TOKENS = 1024
 # resume snapshot paths — one constant so the two capacities stay identical.
 _MEDIA_SNAPSHOT_HEADROOM_TOKENS = 64
 
-# Media boundaries are aligned DOWN to this grid (a multiple of it). The
-# hybrid GatedDeltaNet prefill scans tokens in fixed-size chunk tiles that
-# start at each forward's beginning (``gated_delta_chunked`` C=64); a split
-# whose boundary sits inside a tile re-tiling the tail produces last-ULP
-# state differences that compound through the recurrence (measured ~1.5
-# logits of drift, same argmax) and can flip near-tie tokens a turn or two
-# later. With the boundary on the grid, the split's tiles coincide with the
-# single forward's and the split eliminates the recurrent tile
-# re-alignment drift. GEMM batch-size differences between the split and
-# single forwards remain and still produce small cross-phase float
-# divergence (same argmax; reported, not gated — see the design note).
+# Prefer this recurrent-scan tile grid to remove one source of drift. An
+# off-grid split re-tiles the tail after the boundary; its measured last-ULP
+# recurrent-state drift is comparable to the GEMM batch-size drift every warm
+# resume carries (same argmax). Store and repeat resumes use the identical
+# split, so repeats remain deterministic. Requiring alignment would disable
+# caching for short post-image questions, the most common request shape.
 _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 
 # Model families qualified for the split media boundary, by ``config.model_type``.
@@ -1333,6 +1328,7 @@ class MLLMBatchGenerator:
                 f"singleton_fastpath must be 'auto' or 'off', "
                 f"got {singleton_fastpath!r}"
             )
+        self._step_uids: frozenset[int] | None = None
         self.singleton_fastpath = singleton_fastpath
         if media_prefix_cache not in ("auto", "off"):
             raise ValueError(
@@ -1818,6 +1814,44 @@ class MLLMBatchGenerator:
         self._media_semantics_salt_cache = cached_salt
         return cached_salt
 
+    def _vision_feature_cache_key(self, request: MLLMBatchRequest) -> str | None:
+        key = request.vision_feature_key
+        if not key or not isinstance(key, str):
+            return None
+
+        def flatten(values):
+            if isinstance(values, (list, tuple)):
+                return tuple(item for value in values for item in flatten(value))
+            return (int(values),)
+
+        def geometry_value(value):
+            try:
+                return flatten(value.tolist() if hasattr(value, "tolist") else value)
+            except (TypeError, ValueError):
+                return tuple(value.shape) if hasattr(value, "shape") else repr(value)
+
+        grid = request.image_grid_thw
+        if grid is not None:
+            grid = flatten(grid.tolist() if hasattr(grid, "tolist") else grid)
+        pixel_values = request.pixel_values
+        geometry = (
+            int(request.media_pixel_cap or 0),
+            int(getattr(self, "vision_min_pixels", 0) or 0),
+            (
+                tuple(pixel_values.shape)
+                if pixel_values is not None and hasattr(pixel_values, "shape")
+                else None
+            ),
+            grid,
+            tuple(
+                (name, geometry_value(value))
+                for name in ("video_grid_thw", "spatial_shapes", "image_sizes")
+                if name in request.extra_kwargs
+                for value in (request.extra_kwargs[name],)
+            ),
+        )
+        return f"{key}#{geometry}"
+
     def _media_identity_digest(self, request: MLLMBatchRequest) -> str | None:
         """Cache key: ordered media content plus the semantic salt.
 
@@ -1993,6 +2027,19 @@ class MLLMBatchGenerator:
         return max(1, min(chunk, budget))
 
     def _chunked_media_lm_prefill(self, input_ids, cache, kwargs):
+        return self._drain_media_steps(
+            self._chunked_media_lm_prefill_steps(input_ids, cache, kwargs)
+        )
+
+    @staticmethod
+    def _drain_media_steps(steps):
+        while True:
+            try:
+                next(steps)
+            except StopIteration as done:
+                return done.value
+
+    def _chunked_media_lm_prefill_steps(self, input_ids, cache, kwargs):
         emb = self.model.get_input_embeddings(
             input_ids,
             kwargs.get("pixel_values"),
@@ -2029,6 +2076,7 @@ class MLLMBatchGenerator:
             lm_kwargs.pop("pixel_values", None)
             mx.eval([c.state for c in cache])
             mx.clear_cache()
+            yield
         lm_kwargs.pop("pixel_values", None)
         return self.language_model(
             input_ids[:, -1:],
@@ -2038,11 +2086,17 @@ class MLLMBatchGenerator:
         )
 
     def _media_chunked_suffix_forward(self, ids, cache, delta, chunked):
+        return self._drain_media_steps(
+            self._media_chunked_suffix_forward_steps(ids, cache, delta, chunked)
+        )
+
+    def _media_chunked_suffix_forward_steps(self, ids, cache, delta, chunked):
         chunk = self._media_prefill_chunk_tokens() if chunked else ids.shape[1]
         for start in range(0, ids.shape[1], chunk):
             if start:
                 mx.eval([c.state for c in cache])
                 mx.clear_cache()
+                yield
             output = self._media_suffix_forward(
                 ids[:, start : start + chunk], cache, delta
             )
@@ -2447,20 +2501,6 @@ class MLLMBatchGenerator:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        boundary = len(full_ids) - marker_width
-        # Align the boundary DOWN to the recurrent-scan tile grid so the
-        # split's chunking coincides with the single forward's (see
-        # ``_MEDIA_BOUNDARY_ALIGN_TOKENS``). The suffix only grows, so the
-        # engine's stable-boundary semantics are preserved; anything that
-        # cannot keep the aligned boundary above the placeholders (or the
-        # minimum) stays cold.
-        boundary = (boundary // _MEDIA_BOUNDARY_ALIGN_TOKENS) * (
-            _MEDIA_BOUNDARY_ALIGN_TOKENS
-        )
-        if boundary < _MEDIA_BOUNDARY_MIN_TOKENS or boundary >= len(full_ids):
-            if not counted_miss:
-                self._media_boundary_misses += 1
-            return None
         # The suffix is forwarded with ``pixel_values=None``: every vision
         # placeholder token must sit inside the prefix. The engine's
         # boundary semantics cannot guarantee that for all request shapes
@@ -2476,11 +2516,29 @@ class MLLMBatchGenerator:
             (i for i, token in enumerate(full_ids) if token in placeholder_ids),
             default=-1,
         )
-        if last_placeholder >= boundary:
+        raw = len(full_ids) - marker_width
+        aligned = (raw // _MEDIA_BOUNDARY_ALIGN_TOKENS) * _MEDIA_BOUNDARY_ALIGN_TOKENS
+        # Prefer the grid to remove recurrent-scan re-tiling drift. An
+        # off-grid split re-tiles the tail after the boundary, with measured
+        # last-ULP recurrent-state drift comparable to the GEMM batch-size
+        # drift every warm resume carries (same argmax). Store and repeat
+        # resumes use the same split, keeping
+        # repeats deterministic. A strict grid gate would leave short
+        # post-image questions, the most common shape, uncached.
+        store_boundary: int | None = next(
+            (
+                candidate
+                for candidate in (aligned, raw)
+                if _MEDIA_BOUNDARY_MIN_TOKENS <= candidate < len(full_ids)
+                and candidate > last_placeholder
+            ),
+            None,
+        )
+        if store_boundary is None:
             if not counted_miss:
                 self._media_boundary_misses += 1
             return None
-        return ("store", None, boundary, generation, digest)
+        return ("store", None, store_boundary, generation, digest)
 
     def _media_store(
         self,
@@ -2649,6 +2707,17 @@ class MLLMBatchGenerator:
         if chunked:
             return self._chunked_media_lm_prefill(input_ids, cache, kwargs)
         return self.model(input_ids, cache=cache, **kwargs)
+
+    def _media_cold_redo_steps(self, input_ids, cache, kwargs, chunked=False):
+        if not chunked:
+            return self._media_cold_redo(input_ids, cache, kwargs)
+
+        from mlx_lm.models.cache import make_prompt_cache
+
+        cache[:] = make_prompt_cache(self.language_model)
+        return (
+            yield from self._chunked_media_lm_prefill_steps(input_ids, cache, kwargs)
+        )
 
     def _media_discard_boundary(
         self, request: MLLMBatchRequest, digest: Any = None
@@ -4063,14 +4132,19 @@ class MLLMBatchGenerator:
             f"({processing_time:.2f}s)"
         )
 
-    def _media_forward(
+    def _media_forward(self, request, input_ids, cache, kwargs, chunked=False) -> Any:
+        return self._drain_media_steps(
+            self._media_forward_steps(request, input_ids, cache, kwargs, chunked)
+        )
+
+    def _media_forward_steps(
         self,
         request: MLLMBatchRequest,
         input_ids: Any,
         cache: list[Any],
         kwargs: dict[str, Any],
         chunked: bool = False,
-    ) -> Any:
+    ) -> Generator[None, None, Any]:
         """The media single forward, with boundary store/resume when eligible.
 
         Cold path (plan None): exactly the historical single forward. Store
@@ -4084,11 +4158,13 @@ class MLLMBatchGenerator:
         """
         plan = self._media_boundary_plan(request, input_ids, cache)
         if plan is None:
-            return (
-                self._chunked_media_lm_prefill(input_ids, cache, kwargs)
-                if chunked
-                else self.model(input_ids, cache=cache, **kwargs)
-            )
+            if chunked:
+                return (
+                    yield from self._chunked_media_lm_prefill_steps(
+                        input_ids, cache, kwargs
+                    )
+                )
+            return self.model(input_ids, cache=cache, **kwargs)
         action, entry, boundary, generation, digest = plan
         full_ids = [int(v) for v in input_ids.reshape(-1).tolist()]
         if action == "resume":
@@ -4108,11 +4184,13 @@ class MLLMBatchGenerator:
                 # failed — degrade to a counted cold miss instead of an
                 # impossible resume.
                 self._media_boundary_misses += 1
-                return (
-                    self._chunked_media_lm_prefill(input_ids, cache, kwargs)
-                    if chunked
-                    else self.model(input_ids, cache=cache, **kwargs)
-                )
+                if chunked:
+                    return (
+                        yield from self._chunked_media_lm_prefill_steps(
+                            input_ids, cache, kwargs
+                        )
+                    )
+                return self.model(input_ids, cache=cache, **kwargs)
             # Validate the generation and install the snapshot in one
             # critical section: a clear_prefix_cache landing between the
             # plan and here must not have its emptied store revived by a
@@ -4123,14 +4201,16 @@ class MLLMBatchGenerator:
                     cache[:] = cloned
             if stale:
                 self._media_boundary_misses += 1
-                return (
-                    self._chunked_media_lm_prefill(input_ids, cache, kwargs)
-                    if chunked
-                    else self.model(input_ids, cache=cache, **kwargs)
-                )
+                if chunked:
+                    return (
+                        yield from self._chunked_media_lm_prefill_steps(
+                            input_ids, cache, kwargs
+                        )
+                    )
+                return self.model(input_ids, cache=cache, **kwargs)
             try:
                 self._media_mrope_install(entry.rope_delta)
-                output = self._media_chunked_suffix_forward(
+                output = yield from self._media_chunked_suffix_forward_steps(
                     input_ids[:, boundary:], cache, entry.rope_delta, chunked
                 )
             except _MediaSplitUnsupportedError:
@@ -4140,9 +4220,9 @@ class MLLMBatchGenerator:
                 self._media_mrope_restore()
                 self._media_boundary_misses += 1
                 return (
-                    self._media_cold_redo(input_ids, cache, kwargs, True)
-                    if chunked
-                    else self._media_cold_redo(input_ids, cache, kwargs)
+                    yield from self._media_cold_redo_steps(
+                        input_ids, cache, kwargs, chunked
+                    )
                 )
             except BaseException:
                 # The installed delta is model-global state: a failing
@@ -4168,7 +4248,7 @@ class MLLMBatchGenerator:
         self._media_mrope_save()
         try:
             if chunked and boundary > self._media_prefill_chunk_tokens():
-                self._chunked_media_lm_prefill(
+                yield from self._chunked_media_lm_prefill_steps(
                     input_ids[:, :boundary], cache, prefix_kwargs
                 )
             else:
@@ -4194,15 +4274,17 @@ class MLLMBatchGenerator:
                 self._media_boundary_misses += 1
                 self._media_mrope_restore()
                 return (
-                    self._media_cold_redo(input_ids, cache, prefix_kwargs, True)
-                    if chunked
-                    else self._media_cold_redo(input_ids, cache, prefix_kwargs)
+                    yield from self._media_cold_redo_steps(
+                        input_ids, cache, prefix_kwargs, chunked
+                    )
                 )
             published = True
             # Snapshot published: continue the suffix on the same live cache
             # with the delta this forward already installed on the model.
-            return self._media_chunked_suffix_forward(
-                input_ids[:, boundary:], cache, rope_delta, chunked
+            return (
+                yield from self._media_chunked_suffix_forward_steps(
+                    input_ids[:, boundary:], cache, rope_delta, chunked
+                )
             )
         except _MediaSplitUnsupportedError:
             # The suffix path the probes picked cannot serve this request.
@@ -4213,9 +4295,9 @@ class MLLMBatchGenerator:
                 self._media_discard_boundary(request, digest=digest)
             self._media_boundary_misses += 1
             return (
-                self._media_cold_redo(input_ids, cache, prefix_kwargs, True)
-                if chunked
-                else self._media_cold_redo(input_ids, cache, prefix_kwargs)
+                yield from self._media_cold_redo_steps(
+                    input_ids, cache, prefix_kwargs, chunked
+                )
             )
         except BaseException:
             # Same model-global-state contract: the save transaction spans
@@ -4290,18 +4372,23 @@ class MLLMBatchGenerator:
         # set when the model honours the contract (see ``__init__``) and the
         # request actually carries images; text-only prefill and the chunked
         # path (``pixel_values=None``) never see these kwargs. The features are
-        # image-only (prompt-independent), so the key is the image content
-        # hash, not the prompt. ``getattr`` keeps this callable on the
-        # minimally-constructed generators the chunked-prefill tests build via
+        # dependent on resize geometry, which can depend on prompt length, so
+        # the key combines image content and effective geometry. ``getattr``
+        # keeps this callable on the minimally-constructed generators built via
         # ``__new__`` (which set only model / language_model / prefill_step_size).
         feature_cache = getattr(self, "_vision_feature_cache", None)
+        feature_key = (
+            self._vision_feature_cache_key(request)
+            if feature_cache is not None and request.pixel_values is not None
+            else None
+        )
         if (
             feature_cache is not None
             and request.pixel_values is not None
-            and request.vision_feature_key is not None
+            and feature_key is not None
         ):
             kwargs["vision_cache"] = feature_cache
-            kwargs["_image_key"] = request.vision_feature_key
+            kwargs["_image_key"] = feature_key
 
         # Run the VLM forward pass with cache.
         # The VLM passes cache= through to self.language_model(),
@@ -4510,11 +4597,13 @@ class MLLMBatchGenerator:
             ):
                 raise ClientRequestError(_prefill_cap_violation([request], budget))
             if chunked and cache is not None:
-                output = self._media_forward(
+                output = yield from self._media_forward_steps(
                     request, input_ids, cache, kwargs, chunked=True
                 )
             elif cache is not None:
-                output = self._media_forward(request, input_ids, cache, kwargs)
+                output = yield from self._media_forward_steps(
+                    request, input_ids, cache, kwargs
+                )
             else:
                 output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
@@ -4971,6 +5060,8 @@ class MLLMBatchGenerator:
         prompt_processing = False
         batch = self.active_batch
         num_active = len(batch) if batch else 0
+        if batch is not None and num_active:
+            self._step_uids = frozenset(batch.uids)
 
         # Only start a new batch when there is no active batch generating.
         # Per-request KV caches are created during vision encoding and then
@@ -4995,6 +5086,7 @@ class MLLMBatchGenerator:
                         self._process_prompt_steps(requests, cooperative=True),
                     )
                     self._pending_prefill = pending
+                self._step_uids = frozenset([pending[0].uid])
                 try:
                     # Public next() supplies this step's stream context; it
                     # exits before the suspended continuation returns control.
@@ -5011,6 +5103,7 @@ class MLLMBatchGenerator:
                     self._close_pending_prefill()
                     raise
             else:
+                self._step_uids = frozenset(req.uid for req in requests)
                 new_batch = self._process_prompts(requests)
             processed_uids = {req.uid for req in requests}
             self.unprocessed_requests = [
@@ -5147,8 +5240,14 @@ class MLLMBatchGenerator:
         Returns:
             List of MLLMBatchResponse, one per active request
         """
+        self._step_uids = None
         with mx.stream(self._stream):
-            return self._next()
+            result = self._next()
+        self._step_uids = None
+        return result
+
+    def failed_step_uids(self) -> frozenset[int] | None:
+        return getattr(self, "_step_uids", None)
 
     def stats(self) -> MLLMBatchStats:
         """
