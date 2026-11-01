@@ -142,6 +142,82 @@ def test_refuses_when_fitting_pick_fails(monkeypatch, capsys):
     assert "rapid-mlx models" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("alias", "modality", "operations", "expected_pick"),
+    [
+        ("qwen-image-edit", "image-gen", {"image_to_image"}, None),
+        (
+            "qwen-image-2.1-bf16",
+            "image-gen",
+            {"text_to_image", "image_to_image"},
+            None,
+        ),
+        (
+            "diffusion-gemma-26b-8bit",
+            "text-diffusion",
+            set(),
+            "diffusion-gemma-26b-4bit",
+        ),
+        ("gemma-4-31b-8bit", "text", set(), None),
+    ],
+)
+def test_refusal_suggests_fitting_same_task_model(
+    alias, modality, operations, expected_pick, monkeypatch, capsys
+):
+    from rapid_mlx.catalog.legacy import _main_capabilities
+
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 25 * GIB
+    )
+    with pytest.raises(SystemExit) as exc:
+        run(alias, 32, monkeypatch)
+    assert exc.value.code == 1
+    output = capsys.readouterr().err
+    pick = output.split("rapid-mlx serve ", 1)[1].split()[0]
+    profile = resolve_profile(pick)
+    assert profile is not None
+    assert profile.modality == modality
+    assert operations.issubset(_main_capabilities(profile)["operation_modes"])
+    if expected_pick is not None:
+        assert pick == expected_pick
+    run(pick, 32, monkeypatch)
+
+
+def test_text_diffusion_falls_back_to_text_pick():
+    pick, label = preflight._same_task_fitting_pick(
+        "diffusion-gemma-26b-8bit",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=12 * GIB,
+    )
+    assert (pick, label) == (
+        fitting_pick(32, 12, exclude="diffusion-gemma-26b-8bit"),
+        "text",
+    )
+    assert pick is not None
+    assert resolve_profile(pick).modality == "text"
+
+
+def test_same_task_pick_unknown_alias():
+    assert preflight._same_task_fitting_pick(
+        "not-a-catalog-model",
+        ram_bytes=32 * GIB,
+        recommended_working_set_bytes=25 * GIB,
+    ) == (None, None)
+
+
+def test_refusal_without_fitting_image_model(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight, "_mlx_recommended_working_set_bytes", lambda: 3 * GIB
+    )
+    with pytest.raises(SystemExit) as exc:
+        run("flux2-klein-4b", 32, monkeypatch)
+    assert exc.value.code == 1
+    output = capsys.readouterr().err
+    assert "No image generation model in the catalog fits this Mac." in output
+    assert "rapid-mlx serve " not in output
+    assert "See every model and its size: rapid-mlx models" in output
+
+
 def test_tier_picks_pass_at_floor(monkeypatch):
     for tier in load_recommendation_tiers():
         for pick in tier.picks:

@@ -1067,6 +1067,94 @@ def catalog_memory_refusal(
         return None
 
 
+def _same_task_fitting_pick(
+    alias: str,
+    *,
+    ram_bytes: int | None,
+    recommended_working_set_bytes: int | None,
+) -> tuple[str | None, str | None]:
+    """Suggest an admitted catalog model for the refused model's primary task."""
+    try:
+        from rapid_mlx.catalog.legacy import _main_capabilities
+        from rapid_mlx.model_aliases import (
+            draft_only_conflict,
+            list_builtin_aliases,
+            resolve_profile,
+        )
+        from rapid_mlx.recommendations import fitting_pick
+
+        profile = resolve_profile(alias)
+        if profile is None:
+            return None, None
+        caps = _main_capabilities(profile)
+        task = caps["task_types"][0]
+        ops = set(caps["operation_modes"])
+        adapter = caps["runtime_adapter"]
+        text_diffusion = adapter == "rapid_mlx/text_diffusion"
+        budget = _working_set_budget(ram_bytes, recommended_working_set_bytes)
+        if task == "text_generation" and not text_diffusion:
+            return (
+                fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias)
+                if ram_bytes and budget
+                else None,
+                "text",
+            )
+
+        label = task.replace("_", " ")
+        if task == "image_generation" and "text_to_image" not in ops:
+            label = "image editing"
+        elif text_diffusion:
+            label = "text"
+
+        candidates: list[tuple[bool, int, str]] = []
+        for candidate in sorted(list_builtin_aliases()):
+            candidate_profile = resolve_profile(candidate)
+            if (
+                candidate_profile is None
+                or candidate_profile.experimental
+                or candidate_profile.hf_path == profile.hf_path
+                or candidate.casefold() == alias.casefold()
+                or draft_only_conflict(candidate) is not None
+            ):
+                continue
+            candidate_caps = _main_capabilities(candidate_profile)
+            if candidate_caps["task_types"][0] != task or (
+                text_diffusion and candidate_caps["runtime_adapter"] != adapter
+            ):
+                continue
+            if (
+                catalog_memory_refusal(
+                    candidate,
+                    ram_bytes=ram_bytes,
+                    recommended_working_set_bytes=recommended_working_set_bytes,
+                    cached=False,
+                )
+                is not None
+            ):
+                continue
+            fit = catalog_memory_fit(
+                candidate,
+                ram_bytes=ram_bytes,
+                recommended_working_set_bytes=recommended_working_set_bytes,
+            )
+            if fit.fits is True:
+                candidates.append(
+                    (
+                        ops.issubset(candidate_caps["operation_modes"]),
+                        fit.estimate_bytes or 0,
+                        candidate,
+                    )
+                )
+        if candidates:
+            candidates.sort(key=lambda item: (not item[0], -item[1], item[2]))
+            return candidates[0][2], label
+        if text_diffusion and ram_bytes and budget:
+            return fitting_pick(ram_bytes / _GIB, budget / _GIB, exclude=alias), label
+        return None, label
+    except Exception:
+        return None, None
+
+
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
@@ -1078,7 +1166,6 @@ def _check_catalog_memory_fit(args: Any) -> None:
             return
         from rapid_mlx.cli import _cache_runnability
         from rapid_mlx.model_aliases import resolve_profile
-        from rapid_mlx.recommendations import fitting_pick
 
         alias = getattr(args, "_original_alias", None) or args.model
         profile = resolve_profile(alias)
@@ -1087,10 +1174,11 @@ def _check_catalog_memory_fit(args: Any) -> None:
         cached = _cache_runnability(profile.hf_path) is True
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
+        recommended = mlx_recommended_working_set_bytes()
         result = catalog_memory_refusal(
             alias,
             ram_bytes=ram,
-            recommended_working_set_bytes=mlx_recommended_working_set_bytes(),
+            recommended_working_set_bytes=recommended,
             cached=cached,
         )
         if result is None:
@@ -1104,12 +1192,9 @@ def _check_catalog_memory_fit(args: Any) -> None:
     except Exception:
         return
 
-    try:
-        pick = (
-            fitting_pick(ram / _GIB, budget / _GIB, exclude=alias) if budget else None
-        )
-    except Exception:
-        pick = None
+    pick, label = _same_task_fitting_pick(
+        alias, ram_bytes=ram, recommended_working_set_bytes=recommended
+    )
 
     if result.kind == "memory_floor":
         print(
@@ -1126,6 +1211,9 @@ def _check_catalog_memory_fit(args: Any) -> None:
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
         print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
+    elif label is not None and label != "text":
+        print(f"  No {label} model in the catalog fits this Mac.", file=sys.stderr)
+        print("  See every model and its size: rapid-mlx models", file=sys.stderr)
     else:
         print(
             "  Pick a smaller or more quantized build: rapid-mlx models",
