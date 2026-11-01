@@ -1045,6 +1045,45 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
 
 
+@pytest.mark.parametrize("workers_joined", [False, True])
+def test_text_lane_cancellation_shuts_down_without_waiting(monkeypatch, workers_joined):
+    from rapid_mlx import engine_core
+    from rapid_mlx.utils import tokenizer as tokenizer_module
+
+    calls = []
+    executor_type = local_runner._TrackingExecutor
+
+    class RecordingExecutor(executor_type):
+        def shutdown(self, *, wait, cancel_futures):
+            calls.append(("shutdown", wait, cancel_futures))
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+        def join_workers(self, timeout):
+            calls.append(("join", timeout))
+            # Reap the real, inert worker before simulating the native-worker state.
+            assert super().join_workers(timeout=5)
+            return workers_joined
+
+    def cancel(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(local_runner, "_abandoned_native_worker", False)
+    monkeypatch.setattr(local_runner, "_TrackingExecutor", RecordingExecutor)
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            local_runner._text_measurements(
+                "qwen3.5-4b-4bit",
+                "mlx-community/Qwen3.5-4B-MLX-4bit",
+                acceleration=AccelerationRequest(baseline=True),
+            )
+        )
+    assert calls == [("shutdown", False, True), ("join", 1.0)]
+    assert local_runner.abandoned_native_worker() is (not workers_joined)
+
+
 def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

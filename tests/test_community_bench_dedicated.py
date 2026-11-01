@@ -876,6 +876,31 @@ def test_measure_timeout_does_not_wait_for_blocked_step(fake_dedicated, monkeypa
             release.set()
 
 
+@pytest.mark.parametrize("outstanding", [False, True])
+def test_measure_cancellation_abandons_only_outstanding_work(
+    fake_dedicated, monkeypatch, outstanding
+):
+    from concurrent.futures import Future
+
+    from rapid_mlx.community_bench import runner
+
+    f = fake_dedicated
+    monkeypatch.setattr(f.lr, "_abandoned_native_worker", False)
+    pending = Future()
+
+    async def cancel(adapter, tokenizer, **kwargs):
+        if outstanding:
+            adapter._futures.track(pending)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner, "run_standardized_bench", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(f.lr._measure_dedicated(f.handle, "org/model", "example", {}, None))
+    assert f.closed == [not outstanding]
+    assert f.lr.abandoned_native_worker() is outstanding
+    pending.cancel()
+
+
 @pytest.mark.parametrize(
     "lane,expected_download",
     [

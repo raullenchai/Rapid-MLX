@@ -4442,7 +4442,8 @@ def test_video_download_connection_failures_are_transport_errors(
         server.server_close()
 
 
-def test_video_download_transport_error_reports_server_exit(monkeypatch):
+@pytest.mark.parametrize("server_exited", [True, False])
+def test_video_download_transport_error_reports_server_exit(monkeypatch, server_exited):
     error = _server.ServerExitedError(
         "The local model server stopped unexpectedly (killed by SIGKILL).",
         -9,
@@ -4452,7 +4453,10 @@ def test_video_download_transport_error_reports_server_exit(monkeypatch):
 
     @contextlib.contextmanager
     def serve(*args, **kwargs):
-        yield {"base_url": "http://local/v1", "exit_error": lambda: error}
+        yield {
+            "base_url": "http://local/v1",
+            "exit_error": lambda: error if server_exited else None,
+        }
 
     case = registered_workload("video_generation")["cases"][0]
     monkeypatch.setattr(_server, "serve", serve)
@@ -4480,9 +4484,13 @@ def test_video_download_transport_error_reports_server_exit(monkeypatch):
         raise local_runner.VideoArtifactTransportError("connection closed")
 
     monkeypatch.setattr(local_runner, "_download_video_artifact", fail)
-    with pytest.raises(_server.ServerExitedError) as caught:
+    with pytest.raises(RuntimeError) as caught:
         local_runner._run_video("example-video")
-    assert caught.value is error
+    if server_exited:
+        assert caught.value is error
+    else:
+        assert "server is still running" in str(caught.value)
+    assert isinstance(caught.value.__cause__, local_runner.VideoArtifactTransportError)
 
 
 @pytest.mark.parametrize("received", [0, 1])
@@ -5000,7 +5008,18 @@ def test_video_probe_worker_survives_a_torn_result_pipe(
     assert sender.closed is True
 
 
-@pytest.mark.parametrize("outcome", ["ok", "runtime", "unexpected"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "ok",
+        "runtime",
+        "unexpected",
+        "connection",
+        "chunked",
+        "http",
+        "http_no_response",
+    ],
+)
 def test_video_download_worker_reports_each_outcome(
     monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
@@ -5015,6 +5034,18 @@ def test_video_download_worker_reports_each_outcome(
             raise RuntimeError("video artifact exceeds the 1 GiB safety limit")
         if outcome == "unexpected":
             raise OSError("disk pulled")
+        if outcome in {"connection", "chunked"}:
+            error_type = (
+                requests.exceptions.ConnectionError
+                if outcome == "connection"
+                else requests.exceptions.ChunkedEncodingError
+            )
+            raise error_type("connection closed\nprivate server detail")
+        if outcome in {"http", "http_no_response"}:
+            response = requests.Response() if outcome == "http" else None
+            if response is not None:
+                response.status_code = 503
+            raise requests.HTTPError("private response detail", response=response)
 
     monkeypatch.setattr(local_runner, "_download_video_artifact_unbounded", download)
     receiver, sender = multiprocessing.Pipe(duplex=False)
@@ -5031,6 +5062,14 @@ def test_video_download_worker_reports_each_outcome(
         assert (status, payload) == (
             "error",
             "video artifact exceeds the 1 GiB safety limit",
+        )
+    elif outcome in {"connection", "chunked"}:
+        assert (status, payload) == ("transport", "connection closed")
+    elif outcome in {"http", "http_no_response"}:
+        code = 503 if outcome == "http" else None
+        assert (status, payload) == (
+            "error",
+            f"video artifact download failed with HTTP {code}",
         )
     else:
         assert (status, payload) == ("error", "video artifact download failed")

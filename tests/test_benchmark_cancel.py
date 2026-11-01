@@ -404,6 +404,111 @@ def args(json_mode=False):
     )
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+@pytest.mark.parametrize("flush_fails", [False, True])
+def test_hard_exit_cancelled_runs_cleanup_and_flushes_before_exit(
+    monkeypatch, cleanup_fails, flush_fails
+):
+    calls = []
+
+    def cleanup():
+        calls.append("cleanup")
+        if cleanup_fails:
+            raise SystemExit("cleanup interrupted")
+
+    def flush(name):
+        calls.append(name)
+        if flush_fails:
+            raise BrokenPipeError("stream closed")
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", cleanup)
+    monkeypatch.setattr(
+        cli.sys, "stdout", SimpleNamespace(flush=lambda: flush("stdout"))
+    )
+    monkeypatch.setattr(
+        cli.sys, "stderr", SimpleNamespace(flush=lambda: flush("stderr"))
+    )
+    monkeypatch.setattr(cli.os, "_exit", lambda code: calls.append(("exit", code)))
+
+    cli._hard_exit_cancelled(143)
+
+    assert calls == ["cleanup", "stdout", "stderr", ("exit", 143)]
+
+
+def test_cancel_backstop_exits_without_waiting_for_cleanup(monkeypatch):
+    calls = []
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(cli.os, "_exit", lambda code: calls.append(("exit", code)))
+
+    cli._cancel_backstop(130)
+
+    assert calls == [("exit", 130)]
+
+
+@pytest.mark.parametrize("helper", [cli._hard_exit_cancelled, cli._cancel_backstop])
+def test_cancel_exit_helpers_are_inert_under_pytest(monkeypatch, helper):
+    calls = []
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "cancellation guard")
+    monkeypatch.setattr(cli.atexit, "_run_exitfuncs", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(cli.os, "_exit", calls.append)
+    helper(130)
+    assert calls == []
+
+
+def test_cli_cancels_backstop_when_runner_recovers_from_signal(monkeypatch, capsys):
+    calls = []
+    handlers = {}
+
+    def install(sig, handler):
+        previous = handlers.get(sig)
+        handlers[sig] = handler
+        return previous
+
+    class Timer:
+        def __init__(self, interval, callback, arguments):
+            assert interval == cli._CANCEL_BACKSTOP_SECONDS
+            assert callback is cli._cancel_backstop
+            assert arguments == [143]
+
+        def start(self):
+            calls.append("start")
+
+        def cancel(self):
+            calls.append("cancel")
+
+    def recover(*args, **kwargs):
+        with pytest.raises(KeyboardInterrupt):
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return {"recovered": True}
+
+    monkeypatch.setattr(cli.signal, "signal", install)
+    monkeypatch.setattr(cli.threading, "Timer", Timer)
+    monkeypatch.setattr(cli, "run_local", recover)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
+    assert cli.benchmark_command(args(True)) == 0
+    assert calls == ["start", "cancel"]
+    assert json.loads(capsys.readouterr().out) == {"recovered": True}
+    assert handlers == {signal.SIGINT: None, signal.SIGTERM: None}
+
+
+def test_cli_interrupt_with_abandoned_worker_hard_exits(monkeypatch, capsys):
+    calls = []
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_local", interrupt)
+    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
+    monkeypatch.setattr(cli, "abandoned_native_worker", lambda: True)
+    monkeypatch.setattr(cli, "_hard_exit_cancelled", calls.append)
+
+    assert cli.benchmark_command(args()) == 130
+    assert calls == [130]
+    assert "Benchmark cancelled" in capsys.readouterr().err
+
+
 def test_cli_interrupt(monkeypatch, capsys):
     def interrupt(*args, **kwargs):
         raise KeyboardInterrupt
