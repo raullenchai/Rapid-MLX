@@ -543,7 +543,9 @@ def measured_image_estimate_bytes(model_name: str) -> int | None:
         measured = _measured_image_estimate_for_spelling(alias)
         if measured is not None:
             return measured
-        return _measured_image_estimate_for_spelling(resolve_profile(alias).hf_path)
+        profile = resolve_profile(alias)
+        assert profile is not None  # catalog_identity yields built-in aliases
+        return _measured_image_estimate_for_spelling(profile.hf_path)
     return _measured_image_estimate_for_spelling(model_name)
 
 
@@ -635,9 +637,11 @@ def estimate_model_bytes(model_name: str) -> int:
         measured = measured_image_estimate_bytes(alias)
         if measured is not None:
             return measured
+        profile = resolve_profile(alias)
+        assert profile is not None  # catalog_identity yields built-in aliases
         return max(
             _estimate_for_spelling(alias),
-            _estimate_for_spelling(resolve_profile(alias).hf_path),
+            _estimate_for_spelling(profile.hf_path),
         )
     return _estimate_for_spelling(model_name)
 

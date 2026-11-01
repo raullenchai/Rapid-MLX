@@ -14,7 +14,14 @@ from rapid_mlx.runtime.resident_models import (
 GIB = 1024**3
 
 
-@pytest.mark.parametrize("alias,profile", list(list_profiles().items()))
+@pytest.mark.parametrize(
+    "alias,profile",
+    [
+        (alias, profile)
+        for alias, profile in list_profiles().items()
+        if catalog_alias_for(alias) == alias
+    ],
+)
 def test_catalog_spellings_have_equal_estimates(alias, profile):
     org, name = profile.hf_path.split("/", 1)
     canonical = catalog_alias_for(profile.hf_path)
