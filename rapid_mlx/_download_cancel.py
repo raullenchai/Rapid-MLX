@@ -32,6 +32,16 @@ def _hard_exit_cancelled(code: int) -> None:
     os._exit(code)
 
 
+def _cancel_backstop(code: int) -> None:
+    if "pytest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    os._exit(code)
+
+
+# Upper bound for cleanup and exit hooks after a cancelled transfer.
+_CANCEL_DEADLINE_SECONDS = 2.0
+
+
 def _remove_owned_incomplete_files() -> None:
     """Unlink only open, non-resumable Hub scratch files."""
     try:
@@ -112,6 +122,12 @@ def run_cancellable_download(operation: Callable[[], T], *, retry_hint: str) -> 
                 pass
         except KeyboardInterrupt:
             code = 128 + (first_signum or signal.SIGINT)
+            # Exit hooks or Xet teardown may wait on an abandoned worker.
+            backstop = threading.Timer(
+                _CANCEL_DEADLINE_SECONDS, _cancel_backstop, [code]
+            )
+            backstop.daemon = True
+            backstop.start()
             print("\n  Cancelling download…", file=sys.stderr, flush=True)
             # Exit hooks close the Hub session under the abandoned workers;
             # keep their "resume download" warnings off the terminal.

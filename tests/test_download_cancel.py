@@ -23,6 +23,8 @@ from rapid_mlx._download_gate import confirm_or_abort
         ("serve", signal.SIGTERM, 143, "Run the same command again to continue."),
         # A background job starts with SIGINT ignored; SIGTERM must still cancel.
         ("serve-sigint-ignored", signal.SIGTERM, 143, "Run the same command again"),
+        # An exit hook that never returns must not block cancellation.
+        ("pull-blocking-hook", signal.SIGINT, 130, "Retry: rapid-mlx pull o/m"),
     ],
 )
 def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
@@ -65,7 +67,11 @@ def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
         cli._check_disk_space = lambda *a, **kw: None
         cli._offline_hub_mode_active = lambda: False
         gate.reap_orphan_incomplete_blobs = lambda *a, **kw: (0, 0)
-        if os.environ["MODE"] == "pull":
+        if os.environ["MODE"] == "pull-blocking-hook":
+            import atexit
+
+            atexit.register(time.sleep, 30)
+        if os.environ["MODE"].startswith("pull"):
             cli._pull_repository(SimpleNamespace(model="o/m"))
         else:
             cli._ensure_model_downloaded("o/m")
@@ -122,7 +128,7 @@ def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
     assert hint in stderr
     assert "Traceback" not in stderr
     assert "KeyboardInterrupt" not in stderr
-    if mode != "pull":
+    if not mode.startswith("pull"):
         assert "rapid-mlx pull" not in stderr
     assert not owned.exists()
     for path in (foreign, legacy, part):
