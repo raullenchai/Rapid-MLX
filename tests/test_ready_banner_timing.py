@@ -644,7 +644,13 @@ def test_local_audio_banner_keeps_served_name(monkeypatch, capsys, kind):
 
     from rapid_mlx.audio import registry
 
-    entry = SimpleNamespace(type=kind, notes="local folder", hf_id="/local/model")
+    entry = SimpleNamespace(
+        type=kind,
+        notes="local folder",
+        hf_id="/local/model",
+        family=None,
+        alias="local-audio",
+    )
     monkeypatch.setattr(registry, "resolve_audio_alias", lambda name: entry)
     _banner_setup(monkeypatch, None, "local-audio")
     server.print_ready_banner()
