@@ -76,17 +76,8 @@ def _hf_snapshot_layout(
 
 
 def _looks_like_size(token: str) -> bool:
-    """Loose acceptance of either SI (``GB``) or IEC (``GiB``) suffixes.
-
-    The task spec says ``X.Y GB`` but the project's shared
-    ``_format_bytes`` helper renders IEC (``GiB``); we reuse it per
-    the "do not invent a new size formatter" rule, so the test
-    accepts whichever the helper produces.
-    """
-    return any(
-        unit in token
-        for unit in ("B", "KB", "KiB", "MB", "MiB", "GB", "GiB", "TB", "TiB")
-    )
+    """Accept the shared formatter's decimal size suffixes."""
+    return token in ("B", "KB", "MB", "GB", "TB")
 
 
 def _summary_line(captured: str) -> str:

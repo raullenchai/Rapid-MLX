@@ -161,7 +161,7 @@ def quick_start_size_label(cache_rows=None) -> str:
         size = None
     if not size:
         return "~3 GB"
-    return f"~{max(1, round(size / float(1 << 30)))} GB"
+    return f"~{max(1, round(size / 1e9))} GB"
 
 
 def best_pick(picks: Sequence[dict]) -> dict:

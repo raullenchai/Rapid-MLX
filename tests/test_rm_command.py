@@ -4,14 +4,14 @@
 Pre-0.9.7 ``rm`` deleted gigabytes of model weights silently — no
 confirmation, no freed-space summary. This file pins the new contract:
 
-* default: prompt ``Remove <model> (X.Y GiB)? [y/N]``, default ``N``;
+* default: prompt ``Remove <model> (X.Y GB)? [y/N]``, default ``N``;
 * empty input (just Enter) → ``Aborted.`` and exit 0;
 * EOF (non-TTY / ctrl-D) → ``Aborted.`` and exit 0;
 * ``-y / --yes`` → no prompt, runs the delete;
-* on success a ``Freed X.Y GiB`` line is printed.
+* on success a ``Freed X.Y GB`` line is printed.
 
 The actual HF cache strategy is mocked — these tests must never delete
-real files. Size suffix matches ``rapid_mlx.cli._format_bytes`` (GiB).
+real files. Size suffix matches ``rapid_mlx.cli._format_bytes`` (GB).
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _patched_scan(repo: MagicMock | None) -> MagicMock:
     cache = MagicMock()
     cache.repos = [repo] if repo is not None else []
     strategy = MagicMock()
-    strategy.expected_freed_size_str = "6.0 GiB"
+    strategy.expected_freed_size_str = "6.0 GB"
     cache.delete_revisions.return_value = strategy
     return cache, strategy
 
@@ -130,14 +130,14 @@ def test_eof_aborts() -> None:
 
 
 def test_y_at_prompt_proceeds_and_prints_freed() -> None:
-    """Typing ``y`` at the prompt runs the delete and prints ``Freed X.Y GiB``."""
+    """Typing ``y`` at the prompt runs the delete and prints ``Freed X.Y GB``."""
     out, code, strategy = _invoke_rm(
         "mlx-community/Qwen3.5-9B-MLX-4bit", yes=False, stdin_text="y"
     )
     assert code == 0
     strategy.execute.assert_called_once()
     assert "Freed" in out, f"expected 'Freed' summary on success, got:\n{out}"
-    assert "GiB" in out, f"expected GiB suffix from _format_bytes, got:\n{out}"
+    assert "GB" in out, f"expected GB suffix from _format_bytes, got:\n{out}"
 
 
 # ----- --yes path ----------------------------------------------------------
@@ -164,7 +164,7 @@ def test_yes_flag_skips_prompt() -> None:
     strategy.execute.assert_called_once()
     out = buf.getvalue()
     assert "Freed" in out
-    assert "GiB" in out
+    assert "GB" in out
 
 
 # ----- not-cached path -----------------------------------------------------
@@ -198,8 +198,8 @@ def test_missing_model_exits_1_without_prompt() -> None:
 
 def test_size_uses_format_bytes_suffix() -> None:
     """The prompt + freed line use the same suffix convention as the rest of
-    the CLI (``_format_bytes`` → GiB/MiB/KiB), so users don't see ``5.0 G``
-    in one place and ``5.0 GiB`` in another for the same model."""
+    the CLI (``_format_bytes`` → GB/MB/KB), so users don't see ``5.0 G``
+    in one place and ``5.0 GB`` in another for the same model."""
     repo = _make_repo(size_on_disk=int(6.5 * 1024**3))
     cache, strategy = _patched_scan(repo)
     args = SimpleNamespace(model="mlx-community/Qwen3.5-9B-MLX-4bit", yes=True)
@@ -212,5 +212,5 @@ def test_size_uses_format_bytes_suffix() -> None:
         cli.rm_command(args)
 
     out = buf.getvalue()
-    # ``_format_bytes`` renders 6.5 GiB as ``6.5 GiB`` (1-decimal IEC).
-    assert "6.5 GiB" in out, f"expected '6.5 GiB' in Freed line, got:\n{out}"
+    # ``_format_bytes`` renders 6.5 GiB as ``7.0 GB`` (one decimal place).
+    assert "7.0 GB" in out, f"expected '7.0 GB' in Freed line, got:\n{out}"

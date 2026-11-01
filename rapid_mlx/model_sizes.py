@@ -74,9 +74,9 @@ def size_bytes(hf_path: str) -> int | None:
 
 
 def format_size(hf_path: str, *, unknown: str = "—") -> str:
-    """Human-friendly size for ``hf_path`` (e.g. ``141.1 GiB``), else ``unknown``.
+    """Human-friendly decimal size for ``hf_path`` (e.g. ``16.3 GB``), else ``unknown``.
 
-    Uses the same base-1024 formatter as the download gate so ``rapid-mlx
+    Uses the same decimal GB formatter as the download gate so ``rapid-mlx
     models`` and the ``[Y/n]`` prompt render identical strings.
     """
     n = size_bytes(hf_path)

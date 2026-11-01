@@ -77,18 +77,18 @@ def test_is_listed_distinguishes_null_from_absent():
 def test_format_size_known_and_unknown():
     known = _deepseek_v4_flash_4bit_hf()
     s = model_sizes.format_size(known)
-    assert s.endswith("iB")  # KiB/MiB/GiB/TiB — base-1024 like the gate
+    assert s == f"{model_sizes.size_bytes(known) / 1e9:.1f} GB"
     assert model_sizes.format_size("no/such-repo") == "—"
     assert model_sizes.format_size("no/such-repo", unknown="n/a") == "n/a"
 
 
 def test_issue_example_deepseek_v4_flash_is_large():
     # The report that motivated #1286: deepseek-v4-flash-4bit surprised a user
-    # at ~141 GB. Anchor that it reads as a large multi-hundred-GiB footprint
-    # (guards a unit/formatter regression turning GiB into MiB, etc.).
+    # at ~141 GB. Anchor that it reads as a large multi-hundred-GB footprint
+    # (guards a unit/formatter regression turning GB into MB, etc.).
     n = model_sizes.size_bytes(_deepseek_v4_flash_4bit_hf())
     assert n is not None and n > 100 * 1024**3
-    assert model_sizes.format_size(_deepseek_v4_flash_4bit_hf()).endswith("GiB")
+    assert model_sizes.format_size(_deepseek_v4_flash_4bit_hf()).endswith("GB")
 
 
 def test_every_text_alias_has_a_manifest_entry():

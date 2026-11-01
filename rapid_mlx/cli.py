@@ -1803,9 +1803,9 @@ def _check_disk_space(
         if available_bytes >= required_bytes:
             return
 
-        model_size_gb = model_size_bytes / (1024**3)
-        available_gb = available_bytes / (1024**3)
-        need_to_free_gb = (required_bytes - available_bytes) / (1024**3)
+        model_size_gb = model_size_bytes / 1e9
+        available_gb = available_bytes / 1e9
+        need_to_free_gb = (required_bytes - available_bytes) / 1e9
 
         print(file=sys.stderr)
         print("  Error: Insufficient disk space for download.", file=sys.stderr)
@@ -2369,7 +2369,7 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     if ratio < warning_floor:
         return  # Comfortable headroom — no warning.
 
-    model_gb = model_size_bytes / (1024**3)
+    model_gb = model_size_bytes / 1e9
     working_gb = estimated_working / (1024**3)
     used_gb = used_ram_bytes / (1024**3)
 
@@ -3121,7 +3121,7 @@ def _ensure_model_downloaded(
                     )
                 )
             )
-            size_gb = size_bytes / (1024**3)
+            size_gb = size_bytes / 1e9
         except TimeoutError as exc:
             # The Hub did not answer within the deadline. Falling through to
             # ``snapshot_download`` would re-enter the unbounded lookup and
@@ -9981,28 +9981,15 @@ def bench_command(args):
 
 
 def _format_bytes(n: int) -> str:
-    """Render a byte count as a 1-decimal IEC-suffixed string (GiB/MiB/KiB).
+    """Render decimal byte sizes matching the catalog and download gate.
 
-    Picks the largest unit where the value is >= 1; falls back to bytes.
-    Returns ``"0 B"`` for zero / negative.
-
-    Aligned with ``rapid_mlx._download_gate._format_size`` so the same
-    byte count rendered by ``ls --cached`` and by the B2 confirmation
-    prompt uses the same suffix convention (Codex/DeepSeek round-3 NIT:
-    ``5.0 G`` vs ``5.0 GiB`` for the same model is the kind of paper-
-    cut that makes users think two screens are talking about different
-    sizes).
+    Returns ``"0 B"`` for zero or negative values.
     """
     if n <= 0:
         return "0 B"
-    for unit, factor in (
-        ("GiB", 1024**3),
-        ("MiB", 1024**2),
-        ("KiB", 1024),
-    ):
-        if n >= factor:
-            return f"{n / factor:.1f} {unit}"
-    return f"{n} B"
+    from rapid_mlx._download_gate import _format_size
+
+    return _format_size(n)
 
 
 def _dir_size_bytes(path: str) -> int:
@@ -10674,12 +10661,10 @@ def _annotate_recipe_picks(
         # headroom for xet temporary files and the final cache move.
         download_bytes = 0 if pick["cached"] else size_bytes(hf_path or "")
         required_disk_gb = (
-            None if download_bytes is None else (download_bytes * 1.1) / float(1 << 30)
+            None if download_bytes is None else (download_bytes * 1.1) / 1e9
         )
         pick["download_size_gb"] = (
-            None
-            if download_bytes is None
-            else round(download_bytes / float(1 << 30), 1)
+            None if download_bytes is None else round(download_bytes / 1e9, 1)
         )
         pick["required_disk_gb"] = (
             None
@@ -10765,7 +10750,7 @@ def recipe_command(args) -> None:
 
 
 def _recipe_free_disk_gb() -> float | None:
-    """Return free GiB on the filesystem that receives HF downloads.
+    """Return free decimal GB on the filesystem that receives HF downloads.
 
     ``HF_HUB_CACHE`` can name a directory that does not exist yet, including
     one on an external volume. Walk to its nearest existing ancestor before
@@ -10786,7 +10771,7 @@ def _recipe_free_disk_gb() -> float | None:
             probe = probe.parent
         if not probe.exists():
             return None
-        return shutil.disk_usage(probe).free / float(1 << 30)
+        return shutil.disk_usage(probe).free / 1e9
     except (OSError, TypeError, ValueError):
         return None
 

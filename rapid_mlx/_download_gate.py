@@ -167,23 +167,18 @@ class CacheProbePermissionError(ExternalCacheProbeError):
 
 
 def _format_size(num_bytes: int) -> str:
-    """Render ``num_bytes`` as a human-friendly string (e.g. ``42.3 GiB``).
+    """Render bytes with decimal units, matching the catalog and Desktop.
 
-    Uses base-1024 units (KiB/MiB/GiB) to match the way HF Hub and
-    macOS Finder report file sizes. The ``iB`` suffix is the IEC
-    standard for base-1024 — clearer than bare ``KB``/``GB`` which is
-    ambiguous (powers of 10 in some tools, 2 in others) and matters
-    here because the confirmation threshold is denominated in 1024**3.
+    Uses powers of 1000 (e.g. ``16.3 GB``), with one decimal except for bytes.
     """
-    if num_bytes < 0:
-        num_bytes = 0
-    units = ("B", "KiB", "MiB", "GiB", "TiB")
-    size = float(num_bytes)
-    for unit in units:
-        if size < 1024.0 or unit == units[-1]:
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024.0
-    return f"{size:.1f} TiB"  # unreachable, keeps mypy happy
+    size = float(max(num_bytes, 0))
+    if size < 1000.0:
+        return f"{int(size)} B"
+    for unit in ("KB", "MB", "GB"):
+        size /= 1000.0
+        if round(size, 1) < 1000.0:
+            return f"{size:.1f} {unit}"
+    return f"{size / 1000.0:.1f} TB"
 
 
 def _is_weight_file(name: str) -> bool:

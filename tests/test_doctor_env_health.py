@@ -3834,7 +3834,7 @@ def test_dir_size_walk_does_not_follow_hf_snapshot_symlinks(tmp_path: Path):
     blob.write_bytes(b"x" * 4096)
     (snapshot / "model.safetensors").symlink_to(blob)
 
-    assert eh._dir_size_gb(tmp_path) == pytest.approx(4096 / (1024**3))
+    assert eh._dir_size_gb(tmp_path) == pytest.approx(4096 / 1e9)
 
 
 def test_dir_size_walk_cannot_outlive_shared_doctor_deadline(tmp_path, monkeypatch):

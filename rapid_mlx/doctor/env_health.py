@@ -1545,7 +1545,7 @@ def _detect_apple_silicon() -> tuple[str | None, int | None]:
 def _disk_free_gb(path: Path) -> float | None:
     try:
         usage = shutil.disk_usage(path)
-        return usage.free / (1024**3)
+        return usage.free / 1e9
     except (OSError, FileNotFoundError):
         return None
 
@@ -1629,7 +1629,7 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
                 return None
     except OSError:
         return None
-    return total / (1024**3)
+    return total / 1e9
 
 
 def section_system() -> Section:
