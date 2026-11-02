@@ -1242,7 +1242,9 @@ def print_ready_banner(*, update_notice_shown: bool = False) -> None:
         audio_entry = resolve_audio_alias(_cfg.model_alias) or resolve_audio_alias(
             _cfg.model_name
         )
-        lane_rows = _ready_lane_rows(_cfg, _ep, audio_entry)
+        lane_rows = (
+            _ready_lane_rows(_cfg, _ep, audio_entry) if _ep.listen_fd is None else None
+        )
         chat = lane_rows is None
         interactive = (
             chat
@@ -1456,8 +1458,6 @@ app = FastAPI(
 
 from .middleware.activity import ActivityMiddleware  # noqa: E402
 
-app.add_middleware(ActivityMiddleware)
-
 # SECURITY: bound the request body of /v1/audio/transcriptions at the
 # ASGI layer so honest-Content-Length DoS attempts are rejected before
 # Starlette's multipart parser drains the receive channel and spools
@@ -1506,6 +1506,10 @@ install_request_body_depth_middleware(app)
 from .middleware.body_size import install_request_body_limit_middleware  # noqa: E402
 
 install_request_body_limit_middleware(app)
+
+# Count uploads before the body defenses buffer them, through response completion.
+# The size gate still wraps the depth gate and all route/admission work.
+app.add_middleware(ActivityMiddleware)
 
 # R8-H6: ASGI fast-path for ``GET /healthz`` + ``GET /livez``.
 #

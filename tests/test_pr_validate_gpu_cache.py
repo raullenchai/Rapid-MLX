@@ -9,6 +9,7 @@ import huggingface_hub.constants
 import pytest
 
 from scripts.pr_validate import gpu_cache
+from scripts.pr_validate.base import StepResult
 from scripts.pr_validate.steps import stress_e2e_bench
 
 
@@ -78,6 +79,84 @@ def test_key_changes_when_blob_is_rewritten_in_place(cache_setup):
     (directory / "weights.safetensors").write_text("different contents")
     second = gpu_cache.cache_key(ctx)
     assert first and second and second != first
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "RAPID_MLX_GDN_IN_PROJ_FUSION",
+        "RAPID_MLX_MAX_GENERATION_TOKENS",
+        "RAPID_HYBRID_THROTTLE",
+        "MLX_VLM_BATCH_CACHE_EVAL_INTERVAL",
+        "APC_ENABLED",
+        "DSV41_LAZY",
+    ],
+)
+def test_key_tracks_runtime_feature_settings(cache_setup, monkeypatch, name):
+    ctx, _, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    monkeypatch.delenv(name, raising=False)
+    unset = gpu_cache.cache_key(ctx)
+    monkeypatch.setenv(name, "0")
+    disabled = gpu_cache.cache_key(ctx)
+    monkeypatch.setenv(name, "1")
+    enabled = gpu_cache.cache_key(ctx)
+    assert unset and disabled and enabled
+    assert len({unset, disabled, enabled}) == 3
+
+
+def test_runtime_feature_toggle_reruns_cached_matrix(
+    cache_setup, monkeypatch, tmp_path
+):
+    ctx, _, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    monkeypatch.setenv("RAPID_MLX_GDN_IN_PROJ_FUSION", "0")
+    step = stress_e2e_bench.StressE2EBenchStep()
+    calls = []
+
+    def matrix(_):
+        calls.append(os.environ["RAPID_MLX_GDN_IN_PROJ_FUSION"])
+        return StepResult(name=step.name, status="pass", summary="matrix ran")
+
+    monkeypatch.setattr(step, "_run_matrix", matrix)
+    assert step.run(ctx).status == "pass"
+    assert step.run(ctx).summary.startswith("cached pass")
+    monkeypatch.setenv("RAPID_MLX_GDN_IN_PROJ_FUSION", "1")
+    assert not step.run(ctx).summary.startswith("cached pass")
+    assert step.run(ctx).summary.startswith("cached pass")
+    assert calls == ["0", "1"]
+
+
+def test_key_ignores_unrelated_env_and_credentials(cache_setup, monkeypatch):
+    ctx, _, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    first = gpu_cache.cache_key(ctx)
+    for name in (
+        "UNRELATED_TEST_SETTING",
+        "PR_VALIDATE_GPU_CACHE_DIR",
+        "RAPID_MLX_API_KEY",
+        "RAPID_MLX_BRAVE_API_KEY",
+        "MLX_AUTH_TOKEN",
+        "RAPID_MLX_LOG_FILE",
+        "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
+        "RAPID_MLX_CACHE_EXPORT_DIR",
+    ):
+        monkeypatch.setenv(name, "irrelevant")
+    assert first and gpu_cache.cache_key(ctx) == first
+
+
+def test_runtime_environment_order_does_not_change_key(cache_setup, monkeypatch):
+    ctx, _, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    monkeypatch.delenv("RAPID_MLX_GDN_IN_PROJ_FUSION", raising=False)
+    monkeypatch.delenv("APC_ENABLED", raising=False)
+    monkeypatch.setenv("RAPID_MLX_GDN_IN_PROJ_FUSION", "0")
+    monkeypatch.setenv("APC_ENABLED", "1")
+    first = gpu_cache.cache_key(ctx)
+    monkeypatch.delenv("RAPID_MLX_GDN_IN_PROJ_FUSION")
+    monkeypatch.setenv("RAPID_MLX_GDN_IN_PROJ_FUSION", "0")
+    assert first and gpu_cache.cache_key(ctx) == first
 
 
 def test_local_directory_and_dangling_links(cache_setup, tmp_path):

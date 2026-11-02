@@ -65,6 +65,25 @@ def _installed_fingerprint() -> str:
     return hashlib.sha256("\n".join(packages).encode()).hexdigest()
 
 
+def _runtime_environment() -> list[str]:
+    """Fingerprint inherited runtime knobs, including explicit default overrides."""
+    # Include the runtime namespaces rather than a fixed feature allowlist so
+    # newly added feature switches invalidate prior passes automatically.
+    # Keep paths that select inputs; omit only output destinations and secrets.
+    output_paths = {
+        "RAPID_MLX_LOG_FILE",
+        "RAPID_MLX_TENSORFOLD_AUDIT_PATH",
+        "RAPID_MLX_CACHE_EXPORT_DIR",
+    }
+    return sorted(
+        f"{name}={value}"
+        for name, value in os.environ.items()
+        if name.startswith(("RAPID_", "MLX_", "APC_", "DSV41_"))
+        and name not in output_paths
+        and not re.search(r"(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD)(?:_|$)", name)
+    )
+
+
 def model_fingerprint(model_id: str, cache_dir: Path | None = None) -> dict:
     """Identify the loaded files without modifying the Hub cache."""
     from rapid_mlx.model_aliases import (
@@ -179,7 +198,7 @@ def cache_key(ctx) -> str | None:
         return None
     # The clean checkout commit covers in-tree scripts and baselines; the
     # interpreter, host, packages and model weights cover inputs outside the tree.
-    # PR/base identity, registry, step and RAM override complete the run config.
+    # PR/base identity, registry, step, RAM and runtime environment complete it.
     from .steps.stress_e2e_bench import _selected_choices
 
     try:
@@ -207,7 +226,7 @@ def cache_key(ctx) -> str | None:
             }
         )
     data = {
-        "schema": 2,
+        "schema": 3,
         "models": models,
         "head_sha": head_sha,
         "base_sha": base_sha,
@@ -215,6 +234,7 @@ def cache_key(ctx) -> str | None:
         "registry": registry,
         "step": step,
         "ram_gb": os.environ.get("PR_VALIDATE_RAM_GB", ""),
+        "runtime_environment": _runtime_environment(),
         "python": sys.version,
         "platform": platform.platform(),
         "machine": platform.machine(),

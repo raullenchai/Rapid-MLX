@@ -107,6 +107,22 @@ def hold_gpu_lock(
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # An unlinking holder can leave waiters on a deleted inode.
+                # Only enter the GPU stage after locking the current pathname.
+                locked = os.fstat(fd)
+                try:
+                    current = os.stat(path)
+                except FileNotFoundError:
+                    current = None
+                if current is None or (locked.st_dev, locked.st_ino) != (
+                    current.st_dev,
+                    current.st_ino,
+                ):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                    fd = -1
+                    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+                    continue
                 info.mode = "acquired"
                 break
             except BlockingIOError:
