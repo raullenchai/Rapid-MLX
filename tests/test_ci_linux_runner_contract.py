@@ -17,13 +17,8 @@ ROUTED = (
     "authorize-merge-ready.yml",
 )
 MAC_JOBS = {
-    "ci.yml": {"test-apple-silicon", "test-apple-silicon-mac-only", "l1-smoke"},
-    "rapid-mac-ci.yml": {
-        "build",
-        "gui-app-build",
-        "gui-golden-flows",
-        "release-toolchain-build",
-    },
+    "ci.yml": {"test-apple-silicon", "l1-smoke"},
+    "rapid-mac-ci.yml": {"build", "gui-app-build", "gui-golden-flows"},
 }
 # Only multi-minute jobs ride the heavy pool; seconds-long control-plane jobs
 # use their own switch so they never queue behind test shards.
@@ -52,7 +47,7 @@ def test_every_linux_job_uses_exact_fork_safe_runner_expression(filename):
     assert mac_jobs <= jobs.keys()
     for name, job in jobs.items():
         if name in mac_jobs:
-            if filename == "ci.yml" or name == "release-toolchain-build":
+            if filename == "ci.yml":
                 assert job["runs-on"] == "macos-15"
             else:
                 assert job["runs-on"] == (
