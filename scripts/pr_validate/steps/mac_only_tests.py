@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run test files that hosted Linux and the Apple roster do not fully execute."""
 
+import ast
 import os
 import re
 import subprocess
@@ -36,6 +37,49 @@ def select_roster_files(repo_root: Path) -> list[str]:
     return sorted(path for path in roster if (repo_root / path).is_file())
 
 
+_MLX_MODULES = {"mlx", "mlx_lm", "mlx_vlm", "mlx_audio", "mlx_embeddings"}
+
+
+def _has_mlx_availability_guard(source: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else getattr(node.func, "id", "")
+            )
+            if name == "find_spec" and node.args:
+                module = node.args[0]
+                if isinstance(module, ast.Constant) and isinstance(module.value, str):
+                    if module.value.split(".")[0] in _MLX_MODULES:
+                        return True
+        if isinstance(node, ast.Try):
+            exceptions = {
+                part.id
+                for handler in node.handlers
+                if handler.type is not None
+                for part in ast.walk(handler.type)
+                if isinstance(part, ast.Name)
+            }
+            if not exceptions & {"ImportError", "ModuleNotFoundError"}:
+                continue
+            for statement in node.body:
+                for imported in ast.walk(statement):
+                    if isinstance(imported, ast.Import):
+                        modules = [alias.name for alias in imported.names]
+                    elif isinstance(imported, ast.ImportFrom):
+                        modules = [imported.module or ""]
+                    else:
+                        continue
+                    if any(module.split(".")[0] in _MLX_MODULES for module in modules):
+                        return True
+    return False
+
+
 def select_mac_only_files(repo_root: Path) -> list[str]:
     roster = set(select_roster_files(repo_root))
     marker = re.compile(
@@ -53,7 +97,8 @@ def select_mac_only_files(repo_root: Path) -> list[str]:
             or relative.startswith(("tests/integrations/", "tests/headless_mlx/"))
         ):
             continue
-        if marker.search(path.read_text()):
+        source = path.read_text()
+        if marker.search(source) or _has_mlx_availability_guard(source):
             selected.append(relative)
     return sorted(selected)
 

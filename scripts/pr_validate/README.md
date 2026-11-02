@@ -4,6 +4,20 @@ Single-command merge-readiness gate for incoming PRs (especially
 external contributions). Strict mode: any single step failure blocks
 merge.
 
+## Setup
+
+Use Python 3.12 and install the validator's test extra in its virtual environment:
+
+```bash
+python3.12 -m pip install -e ".[test]"
+```
+
+This includes the registered SDK prerequisites: `anthropic>=0.30.0`,
+`langchain-core>=0.3.0`, and `langchain-openai>=0.2.0`. The `dev` extra
+also includes these dependencies. Keep the environment's `bin` directory on
+`PATH` so the SDK matrix uses the same Python. `sdk_env_check` reports missing
+imports and the install command; it never installs packages at runtime.
+
 ## Usage
 
 ```bash
@@ -39,7 +53,9 @@ A default run executes admit, then review and checks in parallel, followed by
 gpu. Fail-fast is the default: a lane failure cancels the other lane, terminates
 its child processes, and prevents gpu from running. Use `--no-fail-fast` or
 `PR_VALIDATE_FAIL_FAST=0` to run everything for the full picture; `--fail-fast`
-is a compatibility no-op. Critical admit failures still stop the pipeline;
+is a compatibility no-op. Ctrl-C cancels pending steps, terminates children,
+and exits 130. SIGTERM and SIGHUP kill registered bounded child process groups
+and exit with 128 plus the signal number. Critical admit failures still stop the pipeline;
 blocking review findings also stop it unless
 `PR_VALIDATE_CONTINUE_AFTER_CODEX_FAIL=1` is set. Review infrastructure
 failures do not cancel checks, but still block the verdict. `--stage X` runs
@@ -339,8 +355,8 @@ embedded as the `PROMPT_TEMPLATE` string constant in
 `steps/codex_review.py`. The prompt requires `[BLOCKING]`/`[NIT]`
 tiering on every finding (see "Code Review Philosophy" above). Only
 `[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
-scorecard. Skips if `PR_VALIDATE_NO_CODEX=1` or the `codex` binary is
-missing. Once Codex is invoked, a timeout, auth/backend error, unusable
+scorecard. Skips when explicitly disabled with `PR_VALIDATE_NO_CODEX=1`. A missing
+`codex` binary fails with an install hint. Once Codex is invoked, a timeout, auth/backend error, unusable
 binary, or any other unsuccessful exit fails closed: an unavailable
 review cannot produce a MERGE-SAFE verdict.
 
@@ -369,8 +385,9 @@ a newer generation ships or for local experimentation.
 deprecation notice) so CI/local workflows that pre-date the codex
 swap don't unexpectedly re-enable the paid LLM review.
 
-**Failure-mode classification.** Missing binary or explicit opt-out →
-`skip`; every attempted but incomplete review → `fail`. This stops both
+**Failure-mode classification.** Explicit opt-out → `skip`; missing binary
+or any incomplete review → `fail`. A PASS requires exit zero and a parseable
+final verdict; the summary includes review duration and the final message. This stops both
 a malicious content-side crash and a persistent auth/backend outage
 from silently bypassing the only adversarial review gate.
 
@@ -452,7 +469,10 @@ pre-existing flakes. Real regressions = fail.
 
 For medium- and high-blast changes, runs test files containing MLX, macOS,
 network, or cache markers that are outside the hosted Apple test roster. It
-excludes integration, headless MLX, and event-loop tests.
+excludes integration, headless MLX, and event-loop tests. Selection also detects
+MLX-family availability checks using `find_spec` and guarded imports with
+`ImportError` or `ModuleNotFoundError`; unrelated optional imports are excluded.
+The hosted Apple roster remains unchanged.
 
 ### `hosted_ci` (checks stage)
 

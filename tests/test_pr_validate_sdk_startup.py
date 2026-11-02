@@ -499,3 +499,39 @@ def test_cpu_only_partial_pipeline_omits_matrix_prerequisites(ctx):
         )
         == 0
     )
+
+
+def test_sdk_failure_includes_install_command(ctx, agent, monkeypatch):
+    agent["prerequisite_imports"] = ["anthropic", "langchain_core", "langchain_openai"]
+    monkeypatch.setattr(sdk_env_check, "_load_registry", lambda: {"agents": [agent]})
+    output = "\n".join(
+        f"{name}: ModuleNotFoundError: missing"
+        for name in agent["prerequisite_imports"]
+    )
+    monkeypatch.setattr(
+        sdk_env_check.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a, 1, output, ""),
+    )
+    result = sdk_env_check.SDKEnvCheckStep().run(ctx)
+    assert result.status == "fail"
+    for name in agent["prerequisite_imports"]:
+        assert name in result.summary
+    assert 'python3.12 -m pip install -e ".[test]"' in result.summary
+
+
+def test_validator_extra_contains_sdk_distributions():
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    )
+    requirements = {
+        Requirement(value).name: Requirement(value)
+        for value in project["project"]["optional-dependencies"]["test"]
+    }
+    for distribution in ("anthropic", "langchain-core", "langchain-openai"):
+        assert distribution in requirements
+        assert str(requirements[distribution].specifier)

@@ -19,6 +19,7 @@ class SDKEnvCheckStep(Step):
         return StressE2EBenchStep().should_run(ctx)
 
     def run(self, ctx: Context) -> StepResult:
+        install = 'python3.12 -m pip install -e ".[test]"'
         registry = _load_registry()
         agents = registry.get("agents") if isinstance(registry, dict) else None
         if not isinstance(agents, list) or not agents:
@@ -92,17 +93,25 @@ class SDKEnvCheckStep(Step):
             return StepResult(
                 name=self.name,
                 status="fail",
-                summary="SDK prerequisite probe could not complete; repair the validator environment",
+                summary=f"SDK prerequisite probe could not complete; run {install}",
                 artifacts=[str(log)],
             )
         log.write_text(header + (proc.stdout or "") + (proc.stderr or ""))
+        missing = [
+            module
+            for module in sorted(modules)
+            if any(
+                line.startswith(module + ":")
+                for line in (proc.stdout or "").splitlines()
+            )
+        ]
         return StepResult(
             name=self.name,
             status="pass" if proc.returncode == 0 else "fail",
             summary=(
                 "registered SDK prerequisites import successfully"
                 if proc.returncode == 0
-                else "SDK prerequisites failed; repair the validator environment before validation"
+                else f"SDK prerequisites failed: {', '.join(missing) or 'see probe log'}; run {install}"
             ),
             artifacts=[str(log)],
         )
