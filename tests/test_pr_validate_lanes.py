@@ -74,6 +74,27 @@ def test_failing_lane_records_remaining_steps_as_cancelled(repo_root_cwd):
     assert all(row.status == "skip" and "cancelled" in row.summary for row in rows[1:])
 
 
+def test_serial_cancellation_prevents_next_step(repo_root_cwd):
+    ran = []
+
+    def action(name):
+        ran.append(name)
+        repo_root_cwd.cancel_event.set()
+        return result(name, "fail")
+
+    names = ("test_plan_check", "supply_chain")
+    # Disable ordinary fail-fast so only the cancellation check stops the loop.
+    assert (
+        runner.run_pipeline(
+            1, steps=[FakeStep(name, action) for name in names], fail_fast=False
+        )
+        == 1
+    )
+    assert repo_root_cwd.cancel_event.is_set()
+    assert ran == ["test_plan_check"]
+    assert [row.name for row in repo_root_cwd.results] == ["test_plan_check"]
+
+
 @pytest.mark.parametrize("failing_lane", ["checks", "review"])
 def test_cancellation_stops_subprocess_and_remaining_steps(
     repo_root_cwd, monkeypatch, failing_lane

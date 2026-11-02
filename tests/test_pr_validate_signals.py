@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process-level cancellation must include detached descendants."""
+"""Signal handling cleans up children and restores previous handlers."""
 
 import os
 import signal
@@ -7,9 +7,35 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import psutil
 import pytest
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_signal_handler_terminates_children_and_is_restored(monkeypatch, signum):
+    from scripts.pr_validate import pr_validate
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    terminate = Mock()
+    monkeypatch.setattr(pr_validate, "_terminate_child_processes", terminate)
+
+    def pipeline(*args, **kwargs):
+        handler = signal.getsignal(signum)
+        assert callable(handler)
+        assert signal.getsignal(signal.SIGTERM) is signal.getsignal(signal.SIGHUP)
+        with pytest.raises(SystemExit) as exc:
+            handler(signum, None)
+        assert exc.value.code == 128 + signum
+        terminate.assert_called_once_with(grace_seconds=0)
+        return 0
+
+    monkeypatch.setattr(pr_validate, "run_pipeline", pipeline)
+
+    assert pr_validate.main(["1"]) == 0
+    for sig, handler in previous.items():
+        assert signal.getsignal(sig) is handler
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
