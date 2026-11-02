@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Rerun main failures, propose attributable reverts, track nightlies, and retry
-runs whose only problem is a job never acquired by a runner without reporting
-them as code failures."""
+"""Rerun main failures once, propose attributable reverts, and track nightlies."""
 
 from __future__ import annotations
 
@@ -18,8 +16,6 @@ from pathlib import Path
 from scripts.merge_on_green import APIError, GitHub
 
 NIGHTLIES = ("ci.yml", "rapid-mac-ci.yml")
-MAX_RUNNER_ATTEMPTS = 3
-FACADE_JOBS = {"tests", "desktop-tests"}
 
 
 def ensure_label(api: GitHub, label: str) -> None:
@@ -72,64 +68,8 @@ def runs(api: GitHub, workflow: str, event: str) -> list[dict]:
     )
 
 
-def runner_unavailable(job: dict) -> bool:
-    return (
-        job.get("conclusion") == "cancelled"
-        and not job.get("runner_id")
-        and not job.get("runner_name")
-        and not job.get("steps")
-    )
-
-
-def classify_attempt(jobs: list[dict]) -> str:
-    remaining = [
-        job
-        for job in jobs
-        if job.get("name") not in FACADE_JOBS
-        and job.get("conclusion") not in {"success", "skipped", "neutral"}
-    ]
-    if remaining and all(runner_unavailable(job) for job in remaining):
-        return "runner-unavailable"
-    return "failure"
-
-
-def runner_unavailable_run(
-    api: GitHub, run: dict, jobs: list[dict] | None = None
-) -> str | None:
-    if run["conclusion"] != "failure":
-        return None
-    if jobs is None:
-        jobs = api.items(
-            f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs"
-        )
-    if classify_attempt(jobs) != "runner-unavailable":
-        return None
-    if run["run_attempt"] < MAX_RUNNER_ATTEMPTS:
-        # rerun-failed-jobs requeues cancelled jobs as well as failed ones and
-        # their dependents; green jobs are carried over from the prior attempt.
-        api.request(f"actions/runs/{run['id']}/rerun-failed-jobs", "POST")
-        return "Runner unavailable; failed jobs rerun"
-    names = "\n".join(
-        f"- {job['name']}"
-        for job in jobs
-        if job.get("name") not in FACADE_JOBS and runner_unavailable(job)
-    )
-    issue(
-        api,
-        "ci-runner-unavailable",
-        "CI could not acquire runners",
-        f"{run['name']}: {run['html_url']}\nSHA: {run['head_sha']}\n"
-        f"Attempt: {run['run_attempt']}\nNever-acquired jobs:\n{names}\n"
-        "No code failure was observed.",
-    )
-    return "Runner unavailable after retries recorded"
-
-
 def nightly(api: GitHub, run: dict) -> str:
     if run["conclusion"] not in {"success", "cancelled", "skipped", "neutral"}:
-        result = runner_unavailable_run(api, run)
-        if result:
-            return result
         previous = next(
             (
                 r
@@ -310,13 +250,11 @@ def guard(api: GitHub, run: dict) -> str:
     jobs = api.items(
         f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs"
     )
-    result = runner_unavailable_run(api, run, jobs)
-    if result:
-        return result
     failed = [
         j
         for j in jobs
-        if j["conclusion"] == "failure" and j.get("name") not in FACADE_JOBS
+        if j["conclusion"] == "failure"
+        and j.get("name") not in {"tests", "desktop-tests"}
     ]
     failed_steps = [
         s for j in failed for s in j.get("steps", []) if s["conclusion"] == "failure"
