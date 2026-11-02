@@ -114,14 +114,11 @@ class StressE2EBenchStep(Step):
 
     def run(self, ctx: Context) -> StepResult:
         log = _ctx_log(ctx)
-        key = gpu_cache.cache_key(ctx)
-        cached = gpu_cache.load(key, ctx) if key else None
-        if cached:
-            return cached
         with hold_gpu_lock(gpu_lock_path(), log=log) as lock:
             # Probe free RAM once, under the GPU lock, and use that one
-            # selection for both the cache key and the matrix that runs, so a
-            # reduced matrix can never be stored under the full matrix's key.
+            # selection for the cache lookup, the matrix that runs, and the
+            # stored key. A probe taken outside the lock can see RAM held by
+            # another GPU job and pick (or reuse) a reduced matrix.
             try:
                 selection = _selected_choices()
             except _SelectionError as e:

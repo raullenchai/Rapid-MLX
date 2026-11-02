@@ -242,16 +242,19 @@ def test_cache_key_changes_with_installed_distributions(setup, monkeypatch):
     assert first != gpu_cache.cache_key(ctx)
 
 
-def test_cache_key_recomputed_after_lock(setup, monkeypatch):
-    ctx, _ = setup
-    keys = iter(["before", "after", "after"])
+def test_cache_key_computed_only_under_lock(setup, monkeypatch):
+    """Cache lookup happens once, under the lock, with the key of the locked selection."""
+    ctx, path = setup
+    keys = iter(["locked", "locked"])
     monkeypatch.setattr(gpu_cache, "cache_key", lambda _, **kw: next(keys))
     lookups = []
-    cached = StepResult(name="stress_e2e_bench", status="pass", summary="cached")
 
     def load(key, _):
+        with pytest.raises(BlockingIOError):
+            fd = lock_fd(path)
+            os.close(fd)
         lookups.append(key)
-        return cached if key == "before" and len(lookups) > 1 else None
+        return None
 
     monkeypatch.setattr(gpu_cache, "load", load)
     stored = []
@@ -261,13 +264,13 @@ def test_cache_key_recomputed_after_lock(setup, monkeypatch):
     monkeypatch.setattr(step, "_run_matrix", lambda _, selection: result)
 
     assert step.run(ctx) is result
-    assert lookups == ["before", "after"]
-    assert stored[0][0] == "after"
+    assert lookups == ["locked"]
+    assert stored[0][0] == "locked"
 
 
 def test_cache_not_stored_if_head_changes_during_run(setup, monkeypatch):
     ctx, _ = setup
-    states = iter([(SHA, True), (SHA, True), ("c" * 40, True)])
+    states = iter([(SHA, True), ("c" * 40, True)])
     monkeypatch.setattr(gpu_cache, "_repo_state", lambda _: next(states))
     messages = []
     monkeypatch.setattr(ctx, "run_log", messages.append)
@@ -299,11 +302,7 @@ def test_cache_pass_and_miss_conditions(setup, monkeypatch):
 
     monkeypatch.setattr(step, "_run_matrix", matrix)
     assert step.run(ctx).status == "pass"
-    fd = lock_fd(path)
-    try:
-        assert step.run(ctx).summary.startswith("cached pass")
-    finally:
-        os.close(fd)
+    assert step.run(ctx).summary.startswith("cached pass")
     assert len(calls) == 1
     ctx.head_sha = "c" * 40
     status[0] = "fail"
