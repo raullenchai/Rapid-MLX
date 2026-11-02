@@ -5090,6 +5090,9 @@ def _preflight_ddtree_or_exit(args):
 
     args._ddtree_alias_name = alias_name
     args._ddtree_profile = profile
+    args._ddtree_drafter_revision = (
+        profile.ddtree_draft_revision if drafter == profile.ddtree_draft_model else None
+    )
     args._ddtree_drafter_repo = drafter
     args._ddtree_speculative_tokens = speculative_tokens
     args._ddtree_tree_budget = tree_budget
@@ -8883,6 +8886,7 @@ def serve_command(args):
             main_model_repo=_profile.hf_path or args.model,
             drafter_repo=getattr(args, "_ddtree_drafter_repo", None)
             or _profile.ddtree_draft_model,
+            drafter_revision=getattr(args, "_ddtree_drafter_revision", None),
             speculative_tokens=getattr(args, "_ddtree_speculative_tokens", None)
             or _profile.ddtree_speculative_tokens,
             tree_budget=getattr(args, "_ddtree_tree_budget", None)

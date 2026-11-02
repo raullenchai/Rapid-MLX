@@ -44,6 +44,7 @@ def load_runtime(
     drafter_repo: str,
     speculative_tokens: int,
     tree_budget: int,
+    drafter_revision: str | None = None,
 ) -> DDTreeRuntime:
     if not have_runtime():
         raise RuntimeError(
@@ -53,7 +54,9 @@ def load_runtime(
 
     from dtree_mlx.api import DFlashGenerator
 
-    resolved_drafter_repo = _prepare_draft_model_for_dtree(drafter_repo)
+    resolved_drafter_repo = _prepare_draft_model_for_dtree(
+        drafter_repo, revision=drafter_revision
+    )
 
     logger.info(
         "Loading DDTree runtime: target=%s drafter=%s spec=%d tree_budget=%d",
@@ -149,7 +152,9 @@ def _install_qwen35_split_prefill_patch(generator: Any) -> None:
     target._rapid_mlx_split_prefill_patch = True
 
 
-def _prepare_draft_model_for_dtree(draft_model: str) -> str:
+def _prepare_draft_model_for_dtree(
+    draft_model: str, *, revision: str | None = None
+) -> str:
     """Return a dtree-mlx-compatible draft path.
 
     The public Qwen3.5 DFlash draft repos use the newer transformers 5
@@ -159,7 +164,8 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
     mirror with a patched config and symlinked weights, then pass that path
     to ``dtree-mlx``.
     """
-    path = _resolve_model_path(draft_model)
+    path = _resolve_model_path(draft_model, revision=revision)
+    draft_model = str(path)
     cfg_path = path / "config.json"
     if not cfg_path.exists():
         return draft_model
@@ -240,13 +246,15 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _resolve_model_path(path_or_repo: str) -> Path:
+def _resolve_model_path(path_or_repo: str, *, revision: str | None = None) -> Path:
     path = Path(path_or_repo).expanduser()
     if path.exists():
         return path
     from rapid_mlx.model_downloads import snapshot_download
 
-    return Path(snapshot_download(path_or_repo))
+    if revision is None:
+        return Path(snapshot_download(path_or_repo))
+    return Path(snapshot_download(path_or_repo, revision=revision))
 
 
 def _patched_draft_dir(source: Path) -> Path:

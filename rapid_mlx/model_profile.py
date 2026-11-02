@@ -108,6 +108,7 @@ class ModelProfile:
     """
 
     hf_path: str = ""
+    model_type: str | None = None
     # Directory INSIDE ``hf_path`` that holds this alias's weights, for
     # publishers who ship every quantization of one model as sibling
     # folders of a single repo instead of one repo per quant. Liquid AI
@@ -291,6 +292,7 @@ class ModelProfile:
     # needs model-family specific verifier support.
     supports_ddtree: bool = False
     ddtree_draft_model: str | None = None
+    ddtree_draft_revision: str | None = None
     ddtree_speculative_tokens: int | None = None
     ddtree_tree_budget: int | None = None
     # codex round 3 [NIT #3]: minimum unified-memory floor (in GB) for

@@ -1582,6 +1582,7 @@ def test_alias_profile_str_fields_are_explicitly_listed():
         {
             "hf_path",  # HF repo path, open-ended URL-like string
             "revision",  # Immutable checkpoint identity, not a routing switch.
+            "model_type",  # Declared architecture metadata for offline qualification.
             # In-repo directory holding this alias's checkpoint, for
             # publishers who ship one folder per quantization in a single
             # repo (LiquidAI/LFM2.5-2.6B-MLX). NOT a routing switch: it
@@ -1610,6 +1611,7 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # Closed provider identity for a pinned DFlash pair. _coerce accepts
             # only "tensorfold"; aliases without it retain the existing backend.
             "dflash_backend",
+            "ddtree_draft_revision",  # Immutable paired drafter artifact SHA.
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             # HF org/repo path for the isolated serial native-MTP sidecar.
             # Open-ended artifact identity, not a lane enum; _coerce requires

@@ -4,6 +4,8 @@
 import asyncio
 import gc
 import logging
+import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -56,10 +58,18 @@ async def root():
     return {"status": "ok"}
 
 
+# Only verified immutable Hub snapshots may retain a readiness decision.
+_consent_cache: dict[tuple[str, str, bool, bool, bool], dict[str, str]] = {}
+
+
+def _clear_consent_cache() -> None:
+    _consent_cache.clear()
+
+
 def _model_consent_blocker(cfg) -> dict[str, str]:
     """Check only local metadata, using the configured loader's consent policy."""
     from ..audio.registry import resolve_audio_alias
-    from ..model_aliases import resolve_model
+    from ..model_aliases import resolve_model, resolve_revision
     from ..model_metadata import read_model_metadata
     from ..utils.model_file_guard import (
         RemoteCodeConsentRequired,
@@ -86,13 +96,34 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         ),
         None,
     )
+    cache_key = None
     try:
         resolved = resolve_model(model)
         if entry and model.lower() == entry.alias.lower():
             resolved = entry.hf_id
+        revision = resolve_revision(model)
+        trusted = remote_code_enabled()
+        if (
+            revision is not None
+            and re.fullmatch(r"[0-9a-fA-F]{40}", revision)
+            and re.fullmatch(r"[\w.-]+/[\w.-]+", resolved)
+            and not Path(model).expanduser().exists()
+            and not Path(resolved).expanduser().exists()
+        ):
+            cache_key = (
+                resolved,
+                revision,
+                bool(entry and entry.type == "stt"),
+                bool(getattr(engine, "is_mllm", False)),
+                trusted,
+            )
+            if cache_key in _consent_cache:
+                return dict(_consent_cache[cache_key])
         metadata = read_model_metadata(resolved)
         if metadata is None or metadata.snapshot_dir is None:
             return {}
+        if cache_key is not None and Path(metadata.snapshot_dir).name != revision:
+            cache_key = None
         config = metadata.config or {}
         if entry and entry.type == "stt":
             validate_processor_code(metadata.snapshot_dir)
@@ -102,7 +133,7 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
                 validate_vlm_processor_policy(
                     metadata.snapshot_dir,
                     config,
-                    trust_remote_code=remote_code_enabled(),
+                    trust_remote_code=trusted,
                 )
     except RemoteCodeConsentRequired:
         # Never expose repository-provided values or local paths on probes.
@@ -114,6 +145,11 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
     except (OSError, ValueError):
         # Other metadata/load failures retain their existing lifecycle handling.
         logger.debug("Readiness metadata unavailable", exc_info=True)
+        return {}
+    if cache_key is not None:
+        if len(_consent_cache) >= 16:
+            _consent_cache.pop(next(iter(_consent_cache)))
+        _consent_cache[cache_key] = dict(result)
     return result
 
 
