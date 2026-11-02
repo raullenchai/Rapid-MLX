@@ -29,7 +29,14 @@ import mlx.core as mx
 from ._env import env_truthy
 from .model_registry import get_registry
 from .output_collector import RequestOutputCollector, RequestStreamState
-from .request import Request, RequestOutput, SamplingParams
+from .request import (
+    InferenceAbortedError,
+    Request,
+    RequestOutput,
+    SamplingParams,
+    classify_engine_abort,
+    inference_aborted_error_payload,
+)
 from .scheduler import Scheduler, SchedulerConfig
 
 logger = logging.getLogger(__name__)
@@ -1045,48 +1052,31 @@ class EngineCore:
             except Exception as e:
                 import traceback
 
-                # If step() raises (e.g. Metal RuntimeError that did propagate
-                # synchronously to Python, an unexpected scheduler bug, etc.),
-                # the in-flight requests would otherwise hang forever waiting
-                # on finished_events that never get set. Surface the error to
-                # every waiting client as a structured RequestOutput and
-                # release their events so HTTP handlers can return 503 instead
-                # of timing out.
-                #
-                # NOTE: this does NOT recover from the async Metal abort path
-                # described in #353. When mlx::core::gpu::check_error throws
-                # from inside Metal's addCompletedHandler block, the C++
-                # exception propagates straight to std::terminate -> abort()
-                # without ever passing through a Python frame, and the whole
-                # process dies. Tracking that path against mlx-lm#1015 /
-                # ml-explore/mlx#... — once mlx defers the throw to the next
-                # eval, this handler will start catching it.
-                msg = str(e)
-                is_metal = any(
-                    needle in msg
-                    for needle in ("Metal", "MTL", "command buffer", "gpu::check_error")
-                )
-                if is_metal:
-                    logger.error(
-                        "Metal runtime error caught in engine loop — failing "
-                        f"in-flight requests and clearing buffers: {e}"
-                    )
-                    try:
-                        mx.clear_cache()
-                    except Exception:
-                        pass
+                logger.error("Engine loop error: %s\n%s", e, traceback.format_exc())
+                fail_step = getattr(self.scheduler, "fail_step", None)
+                if callable(fail_step):
+                    # Batch/cache cleanup belongs to the same worker as step().
+                    recovery = await loop.run_in_executor(_executor, fail_step, e)
+                    failed_outputs = {out.request_id: out for out in recovery.outputs}
                 else:
-                    logger.error(f"Engine loop error: {e}\n{traceback.format_exc()}")
-
-                # Fail all in-flight requests with a structured error output so
-                # awaiting HTTP handlers unblock (#353).
-                err_text = (
-                    f"Inference aborted: {type(e).__name__}: {e}"
-                    if is_metal
-                    else f"Engine loop error: {type(e).__name__}: {e}"
-                )
+                    # Compatibility for schedulers without request ownership data.
+                    kind = classify_engine_abort(e)
+                    message = inference_aborted_error_payload(
+                        InferenceAbortedError("", error_kind=kind)
+                    )["message"]
+                    failed_outputs = {
+                        rid: RequestOutput(
+                            request_id=rid,
+                            finished=True,
+                            finish_reason="length",
+                            error=message,
+                            error_kind=kind,
+                        )
+                        for rid, event in self._finished_events.items()
+                        if not event.is_set()
+                    }
                 performance = getattr(self.scheduler, "performance", None)
-                for rid in list(self._finished_events.keys()):
+                for rid in failed_outputs:
                     if performance is not None:
                         try:
                             get_request = getattr(self.scheduler, "get_request", None)
@@ -1100,25 +1090,8 @@ class EngineCore:
                     collector = self._output_collectors.get(rid)
                     if collector is not None:
                         try:
-                            collector.put(
-                                RequestOutput(
-                                    request_id=rid,
-                                    new_token_ids=[],
-                                    new_text="",
-                                    output_token_ids=[],
-                                    output_text="",
-                                    finished=True,
-                                    # OpenAI ChatCompletion finish_reason
-                                    # literal-set rejects "error"; "length"
-                                    # keeps the response spec-parseable.
-                                    # ``RequestOutput.error`` still carries
-                                    # the full abort message for callers.
-                                    finish_reason="length",
-                                    prompt_tokens=0,
-                                    completion_tokens=0,
-                                    error=err_text,
-                                )
-                            )
+                            self._stream_buffers.pop(rid, None)
+                            collector.put(failed_outputs[rid])
                         except Exception:
                             pass
                     ev = self._finished_events.get(rid)

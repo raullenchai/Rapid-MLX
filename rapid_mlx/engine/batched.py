@@ -3020,7 +3020,7 @@ class BatchedEngine(BaseEngine):
         messages, _ = self._prepare_cache_stable_messages(messages)
         _, images, _ = extract_multimodal_content(messages)  # type: ignore[arg-type]
         template_tools = convert_tools_for_template(tools) if tools else None
-        # Count template image placeholders, without vision-patch expansion.
+        # Render placeholders before optional dimension-only image expansion.
         prompt, shared_warm_boundary = self._render_chat_prompt(
             messages,
             template_tools,
@@ -3036,6 +3036,20 @@ class BatchedEngine(BaseEngine):
                 has_tools=bool(template_tools),
                 as_token_ids=True,
             )
+        processor = getattr(self, "_processor", None)
+        if images and callable(getattr(processor, "expand_image_prompt", None)):
+            from ..mllm_batch_generator import _expand_sized_image_prompt
+
+            scheduler = getattr(self, "_mllm_scheduler", None)
+            settings = getattr(scheduler, "config", None)
+            if settings is not None:
+                prompt = _expand_sized_image_prompt(
+                    processor,
+                    getattr(self._model, "config", None),
+                    prompt,
+                    images,
+                    settings,
+                )
         return prompt
 
     def _apply_chat_template(
@@ -3177,7 +3191,10 @@ class BatchedEngine(BaseEngine):
             if isinstance(content, list):
                 new_content = []
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") == "image_url":
+                    if isinstance(part, dict) and part.get("type") in (
+                        "image_url",
+                        "input_image",
+                    ):
                         new_content.append({"type": "image"})
                     elif isinstance(part, (dict, str)):
                         new_content.append(part)

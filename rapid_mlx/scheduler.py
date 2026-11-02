@@ -220,7 +220,15 @@ from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
 )
-from .request import Request, RequestOutput, RequestStatus, SamplingParams
+from .request import (
+    InferenceAbortedError,
+    Request,
+    RequestOutput,
+    RequestStatus,
+    SamplingParams,
+    classify_engine_abort,
+    inference_aborted_error_payload,
+)
 from .runtime.model_performance import get_model_performance_ledger
 from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
@@ -10293,6 +10301,8 @@ class Scheduler:
                 request = popped
                 selection_forced = False
 
+            self._step_request_id = request.request_id
+
             # Resolve invalid-prefix fallback before pricing the cohort. A
             # cold retry needs the whole prompt, not the stale hit's suffix.
             # Do this before exact-hit kickoff can trim a cache in place.
@@ -11628,6 +11638,55 @@ class Scheduler:
         if count > 0:
             logger.info(f"Rescheduled {count} requests for retry")
 
+    def fail_step(self, exc: Exception) -> SchedulerOutput:
+        """Retire failed work on the step thread, preserving unscheduled work."""
+        failures = getattr(self, "_consecutive_step_failures", 0) + 1
+        self._consecutive_step_failures = failures
+        fatal = failures >= 10
+        request_id = getattr(self, "_step_request_id", None)
+        self._step_request_id = None
+        if request_id is not None and not fatal:
+            aborted_ids = {request_id}
+        else:
+            # A shared forward pass has no trustworthy row attribution.
+            aborted_ids = self._recover_from_generation_error()
+            if fatal:
+                aborted_ids.update(
+                    rid
+                    for rid, request in self.requests.items()
+                    if not RequestStatus.is_finished(request.status)
+                )
+        for rid in aborted_ids:
+            request = self.requests.get(rid)
+            if request is not None and not RequestStatus.is_finished(request.status):
+                self.performance.record_failed_performance(request)
+                self._do_abort_request(rid)
+                request.set_finished(RequestStatus.FINISHED_ABORTED)
+                request._continuous_mtp_state = None
+                request.batch_uid = None
+        kind = classify_engine_abort(exc)
+        if request_id is not None and not fatal and kind == "insufficient_memory":
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+        message = inference_aborted_error_payload(
+            InferenceAbortedError("", error_kind=kind)
+        )["message"]
+        return SchedulerOutput(
+            outputs=[
+                RequestOutput(
+                    request_id=rid,
+                    finished=True,
+                    finish_reason="abort",
+                    error=message,
+                    error_kind=kind,
+                )
+                for rid in aborted_ids
+            ],
+            finished_request_ids=aborted_ids,
+        )
+
     def step(self, max_retries: int = 1) -> SchedulerOutput:
         """
         Execute one scheduling step with automatic error recovery.
@@ -11645,6 +11704,7 @@ class Scheduler:
             SchedulerOutput with results of this step
         """
         output = SchedulerOutput()
+        self._step_request_id = None
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
         self._process_pending_aborts()
@@ -11658,6 +11718,7 @@ class Scheduler:
             try:
                 # Schedule waiting requests
                 scheduled = self._schedule_waiting()
+                self._step_request_id = None
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 # Use model_prompt_tokens — when PFlash engages the
                 # prefill workload is the compressed length, not the
@@ -11793,10 +11854,14 @@ class Scheduler:
                     self._realign_grammar_logits_processors()
 
                 # Success - break out of retry loop
+                self._consecutive_step_failures = 0
                 break
 
             except TypeError as e:
                 # Catch the NoneType error specifically
+                if getattr(self, "_step_request_id", None) is not None:
+                    output = self.fail_step(e)
+                    break
                 if self._is_cache_corruption_error(e):
                     if attempt < max_retries:
                         logger.warning(
@@ -11818,29 +11883,10 @@ class Scheduler:
             except Exception as e:
                 import traceback
 
-                abort_error = (
-                    f"Inference aborted after generation error: {type(e).__name__}: {e}"
-                )
                 logger.error(
-                    f"Error in batch generation step: {e}\n{traceback.format_exc()}"
+                    "Error in batch generation step: %s\n%s", e, traceback.format_exc()
                 )
-                # Recover from fatal errors (OOM, Metal crash) instead of
-                # re-raising, which would cause infinite loop in engine_core.
-                aborted_ids = self._recover_from_generation_error()
-                for rid in aborted_ids:
-                    output.outputs.append(
-                        RequestOutput(
-                            request_id=rid,
-                            finished=True,
-                            # This is an internal terminal output.  The engine
-                            # raises on ``error`` before route serializers see
-                            # it, so keep its state truthful rather than
-                            # masquerading as a successful token-budget cap.
-                            finish_reason="abort",
-                            error=abort_error,
-                        )
-                    )
-                output.finished_request_ids = aborted_ids
+                output = self.fail_step(e)
                 break
 
         if self._step_timing_enabled and hasattr(self, "_steptime"):

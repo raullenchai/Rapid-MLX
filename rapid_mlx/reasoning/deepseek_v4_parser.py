@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """DeepSeek V4 reasoning parser.
 
-The state transitions mirror the dedicated DeepSeek V4 parsers in vLLM and
-SGLang: a bare ``</think>`` is a control token even when thinking is disabled,
+A bare ``</think>`` is a control token even when thinking is disabled,
 and a DSML tool-call opener implicitly closes an unfinished reasoning block.
+Inside a DSML tool-call block, reasoning markers are literal argument text.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ _THINK_START = "<think>"
 _THINK_END = "</think>"
 _DSML_TOOL_START = "<｜DSML｜tool_calls>"
 _DSML_TOOL_START_R = "<｜DSML｜r:tool_calls>"
+_DSML_TOOL_END = "</｜DSML｜tool_calls>"
 _CONTROL_TOKENS = (
     _THINK_START,
     _THINK_END,
@@ -41,6 +42,7 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
     ):
         super().reset_state()
         self._in_reasoning = start_in_thinking
+        self._in_tool_call = False
         self._thinking_enabled = (
             start_in_thinking if thinking_enabled is None else thinking_enabled
         )
@@ -57,9 +59,9 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
         )
 
     @staticmethod
-    def _partial_control_suffix(text: str) -> int:
+    def _partial_control_suffix(text: str, tokens: tuple[str, ...]) -> int:
         best = 0
-        for token in _CONTROL_TOKENS:
+        for token in tokens:
             for size in range(1, min(len(text), len(token) - 1) + 1):
                 if text.endswith(token[:size]):
                     best = max(best, size)
@@ -77,13 +79,14 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
             (reasoning if self._in_reasoning else content).append(value)
 
         while pending:
+            # Tool arguments are opaque to reasoning extraction. Hold split
+            # closers using the same carry buffer as other control markers.
+            tokens = (_DSML_TOOL_END,) if self._in_tool_call else _CONTROL_TOKENS
             matches = [
-                (idx, token)
-                for token in _CONTROL_TOKENS
-                if (idx := pending.find(token)) >= 0
+                (idx, token) for token in tokens if (idx := pending.find(token)) >= 0
             ]
             if not matches:
-                held = 0 if final else self._partial_control_suffix(pending)
+                held = 0 if final else self._partial_control_suffix(pending, tokens)
                 emit(pending[:-held] if held else pending)
                 if held:
                     self._buffer = pending[-held:]
@@ -92,7 +95,10 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
             index, token = min(matches, key=lambda match: match[0])
             emit(pending[:index])
             pending = pending[index + len(token) :]
-            if token == _THINK_START:
+            if token == _DSML_TOOL_END:
+                content.append(token)
+                self._in_tool_call = False
+            elif token == _THINK_START:
                 # With thinking explicitly disabled both markers are only
                 # sanitizers; never create a reasoning channel the request
                 # opted out of. Otherwise absorb duplicate openers while
@@ -100,7 +106,7 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
                 self._suppress_reasoning = not self._thinking_enabled
                 self._in_reasoning = self._thinking_enabled
             elif token == _THINK_END:
-                # vLLM also absorbs a bare closer in CONTENT state.
+                # Absorb a bare closer even in content state.
                 self._suppress_reasoning = False
                 self._in_reasoning = False
             else:
@@ -108,6 +114,7 @@ class DeepSeekV4ReasoningParser(ReasoningParser):
                 # opener for the downstream DeepSeek V4 tool parser.
                 self._suppress_reasoning = False
                 self._in_reasoning = False
+                self._in_tool_call = True
                 content.append(token)
 
         normal = "".join(content) or None
