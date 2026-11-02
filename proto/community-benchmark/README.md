@@ -31,6 +31,16 @@ only that field and verifies the dataset digest against `v1/datasets/`. Custom
 workloads are exploratory and never enter formal comparison or recommendation
 evidence.
 
+For image cases, `guidance_millionths: 1000000` denotes no classifier-free
+guidance: clients omit the `guidance` request field. Other values are sent as
+`guidance_millionths / 1000000`. Eligibility probes and execution use the same
+mapping. Image selection tries v1 first, followed by 4-step no-CFG, 8-step
+no-CFG, 28-step CFG 3.5, and 28-step no-CFG, accepting the first schedule whose
+cases all pass engine validation. At equal step counts, explicit CFG is preferred:
+an engine accepting explicit guidance uses CFG and falls back to its own default
+CFG when guidance is omitted. Models requiring guidance to be omitted (or exactly
+1.0) only pass the no-CFG schedule.
+
 Semantic validation also requires:
 
 1. model, machine, execution, workload, and dataset digests are recomputed;

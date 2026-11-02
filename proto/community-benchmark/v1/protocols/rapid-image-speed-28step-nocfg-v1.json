@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "protocol_digest": "sha256:354935794d9f5247d2a69d43a1c891ce9dbe453a9b99b0c6efbf57852d4d00ec",
+  "workload": {
+    "protocol_id": "rapid-image-speed-28step-nocfg", "protocol_version": 1, "protocol_strength": "registered",
+    "protocol_digest": "sha256:354935794d9f5247d2a69d43a1c891ce9dbe453a9b99b0c6efbf57852d4d00ec", "task_type": "image_generation",
+    "dataset": {"id": "rapid-public-prompts", "version": 1, "digest": "sha256:1364a3627ef40d98e2920fe188f0941fe6f4a78ea306e4c81964e3b6b705c44c"},
+    "concurrency": 1,
+    "cases": [{"case_id": "t2i-1024-square", "warmup_rounds": 1, "measured_rounds": 1, "mode": "text_to_image", "width": 1024, "height": 1024, "steps": 28, "guidance_millionths": 1000000, "seed": 12648430, "image_count": 1}]
+  }
+}

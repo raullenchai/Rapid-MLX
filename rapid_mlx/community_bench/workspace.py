@@ -23,18 +23,13 @@ from rapid_mlx.model_aliases import (
 
 from .benchmark_contracts import (
     BenchmarkRunValidator,
+    ImageProtocolUnavailableError,
     SubmissionReceiptValidator,
-    public_prompt,
     registered_workload,
 )
 from .provenance_schema import ProvenanceInvalid
 from .provenance_schema import validate as validate_provenance_document
 
-_TASK_PROTOCOL = {
-    "text_generation": "rapid-community-speed",
-    "image_generation": "rapid-image-speed",
-    "video_generation": "rapid-video-speed",
-}
 _FOCUS_ALIASES = frozenset(
     {
         "qwen3.8-27b-4bit",
@@ -177,26 +172,9 @@ def benchmark_protocol_issue(alias: str, task_type: str) -> str | None:
     if task_type != "image_generation":
         return None
     try:
-        from rapid_mlx.image.engine import ImageGenerationEngine, ImageRequestError
-        from rapid_mlx.local_model_path import resolved_model_ref
-        from rapid_mlx.model_aliases import resolve_model
-    except Exception:
-        return None
-    try:
-        engine = ImageGenerationEngine(resolve_model(resolved_model_ref(alias)))
-        for case in registered_workload(task_type)["cases"]:
-            engine.validate_request(
-                prompt=public_prompt(case["case_id"]),
-                width=case["width"],
-                height=case["height"],
-                num_inference_steps=case["steps"],
-                seed=case["seed"],
-                guidance=case["guidance_millionths"] / 1_000_000,
-            )
-    except ImageRequestError as exc:
+        registered_workload(task_type, alias)
+    except ImageProtocolUnavailableError as exc:
         return str(exc)
-    except Exception:
-        return None
     return None
 
 
@@ -232,7 +210,7 @@ def benchmark_catalog(
         # their own registered workload before they can produce comparable rows.
         if task == "video_generation" and alias["alias"] not in _REGISTERED_WAN_ALIASES:
             continue
-        workload = registered_workload(task)
+        workload = registered_workload(task, alias["alias"])
         result = catalog_memory_fit(
             alias["alias"],
             ram_bytes=ram_bytes,
@@ -257,7 +235,7 @@ def benchmark_catalog(
                 # facts must be read from that folder's config, not the root.
                 "subfolder": model["source"].get("subfolder"),
                 "task_type": task,
-                "protocol_id": _TASK_PROTOCOL[task],
+                "protocol_id": workload["protocol_id"],
                 "protocol_version": workload["protocol_version"],
                 "focus": alias["alias"] in _FOCUS_ALIASES,
                 "estimated_memory_gib": estimated_memory_gib,
@@ -368,7 +346,7 @@ def plan_for_alias(
                 "schema_version": 1,
                 "memory_budget_gib": catalog["memory_budget_gib"],
                 "model": entry,
-                "workload": registered_workload(entry["task_type"]),
+                "workload": registered_workload(entry["task_type"], alias_name),
                 "privacy": {
                     "storage": "local",
                     "uploads": False,
@@ -388,12 +366,8 @@ def plan_for_alias(
         ):
             issue = benchmark_protocol_issue(alias_name, "image_generation")
             if issue is not None:
-                case = registered_workload("image_generation")["cases"][0]
-                guidance = case["guidance_millionths"] / 1_000_000
                 raise ValueError(
-                    f"{alias_name} cannot run the registered image benchmark "
-                    f"({case['width']}x{case['height']}, {case['steps']} steps, "
-                    f"guidance {guidance:g}): {issue}"
+                    f"{alias_name} cannot run the registered image benchmark: {issue}"
                 )
             break
     raise ValueError(f"unknown or unsupported benchmark model {alias_name!r}")

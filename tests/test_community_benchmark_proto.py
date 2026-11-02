@@ -635,3 +635,46 @@ def test_canonical_json_handles_unicode_and_rejects_float_exponents() -> None:
     assert _digest({"name": "é"}) == _digest({"name": "e\u0301"})
     with pytest.raises(TypeError, match="forbids floating-point"):
         _canonical({"temperature": 0.7, "tiny": 1e-7})
+
+
+@pytest.mark.parametrize(
+    "suffix,expected",
+    (
+        (
+            "4step-nocfg",
+            "56accf318ed2a5aa418e58ab0de57e7a53bb497638a4101f589c6395d8a5c6f4",
+        ),
+        (
+            "8step-nocfg",
+            "3972198faa551d8070fa70d0cb870d4e508745ba862b7fab757dff87da800f5e",
+        ),
+        (
+            "28step-nocfg",
+            "354935794d9f5247d2a69d43a1c891ce9dbe453a9b99b0c6efbf57852d4d00ec",
+        ),
+        (
+            "28step-cfg3p5",
+            "db138da869374a30a926bdb99225a58669e205356b09d39d60cbcf4cb0575d29",
+        ),
+    ),
+)
+def test_fixed_image_protocol_digest(suffix, expected) -> None:
+    from rapid_mlx.catalog.canonical import rcj_digest
+
+    entry = _load(BENCH_ROOT / "protocols" / f"rapid-image-speed-{suffix}-v1.json")
+    workload = entry["workload"]
+    assert (
+        entry["protocol_digest"] == workload["protocol_digest"] == f"sha256:{expected}"
+    )
+    assert (
+        rcj_digest({k: v for k, v in workload.items() if k != "protocol_digest"})
+        == f"sha256:{expected}"
+    )
+    base = _load(BENCH_ROOT / "protocols" / "rapid-image-speed-v1.json")["workload"]
+    base["protocol_id"] = workload["protocol_id"]
+    base["protocol_digest"] = workload["protocol_digest"]
+    base["cases"][0].update(
+        steps=workload["cases"][0]["steps"],
+        guidance_millionths=workload["cases"][0]["guidance_millionths"],
+    )
+    assert workload == base

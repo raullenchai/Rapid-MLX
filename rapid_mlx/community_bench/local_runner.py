@@ -52,7 +52,7 @@ from .acceleration import (
     resolve_benchmark_acceleration,
     validate_request,
 )
-from .benchmark_contracts import public_prompt, registered_workload
+from .benchmark_contracts import image_case_guidance, public_prompt, registered_workload
 from .hardware import collect, run_conditions
 
 logger = logging.getLogger(__name__)
@@ -845,7 +845,7 @@ def _run_image(
     from rapid_mlx.cli import _check_alias_min_memory
 
     _check_alias_min_memory(alias, stream=sys.stderr)
-    workload = registered_workload("image_generation")
+    workload = registered_workload("image_generation", alias)
     case = workload["cases"][0]
     payload = {
         "model": alias,
@@ -854,7 +854,7 @@ def _run_image(
         "size": f"{case['width']}x{case['height']}",
         "response_format": "b64_json",
         "steps": case["steps"],
-        "guidance": case["guidance_millionths"] / 1_000_000,
+        **image_case_guidance(case),
         "seed": case["seed"],
     }
     measurements: list[dict[str, Any]] = []
@@ -2490,6 +2490,7 @@ def _run_local_measured(
             subfolder=model.get("subfolder"),
             model_identity=model_identity,
             task_type=task_type,
+            alias=alias,
             hardware=hardware,
             software=software,
             started_at=started_at,
@@ -2541,6 +2542,7 @@ def _run_local_measured(
                 subfolder=model.get("subfolder"),
                 model_identity=model_identity,
                 task_type=task_type,
+                alias=alias,
                 hardware=hardware,
                 software=software,
                 started_at=started_at,
