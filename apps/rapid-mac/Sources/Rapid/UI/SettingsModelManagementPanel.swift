@@ -1340,7 +1340,7 @@ struct SettingsModelManagementPanel: View {
             }()
             pill(
                 text: label,
-                id: pct.map { String(localized: "Downloading… \($0)%") } ?? "Downloading…",
+                id: pct.map { "Downloading… \($0)%" } ?? "Downloading…",
                 color: RapidTheme.statusWorking
             )
         case .failed:
