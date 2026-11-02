@@ -672,10 +672,15 @@ def _audio_duration_seconds(
     try:
         import wave  # noqa: PLC0415
 
-        with wave.open(audio_path, "rb") as wav:
+        with open(audio_path, "rb") as source, wave.open(source, "rb") as wav:
             rate = wav.getframerate()
             if rate > 0:
-                return float(wav.getnframes()) / rate
+                # Pipe-written headers can declare an unknown or oversized
+                # data chunk. Bound frames by the bytes actually available.
+                frame_bytes = wav.getnchannels() * wav.getsampwidth()
+                available = max(0, os.fstat(source.fileno()).st_size - source.tell())
+                frames = min(wav.getnframes(), available // frame_bytes)
+                return float(frames) / rate
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -834,7 +839,7 @@ class STTEngine:
         # attribute. Gate on a positive Whisper id check so the patch
         # only fires for actual Whisper backends — non-Whisper engines
         # surface their own load-time errors unmodified.
-        from .registry import resolve_audio_alias
+        from .registry import is_aligner_model, resolve_audio_alias
 
         entry = resolve_audio_alias(model_name)
         self._is_whisper = "whisper" in model_name.lower() or (
@@ -845,7 +850,7 @@ class STTEngine:
         # different call surface (``generate(audio, text, language)``) and
         # a dedicated ``align()`` method — ``transcribe()`` is not valid on
         # them (there is no text to discover).
-        self._is_aligner = "aligner" in model_name.lower()
+        self._is_aligner = is_aligner_model(model_name)
         # SenseVoice (FunAudioLLM) is a non-autoregressive CTC ASR model
         # with a different generate() contract than Whisper: keyword-only
         # ``language`` (from ``_SENSEVOICE_LANGUAGES``, default "auto"),

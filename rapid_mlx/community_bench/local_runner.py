@@ -516,25 +516,40 @@ def _terminate_worker_process(process: multiprocessing.process.BaseProcess) -> N
         return
     try:
         owns_process_group = os.getpgid(pid) == pid
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         owns_process_group = False
+    deadline = time.monotonic() + 1
     if process.is_alive():
         if owns_process_group:
             try:
                 os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
         else:
             process.terminate()
         process.join(timeout=1)
-    if process.is_alive():
-        if owns_process_group:
+    group_alive = False
+    if owns_process_group:
+        # A worker can exit while descendants still occupy its owned group.
+        while True:
+            try:
+                os.killpg(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                group_alive = True
+                break
+            time.sleep(min(0.05, remaining))
+        if group_alive:
             try:
                 os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
-        else:
-            process.kill()
+    worker_alive = process.is_alive()
+    if worker_alive and not owns_process_group:
+        process.kill()
+    if worker_alive or group_alive:
         process.join(timeout=1)
 
 

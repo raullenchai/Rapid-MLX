@@ -5593,6 +5593,59 @@ def test_terminate_worker_skips_a_process_that_never_started() -> None:
     assert process.calls == []
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+def test_terminate_worker_kills_child_after_worker_exits() -> None:
+    import select
+
+    child_code = (
+        "import os, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print(os.getpid(), flush=True); time.sleep(30)"
+    )
+    worker_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "time.sleep(30)"
+    )
+    worker = subprocess.Popen(
+        [sys.executable, "-c", worker_code],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+    )
+
+    def join(timeout=None):
+        try:
+            worker.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+    process = SimpleNamespace(
+        pid=worker.pid,
+        is_alive=lambda: worker.poll() is None,
+        join=join,
+        terminate=worker.terminate,
+        kill=worker.kill,
+    )
+    try:
+        assert select.select([worker.stdout], [], [], 1)[0], "child did not start"
+        child_pid = int(worker.stdout.readline())
+        assert os.getpgid(child_pid) == worker.pid
+
+        local_runner._terminate_worker_process(process)
+
+        assert worker.poll() == -signal.SIGTERM
+        # The child holds the pipe open until it dies, even after its parent exits.
+        assert select.select([worker.stdout], [], [], 1)[0], "child survived cleanup"
+        assert worker.stdout.read() == b""
+    finally:
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        worker.wait(timeout=1)
+        worker.stdout.close()
+
+
 def test_terminate_worker_escalates_group_signals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5605,17 +5658,23 @@ def test_terminate_worker_escalates_group_signals(
 
     local_runner._terminate_worker_process(process)
 
-    assert signals == [(777, signal.SIGTERM), (777, signal.SIGKILL)]
+    assert (777, 0) in signals
+    assert [(pid, sig) for pid, sig in signals if sig] == [
+        (777, signal.SIGTERM),
+        (777, signal.SIGKILL),
+    ]
     assert process.calls == ["join", "join"]
 
 
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
 def test_terminate_worker_tolerates_group_races(
     monkeypatch: pytest.MonkeyPatch,
+    error: type[OSError],
 ) -> None:
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
 
     def killpg(pid, sig):
-        raise ProcessLookupError
+        raise error
 
     monkeypatch.setattr(local_runner.os, "killpg", killpg)
     process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
@@ -5644,14 +5703,18 @@ def test_terminate_worker_stops_after_a_clean_death(
 ) -> None:
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(
-        local_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig))
-    )
+
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(local_runner.os, "killpg", killpg)
     process = _FakeSupervisedProcess(777, alive_sequence=[True, False])
 
     local_runner._terminate_worker_process(process)
 
-    assert signals == [(777, signal.SIGTERM)]
+    assert signals == [(777, signal.SIGTERM), (777, 0)]
     assert process.calls == ["join"]
 
 
