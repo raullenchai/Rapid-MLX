@@ -4,12 +4,10 @@
 Covers:
   * ``install_signal_observability`` registers a handler for SIGTERM /
     SIGHUP / SIGABRT, saves the prior handler, and chains to it.
-  * ``faulthandler.dump_traceback`` is invoked on signal receipt.
+  * Diagnostic signals dump stacks; SIGTERM quietly chains for shutdown.
   * The latch is idempotent (repeat installs don't stack handlers).
   * The C-04 recon symptom (silent server death) is now observable:
-    sending SIGTERM to a process running the install + a tiny event loop
-    produces the documented WARNING line and a thread-stack dump on
-    stderr before the chained default handler runs.
+    sending SIGHUP produces diagnostics before the default handler runs.
 
 The C-level signals (SIGSEGV, SIGBUS, …) handled by ``faulthandler.enable``
 are NOT exercised in unit tests — actually raising them in-process would
@@ -2361,16 +2359,8 @@ def test_startup_sweeps_stale_empty_crash_files(tmp_path):
     )
 
 
-def test_subprocess_sigterm_emits_warning_and_stack_dump():
-    """End-to-end: spawn a child running the install + an idle loop,
-    send SIGTERM, assert the WARNING marker + thread-stack dump appear
-    on stderr BEFORE the process exits.
-
-    This is the C-04 recon symptom reproduction — without the hook the
-    child would die between two stdout writes with no log line. With
-    the hook the operator sees a single-line WARNING + per-thread
-    traceback even when the SIGTERM landed mid-handler.
-    """
+def test_subprocess_sigterm_exits_without_thread_dump():
+    """SIGTERM chains to a clean exit without shutdown diagnostics."""
     program = textwrap.dedent(
         """
         import logging, os, signal, sys, time
@@ -2416,12 +2406,8 @@ def test_subprocess_sigterm_emits_warning_and_stack_dump():
             proc.kill()
             proc.communicate()
 
-    # Documented WARNING shape.
-    assert "received signal SIGTERM" in stderr, stderr
-    # faulthandler.dump_traceback shape — the header line it writes
-    # starts with ``Current thread`` or ``Thread`` depending on whether
-    # all_threads dumped multiple threads.
-    assert "Thread" in stderr or "Current thread" in stderr, stderr
+    assert proc.returncode == 0
+    assert stderr == ""
 
 
 def test_subprocess_sighup_default_disposition_dumps_and_terminates():
@@ -2587,3 +2573,20 @@ def test_crash_file_lock_failure_is_not_fatal(monkeypatch, tmp_path, caplog):
         assert list((tmp_path / ".rapid-mlx" / "logs").glob("crash-*.txt"))
     finally:
         so._reset_for_tests()
+
+
+def test_sigterm_chains_without_thread_dump(monkeypatch, capsys, caplog):
+    from unittest.mock import Mock
+
+    from rapid_mlx import _signal_observability as so
+
+    prior = Mock()
+    dump = Mock()
+    frame = object()
+    monkeypatch.setattr(so, "_prior_handlers", {signal.SIGTERM: prior})
+    monkeypatch.setattr(so.faulthandler, "dump_traceback", dump)
+    so._on_signal(signal.SIGTERM, frame)
+    prior.assert_called_once_with(signal.SIGTERM, frame)
+    dump.assert_not_called()
+    assert capsys.readouterr().err == ""
+    assert "received signal" not in caplog.text

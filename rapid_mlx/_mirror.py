@@ -1103,8 +1103,8 @@ def _do_r2_download(
                     # Bail to HF when the mirror throttles this shard below the
                     # floor (issue #2010): a slow trickle never trips the socket
                     # timeout, so a stalled R2 edge would otherwise crawl for
-                    # minutes. Discard the partial prefix and roll back its
-                    # credit so HF's full-file download can't double-count.
+                    # minutes. Keep the prefix for verified Hub Range resume,
+                    # rolling back credit so the next attempt can credit it once.
                     #
                     # Only guard a transfer that is still short of its absolute
                     # final size: a slow FINAL chunk that completes the file is
@@ -1117,7 +1117,6 @@ def _do_r2_download(
                         and existing + read < final_size
                         and floor.record(read)
                     ):
-                        _safe_unlink(tmp)
                         _rollback_credits(progress_tracker, chunks_credited)
                         return False, "slow-mirror"
 
@@ -1740,7 +1739,7 @@ def _hf_resumable_one(
 
 def _print_dim(msg: str) -> None:
     """Quiet status line. Honors NO_COLOR / non-TTY."""
-    print(msg)
+    print(msg, flush=True)
 
 
 def _safe_display_name(fname: str, max_len: int = 80) -> str:
@@ -1847,10 +1846,9 @@ def download_with_mirror_fallback(
     resolves it.
 
     ``on_pull_start`` is an optional zero-arg hook fired exactly once, right
-    before the first ``Pulling`` line is printed (i.e. after the size/catalog
-    round-trips resolve). The CLI uses it to retire a "Resolving…" spinner so
-    it doesn't collide with the download output. It never fires on the
-    ``return False`` fall-through path.
+    before the initial status line and metadata resolution. The CLI uses it
+    to retire a "Resolving…" spinner so it does not collide with download
+    output. Unsupported revisions and local paths return without firing it.
 
     ``allow_patterns`` narrows the enumerated repo to a subset of files,
     ``fnmatch``-ed against each sibling's in-repo path — the SAME contract as
@@ -1909,6 +1907,14 @@ def download_with_mirror_fallback(
     from huggingface_hub.utils import RepositoryNotFoundError
 
     from ._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
+
+    # Retire the caller's resolving spinner before any blocking metadata work.
+    if on_pull_start is not None:
+        try:
+            on_pull_start()
+        except Exception:
+            pass
+    _print_dim("  Checking model files…")
 
     mirror_only = False
     info = (
@@ -2072,19 +2078,6 @@ def download_with_mirror_fallback(
     BOLD = "\x1b[1m" if is_tty else ""
     DIM = "\x1b[2m" if is_tty else ""
     RESET = "\x1b[0m" if is_tty else ""
-
-    # We're about to emit real download output. Let the caller retire any
-    # "Resolving…" spinner it started BEFORE our first ``Pulling`` line so the
-    # two don't collide on the terminal. Fired only on the paths that actually
-    # print (both ``use_r2`` branches) — never before the ``return False``
-    # below, where the caller keeps the spinner up for its own
-    # ``snapshot_download`` banner. The callback must be cheap and
-    # exception-safe; a misbehaving hook shouldn't abort a good pull.
-    if (use_r2 or hf_only) and on_pull_start is not None:
-        try:
-            on_pull_start()
-        except Exception:
-            pass
 
     if hf_only:
         _print_dim(f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(Hugging Face){RESET}")
@@ -2386,6 +2379,7 @@ def download_with_mirror_fallback(
         )
         if _desktop_progress_protocol():
             _print_dim(f"  [current] {_safe_display_name(fname)}")
+        slow_mirror = False
         if r2_eligible:
             # ``dub`` is set above to either the catalog's
             # download_url_base (default mirror) or the synthetic
@@ -2409,6 +2403,18 @@ def download_with_mirror_fallback(
                     else None
                 ),
             )
+            slow_mirror = _reason == "slow-mirror"
+            if slow_mirror:
+                part = sidecar_dir / f"{_sidecar_key_for(fname)}.part"
+                try:
+                    kept = part.stat().st_size
+                except OSError:
+                    kept = 0
+                progress_tracker.write_line(
+                    f"  Mirror is slow; continuing {_safe_display_name(fname)} from the Hub "
+                    f"(keeping {kept / 1_000_000:.1f} MB already downloaded)."
+                )
+                sys.stdout.flush()
             if ok:
                 try:
                     size = target.stat().st_size if target.exists() else 0
@@ -2444,9 +2450,22 @@ def download_with_mirror_fallback(
                 blob_already_local = (repo_root / "blobs" / expected_sha256).is_file()
             except OSError:
                 blob_already_local = False
-        # Preserve the historical Hub fallback for mirror misses. A direct HF
-        # choice uses the verified Range path, including any mirror prefix.
-        if hf_only and _hf_resumable_one(
+        if (
+            not blob_already_local
+            and expected_size is not None
+            and expected_size >= 50_000_000
+        ):
+            message = (
+                f"  Downloading {_safe_display_name(fname)} "
+                f"({expected_size / 1_000_000:.1f} MB) from Hugging Face…"
+            )
+            if progress_tracker is not None:
+                progress_tracker.write_line(message)
+                sys.stdout.flush()
+            else:
+                _print_dim(message)
+        # Slow mirrors and direct Hub pulls share the verified Range path.
+        if (hf_only or slow_mirror) and _hf_resumable_one(
             repo_id,
             fname,
             revision,

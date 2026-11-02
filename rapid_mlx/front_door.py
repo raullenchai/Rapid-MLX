@@ -678,19 +678,42 @@ def wait_until_ready(
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
-        if check(url):
-            return True
+        try:
+            if check(url):
+                return True
+        except _ModelConsentRequiredError as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return False
         pause(1.0)
     return False
 
 
+class _ModelConsentRequiredError(RuntimeError):
+    """Readiness cannot recover without restarting with explicit consent."""
+
+
 def _ready_probe(url: str) -> bool:
+    import json
     import urllib.error
     import urllib.request
 
     try:
         with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
             return bool(response.status == 200)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            try:
+                payload = json.load(exc)
+            except (OSError, ValueError):
+                payload = {}
+            finally:
+                exc.close()
+            if (
+                isinstance(payload, dict)
+                and payload.get("reason") == "model_code_consent_required"
+            ):
+                raise _ModelConsentRequiredError(payload["message"]) from None
+        return False
     except (urllib.error.URLError, OSError, ValueError):
         return False
 

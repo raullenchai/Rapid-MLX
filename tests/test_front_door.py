@@ -1008,3 +1008,32 @@ def test_run_bare_s_hands_the_terminal_to_a_server_child(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "→ rapid-mlx serve qwen3.5-4b-4bit" in out
     assert "http://127.0.0.1:8000/v1" in out
+
+
+@pytest.mark.parametrize("reason", ["model_code_consent_required", "loading"])
+def test_wait_consent_blocker_stops_before_sleep(monkeypatch, capsys, reason):
+    import io
+    import json
+    import urllib.error
+    from unittest.mock import Mock
+
+    message = "Review the repository code and opt in."
+    urlopen = Mock(
+        side_effect=lambda *a, **kw: (_ for _ in ()).throw(
+            urllib.error.HTTPError(
+                a[0],
+                503,
+                "unavailable",
+                {},
+                io.BytesIO(json.dumps({"reason": reason, "message": message}).encode()),
+            )
+        )
+    )
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    sleeps = []
+    assert not fd.wait_until_ready(8000, _FakeProc(alive_polls=2), sleep=sleeps.append)
+    assert sleeps == ([] if reason == "model_code_consent_required" else [1.0, 1.0])
+    assert capsys.readouterr().err.count(message) == int(
+        reason == "model_code_consent_required"
+    )
+    assert urlopen.call_count == (1 if reason == "model_code_consent_required" else 2)

@@ -4140,7 +4140,7 @@ def _normalize_speculative_config_or_exit(args):
                         not getattr(args, "_auto_mtp_retry", False)
                         and sidecar == profile.hf_path
                     ):
-                        # The upcoming target download also supplies its MTP head.
+                        # Retry after provisioning, including a missing same-repo head.
                         args._auto_mtp_deferred = True
                     else:
                         print(
@@ -7665,6 +7665,45 @@ def serve_command(args):
             _ensure_model_downloaded(args.model)
 
     if getattr(args, "_auto_mtp_deferred", False):
+        from . import model_downloads
+        from .model_aliases import checkpoint_prefix, resolve_profile
+
+        identity = _mtp_catalog_identity(args)
+        profile = resolve_profile(identity)
+        sidecar, _ = _alias_mtp_declaration(identity)
+        if (
+            sidecar == profile.hf_path
+            and _cached_mtp_sidecar(sidecar) is None
+            and not _offline_hub_mode_active()
+            and not model_downloads.disabled()
+        ):
+            # Fetch only head assets; target runnability does not require them.
+            prefix = checkpoint_prefix(identity)
+            print(
+                f"  Fetching the MTP speculative-decoding head for {identity}…",
+                flush=True,
+            )
+            try:
+                run_cancellable_download(
+                    lambda: model_downloads.snapshot_download(
+                        sidecar,
+                        revision=profile.revision,
+                        allow_patterns=[
+                            f"{prefix}{name}"
+                            for name in (
+                                "mtp.safetensors",
+                                "model-mtp.safetensors",
+                                "mtp/*",
+                                "mtplx_runtime.json",
+                            )
+                        ],
+                    ),
+                    retry_hint="  Run the same command again to continue.",
+                )
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Deferred MTP head fetch failed", exc_info=True
+                )
         _restore_speculative_changes(args, _spec_before, _spec_after)
         args._auto_mtp_retry = True
         try:
@@ -13287,6 +13326,8 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
                         except ValueError:
                             payload = {}
                         status = payload if isinstance(payload, dict) else {}
+                        if status.get("reason") == "model_code_consent_required":
+                            raise RuntimeError(status["message"])
                 except requests.RequestException:
                     pass
             _draw()

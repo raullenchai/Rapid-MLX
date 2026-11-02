@@ -981,3 +981,38 @@ def test_pip_fallback_preserves_editable_source(environment, monkeypatch):
         "-e",
         "/tmp/source",
     ]
+
+
+@pytest.mark.parametrize("phase", ["import", "dispatch"])
+def test_cli_keyboard_interrupt_is_cancelled(phase):
+    program = """
+import builtins
+import sys
+import types
+from rapid_mlx.dependency_repair import cli_entrypoint
+
+phase = sys.argv[1]
+if phase == "import":
+    original_import = builtins.__import__
+    def interrupted_import(name, *args, **kwargs):
+        if name == "rapid_mlx.cli":
+            raise KeyboardInterrupt
+        return original_import(name, *args, **kwargs)
+    builtins.__import__ = interrupted_import
+else:
+    cli = types.ModuleType("rapid_mlx.cli")
+    def interrupted_dispatch():
+        raise KeyboardInterrupt
+    cli.cli_entrypoint = interrupted_dispatch
+    sys.modules["rapid_mlx.cli"] = cli
+cli_entrypoint()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, phase],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 130
+    assert result.stderr == "Cancelled\n"
+    assert "Traceback" not in result.stderr
