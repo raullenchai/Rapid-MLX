@@ -86,18 +86,48 @@ run_install_command() {
     return "$status"
 }
 
+collect_install_descendants() {
+    local children child
+    if command -v pgrep >/dev/null 2>&1; then
+        children=$(pgrep -P "$1" 2>/dev/null || true)
+    else
+        children=$(ps -A -o pid=,ppid= | awk -v parent="$1" '$2 == parent { print $1 }')
+    fi
+    for child in $children; do
+        printf '%s\n' "$child"
+        collect_install_descendants "$child"
+    done
+}
+
 stop_install_child() {
-    local attempt
+    local attempt pid pids snapshot survivors
     [ -n "$INSTALL_CHILD_PID" ] || return 0
     if kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
-        kill -TERM "$INSTALL_CHILD_PID" 2>/dev/null || true
+        # Freeze the tree before termination so descendants cannot keep spawning
+        # writers or escape by reparenting while their ancestors are stopped.
+        kill -STOP "$INSTALL_CHILD_PID" 2>/dev/null || true
+        pids="$INSTALL_CHILD_PID"
         for ((attempt = 0; attempt < 100; attempt++)); do
-            kill -0 "$INSTALL_CHILD_PID" 2>/dev/null || break
+            snapshot=$({ printf '%s\n' "$pids"; collect_install_descendants "$INSTALL_CHILD_PID"; } | sort -nu)
+            for pid in $snapshot; do
+                kill -STOP "$pid" 2>/dev/null || true
+            done
+            [ "$snapshot" != "$pids" ] || break
+            pids="$snapshot"
+        done
+        # Queue TERM for the whole stopped tree before allowing handlers to run.
+        for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+        for pid in $pids; do kill -CONT "$pid" 2>/dev/null || true; done
+        for ((attempt = 0; attempt < 100; attempt++)); do
+            survivors=""
+            for pid in $pids; do
+                if kill -0 "$pid" 2>/dev/null; then survivors="$survivors $pid"; fi
+            done
+            pids="$survivors"
+            [ -n "$pids" ] || break
             sleep 0.1
         done
-        if kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
-            kill -KILL "$INSTALL_CHILD_PID" 2>/dev/null || true
-        fi
+        for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
     fi
     wait "$INSTALL_CHILD_PID" 2>/dev/null || true
     INSTALL_CHILD_PID=""

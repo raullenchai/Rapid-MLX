@@ -915,9 +915,10 @@ for signal in HUP TERM; do
         cat > "$fixture/writer" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$$" > "$1/pid"
+bash -c 'sleep 1; printf late > "$1/late-write"' bash "$1" &
+printf '%s\n' "$!" > "$1/grandchild-pid"
 touch "$1/ready"
-sleep 1
-printf late > "$1/late-write"
+wait
 EOF
         chmod +x "$fixture/writer"
         bash -c '
@@ -925,9 +926,14 @@ EOF
             fixture=$2; command_kind=$3
             rollback_rebuild() {
                 if kill -0 "$(cat "$fixture/pid")" 2>/dev/null; then touch "$fixture/alive-at-rollback"; fi
+                if kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then touch "$fixture/alive-at-rollback"; fi
                 touch "$fixture/rollback"
             }
-            release_install_lock() { touch "$fixture/released"; }
+            release_install_lock() {
+                if kill -0 "$(cat "$fixture/pid")" 2>/dev/null ||
+                   kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then touch "$fixture/alive-at-release"; fi
+                touch "$fixture/released"
+            }
             # Use the production trap definitions even in library mode.
             eval "$(sed -n "/^trap on_installer_exit EXIT$/,/^trap .* TERM$/p" "$1")"
             case "$command_kind" in
@@ -949,10 +955,13 @@ EOF
         sleep 1.2
         expected_status=129; [ "$signal" != TERM ] || expected_status=143
         if [ "$signal_status" = "$expected_status" ] && [ -e "$fixture/rollback" ] &&
-           [ -e "$fixture/released" ] && [ ! -e "$fixture/alive-at-rollback" ] && [ ! -e "$fixture/late-write" ]; then
-            ok "$signal stops $command_kind child before rollback and lock release"
+           [ -e "$fixture/released" ] && [ ! -e "$fixture/alive-at-rollback" ] &&
+           [ ! -e "$fixture/alive-at-release" ] && [ ! -e "$fixture/late-write" ] &&
+           ! kill -0 "$(cat "$fixture/pid")" 2>/dev/null &&
+           ! kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then
+            ok "$signal stops $command_kind child and descendants before rollback and lock release"
         else
-            bad "$signal stops $command_kind child before rollback and lock release (status $signal_status)"
+            bad "$signal stops $command_kind child and descendants before rollback and lock release (status $signal_status)"
         fi
     done
 done
