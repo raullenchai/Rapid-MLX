@@ -105,6 +105,8 @@ def runner_unavailable_run(
     if classify_attempt(jobs) != "runner-unavailable":
         return None
     if run["run_attempt"] < MAX_RUNNER_ATTEMPTS:
+        # rerun-failed-jobs requeues cancelled jobs as well as failed ones and
+        # their dependents; green jobs are carried over from the prior attempt.
         api.request(f"actions/runs/{run['id']}/rerun-failed-jobs", "POST")
         return "Runner unavailable; failed jobs rerun"
     names = "\n".join(
