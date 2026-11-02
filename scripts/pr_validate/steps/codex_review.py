@@ -495,18 +495,24 @@ class CodexReviewStep(Step):
         content, usage = _parse_codex_jsonl(proc.stdout)
         execution_errors = []
         turn_failed = False
+        unrecovered_error = False
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(event, dict) and event.get("type") in {
-                "error",
-                "turn.failed",
-            }:
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type in {"error", "turn.failed"}:
                 execution_errors.append(line)
-                turn_failed |= event.get("type") == "turn.failed"
-        if turn_failed or (execution_errors and not content.strip()):
+                turn_failed |= event_type == "turn.failed"
+                unrecovered_error = True
+            elif event_type == "turn.completed":
+                # A later completion confirms recovery from a reconnect error;
+                # an agent message alone may only be a partial reply.
+                unrecovered_error = False
+        if turn_failed or unrecovered_error:
             return StepResult(
                 name=self.name,
                 status="fail",

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import pytest
 
@@ -1926,24 +1927,48 @@ def test_missing_review_binary_blocks(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "event_type,message,stderr,status",
+    "event_types,message,stderr,status",
     [
-        (None, "No blocking issues found.", "authentication mentioned in diff", "pass"),
         (
-            None,
+            ("message",),
+            "No blocking issues found.",
+            "authentication mentioned in diff",
+            "pass",
+        ),
+        (
+            ("message",),
             "No blocking issues found.",
             "rate limit; model unavailable; quota exceeded",
             "pass",
         ),
-        ("error", "No blocking issues found.", "", "pass"),
-        ("turn.failed", "No blocking issues found.", "", "fail"),
-        ("turn.failed", "", "", "fail"),
-        ("error", "", "", "fail"),
-        ("error", "ok", "", "fail"),
+        (("error", "message"), "No blocking issues found.", "", "fail"),
+        (
+            ("error", "message", "turn.completed"),
+            "No blocking issues found.",
+            "",
+            "pass",
+        ),
+        (
+            ("message", "turn.completed", "error"),
+            "No blocking issues found.",
+            "",
+            "fail",
+        ),
+        (("turn.failed", "message"), "No blocking issues found.", "", "fail"),
+        (
+            ("turn.failed", "message", "turn.completed"),
+            "No blocking issues found.",
+            "",
+            "fail",
+        ),
+        (("turn.failed", "message"), "", "", "fail"),
+        (("error", "message"), "", "", "fail"),
+        (("error", "message"), "ok", "", "fail"),
+        (("error", "message", "turn.completed"), "", "", "fail"),
     ],
 )
 def test_zero_exit_review_error_handling(
-    monkeypatch, tmp_path, event_type, message, stderr, status
+    monkeypatch, tmp_path, event_types, message, stderr, status
 ):
     from subprocess import CompletedProcess
 
@@ -1956,19 +1981,17 @@ def test_zero_exit_review_error_handling(
     ctx.diff_path = tmp_path / "pr.diff"
     ctx.diff_path.write_text("diff --git a/a.py b/a.py\n+x=1\n")
     monkeypatch.setattr(codex_review.shutil, "which", lambda _: "/fake/codex")
-    output = json.dumps(
-        {
+    error = "Reconnecting after connection reset"
+    events = {
+        "message": {
             "type": "item.completed",
             "item": {"type": "agent_message", "text": message},
-        }
-    )
-    error = "Reconnecting after connection reset"
-    if event_type:
-        output = (
-            json.dumps({"type": event_type, "error": {"message": error}})
-            + "\n"
-            + output
-        )
+        },
+        "error": {"type": "error", "error": {"message": error}},
+        "turn.failed": {"type": "turn.failed", "error": {"message": error}},
+        "turn.completed": {"type": "turn.completed", "usage": {}},
+    }
+    output = "\n".join(json.dumps(events[event_type]) for event_type in event_types)
     monkeypatch.setattr(
         codex_review.subprocess,
         "run",
@@ -1976,10 +1999,14 @@ def test_zero_exit_review_error_handling(
     )
     result = CodexReviewStep().run(ctx)
     assert result.status == status
-    if event_type:
+    if "error" in event_types or "turn.failed" in event_types:
         assert error in result.details
-    if event_type == "error" and status == "pass":
+    if "error" in event_types and status == "pass":
         assert "Non-fatal Codex error events" in result.details
+    if status == "fail" and message:
+        assert re.fullmatch(
+            r"codex review failed after \d+\.\ds: execution error", result.summary
+        )
 
 
 def test_review_opt_out_is_explicit_in_scorecard(monkeypatch, tmp_path):
