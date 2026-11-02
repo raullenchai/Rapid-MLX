@@ -2393,12 +2393,14 @@ def confirm_or_abort(
     # alias ("rapid-mlx serve qwen…", "rapid-mlx share gemma…"); intent
     # to use that model is clear. Pressing Enter shouldn't punish them
     # with an abort. Ctrl-C still cancels.
+    exit_reason = "declined_download"
     try:
         answer = input("  Continue? [Y/n]: ").strip().lower()
     except EOFError:
         answer = ""  # equivalent to Enter
     except KeyboardInterrupt:
         answer = "n"  # explicit user cancel
+        exit_reason = "user_interrupt"
 
     if answer in {"n", "no"}:
         print(
@@ -2407,5 +2409,9 @@ def confirm_or_abort(
             if suggest_pull
             else f"  Aborted. Set {auto_yes_env}=1 to skip this prompt."
         )
-        sys.exit(1)
+        exc = SystemExit(1)
+        from rapid_mlx.telemetry.server_start import set_exit_reason
+
+        set_exit_reason(exit_reason, exc=exc)
+        raise exc
     return True

@@ -105,13 +105,24 @@ service:
     string supplied by the request.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * A failed server start may include one closed cause (`exit_reason`):
+    `user_interrupt`, `declined_download`, `usage_error`, `port_in_use`,
+    `memory_refused`, or `exception`; never the exception message, command line,
+    or path. Ctrl+C at download confirmation is `user_interrupt`; answering
+    no is `declined_download`.
+  * A failed serve classified as `other` includes one closed exception type
+    (`failure_subtype`): `config_parse`, `import_error`, `io_error`, `type_error`,
+    `memory_error`, `key_error`, `attribute_error`, `assertion_error`,
+    `value_error`, `runtime_error`, or `unknown`; never the message.
   * A failed model serve uses one closed error class: `unsupported_architecture`,
     `unsupported_format`, `insufficient_memory`, `corrupt_weights`,
     `download_failed`, `local_path_missing`, `missing_extra`, `invalid_config`,
     `tokenizer_load_failed`, `incompatible_weights`, `quantization_mismatch`,
-    or `other`. `local_path_missing` says only that a user-supplied local model
-    path or a required file was missing; the path and missing filenames are
-    never sent. `unsupported_format` says only that the model ships no weights
+    `invalid_model_ref`, `backend_load_failed`, or `other`. MLX allocation
+    failures map to `insufficient_memory` using fixed library markers; raw
+    messages are never sent. `local_path_missing` says only that a user-supplied
+    local model path or a required file was missing; the path and missing
+    filenames are never sent. `unsupported_format` says only that the model ships no weights
     Rapid-MLX can load (for example GGUF only); file names are never sent.
   * Whether the preceding server start ended without reporting ready or failed.
     The local marker's process ID, process creation time, system boot time, and

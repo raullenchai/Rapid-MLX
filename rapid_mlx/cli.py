@@ -383,7 +383,7 @@ def _exit_for_port_collision(
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind", port_explicit=port_explicit)
+    failed("bind", port_explicit=port_explicit, exit_reason="port_in_use")
     print(f"\n  Error: Port {port} is already in use on {collision_host}.")
     print(f"  Try a different port: rapid-mlx serve {model} --port {port + 1}")
     sys.exit(1)
@@ -394,7 +394,7 @@ def _exit_for_port_scan_exhaustion(scan_base: int, scan_count: int) -> NoReturn:
 
     from rapid_mlx.telemetry.server_start import failed
 
-    failed("bind", port_explicit=False)
+    failed("bind", port_explicit=False, exit_reason="port_in_use")
     scan_end = scan_base + scan_count - 1
     print(
         f"Ports {scan_base}-{scan_end} are all in use; "
@@ -16366,11 +16366,11 @@ def _capture_start_failures(func: Callable):
     def wrapped(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except BaseException:
+        except BaseException as exc:
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
-                fail_current()
+                fail_current(exc)
             except BaseException:
                 pass
             raise
@@ -16452,6 +16452,12 @@ def main():
     try:
         args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
     except SystemExit as exc:
+        if exc.code == 2:
+            # argparse usage errors exit 2; bind the reason here, at the
+            # parsing boundary, rather than inferring it from the exit code.
+            from rapid_mlx.telemetry.server_start import set_exit_reason
+
+            set_exit_reason("usage_error", exc=exc)
         # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
         flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
         if flag is not None:
@@ -17090,6 +17096,23 @@ def main():
                 auto_selected=bool(getattr(args, "_telemetry_auto_selected", False)),
                 assume_yes=bool(getattr(args, "yes", False)),
             )
+        except BaseException as exc:
+            try:
+                from rapid_mlx.telemetry import model_events, server_start
+
+                ref = getattr(args, "_original_alias", None) or args.model
+                if (
+                    not isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+                    and server_start.current_failure_stage() == "preflight"
+                    and not server_start.terminal_recorded()
+                    and model_events.serve_error_class(exc, model_ref=ref) != "other"
+                ):
+                    model_events.emit_model_serve_failed(
+                        exc, alias_or_path=ref, failure_stage="preflight"
+                    )
+            except BaseException:  # pragma: no cover - defensive telemetry boundary
+                pass
+            raise
     elif args.command == "bench":
         bench_command(args)
     elif args.command == "benchmark":

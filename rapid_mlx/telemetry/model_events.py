@@ -436,6 +436,11 @@ def serve_failure_subtype(exc: BaseException) -> str:
         (ImportError, "import_error"),
         (OSError, "io_error"),
         (TypeError, "type_error"),
+        (MemoryError, "memory_error"),
+        (KeyError, "key_error"),
+        (AttributeError, "attribute_error"),
+        (AssertionError, "assertion_error"),
+        (ValueError, "value_error"),
         (RuntimeError, "runtime_error"),
     ):
         if any(isinstance(cause, failure_type) for cause in chain):

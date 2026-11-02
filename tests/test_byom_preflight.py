@@ -913,8 +913,12 @@ def test_hook_refuses_oversize_serve_but_not_pull_or_disk_stream(hook, capsys):
     hook(info, _args(command="pull", bits=None, format=None))
     hook(info, _args(disk_stream=True))
     assert hook.emitted == []
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as raised:
         hook(info)
+    from rapid_mlx.telemetry import server_start
+
+    assert server_start.exit_reason_for(raised.value) == "memory_refused"
+    assert server_start.exit_reason_for(RuntimeError("private")) == "exception"
     assert [e.failure_class for e in hook.emitted] == [pf.INSUFFICIENT_MEMORY]
 
 

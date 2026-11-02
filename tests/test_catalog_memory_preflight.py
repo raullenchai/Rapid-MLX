@@ -69,6 +69,10 @@ def test_refuses_before_download(alias, ram, monkeypatch, capsys, offline_prefli
     with pytest.raises(SystemExit) as exc:
         run(alias, ram, monkeypatch)
     assert exc.value.code == 1
+    from rapid_mlx.telemetry import server_start
+
+    assert server_start.exit_reason_for(exc.value) == "memory_refused"
+    assert server_start.exit_reason_for(SystemExit(1)) == "exception"
     output = capsys.readouterr().err
     assert "Nothing was downloaded" in output
     pick = output.split("rapid-mlx serve ", 1)[1].split()[0]

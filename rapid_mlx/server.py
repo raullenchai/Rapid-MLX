@@ -950,9 +950,9 @@ async def lifespan(app: FastAPI):
                 assume_yes=optional_runtime_assume_yes(),
             )
         except Exception as _start_exc:
-            from rapid_mlx.telemetry.server_start import failed
+            from rapid_mlx.telemetry.server_start import exit_reason_for, failed
 
-            failed("engine_start")
+            failed("engine_start", exit_reason=exit_reason_for(_start_exc))
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(
@@ -3947,11 +3947,11 @@ def _capture_start_failures(func):
                 auto_selected=False,
                 assume_yes=optional_runtime_assume_yes(),
             )
-        except BaseException:
+        except BaseException as exc:
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
-                fail_current()
+                fail_current(exc)
             except BaseException:
                 pass
             raise
@@ -4432,7 +4432,16 @@ def main():
 
     set_optional_runtime_assume_yes(False)
     parser = _build_parser()
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except SystemExit as exc:
+        if exc.code == 2:
+            # argparse usage errors exit 2; bind the reason here, at the
+            # parsing boundary, rather than inferring it from the exit code.
+            from rapid_mlx.telemetry.server_start import set_exit_reason
+
+            set_exit_reason("usage_error", exc=exc)
+        raise
     from .server_exposure import normalize_bind_host, validate_server_exposure
 
     args.host = normalize_bind_host(args.host)

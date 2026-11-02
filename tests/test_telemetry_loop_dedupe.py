@@ -870,7 +870,7 @@ def test_app_opened_dedupe_key_ignores_the_command(loop_env):
 
 
 def test_registry_has_no_new_server_start_or_app_opened_properties():
-    """Invariant 6: no registry/schema change."""
+    """Dedupe keeps the event schema, including later approved additions."""
     registry = json.loads(
         (Path(rapid_mlx.__file__).parent / "telemetry" / "events.json").read_text()
     )
@@ -884,4 +884,5 @@ def test_registry_has_no_new_server_start_or_app_opened_properties():
         "previous_run_unterminated",
         "port_explicit",
         "failure_stage",
+        "exit_reason",
     }

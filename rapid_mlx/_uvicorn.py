@@ -318,8 +318,8 @@ def run_uvicorn(
             # Custom runners retain uvicorn.run's keyword contract. The
             # post-bind callback belongs only to our server implementation.
             uvicorn_runner(app, **config_kwargs)
-    except BaseException:
-        from rapid_mlx.telemetry.server_start import failed
+    except BaseException as exc:
+        from rapid_mlx.telemetry.server_start import exit_reason_for, failed
 
-        failed("bind", port_explicit=port_explicit)
+        failed("bind", port_explicit=port_explicit, exit_reason=exit_reason_for(exc))
         raise
