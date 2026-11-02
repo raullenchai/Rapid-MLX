@@ -519,37 +519,44 @@ def _terminate_worker_process(process: multiprocessing.process.BaseProcess) -> N
     except (ProcessLookupError, PermissionError):
         owns_process_group = False
     deadline = time.monotonic() + 1
-    if process.is_alive():
-        if owns_process_group:
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-        else:
-            process.terminate()
-        process.join(timeout=1)
-    group_alive = False
     if owns_process_group:
-        # A worker can exit while descendants still occupy its owned group.
-        while True:
-            try:
-                os.killpg(pid, 0)
-            except (ProcessLookupError, PermissionError):
-                break
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                group_alive = True
-                break
-            time.sleep(min(0.05, remaining))
-        if group_alive:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-    worker_alive = process.is_alive()
-    if worker_alive and not owns_process_group:
+        try:
+            if process.is_alive():
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                process.join(timeout=1)
+            group_alive = False
+            # A worker can exit while descendants still occupy its owned group.
+            while True:
+                try:
+                    os.killpg(pid, 0)
+                except ProcessLookupError:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    group_alive = True
+                    break
+                time.sleep(min(0.05, remaining))
+            if group_alive:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process.is_alive() or group_alive:
+                process.join(timeout=1)
+            return
+        except PermissionError:
+            logger.warning(
+                "Cannot signal worker process group %s; falling back to direct worker cleanup",
+                pid,
+            )
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=1)
+    if process.is_alive():
         process.kill()
-    if worker_alive or group_alive:
         process.join(timeout=1)
 
 

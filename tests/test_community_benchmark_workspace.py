@@ -5666,15 +5666,13 @@ def test_terminate_worker_escalates_group_signals(
     assert process.calls == ["join", "join"]
 
 
-@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
 def test_terminate_worker_tolerates_group_races(
     monkeypatch: pytest.MonkeyPatch,
-    error: type[OSError],
 ) -> None:
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
 
     def killpg(pid, sig):
-        raise error
+        raise ProcessLookupError
 
     monkeypatch.setattr(local_runner.os, "killpg", killpg)
     process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
@@ -5684,11 +5682,43 @@ def test_terminate_worker_tolerates_group_races(
     assert process.calls == ["join", "join"]
 
 
+@pytest.mark.parametrize("denied_signal", [signal.SIGTERM, 0, signal.SIGKILL])
+def test_terminate_worker_falls_back_after_group_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    denied_signal: int,
+) -> None:
+    signals: list[int] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
+
+    def killpg(pid, sig):
+        signals.append(sig)
+        if sig == denied_signal:
+            raise PermissionError
+
+    # Expire the grace period immediately so SIGKILL is exercised without waiting.
+    times = iter([0, 1])
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(local_runner.os, "killpg", killpg)
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, True, True])
+
+    local_runner._terminate_worker_process(process)
+
+    expected_calls = [] if denied_signal == signal.SIGTERM else ["join"]
+    assert process.calls == expected_calls + ["terminate", "join", "kill", "join"]
+    assert signals[-1] == denied_signal
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "falling back to direct worker cleanup" in caplog.text
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
 def test_terminate_worker_falls_back_to_direct_signals(
     monkeypatch: pytest.MonkeyPatch,
+    error: type[OSError],
 ) -> None:
     def getpgid(pid):
-        raise ProcessLookupError
+        raise error
 
     monkeypatch.setattr(local_runner.os, "getpgid", getpgid)
     process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
