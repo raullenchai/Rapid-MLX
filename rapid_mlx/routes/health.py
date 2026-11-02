@@ -68,23 +68,30 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         validate_processor_code,
     )
 
-    model = cfg.model_path or cfg.model_alias or cfg.model_name
-    if not model or cfg.retrieval_only:
+    model_path = getattr(cfg, "model_path", None)
+    model_alias = getattr(cfg, "model_alias", None)
+    model_name = getattr(cfg, "model_name", None)
+    retrieval_only = getattr(cfg, "retrieval_only", False)
+    engine = getattr(cfg, "engine", None)
+    model = model_path or model_alias or model_name
+    if not model or retrieval_only:
         return {}
     key = (
-        cfg.model_path,
-        cfg.model_alias,
-        cfg.model_name,
-        cfg.retrieval_only,
-        getattr(cfg.engine, "is_mllm", False),
+        model_path,
+        model_alias,
+        model_name,
+        retrieval_only,
+        getattr(engine, "is_mllm", False),
     )
-    cached = getattr(cfg, "_model_consent_cache", None)
+    cached: tuple[tuple[object, ...], dict[str, str]] | None = getattr(
+        cfg, "_model_consent_cache", None
+    )
     snapshot_dir = None
-    result = {}
+    result: dict[str, str] = {}
     entry = next(
         (
             entry
-            for name in (cfg.model_path, cfg.model_alias, cfg.model_name)
+            for name in (model_path, model_alias, model_name)
             if (entry := resolve_audio_alias(name)) is not None
         ),
         None,
@@ -101,7 +108,7 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
             return cached[1]
         config = metadata.config or {}
         if (entry and entry.type == "stt") or (
-            getattr(cfg.engine, "is_mllm", False)
+            getattr(engine, "is_mllm", False)
             and config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES
         ):
             validate_processor_code(metadata.snapshot_dir)
