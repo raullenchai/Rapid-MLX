@@ -115,7 +115,7 @@ def test_runtime_feature_toggle_reruns_cached_matrix(
     step = stress_e2e_bench.StressE2EBenchStep()
     calls = []
 
-    def matrix(_):
+    def matrix(_, selection):
         calls.append(os.environ["RAPID_MLX_GDN_IN_PROJ_FUSION"])
         return StepResult(name=step.name, status="pass", summary="matrix ran")
 
@@ -244,3 +244,114 @@ def test_run_matrix_reports_selection_error(monkeypatch):
 
     assert result.status == "error"
     assert result.summary == "boom"
+
+
+def test_run_reports_selection_error_under_lock(monkeypatch, tmp_path):
+    def fail_selection():
+        raise stress_e2e_bench._SelectionError("boom")
+
+    monkeypatch.setattr(stress_e2e_bench, "_selected_choices", fail_selection)
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    stored = []
+    monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
+    step = stress_e2e_bench.StressE2EBenchStep()
+    ctx = types.SimpleNamespace(run_log=lambda message: None)
+
+    result = step.run(ctx)
+
+    assert result.status == "error"
+    assert result.summary == "boom"
+    assert not stored
+
+
+@pytest.mark.parametrize("ram_values", [(100, 100, 20, 100), (20, 100, 100, 100)])
+def test_matrix_and_cache_share_one_selection(
+    cache_setup, monkeypatch, tmp_path, ram_values
+):
+    ctx, small, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    snapshot("org/large", "b" * 40, "blob2")
+    full = small + [types.SimpleNamespace(family="large", model_id="org/large")]
+    small_key = gpu_cache.cache_key(ctx, choices=small)
+    full_key = gpu_cache.cache_key(ctx, choices=full)
+    probes = []
+    values = iter(ram_values)
+
+    def probe():
+        value = next(values)
+        probes.append(value)
+        return value
+
+    monkeypatch.setattr(
+        stress_e2e_bench, "_selected_choices", _ORIGINAL_SELECTED_CHOICES
+    )
+    monkeypatch.setattr(stress_e2e_bench, "_load_registry", lambda: {})
+    monkeypatch.setattr(stress_e2e_bench, "_available_ram_gb", probe)
+    monkeypatch.setattr(
+        stress_e2e_bench,
+        "_select_models",
+        lambda registry, ram: full if ram > 50 else small,
+    )
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    step = stress_e2e_bench.StressE2EBenchStep()
+    ran = []
+
+    def matrix(ctx, selection):
+        ran.extend(selection[1])
+        return StepResult(name=step.name, status="pass", summary="ran")
+
+    stored = []
+    monkeypatch.setattr(step, "_run_matrix", matrix)
+    monkeypatch.setattr(gpu_cache, "store", lambda key, *args: stored.append(key))
+    assert step.run(ctx).status == "pass"
+    assert len(probes) == 1
+    assert stored == [full_key if ran == full else small_key]
+    if ran == small:
+        assert stored != [full_key]
+
+
+def test_cached_reduced_matrix_is_not_reused_for_full_selection(
+    cache_setup, monkeypatch, tmp_path
+):
+    """A reduced-matrix pass must not satisfy a run whose locked probe selects the full matrix."""
+    ctx, small, _, snapshot = cache_setup
+    snapshot("org/model", "a" * 40, "blob1")
+    snapshot("org/large", "b" * 40, "blob2")
+    full = small + [types.SimpleNamespace(family="large", model_id="org/large")]
+    small_key = gpu_cache.cache_key(ctx, choices=small)
+    cached_small = StepResult(name="stress_e2e_bench", status="pass", summary="small")
+    # RAM is probed only once the GPU lock is held, after any other GPU job
+    # has released its memory; an earlier low reading must not be consulted.
+    values = iter((100,))
+    monkeypatch.setattr(
+        stress_e2e_bench, "_selected_choices", _ORIGINAL_SELECTED_CHOICES
+    )
+    monkeypatch.setattr(stress_e2e_bench, "_load_registry", lambda: {})
+    monkeypatch.setattr(stress_e2e_bench, "_available_ram_gb", lambda: next(values))
+    monkeypatch.setattr(
+        stress_e2e_bench,
+        "_select_models",
+        lambda registry, ram: full if ram > 50 else small,
+    )
+    monkeypatch.setattr(
+        gpu_cache,
+        "load",
+        lambda key, *args: cached_small if key == small_key else None,
+    )
+    monkeypatch.setattr(gpu_cache, "store", lambda *args: None)
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    step = stress_e2e_bench.StressE2EBenchStep()
+    ran = []
+
+    def matrix(ctx, selection):
+        ran.extend(selection[1])
+        return StepResult(name=step.name, status="pass", summary="full")
+
+    monkeypatch.setattr(step, "_run_matrix", matrix)
+    result = step.run(ctx)
+
+    assert result is not cached_small
+    assert ran == full
+
+
+_ORIGINAL_SELECTED_CHOICES = stress_e2e_bench._selected_choices

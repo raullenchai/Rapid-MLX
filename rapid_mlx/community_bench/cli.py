@@ -528,39 +528,6 @@ def _benchmark_command(args) -> int:
                 check_cache=True,
             )
         elif action == "run":
-            # Progress is for a human watching a terminal. Under --json stderr
-            # stays reserved for the failure document the Desktop app surfaces
-            # verbatim on a non-zero exit — UNLESS the caller opts in with
-            # --progress, which streams RS-tagged progress the Desktop can tell
-            # apart from that document and render as a live bar + ETA.
-            acceleration = request_from_args(args)
-            if not acceleration.baseline and (
-                acceleration.overrides or acceleration.flags
-            ):
-                try:
-                    plan = plan_for_alias(args.benchmark_model)
-                except (LocalBenchmarkError, KeyError, ValueError):
-                    plan = None
-                if plan is not None:
-                    refuse_if_memory_does_not_fit(
-                        args.benchmark_model, plan["model"]["repo_id"]
-                    )
-                if (
-                    plan is not None
-                    and plan["model"]["task_type"] == "text_generation"
-                    and not _is_deepseek_v41_benchmark_target(plan["model"]["repo_id"])
-                ):
-                    preflight_benchmark_acceleration(args.benchmark_model, acceleration)
-            event_sink = None
-            if not args.json:
-                progress_sink = _progress_to_stderr
-            elif getattr(args, "progress", False):
-                progress_sink = _tagged_progress_to_stderr
-                # Structured events go only to machine consumers. A terminal
-                # user gets prose; a GUI gets the protocol's real case list.
-                event_sink = _tagged_event_to_stderr
-            else:
-                progress_sink = None
             received_signal = signal.SIGINT
 
             timer = None
@@ -583,6 +550,43 @@ def _benchmark_command(args) -> int:
                     previous_handlers[sig] = signal.signal(sig, cancel_on_signal)
             try:
                 try:
+                    # Progress is for a human watching a terminal. Under --json stderr
+                    # stays reserved for the failure document the Desktop app surfaces
+                    # verbatim on a non-zero exit — UNLESS the caller opts in with
+                    # --progress, which streams RS-tagged progress the Desktop can tell
+                    # apart from that document and render as a live bar + ETA.
+                    acceleration = request_from_args(args)
+                    if not acceleration.baseline and (
+                        acceleration.overrides or acceleration.flags
+                    ):
+                        try:
+                            plan = plan_for_alias(args.benchmark_model)
+                        except (LocalBenchmarkError, KeyError, ValueError):
+                            plan = None
+                        if plan is not None:
+                            refuse_if_memory_does_not_fit(
+                                args.benchmark_model, plan["model"]["repo_id"]
+                            )
+                        if (
+                            plan is not None
+                            and plan["model"]["task_type"] == "text_generation"
+                            and not _is_deepseek_v41_benchmark_target(
+                                plan["model"]["repo_id"]
+                            )
+                        ):
+                            preflight_benchmark_acceleration(
+                                args.benchmark_model, acceleration
+                            )
+                    event_sink = None
+                    if not args.json:
+                        progress_sink = _progress_to_stderr
+                    elif getattr(args, "progress", False):
+                        progress_sink = _tagged_progress_to_stderr
+                        # Structured events go only to machine consumers. A terminal
+                        # user gets prose; a GUI gets the protocol's real case list.
+                        event_sink = _tagged_event_to_stderr
+                    else:
+                        progress_sink = None
                     value = run_local(
                         args.benchmark_model,
                         archive=archive,

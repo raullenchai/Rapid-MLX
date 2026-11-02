@@ -188,6 +188,7 @@ def _requests_suffix(args, scheduler_kwargs=None) -> bool:
 
 def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -> None:
     from rapid_mlx.cli import (
+        _drop_unavailable_mtp_head,
         _resolve_dflash_launch_or_exit,
         serve_acceleration_preflights,
         serve_runtime_lane,
@@ -196,6 +197,17 @@ def preflight_benchmark_acceleration(alias: str, request: AccelerationRequest) -
     with _capture_preflight_exit():
         args = build_serve_args(alias, request)
         serve_acceleration_preflights(args)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            dropped = getattr(args, "_speculative_config_explicit", False) and (
+                _drop_unavailable_mtp_head(args)
+            )
+        if dropped:
+            reason = output.getvalue().strip().removeprefix("MTP unavailable: ")
+            reason = reason.removesuffix("; using plain decode.")
+            raise AccelerationConfigError(
+                f"MTP unavailable: {reason}; benchmark requires the requested MTP acceleration."
+            )
         lane = serve_runtime_lane(args)
         if lane == "dflash":
             _resolve_dflash_launch_or_exit(args)
