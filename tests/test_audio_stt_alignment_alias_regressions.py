@@ -146,6 +146,38 @@ _ALIGNER_CONFIGS = [
 ]
 
 
+@pytest.mark.parametrize("model_name", [None, "", 42])
+def test_is_aligner_model_rejects_empty_or_non_string_names(model_name):
+    from rapid_mlx.audio.registry import is_aligner_model
+
+    assert is_aligner_model(model_name) is False
+
+
+def test_is_aligner_model_rejects_oversized_config(tmp_path_factory, monkeypatch):
+    from rapid_mlx.audio import registry
+
+    folder = tmp_path_factory.mktemp("checkpoint")
+    with (folder / "config.json").open("wb") as config_file:
+        config_file.truncate(1024 * 1024 + 1)
+
+    def unexpected_parse(*args, **kwargs):
+        pytest.fail("oversized config must be rejected before parsing")
+
+    monkeypatch.setattr(registry.json, "loads", unexpected_parse)
+    assert registry.is_aligner_model(str(folder)) is False
+
+
+@pytest.mark.parametrize("config", [b"[]", b"\xff"])
+def test_is_aligner_model_rejects_non_object_or_invalid_utf8_config(
+    tmp_path_factory, config
+):
+    from rapid_mlx.audio.registry import is_aligner_model
+
+    folder = tmp_path_factory.mktemp("checkpoint")
+    (folder / "config.json").write_bytes(config)
+    assert is_aligner_model(str(folder)) is False
+
+
 @pytest.mark.parametrize("config", _ALIGNER_CONFIGS)
 def test_neutral_local_aligner_engine(local_checkpoint, config, tmp_path):
     from rapid_mlx.audio.stt import STTEngine

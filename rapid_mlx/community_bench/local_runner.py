@@ -567,8 +567,7 @@ def _terminate_worker_process(
                 except ProcessLookupError:
                     pass
                 except PermissionError:
-                    if not group_signal_succeeded:
-                        raise
+                    # Reaching SIGKILL requires a successful group probe above.
                     group_alive = False
             if process.is_alive() or group_alive:
                 process.join(timeout=1)

@@ -5820,6 +5820,27 @@ def test_terminate_worker_escalates_group_signals(
     assert process.calls == ["join", "join"]
 
 
+def test_terminate_worker_tolerates_group_disappearing_before_sigkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if sig == signal.SIGKILL:
+            raise ProcessLookupError
+
+    times = iter([0, 1])
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(local_runner.os, "killpg", killpg)
+    process = _FakeSupervisedProcess(777, alive_sequence=[True, False])
+
+    local_runner._terminate_worker_process(process, owned_pgid=777)
+
+    assert signals == [(777, signal.SIGTERM), (777, 0), (777, signal.SIGKILL)]
+    assert process.calls == ["join", "join"]
+
+
 def test_terminate_worker_tolerates_group_races(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
