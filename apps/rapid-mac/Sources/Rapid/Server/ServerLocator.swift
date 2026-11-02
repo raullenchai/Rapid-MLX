@@ -133,10 +133,10 @@ enum ServerLocator {
         /// enough to render in a status pill or chip next to a path.
         var displayLabel: String {
             switch self {
-            case .rapidBin:               return "RAPID_BIN override"
-            case .runtimeOverride:        return "App-managed override"
-            case .bundled:                return "Bundled with app"
-            case .unknown:                return "Unknown origin"
+            case .rapidBin:               return String(localized: "RAPID_BIN override")
+            case .runtimeOverride:        return String(localized: "App-managed override")
+            case .bundled:                return String(localized: "Bundled with app")
+            case .unknown:                return String(localized: "Unknown origin")
             }
         }
     }

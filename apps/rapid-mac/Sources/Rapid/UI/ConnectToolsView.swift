@@ -361,11 +361,11 @@ struct ConnectToolsView: View {
                         .foregroundStyle(configReady ? RapidTheme.green : .secondary)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(configReady ? "Ready for local connections" : "Waiting for a running model")
+                        Text(configReady ? String(localized: "Ready for local connections") : String(localized: "Waiting for a running model"))
                             .font(RapidFont.secondary.weight(.semibold))
                         Text(configReady
-                            ? "The endpoint, key, and model below are live now."
-                            : "Start a text model above; the API key and integration commands will activate automatically.")
+                            ? String(localized: "The endpoint, key, and model below are live now.")
+                            : String(localized: "Start a text model above; the API key and integration commands will activate automatically."))
                             .font(RapidFont.caption)
                             .foregroundStyle(.secondary)
                     }

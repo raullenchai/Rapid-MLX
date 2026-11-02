@@ -1398,7 +1398,7 @@ struct ChatView: View {
                         }
                         .buttonStyle(.plain)
                         .offset(x: 5, y: -5)
-                        .accessibilityLabel("Remove \(attachment.filename)")
+                        .accessibilityLabel(String(localized: "Remove \(attachment.filename)"))
                         .accessibilityIdentifier(
                             "ChatView.Attachment.Remove.\(attachment.filename)"
                         )
@@ -1431,7 +1431,7 @@ struct ChatView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Remove \(attachment.filename)")
+                        .accessibilityLabel(String(localized: "Remove \(attachment.filename)"))
                         .accessibilityIdentifier(
                             "ChatView.Attachment.Remove.\(attachment.filename)"
                         )
@@ -1838,7 +1838,7 @@ private struct MessageRow: View {
                                     }
                                     .accessibilityElement(children: .combine)
                                     .accessibilityLabel(
-                                        "\(attachment.kind.displayName) file, \(attachment.filename), \(attachment.detailText)"
+                                        String(localized: "\(attachment.kind.displayName) file, \(attachment.filename), \(attachment.detailText)")
                                     )
                                 }
                             }
@@ -2601,7 +2601,7 @@ private struct ToolCallChip: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Tool call \(call.function.name)")
+            .accessibilityLabel(String(localized: "Tool call \(call.function.name)"))
             .accessibilityIdentifier("ToolCallChip.Toggle.\(call.id)")
 
             if let approval {
@@ -2633,7 +2633,7 @@ private struct ToolCallChip: View {
                             }
                             .onPreferenceChange(OwnerPreviewHeightKey.self) { previewHeights = $0 }
                         if (previewHeights["full"] ?? 0) > (previewHeights["limited"] ?? 0) + 0.5 {
-                            Button(fullApprovalPreview ? "Show less" : "Show full preview") { fullApprovalPreview.toggle() }
+                            Button(fullApprovalPreview ? String(localized: "Show less") : String(localized: "Show full preview")) { fullApprovalPreview.toggle() }
                                 .accessibilityIdentifier("OwnerApproval.Expand.\(approval.opID)")
                         }
                     }
@@ -2645,10 +2645,10 @@ private struct ToolCallChip: View {
                         Text("Approval expired").font(.rapid(size: 11)).foregroundStyle(.secondary)
                     }
                     Button("Allow") { onApproval(approval.opID, true) }
-                        .accessibilityLabel("Allow \(call.function.name)")
+                        .accessibilityLabel(String(localized: "Allow \(call.function.name)"))
                         .accessibilityIdentifier("OwnerApproval.Allow.\(approval.opID)")
                     Button("Deny") { onApproval(approval.opID, false) }
-                        .accessibilityLabel("Deny \(call.function.name)")
+                        .accessibilityLabel(String(localized: "Deny \(call.function.name)"))
                         .accessibilityIdentifier("OwnerApproval.Deny.\(approval.opID)")
                 }
                 .buttonStyle(.bordered)

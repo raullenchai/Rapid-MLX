@@ -375,7 +375,7 @@ struct ModelPickerBar: View {
             }
             .accessibilityIdentifier("ModelPickerBar.Delete.Cancel")
         } message: { entry in
-            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.size.map { $0.displayText }.map { " Frees \($0)." } ?? "")")
+            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.size.map { $0.displayText }.map { String(localized: " Frees \($0).") } ?? "")")
         }
         // v0.5.2: brief toast at the top of the picker after a
         // successful (or failed) deletion. Auto-dismisses after a

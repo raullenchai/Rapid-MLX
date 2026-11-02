@@ -1814,7 +1814,7 @@ struct ContentView: View {
                     if let release = updater.availableUpdate,
                        let downloadURL = ContentView.missingOverlayDownloadURL(for: release) {
                         OnboardingActionLane {
-                            Button("Download update \(release.version)") {
+                            Button(String(localized: "Download update \(release.version)")) {
                                 NSWorkspace.shared.open(downloadURL)
                             }
                             .buttonStyle(.onboardingPrimary)

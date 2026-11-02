@@ -56,8 +56,8 @@ struct JumpToBottomButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel(
             isStreaming
-                ? "Jump to latest, still generating"
-                : "Jump to latest"
+                ? String(localized: "Jump to latest, still generating")
+                : String(localized: "Jump to latest")
         )
         .accessibilityIdentifier("Transcript.JumpToBottom")
         .onAppear { startRingIfNeeded() }

@@ -22,6 +22,16 @@
         }
       }
     },
+    " First dictation briefly switches the running model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "首次听写时会短暂切换正在运行的模型。"
+          }
+        }
+      }
+    },
     " Free space %@." : {
       "localizations" : {
         "zh-Hans" : {
@@ -68,6 +78,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : " 目前已有足够内存正常加载。"
+          }
+        }
+      }
+    },
+    " · %@ received" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · 已接收 %@"
+          }
+        }
+      }
+    },
+    " · ETA %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · 预计剩余 %@"
+          }
+        }
+      }
+    },
+    "%@ Action: %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 操作：%@。"
+          }
+        }
+      }
+    },
+    "%@ and run history (%lld events)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@与运行记录（%lld 个事件）"
           }
         }
       }
@@ -192,6 +242,26 @@
         }
       }
     },
+    "%@ s last" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上次耗时 %@ 秒"
+          }
+        }
+      }
+    },
+    "%@ tok/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ token/秒"
+          }
+        }
+      }
+    },
     "%@ · PICKED" : {
       "localizations" : {
         "zh-Hans" : {
@@ -232,6 +302,16 @@
         }
       }
     },
+    "%@: untested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：尚未测试"
+          }
+        }
+      }
+    },
     "%@s" : {
       "localizations" : {
         "zh-Hans" : {
@@ -242,12 +322,32 @@
         }
       }
     },
+    "%lld GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld GB"
+          }
+        }
+      }
+    },
     "%lld are already\nhere." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "本机已有 %lld 个模型。"
+          }
+        }
+      }
+    },
+    "%lld days ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 天前"
           }
         }
       }
@@ -272,12 +372,42 @@
         }
       }
     },
+    "%lld hours ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 小时前"
+          }
+        }
+      }
+    },
     "%lld min left" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "剩余 %lld 分钟"
+          }
+        }
+      }
+    },
+    "%lld minutes ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 分钟前"
+          }
+        }
+      }
+    },
+    "%lld months ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个月前"
           }
         }
       }
@@ -332,12 +462,122 @@
         }
       }
     },
+    "%lld weeks ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 周前"
+          }
+        }
+      }
+    },
+    "%lld years ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 年前"
+          }
+        }
+      }
+    },
+    "%lld%% · %lld/%lld files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld%% · %lld/%lld 个文件"
+          }
+        }
+      }
+    },
+    "%lld-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 位"
+          }
+        }
+      }
+    },
+    "%lldd ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 天前"
+          }
+        }
+      }
+    },
+    "%lldh ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 小时前"
+          }
+        }
+      }
+    },
+    "%lldm ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 分钟前"
+          }
+        }
+      }
+    },
+    "%lldmo ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个月前"
+          }
+        }
+      }
+    },
     "%llds" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld 秒"
+          }
+        }
+      }
+    },
+    "%lldw ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 周前"
+          }
+        }
+      }
+    },
+    "%lldy ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 年前"
+          }
+        }
+      }
+    },
+    ", and screenshot" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "和屏幕截图"
           }
         }
       }
@@ -362,6 +602,46 @@
         }
       }
     },
+    "1 day ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 天前"
+          }
+        }
+      }
+    },
+    "1 hour ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 小时前"
+          }
+        }
+      }
+    },
+    "1 minute ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 分钟前"
+          }
+        }
+      }
+    },
+    "1 month ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 个月前"
+          }
+        }
+      }
+    },
     "1 published result exists for %1$@ on an %2$@. Run it once to add another reference and tighten the range." : {
       "localizations" : {
         "zh-Hans" : {
@@ -378,6 +658,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此组合已有 1 个公开结果。你的结果让比较更有说服力。"
+          }
+        }
+      }
+    },
+    "1 week ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 周前"
+          }
+        }
+      }
+    },
+    "1 year ago" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 年前"
           }
         }
       }
@@ -402,6 +702,16 @@
         }
       }
     },
+    "25 languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "25 种语言"
+          }
+        }
+      }
+    },
     "3. Choose Gateway, paste the URL and API key above, then Test." : {
       "localizations" : {
         "zh-Hans" : {
@@ -418,6 +728,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "4. 应用更改。"
+          }
+        }
+      }
+    },
+    "40 languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "40 种语言"
           }
         }
       }
@@ -452,6 +772,16 @@
         }
       }
     },
+    "A compact multilingual model for older Macs. Faster, with lower accuracy." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适合较早款 Mac 的小型多语言模型，速度更快，但准确率较低。"
+          }
+        }
+      }
+    },
     "A lighter everyday model chosen to fit lower-memory Macs." : {
       "localizations" : {
         "zh-Hans" : {
@@ -472,12 +802,32 @@
         }
       }
     },
+    "A smaller, faster Chinese and English model with a modest accuracy tradeoff." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更小、更快的中英文模型，准确率略有下降。"
+          }
+        }
+      }
+    },
     "Action: %@." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "操作：%@。"
+          }
+        }
+      }
+    },
+    "Active: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前目标：%@"
           }
         }
       }
@@ -538,6 +888,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "允许 %@"
+          }
+        }
+      }
+    },
+    "Allow %@…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许%@…"
           }
         }
       }
@@ -612,6 +972,16 @@
         }
       }
     },
+    "An update attempt didn't take. Rapid-MLX is still running v%@. macOS Finder can't replace files inside a running .app. Check for updates, or quit and re-run the installer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新未生效。Rapid-MLX 仍在运行 v%@。macOS 访达无法替换正在运行的应用内的文件。请检查更新，或退出应用后重新运行安装程序。"
+          }
+        }
+      }
+    },
     "Another MLX app already downloaded these models into the shared Hugging Face cache. Picking one of them skips the download entirely." : {
       "localizations" : {
         "zh-Hans" : {
@@ -642,12 +1012,32 @@
         }
       }
     },
+    "App-managed override" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用管理的替代引擎"
+          }
+        }
+      }
+    },
     "Approval expired" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "批准已过期"
+          }
+        }
+      }
+    },
+    "Asian languages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "亚洲语言"
           }
         }
       }
@@ -772,6 +1162,16 @@
         }
       }
     },
+    "Bundled with app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随应用内置"
+          }
+        }
+      }
+    },
     "Cancel download stops the transfer. The model is not installed, and you can retry it or choose a different one." : {
       "localizations" : {
         "zh-Hans" : {
@@ -798,6 +1198,76 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在检查本机"
+          }
+        }
+      }
+    },
+    "Checked again (%lld times) — Rapid-MLX still can't find its engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已检查 %lld 次，Rapid-MLX 仍然找不到引擎。"
+          }
+        }
+      }
+    },
+    "Checked again — Rapid-MLX still can't find its engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已重新检查，Rapid-MLX 仍然找不到引擎。"
+          }
+        }
+      }
+    },
+    "Chinese" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文"
+          }
+        }
+      }
+    },
+    "Chinese · Beijing · Male" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文 · 北京口音 · 男声"
+          }
+        }
+      }
+    },
+    "Chinese · Female" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文 · 女声"
+          }
+        }
+      }
+    },
+    "Chinese · Male" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文 · 男声"
+          }
+        }
+      }
+    },
+    "Chinese · Sichuan · Male" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文 · 四川口音 · 男声"
           }
         }
       }
@@ -908,6 +1378,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "连接智能体"
+          }
+        }
+      }
+    },
+    "Connected · %lld tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接 · %lld 个工具"
+          }
+        }
+      }
+    },
+    "Connected · 1 tool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已连接 · 1 个工具"
           }
         }
       }
@@ -1048,6 +1538,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制设置"
+          }
+        }
+      }
+    },
+    "Could not verify" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证"
+          }
+        }
+      }
+    },
+    "Couldn't check — the local server didn't answer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查，本地服务器未响应"
           }
         }
       }
@@ -1212,6 +1722,36 @@
         }
       }
     },
+    "Developer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开发者"
+          }
+        }
+      }
+    },
+    "Dictation is off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写已关闭"
+          }
+        }
+      }
+    },
+    "Downloading — dictation can turn on when it finishes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载，完成后即可开启听写。"
+          }
+        }
+      }
+    },
     "Editors and apps" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1222,12 +1762,122 @@
         }
       }
     },
+    "Engine %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎 %@"
+          }
+        }
+      }
+    },
+    "Engine version unknown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎版本未知"
+          }
+        }
+      }
+    },
+    "English" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英语"
+          }
+        }
+      }
+    },
+    "English · Male" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英语 · 男声"
+          }
+        }
+      }
+    },
+    "English-only transcription. Very fast with strong punctuation and capitalization." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅支持英语转录，速度很快，标点和大小写处理出色。"
+          }
+        }
+      }
+    },
+    "Fast Chinese, Cantonese, Japanese, Korean, and English recognition with sound-event tags." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速识别普通话、粤语、日语、韩语和英语，并提供声音事件标签。"
+          }
+        }
+      }
+    },
+    "Fast multilingual transcription with punctuation across 40 languages." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持 40 种语言的快速多语言转录，带标点。"
+          }
+        }
+      }
+    },
+    "Fast transcription across 25 European languages with automatic language detection. Chinese is not supported." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持 25 种欧洲语言的快速转录，能自动检测语言，不支持中文。"
+          }
+        }
+      }
+    },
+    "Fast, lightweight multilingual transcription for everyday dictation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速、轻量的多语言转录，适合日常听写。"
+          }
+        }
+      }
+    },
+    "Finalising…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在完成…"
+          }
+        }
+      }
+    },
+    "Found it. Setting up…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已找到引擎，正在设置…"
+          }
+        }
+      }
+    },
     "Gateway API key" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gateway API 密钥"
+            "value" : "网关 API 密钥"
           }
         }
       }
@@ -1237,7 +1887,17 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gateway URL"
+            "value" : "网关 URL"
+          }
+        }
+      }
+    },
+    "Good multilingual accuracy with lower memory use than the Large models." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言识别准确，内存占用低于 Large 系列模型。"
           }
         }
       }
@@ -1248,6 +1908,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "隐藏密钥"
+          }
+        }
+      }
+    },
+    "High-accuracy Mandarin and Chinese dialect transcription with English code-switching. Output has no punctuation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高准确率的普通话和中文方言转录，支持中英混合，输出不含标点。"
+          }
+        }
+      }
+    },
+    "Highest-accuracy Whisper model. Supports 99+ languages and difficult accents." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确率最高的 Whisper 模型，支持 99 种以上语言，也能识别较难辨认的口音。"
+          }
+        }
+      }
+    },
+    "Japanese · Female" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "日语 · 女声"
+          }
+        }
+      }
+    },
+    "Korean · Female" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "韩语 · 女声"
           }
         }
       }
@@ -1292,6 +1992,76 @@
         }
       }
     },
+    "Listening paused — press %@ to reconnect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写已暂停，按 %@ 重新连接"
+          }
+        }
+      }
+    },
+    "Listening — press %@ in any app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "听写已就绪，可在任意应用中按 %@ 开始"
+          }
+        }
+      }
+    },
+    "Loading %@ into memory…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在将 %@ 加载到内存…"
+          }
+        }
+      }
+    },
+    "Local speech-to-text model. Runs offline after its first download." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地语音转文字模型，首次下载后即可离线使用。"
+          }
+        }
+      }
+    },
+    "Maximum steps: %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多步数：%lld"
+          }
+        }
+      }
+    },
+    "Multilingual" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言"
+          }
+        }
+      }
+    },
+    "Near Large v3 accuracy with much faster transcription. Supports 99+ languages." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确率接近 Large v3，转录速度更快，支持 99 种以上语言。"
+          }
+        }
+      }
+    },
     "Needs a public HTTPS endpoint" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1302,12 +2072,72 @@
         }
       }
     },
+    "Newsletter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "订阅资讯"
+          }
+        }
+      }
+    },
+    "No domain restriction" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不限制域名"
+          }
+        }
+      }
+    },
+    "No effect observed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未观察到效果"
+          }
+        }
+      }
+    },
+    "Not applied yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚未应用"
+          }
+        }
+      }
+    },
+    "Not listening — the hotkey isn't armed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未在听写，快捷键尚未启用"
+          }
+        }
+      }
+    },
     "Not started yet" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚未启动"
+          }
+        }
+      }
+    },
+    "Observed expected change" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已观察到预期变化"
           }
         }
       }
@@ -1332,12 +2162,32 @@
         }
       }
     },
+    "Outcome unknown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果未知"
+          }
+        }
+      }
+    },
     "Paste these values into any app that supports a custom OpenAI or Anthropic provider." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "将这些值粘贴到任何支持自定义 OpenAI 或 Anthropic 提供方的应用中。"
+          }
+        }
+      }
+    },
+    "Preparing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备…"
           }
         }
       }
@@ -1352,12 +2202,122 @@
         }
       }
     },
+    "RAPID_BIN override" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "RAPID_BIN 指定的引擎"
+          }
+        }
+      }
+    },
+    "Rapid will load %@ when you next use dictation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下次使用听写时，Rapid 会加载 %@。"
+          }
+        }
+      }
+    },
+    "Rapid-MLX is still running v%@. macOS Finder can't replace files inside a running .app, so a drag-to-/Applications Replace silently leaves the old build in place. Check for updates (the updater handles the quit + swap automatically), or quit and re-run the installer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid-MLX 仍在运行 v%@。macOS 访达无法替换正在运行的应用内的文件，因此拖入“应用程序”并选择替换后，旧版本可能仍被保留。请检查更新（更新程序会自动退出并替换应用），或退出应用后重新运行安装程序。"
+          }
+        }
+      }
+    },
+    "Ready on disk." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已下载就绪。"
+          }
+        }
+      }
+    },
+    "Recommended for this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "适合这台 Mac"
+          }
+        }
+      }
+    },
+    "Reconnecting in %llds · attempt %lld of %lld%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld 秒后重新连接 · 第 %2$lld 次尝试，共 %3$lld 次%4$@"
+          }
+        }
+      }
+    },
+    "Requesting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在请求…"
+          }
+        }
+      }
+    },
+    "Restarting to install stops active generations and local API sessions." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重启安装会中断正在进行的生成和本地 API 会话。"
+          }
+        }
+      }
+    },
+    "Right ⌘" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右侧 ⌘"
+          }
+        }
+      }
+    },
+    "Right ⌥" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "右侧 ⌥"
+          }
+        }
+      }
+    },
     "Run a text model first. Rapid will then create a private local endpoint and ready-to-copy setup commands." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "请先运行一个文本模型。随后 Rapid 会创建私有的本地端点和可直接复制的设置命令。"
+          }
+        }
+      }
+    },
+    "Run history (%lld events)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行记录（%lld 个事件）"
           }
         }
       }
@@ -1372,6 +2332,16 @@
         }
       }
     },
+    "Saved “%@”, but re-running this recording still produced: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存“%@”，但重新识别此录音的结果仍为：%@"
+          }
+        }
+      }
+    },
     "Server settings" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1382,12 +2352,62 @@
         }
       }
     },
+    "Show full preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示完整预览"
+          }
+        }
+      }
+    },
     "Show key" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示密钥"
+          }
+        }
+      }
+    },
+    "Show less" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收起"
+          }
+        }
+      }
+    },
+    "Speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音"
+          }
+        }
+      }
+    },
+    "Stalled · no new bytes — reconnecting soon%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载停滞，未收到新数据，即将重新连接%@"
+          }
+        }
+      }
+    },
+    "Start a model to connect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型后即可连接"
           }
         }
       }
@@ -1432,6 +2452,26 @@
         }
       }
     },
+    "Strong Chinese and English code-switching, punctuation, and custom vocabulary hints." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "擅长中英混合识别，支持标点和自定义词汇提示。"
+          }
+        }
+      }
+    },
+    "Technical details and run history (%lld events)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "技术详情与运行记录（%lld 个事件）"
+          }
+        }
+      }
+    },
     "Terminal agents" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1452,12 +2492,92 @@
         }
       }
     },
+    "Text to Speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文字转语音"
+          }
+        }
+      }
+    },
+    "The local model is warming up. Recording starts when it’s ready." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地模型正在预热，就绪后将开始录音。"
+          }
+        }
+      }
+    },
     "Try copying the command instead." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "请改为复制命令。"
+          }
+        }
+      }
+    },
+    "Turn it on to dictate into any app." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启后即可在任意应用中听写。"
+          }
+        }
+      }
+    },
+    "Turned off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已关闭"
+          }
+        }
+      }
+    },
+    "Unexpected result" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结果不符合预期"
+          }
+        }
+      }
+    },
+    "Unknown origin" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来源未知"
+          }
+        }
+      }
+    },
+    "Update" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新"
+          }
+        }
+      }
+    },
+    "Updated to v%@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已更新到 v%@"
           }
         }
       }
@@ -1482,12 +2602,122 @@
         }
       }
     },
+    "Verification unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法验证"
+          }
+        }
+      }
+    },
+    "Version %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本 %@"
+          }
+        }
+      }
+    },
+    "Version %@ (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本 %@（%@）"
+          }
+        }
+      }
+    },
+    "Very fast transcription with punctuation for English, French, German, Spanish, Portuguese, Italian, and Japanese. Chinese is not supported." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支持英语、法语、德语、西班牙语、葡萄牙语、意大利语和日语的极速转录，带标点，不支持中文。"
+          }
+        }
+      }
+    },
+    "You were on v%@. The release notes list what changed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "之前的版本是 v%@。更新内容请查看发行说明。"
+          }
+        }
+      }
+    },
     "Your API key is created when the local server starts." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "本地服务器启动时会创建你的 API 密钥。"
+          }
+        }
+      }
+    },
+    "another app" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一个应用"
+          }
+        }
+      }
+    },
+    "at least %lld %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至少 %lld %@"
+          }
+        }
+      }
+    },
+    "balanced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "均衡"
+          }
+        }
+      }
+    },
+    "below average" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "低于平均水平"
+          }
+        }
+      }
+    },
+    "best quality" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最佳准确率"
+          }
+        }
+      }
+    },
+    "code-switching" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中英混合"
           }
         }
       }
@@ -2042,6 +3272,56 @@
         }
       }
     },
+    "ended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已结束"
+          }
+        }
+      }
+    },
+    "fast" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速"
+          }
+        }
+      }
+    },
+    "good" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "良好"
+          }
+        }
+      }
+    },
+    "great" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出色"
+          }
+        }
+      }
+    },
+    "low memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "低内存占用"
+          }
+        }
+      }
+    },
     "macOS keeps about a fifth of unified memory for itself, so a %@ Mac has roughly %@ to give a model. Rapid keeps some of that free for your conversation, so it offers models needing up to about %@." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2358,6 +3638,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已在本机"
+          }
+        }
+      }
+    },
+    "multilingual" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "多语言"
           }
         }
       }
@@ -2766,6 +4056,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "适合你这台 %@ 内存 Mac 的推荐模型"
+          }
+        }
+      }
+    },
+    "plan" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "计划"
           }
         }
       }
@@ -13375,6 +14675,16 @@
         }
       }
     },
+    "whisper-large-v3-turbo is the usual pick — near large-v3 accuracy at a fraction of the latency." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通常推荐 whisper-large-v3-turbo，准确率接近 large-v3，延迟却低得多。"
+          }
+        }
+      }
+    },
     "your local model" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13391,6 +14701,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "你的选择"
+          }
+        }
+      }
+    },
+    "~%lld tok/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "约 %lld token/秒"
           }
         }
       }
@@ -21785,6 +23105,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "约 %@，共 %@"
+          }
+        }
+      }
+    },
+    "≥%@ RAM" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "内存至少需要 %@"
           }
         }
       }

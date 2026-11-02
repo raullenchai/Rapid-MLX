@@ -15,30 +15,27 @@ enum RelativeTimestamp {
     static func label(from created: Date, to now: Date) -> String {
         let (value, unit) = bucket(from: created, to: now)
         switch unit {
-        case .now: return "just now"
-        case .minutes: return "\(value)m ago"
-        case .hours: return "\(value)h ago"
-        case .days: return "\(value)d ago"
-        case .weeks: return "\(value)w ago"
-        case .months: return "\(value)mo ago"
-        case .years: return "\(value)y ago"
+        case .now: return String(localized: "just now")
+        case .minutes: return String(localized: "\(value)m ago")
+        case .hours: return String(localized: "\(value)h ago")
+        case .days: return String(localized: "\(value)d ago")
+        case .weeks: return String(localized: "\(value)w ago")
+        case .months: return String(localized: "\(value)mo ago")
+        case .years: return String(localized: "\(value)y ago")
         }
     }
 
     /// Spelled-out VoiceOver form: "12 minutes ago", "1 hour ago".
     static func accessibilityLabel(from created: Date, to now: Date) -> String {
         let (value, unit) = bucket(from: created, to: now)
-        func plural(_ noun: String) -> String {
-            "\(value) \(noun)\(value == 1 ? "" : "s") ago"
-        }
         switch unit {
-        case .now: return "just now"
-        case .minutes: return plural("minute")
-        case .hours: return plural("hour")
-        case .days: return plural("day")
-        case .weeks: return plural("week")
-        case .months: return plural("month")
-        case .years: return plural("year")
+        case .now: return String(localized: "just now")
+        case .minutes: return value == 1 ? String(localized: "1 minute ago") : String(localized: "\(value) minutes ago")
+        case .hours: return value == 1 ? String(localized: "1 hour ago") : String(localized: "\(value) hours ago")
+        case .days: return value == 1 ? String(localized: "1 day ago") : String(localized: "\(value) days ago")
+        case .weeks: return value == 1 ? String(localized: "1 week ago") : String(localized: "\(value) weeks ago")
+        case .months: return value == 1 ? String(localized: "1 month ago") : String(localized: "\(value) months ago")
+        case .years: return value == 1 ? String(localized: "1 year ago") : String(localized: "\(value) years ago")
         }
     }
 

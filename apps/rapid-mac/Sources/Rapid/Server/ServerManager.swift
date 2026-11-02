@@ -2463,13 +2463,13 @@ final class ServerManager {
     nonisolated static func recheckStatusMessage(for recheck: BinaryRecheck?) -> String? {
         guard let recheck else { return nil }
         if recheck.found {
-            return "Found it. Setting up…"
+            return String(localized: "Found it. Setting up…")
         }
         // Names what was done and what was found, and stops. No retry
         // schedule, no diagnosis of WHY it is absent — nothing here knows.
         return recheck.attempt == 1
-            ? "Checked again — Rapid-MLX still can't find its engine."
-            : "Checked again (\(recheck.attempt) times) — Rapid-MLX still can't find its engine."
+            ? String(localized: "Checked again — Rapid-MLX still can't find its engine.")
+            : String(localized: "Checked again (\(recheck.attempt) times) — Rapid-MLX still can't find its engine.")
     }
 
     /// Transitions a ``.crashed`` or ``.stopped`` state back to

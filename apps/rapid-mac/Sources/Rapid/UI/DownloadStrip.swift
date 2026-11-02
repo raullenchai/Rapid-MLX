@@ -243,12 +243,12 @@ struct DownloadStrip: View {
         switch job.status {
         case .running:
             let bytes = job.progress.bytesDownloaded.map {
-                " · \(DownloadProgress.formatBytes($0)) received"
+                String(localized: " · \(DownloadProgress.formatBytes($0)) received")
             } ?? ""
             if let delay = job.retryDelaySeconds {
-                return "Reconnecting in \(delay)s · attempt \(job.retryAttempt + 2) of \(DownloadManager.maxAutomaticRetries + 1)\(bytes)"
+                return String(localized: "Reconnecting in \(delay)s · attempt \(job.retryAttempt + 2) of \(DownloadManager.maxAutomaticRetries + 1)\(bytes)")
             }
-            if job.isStalled { return "Stalled · no new bytes — reconnecting soon\(bytes)" }
+            if job.isStalled { return String(localized: "Stalled · no new bytes — reconnecting soon\(bytes)") }
             let detail = DownloadStrip.detail(
                 phase: job.progress.phase,
                 bytesSubtitle: job.progress.hasDiskObservation
@@ -313,15 +313,15 @@ struct DownloadStrip: View {
     private static func phaseDetail(_ phase: DownloadProgress.Phase) -> String {
         switch phase {
         case .idle:
-            return "Starting…"
+            return String(localized: "Starting…")
         case .preparing:
-            return "Preparing…"
+            return String(localized: "Preparing…")
         case .fetching(let done, let total, let percent):
-            return "\(percent)% · \(done)/\(total) files"
+            return String(localized: "\(percent)% · \(done)/\(total) files")
         case .downloading(let file, let done, let total, let percent, let speed, let eta):
             let head = "\(percent)% · \(done)/\(total)"
             let speedTail = speed.map { " · \($0)" } ?? ""
-            let etaTail = eta.map { " · ETA \($0)" } ?? ""
+            let etaTail = eta.map { String(localized: " · ETA \($0)") } ?? ""
             // File basename is the most useful disambiguator when
             // multiple files in one snapshot are mid-transfer; truncate
             // in the View, not here.
@@ -330,7 +330,7 @@ struct DownloadStrip: View {
             // pull never hits warmingUp (it doesn't load the model),
             // but the parser shares the enum with serve. Treat as a
             // success-ish state.
-            return "Finalising…"
+            return String(localized: "Finalising…")
         }
     }
 
@@ -349,7 +349,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Stop download. Cached files are kept for continuing later.")
-            .accessibilityLabel("Stop download of \(ModelDisplayName.name(for: job.alias))")
+            .accessibilityLabel(String(localized: "Stop download of \(ModelDisplayName.name(for: job.alias))"))
             .accessibilityIdentifier("DownloadStrip.Cancel.\(job.alias)")
         case .completed, .cancelled, .failed:
             Button {
@@ -361,7 +361,7 @@ struct DownloadStrip: View {
             }
             .buttonStyle(.plain)
             .help("Dismiss")
-            .accessibilityLabel("Dismiss \(ModelDisplayName.name(for: job.alias)) status")
+            .accessibilityLabel(String(localized: "Dismiss \(ModelDisplayName.name(for: job.alias)) status"))
             .accessibilityIdentifier("DownloadStrip.Dismiss.\(job.alias)")
         }
     }

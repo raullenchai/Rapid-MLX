@@ -557,7 +557,7 @@ struct VideoView: View {
                 }
                 .buttonStyle(.rapidSecondary)
                 .accessibilityIdentifier("Video.Reference.Add")
-                Text("JPEG, PNG, or WebP · up to \(referenceLimitText)")
+                Text(String(localized: "JPEG, PNG, or WebP · up to \(referenceLimitText)"))
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textTertiary)
             }

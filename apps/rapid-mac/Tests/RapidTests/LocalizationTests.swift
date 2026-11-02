@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -519,7 +521,7 @@ struct LocalizationTests {
                 "returnExperimentalSurfaceCopy.cuaStep(event.step??0,instruction:instruction)",
                 "returnExperimentalSurfaceCopy.cuaStepFinished(event.step??0)",
                 "returnExperimentalSurfaceCopy.cuaSwitched(to:destination)",
-                "returnExperimentalSurfaceCopy.cuaRun(event.status??\"ended\")"
+                "returnExperimentalSurfaceCopy.cuaRun(event.status??String(localized:\"ended\"))"
             ],
             "ComputerUse/CUAViewModel.swift": [
                 "returnExperimentalSurfaceCopy.cuaAppUnavailable(hint:hint)",
@@ -566,34 +568,38 @@ struct LocalizationTests {
         let json = try loadCatalog()
         let strings = try #require(json["strings"] as? [String: Any])
 
+        func units(in node: Any) -> [[String: Any]] {
+            guard let dictionary = node as? [String: Any] else { return [] }
+            if let unit = dictionary["stringUnit"] as? [String: Any] { return [unit] }
+            return dictionary.values.flatMap { units(in: $0) }
+        }
         for (key, raw) in strings {
-            guard
-                let entry = raw as? [String: Any],
-                let localizations = entry["localizations"] as? [String: Any],
-                let zhUnit = (localizations["zh-Hans"] as? [String: Any])?["stringUnit"] as? [String: Any],
-                let zhValue = zhUnit["value"] as? String
-            else {
-                continue
+            let entry = try #require(raw as? [String: Any])
+            let localizations = entry["localizations"] as? [String: Any] ?? [:]
+            let englishValue = units(in: localizations["en"] as Any).first?["value"] as? String
+            // Symbolic keys with code-owned English fallbacks have no source
+            // format in the catalog; their dedicated runtime tests cover it.
+            if englishValue == nil, key.wholeMatch(of: /[a-z0-9_]+(\.[a-z0-9_]+)+/) != nil { continue }
+            let source = englishValue ?? key
+            let zhUnits = units(in: localizations["zh-Hans"] as Any)
+            if !Self.formatArguments(in: source).isEmpty {
+                #expect(!zhUnits.isEmpty, "Format key lacks zh-Hans: \(key)")
             }
-            // Symbolic keys ("image_input.unavailable…") carry their English
-            // in an explicit `en` value; everything else is keyed by it. A
-            // symbolic key with no `en` value has its source in code, out of
-            // this test's reach.
-            let enUnit = (localizations["en"] as? [String: Any])?["stringUnit"] as? [String: Any]
-            let enValue = enUnit?["value"] as? String
-            if enValue == nil, key.wholeMatch(of: /[a-z0-9_]+(\.[a-z0-9_]+)+/) != nil { continue }
-            let source = enValue ?? key
-            #expect(
-                Self.formatArguments(in: zhValue) == Self.formatArguments(in: source),
-                "zh-Hans format arguments diverge from the source for key: \(key)"
-            )
+            for unit in zhUnits {
+                let value = try #require(unit["value"] as? String)
+                #expect(unit["state"] as? String == "translated")
+                #expect(
+                    Self.formatArguments(in: value) == Self.formatArguments(in: source),
+                    "zh-Hans format arguments diverge from the source for key: \(key)"
+                )
+            }
         }
     }
 
     /// Position-resolved argument types of a format string, so a translation
     /// may reorder arguments with `%2$@` but not change what they are.
     private static func formatArguments(in format: String) -> [String] {
-        let pattern = /%(?:(\d+)\$)?(lld|ld|d|@|\.\d+f|f|%)/
+        let pattern = /%(?:(\d+)\$)?[-+ #0]*(?:\d+)?(?:\.\d+)?(lld|llu|ld|lu|d|u|@|f|lf|%)/
         var implicitPosition = 0
         var arguments: [(Int, String)] = []
         for match in format.matches(of: pattern) {
@@ -770,6 +776,17 @@ struct LocalizationTests {
         #expect(String(localized: "The engine is unavailable", bundle: zhBundle) == "引擎不可用")
         #expect(String(localized: "Export diagnostics…", bundle: zhBundle) == "导出诊断…")
         #expect(String(localized: "Tokens per second: no data yet", bundle: zhBundle) == "每秒 token 数：暂无数据")
+        let version = "1.2.3", previous = "1.2.2", build = "123", engine = "0.12.7"
+        let attempts = 2, steps = 7
+        #expect(String(localized: "Version \(version)", bundle: zhBundle) == "版本 1.2.3")
+        #expect(String(localized: "Version \(version) (\(build))", bundle: zhBundle) == "版本 1.2.3（123）")
+        #expect(String(localized: "Engine \(engine)", bundle: zhBundle) == "引擎 0.12.7")
+        #expect(String(localized: "Updated to v\(version)", bundle: zhBundle) == "已更新到 v1.2.3")
+        #expect(String(localized: "You were on v\(previous). The release notes list what changed.", bundle: zhBundle) == "之前的版本是 v1.2.2。更新内容请查看发行说明。")
+        #expect(String(localized: "Checked again (\(attempts) times) — Rapid-MLX still can't find its engine.", bundle: zhBundle) == "已检查 2 次，Rapid-MLX 仍然找不到引擎。")
+        #expect(String(localized: "Maximum steps: \(steps)", bundle: zhBundle) == "最多步数：7")
+        #expect(String(localized: "Gateway URL", bundle: zhBundle) == "网关 URL")
+        #expect(String(localized: "Gateway API key", bundle: zhBundle) == "网关 API 密钥")
         #expect(String(localized: "Memory: comfortable", bundle: zhBundle) == "内存：充裕")
         let state = String(localized: "normal", bundle: zhBundle)
         let used = "8 GB"
@@ -1001,4 +1018,158 @@ struct LocalizationTests {
         )
         #expect(legacy.unavailableMessage == "此模型不支持照片。要添加照片，请选择支持视觉的模型。")
     }
+    @Test("Reported Desktop keys use the compiler's exact argument types")
+    func desktopCompletenessKeys() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let expected = [
+            "Version %@": "版本 %@",
+            "Version %@ (%@)": "版本 %@（%@）",
+            "Engine %@": "引擎 %@",
+            "Engine version unknown": "引擎版本未知",
+            "Bundled with app": "随应用内置",
+            "Newsletter": "订阅资讯", "Privacy": "隐私",
+            "Updated to v%@": "已更新到 v%@",
+            "You were on v%@. The release notes list what changed.": "之前的版本是 v%@。更新内容请查看发行说明。",
+            "%@ downloaded": "已下载 %@",
+            "Gateway URL": "网关 URL", "Gateway API key": "网关 API 密钥",
+            "Checked again — Rapid-MLX still can't find its engine.": "已重新检查，Rapid-MLX 仍然找不到引擎。",
+            "Checked again (%lld times) — Rapid-MLX still can't find its engine.": "已检查 %lld 次，Rapid-MLX 仍然找不到引擎。",
+            "Maximum steps: %lld": "最多步数：%lld",
+            "CPU %lld percent": "CPU 占用 %lld%%",
+            "GPU %lld percent": "GPU 占用 %lld%%"
+        ]
+        for (key, value) in expected {
+            let entry = try #require(strings[key] as? [String: Any], "Missing exact compiler key: \(key)")
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let unit = try #require((localizations["zh-Hans"] as? [String: Any])?["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(unit["value"] as? String == value, "Unexpected translation: \(key)")
+        }
+    }
+
+    /// Small lexical scanner: parentheses and quotes inside interpolation must
+    /// not hide trailing English copy or make us scan the next modifier.
+    private static func unlocalizedUIArguments(_ source: String) -> [String] {
+        let source = SourceGuardSupport.canonicalSource(source, literals: .preserve)
+        let chars = Array(source)
+        func starts(_ text: String, _ at: Int) -> Bool {
+            let needle = Array(text)
+            return at + needle.count <= chars.count && Array(chars[at..<at + needle.count]) == needle
+        }
+        func quotedEnd(_ start: Int) -> Int {
+            var i = start + 1
+            while i < chars.count {
+                if starts(#"\("#, i) { i = expressionEnd(i + 2) }
+                else if chars[i] == "\\" { i += 2 }
+                else if chars[i] == "\"" { return i + 1 }
+                else { i += 1 }
+            }
+            return chars.count
+        }
+        func expressionEnd(_ start: Int) -> Int {
+            var depth = 1, i = start
+            while i < chars.count {
+                if chars[i] == "\"" { i = quotedEnd(i); continue }
+                if chars[i] == "(" { depth += 1 }
+                if chars[i] == ")" { depth -= 1; if depth == 0 { return i + 1 } }
+                i += 1
+            }
+            return chars.count
+        }
+        func rawProse(_ start: Int, _ end: Int) -> Bool {
+            var i = start
+            while i < end {
+                if starts("String(localized:", i) || starts("LocalizedStringKey(", i) {
+                    while i < end && chars[i] != "(" { i += 1 }
+                    i = expressionEnd(i + 1)
+                } else if chars[i] == "\"" {
+                    let next = min(quotedEnd(i), end)
+                    var literal = "", j = i + 1
+                    while j < next - 1 {
+                        if starts(#"\("#, j) {
+                            let end = expressionEnd(j + 2)
+                            if rawProse(j + 2, end - 1) { return true }
+                            j = end
+                        }
+                        else { literal.append(chars[j]); j += 1 }
+                    }
+                    // Stable identities and non-prose technical readouts.
+                    let allowlist: Set<String> = ["Rapid-MLX", "GitHub", "Hugging Face", "QuickSilver", "MCP", "LLM", "macOS", "URL"]
+                    if !allowlist.contains(literal), literal.range(of: #"[A-Za-z]{2,}"#, options: .regularExpression) != nil {
+                        return true
+                    }
+                    i = next
+                } else { i += 1 }
+            }
+            return false
+        }
+        var findings: [String] = [], bindings: [String: Bool] = [:]
+        // Same-file direct String bindings used by accessibility and help.
+        let binding = try! NSRegularExpression(pattern: #"(?:let|var)([A-Za-z_][A-Za-z_0-9]*)(?::String)?="#)
+        for match in binding.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
+            guard let nameRange = Range(match.range(at: 1), in: source), let range = Range(match.range, in: source) else { continue }
+            let start = source.distance(from: source.startIndex, to: range.upperBound)
+            if start < chars.count, chars[start] == "\"" {
+                bindings[String(source[nameRange])] = rawProse(start, quotedEnd(start))
+            }
+        }
+        for prefix in [".accessibilityLabel(", ".accessibilityValue(", ".accessibilityHint(", ".help(", "Text(verbatim:"] {
+            var i = 0
+            while i < chars.count {
+                // Skip unrelated literals, including examples in comments' strings.
+                if chars[i] == "\"" { i = quotedEnd(i); continue }
+                if starts(prefix, i) {
+                    let start = i + prefix.count, end = expressionEnd(start) - 1
+                    let expression = String(chars[start..<max(start, end)])
+                    let literalEnd = start < chars.count && chars[start] == "\"" ? quotedEnd(start) : start
+                    let directLocalizedLiteral = prefix != "Text(verbatim:" && literalEnd == end
+                        && !expression.contains(#"\("#)
+                    if !directLocalizedLiteral && (rawProse(start, end) || bindings[expression] == true) {
+                        findings.append(prefix + expression + ")")
+                    }
+                    i = end + 1
+                } else { i += 1 }
+            }
+        }
+        return findings
+    }
+
+    @Test("Accessibility, help and verbatim Text never receive unlocalized English Strings")
+    func accessibilitySourceBoundaries() throws {
+        for path in try rapidSources() {
+            let source = try String(contentsOfFile: path, encoding: .utf8)
+            #expect(Self.unlocalizedUIArguments(source).isEmpty, "Unlocalized UI in \(path): \(Self.unlocalizedUIArguments(source))")
+        }
+        for fixture in [
+            #"Text(verbatim: "Loading a model")"#,
+            #"view.accessibilityLabel("Remove \(filename)")"#,
+            #"view.accessibilityLabel("\(cached ? "Downloaded" : "Not downloaded")")"#,
+            #"view.accessibilityValue("Loaded \(count) models")"#,
+            #"view.accessibilityHint(ready ? "Start it" : "Wait here")"#,
+            #"let hint = "Download \(name)"; view.help(hint)"#
+        ] { #expect(!Self.unlocalizedUIArguments(fixture).isEmpty, "Scanner missed: \(fixture)") }
+        #expect(Self.unlocalizedUIArguments(#"view.help(String(localized: "Open \(name)"))"#).isEmpty)
+    }
+
+    @MainActor
+    @Test("The image warm-up HUD gives a long friendly name width and two lines")
+    func imageWarmupNameWraps() async throws {
+        let server = ServerManager(testingState: .idle)
+        let model = ImageGenViewModel(server: server, catalogLoader: { _ in [] })
+        model.selectedAlias = "Bonsai Image Large Model for Detailed Landscape Generation"
+        model.isGenerating = true
+        let stage = GoldenStage(
+            ImagesView(viewModel: model, server: server)
+                .environment(server)
+                .environment(SettingsRouter())
+                .environment(DownloadManager()),
+            size: CGSize(width: 520, height: 700)
+        )
+        try await stage.waitForIdentifier("Images.Progress.WarmupName")
+        let frame = try #require(stage.frame(of: "Images.Progress.WarmupName"))
+        #expect(frame.width > 300, "Warm-up name should receive the available card width")
+        #expect(frame.height > 25, "A long friendly name should wrap to a second line")
+        #expect(stage.treeText().contains(model.selectedDisplayName))
+    }
+
 }
