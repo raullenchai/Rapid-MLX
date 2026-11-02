@@ -467,7 +467,10 @@ def _watch_parent_lifeline(lifeline: Connection, cleanup_path: str | None) -> No
 
 
 def _enter_worker_lifetime(
-    lifeline: Connection, *, cleanup_path: str | None = None
+    lifeline: Connection,
+    *,
+    cleanup_path: str | None = None,
+    sender: Connection | None = None,
 ) -> None:
     """Detach into an own process group whose lifetime is bound to the parent.
 
@@ -480,6 +483,11 @@ def _enter_worker_lifetime(
     """
 
     os.setsid()
+    # Report ownership before work can spawn descendants or the leader can exit.
+    if sender is not None:
+        pid = os.getpid()
+        if os.getpgid(pid) == pid:
+            sender.send(("detached", pid))
     threading.Thread(
         target=_watch_parent_lifeline,
         args=(lifeline, cleanup_path),
@@ -492,7 +500,7 @@ def _video_probe_worker(path: str, sender: Connection, lifeline: Connection) -> 
     """Probe in its own parent-bound group so ffmpeg descendants are terminable."""
 
     try:
-        _enter_worker_lifetime(lifeline, cleanup_path=path)
+        _enter_worker_lifetime(lifeline, cleanup_path=path, sender=sender)
         sender.send(("ok", _probe_video_artifact_unbounded(path)))
     except BaseException as exc:
         message = (
@@ -508,33 +516,73 @@ def _video_probe_worker(path: str, sender: Connection, lifeline: Connection) -> 
         sender.close()
 
 
-def _terminate_worker_process(process: multiprocessing.process.BaseProcess) -> None:
+def _terminate_worker_process(
+    process: multiprocessing.process.BaseProcess, *, owned_pgid: int | None = None
+) -> None:
     # ``BaseProcess`` is the shared supertype of every start-method Process
     # (spawn/fork/forkserver), so callers are not coupled to one context.
     pid = process.pid
     if pid is None:
         return
-    try:
-        owns_process_group = os.getpgid(pid) == pid
-    except ProcessLookupError:
-        owns_process_group = False
+    # Retain a positively observed group even after its leader has been reaped.
+    # A reaped worker's PID may already belong to an unrelated group leader.
+    if owned_pgid is None and process.exitcode is None:
+        try:
+            if os.getpgid(pid) == pid:
+                owned_pgid = pid
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 1
+    if owned_pgid is not None:
+        group_signal_succeeded = False
+        try:
+            if process.is_alive():
+                try:
+                    os.killpg(owned_pgid, signal.SIGTERM)
+                    group_signal_succeeded = True
+                except ProcessLookupError:
+                    pass
+                process.join(timeout=1)
+            group_alive = False
+            # A worker can exit while descendants still occupy its owned group.
+            while True:
+                try:
+                    os.killpg(owned_pgid, 0)
+                    group_signal_succeeded = True
+                except ProcessLookupError:
+                    break
+                except PermissionError:
+                    # macOS reports EPERM for groups containing only zombies.
+                    if group_signal_succeeded:
+                        break
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    group_alive = True
+                    break
+                time.sleep(min(0.05, remaining))
+            if group_alive:
+                try:
+                    os.killpg(owned_pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    if not group_signal_succeeded:
+                        raise
+                    group_alive = False
+            if process.is_alive() or group_alive:
+                process.join(timeout=1)
+            return
+        except PermissionError:
+            logger.warning(
+                "Cannot signal worker process group %s; falling back to direct worker cleanup",
+                owned_pgid,
+            )
     if process.is_alive():
-        if owns_process_group:
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        else:
-            process.terminate()
+        process.terminate()
         process.join(timeout=1)
     if process.is_alive():
-        if owns_process_group:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            process.kill()
+        process.kill()
         process.join(timeout=1)
 
 
@@ -560,21 +608,40 @@ def _run_detached_worker(
     process.start()
     sender.close()
     lifeline_receiver.close()
+    owned_pgid = None
+    timed_out = False
+    deadline = time.monotonic() + timeout_s
     try:
-        if not receiver.poll(timeout_s):
-            _terminate_worker_process(process)
-            raise TimeoutError(f"video artifact {phase} exceeded its hard deadline")
-        try:
-            status, payload = receiver.recv()
-        except EOFError as exc:
-            raise RuntimeError(
-                f"video artifact {phase} exited without a result"
-            ) from exc
+        while True:
+            if not receiver.poll(max(0, deadline - time.monotonic())):
+                timed_out = True
+                raise TimeoutError(f"video artifact {phase} exceeded its hard deadline")
+            try:
+                status, payload = receiver.recv()
+            except EOFError as exc:
+                raise RuntimeError(
+                    f"video artifact {phase} exited without a result"
+                ) from exc
+            if status != "detached":
+                break
+            if payload == process.pid:
+                owned_pgid = payload
     finally:
+        # A handshake can arrive just after the deadline, or before a worker
+        # exits without its result being consumed. Preserve group ownership
+        # before closing the pipe, even if the leader has already been reaped.
+        try:
+            while receiver.poll(0):
+                status_message, payload_message = receiver.recv()
+                if status_message == "detached" and payload_message == process.pid:
+                    owned_pgid = payload_message
+        except (EOFError, OSError):
+            pass
         receiver.close()
-        process.join(timeout=1)
-        if process.is_alive():
-            _terminate_worker_process(process)
+        if not timed_out:
+            process.join(timeout=1)
+        # Descendants can outlive a successfully reaped leader.
+        _terminate_worker_process(process, owned_pgid=owned_pgid)
         # Deliberately outlives the worker: closing earlier would fire the
         # worker's parent-death watchdog during a normal shutdown. Once the
         # worker is reaped no watchdog exists, so closing is inert and never
@@ -644,7 +711,7 @@ def _video_download_worker(
     lifeline: Connection,
 ) -> None:
     try:
-        _enter_worker_lifetime(lifeline, cleanup_path=destination_path)
+        _enter_worker_lifetime(lifeline, cleanup_path=destination_path, sender=sender)
         _download_video_artifact_unbounded(base_url, job_id, destination_path)
         sender.send(("ok", None))
     except BaseException as exc:

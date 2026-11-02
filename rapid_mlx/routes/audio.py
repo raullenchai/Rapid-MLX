@@ -546,6 +546,16 @@ def _served_local_request(model: str, kind: str) -> str | None:
     return None
 
 
+def _resolve_audio_user_alias(model: str) -> str:
+    """Apply the validated user alias mapping shared with CLI resolution."""
+    from ..model_aliases import list_builtin_aliases, user_alias_reserved_names
+    from ..user_aliases import validated_user_aliases
+
+    builtins = list_builtin_aliases()
+    target = validated_user_aliases(builtins, user_alias_reserved_names()).get(model)
+    return builtins.get(target, target) if target is not None else model
+
+
 def _resolve_stt_model(model: str | None) -> str:
     """Resolve an OpenAI-style STT model alias to the MLX repo path.
 
@@ -586,6 +596,7 @@ def _resolve_stt_model(model: str | None) -> str:
                 }
             },
         )
+    model = _resolve_audio_user_alias(model)
     local = _served_local_request(model, "stt")
     if local is not None:
         return local
@@ -652,17 +663,10 @@ def _resolve_stt_model(model: str | None) -> str:
 
 
 def _is_aligner_model(model_name: str) -> bool:
-    """Return True iff ``model_name`` is a forced-alignment model.
+    """Use the same checkpoint classification as the STT engine."""
+    from ..audio.registry import is_aligner_model
 
-    Mirrors :attr:`rapid_mlx.audio.stt.STTEngine._is_aligner` — the
-    ``"aligner"`` substring is the same signal the engine uses to pick
-    the ``align()`` call surface (``mlx-community/Qwen3-ForcedAligner-
-    0.6B-8bit`` and the ``qwen3-aligner`` / ``qwen3-forced-aligner``
-    aliases all resolve to an id containing ``aligner``). Kept at module
-    scope so the transcriptions route can fail-fast BEFORE draining the
-    upload rather than surfacing the engine's own ValueError as a 500.
-    """
-    return isinstance(model_name, str) and "aligner" in model_name.lower()
+    return is_aligner_model(model_name)
 
 
 def _reject_non_whisper_for_translation(
@@ -692,6 +696,7 @@ def _reject_non_whisper_for_translation(
     """
     if not isinstance(model, str) or not model:
         return
+    model = _resolve_audio_user_alias(model)
     # Resolve aliases first so callers that pass ``parakeet`` (alias)
     # vs ``mlx-community/parakeet-tdt-0.6b-v2`` (HF id) get the same
     # verdict.
@@ -777,6 +782,7 @@ def _reject_word_timestamps_for_non_whisper(
         return
     if not isinstance(model, str) or not model:
         return
+    model = _resolve_audio_user_alias(model)
     from ..audio.registry import resolve_audio_alias
 
     target = (
@@ -2799,9 +2805,7 @@ async def create_transcription(
     is_alignment = text is not None
 
     if is_alignment:
-        # Default to the registered aligner alias when the caller didn't
-        # pick a model — the ASR default (whisper-large-v3) is not an
-        # aligner and would fail deep in the engine.
+        # Prefer a served alignment checkpoint before the catalog fallback.
         #
         # A WHITESPACE-ONLY model also takes the default here. FastAPI
         # already coerces a truly empty form field (``model=""``) to
@@ -2815,7 +2819,15 @@ async def create_transcription(
         alignment_model_chosen = isinstance(model_merged, str) and bool(
             model_merged.strip()
         )
-        model = model_merged if alignment_model_chosen else DEFAULT_ALIGNER_ALIAS
+        if alignment_model_chosen:
+            model = model_merged
+        else:
+            served = _served_stt_default()
+            model = (
+                served
+                if served is not None and _is_aligner_model(served)
+                else DEFAULT_ALIGNER_ALIAS
+            )
         # Default to verbose_json so the timestamped ``segments`` are in
         # the body; the plain ``json`` envelope drops them. An explicit
         # response_format (srt/vtt/text/json) is honoured as-is.
@@ -3168,6 +3180,7 @@ def _resolve_tts_model(model: str | None) -> str:
             # this reuses the exact mapping rule below without recursing again.
             return _resolve_tts_model(served)
         return TTS_MODEL_ALIASES[DEFAULT_TTS_ALIAS]
+    model = _resolve_audio_user_alias(model)
     return _served_local_request(model, "tts") or TTS_MODEL_ALIASES.get(
         model.lower(), model
     )

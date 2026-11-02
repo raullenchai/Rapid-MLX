@@ -672,17 +672,25 @@ def _audio_duration_seconds(
     try:
         import wave  # noqa: PLC0415
 
-        with wave.open(audio_path, "rb") as wav:
+        with open(audio_path, "rb") as source, wave.open(source, "rb") as wav:
             rate = wav.getframerate()
             if rate > 0:
-                return float(wav.getnframes()) / rate
+                # Pipe-written headers can declare an unknown or oversized
+                # data chunk. Only trust frames that fit in the payload;
+                # counting remaining bytes could include trailing RIFF chunks.
+                frame_bytes = wav.getnchannels() * wav.getsampwidth()
+                available = max(0, os.fstat(source.fileno()).st_size - source.tell())
+                frames = wav.getnframes()
+                if frames <= available // frame_bytes:
+                    return float(frames) / rate
     except Exception:  # noqa: BLE001
         pass
     try:
         import soundfile as sf  # noqa: PLC0415
 
         duration = float(sf.info(audio_path).duration)
-        return duration if duration >= 0.0 else None
+        if duration >= 0.0:
+            return duration
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -713,9 +721,11 @@ def _audio_duration_seconds(
                 return duration
     except Exception:  # noqa: BLE001
         pass
-    if not allow_decode:
-        return None
-    return _decoded_audio_duration(audio_path)
+    if allow_decode:
+        decoded_duration = _decoded_audio_duration(audio_path)
+        if decoded_duration is not None:
+            return decoded_duration
+    return None
 
 
 def _decoded_audio_duration(audio_path: str) -> float | None:
@@ -834,7 +844,7 @@ class STTEngine:
         # attribute. Gate on a positive Whisper id check so the patch
         # only fires for actual Whisper backends — non-Whisper engines
         # surface their own load-time errors unmodified.
-        from .registry import resolve_audio_alias
+        from .registry import is_aligner_model, resolve_audio_alias
 
         entry = resolve_audio_alias(model_name)
         self._is_whisper = "whisper" in model_name.lower() or (
@@ -845,7 +855,7 @@ class STTEngine:
         # different call surface (``generate(audio, text, language)``) and
         # a dedicated ``align()`` method — ``transcribe()`` is not valid on
         # them (there is no text to discover).
-        self._is_aligner = "aligner" in model_name.lower()
+        self._is_aligner = is_aligner_model(model_name)
         # SenseVoice (FunAudioLLM) is a non-autoregressive CTC ASR model
         # with a different generate() contract than Whisper: keyword-only
         # ``language`` (from ``_SENSEVOICE_LANGUAGES``, default "auto"),

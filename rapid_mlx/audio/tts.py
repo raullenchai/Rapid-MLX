@@ -14,6 +14,7 @@ import importlib
 import io
 import json
 import logging
+import re
 import threading
 import wave
 from collections.abc import Iterator
@@ -30,7 +31,15 @@ from .time_stretch import time_stretch
 # control, including VoxCPM and VibeVoice. All other families (including Kokoro
 # and F5) keep native handling.
 _POST_STRETCH_FAMILIES = frozenset(
-    {"qwen3_tts", "chatterbox", "indextts", "moss_tts_nano", "voxcpm", "vibevoice"}
+    {
+        "qwen3_tts",
+        "chatterbox",
+        "indextts",
+        "moss_tts_nano",
+        "voxcpm",
+        "vibevoice",
+        "dia",
+    }
 )
 
 logger = logging.getLogger(__name__)
@@ -652,6 +661,8 @@ def detect_tts_family(model_name: str) -> str:
     name_lower = model_name.lower()
     if "kokoro" in name_lower:
         return "kokoro"
+    elif re.search(r"(?:^|[_.\-])dia(?:[_.\-]|$)", Path(name_lower).name):
+        return "dia"
     elif "chatterbox" in name_lower:
         return "chatterbox"
     elif "vibevoice" in name_lower:
@@ -822,7 +833,12 @@ class TTSEngine:
                     self.model = load_voxcpm_checkpoint(model_path)
                 elif kokoro_pipeline is not None:
                     with _scoped_snapshot_download(kokoro_pipeline):
-                        self.model = load_model(model_path)
+                        kokoro_model = load_model(model_path)
+                    if Path(self.model_name).expanduser().is_dir():
+                        # The lazy voice pipeline reads this source separately
+                        # from the weight loader's checkpoint path.
+                        kokoro_model.repo_id = str(model_path.resolve())
+                    self.model = kokoro_model
                 else:
                     self.model = load_model(model_path)
             if self._model_family == "moss_tts_nano":
