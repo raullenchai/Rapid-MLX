@@ -4,11 +4,11 @@
 Tracks direct UI arguments and same-file String bindings. Dynamic server/user
 content is outside this heuristic; native catalog extraction remains required.
 """
-from pathlib import Path
 import argparse
 import json
 import re
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Identity, URLs, paths, symbols and unit-only readouts are not prose.
