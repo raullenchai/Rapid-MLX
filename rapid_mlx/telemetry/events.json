@@ -233,7 +233,7 @@
       ]
     },
     "server_start_exit_reason": {
-      "_about": "Closed cause for a failed start, type-only, no message or path.",
+      "_about": "Closed cause for a failed start; explicit refusal reasons are bound to the terminating exception. No message or path.",
       "values": ["user_interrupt", "declined_download", "usage_error", "port_in_use", "memory_refused", "exception"]
     },
     "serve_failure_subtype": {

@@ -950,9 +950,9 @@ async def lifespan(app: FastAPI):
                 assume_yes=optional_runtime_assume_yes(),
             )
         except Exception as _start_exc:
-            from rapid_mlx.telemetry.server_start import failed
+            from rapid_mlx.telemetry.server_start import exit_reason_for, failed
 
-            failed("engine_start")
+            failed("engine_start", exit_reason=exit_reason_for(_start_exc))
             from rapid_mlx.telemetry.model_events import emit_model_serve_failed
 
             emit_model_serve_failed(

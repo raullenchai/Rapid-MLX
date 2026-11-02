@@ -2449,7 +2449,7 @@ def test_all_four_model_events_reach_exact_loopback_json(monkeypatch):
             "auto_selected": False,
             "quant": "unknown",
             "error_class": "other",
-            "failure_subtype": "unknown",
+            "failure_subtype": "value_error",
         },
     ]
     assert events == [
@@ -2524,3 +2524,28 @@ def test_serve_failure_subtype_prefers_key_error_cause():
     outer = RuntimeError()
     outer.__cause__ = KeyError("private")
     assert model_events.serve_failure_subtype(outer) == "key_error"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "[metal::malloc] Resource limit (499000) exceeded",
+        "[metal::malloc] Attempting to allocate 21474836480 bytes which is greater than the maximum allowed buffer size",
+        "Command buffer execution failed: kIOGPUCommandBufferCallbackErrorOutOfMemory",
+        "scoped_pymalloc(): could not allocate 4096 bytes",
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_mlx_oom_uses_existing_closed_memory_class(monkeypatch, message, wrapped):
+    failure = RuntimeError(message + " /private/user-model secret-user-text")
+    if wrapped:
+        outer = RuntimeError("private wrapper")
+        outer.__cause__ = failure
+        failure = outer
+    assert model_events.serve_error_class(failure) == "insufficient_memory"
+    calls = []
+    _capture_accepted_events(
+        monkeypatch, lambda event, props: calls.append((event, props))
+    )
+    model_events.emit_model_serve_failed(failure)
+    assert calls == [("model_serve_failed", {"error_class": "insufficient_memory"})]

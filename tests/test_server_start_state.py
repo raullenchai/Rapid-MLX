@@ -1785,11 +1785,13 @@ def test_exit_reason_override_and_chains():
         outer = RuntimeError()
         outer.__cause__ = inner
         assert server_start.exit_reason_for(outer) == "memory_refused"
-    server_start.set_exit_reason([])
-    server_start.set_exit_reason("private")
+    refusal = SystemExit(1)
+    server_start.set_exit_reason([], exc=refusal)
+    server_start.set_exit_reason("private", exc=refusal)
     assert server_start.exit_reason_for(None) == "exception"
-    server_start.set_exit_reason("declined_download")
-    assert server_start.exit_reason_for(KeyboardInterrupt()) == "declined_download"
+    server_start.set_exit_reason("declined_download", exc=refusal)
+    assert server_start.exit_reason_for(refusal) == "declined_download"
+    assert server_start.exit_reason_for(refusal) == "exception"
 
 
 def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
@@ -1812,3 +1814,121 @@ def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
     server_start.attempted()
     server_start.fail_current(OSError(errno.EADDRINUSE, "private"))
     assert events[-1][1]["exit_reason"] == "port_in_use"
+
+
+@pytest.mark.parametrize(
+    "failure", [KeyboardInterrupt(), SystemExit(2), RuntimeError("private")]
+)
+def test_pending_reason_cannot_override_unrelated_failure(failure):
+    refusal = SystemExit(1)
+    expected = server_start.exit_reason_for(failure)
+    server_start.set_exit_reason("memory_refused", exc=refusal)
+    assert server_start.exit_reason_for(failure) == expected
+    assert server_start.exit_reason_for(refusal) == "exception"
+
+
+@pytest.mark.parametrize("reason", [[], {}, "/private/model", None])
+def test_invalid_exit_reason_never_reaches_event(monkeypatch, reason):
+    events = _capture(monkeypatch)
+    server_start.attempted()
+    server_start.failed("preflight", exit_reason=reason)
+    assert events[-1][1]["exit_reason"] == "exception"
+    assert "exit_reason" not in server_start._server_start_props(
+        "failed", exit_reason=reason
+    )
+
+
+@pytest.mark.parametrize(
+    "answer, expected", [("n", "declined_download"), (None, "user_interrupt")]
+)
+def test_download_confirmation_reason_reaches_failed_start(
+    monkeypatch, answer, expected
+):
+    from rapid_mlx import _download_gate
+
+    events = _capture(monkeypatch)
+    server_start.attempted()
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def respond(_prompt):
+        if answer is None:
+            raise KeyboardInterrupt
+        return answer
+
+    monkeypatch.setattr(builtins, "input", respond)
+    with pytest.raises(SystemExit) as raised, server_start.failure_stage("download"):
+        _download_gate.confirm_or_abort("private/model", 41 * 1024**3)
+    assert raised.value.code == 1
+    assert events[-1][1]["exit_reason"] == expected
+
+
+def test_argparse_usage_error_reaches_failed_start(monkeypatch):
+    import argparse
+
+    events = _capture(monkeypatch)
+    server_start.attempted()
+
+    @cli._capture_start_failures
+    def parse():
+        argparse.ArgumentParser().parse_args(["--unknown-private-flag"])
+
+    with pytest.raises(SystemExit) as raised:
+        parse()
+    assert raised.value.code == 2
+    assert events[-1][1]["exit_reason"] == "usage_error"
+
+
+@pytest.mark.parametrize("model", ["qwen3.5-4b-4bit", "/private/user-model"])
+def test_known_preflight_failure_emits_sanitized_model(monkeypatch, model):
+    from rapid_mlx.byom import preflight
+    from rapid_mlx.telemetry import consent_runtime, model_id
+
+    events = _capture(monkeypatch)
+    model_events._reset_for_tests()
+    monkeypatch.setattr(consent_runtime, "startup", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda _command: None)
+    monkeypatch.setattr(
+        cli,
+        "_parse_args_with_share_passthrough",
+        lambda *_: SimpleNamespace(
+            command="serve",
+            model=model,
+            no_telemetry=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.resolved_model_ref", lambda ref: ref
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.raise_if_missing_local_model", lambda _: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.validate_local_model_for_serve", lambda _: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.raise_if_draft_only_model", lambda _: None
+    )
+    monkeypatch.setattr(preflight, "run_cli_preflight", lambda *_a, **_kw: None)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(
+        cli,
+        "serve_command",
+        lambda _args: (_ for _ in ()).throw(
+            RuntimeError(
+                "[metal::malloc] Resource limit exceeded at /private/user-model"
+            )
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", model])
+    try:
+        with pytest.raises(RuntimeError):
+            cli.main()
+        failed = [props for name, props in events if name == "model_serve_failed"]
+        assert len(failed) == 1
+        assert failed[0]["error_class"] == "insufficient_memory"
+        assert failed[0]["failure_stage"] == "preflight"
+        assert failed[0]["model"] == model_id.telemetry_model_id(model)
+        assert "/private/" not in json.dumps(events)
+    finally:
+        model_events._reset_for_tests()

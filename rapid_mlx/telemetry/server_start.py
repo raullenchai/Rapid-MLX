@@ -39,7 +39,7 @@ _EXIT_REASONS = frozenset(
         "exception",
     }
 )
-_pending_exit_reason: str | None = None
+_pending_exit_reason: tuple[str, BaseException] | None = None
 
 _lock = threading.Lock()
 _attempted = False
@@ -403,7 +403,11 @@ def _server_start_props(
         props["failure_stage"] = failure_stage
     if state == "failed" and failure_stage == "bind" and port_explicit is not None:
         props["port_explicit"] = port_explicit
-    if state == "failed" and exit_reason in _EXIT_REASONS:
+    if (
+        state == "failed"
+        and isinstance(exit_reason, str)
+        and exit_reason in _EXIT_REASONS
+    ):
         props["exit_reason"] = exit_reason
     if state == "attempted" and _previous_run_unterminated:
         props["previous_run_unterminated"] = True
@@ -597,7 +601,7 @@ def failed(
     reason = (
         exit_reason
         if isinstance(exit_reason, str) and exit_reason in _EXIT_REASONS
-        else _pending_exit_reason
+        else "exception"
     )
     context: dict[str, object] = {}
     if reason is not None:
@@ -692,21 +696,30 @@ def failure_stage(stage: str) -> Iterator[None]:
         _current_failure_stage = previous
 
 
-def set_exit_reason(reason: object) -> None:
-    """Remember an approved reason without affecting startup."""
+def set_exit_reason(reason: object, *, exc: BaseException) -> None:
+    """Bind an approved reason to the specific exception that ends startup."""
     global _pending_exit_reason
     try:
+        _pending_exit_reason = None
         if isinstance(reason, str) and reason in _EXIT_REASONS:
-            _pending_exit_reason = reason
+            _pending_exit_reason = (reason, exc)
     except BaseException:
         pass
 
 
 def exit_reason_for(exc: BaseException | None) -> str:
     """Classify startup failures without inspecting their messages."""
+    global _pending_exit_reason
+    pending = _pending_exit_reason
+    _pending_exit_reason = None
     try:
-        if _pending_exit_reason is not None:
-            return _pending_exit_reason
+        if (
+            pending is not None
+            and pending[1] is exc
+            and isinstance(pending[0], str)
+            and pending[0] in _EXIT_REASONS
+        ):
+            return pending[0]
         if isinstance(exc, KeyboardInterrupt):
             return "user_interrupt"
         if isinstance(exc, SystemExit) and exc.code == 2:
@@ -742,7 +755,7 @@ def fail_current(exc: BaseException | None = None) -> None:
     """Fail at the stage selected by the active entrypoint boundary."""
     failed(
         _current_failure_stage,
-        exit_reason=exit_reason_for(exc) if exc is not None else None,
+        exit_reason=exit_reason_for(exc),
     )
 
 

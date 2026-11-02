@@ -511,6 +511,7 @@ def test_missing_lane_is_one_actionable_telemetered_failure(
             "model_type": model_events.model_type(model),
             "load_policy": "eager",
             "failure_stage": "preflight",
+            "exit_reason": "exception",
         }
     ]
     assert len(failures) == 1

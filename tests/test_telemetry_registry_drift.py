@@ -581,3 +581,42 @@ def test_cli_command_enum_matches_the_registered_subcommands(registry):
     )
     declared = set(registry["enums"]["cli_command"]["values"]) - {"bare", "other"}
     assert declared == set(subparsers.choices)
+
+
+def test_start_failure_enums_and_disclosure_match_code(registry):
+    from rapid_mlx.telemetry import model_events, server_start
+
+    reasons = set(registry["enums"]["server_start_exit_reason"]["values"])
+    assert (
+        reasons
+        == server_start._EXIT_REASONS
+        == {
+            "user_interrupt",
+            "declined_download",
+            "usage_error",
+            "port_in_use",
+            "memory_refused",
+            "exception",
+        }
+    )
+    subtypes = {
+        model_events.serve_failure_subtype(exc("private"))
+        for exc in (
+            ImportError,
+            OSError,
+            TypeError,
+            MemoryError,
+            KeyError,
+            AttributeError,
+            AssertionError,
+            ValueError,
+            RuntimeError,
+            Exception,
+        )
+    } | {model_events.serve_failure_subtype(json.JSONDecodeError("private", "", 0))}
+    assert subtypes == set(registry["enums"]["serve_failure_subtype"]["values"])
+    disclosure = (MAC_APP / "PRIVACY.md").read_text()
+    reason_text = disclosure.split("(`exit_reason`):", 1)[1].split("; never", 1)[0]
+    subtype_text = disclosure.split("(`failure_subtype`):", 1)[1].split("; never", 1)[0]
+    assert set(re.findall(r"`([a-z_]+)`", reason_text)) == reasons
+    assert set(re.findall(r"`([a-z_]+)`", subtype_text)) == subtypes
