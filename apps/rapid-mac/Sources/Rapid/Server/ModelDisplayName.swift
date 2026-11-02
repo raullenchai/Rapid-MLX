@@ -25,8 +25,8 @@ extension ModelDisplayName {
         let speech = AudioViewModel.transcriptionDetails(alias: alias, family: nil).displayName
         if speech != alias { return speech }
         let family = ModelInfoCatalog.familyAndContext(for: alias).family
-        guard family != "Unknown", let params = ModelSizing.parseParamsBillions(alias) else { return alias }
-        let number = params.rounded() == params ? String(format: "%.0f", params) : String(format: "%g", params)
+        guard family != "Unknown" else { return alias }
+        let params = ModelSizing.parseParamsBillions(alias)
         let bits = ModelSizing.parseBitsPerWeight(alias)
         let tokens = alias.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).map(String.init)
         let familyEnd = (1...tokens.count).first { end in
@@ -43,10 +43,21 @@ extension ModelDisplayName {
                       ModelSizing.parseBitsPerWeight(token) == bits {
                 consumedBits = true
             } else {
-                variants.append(token.uppercased().hasPrefix("A") && Double(token.dropFirst().dropLast()) != nil && token.hasSuffix("b") ? token.uppercased() : (variantSpellings[token] ?? token.capitalized))
+                variants.append(token.first?.isLetter == true && Double(token.dropFirst().dropLast()) != nil && token.hasSuffix("b") ? token.uppercased() : (variantSpellings[token] ?? token.capitalized))
             }
         }
         let variant = variants.isEmpty ? "" : " · " + variants.joined(separator: " ")
-        return "\(family) · \(number)B" + variant + (bits == 4 ? "" : " · \(bits)-bit")
+        let size: String
+        if let params {
+            let number = params.rounded() == params ? String(format: "%.0f", params) : String(format: "%g", params)
+            let redundant = variants.contains { token in
+                token.range(of: #"(?<![0-9.])"# + NSRegularExpression.escapedPattern(for: number) + #"B(?![a-zA-Z0-9])"#,
+                            options: [.regularExpression, .caseInsensitive]) != nil
+            }
+            size = redundant ? "" : " · \(number)B"
+        } else {
+            size = ""
+        }
+        return family + size + variant + (bits == 4 ? "" : " · \(bits)-bit")
     }
 }

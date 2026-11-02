@@ -108,13 +108,18 @@ final class AudioViewModel {
         activeOperations.contains { $0.snapshot.activity == .synthesizing }
     }
 
-    func refreshCatalog() async {
+    func refreshCatalog(
+        entriesProvider: (URL) async -> [ModelEntry] = { await ModelCatalog.audioEntries(binary: $0) }
+    ) async {
+        guard !Task.isCancelled else { return }
         guard let binary = server.binaryPath else {
             audioModels = []
             catalogLoaded = true
             return
         }
-        audioModels = await ModelCatalog.audioEntries(binary: binary)
+        let entries = await entriesProvider(binary)
+        guard !Task.isCancelled else { return }
+        audioModels = entries
         catalogLoaded = true
         resolveSelections()
     }
@@ -426,10 +431,11 @@ final class AudioViewModel {
                 representative[key] = entry
                 continue
             }
-            if transcriptionAliasPriority(entry.alias)
-                < transcriptionAliasPriority(current.alias) {
-                representative[key] = entry
-            }
+            var chosen = transcriptionAliasPriority(entry.alias)
+                < transcriptionAliasPriority(current.alias) ? entry : current
+            chosen.searchAliases = current.searchAliases.union(entry.searchAliases)
+                .union([current.alias, entry.alias]).subtracting([chosen.alias])
+            representative[key] = chosen
         }
         return order.compactMap { representative[$0] }
     }

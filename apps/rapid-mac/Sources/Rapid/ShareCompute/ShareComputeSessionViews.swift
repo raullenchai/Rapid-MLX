@@ -388,7 +388,7 @@ struct ShareComputeSessionCompleteView: View {
                 sessionMetric(String(localized: "Worker"), receipt.worker)
                 sessionMetric(String(localized: "Model after sharing"), receipt.restoreStatus.title)
             }
-            Text(([receipt.modelTitle, receipt.worker] + (receipt.nodeID.map { [$0] } ?? [])).joined(separator: " · "))
+            Text(([receipt.displayModelTitle, receipt.worker] + (receipt.nodeID.map { [$0] } ?? [])).joined(separator: " · "))
                 .font(.rapid(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             sessionFootnote(action: onViewReward)
         }

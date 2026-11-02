@@ -339,6 +339,9 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     var cachedChatDiscovery: CachedChatDiscovery? = nil
     var isUncataloged: Bool = false
 
+    /// Compatibility aliases retained when several rows share one checkpoint.
+    var searchAliases: Set<String> = []
+
     var id: String { alias }
 
     /// Whether this entry belongs on a product capability surface. Atomic
@@ -2269,16 +2272,20 @@ enum ModelCatalog {
         return bannerPrefixes.contains { line.hasPrefix($0) }
     }
 
-    /// Parse the stable `models --cached --json` envelope. A malformed row
-    /// invalidates the envelope and lets the caller downgrade to the text
-    /// parser; it never becomes permissive cache evidence.
+    /// Parse the stable `models --cached --json` envelope, skipping invalid rows.
+    /// A wholly invalid nonempty envelope still falls back to the text parser.
     static func parseCachedJSON(_ output: String) -> [CachedModelInventoryEntry]? {
         guard let data = output.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = root["cached"] as? [[String: Any]]
+              let rows = root["cached"] as? [Any]
         else { return nil }
         var entries: [CachedModelInventoryEntry] = []
-        for row in rows {
+        var invalidRows = 0
+        rowLoop: for value in rows {
+            guard let row = value as? [String: Any] else {
+                invalidRows += 1
+                continue
+            }
             guard let state = row["state"] as? String,
                   let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
                   let bytes = row["size_bytes"] as? NSNumber,
@@ -2287,13 +2294,13 @@ enum ModelCatalog {
                   bytes.doubleValue == Double(bytes.int64Value),
                   bytes.int64Value > 0,
                   let external = row["external"] as? Bool
-            else { return nil }
+            else { invalidRows += 1; continue rowLoop }
             let size = ModelSize.bytes(bytes.int64Value)
             let launchPath: String?
             if let path = row["launch_path"] as? String {
                 guard path.hasPrefix("/"), !path.contains("\\"),
                       !path.contains("\n"), !path.contains("\r"), !path.contains("\0"),
-                      !path.split(separator: "/").contains("..") else { return nil }
+                      !path.split(separator: "/").contains("..") else { invalidRows += 1; continue rowLoop }
                 launchPath = path
             } else {
                 launchPath = nil
@@ -2310,7 +2317,7 @@ enum ModelCatalog {
                 guard external == false,
                       let alias = row["alias"] as? String,
                       isSafeAlias(alias)
-                else { return nil }
+                else { invalidRows += 1; continue rowLoop }
                 let subfolder: String?
                 if row["subfolder"] is NSNull || row["subfolder"] == nil {
                     subfolder = nil
@@ -2318,29 +2325,31 @@ enum ModelCatalog {
                           isSafeSubfolder(value) {
                     subfolder = value
                 } else {
-                    return nil
+                    invalidRows += 1
+                    continue rowLoop
                 }
                 entries.append((alias, repo, subfolder, size, discovery, nil))
             case "unmapped":
                 guard external == false, row["alias"] is NSNull,
                       row["subfolder"] is NSNull
-                else { return nil }
+                else { invalidRows += 1; continue rowLoop }
                 entries.append(("(unmapped)", repo, nil, size, discovery, launchPath))
             case "external":
                 guard external == true, row["alias"] is NSNull,
                       row["subfolder"] is NSNull
-                else { return nil }
+                else { invalidRows += 1; continue rowLoop }
                 entries.append(("(external)", repo, nil, size, discovery, launchPath))
             case "incomplete":
                 guard external == false, row["alias"] is NSNull,
                       row["subfolder"] is NSNull
-                else { return nil }
+                else { invalidRows += 1; continue rowLoop }
                 continue
             default:
-                return nil
+                invalidRows += 1
+                continue rowLoop
             }
         }
-        return entries
+        return entries.isEmpty && invalidRows > 0 ? nil : entries
     }
 
     private static func isSafeSubfolder(_ value: String) -> Bool {

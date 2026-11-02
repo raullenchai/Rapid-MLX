@@ -298,6 +298,8 @@ enum ModelCacheActions {
             }
             if trimmed.isEmpty { return true }
             if entry.alias.lowercased().contains(trimmed) { return true }
+            if entry.searchAliases.contains(where: { $0.lowercased().contains(trimmed) }) { return true }
+            if ModelDisplayName.name(for: entry.alias).lowercased().contains(trimmed) { return true }
             if let repo = entry.hfRepo, repo.lowercased().contains(trimmed) { return true }
             return false
         }

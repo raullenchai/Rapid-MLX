@@ -157,7 +157,7 @@ struct ShareComputeCreditsTab: View {
         case .unauthorized: note("exclamationmark.triangle", ShareComputeLedgerError.unauthorized.displayMessage, String(localized: "Update your key in Settings to see your credits."), "ShareCompute.Credits.Unauthorized", action: true)
         case .loading: note("clock", String(localized: "Reading your ledger…"), String(localized: "Your credit activity will appear here."), "ShareCompute.Credits.Loading")
         case .rateLimited: note("hourglass", ShareComputeLedgerError.rateLimited.displayMessage, String(localized: "QuickSilver limits ledger checks per hour."), "ShareCompute.Credits.RateLimited")
-        case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, String(localized: "Your local activity below is unaffected."), "ShareCompute.Credits.Unavailable")
+        case .unavailable(let error): note("antenna.radiowaves.left.and.right.slash", error.displayMessage, String(localized: "Your local activity below is unaffected."), "ShareCompute.Credits.Unavailable", action: state.needsKey)
         case .loadedEmpty: emptyNote
         case .refreshFailed:
             if let note = state.staleNote {

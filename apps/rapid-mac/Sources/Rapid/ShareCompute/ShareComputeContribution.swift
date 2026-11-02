@@ -109,6 +109,10 @@ struct ShareComputeReceipt: Codable, Identifiable, Hashable, Sendable {
     let rewardStatus: ShareComputeRewardStatus
     let restoreStatus: ShareComputeRestoreStatus
 
+    var displayModelTitle: String {
+        ShareComputeModel.supported.first { $0.catalogID == catalogID }?.title ?? modelTitle
+    }
+
     var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt)) }
 
     /// Receipt ids follow the provider's own short-hex shape so a user reading
