@@ -237,6 +237,58 @@ async def test_shared_step_failure_preserves_queued(monkeypatch, escaped):
     }
 
 
+@pytest.mark.parametrize(
+    "message", ["invalid admission input", "'NoneType' object is not subscriptable"]
+)
+def test_admission_type_error_isolated_without_cache_retry(monkeypatch, message):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    error = TypeError(message)
+    monkeypatch.setattr(scheduler, "_max_running_sequences", lambda: 2)
+    monkeypatch.setattr(
+        scheduler, "_pop_waiting_for_admission", lambda: scheduler.waiting.popleft()
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.scheduler.mx", SimpleNamespace(clear_cache=MagicMock())
+    )
+
+    def fail_admission(request):
+        assert request.request_id == "bad"
+        assert scheduler._step_request_id == request.request_id
+        raise error
+
+    admission = MagicMock(side_effect=fail_admission)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", admission)
+    fail_step = MagicMock(wraps=scheduler.fail_step)
+    monkeypatch.setattr(scheduler, "fail_step", fail_step)
+    cache_corruption = MagicMock(wraps=scheduler._is_cache_corruption_error)
+    monkeypatch.setattr(scheduler, "_is_cache_corruption_error", cache_corruption)
+    cache_recovery = MagicMock()
+    monkeypatch.setattr(scheduler, "_recover_from_cache_error", cache_recovery)
+    reschedule = MagicMock()
+    monkeypatch.setattr(scheduler, "_reschedule_running_requests", reschedule)
+
+    output = scheduler.step()
+
+    admission.assert_called_once_with(scheduler.requests["bad"])
+    fail_step.assert_called_once_with(error)
+    cache_corruption.assert_not_called()
+    cache_recovery.assert_not_called()
+    reschedule.assert_not_called()
+    assert output.finished_request_ids == {"bad"}
+    assert [out.request_id for out in output.outputs] == ["bad"]
+    assert output.outputs[0].finished
+    assert output.outputs[0].finish_reason == "abort"
+    assert output.outputs[0].error_kind == "engine_aborted"
+    assert scheduler.requests["bad"].status == RequestStatus.FINISHED_ABORTED
+    assert scheduler._step_request_id is None
+    assert set(scheduler.running) == {"active"}
+    assert scheduler.requests["active"].status == RequestStatus.RUNNING
+    assert [request.request_id for request in scheduler.waiting] == ["queued"]
+    assert not RequestStatus.is_finished(scheduler.requests["queued"].status)
+
+
 @pytest.mark.parametrize("shared_failures", [0, 9])
 def test_repeated_admission_failures_preserve_healthy_work(
     monkeypatch, shared_failures
