@@ -76,17 +76,6 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
     model = model_path or model_alias or model_name
     if not model or retrieval_only:
         return {}
-    key = (
-        model_path,
-        model_alias,
-        model_name,
-        retrieval_only,
-        getattr(engine, "is_mllm", False),
-    )
-    cached: tuple[tuple[object, ...], dict[str, str]] | None = getattr(
-        cfg, "_model_consent_cache", None
-    )
-    snapshot_dir = None
     result: dict[str, str] = {}
     entry = next(
         (
@@ -103,9 +92,6 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         metadata = read_model_metadata(resolved)
         if metadata is None or metadata.snapshot_dir is None:
             return {}
-        snapshot_dir = metadata.snapshot_dir
-        if cached is not None and cached[0] == (*key, snapshot_dir):
-            return cached[1]
         config = metadata.config or {}
         if (entry and entry.type == "stt") or (
             getattr(engine, "is_mllm", False)
@@ -124,11 +110,6 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
     except (OSError, ValueError):
         # Other metadata/load failures retain their existing lifecycle handling.
         logger.debug("Readiness metadata unavailable", exc_info=True)
-    if snapshot_dir is not None and result:
-        # Cache only blockers: adding files cannot clear a consent requirement.
-        # Clear snapshots may gain metadata during lazy downloads, so recheck
-        # them on every probe; replaced snapshot directories are also rechecked.
-        cfg._model_consent_cache = ((*key, snapshot_dir), result)
     return result
 
 

@@ -129,53 +129,34 @@ def test_model_file_consent_blocks_readiness_during_startup(
         assert client.get("/health").json()["ready"] is False
 
 
-@pytest.mark.parametrize("blocked", [False, True])
 @pytest.mark.parametrize("audio", [False, True])
-def test_consent_probe_caches_only_blocked_validation(
-    health_client, tmp_path, monkeypatch, blocked, audio
+def test_consent_probe_rechecks_blocked_snapshot_after_metadata_corrected(
+    health_client, tmp_path, monkeypatch, audio
 ):
-    from unittest.mock import patch
-
-    from rapid_mlx import model_metadata
-    from rapid_mlx.routes.health import _model_consent_blocker
-    from rapid_mlx.utils import model_file_guard
-
-    cfg, _ = health_client
+    cfg, client = health_client
+    cfg.ready = True
     cfg.model_path = str(tmp_path)
     cfg.model_alias = "whisper-small" if audio else None
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
-    (tmp_path / "config.json").write_text(
-        '{"model_file":"custom.py"}' if blocked else "{}"
-    )
-    validator = "validate_processor_code" if audio else "validate_model_code"
-    with (
-        patch.object(
-            model_metadata,
-            "read_model_metadata",
-            wraps=model_metadata.read_model_metadata,
-        ) as read,
-        patch.object(
-            model_file_guard, validator, wraps=getattr(model_file_guard, validator)
-        ) as validate,
-    ):
-        first = _model_consent_blocker(cfg)
-        assert bool(first) == blocked
-        assert _model_consent_blocker(cfg) == first
-        assert read.call_count == 2
-        assert validate.call_count == (1 if blocked else 2)
-        cfg.model_name = "changed"
-        assert _model_consent_blocker(cfg) == first
-        assert read.call_count == 3
-        assert validate.call_count == (2 if blocked else 3)
+    metadata = tmp_path / "config.json"
+    metadata.write_text('{"model_file":"custom.py"}')
+
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "model_code_consent_required"
+    assert response.json()["ready"] is False
+
+    metadata.write_text("{}")
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert "reason" not in response.json()
+    assert client.get("/health").json()["ready"] is True
 
 
 def test_consent_probe_rechecks_clear_snapshot_after_metadata_added(
     health_client, tmp_path, monkeypatch
 ):
-    from unittest.mock import patch
-
-    from rapid_mlx.utils import model_file_guard
-
     cfg, client = health_client
     cfg.ready = True
     cfg.model_path = str(tmp_path)
@@ -183,25 +164,16 @@ def test_consent_probe_rechecks_clear_snapshot_after_metadata_added(
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     (tmp_path / "config.json").write_text("{}")
 
-    with patch.object(
-        model_file_guard,
-        "validate_processor_code",
-        wraps=model_file_guard.validate_processor_code,
-    ) as validate:
-        assert client.get("/health/ready").status_code == 200
-        assert client.get("/health/ready").status_code == 200
-        assert validate.call_count == 2
+    assert client.get("/health/ready").status_code == 200
 
-        (tmp_path / "tokenizer_config.json").write_text(
-            '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
-        )
-        response = client.get("/health/ready")
-        assert response.status_code == 503
-        assert response.json()["reason"] == "model_code_consent_required"
-        assert response.json()["ready"] is False
-        assert validate.call_count == 3
-        assert client.get("/health").json()["ready"] is False
-        assert validate.call_count == 3
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+    )
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "model_code_consent_required"
+    assert response.json()["ready"] is False
+    assert client.get("/health").json()["ready"] is False
 
 
 @pytest.mark.parametrize("blocked", [False, True])
