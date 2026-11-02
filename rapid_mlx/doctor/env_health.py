@@ -2010,6 +2010,11 @@ def _source_aware_extra_hint(command: str) -> str:
             if not isinstance(commit, str) or not commit:
                 raise ValueError("invalid source commit")
             url = f"{vcs}+{url}@{commit}"
+        subdirectory = direct.get("subdirectory", "")
+        if not isinstance(subdirectory, str):
+            raise ValueError("invalid source subdirectory")
+        if subdirectory:
+            url += f"#subdirectory={urllib.parse.quote(subdirectory, safe='/')}"
         argv[-1] = f"{package} @ {url}"
     except Exception:
         argv[-1] = package

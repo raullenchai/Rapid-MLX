@@ -6301,6 +6301,47 @@ def test_runtime_pip_hint_resolves_implicit_context_runtime(monkeypatch):
         ),
         (
             {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                "subdirectory": "pkg/rapid",
+            },
+            " @ git+https://example.invalid/source.git@abc123#subdirectory=pkg/rapid",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                "subdirectory": "pkg/rapid mlx#extra&value",
+            },
+            " @ git+https://example.invalid/source.git@abc123"
+            "#subdirectory=pkg/rapid%20mlx%23extra%26value",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                "subdirectory": "",
+            },
+            " @ git+https://example.invalid/source.git@abc123",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                "subdirectory": None,
+            },
+            "",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+                "subdirectory": 123,
+            },
+            "",
+        ),
+        (
+            {
                 "url": "https://example.invalid/source.hg",
                 "vcs_info": {"vcs": "hg", "commit_id": "abc123"},
             },
