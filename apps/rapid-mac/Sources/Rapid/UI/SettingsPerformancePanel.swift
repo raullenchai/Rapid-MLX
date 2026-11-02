@@ -394,14 +394,14 @@ struct SettingsPerformancePanel: View {
         return VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             HStack {
                 Text(perf.hasOverride(forAlias: alias)
-                     ? "Customized for \(ModelDisplayName.name(for: alias))."
+                     ? String(localized: "Customized for \(ModelDisplayName.name(for: alias)).")
                      : measured
-                        ? "\(ModelDisplayName.name(for: alias)) will use its measured defaults."
-                        : "\(ModelDisplayName.name(for: alias)) will use the engine defaults; no measured profile is published for it.")
+                        ? String(localized: "\(ModelDisplayName.name(for: alias)) will use its measured defaults.")
+                        : String(localized: "\(ModelDisplayName.name(for: alias)) will use the engine defaults; no measured profile is published for it."))
                 .font(RapidFont.caption)
                 .foregroundStyle(RapidTheme.textSecondary)
                 Spacer()
-                Button(measured ? "Reset to measured defaults" : "Reset to engine defaults") {
+                Button(measured ? String(localized: "Reset to measured defaults") : String(localized: "Reset to engine defaults")) {
                     perf.resetToDefaults(forAlias: alias)
                 }
                 .buttonStyle(.rapidSecondaryCompact)

@@ -109,7 +109,7 @@ struct SettingsToolsPanel: View {
             // strings upstream, and quietly re-capitalising a VoiceOver
             // label is not this PR's call to make.
             .accessibilityLabel(Self.voiceOverLabel(for: def.function.name))
-            .accessibilityHint(def.function.description)
+            .accessibilityHint(Self.summary(for: name, fallback: def.function.description))
             // Spelled with `def.function.name` rather than the local
             // `name` binding: identical at runtime, but
             // ``AccessibilityIdentifierInventoryTests`` pins the source
@@ -149,7 +149,7 @@ struct SettingsToolsPanel: View {
             .buttonStyle(.plain)
             .foregroundStyle(RapidTheme.utilityActionLabel)
             .rapidAnimation(RapidMotion.quick, value: isExpanded)
-            .accessibilityLabel("Details for \(Self.displayName(for: name))")
+            .accessibilityLabel(String(localized: "Details for \(Self.displayName(for: name))"))
             .accessibilityAddTraits(isExpanded ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint(isExpanded ? String(localized: "Collapse") : String(localized: "Expand"))
             .accessibilityIdentifier("Settings.Tools.Details.\(name)")

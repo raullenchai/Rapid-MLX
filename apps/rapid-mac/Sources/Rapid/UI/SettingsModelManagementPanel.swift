@@ -783,13 +783,13 @@ struct SettingsModelManagementPanel: View {
         var parts = [String(localized: "\(size) memory")]
         if let caveat = pick.caveat {
             if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
+                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
             }
             parts.append(caveat)
         } else {
             parts.append(String(localized: "\(pick.capabilityPct)% capability"))
             if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
+                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
             }
         }
         return parts.joined(separator: " · ")
@@ -910,7 +910,7 @@ struct SettingsModelManagementPanel: View {
     private func modelSubtitle(_ alias: String) -> String {
         var parts = [ModelBrandStyle.displayFamily(forAlias: alias)]
         if let p = paramsLabel(alias) { parts.append(p) }
-        parts.append("\(ModelSizing.parseBitsPerWeight(alias))-bit")
+        parts.append(String(localized: "\(ModelSizing.parseBitsPerWeight(alias))-bit"))
         return parts.joined(separator: " · ")
     }
 
@@ -1053,7 +1053,7 @@ struct SettingsModelManagementPanel: View {
                                 ? String(localized: "Measured size on disk. Downloaded by another app — Rapid can't delete it.")
                                 : String(localized: "Measured size on disk. Deleting frees this much.")
                         )
-                        .accessibilityLabel("On disk, \(size)")
+                        .accessibilityLabel(String(localized: "On disk, \(size)"))
                 } else {
                     // No measurement from ``rapid-mlx ls``. Say "On disk"
                     // and stop — substituting the alias-derived estimate
@@ -1100,7 +1100,7 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .help("Measured size on disk. Stop this model before deleting it.")
-                        .accessibilityLabel("On disk, \(size)")
+                        .accessibilityLabel(String(localized: "On disk, \(size)"))
                 }
                 Text("Serving")
                     .font(RapidFont.caption)
@@ -1125,7 +1125,7 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .help("Estimated download size.")
-                        .accessibilityLabel("Estimated download, about \(gb)")
+                        .accessibilityLabel(String(localized: "Estimated download, about \(gb)"))
                 }
                 QuietIconButton(
                     symbol: "arrow.down.circle",
@@ -1340,7 +1340,7 @@ struct SettingsModelManagementPanel: View {
             }()
             pill(
                 text: label,
-                id: pct.map { "Downloading… \($0)%" } ?? "Downloading…",
+                id: pct.map { String(localized: "Downloading… \($0)%") } ?? "Downloading…",
                 color: RapidTheme.statusWorking
             )
         case .failed:

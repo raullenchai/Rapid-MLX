@@ -50,13 +50,13 @@ struct MathView: View {
                 colorScheme: colorScheme,
                 baseFontSize: UIFontSettings.shared.pointSize(baseFontSize)
             )
-                .accessibilityLabel("Math: \(latex)")
+                .accessibilityLabel(String(localized: "Math: \(latex)"))
         } else {
             Text(displayMode ? "$$\(latex)$$" : "$\(latex)$")
                 .scaledSystemFont(14, design: .monospaced)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-                .accessibilityLabel("Unrenderable math: \(latex)")
+                .accessibilityLabel(String(localized: "Unrenderable math: \(latex)"))
         }
     }
 

@@ -19,7 +19,7 @@ enum ImageReadinessPresentation {
         var details: [String] = []
         if let size = entry.displayedModelSize?.displayText, !size.isEmpty { details.append(size) }
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
-            details.append("≥\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30)))) RAM")
+            details.append(String(localized: "≥\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: memory * Double(1 << 30)))) RAM"))
         }
         details.append(String(localized: "512² default"))
         details.append(String(localized: "\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps"))
@@ -426,7 +426,11 @@ struct ImagesView: View {
                                  : String(localized: "Warming up \(viewModel.selectedDisplayName)"))
                                 .font(.rapid(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
-                                .lineLimit(1).truncationMode(.middle)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .layoutPriority(1)
+                                .accessibilityIdentifier("Images.Progress.WarmupName")
                         }
                         Spacer(minLength: 8)
                         if denoising {
@@ -458,7 +462,7 @@ struct ImagesView: View {
                         .frame(height: 10)
 
                     HStack {
-                        Text(String(format: "%.1fs", max(0, elapsed)))
+                        Text(String(localized: "\(String(format: "%.1f", max(0, elapsed)))s"))
                             .font(.rapid(size: 12, weight: .medium, design: .monospaced))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                             .monospacedDigit()
@@ -474,7 +478,7 @@ struct ImagesView: View {
                     }
                 }
                 .padding(18)
-                .frame(width: 340)
+                .frame(maxWidth: 520)
                 // The same graphite ground the Chat band paints, in the
                 // shape this surface's geometry calls for. Images cannot
                 // use a band: the subject here IS the canvas, and a strip
@@ -846,7 +850,7 @@ struct ImagesView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Output resolution: \(viewModel.outputSizeLabel)")
+        .help(String(localized: "Output resolution: \(viewModel.outputSizeLabel)"))
         .accessibilityLabel("Output resolution")
         .accessibilityValue(viewModel.outputSizeLabel)
         .accessibilityIdentifier("Images.Resolution")

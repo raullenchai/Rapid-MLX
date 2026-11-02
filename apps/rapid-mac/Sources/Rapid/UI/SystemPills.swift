@@ -50,7 +50,7 @@ struct CPUPill: View {
         // this, VoiceOver reads "CPU 45 percent" (override) followed by
         // "CPU 45%" (the child Text), double-announcing the number.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("CPU \(Int(displayedPercent.rounded())) percent")
+        .accessibilityLabel(String(localized: "CPU \(Int(displayedPercent.rounded())) percent"))
     }
 
     @MainActor
@@ -235,7 +235,7 @@ struct TokensPerSecondPill: View {
         case .unknown:  header = String(localized: "Inference throughput")
         }
         let detail: String
-        let formatted = String(format: "%.1f tok/s", resolved.value)
+        let formatted = String(localized: "\(String(format: "%.1f", resolved.value)) tok/s")
         if resolved.isEstimated {
             detail = String(localized: "~\(formatted) (estimated from char count — server did not emit usage)")
         } else {
@@ -292,7 +292,7 @@ struct GPUPill: View {
             .help(Self.tooltip(percent: snap.percent, pressure: pressure))
             // See CPUPill — collapse children to suppress double-read.
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("GPU \(Int(snap.percent.rounded())) percent")
+            .accessibilityLabel(String(localized: "GPU \(Int(snap.percent.rounded())) percent"))
         } else {
             MetricChip(label: String(localized: "GPU n/a"), level: .noData)
                 .help("GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation.")
