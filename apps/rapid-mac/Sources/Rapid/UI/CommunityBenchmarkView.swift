@@ -187,6 +187,10 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 task = nil
             }
             guard let task else { return nil }
+            switch task {
+            case .imageGeneration, .videoGeneration, .textGeneration: break
+            default: return nil
+            }
             let protocolVersion = catalogModel?.protocolVersion ?? {
                 switch task {
                 case .textGeneration: 2
