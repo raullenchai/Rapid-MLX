@@ -7,6 +7,7 @@ import importlib.util
 import sys
 from collections import Counter
 from contextlib import suppress
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -566,7 +567,9 @@ def test_attributed_step_failure_clears_memory_cache(
     clear_cache = MagicMock(
         side_effect=[None, RuntimeError("cache clear failed") if clear_fails else None]
     )
-    monkeypatch.setattr("rapid_mlx.scheduler.mx.clear_cache", clear_cache)
+    monkeypatch.setattr(
+        "rapid_mlx.scheduler.mx", SimpleNamespace(clear_cache=clear_cache)
+    )
 
     output = scheduler.fail_step(RuntimeError(message))
 
