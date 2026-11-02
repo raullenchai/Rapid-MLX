@@ -114,8 +114,10 @@ jobs:
           #                        already covered by ci.yml's
           #                        test-matrix job, which runs the same
           #                        files on 3.12/3.13 without MLX.
-          # Codex auto-skips for lack of ~/.codex/auth.json — no skip
-          # entry needed.
+          # The hosted runner has no reviewer CLI or credentials; the
+          # adversarial review runs in the local gate. Opt out explicitly,
+          # because a missing reviewer CLI is otherwise a hard failure.
+          PR_VALIDATE_NO_CODEX: "1"
           # mac_only_tests also requires MLX, unavailable on this runner.
           PR_VALIDATE_SKIP_STEPS: stress_e2e_bench,full_unit,mac_only_tests
           # CI: fail-fast off so the scorecard shows every issue at

@@ -49,6 +49,7 @@ import time
 import traceback
 from pathlib import Path
 
+from .. import _children
 from .._xdist import pytest_parallel_args
 from ..base import Step, StepResult
 from ..context import Context
@@ -599,6 +600,7 @@ def _run_group_bounded(
         env=env,
         start_new_session=True,
     )
+    _children.register(proc)
     pgid = proc.pid  # == PGID under start_new_session (setsid)
     # Everything after ``Popen`` runs under a guard: if starting the reader
     # threads fails (e.g. ``RuntimeError: can't start new thread`` under thread
@@ -636,7 +638,7 @@ def _run_group_bounded(
         r_err.join(max(0.0, deadline - time.monotonic()))
 
     try:
-        proc.wait(timeout=timeout)
+        _children.wait(proc, timeout=timeout)
     except subprocess.TimeoutExpired:
         # Time budget blown: SIGKILL the whole group BEFORE reaping the leader
         # (race-free — ``pgid`` can't be recycled while the unreaped leader is a
@@ -676,7 +678,7 @@ def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
         except OSError:
             pass
     try:
-        proc.wait(timeout=_REAP_TIMEOUT_S)
+        _children.wait(proc, timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         pass  # truly wedged leader (near-impossible post-SIGKILL) — give up
 

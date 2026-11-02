@@ -71,3 +71,47 @@ def test_run(monkeypatch, tmp_path, codes, status):
     assert "tests/test_roster.py" in calls[1]
     assert calls[1][-2:] == ["-m", "real_hf_cache or requires_network"]
     assert "roster gated:" in result.summary
+
+
+@pytest.mark.parametrize(
+    ("source", "selected"),
+    [
+        (
+            'import importlib.util\nHAS_MLX = importlib.util.find_spec("mlx") is not None\n',
+            True,
+        ),
+        (
+            "try:\n    import mlx.core\nexcept ImportError:\n    HAS_MLX = False\n"
+            '@pytest.mark.skipif(not HAS_MLX, reason="unavailable")\ndef test_guard(): pass\n',
+            True,
+        ),
+        (
+            'try:\n    import mlx_lm\nexcept ModuleNotFoundError:\n    pytest.skip("unavailable")\n',
+            True,
+        ),
+        (
+            "try:\n    import unrelated\nexcept ImportError:\n    AVAILABLE = False\n",
+            False,
+        ),
+        (
+            'import importlib.util\nAVAILABLE = importlib.util.find_spec("unrelated")\n',
+            False,
+        ),
+    ],
+)
+def test_availability_guards(tmp_path, source, selected):
+    path = tmp_path / "tests/test_guard.py"
+    path.parent.mkdir()
+    path.write_text(source)
+    assert (
+        "tests/test_guard.py" in mac_only_tests.select_mac_only_files(tmp_path)
+    ) is selected
+
+
+def test_unicode_route_regression_is_selected():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    path = "tests/test_structured_output.py"
+    assert "class TestStripBackslashBeforeUnicode" in (root / path).read_text()
+    assert path in mac_only_tests.select_mac_only_files(root)

@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 
 from .context import env_truthy
-from .runner import STAGE_NAMES, run_pipeline
+from .runner import STAGE_NAMES, _terminate_child_processes, run_pipeline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,18 +102,33 @@ def main(argv: list[str] | None = None) -> int:
     ).strip().lower() not in {"0", "false", "no", "off"}
     skip_raw = args.skip_steps or os.environ.get("PR_VALIDATE_SKIP_STEPS", "")
     skip_steps = tuple(s.strip() for s in skip_raw.split(",") if s.strip())
-    return run_pipeline(
-        args.pr_number,
-        verbose=args.verbose,
-        fail_fast=fail_fast,
-        skip_steps=skip_steps,
-        base=args.base,
-        body_only=args.body_only,
-        queue_on_success=args.queue_on_success,
-        stage=args.stage,
-        local_full_suite=args.local_full_suite
-        or env_truthy("PR_VALIDATE_LOCAL_FULL_SUITE"),
-    )
+
+    def terminate(signum, frame):
+        _terminate_child_processes(grace_seconds=0)
+        raise SystemExit(128 + signum)
+
+    previous = {}
+    try:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, terminate)
+        return run_pipeline(
+            args.pr_number,
+            verbose=args.verbose,
+            fail_fast=fail_fast,
+            skip_steps=skip_steps,
+            base=args.base,
+            body_only=args.body_only,
+            queue_on_success=args.queue_on_success,
+            stage=args.stage,
+            local_full_suite=args.local_full_suite
+            or env_truthy("PR_VALIDATE_LOCAL_FULL_SUITE"),
+        )
+    except KeyboardInterrupt:
+        print("Validation interrupted (Ctrl-C).", file=sys.stderr)
+        return 130
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

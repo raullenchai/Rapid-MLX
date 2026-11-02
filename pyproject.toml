@@ -326,6 +326,9 @@ all = [
 # as their own extras so pr_validate can re-install them from the
 # canonical source, instead of every script hand-maintaining a list.
 test = [
+    "anthropic>=0.30.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
     "pytest>=7.0.0",
     "pytest-xdist>=3.8.0",
     # Community protocol tests use jsonschema's external Registry API. Keep
@@ -452,6 +455,9 @@ ci-apple = [
     "prometheus_client>=0.16.0",
 ]
 dev = [
+    "anthropic>=0.30.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
     "pexpect>=4.9,<5; sys_platform != 'win32'",
     "pyte>=0.8.2,<0.9",
     # Test runtime (must mirror the `test` extras above; a unit test in
