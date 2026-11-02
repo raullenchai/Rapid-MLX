@@ -2459,11 +2459,8 @@ def download_with_mirror_fallback(
                 f"  Downloading {_safe_display_name(fname)} "
                 f"({expected_size / 1_000_000:.1f} MB) from Hugging Face…"
             )
-            if progress_tracker is not None:
-                progress_tracker.write_line(message)
-                sys.stdout.flush()
-            else:
-                _print_dim(message)
+            progress_tracker.write_line(message)
+            sys.stdout.flush()
         # Slow mirrors and direct Hub pulls share the verified Range path.
         if (hf_only or slow_mirror) and _hf_resumable_one(
             repo_id,

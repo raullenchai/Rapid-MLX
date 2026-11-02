@@ -540,6 +540,11 @@ def test_missing_distribution_metadata(environment, monkeypatch):
         "requires",
         Mock(side_effect=repair.metadata.PackageNotFoundError()),
     )
+    monkeypatch.setattr(
+        repair.metadata,
+        "distribution",
+        Mock(side_effect=repair.metadata.PackageNotFoundError()),
+    )
     assert repair.dependency_failure(ImportError(name="tiktoken"))
     assert repair.missing_modules() == ["rapid-mlx distribution metadata"]
     import rapid_mlx
@@ -981,6 +986,30 @@ def test_pip_fallback_preserves_editable_source(environment, monkeypatch):
         "-e",
         "/tmp/source",
     ]
+
+
+@pytest.mark.parametrize("phase", ["import", "dispatch"])
+def test_cli_keyboard_interrupt_in_process(monkeypatch, capsys, phase):
+    import builtins
+
+    if phase == "import":
+        original_import = builtins.__import__
+
+        def interrupted_import(name, *args, **kwargs):
+            if name == "rapid_mlx.cli":
+                raise KeyboardInterrupt
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", interrupted_import)
+    else:
+        fake = types.ModuleType("rapid_mlx.cli")
+        fake.cli_entrypoint = Mock(side_effect=KeyboardInterrupt)
+        monkeypatch.setitem(sys.modules, "rapid_mlx.cli", fake)
+
+    with pytest.raises(SystemExit) as error:
+        repair.cli_entrypoint()
+    assert error.value.code == 130
+    assert capsys.readouterr().err == "Cancelled\n"
 
 
 @pytest.mark.parametrize("phase", ["import", "dispatch"])

@@ -204,6 +204,32 @@ def test_consent_probe_revalidates_changed_snapshot(
         assert validate.call_count == 2
 
 
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_consent_probe_validation_failure_does_not_block_readiness(
+    health_client, tmp_path, monkeypatch, caplog, error
+):
+    import logging
+    from unittest.mock import Mock
+
+    from rapid_mlx.routes.health import _model_consent_blocker
+    from rapid_mlx.utils import model_file_guard
+
+    cfg, client = health_client
+    cfg.model_path = str(tmp_path)
+    cfg.ready = True
+    (tmp_path / "config.json").write_text("{}")
+    validate = Mock(side_effect=error("metadata unavailable"))
+    monkeypatch.setattr(model_file_guard, "validate_model_code", validate)
+
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.routes.health"):
+        assert _model_consent_blocker(cfg) == {}
+
+    validate.assert_called_once_with({})
+    assert "Readiness metadata unavailable" in caplog.text
+    assert client.get("/health/ready").status_code == 200
+    assert client.get("/health").json()["ready"] is True
+
+
 def test_consent_probe_rechecks_missing_snapshot(health_client, tmp_path, monkeypatch):
     from unittest.mock import Mock
 

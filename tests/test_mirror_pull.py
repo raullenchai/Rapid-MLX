@@ -5093,6 +5093,46 @@ def test_slow_mirror_fallback_resumes_prefix_and_announces(
     ]
 
 
+def test_slow_mirror_missing_part_announces_zero_bytes(tmp_path, monkeypatch, capsys):
+    import hashlib
+
+    filename = "model.safetensors"
+    body = b"x" * 1000
+    repo, revision, router = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [(filename, len(body))], [200]
+    )
+
+    def slow_mirror(url, target, expected_size, **kwargs):
+        part = kwargs["sidecar_dir"] / f"{kwargs['sidecar_key']}.part"
+        assert not part.exists()
+        return False, "slow-mirror"
+
+    def hub_download(repo_id, fname, rev, target, *args):
+        assert (repo_id, fname, rev) == (repo, filename, revision)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        return True
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [(filename, len(body), hashlib.sha256(body).hexdigest())]
+            ),
+        ),
+        patch.object(_mirror, "_download_one_from_r2", side_effect=slow_mirror),
+        patch.object(_mirror, "_hf_resumable_one", side_effect=hub_download) as hub,
+    ):
+        assert _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+
+    hub.assert_called_once()
+    assert (
+        "  Mirror is slow; continuing model.safetensors from the Hub "
+        "(keeping 0.0 MB already downloaded)."
+    ) in capsys.readouterr().out.splitlines()
+
+
 def test_download_announces_before_metadata_request(tmp_path, monkeypatch):
     class FlushedOutput(io.StringIO):
         flushed = ""
