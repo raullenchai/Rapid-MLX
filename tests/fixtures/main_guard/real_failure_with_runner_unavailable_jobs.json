@@ -1,0 +1,1160 @@
+{
+  "run_id": 41467307663,
+  "run_attempt": 1,
+  "jobs": [
+    {
+      "name": "changes",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318343,
+      "runner_name": "GitHub Actions 1000318343",
+      "created_at": "2026-11-02T15:00:16Z",
+      "started_at": "2026-11-02T15:00:31Z",
+      "completed_at": "2026-11-02T15:00:43Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Classify validation lanes",
+          "conclusion": "success"
+        },
+        {
+          "name": "Explain Linux matrix route",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-apple-silicon",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318396,
+      "runner_name": "GitHub Actions 1000318396",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:16:15Z",
+      "completed_at": "2026-11-02T15:47:14Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project and dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Verify Apple Silicon",
+          "conclusion": "success"
+        },
+        {
+          "name": "Enforce parser relative-budget gate",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run Qwen4 norm-convention contracts on CPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run Qwen4 PLE sidecar contracts on CPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run MLX-dependent tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run LTX-2.5 packaged-artifact install test",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run optional checkpoint contracts on CPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload Apple Silicon coverage data",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "l1-smoke (llama3-3b-4bit, 0)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318417,
+      "runner_name": "GitHub Actions 1000318417",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:35:31Z",
+      "completed_at": "2026-11-02T15:38:18Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project",
+          "conclusion": "success"
+        },
+        {
+          "name": "Verify Metal GPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Prefetch model (llama3-3b-4bit)",
+          "conclusion": "success"
+        },
+        {
+          "name": "L1 smoke (coherence + tool-loop contract)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "l1-smoke (qwen3-4b-instruct-2507-4bit, 1)",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "runner_id": 0,
+      "runner_name": "",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:43Z",
+      "completed_at": "2026-11-02T15:43:19Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": []
+    },
+    {
+      "name": "test-apple-silicon-mac-only (2)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318398,
+      "runner_name": "GitHub Actions 1000318398",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:18:51Z",
+      "completed_at": "2026-11-02T15:23:21Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project and dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run mac-only tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "l1-smoke (gemma3-4b-qat-4bit, 1)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318418,
+      "runner_name": "GitHub Actions 1000318418",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:38:20Z",
+      "completed_at": "2026-11-02T15:41:46Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project",
+          "conclusion": "success"
+        },
+        {
+          "name": "Verify Metal GPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Prefetch model (gemma3-4b-qat-4bit)",
+          "conclusion": "success"
+        },
+        {
+          "name": "L1 smoke (coherence + tool-loop contract)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-apple-silicon-mac-only (1)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318415,
+      "runner_name": "GitHub Actions 1000318415",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:32:06Z",
+      "completed_at": "2026-11-02T15:38:18Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project and dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run mac-only tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "lint",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318352,
+      "runner_name": "GitHub Actions 1000318352",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:45Z",
+      "completed_at": "2026-11-02T15:01:00Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run ruff lint",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run ruff format check",
+          "conclusion": "success"
+        },
+        {
+          "name": "Check packaged model digest coverage offline",
+          "conclusion": "success"
+        },
+        {
+          "name": "GitHub Actions SHA pinning",
+          "conclusion": "success"
+        },
+        {
+          "name": "Workflow expression sanity",
+          "conclusion": "success"
+        },
+        {
+          "name": "Model-management architecture SSOT",
+          "conclusion": "success"
+        },
+        {
+          "name": "Engine ↔ desktop app version sync",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.12, 2)",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_id": 1000318353,
+      "runner_name": "GitHub Actions 1000318353",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:45Z",
+      "completed_at": "2026-11-02T15:34:30Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.12",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Post Set up Python 3.12",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.13, 2)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318358,
+      "runner_name": "GitHub Actions 1000318358",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:46Z",
+      "completed_at": "2026-11-02T15:35:50Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Post Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.12, 1)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318360,
+      "runner_name": "GitHub Actions 1000318360",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:49Z",
+      "completed_at": "2026-11-02T15:40:10Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.12",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python 3.12",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.13, 1)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318354,
+      "runner_name": "GitHub Actions 1000318354",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:45Z",
+      "completed_at": "2026-11-02T15:38:53Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Post Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-apple-silicon-mac-only (3)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318355,
+      "runner_name": "GitHub Actions 1000318355",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:46Z",
+      "completed_at": "2026-11-02T15:06:13Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project and dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run mac-only tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "merge-lane-mac",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318361,
+      "runner_name": "GitHub Actions 1000318361",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:48Z",
+      "completed_at": "2026-11-02T15:00:52Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Mark Mac-required merge lane",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "type-check",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318363,
+      "runner_name": "GitHub Actions 1000318363",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:46Z",
+      "completed_at": "2026-11-02T15:01:25Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Enforce shrink-only mypy error budget",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.13, 3)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318359,
+      "runner_name": "GitHub Actions 1000318359",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:45Z",
+      "completed_at": "2026-11-02T15:38:15Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Post Set up Python 3.13",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "l1-smoke (qwen3.5-4b-4bit, 0)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318410,
+      "runner_name": "GitHub Actions 1000318410",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:31:36Z",
+      "completed_at": "2026-11-02T15:35:27Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project",
+          "conclusion": "success"
+        },
+        {
+          "name": "Verify Metal GPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Prefetch model (qwen3.5-4b-4bit)",
+          "conclusion": "success"
+        },
+        {
+          "name": "L1 smoke (coherence + tool-loop contract)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "test-matrix (3.12, 3)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318357,
+      "runner_name": "GitHub Actions 1000318357",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:45Z",
+      "completed_at": "2026-11-02T15:38:29Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python 3.12",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install dependencies",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run unit tests (no MLX required)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install package builder for release-stamp integration test",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real release-stamp package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Run real license-file package build",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Upload Linux shard coverage data",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python 3.12",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "engine-contracts",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318362,
+      "runner_name": "GitHub Actions 1000318362",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:00:46Z",
+      "completed_at": "2026-11-02T15:01:55Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "CLI ↔ Config fidelity audit",
+          "conclusion": "success"
+        },
+        {
+          "name": "Release-script offline tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Installer offline tests",
+          "conclusion": "success"
+        },
+        {
+          "name": "Parser microbench",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "l1-smoke (qwen3-4b-thinking-2507-4bit, 1)",
+      "status": "completed",
+      "conclusion": "success",
+      "runner_id": 1000318409,
+      "runner_name": "GitHub Actions 1000318409",
+      "created_at": "2026-11-02T15:00:43Z",
+      "started_at": "2026-11-02T15:30:50Z",
+      "completed_at": "2026-11-02T15:34:06Z",
+      "labels": [
+        "macos-15"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install project",
+          "conclusion": "success"
+        },
+        {
+          "name": "Verify Metal GPU",
+          "conclusion": "success"
+        },
+        {
+          "name": "Prefetch model (qwen3-4b-thinking-2507-4bit)",
+          "conclusion": "success"
+        },
+        {
+          "name": "L1 smoke (coherence + tool-loop contract)",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Set up Python",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "mlx-bound-guard",
+      "status": "completed",
+      "conclusion": "skipped",
+      "runner_id": null,
+      "runner_name": null,
+      "created_at": "2026-11-02T15:00:44Z",
+      "started_at": "2026-11-02T15:00:44Z",
+      "completed_at": "2026-11-02T15:00:43Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": []
+    },
+    {
+      "name": "merge-lane-no-mac",
+      "status": "completed",
+      "conclusion": "skipped",
+      "runner_id": null,
+      "runner_name": null,
+      "created_at": "2026-11-02T15:00:44Z",
+      "started_at": "2026-11-02T15:00:44Z",
+      "completed_at": "2026-11-02T15:00:43Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": []
+    },
+    {
+      "name": "linux-coverage",
+      "status": "completed",
+      "conclusion": "skipped",
+      "runner_id": null,
+      "runner_name": null,
+      "created_at": "2026-11-02T15:40:11Z",
+      "started_at": "2026-11-02T15:40:11Z",
+      "completed_at": "2026-11-02T15:40:11Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": []
+    },
+    {
+      "name": "tests",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_id": 1000318468,
+      "runner_name": "GitHub Actions 1000318468",
+      "created_at": "2026-11-02T15:47:14Z",
+      "started_at": "2026-11-02T15:47:16Z",
+      "completed_at": "2026-11-02T15:47:30Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "conclusion": "success"
+        },
+        {
+          "name": "Check test results",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Reject cancelled workflow",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Complete job",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "changed-lines-coverage",
+      "status": "completed",
+      "conclusion": "skipped",
+      "runner_id": null,
+      "runner_name": null,
+      "created_at": "2026-11-02T15:47:14Z",
+      "started_at": "2026-11-02T15:47:14Z",
+      "completed_at": "2026-11-02T15:47:14Z",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": []
+    }
+  ]
+}
