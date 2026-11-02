@@ -71,12 +71,9 @@ def test_stt_nested_metadata_blocks_before_native_dispatch(
     base.assert_called_once_with(model_path=root)
 
 
-@pytest.mark.parametrize(
-    "entrypoint", ["policy", pytest.param("mllm", marks=pytest.mark.requires_mlx)]
-)
-def test_inkling_processor_consent_before_vlm_dispatch(
-    tmp_path, monkeypatch, entrypoint
-):
+@pytest.fixture(params=["policy", pytest.param("mllm", marks=pytest.mark.requires_mlx)])
+def vlm_loader(tmp_path, monkeypatch, request):
+    entrypoint = request.param
     from rapid_mlx.utils.model_file_guard import load_vlm_with_policy
 
     if entrypoint == "mllm":
@@ -137,24 +134,73 @@ def test_inkling_processor_consent_before_vlm_dispatch(
         def load(**kwargs):
             return load_vlm_with_policy(tmp_path, loader=loader, **kwargs)
 
-    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
-    with pytest.raises(RemoteCodeConsentRequired, match="auto_map"):
+    return load, loader
+
+
+@pytest.mark.parametrize(
+    "model_type", ["inkling", "got", "inkling_mm_model", "moondream1", "moondream2"]
+)
+def test_processor_consent_before_vlm_dispatch(
+    tmp_path, monkeypatch, vlm_loader, model_type
+):
+    load, loader = vlm_loader
+    _write_metadata(tmp_path, "config.json", model_type=model_type)
+    external = model_type.startswith("moondream")
+    _write_metadata(
+        tmp_path,
+        **({} if external else {"auto_map": {"AutoTokenizer": ["tok.T", None]}}),
+    )
+    reason = "external repository" if external else "auto_map"
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    with pytest.raises(RemoteCodeConsentRequired, match=reason):
         load()
     loader.assert_not_called()
+
     # Process opt-out wins even over an explicit API opt-in.
-    with pytest.raises(RemoteCodeConsentRequired, match="auto_map"):
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    with pytest.raises(RemoteCodeConsentRequired, match=reason):
         load(trust_remote_code=True)
     loader.assert_not_called()
 
-    _write_metadata(tmp_path, "config.json", model_type="llava")
-    load()
-    assert loader.call_args.kwargs["trust_remote_code"] is False
-
-    _write_metadata(tmp_path, "config.json", model_type="inkling")
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE")
     load(trust_remote_code=True)
     assert loader.call_args.kwargs["trust_remote_code"] is True
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+    load()
+    assert loader.call_args.kwargs["trust_remote_code"] is True
     assert loader.call_count == 2
+
+
+@pytest.mark.parametrize("field", ["auto_map", "model_file"])
+def test_vlm_api_opt_out_overrides_environment(
+    tmp_path, monkeypatch, vlm_loader, field
+):
+    load, loader = vlm_loader
+    _write_metadata(tmp_path, **{field: "custom.py"})
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+    with pytest.raises(RemoteCodeConsentRequired, match=field):
+        load(trust_remote_code=False)
+    loader.assert_not_called()
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_vlm_processor_policy_skips_io(tmp_path, monkeypatch, trusted):
+    from pathlib import Path
+
+    from rapid_mlx.utils import model_file_guard as guard
+
+    fail = Mock(side_effect=AssertionError("processor metadata must not be read"))
+    monkeypatch.setattr(guard, "validate_processor_code", fail)
+    monkeypatch.setattr(Path, "open", fail)
+    # Trusted forced/external types and reviewed non-forced types need no scan.
+    types = ["qwen3_vl", "got", "moondream2"] if trusted else ["qwen3_vl"]
+    for model_type in types:
+        guard.validate_vlm_processor_policy(
+            tmp_path,
+            {"model_type": model_type, "auto_map": {"AutoTokenizer": "tok.T"}},
+            trust_remote_code=trusted,
+        )
+    fail.assert_not_called()
 
 
 def test_z_image_tokenizer_consent_before_vlm_dispatch(tmp_path, monkeypatch):

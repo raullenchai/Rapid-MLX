@@ -260,3 +260,29 @@ def test_consent_probe_rechecks_missing_snapshot(health_client, tmp_path, monkey
     assert _model_consent_blocker(cfg) == {}
     assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
     assert read.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "model_type", ["got", "inkling_mm_model", "moondream1", "moondream2"]
+)
+@pytest.mark.parametrize("trusted", [False, True])
+def test_vlm_processor_consent_readiness(
+    health_client, tmp_path, monkeypatch, model_type, trusted
+):
+    import json
+    from types import SimpleNamespace
+
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_path = str(tmp_path)
+    cfg.engine = SimpleNamespace(is_mllm=True)
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
+    if not model_type.startswith("moondream"):
+        (tmp_path / "tokenizer_config.json").write_text(
+            '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+        )
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1" if trusted else "0")
+    response = client.get("/health/ready")
+    assert response.status_code == (200 if trusted else 503)
+    if not trusted:
+        assert response.json()["reason"] == "model_code_consent_required"

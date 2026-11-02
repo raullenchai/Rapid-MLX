@@ -62,10 +62,11 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
     from ..model_aliases import resolve_model
     from ..model_metadata import read_model_metadata
     from ..utils.model_file_guard import (
-        FORCED_TRUST_VLM_MODEL_TYPES,
         RemoteCodeConsentRequired,
+        remote_code_enabled,
         validate_model_code,
         validate_processor_code,
+        validate_vlm_processor_policy,
     )
 
     model_path = getattr(cfg, "model_path", None)
@@ -93,13 +94,16 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         if metadata is None or metadata.snapshot_dir is None:
             return {}
         config = metadata.config or {}
-        if (entry and entry.type == "stt") or (
-            getattr(engine, "is_mllm", False)
-            and config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES
-        ):
+        if entry and entry.type == "stt":
             validate_processor_code(metadata.snapshot_dir)
         else:
             validate_model_code(config)
+            if getattr(engine, "is_mllm", False):
+                validate_vlm_processor_policy(
+                    metadata.snapshot_dir,
+                    config,
+                    trust_remote_code=remote_code_enabled(),
+                )
     except RemoteCodeConsentRequired:
         # Never expose repository-provided values or local paths on probes.
         result = {
