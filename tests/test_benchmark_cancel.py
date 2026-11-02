@@ -441,7 +441,12 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         # A blocked echo never releases teardown, so a generous bound keeps the
         # check exact while tolerating slow server startup on loaded runners.
         worker.join(timeout=30)
-        assert not worker.is_alive(), "server teardown blocked on echo"
+        if worker.is_alive():
+            import traceback
+
+            frame = sys._current_frames().get(worker.ident)
+            stack = "".join(traceback.format_stack(frame)) if frame else "?"
+            pytest.fail(f"server teardown blocked on echo; worker stack:\n{stack}")
         assert not errors
     finally:
         release.set()
