@@ -831,7 +831,7 @@ def _versions_equal(installed: str, target: str) -> bool:
             and installed.strip().removeprefix("v") == target.strip().removeprefix("v")
         )
     try:
-        return Version(installed) == Version(target)
+        return bool(Version(installed) == Version(target))
     except ValueError:
         return False
 
