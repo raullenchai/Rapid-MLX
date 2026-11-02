@@ -1523,7 +1523,9 @@ struct ShareComputeLedgerSafetyTests {
 
     // MARK: Race 1 — a stale 401 must not clobber a newly saved key's state
 
-    @Test("A late 401 from the OLD key never overwrites the state of the key saved after it")
+    // The awaits below are event-driven; the time limit turns a missing event
+    // into a failed test instead of a hung suite.
+    @Test("A late 401 from the OLD key never overwrites the state of the key saved after it", .timeLimit(.minutes(1)))
     func staleUnauthorizedDoesNotClobberNewKey() async throws {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
@@ -2520,7 +2522,8 @@ struct ShareComputeLedgerGatingTests {
 
     // MARK: Observable gate expiry
 
-    @Test("A time gate expiring publishes an observable change")
+    // Event-driven waits; the time limit fails the test if the change is never published.
+    @Test("A time gate expiring publishes an observable change", .timeLimit(.minutes(1)))
     func gateExpiryIsObservable() async throws {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
