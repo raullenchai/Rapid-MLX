@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rapid_mlx.model_aliases import _coerce, resolve_profile
+from rapid_mlx.model_aliases import _coerce, list_profiles, resolve_profile
 from rapid_mlx.speculative.ddtree import runtime
 
 DRAFT_REVISION = "5fc3b3d474760f18c516db87d84c37edbfd3ede6"
@@ -93,9 +93,27 @@ def test_ddtree_revision_requires_drafter():
         )
 
 
-def test_catalog_ddtree_drafter_is_not_a_servable_alias():
-    from rapid_mlx.model_aliases import list_profiles
+def test_ddtree_drafter_requires_revision():
+    with pytest.raises(
+        ValueError, match="ddtree_draft_model requires.*ddtree_draft_revision"
+    ):
+        _coerce(
+            "test", {"hf_path": "owner/target", "ddtree_draft_model": "owner/draft"}
+        )
 
+
+def test_catalog_ddtree_drafters_have_revision_pins():
+    drafters = {
+        alias: profile
+        for alias, profile in list_profiles().items()
+        if profile.ddtree_draft_model
+    }
+    assert drafters
+    for alias, profile in drafters.items():
+        assert profile.ddtree_draft_revision is not None, alias
+
+
+def test_catalog_ddtree_drafter_is_not_a_servable_alias():
     profile = resolve_profile("qwen3.5-9b-8bit")
     assert profile.ddtree_draft_revision == DRAFT_REVISION
     assert all(

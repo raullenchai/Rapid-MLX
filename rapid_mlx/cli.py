@@ -5090,6 +5090,7 @@ def _preflight_ddtree_or_exit(args):
 
     args._ddtree_alias_name = alias_name
     args._ddtree_profile = profile
+    # Like model_downloads.snapshot_download, catalog pins follow repo identity: explicit matches pin; other repos do not.
     args._ddtree_drafter_revision = (
         profile.ddtree_draft_revision if drafter == profile.ddtree_draft_model else None
     )

@@ -103,7 +103,7 @@ def test_declared_types_have_a_loader():
             assert types & (installed | native), (alias, profile.model_type)
 
 
-@pytest.mark.parametrize("model_type", [None, "", "  ", 1, True, [], {}])
+@pytest.mark.parametrize("model_type", [None, "", "  ", " qwen3_vl ", 1, True, [], {}])
 def test_catalog_rejects_invalid_model_type(model_type):
     with pytest.raises(ValueError, match="model_type.*non-empty string"):
         _coerce("test", {"hf_path": "owner/model", "model_type": model_type})

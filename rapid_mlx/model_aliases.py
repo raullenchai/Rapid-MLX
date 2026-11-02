@@ -258,10 +258,13 @@ def _coerce(alias: str, value: object) -> AliasProfile:
 
     model_type = value.get("model_type")
     if "model_type" in value and (
-        not isinstance(model_type, str) or not model_type.strip()
+        not isinstance(model_type, str)
+        or not model_type
+        or model_type != model_type.strip()
     ):
         raise ValueError(
-            f"alias {alias!r}: 'model_type' must be a non-empty string when present"
+            f"alias {alias!r}: 'model_type' must be a non-empty string "
+            "without leading or trailing whitespace when present"
         )
 
     # ``subfolder`` becomes a path segment joined onto a snapshot
@@ -509,6 +512,11 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 )
     supports_ddtree = _strict_bool("supports_ddtree", False)
     ddtree_draft_model = value.get("ddtree_draft_model")
+    if ddtree_draft_model and ddtree_draft_revision is None:
+        raise ValueError(
+            f"alias {alias!r}: ddtree_draft_model requires an immutable "
+            "ddtree_draft_revision pin"
+        )
     if ddtree_draft_revision is not None and not ddtree_draft_model:
         raise ValueError(
             f"alias {alias!r}: ddtree_draft_revision requires ddtree_draft_model"
