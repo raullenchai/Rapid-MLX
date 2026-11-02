@@ -33,11 +33,17 @@ extension ModelDisplayName {
             ModelInfoCatalog.familyAndContext(for: tokens.prefix(end).joined(separator: "-")).family == family
         } ?? 0
         if params == nil {
-            // Family lookup accepts substrings; do not swallow an unrelated
-            // leading token, or relabel speech aliases as text model families.
+            // Only format machine aliases with explicit quantization. Family
+            // lookup accepts substrings; preserve free-text names and speech aliases.
             let familyWithoutFirst = tokens.prefix(familyEnd).dropFirst().joined(separator: "-")
             let audioTokens: Set<String> = ["tts", "stt", "asr", "speech", "voice", "audio"]
-            guard familyEnd > 0,
+            let quantizationTokens: Set<String> = ["2bit", "3bit", "4bit", "6bit", "8bit", "16bit", "bf16", "fp16"]
+            guard alias.unicodeScalars.allSatisfy({
+                      (97...122).contains($0.value) || (48...57).contains($0.value)
+                          || $0 == "." || $0 == "-" || $0 == "_"
+                  }),
+                  tokens.contains(where: { quantizationTokens.contains($0) }),
+                  familyEnd > 0,
                   ModelInfoCatalog.familyAndContext(for: familyWithoutFirst).family != family,
                   !tokens.dropFirst(familyEnd).contains(where: { audioTokens.contains($0) }) else {
                 return alias
