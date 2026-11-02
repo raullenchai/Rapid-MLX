@@ -212,6 +212,48 @@ async def test_shared_step_failure_preserves_queued(monkeypatch, escaped):
     }
 
 
+@pytest.mark.parametrize("shared_failures", [0, 9])
+def test_repeated_admission_failures_preserve_healthy_work(
+    monkeypatch, shared_failures
+):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    scheduler._consecutive_step_failures = shared_failures
+    monkeypatch.setattr(scheduler, "_max_running_sequences", lambda: 2)
+    monkeypatch.setattr(
+        scheduler, "_pop_waiting_for_admission", lambda: scheduler.waiting.popleft()
+    )
+
+    def fail_admission(request):
+        raise ValueError("invalid admission input")
+
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", fail_admission)
+
+    for index in range(11):
+        rid = "bad" if index == 0 else f"bad-{index}"
+        if index:
+            request = Request(rid, [1, 2], SamplingParams())
+            request.prompt_token_ids = [1, 2]
+            request.num_prompt_tokens = 2
+            scheduler.requests[rid] = request
+            scheduler.waiting.appendleft(request)
+
+        output = scheduler.step()
+
+        assert output.finished_request_ids == {rid}
+        assert [out.request_id for out in output.outputs] == [rid]
+        assert output.outputs[0].finish_reason == "abort"
+        assert scheduler.requests[rid].status == RequestStatus.FINISHED_ABORTED
+        assert scheduler._step_request_id is None
+        assert set(scheduler.running) == {"active"}
+        assert scheduler.requests["active"].status == RequestStatus.RUNNING
+        assert [request.request_id for request in scheduler.waiting] == ["queued"]
+        assert not RequestStatus.is_finished(scheduler.requests["queued"].status)
+
+    assert scheduler._consecutive_step_failures == shared_failures
+
+
 def test_repeated_failures_escalate_to_queued_work():
     engine = make_engine()
     seed(engine)

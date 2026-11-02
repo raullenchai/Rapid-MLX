@@ -4450,6 +4450,8 @@ class Scheduler:
         self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
+        self._step_request_id: str | None = None
+        self._consecutive_step_failures: int = 0
         self._generation_paused = False
         self._paused_add_allowance = 0
         self._paused_admission_tokens: set[str] = set()
@@ -11640,14 +11642,14 @@ class Scheduler:
 
     def fail_step(self, exc: Exception) -> SchedulerOutput:
         """Retire failed work on the step thread, preserving unscheduled work."""
-        failures = getattr(self, "_consecutive_step_failures", 0) + 1
-        self._consecutive_step_failures = failures
-        fatal = failures >= 10
         request_id = getattr(self, "_step_request_id", None)
         self._step_request_id = None
-        if request_id is not None and not fatal:
+        if request_id is not None:
             aborted_ids = {request_id}
         else:
+            failures = getattr(self, "_consecutive_step_failures", 0) + 1
+            self._consecutive_step_failures = failures
+            fatal = failures >= 10
             # A shared forward pass has no trustworthy row attribution.
             aborted_ids = self._recover_from_generation_error()
             if fatal:
@@ -11665,7 +11667,7 @@ class Scheduler:
                 request._continuous_mtp_state = None
                 request.batch_uid = None
         kind = classify_engine_abort(exc)
-        if request_id is not None and not fatal and kind == "insufficient_memory":
+        if request_id is not None and kind == "insufficient_memory":
             try:
                 mx.clear_cache()
             except Exception:
