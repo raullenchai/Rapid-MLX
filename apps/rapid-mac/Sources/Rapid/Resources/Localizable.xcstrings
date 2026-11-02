@@ -452,6 +452,26 @@
         }
       }
     },
+    "%lld steps, CFG %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 步，CFG %@"
+          }
+        }
+      }
+    },
+    "%lld steps, no CFG" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 步，无 CFG"
+          }
+        }
+      }
+    },
     "%lld supported" : {
       "localizations" : {
         "zh-Hans" : {

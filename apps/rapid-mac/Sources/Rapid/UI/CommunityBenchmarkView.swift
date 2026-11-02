@@ -130,6 +130,28 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         }
     }
 
+    static func protocolDisplayName(protocolID: String, version: Int) -> String {
+        switch protocolID {
+        case "rapid-image-speed": return "Rapid Image Speed v\(version)"
+        case "rapid-video-speed": return "Rapid Video Speed v\(version)"
+        case "rapid-community-speed": return "Rapid Community Speed v\(version)"
+        default:
+            guard let match = protocolID.wholeMatch(
+                of: #/rapid-image-speed-([0-9]+)step-(?:nocfg|cfg([0-9]+)p([0-9]+))/#
+            ), let steps = Int(match.1) else {
+                return "\(protocolID) v\(version)"
+            }
+            let schedule: String
+            if let whole = match.2, let fraction = match.3 {
+                let cfg = "\(whole).\(fraction)"
+                schedule = String(localized: "\(steps) steps, CFG \(cfg)")
+            } else {
+                schedule = String(localized: "\(steps) steps, no CFG")
+            }
+            return "Rapid Image Speed · \(schedule) v\(version)"
+        }
+    }
+
     static let registeredWanAliases: Set<String> = [
         "wan2.2-t2v-a14b-bf16", "wan2.2-ti2v-5b-bf16", "wan2.2-ti2v-5b-q8"
     ]
@@ -165,6 +187,10 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 task = nil
             }
             guard let task else { return nil }
+            switch task {
+            case .imageGeneration, .videoGeneration, .textGeneration: break
+            default: return nil
+            }
             let protocolVersion = catalogModel?.protocolVersion ?? {
                 switch task {
                 case .textGeneration: 2
@@ -172,18 +198,12 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 default: 1
                 }
             }()
-            let protocolName: String
-            switch task {
-            case .imageGeneration: protocolName = "Rapid Image Speed v\(protocolVersion)"
-            case .videoGeneration: protocolName = "Rapid Video Speed v\(protocolVersion)"
-            case .textGeneration: protocolName = "Rapid Community Speed v\(protocolVersion)"
-            default: return nil
-            }
+            let protocolID = catalogModel?.protocolID ?? Self.defaultProtocolID(for: task)
             return Self(
                 entry: entry,
                 task: task,
-                protocolName: protocolName,
-                protocolID: catalogModel?.protocolID ?? Self.defaultProtocolID(for: task),
+                protocolName: Self.protocolDisplayName(protocolID: protocolID, version: protocolVersion),
+                protocolID: protocolID,
                 protocolVersion: protocolVersion,
                 isFocus: catalogModel?.focus ?? focusAliases.contains(entry.alias),
                 estimatedMemoryGib: catalogModel?.estimatedMemoryGib,
