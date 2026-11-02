@@ -5221,11 +5221,17 @@ def test_enter_worker_lifetime_detaches_and_arms_watchdog(
     )
     monkeypatch.setattr(local_runner, "_watch_parent_lifeline", fake_watch)
     lifeline = object()
+    messages: list[tuple[str, int]] = []
+    monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
+    sender = SimpleNamespace(send=messages.append)
 
-    local_runner._enter_worker_lifetime(lifeline, cleanup_path="/tmp/artifact.mp4")
+    local_runner._enter_worker_lifetime(
+        lifeline, cleanup_path="/tmp/artifact.mp4", sender=sender
+    )
 
     assert armed.wait(timeout=10), "watchdog thread never started"
     assert events == ["setsid"]
+    assert messages == [("detached", os.getpid())]
     assert observed == {"lifeline": lifeline, "cleanup_path": "/tmp/artifact.mp4"}
 
 
@@ -5236,7 +5242,7 @@ def test_video_probe_worker_reports_result_and_closes_sender(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: entered.update(
+        lambda lifeline, *, cleanup_path=None, sender=None: entered.update(
             {"lifeline": lifeline, "cleanup_path": cleanup_path}
         ),
     )
@@ -5268,7 +5274,7 @@ def test_video_probe_worker_reports_errors_without_leaking_internals(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: None,
+        lambda lifeline, *, cleanup_path=None, sender=None: None,
     )
     monkeypatch.setattr(
         local_runner,
@@ -5290,7 +5296,7 @@ def test_video_probe_worker_survives_a_torn_result_pipe(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: None,
+        lambda lifeline, *, cleanup_path=None, sender=None: None,
     )
     monkeypatch.setattr(
         local_runner,
@@ -5331,7 +5337,7 @@ def test_video_download_worker_reports_each_outcome(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: None,
+        lambda lifeline, *, cleanup_path=None, sender=None: None,
     )
 
     def download(base_url: str, job_id: str, destination_path: str) -> None:
@@ -5386,7 +5392,7 @@ def test_video_download_worker_preserves_artifact_after_delivered_success(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: None,
+        lambda lifeline, *, cleanup_path=None, sender=None: None,
     )
     artifact = tmp_path / "artifact.mp4"
     monkeypatch.setattr(
@@ -5413,7 +5419,7 @@ def test_video_download_worker_removes_orphan_after_torn_result_pipe(
     monkeypatch.setattr(
         local_runner,
         "_enter_worker_lifetime",
-        lambda lifeline, *, cleanup_path=None: None,
+        lambda lifeline, *, cleanup_path=None, sender=None: None,
     )
     artifact = tmp_path / "artifact.mp4"
 
@@ -5463,6 +5469,7 @@ class _FakeWorkerConnection:
 class _FakeWorkerProcess:
     def __init__(self, alive_after_join: bool = False) -> None:
         self.pid = 99999
+        self.exitcode = None if alive_after_join else 0
         self._alive_after_join = alive_after_join
         self.started = False
         self.joins: list[float | None] = []
@@ -5556,7 +5563,9 @@ def test_detached_worker_reaps_a_survivor_after_result(
         monkeypatch, recv=lambda: ("ok", None), alive_after_join=True
     )
     monkeypatch.setattr(
-        local_runner, "_terminate_worker_process", lambda proc: reaped.append(proc)
+        local_runner,
+        "_terminate_worker_process",
+        lambda proc, *, owned_pgid=None: reaped.append(proc),
     )
 
     assert (
@@ -5568,9 +5577,71 @@ def test_detached_worker_reaps_a_survivor_after_result(
     assert reaped == [process]
 
 
+def test_detached_worker_timeout_terminates_without_waiting_for_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receiver, _, lifeline_sender, process = _fake_spawn_context(
+        monkeypatch, recv=lambda: None, alive_after_join=True
+    )
+    receiver._poll_result = False
+    cleanups: list[object] = []
+
+    def cleanup(proc, *, owned_pgid=None):
+        assert proc.joins == []
+        assert not lifeline_sender.closed
+        cleanups.append(proc)
+
+    monkeypatch.setattr(local_runner, "_terminate_worker_process", cleanup)
+
+    with pytest.raises(TimeoutError, match="exceeded its hard deadline"):
+        local_runner._run_detached_worker(
+            lambda *args: None, (), timeout_s=5, phase="probe"
+        )
+
+    assert cleanups == [process]
+    assert lifeline_sender.closed
+
+
+@pytest.mark.parametrize("silent_death", [False, True])
+def test_detached_worker_retains_owned_group_after_reaping(
+    monkeypatch: pytest.MonkeyPatch, silent_death: bool
+) -> None:
+    messages = iter([("detached", 99999), ("ok", None)])
+
+    def recv():
+        message = next(messages)
+        if silent_death and message[0] == "ok":
+            raise EOFError
+        return message
+
+    _, _, _, process = _fake_spawn_context(monkeypatch, recv=recv)
+    cleanups: list[tuple[object, int | None]] = []
+
+    def cleanup(proc, *, owned_pgid=None):
+        assert proc.joins == [1]
+        assert not proc.is_alive()
+        cleanups.append((proc, owned_pgid))
+
+    monkeypatch.setattr(local_runner, "_terminate_worker_process", cleanup)
+    if silent_death:
+        with pytest.raises(RuntimeError, match="exited without a result"):
+            local_runner._run_detached_worker(
+                lambda *args: None, (), timeout_s=5, phase="probe"
+            )
+    else:
+        assert (
+            local_runner._run_detached_worker(
+                lambda *args: None, (), timeout_s=5, phase="probe"
+            )
+            is None
+        )
+    assert cleanups == [(process, process.pid)]
+
+
 class _FakeSupervisedProcess:
     def __init__(self, pid, alive_sequence: list[bool]) -> None:
         self.pid = pid
+        self.exitcode = None
         self._alive = iter(alive_sequence)
         self.calls: list[str] = []
 
@@ -5594,7 +5665,28 @@ def test_terminate_worker_skips_a_process_that_never_started() -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
-def test_terminate_worker_kills_child_after_worker_exits() -> None:
+def test_terminate_worker_does_not_signal_reused_pid_without_owned_group() -> None:
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    try:
+        assert os.getpgid(sleeper.pid) == sleeper.pid
+        process = _FakeSupervisedProcess(sleeper.pid, alive_sequence=[False, False])
+        process.exitcode = 0
+
+        local_runner._terminate_worker_process(process)
+
+        assert process.calls == []
+        assert sleeper.poll() is None
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
+@pytest.mark.parametrize("already_reaped", [False, True])
+def test_terminate_worker_kills_child_after_worker_exits(already_reaped: bool) -> None:
     import select
 
     child_code = (
@@ -5605,12 +5697,13 @@ def test_terminate_worker_kills_child_after_worker_exits() -> None:
     worker_code = (
         "import subprocess, sys, time; "
         f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
-        "time.sleep(30)"
+        + ("sys.stdin.readline()" if already_reaped else "time.sleep(30)")
     )
     worker = subprocess.Popen(
         [sys.executable, "-c", worker_code],
         start_new_session=True,
         stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
     )
 
     def join(timeout=None):
@@ -5621,6 +5714,7 @@ def test_terminate_worker_kills_child_after_worker_exits() -> None:
 
     process = SimpleNamespace(
         pid=worker.pid,
+        exitcode=None,
         is_alive=lambda: worker.poll() is None,
         join=join,
         terminate=worker.terminate,
@@ -5631,9 +5725,21 @@ def test_terminate_worker_kills_child_after_worker_exits() -> None:
         child_pid = int(worker.stdout.readline())
         assert os.getpgid(child_pid) == worker.pid
 
-        local_runner._terminate_worker_process(process)
+        owned_pgid = os.getpgid(worker.pid)
+        assert owned_pgid == worker.pid
+        if already_reaped:
+            worker.stdin.write(b"exit\n")
+            worker.stdin.flush()
+            join(timeout=1)
+            assert worker.returncode == 0
+            with pytest.raises(ProcessLookupError):
+                os.getpgid(worker.pid)
 
-        assert worker.poll() == -signal.SIGTERM
+        local_runner._terminate_worker_process(
+            process, owned_pgid=owned_pgid if already_reaped else None
+        )
+
+        assert worker.poll() == (0 if already_reaped else -signal.SIGTERM)
         # The child holds the pipe open until it dies, even after its parent exits.
         assert select.select([worker.stdout], [], [], 1)[0], "child survived cleanup"
         assert worker.stdout.read() == b""
@@ -5644,6 +5750,7 @@ def test_terminate_worker_kills_child_after_worker_exits() -> None:
             pass
         worker.wait(timeout=1)
         worker.stdout.close()
+        worker.stdin.close()
 
 
 def test_terminate_worker_escalates_group_signals(
