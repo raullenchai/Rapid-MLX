@@ -1577,6 +1577,7 @@ struct SettingsModelManagementPanel: View {
             currentGeneration: { downloads.cacheGeneration },
             loader: { await ModelCatalog.productEntries(binary: binary) }
         ) {
+            guard !Task.isCancelled else { return }
             catalog = atomic
             reconcileCapability()
             diskOverview.hasCompletedRefresh = true
