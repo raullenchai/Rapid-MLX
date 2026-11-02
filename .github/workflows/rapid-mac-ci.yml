@@ -78,7 +78,6 @@ jobs:
         id: policy
         env:
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           REPO: ${{ github.repository }}
@@ -91,7 +90,7 @@ jobs:
               echo 'full_gate=true'
             } >> "$GITHUB_OUTPUT"
           else
-            # Keep integration promotion scoped to the lanes selected by the
+            # Keep promotion scoped to the lanes selected by the
             # real PR diff. An engine-only PR must not allocate a full GUI run,
             # and a Desktop-only PR must not allocate model runners.
             # Disable rename folding so both the removed source path and the
@@ -101,8 +100,7 @@ jobs:
               --paths-file /tmp/changed-paths \
               --github-output "$GITHUB_OUTPUT"
             full_gate=false
-            if [ "$HEAD_REPO" = "$REPO" ] && \
-              [[ "$HEAD_REF" == train/* ]]; then
+            if [ "$HEAD_REPO" = "$REPO" ]; then
               full_gate=true
             fi
             python scripts/select_gui_flows.py \
@@ -345,6 +343,28 @@ jobs:
       - name: verify chat timeout contract
         run: swift scripts/verify-chat-timeout.swift
 
+  release-toolchain-build:
+    needs: changes
+    if: >-
+      !cancelled() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.desktop == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/rapid-mac
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Print release toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Compile release configuration
+        run: swift build -c release
+
   # Build the release-shaped, sidecar-free app exactly once for every full
   # Desktop gate. GUI consumers must use this commit-bound artifact instead of
   # compiling their own copy. Keeping this as a dedicated producer makes the
@@ -356,14 +376,11 @@ jobs:
       !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
-      needs.changes.outputs.full_gate == 'true'
-    # The expensive producer runs only after `full_gate` promotion. For PRs,
-    # that signal is limited to same-repository train heads; fork
-    # PRs remain false and therefore never execute repository code on the
-    # trusted Mac fleet. Main pushes use the same allowlisted image as the
-    # artifact consumers, removing a second provider queue without changing
-    # the commit-bound build-once contract. The explicit incident fallback is
-    # allowlisted to GitHub's ARM64 macos-26 image.
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.gui_flow_count != '0'
+    # PR promotion includes every same-repository head and excludes forks.
+    # Keep producer and consumers on the same allowlisted runner so the
+    # commit-bound artifact matches the platform used by every GUI shard.
     runs-on: ${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}
     timeout-minutes: 20
     defaults:
@@ -432,7 +449,8 @@ jobs:
       needs.changes.result == 'success' &&
       needs.gui-app-build.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
-      needs.changes.outputs.full_gate == 'true'
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.changes.outputs.gui_flow_count != '0'
     # Use the same allowlisted Apple-Silicon selection as the producer.
     runs-on: ${{ vars.MACOS_RUNNER == 'macos-26' && 'macos-26' || 'manzanita-standard' }}
     strategy:
@@ -841,8 +859,8 @@ jobs:
 
   desktop-tests:
   # Stable required-check facade. It is present even on non-desktop PRs,
-  # unlike workflow-level path filters. Ordinary PRs settle after the fast
-  # Desktop lane; promoted and integration heads add the GUI golden-flow gate.
+  # unlike workflow-level path filters. Same-repository Desktop PRs also
+  # require the selected GUI journeys when the selection is nonempty.
     # Give informational manual runs a distinct name so pending or failed runs
     # cannot block the automatic desktop-tests check for the same SHA.
     name: ${{ github.event_name == 'workflow_dispatch' && 'desktop-tests (manual full suite)' || 'desktop-tests' }}
@@ -852,6 +870,7 @@ jobs:
       - accessibility-identifier-tests
       - gui-harness-contracts
       - build
+      - release-toolchain-build
       - gui-app-build
       - gui-golden-flows
     # Keep the required-check facade terminal after upstream failure or
@@ -864,6 +883,8 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           DESKTOP_EXPECTED: ${{ needs.changes.outputs.desktop }}
+          GUI_FLOW_COUNT: ${{ needs.changes.outputs.gui_flow_count }}
+          RELEASE_BUILD: ${{ needs.release-toolchain-build.result }}
           FULL_GATE: ${{ needs.changes.outputs.full_gate }}
           IDENTIFIERS: ${{ needs.accessibility-identifiers.result }}
           IDENTIFIER_TESTS: ${{ needs.accessibility-identifier-tests.result }}
@@ -881,7 +902,7 @@ jobs:
             echo "Desktop lane not required for this PR"
             exit 0
           fi
-          for result in "$IDENTIFIERS" "$IDENTIFIER_TESTS" "$HARNESS_CONTRACTS"; do
+          for result in "$IDENTIFIERS" "$IDENTIFIER_TESTS" "$HARNESS_CONTRACTS" "$RELEASE_BUILD"; do
             if [ "$result" != success ]; then
               echo "A desktop PR gate failed: $result"
               exit 1
@@ -891,7 +912,7 @@ jobs:
             echo "Desktop build/test gate failed: $BUILD"
             exit 1
           fi
-          if [ "$FULL_GATE" = true ]; then
+          if [ "$FULL_GATE" = true ] && [ "$GUI_FLOW_COUNT" != 0 ]; then
             if [ "$GUI_APP_BUILD" != success ]; then
               echo "GUI app artifact build failed: $GUI_APP_BUILD"
               exit 1
@@ -901,7 +922,7 @@ jobs:
               exit 1
             fi
           elif [ "$GUI_APP_BUILD" != skipped ] || [ "$GOLDEN_FLOWS" != skipped ]; then
-            echo "Unpromoted head unexpectedly allocated a GUI golden-flow lane"
+            echo "Head without selected GUI work unexpectedly allocated a GUI lane"
             exit 1
           fi
 

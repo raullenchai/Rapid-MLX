@@ -5,9 +5,10 @@ import asyncio
 import http.client
 import json
 import socket
+import sys
 import threading
 import time
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import uvicorn
@@ -124,7 +125,6 @@ def test_trickling_client_cannot_monopolize_responder(progress):
 
 
 @pytest.mark.asyncio
-@pytest.mark.requires_mlx
 async def test_blocking_loader_exposes_intermediate_progress_before_ready(
     monkeypatch, progress
 ):
@@ -133,6 +133,7 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
     The loader cannot finish until an external HTTP client has observed 50%,
     making this fail on the original post-lifespan-only listener implementation.
     """
+    accepting = threading.Event()
     observed = threading.Event()
     loading = threading.Event()
     client_results = []
@@ -140,7 +141,6 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
     callbacks = []
     materialized = []
     chunk_bytes = progress_module._EVAL_BATCH_BYTES
-    import mlx.core as mx
 
     def evaluate(weights):
         materialized.extend(weights)
@@ -162,7 +162,14 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
             None,
         )
 
-    monkeypatch.setattr(mx, "eval", evaluate)
+    mlx = ModuleType("mlx")
+    mlx.__path__ = []
+    core = ModuleType("mlx.core")
+    core.eval = evaluate
+    utils = ModuleType("mlx.utils")
+    utils.tree_flatten = lambda params: list(params.items())
+    for name, module in (("mlx", mlx), ("mlx.core", core), ("mlx.utils", utils)):
+        monkeypatch.setitem(sys.modules, name, module)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         address = reservation.getsockname()
@@ -182,9 +189,13 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b'{"ready":true}'})
 
+    def on_accepting():
+        callbacks.append("ready")
+        accepting.set()
+
     instance = AcceptingConnectionsServer(
         uvicorn.Config(app, host=address[0], port=address[1], log_level="error"),
-        on_server_accepting=lambda: callbacks.append("ready"),
+        on_server_accepting=on_accepting,
     )
 
     def client():
@@ -200,14 +211,12 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
             assert not callbacks
             client_results.append((status, body))
             observed.set()
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                status, body = _get(address)
-                if status == 200:
-                    client_results.append((status, body))
-                    return
-                time.sleep(0.02)
-            raise AssertionError("server never completed listener handoff")
+            # Handoff intentionally interrupts active probe requests. Wait for
+            # the application listener before opening the final connection.
+            assert accepting.wait(3), "server never completed listener handoff"
+            status, body = _get(address)
+            assert status == 200
+            client_results.append((status, body))
         except BaseException as exc:
             errors.append(exc)
         finally:

@@ -137,8 +137,11 @@ def test_product_promotion_keeps_diff_scope_and_accepts_integration_heads():
     ):
         run = _step_run(workflow, job_name, step_name)
         assert 'git diff --no-renames --name-only "$PR_BASE_SHA" "$GITHUB_SHA"' in run
-        assert '[ "$HEAD_REPO" = "$REPO" ] &&' in run
-        assert '[[ "$HEAD_REF" == train/* ]]' in run
+        assert '[ "$HEAD_REPO" = "$REPO" ]' in run
+        if workflow == ENGINE_WORKFLOW:
+            assert '[[ "$HEAD_REF" == train/* ]]' in run
+        else:
+            assert "train/*" not in run
         assert 'echo "full_gate=$full_gate"' in run
 
 
@@ -304,6 +307,8 @@ def test_desktop_aggregate_verdict(classifier, overrides, exit_code):
     env = os.environ | {
         "DESKTOP_EXPECTED": "true",
         "FULL_GATE": "true",
+        "GUI_FLOW_COUNT": "1",
+        "RELEASE_BUILD": "success",
         "IDENTIFIERS": "success",
         "IDENTIFIER_TESTS": "success",
         "HARNESS_CONTRACTS": "success",

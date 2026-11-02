@@ -203,9 +203,8 @@ def test_partial_group_input_never_expands_to_unselected_journeys():
     ]
 
 
-def test_shard_matrix_rejects_empty_or_unknown_flow_sets():
-    with pytest.raises(ValueError, match="known PR journeys"):
-        shard_matrix([])
+def test_shard_matrix_handles_empty_and_rejects_unknown_flow_sets():
+    assert shard_matrix([]) == {"include": []}
     with pytest.raises(ValueError, match="known PR journeys"):
         shard_matrix(["not-a-flow"])
 
@@ -238,3 +237,19 @@ def test_workflow_passes_real_diff_to_router_and_consumes_its_outputs():
     assert "GUI_FLOWS: ${{ matrix.gui_flows }}" in workflow
     assert "EXPECTED_FLOW_COUNT: ${{ matrix.flow_count }}" in workflow
     assert "fail-fast: false" in workflow
+
+
+def test_empty_selection_cli_emits_a_skippable_matrix(monkeypatch, tmp_path):
+    from scripts import select_gui_flows
+
+    output = tmp_path / "outputs"
+    monkeypatch.setattr(select_gui_flows, "select", lambda paths: [])
+    monkeypatch.setattr(
+        sys, "argv", ["select_gui_flows.py", "--github-output", str(output)]
+    )
+    assert select_gui_flows.main() == 0
+    assert output.read_text().splitlines() == [
+        "gui_flows=[]",
+        "gui_flow_count=0",
+        'gui_shards={"include":[]}',
+    ]

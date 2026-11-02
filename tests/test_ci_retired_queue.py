@@ -60,6 +60,7 @@ ENGINE = (
     "test-matrix",
     "linux-coverage",
     "test-apple-silicon",
+    "test-apple-silicon-mac-only",
     "changed-lines-coverage",
     "l1-smoke",
 )
@@ -68,6 +69,7 @@ DESKTOP = (
     "IDENTIFIER_TESTS",
     "HARNESS_CONTRACTS",
     "BUILD",
+    "RELEASE_BUILD",
     "GUI_APP_BUILD",
     "GOLDEN_FLOWS",
 )
@@ -114,11 +116,16 @@ def test_engine_aggregate_requires_every_expected_job(event, full, bad):
         )
 
 
+@pytest.mark.parametrize("flow_count", [0, 1])
 @pytest.mark.parametrize("full", [False, True])
 @pytest.mark.parametrize("bad", ["failure", "cancelled", "skipped", ""])
-def test_desktop_aggregate_requires_every_expected_job(full, bad):
-    env = {"DESKTOP_EXPECTED": "true", "FULL_GATE": str(full).lower()}
-    required = set(DESKTOP if full else DESKTOP[:4])
+def test_desktop_aggregate_requires_every_expected_job(full, bad, flow_count):
+    env = {
+        "DESKTOP_EXPECTED": "true",
+        "FULL_GATE": str(full).lower(),
+        "GUI_FLOW_COUNT": str(flow_count),
+    }
+    required = set(DESKTOP if full and flow_count else DESKTOP[:5])
     env.update({name: "success" if name in required else "skipped" for name in DESKTOP})
     values = {"needs.changes.result": "success"}
     assert verdict("rapid-mac-ci.yml", "desktop-tests", values, env)
@@ -130,8 +137,8 @@ def test_desktop_aggregate_requires_every_expected_job(full, bad):
         "rapid-mac-ci.yml", "desktop-tests", {"needs.changes.result": bad}, env
     )
     assert not verdict("rapid-mac-ci.yml", "desktop-tests", values, env, cancelled=True)
-    if not full:
-        for name in DESKTOP[4:]:
+    if not full or not flow_count:
+        for name in DESKTOP[5:]:
             assert not verdict(
                 "rapid-mac-ci.yml", "desktop-tests", values, env | {name: "success"}
             )

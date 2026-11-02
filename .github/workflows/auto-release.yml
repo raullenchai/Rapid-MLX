@@ -692,7 +692,7 @@ jobs:
       needs.detect.outputs.should_release == 'true'
       && needs.detect.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 105
+    timeout-minutes: 195
     permissions:
       actions: read
       contents: read
@@ -710,7 +710,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --require ci.yml:tests \
             --require rapid-mac-ci.yml:desktop-tests \
-            --deadline-min 90 \
+            --deadline-min 180 \
             2>&1 | tee release-final-ci.txt
 
       - name: Publish exact-SHA CI evidence
@@ -1131,7 +1131,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --require ci.yml:tests \
             --require rapid-mac-ci.yml:desktop-tests \
-            --deadline-min 90
+            --deadline-min 180
 
       # The desktop tag claim. tag_desktop_app.sh requires ACCEPTED_SHA (the
       # exact candidate the pre-approval job printed) to equal RELEASE_SHA —
