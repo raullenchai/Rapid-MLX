@@ -1050,7 +1050,7 @@ struct LocalizationTests {
     /// Small lexical scanner: parentheses and quotes inside interpolation must
     /// not hide trailing English copy or make us scan the next modifier.
     private static func unlocalizedUIArguments(_ source: String) -> [String] {
-        let source = SourceGuardSupport.canonicalSource(source, literals: .preserve)
+        let source = SourceGuardSupport.canonicalSource(source, literals: .preserve, preserveLineBreaks: true)
         let chars = Array(source)
         func starts(_ text: String, _ at: Int) -> Bool {
             let needle = Array(text)
@@ -1104,14 +1104,19 @@ struct LocalizationTests {
             return false
         }
         var findings: [String] = [], bindings: [String: Bool] = [:]
-        // Same-file direct String bindings used by accessibility and help.
-        let binding = try! NSRegularExpression(pattern: #"(?:let|var)([A-Za-z_][A-Za-z_0-9]*)(?::String)?="#)
+        // Inspect the complete initializer, without consuming the next statement.
+        let binding = try! NSRegularExpression(pattern: #"(?:let|var)([A-Za-z_][A-Za-z_0-9]*)(?::String\??)?="#)
         for match in binding.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
             guard let nameRange = Range(match.range(at: 1), in: source), let range = Range(match.range, in: source) else { continue }
-            let start = source.distance(from: source.startIndex, to: range.upperBound)
-            if start < chars.count, chars[start] == "\"" {
-                bindings[String(source[nameRange])] = rawProse(start, quotedEnd(start))
+            var start = source.distance(from: source.startIndex, to: range.upperBound)
+            while start < chars.count && chars[start].isWhitespace { start += 1 }
+            var end = start
+            while end < chars.count && !chars[end].isNewline && chars[end] != ";" && chars[end] != "}" {
+                if chars[end] == "\"" { end = quotedEnd(end) }
+                else if chars[end] == "(" { end = expressionEnd(end + 1) }
+                else { end += 1 }
             }
+            bindings[String(source[nameRange])] = rawProse(start, end)
         }
         for prefix in [".accessibilityLabel(", ".accessibilityValue(", ".accessibilityHint(", ".help(", "Text(verbatim:"] {
             var i = 0
@@ -1119,15 +1124,19 @@ struct LocalizationTests {
                 // Skip unrelated literals, including examples in comments' strings.
                 if chars[i] == "\"" { i = quotedEnd(i); continue }
                 if starts(prefix, i) {
-                    let start = i + prefix.count, end = expressionEnd(start) - 1
-                    let expression = String(chars[start..<max(start, end)])
+                    var start = i + prefix.count
+                    let callEnd = expressionEnd(start)
+                    var end = callEnd - 1
+                    while start < end && chars[start].isWhitespace { start += 1 }
+                    while end > start && chars[end - 1].isWhitespace { end -= 1 }
+                    let expression = String(chars[start..<max(start, end)]).trimmingCharacters(in: .whitespacesAndNewlines)
                     let literalEnd = start < chars.count && chars[start] == "\"" ? quotedEnd(start) : start
                     let directLocalizedLiteral = prefix != "Text(verbatim:" && literalEnd == end
                         && !expression.contains(#"\("#)
                     if !directLocalizedLiteral && (rawProse(start, end) || bindings[expression] == true) {
                         findings.append(prefix + expression + ")")
                     }
-                    i = end + 1
+                    i = callEnd
                 } else { i += 1 }
             }
         }
@@ -1146,9 +1155,15 @@ struct LocalizationTests {
             #"view.accessibilityLabel("\(cached ? "Downloaded" : "Not downloaded")")"#,
             #"view.accessibilityValue("Loaded \(count) models")"#,
             #"view.accessibilityHint(ready ? "Start it" : "Wait here")"#,
-            #"let hint = "Download \(name)"; view.help(hint)"#
+            #"let hint = "Download \(name)"; view.help(hint)"#,
+            #"let hint = ready ? "Start" : "Wait"; view.help(hint)"#,
+            "let hint = (ready ?\n\"Start\" : \"Wait\")\nview.help(hint)"
         ] { #expect(!Self.unlocalizedUIArguments(fixture).isEmpty, "Scanner missed: \(fixture)") }
         #expect(Self.unlocalizedUIArguments(#"view.help(String(localized: "Open \(name)"))"#).isEmpty)
+        for fixture in [
+            #"let hint = String(localized: "Start"); view.help(hint); let other = "Wait""#,
+            "let hint = String(localized: \"Start\")\nlet other = \"Wait\"\nview.help(hint)"
+        ] { #expect(Self.unlocalizedUIArguments(fixture).isEmpty, "Scanner overran initializer: \(fixture)") }
     }
 
     @MainActor
@@ -1158,18 +1173,21 @@ struct LocalizationTests {
         let model = ImageGenViewModel(server: server, catalogLoader: { _ in [] })
         model.selectedAlias = "Bonsai Image Large Model for Detailed Landscape Generation"
         model.isGenerating = true
-        let stage = GoldenStage(
-            ImagesView(viewModel: model, server: server)
-                .environment(server)
-                .environment(SettingsRouter())
-                .environment(DownloadManager()),
-            size: CGSize(width: 520, height: 700)
-        )
-        try await stage.waitForIdentifier("Images.Progress.WarmupName")
-        let frame = try #require(stage.frame(of: "Images.Progress.WarmupName"))
-        #expect(frame.width > 300, "Warm-up name should receive the available card width")
-        #expect(frame.height > 25, "A long friendly name should wrap to a second line")
-        #expect(stage.treeText().contains(model.selectedDisplayName))
+        for width in [ContentView.minWindowWidth, 700, 1100] {
+            let stage = GoldenStage(
+                ImagesView(viewModel: model, server: server)
+                    .environment(server)
+                    .environment(SettingsRouter())
+                    .environment(DownloadManager()),
+                size: CGSize(width: width, height: 700)
+            )
+            try await stage.waitForIdentifier("Images.Progress.WarmupName")
+            let frame = try #require(stage.frame(of: "Images.Progress.WarmupName"))
+            #expect(frame.width > 300, "Warm-up name should receive the available card width")
+            #expect(frame.height > 25, "A long friendly name should wrap to a second line")
+            #expect(frame.height < 45, "The 14pt warm-up name should occupy at most two lines")
+            #expect(stage.treeText().contains(model.selectedDisplayName))
+        }
     }
 
 }

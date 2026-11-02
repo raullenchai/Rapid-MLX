@@ -4,7 +4,9 @@ import Foundation
 enum SourceGuardSupport {
     enum LiteralPolicy: Equatable { case preserve, erase }
 
-    static func canonicalSource(_ source: String, literals policy: LiteralPolicy) -> String {
+    static func canonicalSource(
+        _ source: String, literals policy: LiteralPolicy, preserveLineBreaks: Bool = false
+    ) -> String {
         var output = ""
         output.reserveCapacity(source.count)
         var index = source.startIndex
@@ -14,7 +16,9 @@ enum SourceGuardSupport {
                 continue
             }
             if hasPrefix("/*", in: source, at: index) {
-                index = endOfBlockComment(in: source, at: index)
+                let end = endOfBlockComment(in: source, at: index)
+                if preserveLineBreaks { output += source[index..<end].filter(\.isNewline) }
+                index = end
                 continue
             }
             if canStartBareRegex(in: source, at: index),
@@ -43,7 +47,9 @@ enum SourceGuardSupport {
                 index = literal.end
                 continue
             }
-            if !source[index].isWhitespace { output.append(source[index]) }
+            if !source[index].isWhitespace || (preserveLineBreaks && source[index].isNewline) {
+                output.append(source[index])
+            }
             index = source.index(after: index)
         }
         return output

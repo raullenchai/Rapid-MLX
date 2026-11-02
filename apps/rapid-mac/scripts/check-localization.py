@@ -147,7 +147,7 @@ def scan(path):
         while start < len(source) and source[start].isspace():
             start += 1
         end = start
-        while end < len(source) and source[end] != "\n":
+        while end < len(source) and source[end] not in "\n;}":
             if source[end] == '"':
                 end = literal_end(source, end)
             elif source[end] == "(":

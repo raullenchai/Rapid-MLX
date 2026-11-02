@@ -478,7 +478,7 @@ struct ImagesView: View {
                     }
                 }
                 .padding(18)
-                .frame(maxWidth: 520)
+                .frame(minWidth: 340, idealWidth: 520, maxWidth: 520)
                 // The same graphite ground the Chat band paints, in the
                 // shape this surface's geometry calls for. Images cannot
                 // use a band: the subject here IS the canvas, and a strip
