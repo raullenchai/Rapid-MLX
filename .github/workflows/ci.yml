@@ -835,11 +835,10 @@ jobs:
       needs.changes.result == 'success' &&
       needs.changes.outputs.engine == 'true'
     runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    timeout-minutes: 60
+    # One job, not a shard matrix: hosted macOS arm64 capacity is scarce and
+    # queued jobs that are never acquired are cancelled, failing `tests`.
+    # The whole selection runs in about 15-20 minutes on one runner.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -856,7 +855,7 @@ jobs:
 
       - name: Run mac-only tests
         run: |
-          files=$(python -m scripts.pr_validate.steps.mac_only_tests --list --shard ${{ matrix.shard }}/3)
+          files=$(python -m scripts.pr_validate.steps.mac_only_tests --list)
           test -n "$files"
           # Hosted exclusions are maintained in mac_only_tests.HOSTED_DESELECT.
           deselect=$(python -m scripts.pr_validate.steps.mac_only_tests --deselect-args)

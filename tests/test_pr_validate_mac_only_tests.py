@@ -61,14 +61,13 @@ def test_hosted_mac_only_contract():
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     job = jobs["test-apple-silicon-mac-only"]
     assert job["runs-on"] == "macos-15"
-    assert job["strategy"]["matrix"]["shard"] == [1, 2, 3]
+    # A single job: unacquired hosted macOS shards were cancelled under capacity limits.
+    assert "strategy" not in job
     run = next(
         step["run"] for step in job["steps"] if step.get("name") == "Run mac-only tests"
     )
-    assert (
-        "scripts.pr_validate.steps.mac_only_tests --list --shard ${{ matrix.shard }}/3"
-        in run
-    )
+    assert "scripts.pr_validate.steps.mac_only_tests --list)" in run
+    assert "--shard" not in run
     assert "test-apple-silicon-mac-only" in jobs["tests"]["needs"]
     check = next(
         step["run"]
