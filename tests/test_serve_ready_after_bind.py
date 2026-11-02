@@ -740,7 +740,9 @@ def test_dflash_loader_failure_is_prepare_stage(monkeypatch, checked_target_snap
     monkeypatch.setattr(dflash_server, "have_runtime", lambda: True)
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
     stages: list[str] = []
-    monkeypatch.setattr(server_start, "failed", stages.append)
+    monkeypatch.setattr(
+        server_start, "failed", lambda stage, **_kw: stages.append(stage)
+    )
 
     with pytest.raises(RuntimeError, match="target load failed"):
         dflash_server.run_dflash_server(
@@ -771,7 +773,9 @@ def test_native_mtp_loader_failure_is_prepare_stage(
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
     stages: list[str] = []
-    monkeypatch.setattr(server_start, "failed", stages.append)
+    monkeypatch.setattr(
+        server_start, "failed", lambda stage, **_kw: stages.append(stage)
+    )
 
     with pytest.raises(RuntimeError, match="target load failed"):
         native_server.run_native_mtp_server(
@@ -816,7 +820,9 @@ def test_dspark_loader_failure_is_prepare_stage(monkeypatch):
     monkeypatch.setattr(dspark_server, "download_mtp_snapshot", lambda: Path("/mtp"))
     monkeypatch.setattr(dflash_server, "_dflash_executor", _ImmediateExecutor())
     stages: list[str] = []
-    monkeypatch.setattr(server_start, "failed", stages.append)
+    monkeypatch.setattr(
+        server_start, "failed", lambda stage, **_kw: stages.append(stage)
+    )
 
     with pytest.raises(RuntimeError, match="product load failed"):
         dspark_server.run_server(

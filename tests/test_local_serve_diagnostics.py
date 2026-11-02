@@ -281,7 +281,9 @@ async def test_engine_start_prints_two_lines_and_preserves_failure(
     )
     stages = []
     emitted = []
-    monkeypatch.setattr(server_start, "failed", stages.append)
+    monkeypatch.setattr(
+        server_start, "failed", lambda stage, **_kw: stages.append(stage)
+    )
     monkeypatch.setattr(
         model_events,
         "emit_model_serve_failed",
