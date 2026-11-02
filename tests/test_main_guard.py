@@ -151,6 +151,36 @@ def test_runner_unavailable_retries_then_tracks(event, attempt, monkeypatch):
     prepare.assert_not_called()
 
 
+def test_failed_job_rerun_requeues_cancelled_runner_unavailable_job(monkeypatch):
+    """GitHub requeues cancelled jobs on a failed-jobs rerun; a second attempt that again lacks a runner is retried, not blamed."""
+    attempt1 = fixture_jobs("real_failure_with_runner_unavailable_jobs.json")
+    attempt2 = fixture_jobs("rerun_attempt_jobs.json")
+    jobs1 = {job["name"]: job for job in attempt1}
+    jobs2 = {job["name"]: job for job in attempt2}
+    cancelled = "l1-smoke (qwen3-4b-instruct-2507-4bit, 1)"
+    carried_over = "l1-smoke (gemma3-4b-qat-4bit, 1)"
+    assert jobs2[cancelled]["created_at"] > jobs1[cancelled]["created_at"]
+    assert (
+        jobs2[cancelled]["created_at"] > jobs1["test-matrix (3.12, 2)"]["completed_at"]
+    )
+    assert jobs2[carried_over]["runner_id"] == jobs1[carried_over]["runner_id"]
+    assert jobs2[carried_over]["started_at"] == jobs1[carried_over]["started_at"]
+    assert g.classify_attempt(attempt1) == "failure"
+    assert g.classify_attempt(attempt2) == "runner-unavailable"
+
+    api = setup_api()
+    api.data["actions/runs/10/attempts/2/jobs"] = attempt2
+    api.data[("POST", "actions/runs/10/rerun-failed-jobs")] = None
+    prepare = Mock()
+    monkeypatch.setattr(g, "revert_commit", prepare)
+    result = g.guard(api, run(event="push", run_attempt=2))
+    assert result == "Runner unavailable; failed jobs rerun"
+    writes = [c for c in api.calls if c[1] != "GET"]
+    assert writes == [("actions/runs/10/rerun-failed-jobs", "POST", None, False)]
+    prepare.assert_not_called()
+    assert not any(c[:2] == ("pulls", "POST") for c in api.calls)
+
+
 @pytest.mark.parametrize("event", ["push", "schedule"])
 def test_real_failure_with_runner_unavailable_keeps_code_failure_path(
     event, monkeypatch

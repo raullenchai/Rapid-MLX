@@ -8,6 +8,7 @@
       "conclusion": "success",
       "runner_id": 1000318343,
       "runner_name": "GitHub Actions 1000318343",
+      "created_at": "2026-11-02T15:00:16Z",
       "started_at": "2026-11-02T15:00:31Z",
       "completed_at": "2026-11-02T15:00:43Z",
       "labels": [
@@ -46,6 +47,7 @@
       "conclusion": "success",
       "runner_id": 1000318396,
       "runner_name": "GitHub Actions 1000318396",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:16:15Z",
       "completed_at": "2026-11-02T15:47:14Z",
       "labels": [
@@ -120,6 +122,7 @@
       "conclusion": "success",
       "runner_id": 1000318417,
       "runner_name": "GitHub Actions 1000318417",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:35:31Z",
       "completed_at": "2026-11-02T15:38:18Z",
       "labels": [
@@ -174,6 +177,7 @@
       "conclusion": "cancelled",
       "runner_id": 0,
       "runner_name": "",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:43Z",
       "completed_at": "2026-11-02T15:43:19Z",
       "labels": [
@@ -187,6 +191,7 @@
       "conclusion": "success",
       "runner_id": 1000318398,
       "runner_name": "GitHub Actions 1000318398",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:18:51Z",
       "completed_at": "2026-11-02T15:23:21Z",
       "labels": [
@@ -233,6 +238,7 @@
       "conclusion": "success",
       "runner_id": 1000318418,
       "runner_name": "GitHub Actions 1000318418",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:38:20Z",
       "completed_at": "2026-11-02T15:41:46Z",
       "labels": [
@@ -287,6 +293,7 @@
       "conclusion": "success",
       "runner_id": 1000318415,
       "runner_name": "GitHub Actions 1000318415",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:32:06Z",
       "completed_at": "2026-11-02T15:38:18Z",
       "labels": [
@@ -333,6 +340,7 @@
       "conclusion": "success",
       "runner_id": 1000318352,
       "runner_name": "GitHub Actions 1000318352",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:45Z",
       "completed_at": "2026-11-02T15:01:00Z",
       "labels": [
@@ -403,6 +411,7 @@
       "conclusion": "failure",
       "runner_id": 1000318353,
       "runner_name": "GitHub Actions 1000318353",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:45Z",
       "completed_at": "2026-11-02T15:34:30Z",
       "labels": [
@@ -465,6 +474,7 @@
       "conclusion": "success",
       "runner_id": 1000318358,
       "runner_name": "GitHub Actions 1000318358",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:46Z",
       "completed_at": "2026-11-02T15:35:50Z",
       "labels": [
@@ -527,6 +537,7 @@
       "conclusion": "success",
       "runner_id": 1000318360,
       "runner_name": "GitHub Actions 1000318360",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:49Z",
       "completed_at": "2026-11-02T15:40:10Z",
       "labels": [
@@ -589,6 +600,7 @@
       "conclusion": "success",
       "runner_id": 1000318354,
       "runner_name": "GitHub Actions 1000318354",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:45Z",
       "completed_at": "2026-11-02T15:38:53Z",
       "labels": [
@@ -651,6 +663,7 @@
       "conclusion": "success",
       "runner_id": 1000318355,
       "runner_name": "GitHub Actions 1000318355",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:46Z",
       "completed_at": "2026-11-02T15:06:13Z",
       "labels": [
@@ -697,6 +710,7 @@
       "conclusion": "success",
       "runner_id": 1000318361,
       "runner_name": "GitHub Actions 1000318361",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:48Z",
       "completed_at": "2026-11-02T15:00:52Z",
       "labels": [
@@ -723,6 +737,7 @@
       "conclusion": "success",
       "runner_id": 1000318363,
       "runner_name": "GitHub Actions 1000318363",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:46Z",
       "completed_at": "2026-11-02T15:01:25Z",
       "labels": [
@@ -769,6 +784,7 @@
       "conclusion": "success",
       "runner_id": 1000318359,
       "runner_name": "GitHub Actions 1000318359",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:45Z",
       "completed_at": "2026-11-02T15:38:15Z",
       "labels": [
@@ -831,6 +847,7 @@
       "conclusion": "success",
       "runner_id": 1000318410,
       "runner_name": "GitHub Actions 1000318410",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:31:36Z",
       "completed_at": "2026-11-02T15:35:27Z",
       "labels": [
@@ -885,6 +902,7 @@
       "conclusion": "success",
       "runner_id": 1000318357,
       "runner_name": "GitHub Actions 1000318357",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:45Z",
       "completed_at": "2026-11-02T15:38:29Z",
       "labels": [
@@ -947,6 +965,7 @@
       "conclusion": "success",
       "runner_id": 1000318362,
       "runner_name": "GitHub Actions 1000318362",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:00:46Z",
       "completed_at": "2026-11-02T15:01:55Z",
       "labels": [
@@ -1001,6 +1020,7 @@
       "conclusion": "success",
       "runner_id": 1000318409,
       "runner_name": "GitHub Actions 1000318409",
+      "created_at": "2026-11-02T15:00:43Z",
       "started_at": "2026-11-02T15:30:50Z",
       "completed_at": "2026-11-02T15:34:06Z",
       "labels": [
@@ -1055,6 +1075,7 @@
       "conclusion": "skipped",
       "runner_id": null,
       "runner_name": null,
+      "created_at": "2026-11-02T15:00:44Z",
       "started_at": "2026-11-02T15:00:44Z",
       "completed_at": "2026-11-02T15:00:43Z",
       "labels": [
@@ -1068,6 +1089,7 @@
       "conclusion": "skipped",
       "runner_id": null,
       "runner_name": null,
+      "created_at": "2026-11-02T15:00:44Z",
       "started_at": "2026-11-02T15:00:44Z",
       "completed_at": "2026-11-02T15:00:43Z",
       "labels": [
@@ -1081,6 +1103,7 @@
       "conclusion": "skipped",
       "runner_id": null,
       "runner_name": null,
+      "created_at": "2026-11-02T15:40:11Z",
       "started_at": "2026-11-02T15:40:11Z",
       "completed_at": "2026-11-02T15:40:11Z",
       "labels": [
@@ -1094,6 +1117,7 @@
       "conclusion": "failure",
       "runner_id": 1000318468,
       "runner_name": "GitHub Actions 1000318468",
+      "created_at": "2026-11-02T15:47:14Z",
       "started_at": "2026-11-02T15:47:16Z",
       "completed_at": "2026-11-02T15:47:30Z",
       "labels": [
@@ -1124,6 +1148,7 @@
       "conclusion": "skipped",
       "runner_id": null,
       "runner_name": null,
+      "created_at": "2026-11-02T15:47:14Z",
       "started_at": "2026-11-02T15:47:14Z",
       "completed_at": "2026-11-02T15:47:14Z",
       "labels": [
