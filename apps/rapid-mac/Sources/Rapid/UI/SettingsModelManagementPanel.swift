@@ -39,6 +39,7 @@ struct SettingsModelManagementPanel: View {
     // Seeded from the process-wide cache rather than starting empty: an
     // empty start re-rendered the spinner on every visit regardless of
     // whether the data was already cached.
+    @State private var diskOverview = ModelManagementDiskOverviewState()
     @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
     @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
@@ -447,7 +448,7 @@ struct SettingsModelManagementPanel: View {
     /// runtime because this panel cannot reclaim those bytes.
     @ViewBuilder
     private var storageOverviewSection: some View {
-        let managed = catalog.filter { !$0.isExternal }
+        let managed = diskOverview.entries(in: catalog) ?? []
         let usage = ModelCacheActions.aggregateOnDiskBytes(managed)
         let largest = ModelCacheActions.largestManagedEntry(managed)
         // Upstream (#1822) added this card in the pre-migration idiom —
@@ -456,37 +457,41 @@ struct SettingsModelManagementPanel: View {
         // shared section so it does not ship as the one un-migrated card
         // in the window.
         SettingsSection(String(localized: "Disk overview")) {
-            HStack(spacing: RapidTheme.Space.md) {
-                Label("Models", systemImage: "internaldrive")
-                    .font(RapidFont.bodyEmphasis)
-                    .foregroundStyle(RapidTheme.textPrimary)
-                Spacer(minLength: RapidTheme.Space.sm)
-                Text(ModelCacheActions.storageSummary(
-                    usage: usage,
-                    freeBytes: modelsVolumeFreeBytes
-                ))
-                .font(RapidFont.metric)
-                .foregroundStyle(RapidTheme.textSecondary)
-                .accessibilityIdentifier("Settings.ModelManagement.StorageSummary")
-            }
-            if let largest {
-                SettingsRowDivider()
-                HStack(spacing: RapidTheme.Space.sm) {
-                    Text("Largest")
-                        .font(RapidFont.caption)
-                        .foregroundStyle(RapidTheme.textSecondary)
-                    Text(ModelDisplayName.name(for: largest.alias))
+            if diskOverview.entries(in: catalog) == nil {
+                loadingState
+            } else {
+                HStack(spacing: RapidTheme.Space.md) {
+                    Label("Models", systemImage: "internaldrive")
                         .font(RapidFont.bodyEmphasis)
                         .foregroundStyle(RapidTheme.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                     Spacer(minLength: RapidTheme.Space.sm)
-                    Text(largest.size?.displayText ?? "")
-                        .font(RapidFont.metric)
-                        .foregroundStyle(RapidTheme.textSecondary)
+                    Text(ModelCacheActions.storageSummary(
+                        usage: usage,
+                        freeBytes: modelsVolumeFreeBytes
+                    ))
+                    .font(RapidFont.metric)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.ModelManagement.StorageSummary")
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("Settings.ModelManagement.LargestModel")
+                if let largest {
+                    SettingsRowDivider()
+                    HStack(spacing: RapidTheme.Space.sm) {
+                        Text("Largest")
+                            .font(RapidFont.caption)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                        Text(ModelDisplayName.name(for: largest.alias))
+                            .font(RapidFont.bodyEmphasis)
+                            .foregroundStyle(RapidTheme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: RapidTheme.Space.sm)
+                        Text(largest.size?.displayText ?? "")
+                            .font(RapidFont.metric)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("Settings.ModelManagement.LargestModel")
+                }
             }
         }
     }
@@ -1557,8 +1562,10 @@ struct SettingsModelManagementPanel: View {
     }
 
     private func refreshCatalog() async {
+        guard !Task.isCancelled else { return }
         guard let binary = server.binaryPath else {
             catalog = []
+            diskOverview.hasCompletedRefresh = true
             loading = false
             return
         }
@@ -1570,8 +1577,10 @@ struct SettingsModelManagementPanel: View {
             currentGeneration: { downloads.cacheGeneration },
             loader: { await ModelCatalog.productEntries(binary: binary) }
         ) {
+            guard !Task.isCancelled else { return }
             catalog = atomic
             reconcileCapability()
+            diskOverview.hasCompletedRefresh = true
             loading = false
             return
         }
@@ -1585,8 +1594,11 @@ struct SettingsModelManagementPanel: View {
         ) {
             async let image = ModelCatalog.imageEntries(binary: binary)
             async let audio = ModelCatalog.audioEntries(binary: binary)
-            catalog = hit + (await image) + (await audio)
+            let entries = hit + (await image) + (await audio)
+            guard !Task.isCancelled else { return }
+            catalog = entries
             reconcileCapability()
+            diskOverview.hasCompletedRefresh = true
             loading = false
             return
         }
@@ -1600,7 +1612,10 @@ struct SettingsModelManagementPanel: View {
         )
         async let image = ModelCatalog.imageEntries(binary: binary)
         async let audio = ModelCatalog.audioEntries(binary: binary)
-        catalog = chat + (await image) + (await audio)
+        let entries = chat + (await image) + (await audio)
+        guard !Task.isCancelled else { return }
+        catalog = entries
+        diskOverview.hasCompletedRefresh = true
         reconcileCapability()
     }
 
@@ -1839,5 +1854,13 @@ enum ModelTableLayout {
             + cellTextWidth(String(localized: "Serving"), cellFontSize: cellFontSize, weight: .medium)
             + cellSpacing
             + glyphWidth(cellFontSize: cellFontSize)
+    }
+}
+
+struct ModelManagementDiskOverviewState {
+    var hasCompletedRefresh = false
+
+    func entries(in catalog: [ModelEntry]) -> [ModelEntry]? {
+        hasCompletedRefresh ? catalog.filter { !$0.isExternal } : nil
     }
 }
