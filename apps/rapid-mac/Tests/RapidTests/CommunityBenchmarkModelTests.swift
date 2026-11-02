@@ -6,6 +6,38 @@ import Testing
 @MainActor
 @Suite("Community Benchmark model-first projection")
 struct CommunityBenchmarkModelTests {
+    @Test("Protocol display names preserve versions and parse fixed schedules", arguments: [
+        ("rapid-image-speed", 1, "Rapid Image Speed v1"),
+        ("rapid-video-speed", 3, "Rapid Video Speed v3"),
+        ("rapid-community-speed", 2, "Rapid Community Speed v2"),
+        ("rapid-image-speed-4step-nocfg", 1, "Rapid Image Speed · 4 steps, no CFG v1"),
+        ("rapid-image-speed-28step-nocfg", 1, "Rapid Image Speed · 28 steps, no CFG v1"),
+        ("rapid-image-speed-28step-cfg3p5", 1, "Rapid Image Speed · 28 steps, CFG 3.5 v1"),
+        ("rapid-image-speed-12step-cfg10p25", 4, "Rapid Image Speed · 12 steps, CFG 10.25 v4"),
+        ("custom-speed", 7, "custom-speed v7"),
+        ("rapid-image-speed-8step-cfg3", 1, "rapid-image-speed-8step-cfg3 v1"),
+        ("rapid-image-speed-8step-nocfg-extra", 1, "rapid-image-speed-8step-nocfg-extra v1"),
+    ])
+    func protocolDisplayNames(protocolID: String, version: Int, expected: String) {
+        #expect(CommunityBenchmarkModel.protocolDisplayName(protocolID: protocolID, version: version) == expected)
+    }
+
+    @Test("Decoded catalog protocol determines the image benchmark label")
+    func catalogProtocolDisplayName() throws {
+        let data = Data(#"{"alias":"test-image","focus":false,"memory_fit":"fits","protocol_id":"rapid-image-speed-8step-nocfg","protocol_version":1}"#.utf8)
+        let metadata = try JSONDecoder().decode(CommunityBenchmarkCatalogModel.self, from: data)
+        let entry = ModelEntry(
+            alias: metadata.alias, hfRepo: nil, sizeOnDisk: nil, cached: true,
+            taskTypes: [.imageGeneration], operationModes: [.textToImage]
+        )
+        let model = try #require(CommunityBenchmarkModel.models(
+            from: [entry], metadata: [metadata.alias: metadata]
+        ).first)
+
+        #expect(model.protocolID == "rapid-image-speed-8step-nocfg")
+        #expect(model.protocolName == "Rapid Image Speed · 8 steps, no CFG v1")
+    }
+
     @Test("Selection preserves current, prefers serving, then text")
     func reconciledSelectionPreference() {
         let image = ModelEntry(alias: "a-image", hfRepo: nil, sizeOnDisk: nil, cached: true, taskTypes: [.imageGeneration], operationModes: [.textToImage])
