@@ -43,6 +43,7 @@ from rapid_mlx.community_bench import upload as benchmark_upload
 from rapid_mlx.community_bench import workspace as workspace_module
 from rapid_mlx.community_bench.benchmark_contracts import (
     BenchmarkRunValidator,
+    ImageProtocolUnavailableError,
     registered_workload,
     registered_workload_history,
 )
@@ -111,7 +112,12 @@ def _mock_local_context(
         local_runner,
         "plan_for_alias",
         lambda alias: {
-            "model": {"alias": alias, "repo_id": repo_id, "task_type": task_type}
+            "model": {"alias": alias, "repo_id": repo_id, "task_type": task_type},
+            **(
+                {"workload": registered_workload(task_type)}
+                if task_type == "image_generation"
+                else {}
+            ),
         },
     )
     monkeypatch.setattr(
@@ -132,6 +138,22 @@ def _mock_local_context(
         ("rapid-community-speed-v1.json", "protocols/rapid-community-speed-v1.json"),
         ("rapid-community-speed-v2.json", "protocols/rapid-community-speed-v2.json"),
         ("rapid-image-speed-v1.json", "protocols/rapid-image-speed-v1.json"),
+        (
+            "rapid-image-speed-4step-nocfg-v1.json",
+            "protocols/rapid-image-speed-4step-nocfg-v1.json",
+        ),
+        (
+            "rapid-image-speed-8step-nocfg-v1.json",
+            "protocols/rapid-image-speed-8step-nocfg-v1.json",
+        ),
+        (
+            "rapid-image-speed-28step-nocfg-v1.json",
+            "protocols/rapid-image-speed-28step-nocfg-v1.json",
+        ),
+        (
+            "rapid-image-speed-28step-cfg3p5-v1.json",
+            "protocols/rapid-image-speed-28step-cfg3p5-v1.json",
+        ),
         ("rapid-video-speed-v1.json", "protocols/rapid-video-speed-v1.json"),
         ("rapid-public-prompts-v1.json", "datasets/rapid-public-prompts-v1.json"),
         (
@@ -679,10 +701,52 @@ def test_plan_rejects_draft_only_model() -> None:
     assert "Serve '" not in str(error.value)
 
 
-def test_image_catalog_excludes_incompatible_registered_workload() -> None:
-    aliases = {m["alias"] for m in benchmark_catalog(memory_gib=36)["models"]}
-    assert "bonsai-image-4b-2bit" not in aliases
-    assert "flux2-klein-4b" in aliases
+_FIXED_IMAGE_PROTOCOLS = (
+    ("bonsai-image-4b-2bit", "4step-nocfg", 4),
+    ("qwen-image-2.1-turbo", "8step-nocfg", 8),
+    ("hidream-o1-dev", "28step-nocfg", 28),
+    ("sd35-large-4bit", "28step-cfg3p5", 28),
+)
+
+
+def test_image_protocol_history_order() -> None:
+    assert [
+        workload["protocol_id"]
+        for workload in registered_workload_history("image_generation")
+    ] == [
+        "rapid-image-speed",
+        "rapid-image-speed-4step-nocfg",
+        "rapid-image-speed-8step-nocfg",
+        "rapid-image-speed-28step-cfg3p5",
+        "rapid-image-speed-28step-nocfg",
+    ]
+
+
+@pytest.mark.parametrize("alias,suffix,steps", _FIXED_IMAGE_PROTOCOLS)
+def test_fixed_image_catalog_and_plan(alias, suffix, steps) -> None:
+    entries = {m["alias"]: m for m in benchmark_catalog(memory_gib=36)["models"]}
+    assert entries[alias]["protocol_id"] == f"rapid-image-speed-{suffix}"
+    assert entries[alias]["protocol_version"] == 1
+    assert workspace_module.benchmark_protocol_issue(alias, "image_generation") is None
+    workload = registered_workload("image_generation", alias)
+    assert plan_for_alias(alias)["workload"] == workload
+    assert workload["protocol_id"] == entries[alias]["protocol_id"]
+    assert workload["cases"][0]["steps"] == steps
+    assert entries["flux2-klein-4b"]["protocol_id"] == "rapid-image-speed"
+
+
+@pytest.fixture
+def rejecting_image_engine(monkeypatch):
+    from rapid_mlx.image import engine
+
+    class RejectingEngine:
+        def __init__(self, model):
+            pass
+
+        def validate_request(self, **kwargs):
+            raise engine.ImageRequestError("unsupported schedule")
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", RejectingEngine)
 
 
 def test_image_protocol_issue_ignores_engine_import_failure(monkeypatch) -> None:
@@ -694,7 +758,7 @@ def test_image_protocol_issue_ignores_engine_import_failure(monkeypatch) -> None
 
 
 @pytest.mark.parametrize("failure_stage", ("construction", "validation"))
-def test_image_protocol_issue_ignores_unexpected_engine_errors(
+def test_image_protocol_issue_reports_unexpected_engine_errors(
     monkeypatch, failure_stage
 ) -> None:
     from rapid_mlx.image import engine
@@ -714,7 +778,7 @@ def test_image_protocol_issue_ignores_unexpected_engine_errors(
     monkeypatch.setattr(engine, "ImageGenerationEngine", FailingEngine)
     assert (
         workspace_module.benchmark_protocol_issue("flux2-klein-4b", "image_generation")
-        is None
+        == f"could not validate image schedules: RuntimeError: {failure_stage} failed"
     )
     assert calls == (
         ["construction"]
@@ -738,12 +802,25 @@ def test_plan_rejects_excluded_image_without_protocol_issue(monkeypatch) -> None
     assert calls == [("bonsai-image-4b-2bit", "image_generation")]
 
 
-def test_plan_rejects_incompatible_image_schedule() -> None:
-    with pytest.raises(ValueError, match="4-step schedule"):
+def test_plan_rejects_incompatible_image_schedule(rejecting_image_engine) -> None:
+    aliases = {m["alias"] for m in benchmark_catalog()["models"]}
+    assert "bonsai-image-4b-2bit" not in aliases
+    with pytest.raises(ValueError, match="tried schedules") as excinfo:
         plan_for_alias("bonsai-image-4b-2bit")
+    message = str(excinfo.value)
+    for schedule in (
+        "20 steps, guidance 3.5",
+        "4 steps, guidance omitted",
+        "8 steps, guidance omitted",
+        "28 steps, guidance omitted",
+        "28 steps, guidance 3.5",
+    ):
+        assert schedule in message
 
 
-def test_cli_rejects_incompatible_image_before_server(monkeypatch, capsys) -> None:
+def test_cli_rejects_incompatible_image_before_server(
+    monkeypatch, capsys, rejecting_image_engine
+) -> None:
     import rapid_mlx.cli as top_cli
 
     monkeypatch.setattr(
@@ -757,7 +834,7 @@ def test_cli_rejects_incompatible_image_before_server(monkeypatch, capsys) -> No
     assert excinfo.value.code == 1
     error = capsys.readouterr().err
     assert "Benchmark command failed:" in error
-    assert "4-step schedule" in error
+    assert "tried schedules" in error
 
 
 def test_run_local_rejects_draft_before_loading_or_archiving(
@@ -2061,7 +2138,7 @@ def test_image_runs_capture_conditions_inside_the_server_context(
     monkeypatch.setattr(local_runner, "run_conditions", lambda: next(snapshots))
     measurements = _image_run()["measurements"]
 
-    def fake_image(alias: str, *, isolate_process_group: bool, progress=None):
+    def fake_image(alias: str, *, workload, isolate_process_group: bool, progress=None):
         assert progress is None
         local_runner._record_conditions_after()
         return measurements
@@ -2156,7 +2233,8 @@ def test_failed_attempt_is_archived_without_exception_text(
                 "alias": alias,
                 "repo_id": "mlx-community/example-image-model",
                 "task_type": "image_generation",
-            }
+            },
+            "workload": registered_workload("image_generation"),
         },
     )
     monkeypatch.setattr(
@@ -2422,7 +2500,8 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     # A user watching the terminal sees the server boot and each round,
     # warmup included, with the round's wall time.
     assert progress[0].startswith("Benchmarking example-image (image_generation)")
-    assert progress[1].startswith("Starting local image server for example-image")
+    assert progress[1] == "  " + describe_case(run["workload"]["cases"][0])
+    assert progress[2].startswith("Starting local image server for example-image")
     assert any(line.startswith("Server ready in ") for line in progress)
     assert progress[-4] == "t2i-1024-square  warmup   1 s"
     assert progress[-3] == "t2i-1024-square  round 1/1  2 s"
@@ -2528,7 +2607,7 @@ def test_run_local_without_flag_never_consults_group_topology(
     observed: dict[str, bool] = {}
 
     def run_image(
-        alias: str, *, isolate_process_group: bool, progress=None
+        alias: str, *, workload, isolate_process_group: bool, progress=None
     ) -> list[dict]:
         observed["isolate_process_group"] = isolate_process_group
         return [
@@ -2623,7 +2702,9 @@ def test_image_server_log_echo(monkeypatch, enabled):
     monkeypatch.setattr(_server, "serve", serve)
     monkeypatch.setattr("rapid_mlx.cli._check_alias_min_memory", lambda *a, **kw: None)
     with pytest.raises(CapturedError):
-        local_runner._run_image("example-image")
+        local_runner._run_image(
+            "example-image", workload=registered_workload("image_generation")
+        )
 
 
 def test_run_local_stops_when_image_warmup_is_cancelled(
@@ -6277,7 +6358,7 @@ def test_run_local_announces_plan_and_forwards_progress(
         ),
     )
 
-    def run_image(alias, *, isolate_process_group, progress=None):
+    def run_image(alias, *, workload, isolate_process_group, progress=None):
         progress("t2i-1024-square  round 1/1  12 s")
         return _image_run()["measurements"]
 
@@ -6309,7 +6390,9 @@ def test_run_local_announces_plan_and_forwards_progress(
     # A sink that blows up (closed pipe, encoding error, a buggy caller) is a
     # presentation problem: the benchmark still completes and is archived as
     # completed, whichever stage raised.
-    def run_image_with_progress(alias, *, isolate_process_group, progress=None):
+    def run_image_with_progress(
+        alias, *, workload, isolate_process_group, progress=None
+    ):
         local_runner._report(progress, "t2i-1024-square  round 1/1  12 s")
         return _image_run()["measurements"]
 
@@ -7377,3 +7460,204 @@ def test_run_json_cancels_during_early_preflight(monkeypatch, capsys, stage, sig
         "error": "benchmark cancelled",
     }
     assert {sig: signal.getsignal(sig) for sig in previous} == previous
+
+
+@pytest.mark.parametrize("alias,suffix,steps", _FIXED_IMAGE_PROTOCOLS)
+def test_fixed_image_run_and_ingestion(alias, suffix, steps) -> None:
+    import copy
+
+    from rapid_mlx.catalog.validation import CatalogValidationError
+    from tests.ingestion_contract import IngestionRejected, validate_submission
+
+    run = build_run(
+        repo_id="mlx-community/example-image-model",
+        alias=alias,
+        task_type="image_generation",
+        hardware=Hardware("Apple M4 Pro", 24, 12, 16),
+        software=Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
+        started_at=utc_now(),
+        measurements=_image_run()["measurements"],
+    )
+    assert run["workload"]["protocol_id"] == f"rapid-image-speed-{suffix}"
+    BenchmarkRunValidator().validate(run)
+    validate_submission(run)
+    mutated = copy.deepcopy(run)
+    mutated["workload"]["cases"][0]["steps"] = 5
+    with pytest.raises(CatalogValidationError, match="registered workload differs"):
+        BenchmarkRunValidator().validate(mutated)
+    with pytest.raises(IngestionRejected, match="not a registered"):
+        validate_submission(mutated)
+
+
+@pytest.mark.parametrize(
+    "alias,suffix,steps",
+    (*_FIXED_IMAGE_PROTOCOLS, ("flux2-klein-4b", "", 20)),
+)
+def test_image_schedule_request_payload(monkeypatch, alias, suffix, steps) -> None:
+    import rapid_mlx.cli as top_cli
+
+    monkeypatch.setattr(top_cli, "_check_alias_min_memory", lambda *a, **kw: None)
+    calls = []
+
+    @contextlib.contextmanager
+    def serve(*args, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    def post(url, *, json, **kwargs):
+        calls.append(json)
+        return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(local_runner.requests, "post", post)
+    monkeypatch.setattr(local_runner.requests, "get", lambda *a, **kw: _Response({}))
+    result = local_runner._run_image(alias)
+    assert len(result) == 1
+    assert len(calls) == 2
+    for payload in calls:
+        assert payload["steps"] == steps
+        if suffix.endswith("nocfg"):
+            assert "guidance" not in payload
+        else:
+            assert payload["guidance"] == 3.5
+
+
+@pytest.mark.parametrize(
+    "failure_stage", ("import", "resolution", "construction", "validation")
+)
+@pytest.mark.parametrize("fault_type", (RuntimeError, ImportError))
+def test_image_resolution_fault_keeps_v1_only_on_import_error(
+    monkeypatch, failure_stage, fault_type
+) -> None:
+    from rapid_mlx import model_aliases
+    from rapid_mlx.image import engine
+
+    fault = fault_type("probe failed")
+
+    def fail_resolution(*args, **kwargs):
+        raise fault
+
+    class FaultyEngine:
+        def __init__(self, model):
+            if failure_stage == "construction":
+                raise fault
+
+        def validate_request(self, **kwargs):
+            raise fault
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", FaultyEngine)
+    if failure_stage == "import":
+        monkeypatch.setitem(sys.modules, "rapid_mlx.image.engine", None)
+        assert registered_workload(
+            "image_generation", "bonsai-image-4b-2bit"
+        ) == registered_workload("image_generation")
+        return
+    if failure_stage == "resolution":
+        monkeypatch.setattr(model_aliases, "resolve_model", fail_resolution)
+    message = f"could not validate image schedules: {fault_type.__name__}: probe failed"
+    with pytest.raises(ImageProtocolUnavailableError, match=message) as excinfo:
+        registered_workload("image_generation", "bonsai-image-4b-2bit")
+    assert excinfo.value.__cause__ is fault
+    assert "bonsai-image-4b-2bit" not in {
+        model["alias"] for model in benchmark_catalog()["models"]
+    }
+    with pytest.raises(ValueError, match=message):
+        plan_for_alias("bonsai-image-4b-2bit")
+
+
+@pytest.mark.parametrize("failed", (False, True))
+def test_image_run_reuses_selected_workload(monkeypatch, tmp_path, failed) -> None:
+    import rapid_mlx.cli as top_cli
+
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    selected = registered_workload_history("image_generation")[1]
+    resolutions = []
+
+    def resolve_once(task_type, alias=None):
+        resolutions.append((task_type, alias))
+        if len(resolutions) > 1:
+            raise RuntimeError("second resolution must not happen")
+        return selected
+
+    monkeypatch.setattr(local_runner, "registered_workload", resolve_once)
+    monkeypatch.setattr(run_builder, "registered_workload", resolve_once)
+    monkeypatch.setattr(
+        local_runner,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {
+                "alias": alias,
+                "repo_id": "mlx-community/example-image-model",
+                "task_type": "image_generation",
+            },
+            "workload": resolve_once("image_generation", alias),
+        },
+    )
+    monkeypatch.setattr(top_cli, "_check_alias_min_memory", lambda *a, **kw: None)
+
+    @contextlib.contextmanager
+    def serve(*args, **kwargs):
+        yield {"base_url": "http://local/v1"}
+
+    payloads = []
+
+    def post(url, *, json, **kwargs):
+        payloads.append(json)
+        if failed:
+            raise RuntimeError("image request failed")
+        return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
+
+    monkeypatch.setattr(_server, "serve", serve)
+    monkeypatch.setattr(local_runner.requests, "post", post)
+    monkeypatch.setattr(local_runner.requests, "get", lambda *a, **kw: _Response({}))
+    archive = LocalRunArchive(tmp_path)
+    if failed:
+        with pytest.raises(
+            local_runner.LocalBenchmarkError, match="image request failed"
+        ) as excinfo:
+            local_runner.run_local("example-image", archive=archive)
+        run = excinfo.value.run
+        assert excinfo.value.saved
+    else:
+        run = local_runner.run_local("example-image", archive=archive)
+    assert resolutions == [("image_generation", "example-image")]
+    assert run["workload"] is selected
+    assert archive.get(run["run_id"])["workload"] == selected
+    case = run["workload"]["cases"][0]
+    assert payloads
+    for payload in payloads:
+        assert payload["steps"] == case["steps"] == 4
+        assert payload["size"] == f"{case['width']}x{case['height']}"
+        assert payload["seed"] == case["seed"]
+        assert "guidance" not in payload
+
+
+def test_image_resolution_checks_every_case(monkeypatch) -> None:
+    from rapid_mlx.image import engine
+
+    original_history = registered_workload_history("image_generation")
+    current = original_history[0]
+    current["cases"].append({**current["cases"][0], "seed": 99})
+    calls = []
+
+    class CaseEngine:
+        def __init__(self, model):
+            pass
+
+        def validate_request(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["seed"] == 99:
+                raise engine.ImageRequestError("unsupported seed")
+
+    monkeypatch.setattr(engine, "ImageGenerationEngine", CaseEngine)
+    monkeypatch.setattr(
+        benchmark_contracts,
+        "registered_workload_history",
+        lambda task: original_history,
+    )
+    selected = registered_workload("image_generation", "bonsai-image-4b-2bit")
+    assert selected["protocol_id"] == "rapid-image-speed-4step-nocfg"
+    assert [case["seed"] for case in calls] == [12648430, 99, 12648430]
+    assert calls[0]["guidance"] == 3.5
+    assert calls[-1]["guidance"] is None

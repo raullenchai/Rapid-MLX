@@ -630,6 +630,8 @@ def build_run(
     software: Software | None,
     started_at: str,
     subfolder: str | None = None,
+    alias: str | None = None,
+    workload: dict[str, Any] | None = None,
     measurements: list[dict[str, Any]] | None = None,
     status: str = "completed",
     failure_code: str | None = None,
@@ -661,7 +663,9 @@ def build_run(
             if execution is not None
             else execution_config(task_type, context_length=context_length)
         ),
-        "workload": registered_workload(task_type),
+        "workload": workload
+        if workload is not None
+        else registered_workload(task_type, alias),
         "outcome": outcome,
     }
     if hardware is not None and software is not None:

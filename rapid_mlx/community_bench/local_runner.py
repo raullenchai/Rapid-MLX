@@ -52,7 +52,7 @@ from .acceleration import (
     resolve_benchmark_acceleration,
     validate_request,
 )
-from .benchmark_contracts import public_prompt, registered_workload
+from .benchmark_contracts import image_case_guidance, public_prompt, registered_workload
 from .hardware import collect, run_conditions
 
 logger = logging.getLogger(__name__)
@@ -838,6 +838,7 @@ def _stage_finished(
 def _run_image(
     alias: str,
     *,
+    workload: dict[str, Any] | None = None,
     isolate_process_group: bool = True,
     progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
@@ -845,7 +846,8 @@ def _run_image(
     from rapid_mlx.cli import _check_alias_min_memory
 
     _check_alias_min_memory(alias, stream=sys.stderr)
-    workload = registered_workload("image_generation")
+    if workload is None:
+        workload = registered_workload("image_generation", alias)
     case = workload["cases"][0]
     payload = {
         "model": alias,
@@ -854,9 +856,11 @@ def _run_image(
         "size": f"{case['width']}x{case['height']}",
         "response_format": "b64_json",
         "steps": case["steps"],
-        "guidance": case["guidance_millionths"] / 1_000_000,
         "seed": case["seed"],
     }
+    guidance = image_case_guidance(case)
+    if guidance is not None:
+        payload["guidance"] = guidance
     measurements: list[dict[str, Any]] = []
     _report(progress, f"Starting local image server for {alias} (loads the model)...")
     boot_started = _stage_started(progress)
@@ -2395,6 +2399,9 @@ def _run_local_measured(
     acceleration: AccelerationRequest | None = None,
 ) -> dict[str, Any]:
     context_length = None
+    # The plan's selected schedule must describe both the request and every
+    # outcome record, even if a later engine probe would behave differently.
+    workload = plan["workload"] if task_type == "image_generation" else None
     language = None
     hardware = None
     software = None
@@ -2437,6 +2444,7 @@ def _run_local_measured(
             elif task_type == "image_generation":
                 measurements = _run_image(
                     alias,
+                    workload=workload,
                     isolate_process_group=not inherit_process_group,
                     progress=progress,
                 )
@@ -2490,6 +2498,8 @@ def _run_local_measured(
             subfolder=model.get("subfolder"),
             model_identity=model_identity,
             task_type=task_type,
+            alias=alias,
+            workload=workload,
             hardware=hardware,
             software=software,
             started_at=started_at,
@@ -2541,6 +2551,8 @@ def _run_local_measured(
                 subfolder=model.get("subfolder"),
                 model_identity=model_identity,
                 task_type=task_type,
+                alias=alias,
+                workload=workload,
                 hardware=hardware,
                 software=software,
                 started_at=started_at,

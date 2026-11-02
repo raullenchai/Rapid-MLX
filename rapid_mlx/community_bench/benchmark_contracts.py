@@ -19,12 +19,20 @@ _PROTOCOL_FILES = {
     "image_generation": "rapid-image-speed-v1.json",
     "video_generation": "rapid-video-speed-v1.json",
 }
+# Prefer explicit CFG at equal steps: omission can use an engine's default CFG;
+# engines requiring omitted guidance (or 1.0) only pass the no-CFG schedule.
+_IMAGE_FIXED_SCHEDULE_FILES = (
+    "rapid-image-speed-4step-nocfg-v1.json",
+    "rapid-image-speed-8step-nocfg-v1.json",
+    "rapid-image-speed-28step-cfg3p5-v1.json",
+    "rapid-image-speed-28step-nocfg-v1.json",
+)
 _PROTOCOL_HISTORY = {
     "text_generation": (
         "rapid-community-speed-v1.json",
         "rapid-community-speed-v2.json",
     ),
-    "image_generation": ("rapid-image-speed-v1.json",),
+    "image_generation": ("rapid-image-speed-v1.json", *_IMAGE_FIXED_SCHEDULE_FILES),
     "video_generation": ("rapid-video-speed-v1.json",),
 }
 
@@ -40,8 +48,19 @@ def _read_json(name: str) -> dict[str, Any]:
     return loaded
 
 
-def registered_workload(task_type: str) -> dict[str, Any]:
-    """Return an isolated copy of the registered workload for ``task_type``."""
+class ImageProtocolUnavailableError(ValueError):
+    """Image schedules were rejected or could not be validated."""
+
+
+def image_case_guidance(case: dict[str, Any]) -> float | None:
+    """Map the no-CFG sentinel to omission for both probing and execution."""
+    value = case["guidance_millionths"]
+    guidance: float | None = None if value == 1_000_000 else value / 1_000_000
+    return guidance
+
+
+def registered_workload(task_type: str, alias: str | None = None) -> dict[str, Any]:
+    """Return a registered workload, selecting a validated image schedule by alias."""
 
     try:
         filename = _PROTOCOL_FILES[task_type]
@@ -49,7 +68,47 @@ def registered_workload(task_type: str) -> dict[str, Any]:
         raise ValueError(
             f"no registered community benchmark for {task_type!r}"
         ) from exc
-    return copy.deepcopy(_read_json(filename)["workload"])
+    workload: dict[str, Any] = copy.deepcopy(_read_json(filename)["workload"])
+    if task_type != "image_generation" or alias is None:
+        return workload
+    try:
+        try:
+            from rapid_mlx.image.engine import ImageGenerationEngine, ImageRequestError
+            from rapid_mlx.local_model_path import resolved_model_ref
+            from rapid_mlx.model_aliases import resolve_model
+        except ImportError:
+            return workload
+
+        engine = ImageGenerationEngine(resolve_model(resolved_model_ref(alias)))
+        failures = []
+        for candidate in registered_workload_history(task_type):
+            try:
+                for case in candidate["cases"]:
+                    engine.validate_request(
+                        prompt=public_prompt(case["case_id"]),
+                        width=case["width"],
+                        height=case["height"],
+                        num_inference_steps=case["steps"],
+                        seed=case["seed"],
+                        guidance=image_case_guidance(case),
+                    )
+                return candidate
+            except ImageRequestError as exc:
+                schedules = "; ".join(
+                    f"{case['width']}x{case['height']}, {case['steps']} steps, "
+                    + (
+                        "guidance omitted"
+                        if case["guidance_millionths"] == 1_000_000
+                        else f"guidance {case['guidance_millionths'] / 1_000_000:g}"
+                    )
+                    for case in candidate["cases"]
+                )
+                failures.append(f"{schedules}: {exc}")
+    except Exception as exc:
+        raise ImageProtocolUnavailableError(
+            f"could not validate image schedules: {type(exc).__name__}: {exc}"
+        ) from exc
+    raise ImageProtocolUnavailableError("tried schedules: " + "; ".join(failures))
 
 
 def registered_workload_history(task_type: str) -> list[dict[str, Any]]:

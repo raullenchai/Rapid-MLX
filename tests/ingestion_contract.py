@@ -21,6 +21,7 @@ unnoticed on a machine that has one.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -186,14 +187,34 @@ def validate_execution(execution: Any, task_type: str) -> None:
     _exact_object(execution["resources"], RESOURCES_KEYS, "execution.resources")
 
 
+# The four fixed-schedule image entries are pending server-side registration.
+_REGISTERED_PROTOCOL_FILES = (
+    "rapid-community-speed-v1.json",
+    "rapid-community-speed-v2.json",
+    "rapid-image-speed-v1.json",
+    "rapid-image-speed-4step-nocfg-v1.json",
+    "rapid-image-speed-8step-nocfg-v1.json",
+    "rapid-image-speed-28step-cfg3p5-v1.json",
+    "rapid-image-speed-28step-nocfg-v1.json",
+    "rapid-video-speed-v1.json",
+)
+
+
+def _registered_workloads() -> list[dict[str, Any]]:
+    root = (
+        Path(__file__).resolve().parents[1] / "proto/community-benchmark/v1/protocols"
+    )
+    return [
+        json.loads((root / name).read_text())["workload"]
+        for name in _REGISTERED_PROTOCOL_FILES
+    ]
+
+
 def validate_submission(payload: Any) -> None:
     """Validate the parts of a submission this mirror covers.
 
-    Covers the model identity and ``execution`` (through ``runtime`` and
-    ``resources``) — the two blocks this client decides the contents of. The
-    machine and workload blocks have their own allowlists in the worker and are
-    not mirrored here; a mirror that claimed more than it checks would be worse
-    than one that states its scope.
+    Covers model identity, execution and exact registered workload equality.
+    Machine fields and measurement checks remain outside this mirror's scope.
     """
 
     if not isinstance(payload, dict):
@@ -201,6 +222,8 @@ def validate_submission(payload: Any) -> None:
     workload = payload.get("workload")
     if not isinstance(workload, dict):
         raise IngestionRejected("workload must be an object")
+    if workload not in _registered_workloads():
+        raise IngestionRejected("workload is not a registered internal-beta protocol")
     task_type = str(workload.get("task_type"))
     validate_model(payload.get("model"), task_type)
     validate_execution(payload.get("execution"), task_type)

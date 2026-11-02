@@ -14,6 +14,7 @@ import requests
 
 from rapid_mlx.bench import _server
 from rapid_mlx.community_bench import local_runner
+from rapid_mlx.community_bench.benchmark_contracts import registered_workload
 
 
 @pytest.mark.parametrize(
@@ -172,7 +173,9 @@ def test_image_connection_failure_reports_server_exit(monkeypatch, exited, failu
     monkeypatch.setattr(_server, "serve", serve)
     monkeypatch.setattr(local_runner.requests, "post", request)
     with pytest.raises(_server.ServerExitedError if exited else RuntimeError) as caught:
-        local_runner._run_image("example")
+        local_runner._run_image(
+            "example", workload=registered_workload("image_generation")
+        )
     assert calls == 2
     if exited:
         assert "killed by SIGKILL" in str(caught.value)
