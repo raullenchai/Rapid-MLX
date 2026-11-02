@@ -223,6 +223,9 @@ final class ShareComputeLedgerCoordinator {
     /// requests against a 120/hour budget for identical data).
     var isBusy: Bool { inFlight != nil }
 
+    /// Read-only completion probe for tests that control an in-flight loader.
+    var refreshCompletion: Task<Void, Never>? { inFlight }
+
     /// Whether the endpoint has rate-limited us and the cooldown is unexpired.
     var isRateLimited: Bool {
         guard let rateLimitedUntil else { return false }
