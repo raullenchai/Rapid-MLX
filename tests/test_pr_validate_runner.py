@@ -261,7 +261,12 @@ class TestFailFast:
                 ["[BLOCKING] scripts/x.py:1 — bug", "[NIT] style"],
                 True,
             ),
-            ("1. [NIT] style", "pass", ["[NIT] style"], False),
+            (
+                "1. [NIT] scripts/x.py:1 — unclear naming. Fix: use a descriptive name.",
+                "pass",
+                ["[NIT] scripts/x.py:1 — unclear naming. Fix: use a descriptive name."],
+                False,
+            ),
         ],
         ids=["numbered-blocking-and-nit", "numbered-nit-only"],
     )
@@ -305,7 +310,8 @@ class TestFailFast:
                         "type": "item.completed",
                         "item": {"type": "agent_message", "text": reply},
                     }
-                ),
+                )
+                + '\n{"type": "turn.completed"}',
                 stderr="",
             )
         )

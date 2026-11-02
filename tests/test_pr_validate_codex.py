@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import pytest
 
@@ -400,6 +401,7 @@ class TestModelPinning:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
@@ -547,6 +549,7 @@ class TestPromptInjectionGuards:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -613,6 +616,7 @@ class TestPromptInjectionGuards:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["cwd"] = kwargs.get("cwd")
@@ -846,6 +850,7 @@ class TestMalformedReplyDoesNotPass:
                     "item": {"type": "agent_message", "text": reply_text},
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
@@ -1026,6 +1031,7 @@ class TestPRMetadataFencedAsUntrusted:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1213,6 +1219,7 @@ class TestNonceFencedAuthorContent:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1396,6 +1403,7 @@ class TestRound9DirectoryContextFenced:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1469,6 +1477,7 @@ class TestRound9DirectoryContextFenced:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1599,6 +1608,7 @@ class TestRound12PromptEmbeddedAsConstant:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1655,6 +1665,7 @@ class TestRound12PromptEmbeddedAsConstant:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
@@ -1873,3 +1884,234 @@ class TestRound15BrokenCodexBinaryDoesNotCrashPipeline:
         result = self._drive(monkeypatch, tmp_path, FileNotFoundError(2, "No such"))
         assert result.status == "fail"
         assert "FileNotFoundError" in result.summary
+
+
+@pytest.mark.parametrize(
+    "message,status",
+    [
+        ("", "fail"),
+        ("Authentication error: please log in", "fail"),
+        ("ok", "fail"),
+        ("1. [NIT] x", "pass"),
+        ("1. [NIT] a.py:1 — unclear naming.", "pass"),
+        ("1. [NIT] a.py:1 — unclear naming. Fix: use a descriptive name.", "pass"),
+        ("No blocking issues found.", "pass"),
+    ],
+)
+def test_review_execution_evidence(monkeypatch, tmp_path, message, status):
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.steps import codex_review
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("")
+    ctx = Context(pr_number=1, work_dir=tmp_path)
+    ctx.diff_path = tmp_path / "pr.diff"
+    ctx.diff_path.write_text("diff --git a/a.py b/a.py\n+x=1\n")
+    monkeypatch.setattr(codex_review.shutil, "which", lambda _: "/fake/codex")
+    output = json.dumps(
+        {"type": "item.completed", "item": {"type": "agent_message", "text": message}}
+    )
+    output += '\n{"type": "turn.completed"}'
+    monkeypatch.setattr(
+        codex_review.subprocess,
+        "run",
+        lambda *a, **kw: __import__("subprocess").CompletedProcess(a, 0, output, ""),
+    )
+    result = CodexReviewStep().run(ctx)
+    assert result.status == status
+    if status == "pass":
+        assert message in result.details
+        assert "s" in result.summary and "review" in result.summary
+        assert message in result.summary
+
+
+def test_missing_review_binary_blocks(monkeypatch, tmp_path):
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.steps import codex_review
+
+    monkeypatch.setattr(codex_review.shutil, "which", lambda _: None)
+    monkeypatch.setattr(codex_review, "DEFAULT_CODEX_PATH", str(tmp_path / "missing"))
+    result = CodexReviewStep().run(Context(pr_number=1))
+    assert result.status == "fail"
+    assert "npm i -g @openai/codex" in result.summary
+    assert "PR_VALIDATE_NO_CODEX" in result.summary
+
+
+@pytest.mark.parametrize(
+    "event_types,complete",
+    [
+        (("message",), False),
+        (("message", "turn.completed"), True),
+        (("turn.completed", "message"), False),
+        (("message", "turn.completed", "message"), False),
+    ],
+)
+@pytest.mark.parametrize(
+    "message,status",
+    [
+        ("No blocking issues found.", "pass"),
+        ("1. [BLOCKING] a.py:1 — wrong default. Fix: use None.", "fail"),
+    ],
+)
+def test_review_requires_completion_after_final_message(
+    monkeypatch, tmp_path, event_types, complete, message, status
+):
+    from subprocess import CompletedProcess
+
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.steps import codex_review
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("")
+    ctx = Context(pr_number=1, work_dir=tmp_path)
+    ctx.diff_path = tmp_path / "pr.diff"
+    ctx.diff_path.write_text("diff --git a/a.py b/a.py\n+x=1\n")
+    monkeypatch.setattr(codex_review.shutil, "which", lambda _: "/fake/codex")
+    events = {
+        "message": {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": message},
+        },
+        "turn.completed": {"type": "turn.completed", "usage": {}},
+    }
+    output = "\n".join(json.dumps(events[event_type]) for event_type in event_types)
+    monkeypatch.setattr(
+        codex_review.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a, 0, output, ""),
+    )
+    result = CodexReviewStep().run(ctx)
+    assert result.status == (status if complete else "fail")
+    if complete:
+        assert result.artifacts
+        assert message in result.details
+    else:
+        assert re.fullmatch(
+            r"codex review incomplete after \d+\.\ds: "
+            r"no turn completion after the final agent message",
+            result.summary,
+        )
+        assert output[:1500] in result.details
+        assert not result.artifacts
+
+
+@pytest.mark.parametrize(
+    "event_types,message,stderr,status",
+    [
+        (
+            ("message", "turn.completed"),
+            "No blocking issues found.",
+            "authentication mentioned in diff",
+            "pass",
+        ),
+        (
+            ("message", "turn.completed"),
+            "No blocking issues found.",
+            "rate limit; model unavailable; quota exceeded",
+            "pass",
+        ),
+        (("error", "message"), "No blocking issues found.", "", "fail"),
+        (
+            ("error", "message", "turn.completed"),
+            "No blocking issues found.",
+            "",
+            "pass",
+        ),
+        (
+            ("message", "turn.completed", "error"),
+            "No blocking issues found.",
+            "",
+            "fail",
+        ),
+        (("turn.failed", "message"), "No blocking issues found.", "", "fail"),
+        (
+            ("turn.failed", "message", "turn.completed"),
+            "No blocking issues found.",
+            "",
+            "fail",
+        ),
+        (("turn.failed", "message"), "", "", "fail"),
+        (("error", "message"), "", "", "fail"),
+        (("error", "message"), "ok", "", "fail"),
+        (("error", "message", "turn.completed"), "", "", "fail"),
+    ],
+)
+def test_zero_exit_review_error_handling(
+    monkeypatch, tmp_path, event_types, message, stderr, status
+):
+    from subprocess import CompletedProcess
+
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.steps import codex_review
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("")
+    ctx = Context(pr_number=1, work_dir=tmp_path)
+    ctx.diff_path = tmp_path / "pr.diff"
+    ctx.diff_path.write_text("diff --git a/a.py b/a.py\n+x=1\n")
+    monkeypatch.setattr(codex_review.shutil, "which", lambda _: "/fake/codex")
+    error = "Reconnecting after connection reset"
+    events = {
+        "message": {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": message},
+        },
+        "error": {"type": "error", "error": {"message": error}},
+        "turn.failed": {"type": "turn.failed", "error": {"message": error}},
+        "turn.completed": {"type": "turn.completed", "usage": {}},
+    }
+    output = "\n".join(json.dumps(events[event_type]) for event_type in event_types)
+    monkeypatch.setattr(
+        codex_review.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a, 0, output, stderr),
+    )
+    result = CodexReviewStep().run(ctx)
+    assert result.status == status
+    if "error" in event_types or "turn.failed" in event_types:
+        assert error in result.details
+    if "error" in event_types and status == "pass":
+        assert "Non-fatal Codex error events" in result.details
+    if status == "fail" and message:
+        assert re.fullmatch(
+            r"codex review failed after \d+\.\ds: execution error", result.summary
+        )
+
+
+def test_review_opt_out_is_explicit_in_scorecard(monkeypatch, tmp_path):
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.scorecard import render_scorecard
+
+    monkeypatch.setenv("PR_VALIDATE_NO_CODEX", "1")
+    ctx = Context(pr_number=1, work_dir=tmp_path)
+    ctx.results.append(CodexReviewStep().execute(ctx))
+    assert ctx.results[0].status == "skip"
+    assert "disabled" in render_scorecard(ctx)
+    assert "PR_VALIDATE_NO_CODEX" in render_scorecard(ctx)
+
+
+def test_clean_review_summary_uses_truncated_first_line(monkeypatch, tmp_path):
+    message = "No" + " " * 180 + "blocking issues\nfound."
+    result = TestMalformedReplyDoesNotPass._drive(monkeypatch, tmp_path, message)
+    assert result.status == "pass"
+    assert result.summary.split(": ", 1)[1] == message.splitlines()[0][:160]
+    assert "\n" not in result.summary
+    assert message in result.details
+    assert "Review duration:" in result.details
+
+
+def test_hosted_validate_workflow_opts_out_of_codex_explicitly():
+    """The hosted runner has no reviewer CLI; a missing CLI now fails, so the
+    hosted workflow must opt out explicitly instead of relying on a skip."""
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1] / ".github/workflows/pr-validate.yml"
+        ).read_text()
+    )
+    steps = [s for job in workflow["jobs"].values() for s in job.get("steps", [])]
+    run = next(s for s in steps if s.get("id") == "validate")
+    assert run["env"]["PR_VALIDATE_NO_CODEX"] == "1"

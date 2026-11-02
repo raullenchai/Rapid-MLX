@@ -55,6 +55,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from ..base import Step, StepResult
@@ -273,6 +274,15 @@ class CodexReviewStep(Step):
         # so verbose logs / scorecards name the reviewer actually used.
         return f"Codex ({CODEX_MODEL}) adversarial review of diff"
 
+    def execute(self, ctx: Context) -> StepResult:
+        result = super().execute(ctx)
+        if result.status == "skip":
+            for variable in ("PR_VALIDATE_NO_CODEX", "PR_VALIDATE_NO_DEEPSEEK"):
+                if env_truthy(variable):
+                    result.summary = f"review explicitly disabled via {variable}=1"
+                    break
+        return result
+
     def should_run(self, ctx: Context) -> bool:
         # Allow opt-out (offline dev, CI without codex auth, etc.).
         # ``PR_VALIDATE_NO_DEEPSEEK`` is honored as a backwards-compat
@@ -300,9 +310,10 @@ class CodexReviewStep(Step):
         if codex_bin is None:
             return StepResult(
                 name=self.name,
-                status="skip",
+                status="fail",
                 summary=(
-                    "codex CLI not found on PATH (install: `npm i -g @openai/codex`)"
+                    "codex CLI not found on PATH (install: `npm i -g @openai/codex`); "
+                    "review required; explicitly disable with PR_VALIDATE_NO_CODEX=1"
                 ),
             )
 
@@ -377,6 +388,7 @@ class CodexReviewStep(Step):
         sent_path = ctx.artifact_path("codex-request.txt")
         sent_path.write_text(combined_prompt)
 
+        started = time.monotonic()
         ctx.run_log(f"calling codex exec ({len(diff.encode())} bytes of diff)…")
 
         # Defence-in-depth against prompt injection. ``codex exec``'s
@@ -479,7 +491,42 @@ class CodexReviewStep(Step):
                 details=f"```\n{tail}\n```",
             )
 
+        elapsed = time.monotonic() - started
         content, usage = _parse_codex_jsonl(proc.stdout)
+        execution_errors = []
+        turn_failed = False
+        unrecovered_error = False
+        turn_completed = False
+        for line in proc.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type in {"error", "turn.failed"}:
+                execution_errors.append(line)
+                turn_failed |= event_type == "turn.failed"
+                unrecovered_error = True
+            elif event_type == "turn.completed":
+                # A later completion confirms recovery from a reconnect error;
+                # an agent message alone may only be a partial reply.
+                unrecovered_error = False
+                turn_completed = True
+            elif event_type == "item.completed":
+                item = event.get("item")
+                if isinstance(item, dict) and item.get("type") == "agent_message":
+                    turn_completed = False
+        if turn_failed or unrecovered_error:
+            return StepResult(
+                name=self.name,
+                status="fail",
+                summary=f"codex review failed after {elapsed:.1f}s: execution error",
+                details="\n".join(execution_errors + [proc.stderr or "", content])[
+                    :2000
+                ],
+            )
         if not content.strip():
             # Codex emitted only thread/turn events with no agent
             # message — could be a benign policy refusal OR an
@@ -497,6 +544,23 @@ class CodexReviewStep(Step):
                 details=f"```\n{proc.stdout[:1500]}\n```",
             )
 
+        if not turn_completed:
+            return StepResult(
+                name=self.name,
+                status="fail",
+                summary=(
+                    f"codex review incomplete after {elapsed:.1f}s: "
+                    "no turn completion after the final agent message"
+                ),
+                details=f"```\n{proc.stdout[:1500]}\n```",
+            )
+
+        execution_note = (
+            "\n\n**Non-fatal Codex error events:**\n\n" + "\n".join(execution_errors)
+            if execution_errors
+            else ""
+        )
+
         review_path = ctx.artifact_path("codex-review.md")
         review_path.write_text(content)
         usage_path = ctx.artifact_path("codex-usage.json")
@@ -509,7 +573,11 @@ class CodexReviewStep(Step):
             return StepResult(
                 name=self.name,
                 status="pass",
-                summary="codex found no blocking issues",
+                summary=(
+                    f"codex review completed in {elapsed:.1f}s: "
+                    f"{content.strip().splitlines()[0][:160]}"
+                ),
+                details=f"Review duration: {elapsed:.1f}s\n\n{content}{execution_note}",
                 artifacts=[str(review_path), str(usage_path)],
             )
 
@@ -533,7 +601,7 @@ class CodexReviewStep(Step):
                     "**Codex reply (no numbered findings, no `no blocking issues "
                     "found` phrase):**\n\n"
                     f"{content[:2000]}\n\n"
-                    f"_(Saved to `{review_path}`.)_"
+                    f"_(Saved to `{review_path}`.)_{execution_note}"
                 ),
                 artifacts=[str(review_path), str(usage_path)],
             )
@@ -562,12 +630,13 @@ class CodexReviewStep(Step):
             return StepResult(
                 name=self.name,
                 status="pass",
-                summary=summary,
+                summary=f"{summary}; review {elapsed:.1f}s: {content.splitlines()[0][:160]}",
                 findings=labelled,
                 details=(
                     "**Full review:**\n\n"
                     f"{content}\n\n"
                     f"_(Saved to `{review_path}`. Token usage: {usage_str})_"
+                    f"{execution_note}"
                 ),
                 artifacts=[str(review_path), str(usage_path)],
             )
@@ -582,6 +651,7 @@ class CodexReviewStep(Step):
                 "**Full review:**\n\n"
                 f"{content}\n\n"
                 f"_(Saved to `{review_path}`. Token usage: {usage_str})_"
+                f"{execution_note}"
             ),
             artifacts=[str(review_path), str(usage_path)],
         )

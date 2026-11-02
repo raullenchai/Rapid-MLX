@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 import psutil
 
+from . import _children
 from .base import Step, StepResult
 from .context import STEP_OPT_OUT_ENV_VARS, Context, env_truthy
 from .scorecard import render_scorecard, verdict
@@ -113,8 +114,13 @@ def _stop_reason(step: Step, result: StepResult, fail_fast: bool) -> str | None:
 
 
 def _terminate_child_processes(grace_seconds: float = 5.0) -> None:
+    bounded_leaders = _children.kill_groups()
     try:
-        children = psutil.Process().children(recursive=True)
+        children = [
+            child
+            for child in psutil.Process().children(recursive=True)
+            if child.pid not in bounded_leaders
+        ]
     except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError) as error:
         print(f"  warning: cannot enumerate child processes: {error}", file=sys.stderr)
         return
@@ -298,6 +304,8 @@ def run_pipeline(
 
     def run_serial(steps_to_run: Sequence[Step]) -> bool:
         for step in steps_to_run:
+            if cancel.is_set():
+                return False
             print(
                 f"## [{step.name}] {step.description} (stage: {stage_of(step.name)})",
                 file=sys.stderr,
@@ -367,22 +375,34 @@ def run_pipeline(
             if terminate:
                 _terminate_child_processes()
 
-    if run_serial(serial):
-        threads = [
-            threading.Thread(target=run_lane, args=(name, lane))
-            for name, lane in lanes.items()
-            if lane
-        ]
+    threads: list[threading.Thread] = []
+    try:
+        if run_serial(serial):
+            threads = [
+                threading.Thread(target=run_lane, args=(name, lane), daemon=True)
+                for name, lane in lanes.items()
+                if lane
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            if cancel.is_set() or (
+                fail_fast and any(r.status in ("fail", "error") for r in ctx.results)
+            ):
+                print("  fail-fast: stopping before gpu", file=sys.stderr)
+            else:
+                run_serial(gpu)
+    except BaseException:
+        with lock:
+            cancel_reason = "interrupted"
+            cancel.set()
+        _terminate_child_processes()
+        deadline = time.monotonic() + 5.0
         for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        if cancel.is_set() or (
-            fail_fast and any(r.status in ("fail", "error") for r in ctx.results)
-        ):
-            print("  fail-fast: stopping before gpu", file=sys.stderr)
-        else:
-            run_serial(gpu)
+            if thread.ident is not None:
+                thread.join(max(0.0, deadline - time.monotonic()))
+        raise
 
     order = {step.name: i for i, step in enumerate(pipeline)}
     ctx.results.sort(key=lambda result: order.get(result.name, len(pipeline)))
