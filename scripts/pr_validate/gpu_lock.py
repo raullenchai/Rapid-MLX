@@ -107,8 +107,11 @@ def hold_gpu_lock(
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                # An unlinking holder can leave waiters on a deleted inode.
-                # Only enter the GPU stage after locking the current pathname.
+                # This module never unlinks; only legacy lockf(1) without -k does,
+                # while still holding the lock, before releasing it on exit.
+                # Once we hold the lock and fstat matches stat(path), no holder
+                # can still unlink the path under us. A waiter on an already
+                # unlinked inode sees a mismatch and reopens.
                 locked = os.fstat(fd)
                 try:
                     current = os.stat(path)
