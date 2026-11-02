@@ -198,6 +198,12 @@ def test_matrix_with_minimal_context(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
     monkeypatch.setenv("PR_VALIDATE_GPU_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.delenv("PR_VALIDATE_NO_GPU_CACHE", raising=False)
+    # Matrix selection probes host RAM; pin it so the test is host-independent.
+    monkeypatch.setattr(
+        stress_e2e_bench,
+        "_selected_choices",
+        lambda: ({}, [types.SimpleNamespace(family="text", model_id="org/model")]),
+    )
     ctx = types.SimpleNamespace(repo_root=tmp_path, base_sha="0" * 40)
     step = StressE2EBenchStep()
     result = StepResult(name=step.name, status="pass", summary="ok")
