@@ -246,6 +246,24 @@ def test_run_matrix_reports_selection_error(monkeypatch):
     assert result.summary == "boom"
 
 
+def test_run_reports_selection_error_under_lock(monkeypatch, tmp_path):
+    def fail_selection():
+        raise stress_e2e_bench._SelectionError("boom")
+
+    monkeypatch.setattr(stress_e2e_bench, "_selected_choices", fail_selection)
+    monkeypatch.setenv("PR_VALIDATE_GPU_LOCK", str(tmp_path / "gpu.lock"))
+    stored = []
+    monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
+    step = stress_e2e_bench.StressE2EBenchStep()
+    ctx = types.SimpleNamespace(run_log=lambda message: None)
+
+    result = step.run(ctx)
+
+    assert result.status == "error"
+    assert result.summary == "boom"
+    assert not stored
+
+
 @pytest.mark.parametrize("ram_values", [(100, 100, 20, 100), (20, 100, 100, 100)])
 def test_matrix_and_cache_share_one_selection(
     cache_setup, monkeypatch, tmp_path, ram_values
