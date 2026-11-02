@@ -731,7 +731,7 @@ def exit_reason_for(exc: BaseException | None) -> str:
             if current is None or id(current) in seen:
                 break
             seen.add(id(current))
-            if isinstance(current, (MetalPreflightError, MemoryError)):
+            if isinstance(current, MetalPreflightError):
                 return "memory_refused"
             if isinstance(current, OSError) and current.errno == errno.EADDRINUSE:
                 return "port_in_use"

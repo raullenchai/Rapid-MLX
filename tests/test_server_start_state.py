@@ -1767,7 +1767,8 @@ def test_entrypoint_guard_never_replaces_host_exception(monkeypatch, decorator):
         (KeyboardInterrupt(), "user_interrupt"),
         (SystemExit(2), "usage_error"),
         (SystemExit(1), "exception"),
-        (MemoryError(), "memory_refused"),
+        # A real allocator failure is an exception, not a refusal.
+        (MemoryError(), "exception"),
         (OSError(errno.EADDRINUSE, "private"), "port_in_use"),
         (OSError(errno.EACCES, "private"), "exception"),
         (None, "exception"),
@@ -1780,11 +1781,11 @@ def test_exit_reason_for_types(exc, expected):
 def test_exit_reason_override_and_chains():
     from rapid_mlx.memory_budget import MetalPreflightError
 
-    for inner in (MemoryError(), MetalPreflightError()):
-        assert server_start.exit_reason_for(inner) == "memory_refused"
-        outer = RuntimeError()
-        outer.__cause__ = inner
-        assert server_start.exit_reason_for(outer) == "memory_refused"
+    inner = MetalPreflightError()
+    assert server_start.exit_reason_for(inner) == "memory_refused"
+    outer = RuntimeError()
+    outer.__cause__ = inner
+    assert server_start.exit_reason_for(outer) == "memory_refused"
     refusal = SystemExit(1)
     server_start.set_exit_reason([], exc=refusal)
     server_start.set_exit_reason("private", exc=refusal)
@@ -1802,18 +1803,20 @@ def test_exit_reason_binding_survives_unrelated_failure():
 
 
 def test_exit_reason_ignores_suppressed_context():
+    from rapid_mlx.memory_budget import MetalPreflightError
+
     try:
         try:
-            raise MemoryError()
-        except MemoryError:
+            raise MetalPreflightError()
+        except MetalPreflightError:
             raise RuntimeError() from None
     except RuntimeError as exc:
         hidden = exc
     assert server_start.exit_reason_for(hidden) == "exception"
     try:
         try:
-            raise MemoryError()
-        except MemoryError:
+            raise MetalPreflightError()
+        except MetalPreflightError:
             raise RuntimeError()
     except RuntimeError as exc:
         implicit = exc
@@ -1831,9 +1834,11 @@ def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
     )
     server_start.attempted()
     assert not server_start.terminal_recorded()
-    with pytest.raises(MemoryError), server_start.failure_stage("preflight"):
+    from rapid_mlx.memory_budget import MetalPreflightError
+
+    with pytest.raises(MetalPreflightError), server_start.failure_stage("preflight"):
         assert server_start.current_failure_stage() == "preflight"
-        raise MemoryError()
+        raise MetalPreflightError()
     assert server_start.terminal_recorded()
     assert events[-1][1]["exit_reason"] == "memory_refused"
     server_start._reset_for_tests()
