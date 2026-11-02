@@ -34,7 +34,7 @@ def _wav(data_size=48000, riff_size=48036, channels=1):
 @pytest.mark.parametrize("size", [0xFFFFFFFF, 0xFFFFFF00, 192000, None])
 @pytest.mark.parametrize("channels", [1, 2])
 @pytest.mark.parametrize("probe_duration", [None, 1.25])
-def test_wav_duration_bounds_declared_frames_by_payload(
+def test_wav_duration_falls_through_for_oversized_headers(
     tmp_path, monkeypatch, size, channels, probe_duration
 ):
     from rapid_mlx.audio import stt
@@ -56,15 +56,52 @@ def test_wav_duration_bounds_declared_frames_by_payload(
     path.write_bytes(
         _wav(size if size is not None else 48000 * channels, 0xFFFFFFFF, channels)
     )
-    expected = (
-        probe_duration if size is not None and probe_duration is not None else 1.5
-    )
-    assert _audio_duration_seconds(str(path), allow_decode=False) == pytest.approx(
-        expected
-    )
+    expected = probe_duration if size is not None else 1.5
+    duration = _audio_duration_seconds(str(path), allow_decode=False)
+    if expected is None:
+        assert duration is None
+    else:
+        assert duration == pytest.approx(expected)
     assert calls == (
         [str(path)] if size is not None and probe_duration is not None else []
     )
+
+
+def test_oversized_wav_duration_falls_back_to_decode(tmp_path, monkeypatch):
+    from rapid_mlx.audio import stt
+
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setattr(stt.shutil, "which", lambda _: None)
+    calls = []
+
+    def decode(audio_path):
+        calls.append(audio_path)
+        return 1.5
+
+    monkeypatch.setattr(stt, "_decoded_audio_duration", decode)
+    path = tmp_path / "pipe.wav"
+    path.write_bytes(_wav(0xFFFFFFFF, 0xFFFFFFFF))
+    assert stt._audio_duration_seconds(str(path), allow_decode=False) is None
+    assert calls == []
+    assert stt._audio_duration_seconds(str(path), allow_decode=True) == pytest.approx(
+        1.5
+    )
+    assert calls == [str(path)]
+
+
+def test_sentinel_wav_duration_does_not_count_trailing_metadata(tmp_path, monkeypatch):
+    from rapid_mlx.audio import stt
+
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setattr(stt.shutil, "which", lambda _: None)
+    path = tmp_path / "metadata.wav"
+    path.write_bytes(
+        _wav(0xFFFFFFFF, 0xFFFFFFFF)
+        + b"LIST"
+        + struct.pack("<I", 16000)
+        + b"\0" * 16000
+    )
+    assert stt._audio_duration_seconds(str(path), allow_decode=False) is None
 
 
 def test_wav_duration_ignores_trailing_metadata(tmp_path):
