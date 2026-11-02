@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -164,14 +165,14 @@ def test_permission_denied_existing_file_reports_access_hint(
     pins = _MODULE.load_pins(_MANIFEST)
     for repository, revision, _ in pins.values():
         _populate(tmp_path, repository, revision)
-    real_is_file = Path.is_file
+    real_stat = Path.stat
 
-    def deny(self: Path) -> bool:
+    def deny(self: Path, *args, **kwargs):
         if self.name == "config.json":
             raise PermissionError(1, "Operation not permitted", str(self))
-        return real_is_file(self)
+        return real_stat(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_file", deny)
+    monkeypatch.setattr(Path, "stat", deny)
     assert (
         _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
     )
@@ -336,3 +337,54 @@ def test_workflow_preflight_precedes_every_expensive_command() -> None:
         "/opt/homebrew/opt/python@3.12/bin/python3.12 \\\n"
         "            apps/rapid-mac/scripts/check-sidecar-smoke-cache.py" in workflow
     )
+
+
+@pytest.mark.parametrize(
+    "error", [PermissionError, FileNotFoundError, NotADirectoryError]
+)
+def test_stat_error_classification_matches_python_314(
+    tmp_path, monkeypatch, capsys, error
+):
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    real_stat = Path.stat
+
+    def stat_path(self, *args, **kwargs):
+        if self.name == "config.json":
+            raise error("cannot stat cache file")
+        return real_stat(self, *args, **kwargs)
+
+    def is_file(self):
+        try:
+            return stat.S_ISREG(self.stat().st_mode)
+        except OSError:
+            return False
+
+    monkeypatch.setattr(Path, "stat", stat_path)
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert (
+        _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 1
+    )
+    output = capsys.readouterr().err
+    assert ("Full Disk Access" in output) == (error is PermissionError)
+    assert ("snapshot_download" in output) == (error is not PermissionError)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_inaccessible_snapshot_reports_access_hint(tmp_path, capsys):
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    snapshot = _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
+    snapshot.chmod(0)
+    try:
+        assert (
+            _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)])
+            == 1
+        )
+        output = capsys.readouterr().err
+        assert "Full Disk Access" in output
+        assert "snapshot_download" not in output
+    finally:
+        snapshot.chmod(0o700)
