@@ -6035,6 +6035,9 @@ def test_missing_embeddings_hint_uses_install_manager(monkeypatch, method):
     monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda _: None)
     monkeypatch.setattr(eh, "is_homebrew_interpreter", lambda _: False)
     monkeypatch.setattr(eh, "_safe_version", lambda _: None)
+    monkeypatch.setattr(
+        eh._im, "distribution", lambda _: SimpleNamespace(read_text=lambda _: None)
+    )
     section = eh.section_optional_packages()
     row = next(c for c in section.checks if c.label.startswith("mlx-embeddings"))
     if method == "pip":
@@ -6279,3 +6282,109 @@ def test_runtime_pip_hint_resolves_implicit_context_runtime(monkeypatch):
     )
     uses_context.assert_called_once_with(runtime)
     detection.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "method,prefix",
+    [("uv", "uv tool install --force"), ("pipx", "pipx install --force")],
+)
+@pytest.mark.parametrize(
+    "direct,expected",
+    [
+        (None, "==1.2.3"),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+            },
+            " @ git+https://example.invalid/source.git@abc123",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.hg",
+                "vcs_info": {"vcs": "hg", "commit_id": "abc123"},
+            },
+            " @ hg+https://example.invalid/source.hg@abc123",
+        ),
+        (
+            {"url": "file:///wheels/rapid mlx.whl", "archive_info": {}},
+            " @ file:///wheels/rapid mlx.whl",
+        ),
+        ({"url": "file:///local/source", "dir_info": {}}, " @ file:///local/source"),
+        ("invalid json", ""),
+        ({"vcs_info": {}}, ""),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"commit_id": "abc123"},
+            },
+            "",
+        ),
+    ],
+)
+def test_tool_extra_hint_preserves_install_source(
+    monkeypatch, method, prefix, direct, expected
+):
+    from rapid_mlx import _version_check
+    from rapid_mlx.runtime import optional_runtime
+
+    monkeypatch.setattr(
+        _version_check,
+        "detect_install_method",
+        lambda: _version_check.InstallInfo(method, "", []),
+    )
+    monkeypatch.setattr(optional_runtime, "installed_extras", lambda: ["audio"])
+    monkeypatch.setattr(optional_runtime, "recorded_tool_extras", lambda: [])
+    monkeypatch.setattr("rapid_mlx.__version__", "1.2.3")
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _: False)
+    distribution = mock.Mock()
+    distribution.read_text.return_value = (
+        direct
+        if isinstance(direct, str)
+        else json.dumps(direct)
+        if direct is not None
+        else None
+    )
+    monkeypatch.setattr(eh._im, "distribution", lambda name: distribution)
+
+    command = eh._runtime_pip_command("rapid-mlx[embeddings]")
+    assert command == prefix + " " + shlex.quote(
+        "rapid-mlx[audio,embeddings]" + expected
+    )
+
+
+@pytest.mark.parametrize("deep,expected_timeout", [(False, 45.0), (True, 120.0)])
+def test_import_probe_timeout_allows_deep_cold_import(
+    monkeypatch, deep, expected_timeout
+):
+    clock = [100.0]
+    timeouts = []
+    outcomes = []
+
+    def run(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock[0] += min(70.0, kwargs["timeout"])
+        if kwargs["timeout"] < 70.0:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return SimpleNamespace(
+            stdout=eh._PROBE_RESULT_PREFIX + json.dumps({"importable": True})
+        )
+
+    def optional():
+        outcomes.append(
+            eh._runtime_module_importable(Path(sys.executable), "mlx_vlm", None)
+        )
+        return eh.Section("Optional")
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh.subprocess, "run", run)
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args: None)
+    monkeypatch.setitem(eh._SECTION_IDS, optional, "packages.optional")
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (optional,))
+    monkeypatch.setattr(eh, "_DEEP_SECTION_BUILDERS", ())
+    eh.run_all(deep=deep)
+    assert timeouts == [expected_timeout]
+    assert outcomes == [deep]
+    assert eh._DOCTOR_BUDGET_S == 60.0
+    if deep:
+        assert eh._DOCTOR_DEEP_BUDGET_S == 150.0

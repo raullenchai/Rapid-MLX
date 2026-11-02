@@ -20,6 +20,9 @@ MAX_PYTHON_MINOR=13
 VENV_BACKUP=""
 PRESERVED_EXTRAS=""
 OLD_VENV_PYTHON=""
+INSTALL_CHILD_PID=""
+INSTALL_CONFIG_DIR=""
+INSTALL_FILTER_PID=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,11 +67,40 @@ print_success_box() {
 # Keep terminal input available for interactive runs; internal data pipelines
 # (such as the cache JSON reader) must keep their own explicit stdin.
 run_install_command() {
+    local status=0
     if [ -t 0 ]; then
-        "$@"
+        "$@" <&0 &
     else
-        "$@" </dev/null
+        "$@" </dev/null &
     fi
+    INSTALL_CHILD_PID=$!
+    while :; do
+        status=0
+        wait "$INSTALL_CHILD_PID" || status=$?
+        # A returning signal handler can interrupt wait while the child lives.
+        if [ "$status" -le 128 ] || ! kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
+            break
+        fi
+    done
+    INSTALL_CHILD_PID=""
+    return "$status"
+}
+
+stop_install_child() {
+    local attempt
+    [ -n "$INSTALL_CHILD_PID" ] || return 0
+    if kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
+        kill -TERM "$INSTALL_CHILD_PID" 2>/dev/null || true
+        for ((attempt = 0; attempt < 100; attempt++)); do
+            kill -0 "$INSTALL_CHILD_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
+            kill -KILL "$INSTALL_CHILD_PID" 2>/dev/null || true
+        fi
+    fi
+    wait "$INSTALL_CHILD_PID" 2>/dev/null || true
+    INSTALL_CHILD_PID=""
 }
 
 # Download function — works with curl or wget
@@ -405,8 +437,43 @@ release_install_lock() {
 }
 
 on_installer_exit() {
+    trap '' HUP INT TERM
+    stop_install_child
+    if [ -n "$INSTALL_FILTER_PID" ]; then
+        kill -TERM "$INSTALL_FILTER_PID" 2>/dev/null || true
+        wait "$INSTALL_FILTER_PID" 2>/dev/null || true
+    fi
+    [ -z "$INSTALL_CONFIG_DIR" ] || rm -rf "$INSTALL_CONFIG_DIR"
     rollback_rebuild
     release_install_lock
+}
+
+# Metadata normalizes extra names to letters, digits, and internal hyphens.
+valid_extras() {
+    [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$ ]]
+}
+
+load_pending_extras() {
+    local pending
+    [ -z "$PRESERVED_EXTRAS" ] && [ -f "$INSTALL_DIR/.pending-extras" ] || return 0
+    pending=$(cat "$INSTALL_DIR/.pending-extras") || return 1
+    if valid_extras "$pending"; then
+        PRESERVED_EXTRAS="$pending"
+    else
+        rm -f "$INSTALL_DIR/.pending-extras"
+    fi
+}
+
+persist_pending_extras() {
+    local temporary
+    [ -n "$PRESERVED_EXTRAS" ] || return 0
+    valid_extras "$PRESERVED_EXTRAS" || return 1
+    temporary=$(mktemp "$INSTALL_DIR/.pending-extras.XXXXXX") || return 1
+    if ! printf '%s\n' "$PRESERVED_EXTRAS" > "$temporary" ||
+       ! mv "$temporary" "$INSTALL_DIR/.pending-extras"; then
+        rm -f "$temporary"
+        return 1
+    fi
 }
 
 # Decide whether to create, upgrade, or transactionally rebuild a venv.
@@ -436,13 +503,17 @@ create_venv() {
 # Carry out a planned action. Kept as its own function (not an inline case) so
 # the create/upgrade/rebuild wiring is unit-testable with mocked actions.
 dispatch_venv() {
+    load_pending_extras
     case "$1" in
         upgrade)
             info "Upgrading Rapid-MLX..."
             upgrade_pip
             ;;
         rebuild)
-            PRESERVED_EXTRAS="$(installed_extras_of_venv "$INSTALL_DIR" || true)"
+            if [ -z "$PRESERVED_EXTRAS" ]; then
+                PRESERVED_EXTRAS="$(installed_extras_of_venv "$INSTALL_DIR" || true)"
+            fi
+            persist_pending_extras || return 1
             OLD_VENV_PYTHON="$(run_install_command "$INSTALL_DIR/bin/python" -c 'import sys; print("{}.{}".format(sys.version_info[0], sys.version_info[1]))' 2>/dev/null || true)"
             if [[ "$OLD_VENV_PYTHON" =~ ^[0-9]+\.[0-9]+$ ]] &&
                { [ "${OLD_VENV_PYTHON#*.}" -lt "$MIN_PYTHON_MINOR" ] || [ "${OLD_VENV_PYTHON#*.}" -gt "$MAX_PYTHON_MINOR" ]; }; then
@@ -607,7 +678,7 @@ validate_target() {
 }
 
 uv_config_absent() {
-    local dir config_dir config_dirs=${XDG_CONFIG_DIRS:-}
+    local dir root physical_dir config_dir config_dirs=${XDG_CONFIG_DIRS:-}
     [ -z "${UV_CONFIG_FILE+x}" ] && [ -z "${UV_NO_CONFIG+x}" ] || return 1
     for config_dir in "${XDG_CONFIG_HOME:-$HOME/.config}" /etc "${config_dirs//:/$'\n'}"; do
         while IFS= read -r dir; do
@@ -615,32 +686,33 @@ uv_config_absent() {
             [ ! -e "$dir/uv/uv.toml" ] && [ ! -L "$dir/uv/uv.toml" ] || return 1
         done <<< "$config_dir"
     done
-    dir=$PWD
-    while :; do
-        [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
-        if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
-            "$INSTALL_DIR/bin/python" -I -c '
+    physical_dir=$(pwd -P) || return 1
+    for root in "$PWD" "$physical_dir"; do
+        dir=$root
+        while :; do
+            [ ! -e "$dir/uv.toml" ] && [ ! -L "$dir/uv.toml" ] || return 1
+            if [ -e "$dir/pyproject.toml" ] || [ -L "$dir/pyproject.toml" ]; then
+                "$INSTALL_DIR/bin/python" -I -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as f:
     doc = tomllib.load(f)
 tool = doc.get("tool")
 sys.exit(not ("tool" not in doc or isinstance(tool, dict) and "uv" not in tool))
 ' "$dir/pyproject.toml" </dev/null 2>/dev/null || return 1
-        fi
-        [ "$dir" = / ] && break
-        dir=${dir%/*}
-        [ -n "$dir" ] || dir=/
+            fi
+            [ "$dir" = / ] && break
+            dir=${dir%/*}
+            [ -n "$dir" ] || dir=/
+        done
     done
 }
 
-# Preserve the installer status even when grep removes every stderr line.
+# Keep the writer in this shell so exit cleanup can stop it before rollback.
 run_package_command() {
+    local status=0
     if [ "$1" = uv ]; then
-        # A subshell scopes the cleanup trap and leaves uv stderr untouched.
-        (
-            if uv_config_absent && tmpdir=$(mktemp -d 2>/dev/null); then
-                trap 'rm -rf "$tmpdir"' EXIT
-                if cat > "$tmpdir/uv.toml" <<'EOF'
+        if uv_config_absent && INSTALL_CONFIG_DIR=$(mktemp -d 2>/dev/null); then
+            if cat > "$INSTALL_CONFIG_DIR/uv.toml" <<'EOF'
 [[dependency-metadata]]
 name = "mlx-video-with-audio"
 version = "0.1.36"
@@ -648,23 +720,32 @@ requires-dist = ["mlx>=0.22.0", "numpy", "safetensors", "huggingface_hub", "tran
                  "opencv-python>=4.12.0.88", "Pillow>=10.3.0", "mlx-vlm", "soundfile>=0.12.0",
                  "pytest; extra == \"dev\""]
 EOF
-                then
-                    UV_CONFIG_FILE="$tmpdir/uv.toml" run_install_command "$@"
-                else
-                    run_install_command "$@"
-                fi
+            then
+                UV_CONFIG_FILE="$INSTALL_CONFIG_DIR/uv.toml" run_install_command "$@" || status=$?
             else
-                run_install_command "$@"
+                run_install_command "$@" || status=$?
             fi
-        )
-        return $?
-    fi
-    local status
-    if run_install_command "$@" 2>&1 1>&3 | grep --line-buffered -Ev '^WARNING: transformers [^ ]+ does not provide the extra '\''tokenizers'\''$' >&2; then
-        status=${PIPESTATUS[0]}
+            rm -rf "$INSTALL_CONFIG_DIR"
+            INSTALL_CONFIG_DIR=""
+        else
+            run_install_command "$@" || status=$?
+        fi
     else
-        status=${PIPESTATUS[0]}
-    fi 3>&1
+        # A FIFO keeps stderr streaming without putting the writer in a pipeline.
+        if command -v grep >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1 &&
+           INSTALL_CONFIG_DIR=$(mktemp -d 2>/dev/null) &&
+           mkfifo "$INSTALL_CONFIG_DIR/stderr"; then
+            grep --line-buffered -Ev '^WARNING: transformers [^ ]+ does not provide the extra '\''tokenizers'\''$' < "$INSTALL_CONFIG_DIR/stderr" >&2 &
+            INSTALL_FILTER_PID=$!
+            run_install_command "$@" 2> "$INSTALL_CONFIG_DIR/stderr" || status=$?
+            wait "$INSTALL_FILTER_PID" || true
+            INSTALL_FILTER_PID=""
+        else
+            run_install_command "$@" || status=$?
+        fi
+        [ -z "$INSTALL_CONFIG_DIR" ] || rm -rf "$INSTALL_CONFIG_DIR"
+        INSTALL_CONFIG_DIR=""
+    fi
     return "$status"
 }
 
@@ -694,6 +775,7 @@ install_package() {
 # Restoring optional features is best effort after the rebuild is committed.
 reinstall_preserved_extras() {
     local version spec
+    load_pending_extras
     [ -n "$PRESERVED_EXTRAS" ] || return 0
     version=$(run_install_command "$INSTALL_DIR/bin/python" -I -c 'import importlib.metadata as m; print(m.version("rapid-mlx"))' 2>/dev/null) || version=""
     if [ "$TARGET" = latest ]; then
@@ -707,6 +789,8 @@ reinstall_preserved_extras() {
     if { [ "$TARGET" != latest ] && [ -z "$version" ]; } || ! run_package_command "${INSTALLER[@]}" "$spec"; then
         warn "Could not reinstall optional features ($PRESERVED_EXTRAS)."
         dim "Install them later with: $INSTALL_DIR/bin/python -m pip install '$spec'"
+    else
+        rm -f "$INSTALL_DIR/.pending-extras"
     fi
     return 0
 }
@@ -818,6 +902,31 @@ for path in paths:
     done
 }
 
+# Only a positive hardware identification warrants a specific diagnosis.
+check_shell_architecture() {
+    local arch="$1" probe="${RAPID_INSTALL_SYSCTL:-}" hardware
+    [ "$arch" != arm64 ] || return 0
+    if [ -z "$probe" ]; then
+        if [ -x /usr/sbin/sysctl ]; then probe=/usr/sbin/sysctl; else probe=sysctl; fi
+    fi
+    if [ "$("$probe" -n hw.optional.arm64 2>/dev/null || true)" = 1 ] ||
+       [ "$("$probe" -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
+        err "This terminal is running under Rosetta (x86_64), but your Mac has Apple Silicon."
+        dim "Open Terminal without Rosetta (Finder → Applications → Utilities → Terminal → Get Info → uncheck \"Open using Rosetta\") and run the installer again."
+    else
+        hardware=$("$probe" -n machdep.cpu.brand_string 2>/dev/null || true)
+        if [[ "$hardware" == *Intel* ]]; then
+            err "This Mac has an Intel processor. Rapid-MLX needs a Mac with Apple Silicon (M1 or later)."
+            dim "MLX, the framework Rapid-MLX runs on, only supports Apple Silicon. Memory size doesn't change this."
+        else
+            err "This terminal reports $arch; the Mac processor could not be identified."
+            dim "Open Terminal without Rosetta (Finder → Applications → Utilities → Terminal → Get Info → uncheck \"Open using Rosetta\") and run the installer again."
+            dim "Rapid-MLX needs a Mac with Apple Silicon (M1 or later)."
+        fi
+    fi
+    return 1
+}
+
 # When sourced by the test harness we only want the definitions above, not the
 # installer itself. `return` succeeds only in a sourced context; the `|| exit 0`
 # keeps an accidental `RAPID_INSTALL_LIB=1 bash install.sh` from erroring out.
@@ -845,18 +954,7 @@ case "$(uname -s)" in
 esac
 
 ARCH=$(uname -m)
-if [ "$ARCH" != "arm64" ]; then
-    # A translated (Rosetta) shell on Apple Silicon also reports x86_64; tell
-    # that user how to fix it instead of saying their Mac is unsupported.
-    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
-        err "This terminal is running under Rosetta (x86_64), but your Mac has Apple Silicon."
-        dim "Open Terminal without Rosetta (Finder → Applications → Utilities → Terminal → Get Info → uncheck \"Open using Rosetta\") and run the installer again."
-    else
-        err "This Mac has an Intel processor. Rapid-MLX needs a Mac with Apple Silicon (M1 or later)."
-        dim "MLX, the framework Rapid-MLX runs on, only supports Apple Silicon. Memory size doesn't change this."
-    fi
-    exit 1
-fi
+check_shell_architecture "$ARCH" || exit 1
 
 MACOS_VERSION=$(sw_vers -productVersion | cut -d. -f1)
 if [ "$MACOS_VERSION" -lt 13 ]; then
@@ -883,6 +981,7 @@ dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
 
 acquire_install_lock
 trap on_installer_exit EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 PYTHON="$(select_python || true)"

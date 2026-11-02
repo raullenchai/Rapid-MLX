@@ -856,6 +856,107 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
     done
 ) && ok "service hints only follow upgrades and rebuilds with existing services" || bad "service hints only follow upgrades and rebuilds with existing services"
 
+# Pending optional features survive retries and stay outside the venv stash.
+for install_status in 0 7; do
+    (
+        INSTALL_DIR="$WORK/pending-$install_status"; mkdir -p "$INSTALL_DIR/bin"
+        printf '#!/bin/bash\necho 1.0.1\n' > "$INSTALL_DIR/bin/python"
+        chmod +x "$INSTALL_DIR/bin/python"
+        printf 'audio,chat\n' > "$INSTALL_DIR/.pending-extras"
+        PRESERVED_EXTRAS=""; TARGET=stable; INSTALLER=(recorder)
+        upgrade_pip() { :; }
+        recorder() { printf '%s\n' "$*" > "$INSTALL_DIR/attempt"; return "$install_status"; }
+        dispatch_venv upgrade >/dev/null || exit 1
+        reinstall_preserved_extras >/dev/null || exit 1
+        [ "$(cat "$INSTALL_DIR/attempt")" = 'rapid-mlx[audio,chat]==1.0.1' ] || exit 1
+        if [ "$install_status" = 0 ]; then
+            [ ! -e "$INSTALL_DIR/.pending-extras" ]
+        else
+            [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]
+        fi
+    ) && ok "pending extras retry status $install_status" || bad "pending extras retry status $install_status"
+done
+(
+    INSTALL_DIR="$WORK/pending-stash"; mkdir -p "$INSTALL_DIR/bin"
+    installed_extras_of_venv() { echo audio,chat; }
+    create_venv() { [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]; }
+    dispatch_venv rebuild >/dev/null || exit 1
+    [ ! -e "$VENV_BACKUP/.pending-extras" ] || exit 1
+    restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP" || exit 1
+    [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]
+) && ok "pending extras persist before stash and survive restore" || bad "pending extras persist before stash and survive restore"
+(
+    INSTALL_DIR="$WORK/pending-garbage"; mkdir -p "$INSTALL_DIR"
+    printf 'chat] @ invalid\n' > "$INSTALL_DIR/.pending-extras"
+    PRESERVED_EXTRAS=""; upgrade_pip() { :; }
+    dispatch_venv upgrade >/dev/null || exit 1
+    [ -z "$PRESERVED_EXTRAS" ] && [ ! -e "$INSTALL_DIR/.pending-extras" ]
+) && ok "invalid pending extras are discarded" || bad "invalid pending extras are discarded"
+
+for config_name in uv.toml pyproject.toml; do
+    (
+        fixture="$WORK/physical-$config_name"
+        mkdir -p "$fixture/physical/project" "$fixture/logical" "$fixture/home"
+        printf '[tool.uv]\n' > "$fixture/physical/$config_name"
+        ln -s "$fixture/physical/project" "$fixture/logical/project"
+        HOME="$fixture/home"; XDG_CONFIG_HOME="$HOME"; XDG_CONFIG_DIRS="$HOME"
+        unset UV_CONFIG_FILE UV_NO_CONFIG
+        INSTALL_DIR="$fixture/runtime"; mkdir -p "$INSTALL_DIR/bin"
+        ln -s "$REAL_PYTHON" "$INSTALL_DIR/bin/python"
+        cd "$fixture/logical/project" || exit 1
+        if uv_config_absent; then exit 1; fi
+    ) && ok "physical ancestor $config_name is respected" || bad "physical ancestor $config_name is respected"
+done
+
+# Signal only the installer shell; a surviving writer must stop before rollback.
+for signal in HUP TERM; do
+    for command_kind in direct pip uv; do
+        fixture="$WORK/signal-$signal-$command_kind"; mkdir -p "$fixture"
+        cat > "$fixture/writer" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$$" > "$1/pid"
+touch "$1/ready"
+sleep 1
+printf late > "$1/late-write"
+EOF
+        chmod +x "$fixture/writer"
+        bash -c '
+            RAPID_INSTALL_LIB=1 source "$1"
+            fixture=$2; command_kind=$3
+            rollback_rebuild() {
+                if kill -0 "$(cat "$fixture/pid")" 2>/dev/null; then touch "$fixture/alive-at-rollback"; fi
+                touch "$fixture/rollback"
+            }
+            release_install_lock() { touch "$fixture/released"; }
+            # Use the production trap definitions even in library mode.
+            eval "$(sed -n "/^trap on_installer_exit EXIT$/,/^trap .* TERM$/p" "$1")"
+            case "$command_kind" in
+                direct) run_install_command "$fixture/writer" "$fixture" ;;
+                pip) run_package_command "$fixture/writer" "$fixture" ;;
+                uv)
+                    uv_config_absent() { return 1; }
+                    uv() { exec "$fixture/writer" "$fixture"; }
+                    run_package_command uv pip install ;;
+            esac
+        ' bash "$INSTALL_SH" "$fixture" "$command_kind" >"$fixture/output" 2>&1 &
+        installer_pid=$!
+        for ((attempt=0; attempt<100; attempt++)); do
+            [ ! -e "$fixture/ready" ] || break
+            sleep 0.02
+        done
+        kill -s "$signal" "$installer_pid"
+        signal_status=0; wait "$installer_pid" || signal_status=$?
+        sleep 1.2
+        expected_status=129; [ "$signal" != TERM ] || expected_status=143
+        if [ "$signal_status" = "$expected_status" ] && [ -e "$fixture/rollback" ] &&
+           [ -e "$fixture/released" ] && [ ! -e "$fixture/alive-at-rollback" ] && [ ! -e "$fixture/late-write" ]; then
+            ok "$signal stops $command_kind child before rollback and lock release"
+        else
+            bad "$signal stops $command_kind child before rollback and lock release (status $signal_status)"
+        fi
+    done
+done
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

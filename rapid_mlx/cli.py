@@ -15799,11 +15799,7 @@ def upgrade_command(args):
             "  Could not confirm the installed version; run `rapid-mlx --version` to check."
         )
         sys.exit(1)
-    elif (
-        vc._parse_version(target) is not None
-        and vc._parse_version(verified) is not None
-        and vc._parse_version(verified) >= vc._parse_version(target)
-    ):
+    elif vc._versions_equal(verified, target):
         print(f"  ✓ rapid-mlx is now {verified}.")
     else:
         print(

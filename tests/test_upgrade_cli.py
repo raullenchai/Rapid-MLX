@@ -248,6 +248,12 @@ def test_python_floor_guidance(monkeypatch, capsys, method, guidance, dry_run):
     [
         ("pip", "1.0.0", 1, "still 1.0.0"),
         ("pip", "1.0.1", 0, "now 1.0.1"),
+        ("pip", "1.0.1a1", 1, "still 1.0.1a1"),
+        ("pip", "1.0.1b1", 1, "still 1.0.1b1"),
+        ("pip", "1.0.1.dev0", 1, "still 1.0.1.dev0"),
+        ("pip", "1.0.1rc1", 1, "still 1.0.1rc1"),
+        ("pip", "1.0.1.post1", 1, "still 1.0.1.post1"),
+        ("pip", "1.0.2", 1, "still 1.0.2"),
         ("brew", "1.0.0", 1, "brew update && brew upgrade rapid-mlx"),
         (
             "pip",
@@ -461,3 +467,28 @@ def test_upgrade_install_display(monkeypatch, capsys, method, binary, label):
     out = capsys.readouterr().out
     assert f"  Install:  {label} ({binary or sys.executable})" in out
     assert "unknown path" not in out
+
+
+@pytest.mark.parametrize("version", ["1.0.1a1", "1.0.1b1", "1.0.1.dev0", "1.0.1rc1"])
+def test_upgrade_does_not_confirm_prerelease_launcher(monkeypatch, capsys, version):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
+    monkeypatch.setattr(vc, "get_release_info", lambda **_: vc.ReleaseInfo("1.0.1"))
+    monkeypatch.setattr(
+        vc,
+        "detect_install_method",
+        lambda: vc.InstallInfo("pip", "upgrade", ["upgrade"], "/tools/rapid-mlx"),
+    )
+    monkeypatch.setattr(vc.os, "access", lambda *args: True)
+    monkeypatch.setattr(vc, "_launcher_belongs_to_running_install", lambda _: True)
+    with (
+        patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=f"rapid-mlx {version}\n"),
+        ),
+        pytest.raises(SystemExit) as exc,
+    ):
+        upgrade_command(SimpleNamespace(yes=True, dry_run=False))
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert f"still {version}" in output
+    assert "✓" not in output

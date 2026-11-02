@@ -656,9 +656,7 @@ def prompt_upgrade_if_available() -> bool:
             return False
         if returncode == 0:
             new = installed_version_in_fresh_process(info)
-            parsed_new = _parse_version(new) if new is not None else None
-            target = _parse_version(latest_str)
-            if parsed_new is not None and target is not None and parsed_new >= target:
+            if new is not None and _versions_equal(new, latest_str):
                 print(
                     f"\nUpgrade complete: rapid-mlx {new}. Please re-run your command.\n"
                 )
@@ -822,12 +820,32 @@ def _format_available_warning(installed: str, latest: str) -> str:
     return format_staleness_warning(installed, latest)
 
 
+def _versions_equal(installed: str, target: str) -> bool:
+    """Compare exact releases without dropping prerelease or build suffixes."""
+    try:
+        from packaging.version import Version
+    except ImportError:
+        return (
+            _parse_version(installed) is not None
+            and _parse_version(installed) == _parse_version(target)
+            and installed.strip().removeprefix("v") == target.strip().removeprefix("v")
+        )
+    try:
+        return Version(installed) == Version(target)
+    except ValueError:
+        return False
+
+
 def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
     import subprocess
 
-    if info.binary_path and os.access(info.binary_path, os.X_OK):
+    if (
+        info.binary_path
+        and os.access(info.binary_path, os.X_OK)
+        and _launcher_belongs_to_running_install(info.binary_path)
+    ):
         argv = [info.binary_path, "--version"]
-        pattern = r"\brapid-mlx\s+(\d+\.\d+\.\d+(?:rc\d+|\.[^\s]+)?)"
+        pattern = r"\brapid-mlx\s+(\d+(?:\.\d+)*\S*)"
     else:
         import site
 
@@ -852,7 +870,7 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
             return None
         matches = re.findall(pattern, result.stdout, re.MULTILINE)
         version = matches[-1] if matches else None
-        return version if version and _parse_version(version) is not None else None
+        return version if version and _versions_equal(version, version) else None
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
 
