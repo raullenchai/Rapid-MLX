@@ -5090,6 +5090,10 @@ def _preflight_ddtree_or_exit(args):
 
     args._ddtree_alias_name = alias_name
     args._ddtree_profile = profile
+    # Like model_downloads.snapshot_download, catalog pins follow repo identity: explicit matches pin; other repos do not.
+    args._ddtree_drafter_revision = (
+        profile.ddtree_draft_revision if drafter == profile.ddtree_draft_model else None
+    )
     args._ddtree_drafter_repo = drafter
     args._ddtree_speculative_tokens = speculative_tokens
     args._ddtree_tree_budget = tree_budget
@@ -8879,10 +8883,22 @@ def serve_command(args):
         _profile = getattr(args, "_ddtree_profile", None)
         if _alias_name is None or _profile is None:
             _alias_name, _profile = _preflight_ddtree_or_exit(args)
+        _drafter_repo = (
+            getattr(args, "_ddtree_drafter_repo", None) or _profile.ddtree_draft_model
+        )
+        _drafter_revision = (
+            getattr(args, "_ddtree_drafter_revision", None)
+            if getattr(args, "_ddtree_drafter_repo", None) == _drafter_repo
+            else None
+        ) or (
+            _profile.ddtree_draft_revision
+            if _drafter_repo == _profile.ddtree_draft_model
+            else None
+        )
         run_ddtree_server(
             main_model_repo=_profile.hf_path or args.model,
-            drafter_repo=getattr(args, "_ddtree_drafter_repo", None)
-            or _profile.ddtree_draft_model,
+            drafter_repo=_drafter_repo,
+            drafter_revision=_drafter_revision,
             speculative_tokens=getattr(args, "_ddtree_speculative_tokens", None)
             or _profile.ddtree_speculative_tokens,
             tree_budget=getattr(args, "_ddtree_tree_budget", None)

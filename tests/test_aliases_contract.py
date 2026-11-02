@@ -48,6 +48,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
     {
         "hf_path",
         "revision",  # Immutable checkpoint identity.
+        "model_type",
         # In-repo directory holding this alias's checkpoint, for
         # publishers who ship every quantization as a sibling folder of
         # ONE repo (LiquidAI/LFM2.5-2.6B-MLX). Applied at load and at
@@ -93,6 +94,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         # _coerce accepts only "tensorfold" and requires a pinned drafter.
         "dflash_backend",
         "supports_ddtree",
+        "ddtree_draft_revision",
         "ddtree_draft_model",
         "ddtree_speculative_tokens",
         "ddtree_tree_budget",

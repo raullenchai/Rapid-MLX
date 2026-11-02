@@ -167,6 +167,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         {
             "hf_path",
             "revision",  # Immutable artifact identity, never a routing switch.
+            "model_type",
             # Directory inside ``hf_path`` holding this alias's checkpoint.
             # For publishers who ship every quantization as a sibling
             # folder of ONE repo (LiquidAI/LFM2.5-2.6B-MLX → ``4bit/``,
@@ -223,6 +224,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "tensorfold_target_revision",
             "tensorfold_runtime_revision",
             "supports_ddtree",
+            "ddtree_draft_revision",
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
@@ -252,6 +254,17 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: 'hf_path' must be a non-empty string, "
             f"got {type(hf_path).__name__}={hf_path!r}"
+        )
+
+    model_type = value.get("model_type")
+    if "model_type" in value and (
+        not isinstance(model_type, str)
+        or not model_type
+        or model_type != model_type.strip()
+    ):
+        raise ValueError(
+            f"alias {alias!r}: 'model_type' must be a non-empty string "
+            "without leading or trailing whitespace when present"
         )
 
     # ``subfolder`` becomes a path segment joined onto a snapshot
@@ -423,6 +436,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         )
     dflash_target_revision = value.get("dflash_target_revision")
     dflash_draft_revision = value.get("dflash_draft_revision")
+    ddtree_draft_revision = value.get("ddtree_draft_revision")
     revisions = (dflash_target_revision, dflash_draft_revision)
     if dflash_draft_model and any(revision is None for revision in revisions):
         raise ValueError(
@@ -470,6 +484,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     for key, revision in (
         ("dflash_target_revision", dflash_target_revision),
         ("dflash_draft_revision", dflash_draft_revision),
+        ("ddtree_draft_revision", ddtree_draft_revision),
     ):
         if revision is not None and (
             not isinstance(revision, str)
@@ -497,6 +512,15 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 )
     supports_ddtree = _strict_bool("supports_ddtree", False)
     ddtree_draft_model = value.get("ddtree_draft_model")
+    if ddtree_draft_model and ddtree_draft_revision is None:
+        raise ValueError(
+            f"alias {alias!r}: ddtree_draft_model requires an immutable "
+            "ddtree_draft_revision pin"
+        )
+    if ddtree_draft_revision is not None and not ddtree_draft_model:
+        raise ValueError(
+            f"alias {alias!r}: ddtree_draft_revision requires ddtree_draft_model"
+        )
     if supports_ddtree and not ddtree_draft_model:
         raise ValueError(
             f"alias {alias!r}: supports_ddtree=true requires "
@@ -777,6 +801,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     return AliasProfile(
         hf_path=hf_path,
         revision=checkpoint_revision,
+        model_type=model_type,
         subfolder=subfolder,
         modality=modality,
         video_modes=video_modes,
@@ -811,6 +836,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         tensorfold_runtime_revision=tensorfold_runtime_revision,
         supports_ddtree=supports_ddtree,
         ddtree_draft_model=ddtree_draft_model,
+        ddtree_draft_revision=ddtree_draft_revision,
         ddtree_speculative_tokens=ddtree_speculative_tokens,
         ddtree_tree_budget=ddtree_tree_budget,
         recommended_sampling=recommended_sampling,

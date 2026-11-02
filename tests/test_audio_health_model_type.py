@@ -9,6 +9,15 @@ from rapid_mlx.config import reset_config
 from rapid_mlx.routes.health import probe_router
 
 
+@pytest.fixture(autouse=True)
+def clear_consent_cache():
+    from rapid_mlx.routes.health import _clear_consent_cache
+
+    _clear_consent_cache()
+    yield
+    _clear_consent_cache()
+
+
 @pytest.fixture
 def health_client():
     cfg = reset_config()
@@ -286,3 +295,139 @@ def test_vlm_processor_consent_readiness(
     assert response.status_code == (200 if trusted else 503)
     if not trusted:
         assert response.json()["reason"] == "model_code_consent_required"
+
+
+@pytest.fixture
+def pinned_consent_probe(health_client, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx import model_aliases, model_metadata
+
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_alias = "qwen3.5-4b-4bit"
+    revision = "a1" * 20
+    snapshot = tmp_path / revision
+    snapshot.mkdir()
+    metadata = model_metadata.ModelMetadata(
+        config={"model_file": "custom.py"},
+        chat_template=None,
+        snapshot_dir=snapshot,
+    )
+    read = Mock(return_value=metadata)
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda _: revision)
+    monkeypatch.setattr(model_metadata, "read_model_metadata", read)
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    return cfg, client, read, metadata
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_pinned_consent_probe_reads_metadata_once(pinned_consent_probe, blocked):
+    from rapid_mlx.routes.health import _model_consent_blocker
+
+    cfg, client, read, metadata = pinned_consent_probe
+    if not blocked:
+        metadata.config.clear()
+    for path in ("/health/ready", "/readyz"):
+        assert client.get(path).status_code == (503 if blocked else 200)
+    assert read.call_count == 1
+    # Returning a decision must not let callers mutate the cached value.
+    _model_consent_blocker(cfg).clear()
+    assert bool(_model_consent_blocker(cfg)) == blocked
+    assert read.call_count == 1
+
+
+def test_pinned_consent_cache_evicts_oldest_entry(pinned_consent_probe):
+    from rapid_mlx.routes.health import _consent_cache, _model_consent_blocker
+
+    cfg, _, read, _ = pinned_consent_probe
+    keys = []
+    for index in range(17):
+        cfg.model_path = f"owner/model-{index}"
+        assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+        keys.append(next(reversed(_consent_cache)))
+        assert len(_consent_cache) == min(index + 1, 16)
+
+    assert keys[0] not in _consent_cache
+    assert list(_consent_cache) == keys[1:]
+    assert read.call_count == 17
+
+    # A retained entry is reused; revisiting the evicted one reads it again.
+    cfg.model_path = "owner/model-1"
+    assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+    assert read.call_count == 17
+    cfg.model_path = "owner/model-0"
+    assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+    assert read.call_count == 18
+    assert len(_consent_cache) == 16
+    assert keys[1] not in _consent_cache
+    assert list(_consent_cache) == keys[2:] + keys[:1]
+
+
+def test_pinned_consent_probe_rechecks_when_consent_changes(
+    pinned_consent_probe, monkeypatch
+):
+    _, client, read, _ = pinned_consent_probe
+    assert client.get("/health/ready").status_code == 503
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+    assert client.get("/readyz").status_code == 200
+    assert read.call_count == 2
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    assert client.get("/readyz").status_code == 503
+
+
+def test_local_consent_probe_reads_metadata_every_time(pinned_consent_probe):
+    cfg, client, read, metadata = pinned_consent_probe
+    # Even a local directory named for a commit and a resolved catalog pin
+    # cannot establish that its contents are immutable.
+    cfg.model_path = str(metadata.snapshot_dir)
+    for path in ("/health/ready", "/readyz"):
+        assert client.get(path).status_code == 503
+    assert read.call_count == 2
+
+
+@pytest.mark.parametrize("missing", ["metadata", "snapshot", OSError, ValueError])
+def test_pinned_consent_probe_rechecks_unavailable_metadata(
+    pinned_consent_probe, missing
+):
+    from rapid_mlx.model_metadata import ModelMetadata
+
+    _, client, read, metadata = pinned_consent_probe
+    unavailable = (
+        None
+        if missing == "metadata"
+        else ModelMetadata(config={}, chat_template=None, snapshot_dir=None)
+        if missing == "snapshot"
+        else missing()
+    )
+    read.side_effect = [unavailable, metadata]
+    assert client.get("/health/ready").status_code == 200
+    assert client.get("/readyz").status_code == 503
+    assert client.get("/readyz").status_code == 503
+    assert read.call_count == 2
+
+
+@pytest.mark.parametrize("revision", [None, "main", "a1" * 19])
+def test_unpinned_consent_probe_reads_metadata_every_time(
+    pinned_consent_probe, monkeypatch, revision
+):
+    from rapid_mlx import model_aliases
+
+    _, client, read, _ = pinned_consent_probe
+    monkeypatch.setattr(model_aliases, "resolve_revision", lambda _: revision)
+    for path in ("/health/ready", "/readyz"):
+        assert client.get(path).status_code == 503
+    assert read.call_count == 2
+
+
+def test_pinned_consent_probe_rechecks_nonmatching_snapshot(pinned_consent_probe):
+    from dataclasses import replace
+
+    _, client, read, metadata = pinned_consent_probe
+    read.return_value = replace(
+        metadata, snapshot_dir=metadata.snapshot_dir.parent / "mutable"
+    )
+    assert client.get("/health/ready").status_code == 503
+    read.return_value = replace(read.return_value, config={})
+    assert client.get("/readyz").status_code == 200
+    assert read.call_count == 2

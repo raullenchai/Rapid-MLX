@@ -556,6 +556,7 @@ def run_ddtree_server(
     host: str,
     port: int,
     port_explicit: bool | None = None,
+    drafter_revision: str | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -582,6 +583,7 @@ def run_ddtree_server(
         return load_runtime(
             main_model_repo=main_model_repo,
             drafter_repo=drafter_repo,
+            drafter_revision=drafter_revision,
             speculative_tokens=speculative_tokens,
             tree_budget=tree_budget,
         )
