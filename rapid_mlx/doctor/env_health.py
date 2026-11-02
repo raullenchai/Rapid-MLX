@@ -304,8 +304,9 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
 # while reserving time for the later diagnostics; warm probes return immediately.
 _DOCTOR_BUDGET_S = 60.0
 _DOCTOR_FOLLOWUP_RESERVE_S = 5.0
-_DOCTOR_DEEP_BUDGET_S = 75.0
+_DOCTOR_DEEP_BUDGET_S = 150.0
 _IMPORT_PROBE_TIMEOUT_S = 45.0
+_DEEP_IMPORT_PROBE_TIMEOUT_S = 120.0
 # Leave enough scheduling-budget headroom for subprocess timeout cleanup, report
 # assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
 # terminating the child at its timeout and can return a few milliseconds
@@ -1247,7 +1248,11 @@ def _runtime_module_importable(
             command,
             capture_output=True,
             text=True,
-            timeout=_bounded_timeout(_IMPORT_PROBE_TIMEOUT_S),
+            timeout=_bounded_timeout(
+                _DEEP_IMPORT_PROBE_TIMEOUT_S
+                if _DOCTOR_DEEP_MODE
+                else _IMPORT_PROBE_TIMEOUT_S
+            ),
             env={
                 "HOME": os.environ.get("HOME", str(Path.home())),
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -1985,6 +1990,44 @@ def _version_supported(dist: str, version: str) -> bool:
         return False
 
 
+def _source_aware_extra_hint(command: str) -> str:
+    """Keep tool extras and the installed source in manual repair guidance."""
+    argv = shlex.split(command)
+    package = argv[-1].partition("==")[0]
+    try:
+        raw = _im.distribution("rapid-mlx").read_text("direct_url.json")
+        if raw is None:
+            return command
+        direct = json.loads(raw)
+        url = direct["url"]
+        if not isinstance(url, str) or not url:
+            raise ValueError("invalid source URL")
+        parsed_url = urllib.parse.urlsplit(url)
+        if (
+            parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.query
+        ):
+            raise ValueError("source URL may contain credentials")
+        if "vcs_info" in direct:
+            vcs = direct["vcs_info"]["vcs"]
+            if not isinstance(vcs, str) or not vcs:
+                raise ValueError("invalid source VCS")
+            commit = direct["vcs_info"]["commit_id"]
+            if not isinstance(commit, str) or not commit:
+                raise ValueError("invalid source commit")
+            url = f"{vcs}+{url}@{commit}"
+        subdirectory = direct.get("subdirectory", "")
+        if not isinstance(subdirectory, str):
+            raise ValueError("invalid source subdirectory")
+        if subdirectory:
+            url += f"#subdirectory={urllib.parse.quote(subdirectory, safe='/')}"
+        argv[-1] = f"{package} @ {url}"
+    except Exception:
+        argv[-1] = package
+    return shlex.join(argv)
+
+
 def _runtime_pip_command(
     *requirements: str,
     runtime: Path | None = None,
@@ -2009,7 +2052,9 @@ def _runtime_pip_command(
                     else None
                 )
                 if extra and not is_base_runtime_extra(extra[1]):
-                    return optional_extra_repair_command(extra[1])
+                    return _source_aware_extra_hint(
+                        optional_extra_repair_command(extra[1])
+                    )
                 argv = repair_argv()
                 if argv is not None:
                     return shlex.join(argv)

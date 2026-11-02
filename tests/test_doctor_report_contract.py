@@ -410,7 +410,7 @@ def test_lock_timeout_preserves_only_selection(monkeypatch):
     assert [section.id for section in report.sections] == ["network"]
 
 
-@pytest.mark.parametrize("deep, expected_timeout", [(False, 65.0), (True, 80.0)])
+@pytest.mark.parametrize("deep, expected_timeout", [(False, 65.0), (True, 155.0)])
 def test_doctor_json_does_not_mix_human_output(
     monkeypatch, capsys, deep, expected_timeout
 ):

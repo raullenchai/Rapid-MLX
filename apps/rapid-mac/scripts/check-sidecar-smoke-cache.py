@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -151,10 +152,14 @@ def unavailable_pins(
                 # warm-tier symlink. ``is_file`` alone can succeed while the
                 # release runner later blocks forever opening the same blob.
                 # The probe is an isolated, bounded subprocess for that reason.
-                if snapshot.is_dir() and candidate.is_file():
+                if stat.S_ISDIR(snapshot.stat().st_mode) and stat.S_ISREG(
+                    candidate.stat().st_mode
+                ):
                     outcome = probe_file(candidate)
                 else:
                     outcome = MISSING
+            except (FileNotFoundError, NotADirectoryError):
+                outcome = MISSING
             except PermissionError:
                 outcome = BLOCKED
             except OSError:

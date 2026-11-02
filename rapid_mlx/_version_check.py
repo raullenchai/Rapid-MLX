@@ -656,9 +656,7 @@ def prompt_upgrade_if_available() -> bool:
             return False
         if returncode == 0:
             new = installed_version_in_fresh_process(info)
-            parsed_new = _parse_version(new) if new is not None else None
-            target = _parse_version(latest_str)
-            if parsed_new is not None and target is not None and parsed_new >= target:
+            if new is not None and _version_satisfies_target(new, latest_str):
                 print(
                     f"\nUpgrade complete: rapid-mlx {new}. Please re-run your command.\n"
                 )
@@ -822,12 +820,80 @@ def _format_available_warning(installed: str, latest: str) -> str:
     return format_staleness_warning(installed, latest)
 
 
+def _normalize_version(version: str) -> tuple[tuple[int, ...], str] | None:
+    match = re.match(r"(\d+(?:\.\d+)*)(.*)", version.strip().lower().removeprefix("v"))
+    if match is None:
+        return None
+    release = [int(component) for component in match[1].split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    aliases = {
+        "alpha": "a",
+        "beta": "b",
+        "c": "rc",
+        "pre": "rc",
+        "preview": "rc",
+    }
+    suffix = re.sub(
+        r"^[._-]?(alpha|beta|preview|pre|rc|dev|post|a|b|c)",
+        lambda label: aliases.get(label[1], label[1]),
+        match[2],
+    )
+    return tuple(release), suffix
+
+
+def _versions_equal(installed: str, target: str) -> bool:
+    """Compare exact releases without dropping prerelease or build suffixes."""
+    try:
+        from packaging.version import Version
+    except ImportError:
+        normalized = _normalize_version(installed)
+        return normalized is not None and normalized == _normalize_version(target)
+    try:
+        return bool(Version(installed) == Version(target))
+    except ValueError:
+        return False
+
+
+def _version_satisfies_target(installed: str, target: str) -> bool:
+    """Accept the target or a newer release appropriate for its release channel."""
+    try:
+        from packaging.version import Version
+    except ImportError:
+        if _versions_equal(installed, target):
+            return True
+        normalized_installed = _normalize_version(installed)
+        normalized_target = _normalize_version(target)
+        return bool(
+            normalized_installed is not None
+            and normalized_target is not None
+            and not normalized_installed[1]
+            and normalized_installed[0] > normalized_target[0]
+        )
+    try:
+        installed_version = Version(installed)
+        target_version = Version(target)
+    except ValueError:
+        return False
+    return bool(
+        installed_version == target_version
+        or (
+            installed_version > target_version
+            and (target_version.is_prerelease or not installed_version.is_prerelease)
+        )
+    )
+
+
 def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
     import subprocess
 
-    if info.binary_path and os.access(info.binary_path, os.X_OK):
+    if (
+        info.binary_path
+        and os.access(info.binary_path, os.X_OK)
+        and _launcher_belongs_to_running_install(info.binary_path)
+    ):
         argv = [info.binary_path, "--version"]
-        pattern = r"\brapid-mlx\s+(\d+\.\d+\.\d+(?:rc\d+|\.[^\s]+)?)"
+        pattern = r"\brapid-mlx\s+(\d+(?:\.\d+)*\S*)"
     else:
         import site
 
@@ -852,7 +918,7 @@ def installed_version_in_fresh_process(info: InstallInfo) -> str | None:
             return None
         matches = re.findall(pattern, result.stdout, re.MULTILINE)
         version = matches[-1] if matches else None
-        return version if version and _parse_version(version) is not None else None
+        return version if version and _versions_equal(version, version) else None
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
 

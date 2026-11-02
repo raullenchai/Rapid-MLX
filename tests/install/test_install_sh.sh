@@ -856,6 +856,158 @@ INSTALL_DIR="$OLD_INSTALL_DIR"
     done
 ) && ok "service hints only follow upgrades and rebuilds with existing services" || bad "service hints only follow upgrades and rebuilds with existing services"
 
+# Pending optional features survive retries and stay outside the venv stash.
+for install_status in 0 7; do
+    (
+        INSTALL_DIR="$WORK/pending-$install_status"; mkdir -p "$INSTALL_DIR/bin"
+        printf '#!/bin/bash\necho 1.0.1\n' > "$INSTALL_DIR/bin/python"
+        chmod +x "$INSTALL_DIR/bin/python"
+        printf 'audio,chat\n' > "$INSTALL_DIR/.pending-extras"
+        PRESERVED_EXTRAS=""; TARGET=stable; INSTALLER=(recorder)
+        upgrade_pip() { :; }
+        recorder() { printf '%s\n' "$*" > "$INSTALL_DIR/attempt"; return "$install_status"; }
+        dispatch_venv upgrade >/dev/null || exit 1
+        reinstall_preserved_extras >/dev/null || exit 1
+        [ "$(cat "$INSTALL_DIR/attempt")" = 'rapid-mlx[audio,chat]==1.0.1' ] || exit 1
+        if [ "$install_status" = 0 ]; then
+            [ ! -e "$INSTALL_DIR/.pending-extras" ]
+        else
+            [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]
+        fi
+    ) && ok "pending extras retry status $install_status" || bad "pending extras retry status $install_status"
+done
+(
+    INSTALL_DIR="$WORK/pending-stash"; mkdir -p "$INSTALL_DIR/bin"
+    installed_extras_of_venv() { echo audio,chat; }
+    create_venv() { [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]; }
+    dispatch_venv rebuild >/dev/null || exit 1
+    [ ! -e "$VENV_BACKUP/.pending-extras" ] || exit 1
+    restore_venv_entries "$INSTALL_DIR" "$VENV_BACKUP" || exit 1
+    [ "$(cat "$INSTALL_DIR/.pending-extras")" = audio,chat ]
+) && ok "pending extras persist before stash and survive restore" || bad "pending extras persist before stash and survive restore"
+(
+    INSTALL_DIR="$WORK/pending-garbage"; mkdir -p "$INSTALL_DIR"
+    printf 'chat] @ invalid\n' > "$INSTALL_DIR/.pending-extras"
+    PRESERVED_EXTRAS=""; upgrade_pip() { :; }
+    dispatch_venv upgrade >/dev/null || exit 1
+    [ -z "$PRESERVED_EXTRAS" ] && [ ! -e "$INSTALL_DIR/.pending-extras" ]
+) && ok "invalid pending extras are discarded" || bad "invalid pending extras are discarded"
+
+for config_name in uv.toml pyproject.toml; do
+    (
+        fixture="$WORK/physical-$config_name"
+        mkdir -p "$fixture/physical/project" "$fixture/logical" "$fixture/home"
+        printf '[tool.uv]\n' > "$fixture/physical/$config_name"
+        ln -s "$fixture/physical/project" "$fixture/logical/project"
+        HOME="$fixture/home"; XDG_CONFIG_HOME="$HOME"; XDG_CONFIG_DIRS="$HOME"
+        unset UV_CONFIG_FILE UV_NO_CONFIG
+        INSTALL_DIR="$fixture/runtime"; mkdir -p "$INSTALL_DIR/bin"
+        ln -s "$REAL_PYTHON" "$INSTALL_DIR/bin/python"
+        cd "$fixture/logical/project" || exit 1
+        if uv_config_absent; then exit 1; fi
+    ) && ok "physical ancestor $config_name is respected" || bad "physical ancestor $config_name is respected"
+done
+
+# Signal only the installer shell; a surviving writer must stop before rollback.
+for signal in HUP TERM; do
+    for command_kind in direct pip uv; do
+        fixture="$WORK/signal-$signal-$command_kind"; mkdir -p "$fixture"
+        cat > "$fixture/writer" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$$" > "$1/pid"
+bash -c 'sleep 1; printf late > "$1/late-write"' bash "$1" &
+printf '%s\n' "$!" > "$1/grandchild-pid"
+touch "$1/ready"
+wait
+EOF
+        chmod +x "$fixture/writer"
+        bash -c '
+            RAPID_INSTALL_LIB=1 source "$1"
+            fixture=$2; command_kind=$3
+            rollback_rebuild() {
+                if kill -0 "$(cat "$fixture/pid")" 2>/dev/null; then touch "$fixture/alive-at-rollback"; fi
+                if kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then touch "$fixture/alive-at-rollback"; fi
+                touch "$fixture/rollback"
+            }
+            release_install_lock() {
+                if kill -0 "$(cat "$fixture/pid")" 2>/dev/null ||
+                   kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then touch "$fixture/alive-at-release"; fi
+                touch "$fixture/released"
+            }
+            # Use the production trap definitions even in library mode.
+            eval "$(sed -n "/^trap on_installer_exit EXIT$/,/^trap .* TERM$/p" "$1")"
+            case "$command_kind" in
+                direct) run_install_command "$fixture/writer" "$fixture" ;;
+                pip) run_package_command "$fixture/writer" "$fixture" ;;
+                uv)
+                    uv_config_absent() { return 1; }
+                    uv() { exec "$fixture/writer" "$fixture"; }
+                    run_package_command uv pip install ;;
+            esac
+        ' bash "$INSTALL_SH" "$fixture" "$command_kind" >"$fixture/output" 2>&1 &
+        installer_pid=$!
+        for ((attempt=0; attempt<100; attempt++)); do
+            [ ! -e "$fixture/ready" ] || break
+            sleep 0.02
+        done
+        kill -s "$signal" "$installer_pid"
+        signal_status=0; wait "$installer_pid" || signal_status=$?
+        sleep 1.2
+        expected_status=129; [ "$signal" != TERM ] || expected_status=143
+        if [ "$signal_status" = "$expected_status" ] && [ -e "$fixture/rollback" ] &&
+           [ -e "$fixture/released" ] && [ ! -e "$fixture/alive-at-rollback" ] &&
+           [ ! -e "$fixture/alive-at-release" ] && [ ! -e "$fixture/late-write" ] &&
+           ! kill -0 "$(cat "$fixture/pid")" 2>/dev/null &&
+           ! kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then
+            ok "$signal stops $command_kind child and descendants before rollback and lock release"
+        else
+            bad "$signal stops $command_kind child and descendants before rollback and lock release (status $signal_status)"
+        fi
+    done
+done
+
+# A TERM handler can start another writer after the initial tree was frozen.
+fixture="$WORK/signal-term-handler"; mkdir -p "$fixture"
+cat > "$fixture/writer" <<'EOF'
+#!/bin/bash
+on_term() {
+    bash -c 'sleep 1; printf late > "$1/late-write"' bash "$1" &
+    printf '%s\n' "$!" > "$1/grandchild-pid"
+    touch "$1/handler-ran"
+    # Keep the parent discoverable while its new child starts.
+    sleep 0.4
+    exit 0
+}
+trap 'on_term "$1"' TERM
+touch "$1/ready"
+while :; do sleep 0.05; done
+EOF
+chmod +x "$fixture/writer"
+bash -c '
+    RAPID_INSTALL_LIB=1 source "$1"
+    fixture=$2
+    rollback_rebuild() { touch "$fixture/rollback"; }
+    release_install_lock() { touch "$fixture/released"; }
+    eval "$(sed -n "/^trap on_installer_exit EXIT$/,/^trap .* TERM$/p" "$1")"
+    run_install_command "$fixture/writer" "$fixture"
+' bash "$INSTALL_SH" "$fixture" >"$fixture/output" 2>&1 &
+installer_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    [ ! -e "$fixture/ready" ] || break
+    sleep 0.02
+done
+kill -HUP "$installer_pid"
+signal_status=0; wait "$installer_pid" || signal_status=$?
+sleep 2
+if [ "$signal_status" = 129 ] && [ -e "$fixture/handler-ran" ] &&
+   [ -e "$fixture/rollback" ] && [ -e "$fixture/released" ] &&
+   [ ! -e "$fixture/late-write" ] &&
+   ! kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then
+    ok "HUP stops a writer spawned by the child TERM handler"
+else
+    bad "HUP stops a writer spawned by the child TERM handler (status $signal_status)"
+fi
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
