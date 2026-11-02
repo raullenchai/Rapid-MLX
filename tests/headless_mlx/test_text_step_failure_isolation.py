@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from collections import Counter
 from contextlib import suppress
 from unittest.mock import MagicMock, patch
 
@@ -61,6 +62,7 @@ def seed(engine):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("escaped", [True, False])
 @pytest.mark.parametrize(
     "error,code",
     [
@@ -82,10 +84,16 @@ def seed(engine):
         ),
     ],
 )
-async def test_admission_failure_isolated_and_classified(monkeypatch, error, code):
+async def test_admission_failure_isolated_and_classified(
+    monkeypatch, error, code, escaped
+):
     engine = make_engine()
     seed(engine)
     scheduler = engine.scheduler
+    record_failure = MagicMock(wraps=scheduler.performance.record_failed_performance)
+    monkeypatch.setattr(
+        scheduler.performance, "record_failed_performance", record_failure
+    )
     # Exercise the real admission loop up to request-local prefill validation.
     monkeypatch.setattr(scheduler, "_max_running_sequences", lambda: 2)
     monkeypatch.setattr(
@@ -101,6 +109,9 @@ async def test_admission_failure_isolated_and_classified(monkeypatch, error, cod
         nonlocal calls
         calls += 1
         if calls == 1:
+            if escaped:
+                scheduler._step_request_id = "bad"
+                raise error
             return original_step()
         ids = set(scheduler.running) | {r.request_id for r in scheduler.waiting}
         scheduler.running.clear()
@@ -133,6 +144,9 @@ async def test_admission_failure_isolated_and_classified(monkeypatch, error, cod
         for rid, collector in engine._output_collectors.items()
     }
     assert outputs["bad"].error_kind == code
+    assert Counter(
+        call.args[0].request_id for call in record_failure.call_args_list
+    ) == {"bad": 1}
     assert "private/model/path" not in outputs["bad"].error
     payload = inference_aborted_error_payload(
         InferenceAbortedError(
@@ -151,6 +165,10 @@ async def test_shared_step_failure_preserves_queued(monkeypatch, escaped):
     engine = make_engine()
     seed(engine)
     scheduler = engine.scheduler
+    record_failure = MagicMock(wraps=scheduler.performance.record_failed_performance)
+    monkeypatch.setattr(
+        scheduler.performance, "record_failed_performance", record_failure
+    )
     scheduler.running["bad"] = scheduler.waiting.popleft()
     scheduler.requests["bad"].status = RequestStatus.RUNNING
     generator = MagicMock()
@@ -200,6 +218,12 @@ async def test_shared_step_failure_preserves_queued(monkeypatch, escaped):
         for rid, collector in engine._output_collectors.items()
     }
     assert outputs["queued"].error is None
+    assert Counter(
+        call.args[0].request_id for call in record_failure.call_args_list
+    ) == {
+        "bad": 1,
+        "active": 1,
+    }
     for rid in ("bad", "active"):
         assert outputs[rid].error_kind == "engine_aborted"
         assert "private/model/path" not in outputs[rid].error
@@ -254,16 +278,83 @@ def test_repeated_admission_failures_preserve_healthy_work(
     assert scheduler._consecutive_step_failures == shared_failures
 
 
-def test_repeated_failures_escalate_to_queued_work():
+def test_repeated_failures_escalate_to_queued_work(monkeypatch):
     engine = make_engine()
     seed(engine)
     scheduler = engine.scheduler
+    record_failure = MagicMock(wraps=scheduler.performance.record_failed_performance)
+    monkeypatch.setattr(
+        scheduler.performance, "record_failed_performance", record_failure
+    )
     scheduler._consecutive_step_failures = 9
     output = scheduler.fail_step(RuntimeError("persistent step failure"))
     assert {out.request_id for out in output.outputs} == {"bad", "active", "queued"}
     assert not scheduler.running
     assert not scheduler.waiting
     assert all(out.error_kind == "engine_aborted" for out in output.outputs)
+    assert Counter(
+        call.args[0].request_id for call in record_failure.call_args_list
+    ) == {
+        "bad": 1,
+        "active": 1,
+        "queued": 1,
+    }
+
+
+def test_failed_performance_is_idempotent():
+    engine = make_engine()
+    seed(engine)
+    performance = engine.scheduler.performance
+    request = engine.scheduler.requests["bad"]
+    before = performance.snapshot().requests_failed
+
+    assert performance.record_failed_performance(request) is True
+    assert performance.record_failed_performance(request) is False
+    assert performance.snapshot().requests_failed == before + 1
+
+
+@pytest.mark.asyncio
+async def test_compatibility_step_failure_records_each_request_once():
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    record_failure = MagicMock(wraps=scheduler.performance.record_failed_performance)
+
+    class CompatibilityScheduler:
+        performance = MagicMock(record_failed_performance=record_failure)
+
+        def has_requests(self):
+            return True
+
+        def get_request(self, rid):
+            return scheduler.get_request(rid)
+
+        def step(self):
+            raise RuntimeError("step failed")
+
+    engine.scheduler = CompatibilityScheduler()
+    engine._finished_events["queued"].set()
+    engine._running = True
+    task = asyncio.create_task(engine._engine_loop())
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(event.wait() for event in engine._finished_events.values())
+            ),
+            2,
+        )
+    finally:
+        engine._running = False
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert Counter(
+        call.args[0].request_id for call in record_failure.call_args_list
+    ) == {
+        "bad": 1,
+        "active": 1,
+    }
 
 
 @pytest.mark.parametrize("clear_fails", [False, True])

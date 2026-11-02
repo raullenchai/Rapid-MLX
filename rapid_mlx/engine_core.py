@@ -1075,18 +1075,25 @@ class EngineCore:
                         for rid, event in self._finished_events.items()
                         if not event.is_set()
                     }
-                performance = getattr(self.scheduler, "performance", None)
-                for rid in failed_outputs:
+                    performance = getattr(self.scheduler, "performance", None)
                     if performance is not None:
-                        try:
-                            get_request = getattr(self.scheduler, "get_request", None)
-                            request = (
-                                get_request(rid) if get_request is not None else None
-                            )
-                            if request is not None:
-                                performance.record_failed_performance(request)
-                        except Exception:  # pragma: no cover — defensive
-                            logger.debug("Failed to record engine failure for %s", rid)
+                        for rid in failed_outputs:
+                            try:
+                                get_request = getattr(
+                                    self.scheduler, "get_request", None
+                                )
+                                request = (
+                                    get_request(rid)
+                                    if get_request is not None
+                                    else None
+                                )
+                                if request is not None:
+                                    performance.record_failed_performance(request)
+                            except Exception:  # pragma: no cover — defensive
+                                logger.debug(
+                                    "Failed to record engine failure for %s", rid
+                                )
+                for rid in failed_outputs:
                     collector = self._output_collectors.get(rid)
                     if collector is not None:
                         try:
