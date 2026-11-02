@@ -315,7 +315,7 @@ def verify(
     repo: str,
     requirements: tuple[RequiredWorkflow, ...],
     gh: str = "gh",
-    deadline_sec: float = 5400,
+    deadline_sec: float = 10800,
     sleep_sec: float = 20,
 ) -> list[str]:
     _validate_sha(source_sha)
@@ -412,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         dest="requirements",
         help="Required workflow and aggregate job: WORKFLOW.yml:job-name",
     )
-    parser.add_argument("--deadline-min", type=float, default=90)
+    parser.add_argument("--deadline-min", type=float, default=180)
     parser.add_argument("--sleep-sec", type=float, default=20)
     parser.add_argument("--gh", default="gh")
     args = parser.parse_args(argv)

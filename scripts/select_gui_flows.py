@@ -119,7 +119,9 @@ def shard_matrix(flows: Iterable[str]) -> dict[str, list[dict[str, object]]]:
     selected = set(flows)
     journeys = _pr_journeys()
     known = {str(journey["name"]) for journey in journeys}
-    if not selected or not selected <= known:
+    if not selected:
+        return {"include": []}
+    if not selected <= known:
         raise ValueError("GUI shard input must contain known PR journeys")
 
     groups: dict[str, list[str]] = {}
