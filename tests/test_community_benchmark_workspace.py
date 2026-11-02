@@ -7524,13 +7524,14 @@ def test_image_schedule_request_payload(monkeypatch, alias, suffix, steps) -> No
 @pytest.mark.parametrize(
     "failure_stage", ("import", "resolution", "construction", "validation")
 )
+@pytest.mark.parametrize("fault_type", (RuntimeError, ImportError))
 def test_image_resolution_fault_keeps_v1_only_on_import_error(
-    monkeypatch, failure_stage
+    monkeypatch, failure_stage, fault_type
 ) -> None:
     from rapid_mlx import model_aliases
     from rapid_mlx.image import engine
 
-    fault = RuntimeError("probe failed")
+    fault = fault_type("probe failed")
 
     def fail_resolution(*args, **kwargs):
         raise fault
@@ -7552,7 +7553,7 @@ def test_image_resolution_fault_keeps_v1_only_on_import_error(
         return
     if failure_stage == "resolution":
         monkeypatch.setattr(model_aliases, "resolve_model", fail_resolution)
-    message = "could not validate image schedules: RuntimeError: probe failed"
+    message = f"could not validate image schedules: {fault_type.__name__}: probe failed"
     with pytest.raises(ImageProtocolUnavailableError, match=message) as excinfo:
         registered_workload("image_generation", "bonsai-image-4b-2bit")
     assert excinfo.value.__cause__ is fault

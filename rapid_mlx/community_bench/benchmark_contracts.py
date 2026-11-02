@@ -72,9 +72,12 @@ def registered_workload(task_type: str, alias: str | None = None) -> dict[str, A
     if task_type != "image_generation" or alias is None:
         return workload
     try:
-        from rapid_mlx.image.engine import ImageGenerationEngine, ImageRequestError
-        from rapid_mlx.local_model_path import resolved_model_ref
-        from rapid_mlx.model_aliases import resolve_model
+        try:
+            from rapid_mlx.image.engine import ImageGenerationEngine, ImageRequestError
+            from rapid_mlx.local_model_path import resolved_model_ref
+            from rapid_mlx.model_aliases import resolve_model
+        except ImportError:
+            return workload
 
         engine = ImageGenerationEngine(resolve_model(resolved_model_ref(alias)))
         failures = []
@@ -101,8 +104,6 @@ def registered_workload(task_type: str, alias: str | None = None) -> dict[str, A
                     for case in candidate["cases"]
                 )
                 failures.append(f"{schedules}: {exc}")
-    except ImportError:
-        return workload
     except Exception as exc:
         raise ImageProtocolUnavailableError(
             f"could not validate image schedules: {type(exc).__name__}: {exc}"
