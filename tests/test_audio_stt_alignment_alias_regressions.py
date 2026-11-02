@@ -3,6 +3,7 @@
 
 import json
 import struct
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -30,14 +31,40 @@ def _wav(data_size=48000, riff_size=48036, channels=1):
     )
 
 
-@pytest.mark.parametrize("size", [0xFFFFFFFF, 0xFFFFFF00, 192000])
+@pytest.mark.parametrize("size", [0xFFFFFFFF, 0xFFFFFF00, 192000, None])
 @pytest.mark.parametrize("channels", [1, 2])
-def test_wav_duration_bounds_declared_frames_by_payload(tmp_path, size, channels):
+@pytest.mark.parametrize("probe_duration", [None, 1.25])
+def test_wav_duration_bounds_declared_frames_by_payload(
+    tmp_path, monkeypatch, size, channels, probe_duration
+):
+    from rapid_mlx.audio import stt
     from rapid_mlx.audio.stt import _audio_duration_seconds
 
+    calls = []
+
+    def info(audio_path):
+        calls.append(audio_path)
+        return SimpleNamespace(duration=probe_duration)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(info=info) if probe_duration is not None else None,
+    )
+    monkeypatch.setattr(stt.shutil, "which", lambda _: None)
     path = tmp_path / "pipe.wav"
-    path.write_bytes(_wav(size, 0xFFFFFFFF, channels))
-    assert _audio_duration_seconds(str(path), allow_decode=False) == pytest.approx(1.5)
+    path.write_bytes(
+        _wav(size if size is not None else 48000 * channels, 0xFFFFFFFF, channels)
+    )
+    expected = (
+        probe_duration if size is not None and probe_duration is not None else 1.5
+    )
+    assert _audio_duration_seconds(str(path), allow_decode=False) == pytest.approx(
+        expected
+    )
+    assert calls == (
+        [str(path)] if size is not None and probe_duration is not None else []
+    )
 
 
 def test_wav_duration_ignores_trailing_metadata(tmp_path):

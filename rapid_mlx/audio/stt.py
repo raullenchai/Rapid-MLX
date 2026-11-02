@@ -669,6 +669,7 @@ def _audio_duration_seconds(
     audio_path: str, *, allow_decode: bool = True
 ) -> float | None:
     """Read the source duration without decoding the whole file again."""
+    bounded_duration = None
     try:
         import wave  # noqa: PLC0415
 
@@ -676,18 +677,22 @@ def _audio_duration_seconds(
             rate = wav.getframerate()
             if rate > 0:
                 # Pipe-written headers can declare an unknown or oversized
-                # data chunk. Bound frames by the bytes actually available.
+                # data chunk. Keep a byte-bounded fallback, but prefer later
+                # probes since trailing RIFF chunks may not be audio.
                 frame_bytes = wav.getnchannels() * wav.getsampwidth()
                 available = max(0, os.fstat(source.fileno()).st_size - source.tell())
-                frames = min(wav.getnframes(), available // frame_bytes)
-                return float(frames) / rate
+                frames = wav.getnframes()
+                if frames <= available // frame_bytes:
+                    return float(frames) / rate
+                bounded_duration = float(available // frame_bytes) / rate
     except Exception:  # noqa: BLE001
         pass
     try:
         import soundfile as sf  # noqa: PLC0415
 
         duration = float(sf.info(audio_path).duration)
-        return duration if duration >= 0.0 else None
+        if duration >= 0.0:
+            return duration
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -718,9 +723,11 @@ def _audio_duration_seconds(
                 return duration
     except Exception:  # noqa: BLE001
         pass
-    if not allow_decode:
-        return None
-    return _decoded_audio_duration(audio_path)
+    if allow_decode:
+        duration = _decoded_audio_duration(audio_path)
+        if duration is not None:
+            return duration
+    return bounded_duration
 
 
 def _decoded_audio_duration(audio_path: str) -> float | None:
