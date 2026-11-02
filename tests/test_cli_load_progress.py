@@ -178,3 +178,16 @@ def test_consent_blocker_fails_immediately_with_message(wait, tty, capsys):
     assert output.count(message) == 0
     assert captured.out.count(message) == 0
     assert captured.err.count(message) == 0
+
+
+@pytest.mark.parametrize("message_fields", [{}, {"message": ""}, {"message": 123}])
+def test_consent_blocker_uses_fallback_message(wait, message_fields):
+    _, calls, error = wait(
+        [(503, {"reason": "model_code_consent_required", **message_fields})]
+    )
+    assert isinstance(error, RuntimeError)
+    assert str(error) == (
+        "Model requires repository code consent. Review the repository code, "
+        "then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+    )
+    assert len(calls) == 1

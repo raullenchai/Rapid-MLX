@@ -213,7 +213,7 @@ async def health():
     if retrieval_models:
         model_name = retrieval_models[0]
 
-    consent_blocker = _model_consent_blocker(cfg)
+    consent_blocker = await asyncio.to_thread(_model_consent_blocker, cfg)
     return {
         **update_refresh.snapshot(),
         "status": "healthy",
@@ -257,7 +257,7 @@ async def health_ready():
     cfg = get_config()
     if primary_switching():
         raise ModelSwitchingError()
-    consent_blocker = _model_consent_blocker(cfg)
+    consent_blocker = await asyncio.to_thread(_model_consent_blocker, cfg)
     if consent_blocker:
         return JSONResponse(
             status_code=503, content={"ready": False, **consent_blocker}

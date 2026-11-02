@@ -68,6 +68,11 @@ MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
 _DOWNLOAD_DISK_HEADROOM = 0.10
 
+_MODEL_CONSENT_REQUIRED_MESSAGE = (
+    "Model requires repository code consent. Review the repository code, "
+    "then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+)
+
 DEFAULT_SERVE_PORT = 8000
 DEFAULT_SERVE_PORT_CANDIDATES = 10
 DEFAULT_SYSTEM_ONE_PORT = 8700
@@ -13327,7 +13332,12 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
                             payload = {}
                         status = payload if isinstance(payload, dict) else {}
                         if status.get("reason") == "model_code_consent_required":
-                            raise RuntimeError(status["message"])
+                            message = status.get("message")
+                            raise RuntimeError(
+                                message
+                                if isinstance(message, str) and message
+                                else _MODEL_CONSENT_REQUIRED_MESSAGE
+                            )
                 except requests.RequestException:
                     pass
             _draw()

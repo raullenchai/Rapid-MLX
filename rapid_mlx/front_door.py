@@ -41,6 +41,10 @@ QUICK_START_MODEL = FIRST_RUN_MODEL
 PRODUCT_LINE = "Local OpenAI- and Anthropic-compatible LLM server for Apple Silicon."
 DOCS_URL = "https://rapidmlx.com/docs/"
 DEFAULT_PORT = 8000
+_MODEL_CONSENT_REQUIRED_MESSAGE = (
+    "Model requires repository code consent. Review the repository code, "
+    "then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+)
 _PORT_SEARCH_SPAN = 100
 _PICKER_LIMIT = 7
 _ROLE_LABELS = {"smart": "Smart", "fast": "Fast"}
@@ -711,7 +715,12 @@ def _ready_probe(url: str) -> bool:
                     isinstance(payload, dict)
                     and payload.get("reason") == "model_code_consent_required"
                 ):
-                    raise _ModelConsentRequiredError(payload["message"]) from None
+                    message = payload.get("message")
+                    raise _ModelConsentRequiredError(
+                        message
+                        if isinstance(message, str) and message
+                        else _MODEL_CONSENT_REQUIRED_MESSAGE
+                    ) from None
             return False
         finally:
             exc.close()

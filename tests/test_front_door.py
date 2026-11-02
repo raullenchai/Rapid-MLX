@@ -1025,6 +1025,30 @@ def test_ready_probe_closes_non_503_http_error(monkeypatch):
     assert body.closed
 
 
+@pytest.mark.parametrize("message_fields", [{}, {"message": ""}, {"message": 123}])
+def test_ready_probe_consent_blocker_uses_fallback_message(monkeypatch, message_fields):
+    import io
+    import json
+    import urllib.error
+    from unittest.mock import Mock
+
+    body = io.BytesIO(
+        json.dumps({"reason": "model_code_consent_required", **message_fields}).encode()
+    )
+    error = urllib.error.HTTPError(
+        "http://localhost/health/ready", 503, "unavailable", {}, body
+    )
+    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=error))
+
+    with pytest.raises(fd._ModelConsentRequiredError) as exc_info:
+        fd._ready_probe("http://localhost/health/ready")
+    assert str(exc_info.value) == (
+        "Model requires repository code consent. Review the repository code, "
+        "then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+    )
+    assert body.closed
+
+
 @pytest.mark.parametrize("reason", ["model_code_consent_required", "loading"])
 def test_wait_consent_blocker_stops_before_sleep(monkeypatch, capsys, reason):
     import io
