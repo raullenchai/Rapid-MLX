@@ -220,7 +220,15 @@ from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
 )
-from .request import Request, RequestOutput, RequestStatus, SamplingParams
+from .request import (
+    InferenceAbortedError,
+    Request,
+    RequestOutput,
+    RequestStatus,
+    SamplingParams,
+    classify_engine_abort,
+    inference_aborted_error_payload,
+)
 from .runtime.model_performance import get_model_performance_ledger
 from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
@@ -4442,6 +4450,8 @@ class Scheduler:
         self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
+        self._step_request_id: str | None = None
+        self._consecutive_step_failures: int = 0
         self._generation_paused = False
         self._paused_add_allowance = 0
         self._paused_admission_tokens: set[str] = set()
@@ -10293,6 +10303,8 @@ class Scheduler:
                 request = popped
                 selection_forced = False
 
+            self._step_request_id = request.request_id
+
             # Resolve invalid-prefix fallback before pricing the cohort. A
             # cold retry needs the whole prompt, not the stale hit's suffix.
             # Do this before exact-hit kickoff can trim a cache in place.
@@ -10308,6 +10320,7 @@ class Scheduler:
             if not self._prefill_cohort_fits(request):
                 if not shortest_tail:
                     self.waiting.insert(waiting_order.index(request), request)
+                self._step_request_id = None
                 break
 
             # Ensure we have a batch generator. The False return means
@@ -10316,16 +10329,22 @@ class Scheduler:
             # into the stale generator (Rapid-MLX #611 / codex P2 on
             # PR #612). Requeue and break so the next ``step`` retries
             # once the running batch completes.
+            # Generator replacement mutates shared state, outside request ownership.
+            self._step_request_id = None
             if not self._ensure_batch_generator(request.sampling_params):
                 if not shortest_tail:
                     self.waiting.appendleft(request)
+                self._step_request_id = None
                 break
 
             if self.batch_generator is None:
                 # Put back and try again later
                 if not shortest_tail:
                     self.waiting.appendleft(request)
+                self._step_request_id = None
                 break
+
+            self._step_request_id = request.request_id
 
             # Determine tokens to process and cache to use
             # Note: Don't use `remaining_tokens or prompt_token_ids` because empty list
@@ -10369,6 +10388,7 @@ class Scheduler:
                 ):
                     if not shortest_tail:
                         self.waiting.insert(waiting_order.index(request), request)
+                    self._step_request_id = None
                     break
             elif request.remaining_tokens:
                 tokens_to_process = request.remaining_tokens
@@ -10557,6 +10577,8 @@ class Scheduler:
                 shared_local_split = None
                 request.shared_prefix_snapshot_at = 0
 
+            # Insertion can partially mutate the shared batch before raising.
+            self._step_request_id = None
             try:
                 if shared_local_split is not None:
                     splits = sorted(
@@ -10598,6 +10620,7 @@ class Scheduler:
                     )
             except Exception as e:
                 if cache_to_use is not None:
+                    self._step_request_id = request.request_id
                     logger.warning(
                         f"[cache_insert_error] request={request.request_id[:12]} "
                         f"cache insert failed ({e}), retrying without cache"
@@ -10616,6 +10639,7 @@ class Scheduler:
                     if not self._prefill_cohort_fits(request):
                         if not shortest_tail:
                             self.waiting.insert(waiting_order.index(request), request)
+                        self._step_request_id = None
                         break
                     # The retry keeps only the message boundary split.
                     request.shared_prefix_snapshot_at = 0
@@ -10626,6 +10650,7 @@ class Scheduler:
                         "_cache_snapshot_boundary",
                         getattr(request, "prefix_boundary", 0),
                     )
+                    self._step_request_id = None
                     if self.memory_aware_cache is not None and 0 < retry_boundary < len(
                         tokens_to_process
                     ):
@@ -10657,6 +10682,7 @@ class Scheduler:
             # request in place and retry on a later scheduler tick instead of
             # spinning forever in this unchanged loop.
             if not uids and shortest_tail:
+                self._step_request_id = None
                 break
 
             if uids:
@@ -10689,6 +10715,9 @@ class Scheduler:
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
+                # Admission is committed; later bookkeeping belongs to the batch.
+                self._step_request_id = None
+
                 self.total_prompt_tokens += request.num_prompt_tokens
                 cache_info = (
                     f", {request.cached_tokens} cached"
@@ -10703,6 +10732,9 @@ class Scheduler:
                     f"max_tokens={request.sampling_params.max_tokens} "
                     f"running={len(self.running)} waiting={len(self.waiting)}"
                 )
+
+            # Empty insert results also end request-local admission work.
+            self._step_request_id = None
 
         return scheduled
 
@@ -11628,6 +11660,55 @@ class Scheduler:
         if count > 0:
             logger.info(f"Rescheduled {count} requests for retry")
 
+    def fail_step(self, exc: Exception) -> SchedulerOutput:
+        """Retire failed work on the step thread, preserving unscheduled work."""
+        request_id = getattr(self, "_step_request_id", None)
+        self._step_request_id = None
+        if request_id is not None:
+            aborted_ids = {request_id}
+        else:
+            failures = getattr(self, "_consecutive_step_failures", 0) + 1
+            self._consecutive_step_failures = failures
+            fatal = failures >= 10
+            # A shared forward pass has no trustworthy row attribution.
+            aborted_ids = self._recover_from_generation_error()
+            if fatal:
+                aborted_ids.update(
+                    rid
+                    for rid, request in self.requests.items()
+                    if not RequestStatus.is_finished(request.status)
+                )
+        for rid in aborted_ids:
+            request = self.requests.get(rid)
+            if request is not None and not RequestStatus.is_finished(request.status):
+                self.performance.record_failed_performance(request)
+                self._do_abort_request(rid)
+                request.set_finished(RequestStatus.FINISHED_ABORTED)
+                request._continuous_mtp_state = None
+                request.batch_uid = None
+        kind = classify_engine_abort(exc)
+        if request_id is not None and kind == "insufficient_memory":
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+        message = inference_aborted_error_payload(
+            InferenceAbortedError("", error_kind=kind)
+        )["message"]
+        return SchedulerOutput(
+            outputs=[
+                RequestOutput(
+                    request_id=rid,
+                    finished=True,
+                    finish_reason="abort",
+                    error=message,
+                    error_kind=kind,
+                )
+                for rid in aborted_ids
+            ],
+            finished_request_ids=aborted_ids,
+        )
+
     def step(self, max_retries: int = 1) -> SchedulerOutput:
         """
         Execute one scheduling step with automatic error recovery.
@@ -11645,6 +11726,7 @@ class Scheduler:
             SchedulerOutput with results of this step
         """
         output = SchedulerOutput()
+        self._step_request_id = None
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
         self._process_pending_aborts()
@@ -11658,6 +11740,7 @@ class Scheduler:
             try:
                 # Schedule waiting requests
                 scheduled = self._schedule_waiting()
+                self._step_request_id = None
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 # Use model_prompt_tokens — when PFlash engages the
                 # prefill workload is the compressed length, not the
@@ -11793,10 +11876,14 @@ class Scheduler:
                     self._realign_grammar_logits_processors()
 
                 # Success - break out of retry loop
+                self._consecutive_step_failures = 0
                 break
 
             except TypeError as e:
                 # Catch the NoneType error specifically
+                if getattr(self, "_step_request_id", None) is not None:
+                    output = self.fail_step(e)
+                    break
                 if self._is_cache_corruption_error(e):
                     if attempt < max_retries:
                         logger.warning(
@@ -11818,29 +11905,10 @@ class Scheduler:
             except Exception as e:
                 import traceback
 
-                abort_error = (
-                    f"Inference aborted after generation error: {type(e).__name__}: {e}"
-                )
                 logger.error(
-                    f"Error in batch generation step: {e}\n{traceback.format_exc()}"
+                    "Error in batch generation step: %s\n%s", e, traceback.format_exc()
                 )
-                # Recover from fatal errors (OOM, Metal crash) instead of
-                # re-raising, which would cause infinite loop in engine_core.
-                aborted_ids = self._recover_from_generation_error()
-                for rid in aborted_ids:
-                    output.outputs.append(
-                        RequestOutput(
-                            request_id=rid,
-                            finished=True,
-                            # This is an internal terminal output.  The engine
-                            # raises on ``error`` before route serializers see
-                            # it, so keep its state truthful rather than
-                            # masquerading as a successful token-budget cap.
-                            finish_reason="abort",
-                            error=abort_error,
-                        )
-                    )
-                output.finished_request_ids = aborted_ids
+                output = self.fail_step(e)
                 break
 
         if self._step_timing_enabled and hasattr(self, "_steptime"):

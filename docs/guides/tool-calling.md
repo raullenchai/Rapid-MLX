@@ -58,7 +58,7 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `deepseek_v3` | `deepseek_r1_0528` | DeepSeek V3, R1-0528 distills | Unicode-delimiter token envelope with fenced JSON arguments |
 | `deepseek_v31` | | DeepSeek V3.1 | Unicode-delimiter token envelope, inline JSON (thinking channel) |
 | `deepseek_v4_0731` | | DeepSeek-V4-Flash-0731 | DSML |
-| `deepseek_v4_flash` | | DeepSeek-V4-Flash (2/4/8-bit, TensorFold) | DSML |
+| `deepseek_v4_flash` | | DeepSeek-V4-Flash (2/4/8-bit) | DSML |
 | `functionary` | `meetkai` | MeetKai Functionary | Multiple function blocks |
 | `gemma4` | `gemma_4` | Gemma 4 | `<\|tool_call>call:name{...}<tool_call\|>` |
 | `glm47` | `glm4` | GLM-4.7, GLM-4.7-Flash | `<tool_call>` with `<arg_key>`/`<arg_value>` XML |
@@ -80,6 +80,11 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `seed_oss` | `seed`, `gpt_oss` | Seed-OSS, GPT-OSS | `<seed:tool_call><function=name><parameter=key>` |
 | `ui_tars` | `ui-tars`, `uitars` | UI-TARS GUI-agent VLMs | `Action: verb(args)` computer-use lines |
 | `xlam` | | Salesforce xLAM | JSON with `tool_calls` array |
+
+Tool calling is not supported on the DeepSeek TensorFold lane yet; tool
+requests return HTTP 400. The `deepseek-v4-flash-tensorfold` alias retains its
+parser metadata for ordinary-engine serving with `--no-spec-decode`. Use
+`deepseek-v4-flash-4bit` for tool calling through the ordinary serving lane.
 
 Two easy mix-ups to watch for:
 

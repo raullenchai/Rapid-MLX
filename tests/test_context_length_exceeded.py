@@ -521,10 +521,16 @@ def test_mllm_prompt_admission_defers_missing_template_to_processor():
     )
 
 
-def test_mllm_text_preflight_does_not_count_image_data_as_text():
+@pytest.mark.parametrize(
+    "image_type, object_url",
+    [("image_url", True), ("input_image", True), ("input_image", False)],
+)
+def test_mllm_text_preflight_does_not_count_image_data_as_text(image_type, object_url):
     import json
+    from copy import deepcopy
     from types import SimpleNamespace
 
+    from rapid_mlx.config import get_config
     from rapid_mlx.service.helpers import enforce_context_length_for_messages
 
     rendered = []
@@ -541,10 +547,9 @@ def test_mllm_text_preflight_does_not_count_image_data_as_text():
         ),
         tokenizer=SimpleNamespace(apply_chat_template=apply_chat_template),
     )
-    image = {
-        "type": "image_url",
-        "image_url": {"url": "data:image/jpeg;base64," + "A" * 4_000},
-    }
+    get_config().max_prompt_tokens = 1_000
+    url = "data:image/jpeg;base64," + "A" * 4_000
+    image = {"type": image_type, "image_url": {"url": url} if object_url else url}
     messages = [
         {
             "role": "user",
@@ -552,8 +557,10 @@ def test_mllm_text_preflight_does_not_count_image_data_as_text():
         }
     ]
 
+    original = deepcopy(messages)
     prompt_tokens = enforce_context_length_for_messages(engine, messages)
 
+    assert messages == original
     assert prompt_tokens is not None and prompt_tokens < 1_000
     assert rendered[0][0]["content"] == [
         {"type": "text", "text": "which one?"},
@@ -631,7 +638,7 @@ def test_operational_prompt_cap_fails_closed_when_mllm_count_unavailable(failure
 
     assert excinfo.value.status_code == 400
     err = excinfo.value.detail["error"]
-    assert err["code"] == "context_length_exceeded"
+    assert err["code"] == "prompt_token_count_unavailable"
     assert "rejected before prefill" in err["message"]
 
 
@@ -1166,3 +1173,35 @@ def test_operational_cap_body_names_the_max_prompt_tokens_flag():
     assert "--max-prompt-tokens" in message
     assert "not the model's context window" in message
     assert "reduce the length of the prompt" in message
+
+
+def test_mllm_capped_preflight_converts_pydantic_tools():
+    from types import SimpleNamespace
+
+    from rapid_mlx.api.models import ToolDefinition
+    from rapid_mlx.api.tool_calling import convert_tools_for_template
+    from rapid_mlx.config import get_config
+    from rapid_mlx.service.helpers import enforce_context_length_for_messages
+
+    tools = [
+        ToolDefinition(
+            type="function",
+            function={"name": "weather", "parameters": {"type": "object"}},
+        )
+    ]
+
+    def apply_chat_template(messages, **kwargs):
+        if kwargs["tools"] != convert_tools_for_template(tools):
+            raise ValueError("Tools must be template dictionaries")
+        return [1, 2, 3]
+
+    engine = SimpleNamespace(
+        is_mllm=True, tokenizer=SimpleNamespace(apply_chat_template=apply_chat_template)
+    )
+    get_config().max_prompt_tokens = 100
+    assert (
+        enforce_context_length_for_messages(
+            engine, [{"role": "user", "content": "hi"}], tools=tools
+        )
+        == 3
+    )
