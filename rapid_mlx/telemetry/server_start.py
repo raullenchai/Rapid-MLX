@@ -711,16 +711,14 @@ def set_exit_reason(reason: object, *, exc: BaseException) -> None:
 def exit_reason_for(exc: BaseException | None) -> str:
     """Classify startup failures without inspecting their messages."""
     global _pending_exit_reason
-    pending = _pending_exit_reason
-    _pending_exit_reason = None
     try:
-        if (
-            pending is not None
-            and pending[1] is exc
-            and isinstance(pending[0], str)
-            and pending[0] in _EXIT_REASONS
-        ):
-            return pending[0]
+        pending = _pending_exit_reason
+        if pending is not None and pending[1] is exc:
+            # Consume only the binding for this exact exception; an unrelated
+            # failure must neither read nor clear it.
+            _pending_exit_reason = None
+            if isinstance(pending[0], str) and pending[0] in _EXIT_REASONS:
+                return pending[0]
         if isinstance(exc, KeyboardInterrupt):
             return "user_interrupt"
         if isinstance(exc, SystemExit) and exc.code == 2:
@@ -737,7 +735,12 @@ def exit_reason_for(exc: BaseException | None) -> str:
                 return "memory_refused"
             if isinstance(current, OSError) and current.errno == errno.EADDRINUSE:
                 return "port_in_use"
-            current = current.__cause__ or current.__context__
+            if current.__cause__ is not None:
+                current = current.__cause__
+            elif current.__suppress_context__:
+                break
+            else:
+                current = current.__context__
     except BaseException:
         return "exception"
     return "exception"

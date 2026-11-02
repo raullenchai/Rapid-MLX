@@ -1794,6 +1794,32 @@ def test_exit_reason_override_and_chains():
     assert server_start.exit_reason_for(refusal) == "exception"
 
 
+def test_exit_reason_binding_survives_unrelated_failure():
+    refusal = SystemExit(1)
+    server_start.set_exit_reason("declined_download", exc=refusal)
+    assert server_start.exit_reason_for(RuntimeError()) == "exception"
+    assert server_start.exit_reason_for(refusal) == "declined_download"
+
+
+def test_exit_reason_ignores_suppressed_context():
+    try:
+        try:
+            raise MemoryError()
+        except MemoryError:
+            raise RuntimeError() from None
+    except RuntimeError as exc:
+        hidden = exc
+    assert server_start.exit_reason_for(hidden) == "exception"
+    try:
+        try:
+            raise MemoryError()
+        except MemoryError:
+            raise RuntimeError()
+    except RuntimeError as exc:
+        implicit = exc
+    assert server_start.exit_reason_for(implicit) == "memory_refused"
+
+
 def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     events = _capture(monkeypatch)
@@ -1824,7 +1850,7 @@ def test_pending_reason_cannot_override_unrelated_failure(failure):
     expected = server_start.exit_reason_for(failure)
     server_start.set_exit_reason("memory_refused", exc=refusal)
     assert server_start.exit_reason_for(failure) == expected
-    assert server_start.exit_reason_for(refusal) == "exception"
+    assert server_start.exit_reason_for(refusal) == "memory_refused"
 
 
 @pytest.mark.parametrize("reason", [[], {}, "/private/model", None])
