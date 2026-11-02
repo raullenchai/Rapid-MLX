@@ -112,7 +112,8 @@ def test_gui_artifact_producer_uses_trusted_mac_only_after_promotion():
         "!cancelled() && "
         "needs.changes.result == 'success' && "
         "needs.changes.outputs.desktop == 'true' && "
-        "needs.changes.outputs.full_gate == 'true'"
+        "needs.changes.outputs.full_gate == 'true' && "
+        "needs.changes.outputs.gui_flow_count != '0'"
     )
     secret_context = re.compile(r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])", re.I)
     assert not any(secret_context.search(value) for value in strings(producer))
