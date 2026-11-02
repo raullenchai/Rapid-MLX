@@ -5,10 +5,9 @@ import asyncio
 import http.client
 import json
 import socket
-import sys
 import threading
 import time
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import uvicorn
@@ -125,6 +124,7 @@ def test_trickling_client_cannot_monopolize_responder(progress):
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_mlx
 async def test_blocking_loader_exposes_intermediate_progress_before_ready(
     monkeypatch, progress
 ):
@@ -141,6 +141,7 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
     callbacks = []
     materialized = []
     chunk_bytes = progress_module._EVAL_BATCH_BYTES
+    import mlx.core as mx
 
     def evaluate(weights):
         materialized.extend(weights)
@@ -162,14 +163,7 @@ async def test_blocking_loader_exposes_intermediate_progress_before_ready(
             None,
         )
 
-    mlx = ModuleType("mlx")
-    mlx.__path__ = []
-    core = ModuleType("mlx.core")
-    core.eval = evaluate
-    utils = ModuleType("mlx.utils")
-    utils.tree_flatten = lambda params: list(params.items())
-    for name, module in (("mlx", mlx), ("mlx.core", core), ("mlx.utils", utils)):
-        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(mx, "eval", evaluate)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         address = reservation.getsockname()

@@ -438,7 +438,9 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     try:
-        worker.join(timeout=6)
+        # A blocked echo never releases teardown, so a generous bound keeps the
+        # check exact while tolerating slow server startup on loaded runners.
+        worker.join(timeout=30)
         assert not worker.is_alive(), "server teardown blocked on echo"
         assert not errors
     finally:
