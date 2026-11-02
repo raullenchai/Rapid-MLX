@@ -1527,36 +1527,32 @@ struct ShareComputeLedgerSafetyTests {
     func staleUnauthorizedDoesNotClobberNewKey() async throws {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
-        let gate = Gate()
-
+        let account = ShareComputeLedgerFixture.account
+        let requests = ControlledLedgerRequests()
         let coordinator = Self.coordinator(keychain: keychain) { key in
-            gate.record(key)
-            await gate.wait()
-            // Only the old key is rejected; the new one would have succeeded.
-            if key == Self.providerKeyA { throw ShareComputeLedgerError.unauthorized }
-            return ShareComputeLedgerFixture.account
+            try await requests.load(key)
         }
 
         coordinator.appear()
-        await Self.settle()
-        #expect(gate.callCount == 1)
+        let oldCompletion = try #require(coordinator.refreshCompletion)
+        await requests.waitForRequest(Self.providerKeyA)
 
-        // The user saves a replacement key while the old request is still
-        // in flight.
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyASameLabel.rawValue)
         coordinator.providerKeyChanged()
-        #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyASameLabel.rawValue)
+        let newCompletion = try #require(coordinator.refreshCompletion)
+        await requests.waitForRequest(Self.providerKeyASameLabel)
 
-        // Now the OLD request's 401 lands.
-        gate.releaseAll()
-        await Self.settle()
+        // Complete the replacement first, then deliver the old rejection.
+        await requests.complete(Self.providerKeyASameLabel, with: .success(account))
+        await newCompletion.value
+        #expect(coordinator.state == .loadedState(account))
+        await requests.complete(Self.providerKeyA, with: .failure(.unauthorized))
+        await oldCompletion.value
 
-        // The new key's state survives — a slow rejection from the OLD
-        // world must never flip the coordinator to `.unauthorized` for a
-        // credential that was never actually rejected.
         #expect(keychain.read(account: ShareComputeProviderKeyStore.account) == Self.providerKeyASameLabel.rawValue)
-        #expect(coordinator.state != .unauthorized)
+        #expect(coordinator.state == .loadedState(account))
         #expect(coordinator.savedKeyLabel == Self.providerKeyASameLabel.redactedLabel)
+        coordinator.cancelInFlight()
     }
 
     // MARK: Credential resolution — ONE key
@@ -2125,6 +2121,7 @@ struct ShareComputeLedgerGatingTests {
         private let lock = NSLock()
         private var waiting: [UUID: CheckedContinuation<Void, Never>] = [:]
         private var cancelled: Set<UUID> = []
+        private var armedWaiters: [CheckedContinuation<Void, Never>] = []
         private(set) var requestedDelays: [TimeInterval] = []
 
         /// Honours cancellation the way `Task.sleep` does.
@@ -2168,7 +2165,23 @@ struct ShareComputeLedgerGatingTests {
                 return
             }
             waiting[id] = continuation
+            let observers = armedWaiters
+            armedWaiters = []
             lock.unlock()
+            observers.forEach { $0.resume() }
+        }
+
+        func waitUntilArmed() async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if !waiting.isEmpty {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    armedWaiters.append(continuation)
+                    lock.unlock()
+                }
+            }
         }
 
         /// Lets every armed timer fire.
@@ -2508,7 +2521,7 @@ struct ShareComputeLedgerGatingTests {
     // MARK: Observable gate expiry
 
     @Test("A time gate expiring publishes an observable change")
-    func gateExpiryIsObservable() async {
+    func gateExpiryIsObservable() async throws {
         let keychain = InMemoryKeychain()
         keychain.write(account: ShareComputeProviderKeyStore.account, secret: Self.providerKeyA.rawValue)
         let gate = SleepGate()
@@ -2523,38 +2536,28 @@ struct ShareComputeLedgerGatingTests {
         )
 
         coordinator.appear()
-        await Self.settle()
-        // Inside the interval, so the button is down and a timer is armed.
+        let completion = try #require(coordinator.refreshCompletion)
+        await completion.value
+        await gate.waitUntilArmed()
         #expect(!coordinator.allowsManualRefresh)
         #expect(coordinator.hasScheduledWake)
 
-        // Exactly what SwiftUI does when it reads the property in a body.
-        nonisolated(unsafe) var notified = false
+        let (changes, changed) = AsyncStream<Void>.makeStream()
         withObservationTracking {
             _ = coordinator.allowsManualRefresh
         } onChange: {
-            notified = true
+            changed.yield(())
+            changed.finish()
         }
 
         clock = clock.addingTimeInterval(ShareComputeLedgerRefresh.minimumInterval + 1)
-        // `hasScheduledWake` records the Task before its injected sleeper has
-        // installed a continuation. Wait for that handoff before releasing it.
-        for _ in 0..<100 {
-            if gate.armedCount != 0 { break }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(gate.armedCount == 1)
         gate.fire()
-        for _ in 0..<100 {
-            if notified { break }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-
-        // The view was told, without a tab switch, a status-bar tick, or any
-        // other page's state changing.
-        #expect(notified)
+        for await _ in changes { break }
+        // Observation fires before the stored write; hopping back to this
+        // actor lets the synchronous gate update finish.
         #expect(coordinator.allowsManualRefresh)
         #expect(coordinator.refreshHoldNote == nil)
+        coordinator.cancelInFlight()
     }
 
     // MARK: Timer hygiene
