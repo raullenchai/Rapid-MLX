@@ -314,6 +314,96 @@ def test_failed_performance_is_idempotent():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("escaped", [True, False])
+@pytest.mark.parametrize("partial_recovery", [True, False])
+async def test_recovery_failure_unblocks_requests_and_loop_survives(
+    monkeypatch, escaped, partial_recovery
+):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    before = scheduler.performance.snapshot().requests_failed
+    engine._output_collectors["done"] = RequestOutputCollector(aggregate=True)
+    engine._finished_events["done"] = asyncio.Event()
+    engine._finished_events["done"].set()
+    error = RuntimeError("Metal command buffer execution failed: private/model/path")
+    recovery_error = RuntimeError("recovery failed: private/recovery/path")
+
+    def recover():
+        if partial_recovery:
+            request = scheduler.running.pop("active", None)
+            if request is not None:
+                scheduler.performance.record_failed_performance(request)
+                request.set_finished(RequestStatus.FINISHED_ABORTED)
+        raise recovery_error
+
+    monkeypatch.setattr(scheduler, "_recover_from_generation_error", recover)
+    fail_step = MagicMock(wraps=scheduler.fail_step)
+    monkeypatch.setattr(scheduler, "fail_step", fail_step)
+    monkeypatch.setattr(scheduler, "_schedule_waiting", MagicMock(side_effect=error))
+    original_step = scheduler.step
+    calls = 0
+
+    def step():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            if escaped:
+                raise error
+            return original_step()
+        scheduler.running.clear()
+        scheduler.waiting.clear()
+        if "later" in scheduler.requests:
+            return SchedulerOutput(
+                outputs=[
+                    RequestOutput(request_id="later", finished=True, output_text="ok")
+                ],
+                finished_request_ids={"later"},
+            )
+        return SchedulerOutput()
+
+    monkeypatch.setattr(scheduler, "step", step)
+    engine._running = True
+    task = asyncio.create_task(engine._engine_loop())
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(event.wait() for event in engine._finished_events.values())
+            ),
+            2,
+        )
+        for rid in ("bad", "active", "queued"):
+            output = engine._output_collectors[rid].get_nowait()
+            assert output.request_id == rid
+            assert output.finished
+            assert output.error_kind == "engine_aborted"
+            assert output.error
+            assert "private/" not in output.error
+        assert engine._output_collectors["done"].get_nowait() is None
+        assert scheduler.performance.snapshot().requests_failed == before + 3
+        assert fail_step.call_count == (1 if escaped else 2)
+        assert not task.done()
+
+        request = Request("later", [1, 2], SamplingParams())
+        scheduler.requests["later"] = request
+        scheduler.waiting.append(request)
+        engine._output_collectors["later"] = RequestOutputCollector(aggregate=True)
+        engine._finished_events["later"] = asyncio.Event()
+        engine._idle_event.set()
+        await asyncio.wait_for(engine._finished_events["later"].wait(), 2)
+        output = engine._output_collectors["later"].get_nowait()
+        assert output.finished
+        assert output.error is None
+        assert output.output_text == "ok"
+        assert not task.done()
+    finally:
+        engine._running = False
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_compatibility_step_failure_records_each_request_once():
     engine = make_engine()
     seed(engine)

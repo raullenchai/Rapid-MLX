@@ -1054,12 +1054,18 @@ class EngineCore:
 
                 logger.error("Engine loop error: %s\n%s", e, traceback.format_exc())
                 fail_step = getattr(self.scheduler, "fail_step", None)
+                failed_outputs = None
                 if callable(fail_step):
-                    # Batch/cache cleanup belongs to the same worker as step().
-                    recovery = await loop.run_in_executor(_executor, fail_step, e)
-                    failed_outputs = {out.request_id: out for out in recovery.outputs}
-                else:
-                    # Compatibility for schedulers without request ownership data.
+                    try:
+                        # Batch/cache cleanup belongs to the same worker as step().
+                        recovery = await loop.run_in_executor(_executor, fail_step, e)
+                        failed_outputs = {
+                            out.request_id: out for out in recovery.outputs
+                        }
+                    except Exception:
+                        logger.exception("Engine step recovery failed")
+                if failed_outputs is None:
+                    # Missing or failed recovery cannot leave tracked clients waiting.
                     kind = classify_engine_abort(e)
                     message = inference_aborted_error_payload(
                         InferenceAbortedError("", error_kind=kind)
