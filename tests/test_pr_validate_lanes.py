@@ -282,3 +282,69 @@ def test_failure_after_cancellation_is_preserved(repo_root_cwd, status):
     row = next(r for r in repo_root_cwd.results if r.name == "lint")
     assert row.status == status
     assert row.summary == f"after cancellation: {status}"
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+def test_main_interrupt_cancels_lanes(repo_root_cwd, monkeypatch, exception):
+    started = threading.Event()
+    release = threading.Event()
+    ran = []
+    terminated = []
+    real_join = threading.Thread.join
+    interrupted = False
+    workers = []
+
+    def blocking(name):
+        started.set()
+        assert release.wait(5)
+        return result(name)
+
+    def join(thread, timeout=None):
+        nonlocal interrupted
+        if threading.current_thread() is threading.main_thread() and not interrupted:
+            interrupted = True
+            workers.append(thread)
+            assert started.wait(5)
+            raise exception()
+        return real_join(thread, timeout)
+
+    def terminate():
+        terminated.append(True)
+        release.set()
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+    monkeypatch.setattr(runner, "_terminate_child_processes", terminate)
+    try:
+        with pytest.raises(exception):
+            runner.run_pipeline(
+                1,
+                steps=[
+                    FakeStep("lint", blocking),
+                    FakeStep(
+                        "targeted_tests", lambda name: ran.append(name) or result(name)
+                    ),
+                ],
+            )
+        assert terminated
+        assert repo_root_cwd.cancel_event.is_set()
+        assert not ran
+        assert any("interrupted" in row.summary for row in repo_root_cwd.results)
+    finally:
+        release.set()
+        for worker in workers:
+            real_join(worker, 5)
+
+
+def test_cli_ctrl_c_returns_130(monkeypatch, capsys):
+    from scripts.pr_validate import pr_validate
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pr_validate, "run_pipeline", interrupt)
+    try:
+        exit_code = pr_validate.main(["1"])
+    except KeyboardInterrupt:
+        pytest.fail("CLI leaked KeyboardInterrupt instead of returning 130")
+    assert exit_code == 130
+    assert capsys.readouterr().err.splitlines() == ["Validation interrupted (Ctrl-C)."]
