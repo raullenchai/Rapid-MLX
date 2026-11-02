@@ -6374,7 +6374,23 @@ def test_runtime_pip_hint_resolves_implicit_context_runtime(monkeypatch):
         ),
         ({"url": "file:///local/source", "dir_info": {}}, " @ file:///local/source"),
         ("invalid json", ""),
+        ({"url": ""}, ""),
+        ({"url": 123}, ""),
         ({"vcs_info": {}}, ""),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "", "commit_id": "abc"},
+            },
+            "",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": ""},
+            },
+            "",
+        ),
         (
             {
                 "url": "https://example.invalid/source.git",
