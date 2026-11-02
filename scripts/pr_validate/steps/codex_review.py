@@ -496,6 +496,7 @@ class CodexReviewStep(Step):
         execution_errors = []
         turn_failed = False
         unrecovered_error = False
+        turn_completed = False
         for line in proc.stdout.splitlines():
             try:
                 event = json.loads(line)
@@ -512,6 +513,11 @@ class CodexReviewStep(Step):
                 # A later completion confirms recovery from a reconnect error;
                 # an agent message alone may only be a partial reply.
                 unrecovered_error = False
+                turn_completed = True
+            elif event_type == "item.completed":
+                item = event.get("item")
+                if isinstance(item, dict) and item.get("type") == "agent_message":
+                    turn_completed = False
         if turn_failed or unrecovered_error:
             return StepResult(
                 name=self.name,
@@ -534,6 +540,17 @@ class CodexReviewStep(Step):
                     "codex returned a zero-exit success but no agent message — "
                     "policy refusal / truncation / format failure; re-run or "
                     "address manually"
+                ),
+                details=f"```\n{proc.stdout[:1500]}\n```",
+            )
+
+        if not turn_completed:
+            return StepResult(
+                name=self.name,
+                status="fail",
+                summary=(
+                    f"codex review incomplete after {elapsed:.1f}s: "
+                    "no turn completion after the final agent message"
                 ),
                 details=f"```\n{proc.stdout[:1500]}\n```",
             )

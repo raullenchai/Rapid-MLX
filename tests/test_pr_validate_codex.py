@@ -401,6 +401,7 @@ class TestModelPinning:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
@@ -548,6 +549,7 @@ class TestPromptInjectionGuards:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -614,6 +616,7 @@ class TestPromptInjectionGuards:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["cwd"] = kwargs.get("cwd")
@@ -847,6 +850,7 @@ class TestMalformedReplyDoesNotPass:
                     "item": {"type": "agent_message", "text": reply_text},
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
@@ -1027,6 +1031,7 @@ class TestPRMetadataFencedAsUntrusted:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1214,6 +1219,7 @@ class TestNonceFencedAuthorContent:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1397,6 +1403,7 @@ class TestRound9DirectoryContextFenced:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1470,6 +1477,7 @@ class TestRound9DirectoryContextFenced:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1600,6 +1608,7 @@ class TestRound12PromptEmbeddedAsConstant:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         def fake_run(cmd, **kwargs):
             captured["input"] = kwargs.get("input", "")
@@ -1656,6 +1665,7 @@ class TestRound12PromptEmbeddedAsConstant:
                     },
                 }
             )
+            stdout += '\n{"type": "turn.completed"}'
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.codex_review.shutil.which",
@@ -1901,6 +1911,7 @@ def test_review_execution_evidence(monkeypatch, tmp_path, message, status):
     output = json.dumps(
         {"type": "item.completed", "item": {"type": "agent_message", "text": message}}
     )
+    output += '\n{"type": "turn.completed"}'
     monkeypatch.setattr(
         codex_review.subprocess,
         "run",
@@ -1927,16 +1938,74 @@ def test_missing_review_binary_blocks(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
+    "event_types,complete",
+    [
+        (("message",), False),
+        (("message", "turn.completed"), True),
+        (("turn.completed", "message"), False),
+        (("message", "turn.completed", "message"), False),
+    ],
+)
+@pytest.mark.parametrize(
+    "message,status",
+    [
+        ("No blocking issues found.", "pass"),
+        ("1. [BLOCKING] a.py:1 — wrong default. Fix: use None.", "fail"),
+    ],
+)
+def test_review_requires_completion_after_final_message(
+    monkeypatch, tmp_path, event_types, complete, message, status
+):
+    from subprocess import CompletedProcess
+
+    from scripts.pr_validate.context import Context
+    from scripts.pr_validate.steps import codex_review
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("")
+    ctx = Context(pr_number=1, work_dir=tmp_path)
+    ctx.diff_path = tmp_path / "pr.diff"
+    ctx.diff_path.write_text("diff --git a/a.py b/a.py\n+x=1\n")
+    monkeypatch.setattr(codex_review.shutil, "which", lambda _: "/fake/codex")
+    events = {
+        "message": {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": message},
+        },
+        "turn.completed": {"type": "turn.completed", "usage": {}},
+    }
+    output = "\n".join(json.dumps(events[event_type]) for event_type in event_types)
+    monkeypatch.setattr(
+        codex_review.subprocess,
+        "run",
+        lambda *a, **kw: CompletedProcess(a, 0, output, ""),
+    )
+    result = CodexReviewStep().run(ctx)
+    assert result.status == (status if complete else "fail")
+    if complete:
+        assert result.artifacts
+        assert message in result.details
+    else:
+        assert re.fullmatch(
+            r"codex review incomplete after \d+\.\ds: "
+            r"no turn completion after the final agent message",
+            result.summary,
+        )
+        assert output[:1500] in result.details
+        assert not result.artifacts
+
+
+@pytest.mark.parametrize(
     "event_types,message,stderr,status",
     [
         (
-            ("message",),
+            ("message", "turn.completed"),
             "No blocking issues found.",
             "authentication mentioned in diff",
             "pass",
         ),
         (
-            ("message",),
+            ("message", "turn.completed"),
             "No blocking issues found.",
             "rate limit; model unavailable; quota exceeded",
             "pass",

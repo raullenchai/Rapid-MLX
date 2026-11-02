@@ -310,7 +310,8 @@ class TestFailFast:
                         "type": "item.completed",
                         "item": {"type": "agent_message", "text": reply},
                     }
-                ),
+                )
+                + '\n{"type": "turn.completed"}',
                 stderr="",
             )
         )
