@@ -1008,3 +1008,71 @@ def test_run_bare_s_hands_the_terminal_to_a_server_child(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "→ rapid-mlx serve qwen3.5-4b-4bit" in out
     assert "http://127.0.0.1:8000/v1" in out
+
+
+def test_ready_probe_closes_non_503_http_error(monkeypatch):
+    import io
+    import urllib.error
+    from unittest.mock import Mock
+
+    body = io.BytesIO(b"internal server error")
+    error = urllib.error.HTTPError(
+        "http://localhost/health/ready", 500, "error", {}, body
+    )
+    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=error))
+
+    assert fd._ready_probe("http://localhost/health/ready") is False
+    assert body.closed
+
+
+@pytest.mark.parametrize("message_fields", [{}, {"message": ""}, {"message": 123}])
+def test_ready_probe_consent_blocker_uses_fallback_message(monkeypatch, message_fields):
+    import io
+    import json
+    import urllib.error
+    from unittest.mock import Mock
+
+    body = io.BytesIO(
+        json.dumps({"reason": "model_code_consent_required", **message_fields}).encode()
+    )
+    error = urllib.error.HTTPError(
+        "http://localhost/health/ready", 503, "unavailable", {}, body
+    )
+    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=error))
+
+    with pytest.raises(fd._ModelConsentRequiredError) as exc_info:
+        fd._ready_probe("http://localhost/health/ready")
+    assert str(exc_info.value) == (
+        "Model requires repository code consent. Review the repository code, "
+        "then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1."
+    )
+    assert body.closed
+
+
+@pytest.mark.parametrize("reason", ["model_code_consent_required", "loading"])
+def test_wait_consent_blocker_stops_before_sleep(monkeypatch, capsys, reason):
+    import io
+    import json
+    import urllib.error
+    from unittest.mock import Mock
+
+    message = "Review the repository code and opt in."
+    urlopen = Mock(
+        side_effect=lambda *a, **kw: (_ for _ in ()).throw(
+            urllib.error.HTTPError(
+                a[0],
+                503,
+                "unavailable",
+                {},
+                io.BytesIO(json.dumps({"reason": reason, "message": message}).encode()),
+            )
+        )
+    )
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    sleeps = []
+    assert not fd.wait_until_ready(8000, _FakeProc(alive_polls=2), sleep=sleeps.append)
+    assert sleeps == ([] if reason == "model_code_consent_required" else [1.0, 1.0])
+    assert capsys.readouterr().err.count(message) == int(
+        reason == "model_code_consent_required"
+    )
+    assert urlopen.call_count == (1 if reason == "model_code_consent_required" else 2)

@@ -717,8 +717,9 @@ def _signal_name(signum: int) -> str:
 
 
 def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
-    """Chained signal handler: log receipt + dump per-thread stacks, then
-    delegate to whatever was registered before us.
+    """Dump diagnostic signals, then delegate to the prior handler.
+
+    SIGTERM is ordinary shutdown and chains without a warning or stack dump.
 
     Runs on the main thread (Python signal-handler invariant). Must be
     *quick* and *async-signal-safe-ish* — we deliberately do only:
@@ -733,23 +734,24 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     handler is unsafe because it can re-enter the C stdio lock).
     """
     name = _signal_name(signum)
-    # Single-line preamble so log scrapers can grep one consistent
-    # marker. The stack dump itself goes to stderr via faulthandler
-    # (not through the logging tree), so this WARNING line is the
-    # "table of contents" entry that points readers at the stderr dump.
-    try:
-        logger.warning(
-            "rapid-mlx received signal %s; thread stacks follow (faulthandler)",
-            name,
-        )
-    except Exception:  # pragma: no cover — defensive
-        # A logging failure must not block the chain to uvicorn's handler.
-        pass
+    if signum != signal.SIGTERM:
+        # Single-line preamble so log scrapers can grep one consistent
+        # marker. The stack dump itself goes to stderr via faulthandler
+        # (not through the logging tree), so this WARNING line is the
+        # "table of contents" entry that points readers at the stderr dump.
+        try:
+            logger.warning(
+                "rapid-mlx received signal %s; thread stacks follow (faulthandler)",
+                name,
+            )
+        except Exception:  # pragma: no cover — defensive
+            # A logging failure must not block the chain to the prior handler.
+            pass
 
-    try:
-        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
-    except Exception:  # pragma: no cover — defensive
-        pass
+        try:
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        except Exception:  # pragma: no cover — defensive
+            pass
 
     # Chain to whatever was registered before us so the original
     # disposition is preserved end-to-end:

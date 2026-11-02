@@ -233,9 +233,8 @@ def test_do_r2_download_bails_to_hf_on_slow_mirror(tmp_path, monkeypatch):
 
     assert not ok
     assert reason == "slow-mirror"
-    # The partial prefix is discarded so HF's full-file download can't be
-    # concatenated onto a stale R2 prefix.
-    assert not part.exists()
+    # Preserve the prefix for the verified Hub Range fallback.
+    assert 0 < part.stat().st_size < 100_000_000
     assert not target.exists()
     # The loop must stream via read1 (prompt) — a blocking read would starve
     # the floor and this would never abort.

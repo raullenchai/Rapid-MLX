@@ -347,6 +347,9 @@ def cli_entrypoint() -> None:
 
         run()
         os.environ.pop(_RETRY, None)
+    except KeyboardInterrupt:
+        print("Cancelled", file=sys.stderr)
+        raise SystemExit(130) from None
     except ImportError as exc:
         if not dependency_failure(exc):
             raise

@@ -56,6 +56,63 @@ async def root():
     return {"status": "ok"}
 
 
+def _model_consent_blocker(cfg) -> dict[str, str]:
+    """Check only local metadata, using the configured loader's consent policy."""
+    from ..audio.registry import resolve_audio_alias
+    from ..model_aliases import resolve_model
+    from ..model_metadata import read_model_metadata
+    from ..utils.model_file_guard import (
+        FORCED_TRUST_VLM_MODEL_TYPES,
+        RemoteCodeConsentRequired,
+        validate_model_code,
+        validate_processor_code,
+    )
+
+    model_path = getattr(cfg, "model_path", None)
+    model_alias = getattr(cfg, "model_alias", None)
+    model_name = getattr(cfg, "model_name", None)
+    retrieval_only = getattr(cfg, "retrieval_only", False)
+    engine = getattr(cfg, "engine", None)
+    model = model_path or model_alias or model_name
+    if not model or retrieval_only:
+        return {}
+    result: dict[str, str] = {}
+    entry = next(
+        (
+            entry
+            for name in (model_path, model_alias, model_name)
+            if (entry := resolve_audio_alias(name)) is not None
+        ),
+        None,
+    )
+    try:
+        resolved = resolve_model(model)
+        if entry and model.lower() == entry.alias.lower():
+            resolved = entry.hf_id
+        metadata = read_model_metadata(resolved)
+        if metadata is None or metadata.snapshot_dir is None:
+            return {}
+        config = metadata.config or {}
+        if (entry and entry.type == "stt") or (
+            getattr(engine, "is_mllm", False)
+            and config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES
+        ):
+            validate_processor_code(metadata.snapshot_dir)
+        else:
+            validate_model_code(config)
+    except RemoteCodeConsentRequired:
+        # Never expose repository-provided values or local paths on probes.
+        result = {
+            "reason": "model_code_consent_required",
+            "message": "Model requires repository code consent. Review the repository "
+            "code, then explicitly opt in with RAPID_MLX_TRUST_REMOTE_CODE=1.",
+        }
+    except (OSError, ValueError):
+        # Other metadata/load failures retain their existing lifecycle handling.
+        logger.debug("Readiness metadata unavailable", exc_info=True)
+    return result
+
+
 @probe_router.get("/health")
 async def health():
     """Health check endpoint.
@@ -145,13 +202,17 @@ async def health():
     if retrieval_models:
         model_name = retrieval_models[0]
 
+    consent_blocker = _model_consent_blocker(cfg)
     return {
         **update_refresh.snapshot(),
         "status": "healthy",
-        "ready": cfg.ready and not switching,
+        "ready": cfg.ready and not switching and not consent_blocker,
+        **consent_blocker,
         "state": (
             "switching"
             if switching
+            else "blocked"
+            if consent_blocker
             else primary_status["state"]
             if primary_status is not None
             else "ready"
@@ -185,6 +246,11 @@ async def health_ready():
     cfg = get_config()
     if primary_switching():
         raise ModelSwitchingError()
+    consent_blocker = _model_consent_blocker(cfg)
+    if consent_blocker:
+        return JSONResponse(
+            status_code=503, content={"ready": False, **consent_blocker}
+        )
     if not cfg.ready:
         import json
 

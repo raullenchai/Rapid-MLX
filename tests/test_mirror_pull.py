@@ -4413,14 +4413,11 @@ def test_on_pull_start_fires_once_before_first_pulling_line(
     assert hook_idx < pulling_idxs[0], "hook must fire before the first Pulling line"
 
 
-def test_on_pull_start_not_fired_when_mirror_skipped(
+def test_on_pull_start_retires_spinner_before_metadata_when_mirror_skipped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """When the catalog says the alias is NOT mirrored, the mirror returns
-    False (caller falls back to ``snapshot_download``) and must NOT fire the
-    hook — the CLI keeps its spinner up for the snapshot banner instead.
-    """
+    """Retire the spinner for the initial status even on later Hub fall-through."""
     repo_id = "mlx-community/Gemma-4-31B-4bit"
     revision = "beef" * 10
     files = [("config.json", 100)]
@@ -4447,7 +4444,7 @@ def test_on_pull_start_not_fired_when_mirror_skipped(
         )
 
     assert ok is False
-    assert fired == [], "hook must not fire on the return-False fall-through"
+    assert fired == ["x"], "hook retires the spinner before the initial status"
 
 
 def test_on_pull_start_exception_does_not_abort_pull(
@@ -5025,3 +5022,195 @@ def test_mirror_non_lfs_warm_relink_reports_cached(
     assert hf_mock.call_count == 1  # HF re-linked the local non-LFS blob
     assert out["network_fetch"] is False
     assert out["transferred_bytes"] == 0
+
+
+def test_slow_mirror_fallback_resumes_prefix_and_announces(
+    tmp_path, monkeypatch, capsys
+):
+    import hashlib
+
+    repo, revision, router = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [("model.safetensors", 1000)], [200]
+    )
+    body = b"x" * 1000
+    digest = hashlib.sha256(body).hexdigest()
+    location = "https://cdn.example.test/model.safetensors"
+    mirror_reads = []
+
+    class SlowResponse(_FakeResponse):
+        def read(self, n=-1):
+            chunk = super().read(400)
+            mirror_reads.append(len(chunk))
+            return chunk
+
+    def urlopen(req, timeout=None):
+        if req.full_url == location:
+            assert req.get_header("Range") == "bytes=400-"
+            return _FakeResponse(
+                206,
+                body[400:],
+                {"Content-Length": "600", "Content-Range": "bytes 400-999/1000"},
+            )
+        if req.full_url.endswith("model.safetensors"):
+            return SlowResponse(200, body, {"Content-Length": "1000"})
+        return router(req, timeout=timeout)
+
+    monkeypatch.setattr(_mirror._ThroughputFloor, "record", lambda self, read: True)
+    tracker = _mirror._ProgressTracker(total=len(body))
+    monkeypatch.setattr(_mirror, "_ProgressTracker", lambda **kw: tracker)
+    with (
+        patch("urllib.request.urlopen", side_effect=urlopen),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [("model.safetensors", len(body), digest)]
+            ),
+        ),
+        patch("huggingface_hub.file_download.get_hf_file_metadata") as metadata,
+        patch(
+            "huggingface_hub.hf_hub_download", side_effect=AssertionError("must resume")
+        ),
+    ):
+        metadata.return_value.location = location
+        assert _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+    target = (
+        tmp_path
+        / f"models--{repo.replace('/', '--')}"
+        / "snapshots"
+        / revision
+        / "model.safetensors"
+    )
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == digest
+    assert mirror_reads == [400]
+    assert tracker._done == len(body)
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "Mirror is slow" in line
+    ]
+    assert lines == [
+        "  Mirror is slow; continuing model.safetensors from the Hub (keeping 0.0 MB already downloaded)."
+    ]
+
+
+def test_slow_mirror_missing_part_announces_zero_bytes(tmp_path, monkeypatch, capsys):
+    import hashlib
+
+    filename = "model.safetensors"
+    body = b"x" * 1000
+    repo, revision, router = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [(filename, len(body))], [200]
+    )
+
+    def slow_mirror(url, target, expected_size, **kwargs):
+        part = kwargs["sidecar_dir"] / f"{kwargs['sidecar_key']}.part"
+        assert not part.exists()
+        return False, "slow-mirror"
+
+    def hub_download(repo_id, fname, rev, target, *args):
+        assert (repo_id, fname, rev) == (repo, filename, revision)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        return True
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(
+                revision, [(filename, len(body), hashlib.sha256(body).hexdigest())]
+            ),
+        ),
+        patch.object(_mirror, "_download_one_from_r2", side_effect=slow_mirror),
+        patch.object(_mirror, "_hf_resumable_one", side_effect=hub_download) as hub,
+    ):
+        assert _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+
+    hub.assert_called_once()
+    assert (
+        "  Mirror is slow; continuing model.safetensors from the Hub "
+        "(keeping 0.0 MB already downloaded)."
+    ) in capsys.readouterr().out.splitlines()
+
+
+def test_download_announces_before_metadata_request(tmp_path, monkeypatch):
+    class FlushedOutput(io.StringIO):
+        flushed = ""
+
+        def flush(self):
+            self.flushed = self.getvalue()
+
+    output = FlushedOutput()
+    monkeypatch.setattr(_mirror.sys, "stdout", output)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+
+    def metadata(*a, **kw):
+        assert output.flushed.count("  Checking model files…\n") == 1
+        raise OSError("mock metadata unavailable")
+
+    with patch("huggingface_hub.model_info", side_effect=metadata):
+        assert not _mirror.download_with_mirror_fallback(
+            "owner/repo", cache_dir=tmp_path
+        )
+    assert output.getvalue().count("Checking model files") == 1
+
+
+@pytest.mark.parametrize("size", [49_999_999, 50_000_000])
+@pytest.mark.parametrize("hf_only", [False, True])
+@pytest.mark.parametrize("local_blob", [False, True])
+def test_hub_file_announces_before_blocking_call(
+    tmp_path, monkeypatch, size, hf_only, local_blob
+):
+    filename = "model.safetensors"
+    repo, revision, router = _mirrored_pull_setup(
+        tmp_path, monkeypatch, [(filename, 1)], [404]
+    )
+    if hf_only:
+        monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
+    digest = "a" * 64
+    if local_blob:
+        blob = tmp_path / f"models--{repo.replace('/', '--')}" / "blobs" / digest
+        blob.parent.mkdir(parents=True)
+        blob.write_bytes(b"local")
+
+    class FlushedOutput(io.StringIO):
+        flushed = ""
+
+        def flush(self):
+            self.flushed = self.getvalue()
+
+    output = FlushedOutput()
+    monkeypatch.setattr(_mirror.sys, "stdout", output)
+    lines = []
+    write_line = _mirror._ProgressTracker.write_line
+
+    def record(tracker, line):
+        lines.append(line)
+        write_line(tracker, line)
+
+    monkeypatch.setattr(_mirror._ProgressTracker, "write_line", record)
+    calls = []
+
+    def blocking(*a, **kw):
+        calls.append(True)
+        expected = (
+            f"  Downloading {filename} ({size / 1_000_000:.1f} MB) from Hugging Face…"
+        )
+        assert output.flushed.count(expected) == int(
+            size >= 50_000_000 and not local_blob
+        )
+        assert lines.count(expected) == int(size >= 50_000_000 and not local_blob)
+        return False if hf_only and len(calls) == 1 else (False, None)
+
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, [(filename, size, digest)]),
+        ),
+        patch.object(_mirror, "_hf_resumable_one", side_effect=blocking) as resumable,
+        patch.object(_mirror, "_hf_fallback_one", side_effect=blocking) as fallback,
+    ):
+        assert not _mirror.download_with_mirror_fallback(repo, cache_dir=tmp_path)
+    assert resumable.call_count == int(hf_only)
+    assert fallback.call_count == 1

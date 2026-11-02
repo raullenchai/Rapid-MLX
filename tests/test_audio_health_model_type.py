@@ -32,3 +32,231 @@ def test_model_type_without_engine(health_client, alias, model_type, engine_type
     data = client.get("/health").json()
     assert data["model_type"] == model_type
     assert data["engine_type"] == engine_type
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+@pytest.mark.parametrize("metadata_file", ["config.json", "tokenizer_config.json"])
+def test_consent_required_model_is_not_ready(
+    health_client, tmp_path, monkeypatch, metadata_file, trusted
+):
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_alias = "whisper-small"
+    cfg.model_path = str(tmp_path)
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    # Metadata alone must suffice; there are no weights or executable files.
+    (tmp_path / metadata_file).write_text(
+        '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+    )
+    if trusted:
+        monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "1")
+        assert client.get("/health").json()["ready"] is True
+        assert client.get("/health/ready").status_code == 200
+        return
+    data = client.get("/health").json()
+    assert data["ready"] is False
+    assert data["reason"] == "model_code_consent_required"
+    assert "RAPID_MLX_TRUST_REMOTE_CODE=1" in data["message"]
+    assert str(tmp_path) not in data["message"]
+    assert "private.Tokenizer" not in data["message"]
+    for path in ("/health/ready", "/readyz"):
+        response = client.get(path)
+        assert response.status_code == 503
+        assert response.json()["reason"] == data["reason"]
+        assert response.json()["ready"] is False
+
+
+@pytest.mark.parametrize("audio", [False, True])
+def test_model_without_consent_requirement_stays_ready(
+    health_client, tmp_path, monkeypatch, audio
+):
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_alias = "whisper-small" if audio else None
+    cfg.model_path = str(tmp_path)
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    # Text loaders need no consent for metadata they do not execute.
+    (tmp_path / "config.json").write_text(
+        "{}" if audio else '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+    )
+    assert client.get("/health").json()["ready"] is True
+    assert client.get("/health/ready").status_code == 200
+
+
+def test_cached_consent_required_model_is_not_ready(
+    health_client, tmp_path, monkeypatch
+):
+    from rapid_mlx import model_metadata
+    from rapid_mlx.audio.registry import resolve_audio_alias
+
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_alias = "whisper-small"
+    cfg.model_path = resolve_audio_alias(cfg.model_alias).hf_id
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+    )
+    lookups = []
+
+    def cached_file(model, filename):
+        lookups.append((model, filename))
+        return tmp_path / filename
+
+    monkeypatch.setattr(model_metadata, "_cached_file", cached_file)
+    monkeypatch.setattr(
+        model_metadata, "resolve_offline_cached_snapshot", lambda _: None
+    )
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "model_code_consent_required"
+    assert lookups and all(model == cfg.model_path for model, _ in lookups)
+
+
+def test_model_file_consent_blocks_readiness_during_startup(
+    health_client, tmp_path, monkeypatch
+):
+    cfg, client = health_client
+    cfg.model_path = str(tmp_path)
+    (tmp_path / "config.json").write_text('{"model_file":"private.py"}')
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    for started in (False, True):
+        cfg.ready = started
+        response = client.get("/health/ready")
+        assert response.status_code == 503
+        assert response.json()["reason"] == "model_code_consent_required"
+        assert client.get("/health").json()["ready"] is False
+
+
+@pytest.mark.parametrize("audio", [False, True])
+def test_consent_probe_rechecks_blocked_snapshot_after_metadata_corrected(
+    health_client, tmp_path, monkeypatch, audio
+):
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_path = str(tmp_path)
+    cfg.model_alias = "whisper-small" if audio else None
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    metadata = tmp_path / "config.json"
+    metadata.write_text('{"model_file":"custom.py"}')
+
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "model_code_consent_required"
+    assert response.json()["ready"] is False
+
+    metadata.write_text("{}")
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert "reason" not in response.json()
+    assert client.get("/health").json()["ready"] is True
+
+
+def test_consent_probe_rechecks_clear_snapshot_after_metadata_added(
+    health_client, tmp_path, monkeypatch
+):
+    cfg, client = health_client
+    cfg.ready = True
+    cfg.model_path = str(tmp_path)
+    cfg.model_alias = "whisper-small"
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    (tmp_path / "config.json").write_text("{}")
+
+    assert client.get("/health/ready").status_code == 200
+
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"auto_map":{"AutoTokenizer":"private.Tokenizer"}}'
+    )
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "model_code_consent_required"
+    assert response.json()["ready"] is False
+    assert client.get("/health").json()["ready"] is False
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_consent_probe_revalidates_changed_snapshot(
+    health_client, tmp_path, monkeypatch, blocked
+):
+    from unittest.mock import Mock, patch
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.routes.health import _model_consent_blocker
+    from rapid_mlx.utils import model_file_guard
+
+    cfg, _ = health_client
+    cfg.model_path = "same-model"
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    read = Mock(
+        side_effect=[
+            model_metadata.ModelMetadata(
+                config={"model_file": "custom.py"} if requires_consent else {},
+                chat_template=None,
+                snapshot_dir=tmp_path / snapshot,
+            )
+            for snapshot, requires_consent in (("old", blocked), ("new", not blocked))
+        ]
+    )
+    monkeypatch.setattr(model_metadata, "read_model_metadata", read)
+    with patch.object(
+        model_file_guard,
+        "validate_model_code",
+        wraps=model_file_guard.validate_model_code,
+    ) as validate:
+        assert bool(_model_consent_blocker(cfg)) == blocked
+        assert bool(_model_consent_blocker(cfg)) == (not blocked)
+        assert read.call_count == 2
+        assert validate.call_count == 2
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError])
+def test_consent_probe_validation_failure_does_not_block_readiness(
+    health_client, tmp_path, monkeypatch, caplog, error
+):
+    import logging
+    from unittest.mock import Mock
+
+    from rapid_mlx.routes.health import _model_consent_blocker
+    from rapid_mlx.utils import model_file_guard
+
+    cfg, client = health_client
+    cfg.model_path = str(tmp_path)
+    cfg.ready = True
+    (tmp_path / "config.json").write_text("{}")
+    validate = Mock(side_effect=error("metadata unavailable"))
+    monkeypatch.setattr(model_file_guard, "validate_model_code", validate)
+
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.routes.health"):
+        assert _model_consent_blocker(cfg) == {}
+
+    validate.assert_called_once_with({})
+    assert "Readiness metadata unavailable" in caplog.text
+    assert client.get("/health/ready").status_code == 200
+    assert client.get("/health").json()["ready"] is True
+
+
+def test_consent_probe_rechecks_missing_snapshot(health_client, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.routes.health import _model_consent_blocker
+
+    cfg, _ = health_client
+    cfg.model_path = str(tmp_path)
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    read = Mock(
+        side_effect=[
+            None,
+            model_metadata.ModelMetadata(
+                config={"model_file": "custom.py"},
+                chat_template=None,
+                snapshot_dir=tmp_path,
+            ),
+        ]
+    )
+    monkeypatch.setattr(model_metadata, "read_model_metadata", read)
+    assert _model_consent_blocker(cfg) == {}
+    assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+    assert read.call_count == 2
