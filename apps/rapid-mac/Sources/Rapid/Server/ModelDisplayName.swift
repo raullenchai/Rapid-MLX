@@ -32,6 +32,17 @@ extension ModelDisplayName {
         let familyEnd = (1...tokens.count).first { end in
             ModelInfoCatalog.familyAndContext(for: tokens.prefix(end).joined(separator: "-")).family == family
         } ?? 0
+        if params == nil {
+            // Family lookup accepts substrings; do not swallow an unrelated
+            // leading token, or relabel speech aliases as text model families.
+            let familyWithoutFirst = tokens.prefix(familyEnd).dropFirst().joined(separator: "-")
+            let audioTokens: Set<String> = ["tts", "stt", "asr", "speech", "voice", "audio"]
+            guard familyEnd > 0,
+                  ModelInfoCatalog.familyAndContext(for: familyWithoutFirst).family != family,
+                  !tokens.dropFirst(familyEnd).contains(where: { audioTokens.contains($0) }) else {
+                return alias
+            }
+        }
         var consumedSize = false
         var consumedBits = false
         let variantSpellings = ["tensorfold": "TensorFold"]
