@@ -10329,6 +10329,8 @@ class Scheduler:
             # into the stale generator (Rapid-MLX #611 / codex P2 on
             # PR #612). Requeue and break so the next ``step`` retries
             # once the running batch completes.
+            # Generator replacement mutates shared state, outside request ownership.
+            self._step_request_id = None
             if not self._ensure_batch_generator(request.sampling_params):
                 if not shortest_tail:
                     self.waiting.appendleft(request)
@@ -10341,6 +10343,8 @@ class Scheduler:
                     self.waiting.appendleft(request)
                 self._step_request_id = None
                 break
+
+            self._step_request_id = request.request_id
 
             # Determine tokens to process and cache to use
             # Note: Don't use `remaining_tokens or prompt_token_ids` because empty list
@@ -10573,6 +10577,8 @@ class Scheduler:
                 shared_local_split = None
                 request.shared_prefix_snapshot_at = 0
 
+            # Insertion can partially mutate the shared batch before raising.
+            self._step_request_id = None
             try:
                 if shared_local_split is not None:
                     splits = sorted(
@@ -10614,6 +10620,7 @@ class Scheduler:
                     )
             except Exception as e:
                 if cache_to_use is not None:
+                    self._step_request_id = request.request_id
                     logger.warning(
                         f"[cache_insert_error] request={request.request_id[:12]} "
                         f"cache insert failed ({e}), retrying without cache"
@@ -10643,6 +10650,7 @@ class Scheduler:
                         "_cache_snapshot_boundary",
                         getattr(request, "prefix_boundary", 0),
                     )
+                    self._step_request_id = None
                     if self.memory_aware_cache is not None and 0 < retry_boundary < len(
                         tokens_to_process
                     ):

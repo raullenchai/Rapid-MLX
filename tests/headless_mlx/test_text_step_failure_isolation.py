@@ -278,6 +278,52 @@ def test_repeated_admission_failures_preserve_healthy_work(
     assert scheduler._consecutive_step_failures == shared_failures
 
 
+@pytest.mark.parametrize("operation", ["insert", "insert_segments", "ensure"])
+def test_shared_insert_failure_recovers_batch(monkeypatch, operation):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    generator = MagicMock()
+    error = RuntimeError("shared insert failed")
+    generator.insert.side_effect = error
+    generator.insert_segments.side_effect = error
+    scheduler.batch_generator = generator
+    scheduler.request_id_to_uid["active"] = 2
+    scheduler.uid_to_request_id[2] = "active"
+    monkeypatch.setattr(scheduler, "_max_running_sequences", lambda: 2)
+    ensure = MagicMock(return_value=True)
+    if operation == "ensure":
+        ensure.side_effect = error
+    monkeypatch.setattr(scheduler, "_ensure_batch_generator", ensure)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", lambda request: True)
+    monkeypatch.setattr(
+        scheduler, "_pop_waiting_for_admission", lambda: scheduler.waiting.popleft()
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_shared_prefix_local_split",
+        lambda *args: 1 if operation == "insert_segments" else None,
+    )
+    recovery = MagicMock(wraps=scheduler._recover_from_generation_error)
+    monkeypatch.setattr(scheduler, "_recover_from_generation_error", recovery)
+
+    output = scheduler.step()
+
+    recovery.assert_called_once_with()
+    if operation == "ensure":
+        ensure.assert_called_once()
+        generator.insert.assert_not_called()
+        generator.insert_segments.assert_not_called()
+    else:
+        getattr(generator, operation).assert_called_once()
+    assert output.finished_request_ids == {"active"}
+    assert all(out.error_kind == "engine_aborted" for out in output.outputs)
+    assert scheduler._step_request_id is None
+    assert not scheduler.running
+    assert [request.request_id for request in scheduler.waiting] == ["queued"]
+    generator.close.assert_called_once()
+
+
 def test_shared_admission_bookkeeping_failure_recovers_batch(monkeypatch):
     engine = make_engine()
     seed(engine)
@@ -357,10 +403,11 @@ def test_failed_performance_is_idempotent():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("abort_fails", [False, True])
 @pytest.mark.parametrize("escaped", [True, False])
 @pytest.mark.parametrize("partial_recovery", [True, False])
 async def test_recovery_failure_unblocks_requests_and_loop_survives(
-    monkeypatch, escaped, partial_recovery
+    monkeypatch, escaped, partial_recovery, abort_fails
 ):
     engine = make_engine()
     seed(engine)
@@ -384,6 +431,10 @@ async def test_recovery_failure_unblocks_requests_and_loop_survives(
     fail_step = MagicMock(wraps=scheduler.fail_step)
     monkeypatch.setattr(scheduler, "fail_step", fail_step)
     monkeypatch.setattr(scheduler, "_schedule_waiting", MagicMock(side_effect=error))
+    abort_request = MagicMock(wraps=scheduler.abort_request)
+    if abort_fails:
+        abort_request.side_effect = RuntimeError("abort enqueue failed")
+    monkeypatch.setattr(scheduler, "abort_request", abort_request)
     original_step = scheduler.step
     calls = 0
 
@@ -425,6 +476,11 @@ async def test_recovery_failure_unblocks_requests_and_loop_survives(
         assert engine._output_collectors["done"].get_nowait() is None
         assert scheduler.performance.snapshot().requests_failed == before + 3
         assert fail_step.call_count == (1 if escaped else 2)
+        assert Counter(call.args[0] for call in abort_request.call_args_list) == {
+            "bad": 1,
+            "active": 1,
+            "queued": 1,
+        }
         assert not task.done()
 
         request = Request("later", [1, 2], SamplingParams())

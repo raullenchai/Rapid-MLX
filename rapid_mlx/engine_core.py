@@ -1081,6 +1081,13 @@ class EngineCore:
                         for rid, event in self._finished_events.items()
                         if not event.is_set()
                     }
+                    for rid in failed_outputs:
+                        try:
+                            self.scheduler.abort_request(rid)
+                        except Exception:
+                            logger.debug(
+                                "Failed to enqueue scheduler abort for %s", rid
+                            )
                     performance = getattr(self.scheduler, "performance", None)
                     if performance is not None:
                         for rid in failed_outputs:

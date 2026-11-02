@@ -64,6 +64,16 @@ def test_models_discovery_reports_active_lane_tool_parser(
         server, "load_tensorfold_backend", lambda **kwargs: (backend, provider)
     )
     apps = []
+    validators = []
+    from rapid_mlx.speculative.dflash import server as http_server
+
+    build_app = http_server._build_app
+
+    def capture_validator(**kwargs):
+        validators.append(kwargs["validate_request_fn"])
+        return build_app(**kwargs)
+
+    monkeypatch.setattr(http_server, "_build_app", capture_validator)
     monkeypatch.setattr(_uvicorn, "run_uvicorn", lambda app, **kwargs: apps.append(app))
     server.run_tensorfold_qwen27_server(
         main_model_repo="target",
@@ -91,6 +101,24 @@ def test_models_discovery_reports_active_lane_tool_parser(
             *(["tools"] if parser else []),
             "experimental",
         ]
+        if profile_id == "qwen3.8-27b-tensorfold" and parser:
+            from rapid_mlx.api.models import ChatCompletionRequest
+
+            validators[0](
+                ChatCompletionRequest(
+                    model=profile_id,
+                    messages=[{"role": "user", "content": "hi"}],
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "weather",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                )
+            )
         if profile_id == "deepseek-v4-flash-tensorfold":
             rejected = client.post(
                 "/v1/chat/completions",
