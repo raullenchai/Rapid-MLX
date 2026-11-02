@@ -337,6 +337,33 @@ def test_pinned_consent_probe_reads_metadata_once(pinned_consent_probe, blocked)
     assert read.call_count == 1
 
 
+def test_pinned_consent_cache_evicts_oldest_entry(pinned_consent_probe):
+    from rapid_mlx.routes.health import _consent_cache, _model_consent_blocker
+
+    cfg, _, read, _ = pinned_consent_probe
+    keys = []
+    for index in range(17):
+        cfg.model_path = f"owner/model-{index}"
+        assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+        keys.append(next(reversed(_consent_cache)))
+        assert len(_consent_cache) == min(index + 1, 16)
+
+    assert keys[0] not in _consent_cache
+    assert list(_consent_cache) == keys[1:]
+    assert read.call_count == 17
+
+    # A retained entry is reused; revisiting the evicted one reads it again.
+    cfg.model_path = "owner/model-1"
+    assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+    assert read.call_count == 17
+    cfg.model_path = "owner/model-0"
+    assert _model_consent_blocker(cfg)["reason"] == "model_code_consent_required"
+    assert read.call_count == 18
+    assert len(_consent_cache) == 16
+    assert keys[1] not in _consent_cache
+    assert list(_consent_cache) == keys[2:] + keys[:1]
+
+
 def test_pinned_consent_probe_rechecks_when_consent_changes(
     pinned_consent_probe, monkeypatch
 ):

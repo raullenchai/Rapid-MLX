@@ -36,7 +36,11 @@ def test_serve_ddtree_drafter_revision_fallback(
     from rapid_mlx import cli
 
     # Execute the actual launch branch without the unrelated serve boot path.
-    function = ast.parse(inspect.getsource(cli.serve_command)).body[0]
+    source, start_line = inspect.getsourcelines(cli.serve_command)
+    function = ast.parse("".join(source)).body[0]
+    # Keep coverage attributed to the original CLI lines, not to line 1 of
+    # the extracted function. This branch needs no MLX or serve boot path.
+    ast.increment_lineno(function, start_line - 1)
     branch = next(
         node
         for node in reversed(function.body)
