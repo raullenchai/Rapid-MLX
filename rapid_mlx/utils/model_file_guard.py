@@ -16,9 +16,13 @@ from typing import Any
 
 from .._env import env_falsey, env_truthy
 
-# inkling's processor forces trust on the model-root tokenizer; z_image's pipeline
-# forces trust on the hard-coded 'tokenizer' subfolder.
-FORCED_TRUST_VLM_MODEL_TYPES = frozenset({"inkling", "z_image"})
+# Processors that force code trust on the root tokenizer or, for z_image,
+# the fixed 'tokenizer' subfolder. Include raw config aliases before remapping.
+FORCED_TRUST_VLM_MODEL_TYPES = frozenset(
+    {"got", "inkling", "inkling_mm_model", "z_image"}
+)
+# Processors that force tokenizer code trust on a fixed external repository.
+EXTERNAL_TOKENIZER_VLM_MODEL_TYPES = frozenset({"moondream1", "moondream2"})
 # Subfolder names that forced-trust loaders open without any config reference.
 FORCED_TRUST_SUBFOLDERS = ("tokenizer",)
 
@@ -133,7 +137,9 @@ def validate_model_code(config: dict, *, trust_remote_code: bool | None = None) 
         )
 
 
-def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
+def _validate_processor_directory(
+    directory: Path, *, root: Path, trust_remote_code: bool | None = None
+) -> dict:
     """Check one metadata directory and return its model config for path discovery."""
     model_config = {}
     location = (
@@ -157,12 +163,12 @@ def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
         if name == "config.json":
             model_config = config
         try:
-            validate_model_code(config)
+            validate_model_code(config, trust_remote_code=trust_remote_code)
         except RemoteCodeConsentRequired as exc:
             if directory == root:
                 raise
             raise RemoteCodeConsentRequired(f"{location}: {exc}") from exc
-        if config.get("auto_map") and not remote_code_enabled():
+        if config.get("auto_map") and not remote_code_enabled(trust_remote_code):
             raise RemoteCodeConsentRequired(
                 f"{location} declares auto_map (executable Python). "
                 "Review the repository code, then explicitly opt in with "
@@ -171,7 +177,9 @@ def _validate_processor_directory(directory: Path, *, root: Path) -> dict:
     return model_config
 
 
-def validate_processor_code(model_path: str | Path) -> None:
+def validate_processor_code(
+    model_path: str | Path, *, trust_remote_code: bool | None = None
+) -> None:
     """Inspect metadata before loaders that force repository-code trust.
 
     Check the root, forced-trust subfolders, up to 64 visible immediate
@@ -180,7 +188,9 @@ def validate_processor_code(model_path: str | Path) -> None:
     Run once at load, never from generation or transcription.
     """
     root = Path(model_path)
-    config = _validate_processor_directory(root, root=root)
+    config = _validate_processor_directory(
+        root, root=root, trust_remote_code=trust_remote_code
+    )
     validate_local_model_file(root)
     if not root.is_dir():
         return
@@ -197,7 +207,9 @@ def validate_processor_code(model_path: str | Path) -> None:
         if resolved in seen:
             return
         seen.add(resolved)
-        _validate_processor_directory(directory, root=root)
+        _validate_processor_directory(
+            directory, root=root, trust_remote_code=trust_remote_code
+        )
 
     for name in FORCED_TRUST_SUBFOLDERS:
         check_directory(root / name)
@@ -216,6 +228,23 @@ def validate_processor_code(model_path: str | Path) -> None:
         for path in values:
             if isinstance(path, str):
                 check_directory(root / path)
+
+
+def validate_vlm_processor_policy(
+    model_path: str | Path, config: dict, *, trust_remote_code: bool
+) -> None:
+    """Qualify forced-trust processors using the caller's effective consent."""
+    if trust_remote_code:
+        return
+    model_type = config.get("model_type")
+    if model_type in EXTERNAL_TOKENIZER_VLM_MODEL_TYPES:
+        raise RemoteCodeConsentRequired(
+            "Model processor loads tokenizer code from an external repository. "
+            "Review the repository code, then explicitly opt in with "
+            "RAPID_MLX_TRUST_REMOTE_CODE=1 or trust_remote_code=True."
+        )
+    if model_type in FORCED_TRUST_VLM_MODEL_TYPES:
+        validate_processor_code(model_path, trust_remote_code=False)
 
 
 def checked_stt_loader(loader):
@@ -297,8 +326,7 @@ def load_vlm_with_policy(model_name: str | Path, *, loader=None, **kwargs):
         raise ValueError("Model config must contain an object")
     config = {**config, **(kwargs.get("model_config") or {})}
     validate_model_code(config, trust_remote_code=trust)
-    if not trust and config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES:
-        validate_processor_code(model_path)
+    validate_vlm_processor_policy(model_path, config, trust_remote_code=trust)
     if config.get("model_file"):
         validate_local_model_file(model_path, model_config=config)
     if config.get("model_type") == "kimi_k25" and not config.get("model_file"):

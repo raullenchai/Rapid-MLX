@@ -1813,20 +1813,17 @@ class MLXMultimodalLM:
                 trust_remote_code=trust_remote_code,
             )
             from ..utils.model_file_guard import (
-                FORCED_TRUST_VLM_MODEL_TYPES,
                 validate_local_model_file,
                 validate_model_code,
-                validate_processor_code,
+                validate_vlm_processor_policy,
             )
 
             if not isinstance(self.config, dict):
                 raise ValueError("Model config must contain an object")
             validate_model_code(self.config, trust_remote_code=trust_remote_code)
-            if (
-                not trust_remote_code
-                and self.config.get("model_type") in FORCED_TRUST_VLM_MODEL_TYPES
-            ):
-                validate_processor_code(model_path)
+            validate_vlm_processor_policy(
+                model_path, self.config, trust_remote_code=trust_remote_code
+            )
             if self.config.get("model_file"):
                 validate_local_model_file(model_path)
             if (
