@@ -169,7 +169,7 @@ def model_fingerprint(model_id: str, cache_dir: Path | None = None) -> dict:
     return {"repo_id": repo_id, "revision": revision, "sha256": digest}
 
 
-def cache_key(ctx) -> str | None:
+def cache_key(ctx, *, choices=None) -> str | None:
     head_sha = getattr(ctx, "head_sha", "") or ""
     base_sha = getattr(ctx, "base_sha", "") or ""
     if env_truthy("PR_VALIDATE_NO_GPU_CACHE"):
@@ -202,7 +202,8 @@ def cache_key(ctx) -> str | None:
     from .steps.stress_e2e_bench import _selected_choices
 
     try:
-        _, choices = _selected_choices()
+        if choices is None:
+            _, choices = _selected_choices()
         if not choices:
             raise ValueError("no selected models")
     except Exception:  # noqa: BLE001

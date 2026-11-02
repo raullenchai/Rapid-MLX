@@ -1573,3 +1573,73 @@ def test_tensorfold_suffix_refused_before_loading(monkeypatch, function, explici
     )
     with pytest.raises(acceleration.AccelerationConfigError, match="Suffix decoding"):
         getattr(acceleration, function)("gemma-4-26b-tensorfold", request)
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_explicit_unavailable_mtp_refuses_before_target_load(
+    monkeypatch, capsys, offline
+):
+    from unittest.mock import Mock
+
+    from huggingface_hub import constants
+
+    from rapid_mlx import cli as serve_cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.community_bench import cli, local_runner
+    from rapid_mlx.community_bench.acceleration import (
+        AccelerationConfigError,
+        preflight_benchmark_acceleration,
+        request_from_args,
+    )
+
+    monkeypatch.setattr(cli, "refuse_if_memory_does_not_fit", lambda *a: None)
+    monkeypatch.setattr(
+        serve_cli,
+        "_gather_kv_cache_dtype_inputs",
+        lambda *a: ({"model_type": "qwen3_5"}, None),
+    )
+    monkeypatch.setattr(serve_cli, "_cached_mtp_sidecar", lambda *a: None)
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", offline)
+    if not offline:
+        from rapid_mlx.spec_decode.mtp import qwen3_5_inject
+
+        def unavailable(sidecar):
+            qwen3_5_inject.logger.warning(
+                "[mtp.inject] could not resolve sidecar %s", sidecar
+            )
+            return None
+
+        monkeypatch.setattr(qwen3_5_inject, "_resolve_sidecar_file", unavailable)
+    download = Mock(side_effect=AssertionError("target download reached"))
+    load = Mock(side_effect=AssertionError("target load reached"))
+    monkeypatch.setattr(serve_cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(local_runner, "_text_measurements", load)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.5-4b-4bit",
+            "--json",
+            "--speculative-config",
+            '{"method":"mtp","model":"org/unavailable"}',
+        ]
+    )
+    reason = (
+        "the MTP sidecar org/unavailable is not downloaded and "
+        "Hugging Face is offline (HF_HUB_OFFLINE=1)"
+        if offline
+        else "the MTP sidecar org/unavailable could not be downloaded"
+    )
+    message = (
+        f"MTP unavailable: {reason}; benchmark requires the requested MTP acceleration."
+    )
+    with pytest.raises(AccelerationConfigError) as error:
+        preflight_benchmark_acceleration(args.benchmark_model, request_from_args(args))
+    assert str(error.value) == message
+    assert capsys.readouterr().err == ""
+    assert cli.benchmark_command(args) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": message, "saved": False}
+    download.assert_not_called()
+    load.assert_not_called()

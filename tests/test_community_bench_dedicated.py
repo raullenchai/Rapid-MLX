@@ -816,6 +816,9 @@ def test_timeout_submits_close_without_waiting():
         assert started.is_set()
         assert time.monotonic() - start < 1
         assert not closed.is_set()
+        assert adapter.timed_out
+        assert not adapter._active
+        assert not adapter._requests
         release.set()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1016,3 +1019,33 @@ def test_partial_pinned_target_snapshot_dedicated(
         )
     )
     assert identity["components"][0]["source"]["resolved_revision"] == revision
+
+
+@pytest.mark.parametrize("timeout", [None, 0.2])
+def test_dedicated_timeout_bounds_each_output(timeout):
+    import time
+
+    closed = []
+
+    def stream(prompt, maximum):
+        try:
+            for token in range(maximum):
+                time.sleep(0.04)
+                yield TokenChunk(token, len(prompt))
+        finally:
+            closed.append(True)
+
+    async def run(executor):
+        adapter = _DedicatedRuntimeBenchmarkAdapter(
+            SimpleNamespace(executor=executor, token_stream=stream)
+        )
+        adapter._requests["steady"] = ([1], SimpleNamespace(max_tokens=8))
+        outputs = [x async for x in adapter.stream_outputs("steady", timeout=timeout)]
+        assert len(outputs) == 8
+        assert outputs[-1].finished
+        assert not adapter.timed_out
+        assert not adapter._active
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        asyncio.run(run(executor))
+    assert closed == [True]

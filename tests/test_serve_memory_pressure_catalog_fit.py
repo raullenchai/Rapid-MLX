@@ -67,7 +67,7 @@ def test_fitting_catalog_model_still_reports_live_pressure(
     check(used_gb)
     out = capsys.readouterr().out
     assert message in out
-    assert "Catalog working set:       20.0 GB" in out
+    assert "Catalog working set:         20 GB" in out
     assert "model x 1.5" not in out
     if used_gb <= 12:
         assert "Memory pressure warning" not in out
@@ -95,7 +95,7 @@ def test_catalog_estimate_without_fit_keeps_conservative_bands(
     check(8)
     out = capsys.readouterr().out
     assert "!! Memory pressure warning" in out
-    assert "Catalog working set:       20.0 GB" in out
+    assert "Catalog working set:         20 GB" in out
     assert "88% projected utilization" in out
 
 
@@ -113,3 +113,22 @@ def test_unknown_or_failed_catalog_estimate_falls_back_to_disk(
     assert "!! Memory pressure warning" in out
     assert "model x 1.5" in out
     assert "92% projected utilization" in out
+
+
+@pytest.mark.parametrize("catalog", [True, False])
+def test_memory_warning_formats_all_byte_quantities(memory_check, capsys, catalog):
+    check, _ = memory_check
+    check(13, alias=ALIAS if catalog else None)
+    out = capsys.readouterr().out
+    expected = {
+        "Model on disk": 16 * GIB,
+        "Catalog working set" if catalog else "Est. working set": (
+            20 if catalog else 24
+        )
+        * GIB,
+        "Currently used by OS": 13 * GIB,
+        "Total system RAM": 32 * GIB,
+    }
+    for label, byte_count in expected.items():
+        line = next(line for line in out.splitlines() if label + ":" in line)
+        assert line.split(":", 1)[1].strip().startswith(preflight._gb(byte_count))

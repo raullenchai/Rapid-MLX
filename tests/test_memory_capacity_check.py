@@ -168,7 +168,7 @@ def test_32gb_recommendation_warning_quotes_the_same_20gb_when_pressure_is_real(
         _check_memory_capacity("/resolved/qwen3.8", alias="qwen3.8-27b-4bit")
     out = capsys.readouterr().out
     assert "Memory pressure note" in out
-    assert "Catalog working set:       20.0 GB" in out
+    assert "Catalog working set:         20 GB" in out
     assert "likely too large" not in out
     assert "97% projected utilization" in out
 

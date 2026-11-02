@@ -1434,24 +1434,19 @@ class _DedicatedRuntimeBenchmarkAdapter(_DeepSeekV41BenchmarkAdapter):
         from rapid_mlx.request import RequestOutput
 
         prompt, sampling = self._requests.pop(request_id)
-        loop = asyncio.get_running_loop()
         iterator = await asyncio.wrap_future(
             self._submit(self._handle.token_stream, prompt, sampling.max_tokens)
         )
         self._active[request_id] = iterator
-        deadline = None if timeout is None else loop.time() + timeout
         tokens = []
         try:
             while len(tokens) < sampling.max_tokens:
-                remaining = None if deadline is None else deadline - loop.time()
-                if remaining is not None and remaining <= 0:
-                    raise asyncio.TimeoutError
                 future = asyncio.wrap_future(
                     self._submit(_next_generation_chunk, iterator)
                 )
                 has_chunk, chunk = (
-                    await asyncio.wait_for(future, remaining)
-                    if remaining is not None
+                    await asyncio.wait_for(future, timeout)
+                    if timeout is not None
                     else await future
                 )
                 if not has_chunk:

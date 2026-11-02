@@ -119,11 +119,21 @@ class StressE2EBenchStep(Step):
         if cached:
             return cached
         with hold_gpu_lock(gpu_lock_path(), log=log) as lock:
-            key = gpu_cache.cache_key(ctx)
-            cached = gpu_cache.load(key, ctx) if key else None
-            result = cached if cached else self._run_matrix(ctx)
+            # Probe free RAM once, under the GPU lock, and use that one
+            # selection for both the cache key and the matrix that runs, so a
+            # reduced matrix can never be stored under the full matrix's key.
+            try:
+                selection = _selected_choices()
+            except _SelectionError as e:
+                selection = None
+                key = cached = None
+                result = StepResult(name=self.name, status="error", summary=str(e))
+            else:
+                key = gpu_cache.cache_key(ctx, choices=selection[1])
+                cached = gpu_cache.load(key, ctx) if key else None
+                result = cached if cached else self._run_matrix(ctx, selection)
             if key and not cached and result.status == "pass":
-                if gpu_cache.cache_key(ctx) == key:
+                if gpu_cache.cache_key(ctx, choices=selection[1]) == key:
                     gpu_cache.store(key, ctx, result)
                 else:
                     log(
@@ -134,9 +144,11 @@ class StressE2EBenchStep(Step):
         log(description)
         return result
 
-    def _run_matrix(self, ctx: Context) -> StepResult:
+    def _run_matrix(self, ctx: Context, selection=None) -> StepResult:
         try:
-            registry, choices = _selected_choices()
+            registry, choices = (
+                selection if selection is not None else _selected_choices()
+            )
         except _SelectionError as e:
             return StepResult(name=self.name, status="error", summary=str(e))
 

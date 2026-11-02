@@ -15,7 +15,11 @@ from typing import Any
 
 from rapid_mlx.byom.preflight import _working_set_budget, catalog_memory_fit
 from rapid_mlx.catalog import build_legacy_catalog_snapshot
-from rapid_mlx.model_aliases import draft_only_conflict, raise_if_draft_only_model
+from rapid_mlx.model_aliases import (
+    draft_only_conflict,
+    raise_if_draft_only_model,
+    resolve_profile,
+)
 
 from .benchmark_contracts import (
     BenchmarkRunValidator,
@@ -211,7 +215,8 @@ def benchmark_catalog(
     entries: list[dict[str, Any]] = []
     for alias in snapshot["aliases"]:
         # Serve refuses draft-only checkpoints, so the benchmark catalog never offers them.
-        if draft_only_conflict(alias["alias"]) is not None:
+        model = models[alias["target"]["registry_model_id"]]
+        if draft_only_conflict(model["source"]["repo_id"]) is not None:
             continue
         task_types = list(alias["capabilities"]["task_types"])
         task = _primary_task(task_types)
@@ -227,7 +232,6 @@ def benchmark_catalog(
         # their own registered workload before they can produce comparable rows.
         if task == "video_generation" and alias["alias"] not in _REGISTERED_WAN_ALIASES:
             continue
-        model = models[alias["target"]["registry_model_id"]]
         workload = registered_workload(task)
         result = catalog_memory_fit(
             alias["alias"],
@@ -350,13 +354,16 @@ def plan_for_alias(
     filesystem and never downloads anything.
     """
 
-    raise_if_draft_only_model(alias_name, action="Benchmark")
+    profile = resolve_profile(alias_name)
+    if profile is not None:
+        raise_if_draft_only_model(profile.hf_path, action="Benchmark")
     catalog = benchmark_catalog(
         memory_gib=memory_gib,
         recommended_working_set_bytes=recommended_working_set_bytes,
     )
     for entry in catalog["models"]:
         if entry["alias"] == alias_name:
+            raise_if_draft_only_model(entry["repo_id"], action="Benchmark")
             plan = {
                 "schema_version": 1,
                 "memory_budget_gib": catalog["memory_budget_gib"],

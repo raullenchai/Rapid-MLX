@@ -7304,3 +7304,72 @@ def test_tensorfold_runtime_readiness_missing_package(monkeypatch):
         benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation")["status"]
         == "ready"
     )
+
+
+@pytest.mark.parametrize("user_alias", [False, True])
+def test_draft_checkpoint_guard_uses_executed_identity(
+    monkeypatch, tmp_path, user_alias
+):
+    from unittest.mock import Mock
+
+    from rapid_mlx import cli as serve_cli
+    from rapid_mlx import user_aliases
+    from rapid_mlx.cli_parser import build_parser
+
+    alias = "my-draft" if user_alias else "qwen3.6-35b-mtp-4bit"
+    if user_alias:
+        monkeypatch.setattr(
+            user_aliases,
+            "validated_user_aliases",
+            lambda *a, **kw: {alias: "qwen3.6-35b-mtp-4bit"},
+        )
+    else:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / alias).mkdir()
+        (tmp_path / alias / "config.json").write_text("{}")
+    download = Mock(side_effect=AssertionError("download reached"))
+    load = Mock(side_effect=AssertionError("load reached"))
+    monkeypatch.setattr(serve_cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(local_runner, "_text_measurements", load)
+    assert alias not in {m["alias"] for m in benchmark_catalog()["models"]}
+    with pytest.raises(DraftModelNotServableError, match="draft checkpoint"):
+        plan_for_alias(alias)
+    args = build_parser().parse_args(
+        ["benchmark", "run", alias, "--baseline", "--json"]
+    )
+    assert community_cli.benchmark_command(args) == 1
+    download.assert_not_called()
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "stage", ["plan_for_alias", "preflight_benchmark_acceleration"]
+)
+def test_run_json_cancels_during_early_preflight(monkeypatch, capsys, stage):
+    from rapid_mlx.cli_parser import build_parser
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    def interrupt(*a, **kw):
+        assert signal.getsignal(signal.SIGINT) != previous[signal.SIGINT]
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(community_cli, "refuse_if_memory_does_not_fit", lambda *a: None)
+    monkeypatch.setattr(community_cli, stage, interrupt)
+    args = build_parser().parse_args(
+        [
+            "benchmark",
+            "run",
+            "qwen3.5-4b-4bit",
+            "--no-spec-decode",
+            "--json",
+        ]
+    )
+    assert community_cli.benchmark_command(args) == 130
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "cancelled": True,
+        "error": "benchmark cancelled",
+    }
+    assert {sig: signal.getsignal(sig) for sig in previous} == previous

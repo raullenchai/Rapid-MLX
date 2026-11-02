@@ -184,7 +184,7 @@ def test_matrix_holds_lock(setup, monkeypatch):
     monkeypatch.setenv("PR_VALIDATE_NO_GPU_CACHE", "1")
     step = StressE2EBenchStep()
 
-    def matrix(_):
+    def matrix(_, selection):
         with pytest.raises(BlockingIOError):
             fd = lock_fd(path)
             os.close(fd)
@@ -201,7 +201,7 @@ def test_matrix_with_minimal_context(tmp_path, monkeypatch):
     ctx = types.SimpleNamespace(repo_root=tmp_path, base_sha="0" * 40)
     step = StressE2EBenchStep()
     result = StepResult(name=step.name, status="pass", summary="ok")
-    monkeypatch.setattr(step, "_run_matrix", lambda _: result)
+    monkeypatch.setattr(step, "_run_matrix", lambda _, selection: result)
 
     assert step.run(ctx) is result
     assert not (tmp_path / "cache").exists()
@@ -213,7 +213,7 @@ def test_cache_store_holds_lock(setup, monkeypatch):
     monkeypatch.setattr(
         step,
         "_run_matrix",
-        lambda _: StepResult(name=step.name, status="pass", summary="ok"),
+        lambda _, selection: StepResult(name=step.name, status="pass", summary="ok"),
     )
     stored = []
 
@@ -239,7 +239,7 @@ def test_cache_key_changes_with_installed_distributions(setup, monkeypatch):
 def test_cache_key_recomputed_after_lock(setup, monkeypatch):
     ctx, _ = setup
     keys = iter(["before", "after", "after"])
-    monkeypatch.setattr(gpu_cache, "cache_key", lambda _: next(keys))
+    monkeypatch.setattr(gpu_cache, "cache_key", lambda _, **kw: next(keys))
     lookups = []
     cached = StepResult(name="stress_e2e_bench", status="pass", summary="cached")
 
@@ -252,7 +252,7 @@ def test_cache_key_recomputed_after_lock(setup, monkeypatch):
     monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
     step = StressE2EBenchStep()
     result = StepResult(name=step.name, status="pass", summary="matrix ran")
-    monkeypatch.setattr(step, "_run_matrix", lambda _: result)
+    monkeypatch.setattr(step, "_run_matrix", lambda _, selection: result)
 
     assert step.run(ctx) is result
     assert lookups == ["before", "after"]
@@ -269,7 +269,7 @@ def test_cache_not_stored_if_head_changes_during_run(setup, monkeypatch):
     monkeypatch.setattr(
         step,
         "_run_matrix",
-        lambda _: StepResult(name=step.name, status="pass", summary="ok"),
+        lambda _, selection: StepResult(name=step.name, status="pass", summary="ok"),
     )
     stored = []
     monkeypatch.setattr(gpu_cache, "store", lambda *args: stored.append(args))
@@ -287,7 +287,7 @@ def test_cache_pass_and_miss_conditions(setup, monkeypatch):
     calls = []
     status = ["pass"]
 
-    def matrix(_):
+    def matrix(_, selection):
         calls.append(1)
         return StepResult(name=step.name, status=status[0], summary="ok")
 

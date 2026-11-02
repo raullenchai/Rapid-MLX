@@ -2388,9 +2388,12 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
     if ratio < warning_floor:
         return  # Comfortable headroom — no warning.
 
-    model_gb = model_size_bytes / 1e9
-    working_gb = estimated_working / (1024**3)
-    used_gb = used_ram_bytes / (1024**3)
+    from rapid_mlx.byom.preflight import _gb
+
+    model_gb = _gb(model_size_bytes)
+    working_gb = _gb(estimated_working)
+    used_gb = _gb(used_ram_bytes)
+    total_gb_text = _gb(total_ram_bytes)
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     YELLOW = "\x1b[33m" if is_tty else ""
@@ -2416,17 +2419,17 @@ def _check_memory_capacity(model_name: str, *, alias: str | None = None) -> None
         )
     print()
     if model_size_bytes > 0:
-        print(f"    Model on disk:           {model_gb:>6.1f} GB")
+        print(f"    Model on disk:           {model_gb:>9}")
     if catalog_working_gb is not None:
-        print(f"    Catalog working set:     {working_gb:>6.1f} GB")
+        print(f"    Catalog working set:     {working_gb:>9}")
     else:
         print(
-            f"    Est. working set:        {working_gb:>6.1f} GB  "
+            f"    Est. working set:        {working_gb:>9}  "
             f"{DIM}(model x 1.5 — short-chat workload; long-context serving will use more){RESET}"
         )
-    print(f"    Currently used by OS:    {used_gb:>6.1f} GB")
+    print(f"    Currently used by OS:    {used_gb:>9}")
     print(
-        f"    Total system RAM:        {total_gb:>6.1f} GB  "
+        f"    Total system RAM:        {total_gb_text:>9}  "
         f"({ratio * 100:.0f}% projected utilization)"
     )
     print()
