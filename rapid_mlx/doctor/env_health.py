@@ -2007,6 +2007,7 @@ def _source_aware_extra_hint(command: str) -> str:
             parsed_url.username is not None
             or parsed_url.password is not None
             or parsed_url.query
+            or parsed_url.fragment
         ):
             raise ValueError("source URL may contain credentials")
         if "vcs_info" in direct:
