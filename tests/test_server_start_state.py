@@ -1765,7 +1765,8 @@ def test_entrypoint_guard_never_replaces_host_exception(monkeypatch, decorator):
     ("exc", "expected"),
     [
         (KeyboardInterrupt(), "user_interrupt"),
-        (SystemExit(2), "usage_error"),
+        # Only the argparse boundary binds usage_error; a bare exit 2 does not.
+        (SystemExit(2), "exception"),
         (SystemExit(1), "exception"),
         # A real allocator failure is an exception, not a refusal.
         (MemoryError(), "exception"),
@@ -1954,7 +1955,25 @@ def test_argparse_usage_error_reaches_failed_start(monkeypatch):
     with pytest.raises(SystemExit) as raised:
         parse()
     assert raised.value.code == 2
-    assert events[-1][1]["exit_reason"] == "usage_error"
+    assert events[-1][1]["exit_reason"] == "exception"
+
+
+@pytest.mark.parametrize("entry", ["cli", "server"])
+def test_parse_boundary_binds_usage_error(monkeypatch, entry):
+    from rapid_mlx import server
+
+    if entry == "cli":
+        monkeypatch.setattr(
+            sys, "argv", ["rapid-mlx", "serve", "--unknown-private-flag"]
+        )
+        main = cli.main
+    else:
+        monkeypatch.setattr(sys, "argv", ["rapid-mlx-server", "--unknown-private-flag"])
+        main = server.main
+    with pytest.raises(SystemExit) as raised:
+        main()
+    assert raised.value.code == 2
+    assert server_start.exit_reason_for(raised.value) == "usage_error"
 
 
 @pytest.mark.parametrize("model", ["qwen3.5-4b-4bit", "/private/user-model"])

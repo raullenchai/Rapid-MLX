@@ -719,8 +719,6 @@ def exit_reason_for(exc: BaseException | None) -> str:
             return bound
         if isinstance(exc, KeyboardInterrupt):
             return "user_interrupt"
-        if isinstance(exc, SystemExit) and exc.code == 2:
-            return "usage_error"
         from rapid_mlx.memory_budget import MetalPreflightError
 
         seen: set[int] = set()

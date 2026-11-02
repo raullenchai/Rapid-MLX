@@ -16452,6 +16452,15 @@ def main():
     try:
         args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
     except SystemExit as exc:
+        if exc.code == 2:
+            # argparse usage errors exit 2; bind the reason here, at the
+            # parsing boundary, rather than inferring it from the exit code.
+            try:
+                from rapid_mlx.telemetry.server_start import set_exit_reason
+
+                set_exit_reason("usage_error", exc=exc)
+            except BaseException:
+                pass
         # ``-h`` / ``--help`` / ``-V`` / ``--version`` exit 0 inside argparse.
         flag = _help_or_version_flag(sys.argv[1:]) if exc.code in (0, None) else None
         if flag is not None:
