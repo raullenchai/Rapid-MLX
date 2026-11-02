@@ -100,9 +100,10 @@ collect_install_descendants() {
 }
 
 stop_install_child() {
-    local attempt pid pids snapshot survivors
+    local attempt pid pids snapshot survivors new_pids deadline
     [ -n "$INSTALL_CHILD_PID" ] || return 0
     if kill -0 "$INSTALL_CHILD_PID" 2>/dev/null; then
+        deadline=$((SECONDS + 10))
         # Freeze the tree before termination so descendants cannot keep spawning
         # writers or escape by reparenting while their ancestors are stopped.
         kill -STOP "$INSTALL_CHILD_PID" 2>/dev/null || true
@@ -118,14 +119,40 @@ stop_install_child() {
         # Queue TERM for the whole stopped tree before allowing handlers to run.
         for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
         for pid in $pids; do kill -CONT "$pid" 2>/dev/null || true; done
-        for ((attempt = 0; attempt < 100; attempt++)); do
+        for ((attempt = 0; attempt < 100 && SECONDS < deadline; attempt++)); do
             survivors=""
             for pid in $pids; do
                 if kill -0 "$pid" 2>/dev/null; then survivors="$survivors $pid"; fi
             done
-            pids="$survivors"
-            [ -n "$pids" ] || break
+            [ -n "$survivors" ] || break
+            # TERM handlers may spawn writers under any surviving descendant.
+            snapshot=$({
+                printf '%s\n' "$pids"
+                for pid in $survivors; do collect_install_descendants "$pid"; done
+            } | sort -nu)
+            new_pids=""
+            for pid in $snapshot; do
+                case $'\n'"$pids"$'\n' in
+                    *$'\n'"$pid"$'\n'*) ;;
+                    *) new_pids="$new_pids $pid" ;;
+                esac
+            done
+            for pid in $new_pids; do kill -TERM "$pid" 2>/dev/null || true; done
+            for pid in $new_pids; do kill -CONT "$pid" 2>/dev/null || true; done
+            pids="$snapshot"
             sleep 0.1
+        done
+        # Freeze again before KILL: handlers ran after the first frozen snapshot.
+        for ((attempt = 0; attempt < 100; attempt++)); do
+            for pid in $pids; do kill -STOP "$pid" 2>/dev/null || true; done
+            snapshot=$({
+                printf '%s\n' "$pids"
+                for pid in $pids; do
+                    if kill -0 "$pid" 2>/dev/null; then collect_install_descendants "$pid"; fi
+                done
+            } | sort -nu)
+            [ "$snapshot" != "$pids" ] || break
+            pids="$snapshot"
         done
         for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
     fi

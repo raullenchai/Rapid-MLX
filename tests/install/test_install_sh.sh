@@ -966,6 +966,48 @@ EOF
     done
 done
 
+# A TERM handler can start another writer after the initial tree was frozen.
+fixture="$WORK/signal-term-handler"; mkdir -p "$fixture"
+cat > "$fixture/writer" <<'EOF'
+#!/bin/bash
+on_term() {
+    bash -c 'sleep 1; printf late > "$1/late-write"' bash "$1" &
+    printf '%s\n' "$!" > "$1/grandchild-pid"
+    touch "$1/handler-ran"
+    # Keep the parent discoverable while its new child starts.
+    sleep 0.4
+    exit 0
+}
+trap 'on_term "$1"' TERM
+touch "$1/ready"
+while :; do sleep 0.05; done
+EOF
+chmod +x "$fixture/writer"
+bash -c '
+    RAPID_INSTALL_LIB=1 source "$1"
+    fixture=$2
+    rollback_rebuild() { touch "$fixture/rollback"; }
+    release_install_lock() { touch "$fixture/released"; }
+    eval "$(sed -n "/^trap on_installer_exit EXIT$/,/^trap .* TERM$/p" "$1")"
+    run_install_command "$fixture/writer" "$fixture"
+' bash "$INSTALL_SH" "$fixture" >"$fixture/output" 2>&1 &
+installer_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+    [ ! -e "$fixture/ready" ] || break
+    sleep 0.02
+done
+kill -HUP "$installer_pid"
+signal_status=0; wait "$installer_pid" || signal_status=$?
+sleep 2
+if [ "$signal_status" = 129 ] && [ -e "$fixture/handler-ran" ] &&
+   [ -e "$fixture/rollback" ] && [ -e "$fixture/released" ] &&
+   [ ! -e "$fixture/late-write" ] &&
+   ! kill -0 "$(cat "$fixture/grandchild-pid")" 2>/dev/null; then
+    ok "HUP stops a writer spawned by the child TERM handler"
+else
+    bad "HUP stops a writer spawned by the child TERM handler (status $signal_status)"
+fi
+
 echo
 printf 'passed %d, failed %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
