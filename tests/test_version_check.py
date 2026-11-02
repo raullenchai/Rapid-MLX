@@ -2151,3 +2151,29 @@ def test_verification_version_equality(
 
 def test_verification_version_equality_normalizes_release():
     assert vc._versions_equal("1.0.1.0", "v1.0.1")
+
+
+@pytest.mark.parametrize(
+    "installed,target,expected",
+    [
+        ("1.0.1.0", "1.0.1", True),
+        ("1.0.1RC1", "1.0.1rc1", True),
+        ("v1.0.1", "1.0.1", True),
+        ("1.0.1b1", "1.0.1", False),
+        ("1.0.1", "1.0.2", False),
+        ("1.0.1.alpha1", "1.0.1a1", True),
+        ("1.0.1-beta1", "1.0.1b1", True),
+        ("1.0.1_c1", "1.0.1rc1", True),
+        ("1.0.1.pre1", "1.0.1rc1", True),
+        ("1.0.1-preview1", "1.0.1rc1", True),
+        ("1.0.1.dev1", "1.0.1dev1", True),
+        ("1.0.1_post1", "1.0.1post1", True),
+        ("1.0.1..rc1", "1.0.1rc1", False),
+        ("0.0", "0", True),
+        ("garbage", "garbage", False),
+    ],
+)
+def test_versions_equal_without_packaging(monkeypatch, installed, target, expected):
+    monkeypatch.setitem(sys.modules, "packaging.version", None)
+    monkeypatch.setitem(sys.modules, "packaging", None)
+    assert vc._versions_equal(installed, target) is expected

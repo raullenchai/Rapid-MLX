@@ -2002,6 +2002,13 @@ def _source_aware_extra_hint(command: str) -> str:
         url = direct["url"]
         if not isinstance(url, str) or not url:
             raise ValueError("invalid source URL")
+        parsed_url = urllib.parse.urlsplit(url)
+        if (
+            parsed_url.username is not None
+            or parsed_url.password is not None
+            or parsed_url.query
+        ):
+            raise ValueError("source URL may contain credentials")
         if "vcs_info" in direct:
             vcs = direct["vcs_info"]["vcs"]
             if not isinstance(vcs, str) or not vcs:

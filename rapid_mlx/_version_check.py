@@ -825,11 +825,32 @@ def _versions_equal(installed: str, target: str) -> bool:
     try:
         from packaging.version import Version
     except ImportError:
-        return (
-            _parse_version(installed) is not None
-            and _parse_version(installed) == _parse_version(target)
-            and installed.strip().removeprefix("v") == target.strip().removeprefix("v")
-        )
+
+        def normalize(version: str) -> tuple[tuple[int, ...], str] | None:
+            match = re.match(
+                r"(\d+(?:\.\d+)*)(.*)", version.strip().lower().removeprefix("v")
+            )
+            if match is None:
+                return None
+            release = [int(component) for component in match[1].split(".")]
+            while len(release) > 1 and release[-1] == 0:
+                release.pop()
+            aliases = {
+                "alpha": "a",
+                "beta": "b",
+                "c": "rc",
+                "pre": "rc",
+                "preview": "rc",
+            }
+            suffix = re.sub(
+                r"^[._-]?(alpha|beta|preview|pre|rc|dev|post|a|b|c)",
+                lambda label: aliases.get(label[1], label[1]),
+                match[2],
+            )
+            return tuple(release), suffix
+
+        normalized = normalize(installed)
+        return normalized is not None and normalized == normalize(target)
     try:
         return bool(Version(installed) == Version(target))
     except ValueError:

@@ -6294,6 +6294,20 @@ def test_runtime_pip_hint_resolves_implicit_context_runtime(monkeypatch):
         (None, "==1.2.3"),
         (
             {
+                "url": "https://user:private-secret@example.invalid/source.git",
+                "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+            },
+            "",
+        ),
+        (
+            {
+                "url": "https://example.invalid/source.tar.gz?token=private-secret",
+                "archive_info": {},
+            },
+            "",
+        ),
+        (
+            {
                 "url": "https://example.invalid/source.git",
                 "vcs_info": {"vcs": "git", "commit_id": "abc123"},
             },
@@ -6389,6 +6403,7 @@ def test_tool_extra_hint_preserves_install_source(
     monkeypatch.setattr(eh._im, "distribution", lambda name: distribution)
 
     command = eh._runtime_pip_command("rapid-mlx[embeddings]")
+    assert "private-secret" not in command
     assert command == prefix + " " + shlex.quote(
         "rapid-mlx[audio,embeddings]" + expected
     )
