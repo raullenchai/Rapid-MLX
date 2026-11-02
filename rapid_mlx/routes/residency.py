@@ -119,7 +119,7 @@ def _record_payload(record) -> dict:
 
 
 @router.get("/v1/models/residency")
-async def model_residency(request: Request = None):
+async def model_residency(request: Request):
     """Return resident models and actual process usage against the ceiling."""
 
     from ..runtime.audio_worker import audio_worker
@@ -132,7 +132,7 @@ async def model_residency(request: Request = None):
     from .agents import active_agent_runs
     from .video import active_video_jobs
 
-    local_search = getattr(request.app.state, "local_search", None) if request else None
+    local_search = getattr(request.app.state, "local_search", None)
     # Background jobs outlive their POST and must keep the process resident.
     background = (
         active_video_jobs()
