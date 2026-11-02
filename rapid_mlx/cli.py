@@ -7522,7 +7522,10 @@ def serve_command(args):
     )
     if not _native_media:
         _warn_vision_text_only_degrade(_serve_profile, args=args)
-    if _serve_will_run_on_mllm_lane(args):
+
+    def require_final_lane_vision_runtime() -> None:
+        if not _serve_will_run_on_mllm_lane(args):
+            return
         from .models.mllm import require_mlx_vlm_or_exit
 
         _run_optional_runtime_guard(
@@ -7532,6 +7535,12 @@ def serve_command(args):
             assume_yes=bool(getattr(args, "yes", False)),
             text_diffusion=_alias_modality(args.model) == "text-diffusion",
         )
+
+    # Automatic MTP can select the text lane only after the target arrives.
+    # Check dependencies after that decision, rather than the provisional lane.
+    _defer_vision_guard = getattr(args, "_auto_mtp_deferred", False)
+    if not _defer_vision_guard:
+        require_final_lane_vision_runtime()
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
@@ -7677,6 +7686,9 @@ def serve_command(args):
         _preflight_native_mtp_or_exit(args)
 
     _drop_unavailable_mtp_head(args)
+
+    if _defer_vision_guard:
+        require_final_lane_vision_runtime()
 
     # The prefetch above swallows transport errors on purpose ("server will
     # retry"), which is right for a text model — the loader retries and raises

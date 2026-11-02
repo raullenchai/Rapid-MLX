@@ -110,7 +110,11 @@ class AudioAliasEntry:
     catalog_hf_id: str | None = None
 
 
-_LOCAL_MODEL_TYPE_FAMILIES = {"voxcpm2": "voxcpm", "chatterbox_turbo": "chatterbox"}
+_LOCAL_MODEL_TYPE_FAMILIES = {
+    "voxcpm2": "voxcpm",
+    "chatterbox_turbo": "chatterbox",
+    "qwen3_forced_aligner": "qwen3_aligner",
+}
 
 
 # Lazy cache. Populated on first call to :func:`_load_registry`. Reset
@@ -390,6 +394,30 @@ def _load_registry_uncached() -> dict[str, AudioAliasEntry]:
     _RUNTIME_REQUIREMENTS.update(runtime_requirements)
     _REGISTRY = entries
     return entries
+
+
+def is_aligner_model(model_name: str) -> bool:
+    """Recognize alignment names and local checkpoints by their config."""
+    if not isinstance(model_name, str) or not model_name:
+        return False
+    if "aligner" in model_name.lower():
+        return True
+    try:
+        if not os.path.isdir(model_name):
+            return False
+        with open(os.path.join(model_name, "config.json"), "rb") as config_file:
+            if os.fstat(config_file.fileno()).st_size > 1024 * 1024:
+                return False
+            config = json.loads(config_file.read(1024 * 1024))
+        if not isinstance(config, dict):
+            return False
+        thinker = config.get("thinker_config")
+        return config.get("model_type") == "qwen3_forced_aligner" or (
+            isinstance(thinker, dict)
+            and thinker.get("model_type") == "qwen3_forced_aligner"
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def resolve_local_audio_folder(path: str) -> AudioAliasEntry | None:

@@ -52,6 +52,20 @@ pytestmark = [
 _ALIGNER_ID = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
 
 
+@pytest.fixture(autouse=True)
+def _audio_worker_without_mlx_init(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rapid_mlx.runtime.audio_worker import audio_worker
+
+    server = types.ModuleType("rapid_mlx.server")
+    server._emit_audio_model_served_once = lambda *args: None
+    monkeypatch.setitem(sys.modules, "rapid_mlx.server", server)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        monkeypatch.setattr(audio_worker, "_fallback_worker", lambda: worker)
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
