@@ -49,7 +49,7 @@ def _read_json(name: str) -> dict[str, Any]:
 
 
 class ImageProtocolUnavailableError(ValueError):
-    """Every registered image schedule was rejected by the model engine."""
+    """Image schedules were rejected or could not be validated."""
 
 
 def image_case_guidance(case: dict[str, Any]) -> float | None:
@@ -101,8 +101,12 @@ def registered_workload(task_type: str, alias: str | None = None) -> dict[str, A
                     for case in candidate["cases"]
                 )
                 failures.append(f"{schedules}: {exc}")
-    except Exception:
+    except ImportError:
         return workload
+    except Exception as exc:
+        raise ImageProtocolUnavailableError(
+            f"could not validate image schedules: {type(exc).__name__}: {exc}"
+        ) from exc
     raise ImageProtocolUnavailableError("tried schedules: " + "; ".join(failures))
 
 

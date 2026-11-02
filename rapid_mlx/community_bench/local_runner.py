@@ -838,6 +838,7 @@ def _stage_finished(
 def _run_image(
     alias: str,
     *,
+    workload: dict[str, Any] | None = None,
     isolate_process_group: bool = True,
     progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
@@ -845,7 +846,8 @@ def _run_image(
     from rapid_mlx.cli import _check_alias_min_memory
 
     _check_alias_min_memory(alias, stream=sys.stderr)
-    workload = registered_workload("image_generation", alias)
+    if workload is None:
+        workload = registered_workload("image_generation", alias)
     case = workload["cases"][0]
     payload = {
         "model": alias,
@@ -2397,6 +2399,9 @@ def _run_local_measured(
     acceleration: AccelerationRequest | None = None,
 ) -> dict[str, Any]:
     context_length = None
+    # The plan's selected schedule must describe both the request and every
+    # outcome record, even if a later engine probe would behave differently.
+    workload = plan["workload"] if task_type == "image_generation" else None
     language = None
     hardware = None
     software = None
@@ -2439,6 +2444,7 @@ def _run_local_measured(
             elif task_type == "image_generation":
                 measurements = _run_image(
                     alias,
+                    workload=workload,
                     isolate_process_group=not inherit_process_group,
                     progress=progress,
                 )
@@ -2493,6 +2499,7 @@ def _run_local_measured(
             model_identity=model_identity,
             task_type=task_type,
             alias=alias,
+            workload=workload,
             hardware=hardware,
             software=software,
             started_at=started_at,
@@ -2545,6 +2552,7 @@ def _run_local_measured(
                 model_identity=model_identity,
                 task_type=task_type,
                 alias=alias,
+                workload=workload,
                 hardware=hardware,
                 software=software,
                 started_at=started_at,
