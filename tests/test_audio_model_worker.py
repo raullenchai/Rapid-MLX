@@ -736,7 +736,8 @@ async def test_residency_snapshot_includes_audio_lane_truth(monkeypatch):
         lambda: [{"lane": "stt", "model": "whisper-small"}],
     )
 
-    snapshot = await residency.model_residency()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    snapshot = await residency.model_residency(request)
     assert "activity" in snapshot
     snapshot.pop("activity")
     assert snapshot == {

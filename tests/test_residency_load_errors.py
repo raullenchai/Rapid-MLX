@@ -557,7 +557,8 @@ async def test_path_validation_keeps_event_loop_responsive(control_plane, monkey
                 break
             await asyncio.sleep(0.005)
         assert entered.is_set()
-        assert (await residency.model_residency())["models"] == []
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+        assert (await residency.model_residency(request))["models"] == []
     finally:
         release.set()
     with pytest.raises(residency.HTTPException) as caught:

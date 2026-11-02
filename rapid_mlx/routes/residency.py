@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from huggingface_hub.errors import (
     GatedRepoError,
     HfHubHTTPError,
@@ -119,7 +119,7 @@ def _record_payload(record) -> dict:
 
 
 @router.get("/v1/models/residency")
-async def model_residency():
+async def model_residency(request: Request):
     """Return resident models and actual process usage against the ceiling."""
 
     from ..runtime.audio_worker import audio_worker
@@ -132,10 +132,13 @@ async def model_residency():
     from .agents import active_agent_runs
     from .video import active_video_jobs
 
-    # Video jobs, CUA runs and agent runs (including approval or client tool
-    # waits) outlive their POST. Restart the idle clock when they finish.
+    local_search = getattr(request.app.state, "local_search", None)
+    # Background jobs outlive their POST and must keep the process resident.
     background = (
-        active_video_jobs() + active_agent_runs() + get_cua_service().active_run_count()
+        active_video_jobs()
+        + active_agent_runs()
+        + get_cua_service().active_run_count()
+        + int(local_search is not None and local_search.is_busy)
     )
     if background:
         activity_tracker.touch()

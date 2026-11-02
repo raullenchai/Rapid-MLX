@@ -260,6 +260,11 @@ class LocalSearch:
         if self.pending and (self.task is None or self.task.done()):
             self.task = asyncio.create_task(self._run())
 
+    @property
+    def is_busy(self) -> bool:
+        """Include queued work and worker awaits before progress becomes active."""
+        return bool(self.pending or (self.task is not None and not self.task.done()))
+
     def status(self) -> dict:
         return self._status(
             self.resolve_model(self.model_id), self.store.folders(), self.store.totals()
@@ -653,6 +658,10 @@ class LocalSearch:
                     self.progress = self._idle()
         finally:
             self.progress = self._idle()
+
+            from ..middleware.activity import activity_tracker
+
+            activity_tracker.touch()
 
     async def _index(self, folder: dict):
         root = Path(folder["path"])

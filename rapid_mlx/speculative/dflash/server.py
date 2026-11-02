@@ -885,6 +885,10 @@ def _build_app(
     install_request_body_depth_middleware(app)
     app.add_middleware(_DFlashAdmissionMiddleware, admission=admission)
     install_request_body_limit_middleware(app)
+    from ...middleware.activity import ActivityMiddleware, ActivityTracker
+
+    activity = ActivityTracker()
+    app.add_middleware(ActivityMiddleware, tracker=activity)
     # F-090/F-091: register CORS only when an explicit origin allowlist is
     # configured. ``cors_origins=[]`` (the new default — see
     # ``rapid_mlx/server.py::configure_cors_from_env``) skips the middleware
@@ -991,6 +995,41 @@ def _build_app(
         if runtime_status_extra:
             result.update(runtime_status_extra)
         return result
+
+    @app.get(
+        "/v1/models/residency",
+        dependencies=[Depends(_verify_api_key_with_bearer_challenge)],
+    )
+    async def model_residency() -> dict[str, Any]:
+        """Report the fixed resident model and complete HTTP activity lifecycle."""
+        from ...runtime.process_memory import get_phys_footprint
+
+        current = activity.snapshot()
+        return {
+            "memory_limit_bytes": 0,
+            "memory_used_bytes": get_phys_footprint(),
+            "memory_available_bytes": None,
+            "idle_ttl_seconds": 0,
+            "loads_total": 1,
+            "evictions_total": 0,
+            "models": [
+                {
+                    "id": served_model_name,
+                    "model_path": served_model_name,
+                    "aliases": [],
+                    "modality": "text",
+                    "state": "resident",
+                    "pinned": False,
+                    "primary": True,
+                    "active_requests": current["in_flight"],
+                    "estimated_bytes": 0,
+                    "measured_bytes": None,
+                    "idle_seconds": current["idle_seconds"],
+                }
+            ],
+            "audio_lanes": [],
+            "activity": current,
+        }
 
     @app.get(
         "/v1/models/{model_id:path}",
