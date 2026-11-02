@@ -2002,3 +2002,20 @@ def test_clean_review_summary_uses_truncated_first_line(monkeypatch, tmp_path):
     assert "\n" not in result.summary
     assert message in result.details
     assert "Review duration:" in result.details
+
+
+def test_hosted_validate_workflow_opts_out_of_codex_explicitly():
+    """The hosted runner has no reviewer CLI; a missing CLI now fails, so the
+    hosted workflow must opt out explicitly instead of relying on a skip."""
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1] / ".github/workflows/pr-validate.yml"
+        ).read_text()
+    )
+    steps = [s for job in workflow["jobs"].values() for s in job.get("steps", [])]
+    run = next(s for s in steps if s.get("id") == "validate")
+    assert run["env"]["PR_VALIDATE_NO_CODEX"] == "1"
