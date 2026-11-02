@@ -124,9 +124,10 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
     except (OSError, ValueError):
         # Other metadata/load failures retain their existing lifecycle handling.
         logger.debug("Readiness metadata unavailable", exc_info=True)
-    if snapshot_dir is not None:
-        # Keep the resolved snapshot with the config identity; unresolved lazy
-        # models must be checked again after their download completes.
+    if snapshot_dir is not None and result:
+        # Cache only blockers: adding files cannot clear a consent requirement.
+        # Clear snapshots may gain metadata during lazy downloads, so recheck
+        # them on every probe; replaced snapshot directories are also rechecked.
         cfg._model_consent_cache = ((*key, snapshot_dir), result)
     return result
 
