@@ -56,12 +56,11 @@ def test_wav_duration_falls_through_for_oversized_headers(
     path.write_bytes(
         _wav(size if size is not None else 48000 * channels, 0xFFFFFFFF, channels)
     )
-    expected = probe_duration if size is not None else 1.5
+    expected = (
+        probe_duration if size is not None and probe_duration is not None else 1.5
+    )
     duration = _audio_duration_seconds(str(path), allow_decode=False)
-    if expected is None:
-        assert duration is None
-    else:
-        assert duration == pytest.approx(expected)
+    assert duration == expected
     assert calls == (
         [str(path)] if size is not None and probe_duration is not None else []
     )
@@ -81,7 +80,7 @@ def test_oversized_wav_duration_falls_back_to_decode(tmp_path, monkeypatch):
     monkeypatch.setattr(stt, "_decoded_audio_duration", decode)
     path = tmp_path / "pipe.wav"
     path.write_bytes(_wav(0xFFFFFFFF, 0xFFFFFFFF))
-    assert stt._audio_duration_seconds(str(path), allow_decode=False) is None
+    assert stt._audio_duration_seconds(str(path), allow_decode=False) == 1.5
     assert calls == []
     assert stt._audio_duration_seconds(str(path), allow_decode=True) == pytest.approx(
         1.5
@@ -89,7 +88,7 @@ def test_oversized_wav_duration_falls_back_to_decode(tmp_path, monkeypatch):
     assert calls == [str(path)]
 
 
-def test_sentinel_wav_duration_does_not_count_trailing_metadata(tmp_path, monkeypatch):
+def test_sentinel_wav_duration_bounds_trailing_metadata(tmp_path, monkeypatch):
     from rapid_mlx.audio import stt
 
     monkeypatch.setitem(sys.modules, "soundfile", None)
@@ -101,7 +100,10 @@ def test_sentinel_wav_duration_does_not_count_trailing_metadata(tmp_path, monkey
         + struct.pack("<I", 16000)
         + b"\0" * 16000
     )
-    assert stt._audio_duration_seconds(str(path), allow_decode=False) is None
+    duration = stt._audio_duration_seconds(str(path), allow_decode=False)
+    assert duration is not None
+    assert 1.5 <= duration <= path.stat().st_size / 32000
+    assert duration < (0xFFFFFFFF / 32000) / 1000
 
 
 def test_wav_duration_ignores_trailing_metadata(tmp_path):

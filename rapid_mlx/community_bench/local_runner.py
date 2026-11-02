@@ -534,28 +534,23 @@ def _terminate_worker_process(
             pass
     deadline = time.monotonic() + 1
     if owned_pgid is not None:
-        group_signal_succeeded = False
         try:
+            try:
+                os.killpg(owned_pgid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
             if process.is_alive():
-                try:
-                    os.killpg(owned_pgid, signal.SIGTERM)
-                    group_signal_succeeded = True
-                except ProcessLookupError:
-                    pass
                 process.join(timeout=1)
             group_alive = False
             # A worker can exit while descendants still occupy its owned group.
             while True:
                 try:
                     os.killpg(owned_pgid, 0)
-                    group_signal_succeeded = True
                 except ProcessLookupError:
                     break
                 except PermissionError:
                     # macOS reports EPERM for groups containing only zombies.
-                    if group_signal_succeeded:
-                        break
-                    raise
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     group_alive = True

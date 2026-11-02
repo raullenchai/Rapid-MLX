@@ -669,6 +669,7 @@ def _audio_duration_seconds(
     audio_path: str, *, allow_decode: bool = True
 ) -> float | None:
     """Read the source duration without decoding the whole file again."""
+    bounded_duration = None
     try:
         import wave  # noqa: PLC0415
 
@@ -683,6 +684,7 @@ def _audio_duration_seconds(
                 frames = wav.getnframes()
                 if frames <= available // frame_bytes:
                     return float(frames) / rate
+                bounded_duration = (available // frame_bytes) / rate
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -725,7 +727,9 @@ def _audio_duration_seconds(
         decoded_duration = _decoded_audio_duration(audio_path)
         if decoded_duration is not None:
             return decoded_duration
-    return None
+    # This payload-bounded upper bound keeps duration limits enforced without
+    # trusting an inflated header, even if trailing RIFF chunks add bytes.
+    return bounded_duration
 
 
 def _decoded_audio_duration(audio_path: str) -> float | None:

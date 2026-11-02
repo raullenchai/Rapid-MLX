@@ -5800,24 +5800,31 @@ def test_terminate_worker_kills_child_after_worker_exits(already_reaped: bool) -
         worker.stdin.close()
 
 
+@pytest.mark.parametrize("already_reaped", [False, True])
 def test_terminate_worker_escalates_group_signals(
     monkeypatch: pytest.MonkeyPatch,
+    already_reaped: bool,
 ) -> None:
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(
         local_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig))
     )
-    process = _FakeSupervisedProcess(777, alive_sequence=[True, True])
+    process = _FakeSupervisedProcess(777, alive_sequence=[not already_reaped] * 2)
+    if already_reaped:
+        process.exitcode = 0
 
-    local_runner._terminate_worker_process(process)
+    local_runner._terminate_worker_process(
+        process, owned_pgid=777 if already_reaped else None
+    )
 
+    assert signals[0] == (777, signal.SIGTERM)
     assert (777, 0) in signals
     assert [(pid, sig) for pid, sig in signals if sig] == [
         (777, signal.SIGTERM),
         (777, signal.SIGKILL),
     ]
-    assert process.calls == ["join", "join"]
+    assert process.calls == (["join"] if already_reaped else ["join", "join"])
 
 
 def test_terminate_worker_tolerates_group_disappearing_before_sigkill(
@@ -5854,7 +5861,7 @@ def test_terminate_worker_tolerates_group_races(
 
     local_runner._terminate_worker_process(process)
 
-    assert process.calls == ["join", "join"]
+    assert process.calls == []
 
 
 @pytest.mark.parametrize("worker_alive", [False, True])
@@ -5871,12 +5878,14 @@ def test_terminate_worker_falls_back_after_group_permission_error(
         raise PermissionError
 
     monkeypatch.setattr(local_runner.os, "killpg", killpg)
-    process = _FakeSupervisedProcess(777, alive_sequence=[worker_alive, True, True])
+    process = _FakeSupervisedProcess(777, alive_sequence=[worker_alive, worker_alive])
 
     local_runner._terminate_worker_process(process)
 
-    assert process.calls == ["terminate", "join", "kill", "join"]
-    assert signals == [signal.SIGTERM if worker_alive else 0]
+    assert process.calls == (
+        ["terminate", "join", "kill", "join"] if worker_alive else []
+    )
+    assert signals == [signal.SIGTERM]
     assert len(caplog.records) == 1
     assert caplog.records[0].levelname == "WARNING"
     assert "falling back to direct worker cleanup" in caplog.text
@@ -5884,7 +5893,7 @@ def test_terminate_worker_falls_back_after_group_permission_error(
 
 @pytest.mark.parametrize(
     ("worker_alive", "denied_signal"),
-    [(True, 0), (True, signal.SIGKILL), (False, signal.SIGKILL)],
+    [(True, 0), (False, 0), (True, signal.SIGKILL), (False, signal.SIGKILL)],
 )
 def test_terminate_worker_tolerates_zombie_group_permission_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -5907,7 +5916,7 @@ def test_terminate_worker_tolerates_zombie_group_permission_error(
 
     local_runner._terminate_worker_process(process, owned_pgid=777)
 
-    expected_signals = [signal.SIGTERM] if worker_alive else []
+    expected_signals = [signal.SIGTERM]
     expected_signals.append(0)
     if denied_signal == signal.SIGKILL:
         expected_signals.append(signal.SIGKILL)
