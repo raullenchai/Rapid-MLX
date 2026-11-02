@@ -5325,6 +5325,23 @@ def context_overflow_from_client_error(
         return None
     import re
 
+    cap_match = re.fullmatch(
+        r"context_length_exceeded: prompt has (\d+) tokens after media "
+        r"expansion, exceeding --max-prompt-tokens (\d+)",
+        str(exc),
+    )
+    if cap_match is not None:
+        prompt_tokens, limit = map(int, cap_match.groups())
+        return ContextLengthExceeded(
+            prompt_tokens=prompt_tokens,
+            limit=limit,
+            message=(
+                f"This server's maximum admitted prompt length is {limit} tokens. "
+                f"However, your prompt contains {prompt_tokens} tokens after media "
+                "expansion. Please reduce the prompt or raise --max-prompt-tokens "
+                "if the model and available memory permit."
+            ),
+        )
     match = re.fullmatch(
         r"context_length_exceeded: prompt has (\d+) tokens after media "
         r"expansion, (?:exceeding --context-length |reaching or exceeding "
@@ -5475,7 +5492,9 @@ def enforce_context_length(
     )
 
 
-def _raise_prompt_count_unavailable() -> NoReturn:
+def _raise_prompt_count_unavailable(
+    *, code: str = "context_length_exceeded"
+) -> NoReturn:
     """Fail closed when an explicit operator ceiling cannot be enforced."""
     cfg = get_config()
     cap = (
@@ -5485,10 +5504,8 @@ def _raise_prompt_count_unavailable() -> NoReturn:
     )
     from rapid_mlx.telemetry.inference import emit_capability_rejected
 
-    emit_capability_rejected(
-        "context_length_exceeded",
-        reject_reason="operational_cap",
-    )
+    if code == "context_length_exceeded":
+        emit_capability_rejected(code, reject_reason="operational_cap")
     raise HTTPException(
         status_code=400,
         detail={
@@ -5499,7 +5516,7 @@ def _raise_prompt_count_unavailable() -> NoReturn:
                     "The request was rejected before prefill."
                 ),
                 "type": "invalid_request_error",
-                "code": "context_length_exceeded",
+                "code": code,
                 "param": "messages",
             }
         },
@@ -5686,11 +5703,14 @@ def enforce_context_length_for_messages(
             apply_template = getattr(tokenizer, "apply_chat_template", None)
             if not callable(apply_template):
                 if require_text_preflight:
-                    _raise_prompt_count_unavailable()
+                    _raise_prompt_count_unavailable(
+                        code="prompt_token_count_unavailable"
+                    )
                 return None
             template_kwargs = dict(chat_template_kwargs or {})
             if enable_thinking is not None:
                 template_kwargs.setdefault("enable_thinking", enable_thinking)
+            from ..api.tool_calling import convert_tools_for_template
             from ..engine.batched import BatchedEngine
 
             # Render image parts as the processor does. Templates that only
@@ -5698,7 +5718,7 @@ def enforce_context_length_for_messages(
             # text, so a few images read as hundreds of thousands of tokens.
             prompt_ids = apply_template(
                 BatchedEngine._prepare_mllm_messages(messages),
-                tools=tools,
+                tools=convert_tools_for_template(tools) if tools else None,
                 tokenize=True,
                 add_generation_prompt=True,
                 **template_kwargs,
@@ -5709,11 +5729,11 @@ def enforce_context_length_for_messages(
         except Exception:
             logger.debug("MLLM prompt admission tokenization failed", exc_info=True)
             if require_text_preflight:
-                _raise_prompt_count_unavailable()
+                _raise_prompt_count_unavailable(code="prompt_token_count_unavailable")
             return None
         if prompt_tokens <= 0:
             if require_text_preflight:
-                _raise_prompt_count_unavailable()
+                _raise_prompt_count_unavailable(code="prompt_token_count_unavailable")
             return None
         enforce_context_length(
             engine,

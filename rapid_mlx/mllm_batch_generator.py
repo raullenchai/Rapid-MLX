@@ -191,6 +191,78 @@ def _vision_pixel_ceiling(
     return max(patch_unit**2, budget_per_image * patch_unit**2)
 
 
+def _effective_vision_pixel_cap(
+    config, processor, token_budget, image_count, min_pixels, max_pixels
+):
+    """Resolve the shared image-size ceiling for preprocessing and counting."""
+    automatic = (
+        _vision_pixel_ceiling(config, processor, token_budget, image_count)
+        if image_count
+        else 0
+    )
+    pixel_cap = (
+        min(max_pixels, automatic)
+        if max_pixels and automatic
+        else max_pixels or automatic
+    )
+    if pixel_cap and min_pixels and min_pixels > pixel_cap:
+        raise ClientRequestError(
+            "Failed to process image: --vision-min-pixels exceeds the vision token budget"
+        )
+    return pixel_cap
+
+
+def _reduced_vision_pixel_cap(pixel_cap, token_budget, token_count, patch_unit):
+    """Return a second-pass ceiling when the processed prompt exceeds budget."""
+    if not pixel_cap or not isinstance(token_count, int) or token_count <= token_budget:
+        return None
+    reduced = int(pixel_cap * token_budget / token_count)
+    return reduced if reduced >= patch_unit**2 else None
+
+
+def _expand_sized_image_prompt(processor, model_config, prompt, images, settings):
+    """Count a sizing-capable processor's expansion without vision encoding."""
+    from PIL import Image
+
+    from .models.mllm import _temp_manager, process_image_input
+
+    paths = []
+    try:
+        sizes = []
+        for image in images:
+            path = process_image_input(image)
+            paths.append(path)
+            with Image.open(path) as decoded:
+                sizes.append(decoded.size)
+        budget = settings.vision_prefill_token_budget
+        pixel_cap = _effective_vision_pixel_cap(
+            model_config,
+            processor,
+            budget,
+            len(images),
+            settings.vision_min_pixels,
+            settings.vision_max_pixels,
+        )
+        patch_unit = _vision_patch_unit(model_config, processor)
+        for _ in range(2):
+            expanded = processor.expand_image_prompt(
+                prompt,
+                sizes,
+                min_pixels=settings.vision_min_pixels or 65_536,
+                max_pixels=pixel_cap or None,
+            )
+            reduced = _reduced_vision_pixel_cap(
+                pixel_cap, budget, len(expanded), patch_unit
+            )
+            if reduced is None:
+                break
+            pixel_cap = reduced
+        return expanded
+    finally:
+        for path in paths:
+            _temp_manager.cleanup(path)
+
+
 _MLLM_PREFILL_CHUNK_TOKENS = MLLM_PREFILL_CHUNK_TOKENS
 
 # How many exact hybrid snapshots mlx-vlm's APC keeps in memory for the MLLM
@@ -1222,11 +1294,18 @@ def _apply_request_logits_processors(
 
 
 def _enforce_preprocessed_context_window(
-    requests: list[MLLMBatchRequest], context_length: int
+    requests: list[MLLMBatchRequest],
+    context_length: int,
+    max_prompt_tokens: int | None = None,
 ) -> None:
-    """Use expanded media token counts for the effective context window."""
+    """Use expanded media token counts for prompt admission and decoding."""
     for req in requests:
         prompt_tokens = int(req.input_ids.size) if req.input_ids is not None else 0
+        if max_prompt_tokens is not None and prompt_tokens > max_prompt_tokens:
+            raise ClientRequestError(
+                f"context_length_exceeded: prompt has {prompt_tokens} tokens "
+                f"after media expansion, exceeding --max-prompt-tokens {max_prompt_tokens}"
+            )
         if prompt_tokens >= context_length:
             raise ClientRequestError(
                 f"context_length_exceeded: prompt has {prompt_tokens} tokens "
@@ -3990,24 +4069,14 @@ class MLLMBatchGenerator:
         # ``RuntimeError`` / arbitrary ``Exception``) MUST keep
         # propagating as server errors so the caller sees HTTP 500
         # instead of a misleading HTTP 400 "Failed to process image".
-        auto_pixel_cap = (
-            _vision_pixel_ceiling(
-                getattr(self.model, "config", None),
-                self.processor,
-                self.vision_prefill_token_budget,
-                len(all_images),
-            )
-            if all_images
-            else 0
+        pixel_cap = _effective_vision_pixel_cap(
+            getattr(self.model, "config", None),
+            self.processor,
+            self.vision_prefill_token_budget,
+            len(all_images),
+            self.vision_min_pixels,
+            self.vision_max_pixels,
         )
-        pixel_cap = self.vision_max_pixels
-        if auto_pixel_cap:
-            pixel_cap = min(pixel_cap, auto_pixel_cap) if pixel_cap else auto_pixel_cap
-        if pixel_cap and self.vision_min_pixels and self.vision_min_pixels > pixel_cap:
-            raise ClientRequestError(
-                "Failed to process image: --vision-min-pixels exceeds the "
-                "vision token budget"
-            )
 
         patch_unit = _vision_patch_unit(
             getattr(self.model, "config", None), self.processor
@@ -4059,16 +4128,10 @@ class MLLMBatchGenerator:
                 token_count = self._media_budget_token_count(
                     inputs.get("input_ids"), request.chunked_media_prefill
                 )
-                if (
-                    not pixel_cap
-                    or not isinstance(token_count, int)
-                    or token_count <= self.vision_prefill_token_budget
-                ):
-                    break
-                reduced_cap = int(
-                    pixel_cap * self.vision_prefill_token_budget / token_count
+                reduced_cap = _reduced_vision_pixel_cap(
+                    pixel_cap, self.vision_prefill_token_budget, token_count, patch_unit
                 )
-                if reduced_cap < patch_unit**2:
+                if reduced_cap is None:
                     break
                 pixel_cap = reduced_cap
             if isinstance(token_count, int) and (
@@ -4694,7 +4757,9 @@ class MLLMBatchGenerator:
         configured_context = get_config().context_length
         if configured_context is not None:
             context_length = min(context_length, configured_context)
-        _enforce_preprocessed_context_window(requests, context_length)
+        _enforce_preprocessed_context_window(
+            requests, context_length, get_config().max_prompt_tokens
+        )
 
         # Snapshot per-request prompt-token counts BEFORE any later step
         # nulls out ``input_ids`` to release Metal buffers (line ~822 in

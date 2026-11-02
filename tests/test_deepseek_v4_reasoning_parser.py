@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,101 @@ from rapid_mlx.service.helpers import (
     _uses_deepseek_v4_reasoning,
 )
 from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers.deepseek_v4_0731_tool_parser import (
+    DeepSeekV40731ToolParser,
+)
+
+
+def _literal_think_tool_wire(alias: str) -> str:
+    return (
+        f"<｜DSML｜{alias}tool_calls>"
+        f'<｜DSML｜{alias}invoke name="write_file">'
+        f'<｜DSML｜{alias}parameter name="content" string="true">'
+        "A<think>B</think>C</｜DSML｜parameter>"
+        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+
+
+@pytest.mark.parametrize("enable_thinking", [True, False])
+@pytest.mark.parametrize("alias", ["", "r:"])
+@pytest.mark.parametrize("chunk_size", [None, 1000, 1, 7])
+def test_dsml_literal_think_arguments(enable_thinking, alias, chunk_size) -> None:
+    parser = DeepSeekV4ReasoningParser()
+    wire = _literal_think_tool_wire(alias)
+    text = "<think>plan</think>" + wire + "<think>after</think>answer"
+    if chunk_size is None:
+        reasoning, content = parser.extract_reasoning(
+            text, enable_thinking=enable_thinking
+        )
+    else:
+        parser.configure_request(enable_thinking=enable_thinking)
+        deltas = []
+        previous = ""
+        for offset in range(0, len(text), chunk_size):
+            chunk = text[offset : offset + chunk_size]
+            delta = parser.extract_reasoning_streaming(
+                previous, previous + chunk, chunk
+            )
+            if delta:
+                deltas.append(delta)
+            previous += chunk
+        tail = parser.finalize_streaming(text)
+        if tail:
+            deltas.append(tail)
+        reasoning = "".join(delta.reasoning or "" for delta in deltas) or None
+        content = "".join(delta.content or "" for delta in deltas)
+
+    assert content == wire + "answer"
+    assert reasoning == ("planafter" if enable_thinking else None)
+    result = DeepSeekV40731ToolParser(None).extract_tool_calls(content)
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["name"] == "write_file"
+    assert json.loads(result.tool_calls[0]["arguments"]) == {
+        "content": "A<think>B</think>C"
+    }
+
+
+@pytest.mark.parametrize("enable_thinking", [True, False])
+@pytest.mark.parametrize("alias", ["", "r:"])
+@pytest.mark.parametrize("chunk_size", [1000, 1, 7])
+def test_postprocessor_dsml_literal_think_arguments(
+    enable_thinking, alias, chunk_size
+) -> None:
+    cfg = ServerConfig()
+    cfg.reasoning_parser_name = "deepseek_v4"
+    cfg.tool_parser_instance = DeepSeekV40731ToolParser(None)
+    processor = StreamingPostProcessor(
+        cfg, enable_thinking=enable_thinking, tools_requested=True
+    )
+    processor.reset()
+    text = "<think>plan</think>" + _literal_think_tool_wire(alias)
+    events = []
+    for offset in range(0, len(text), chunk_size):
+        chunk = text[offset : offset + chunk_size]
+        events.extend(
+            processor.process_chunk(
+                GenerationOutput(
+                    text=text[: offset + len(chunk)],
+                    new_text=chunk,
+                    tokens=[1],
+                    finished=False,
+                )
+            )
+        )
+    events.extend(processor.finalize())
+
+    assert processor.accumulated_reasoning == ("plan" if enable_thinking else "")
+    calls = [
+        call
+        for event in events
+        if event.type == "tool_call"
+        for call in event.tool_calls
+    ]
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "write_file"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "content": "A<think>B</think>C"
+    }
 
 
 def test_chat_mode_absorbs_bare_think_close_after_content() -> None:

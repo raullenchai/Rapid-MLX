@@ -34,19 +34,24 @@ def smart_resize(
     return h, w
 
 
+def image_grid(height, width, *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS):
+    """Return the patch grid from dimensions, without decoding image pixels."""
+    h, w = smart_resize(height, width, min_pixels=min_pixels, max_pixels=max_pixels)
+    if h * w > max_pixels:
+        raise ValueError("Resized image exceeds the pixel budget")
+    return (1, h // 16, w // 16)
+
+
 def preprocess_images(images, *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS):
     """Return ordered NumPy patches and THW grids for PIL images."""
     patches, grids = [], []
     for image in images:
-        h, w = smart_resize(
+        _, gh, gw = image_grid(
             image.height, image.width, min_pixels=min_pixels, max_pixels=max_pixels
         )
-        # Reject rounded results exceeding the admission budget, including extreme ratios.
-        if h * w > max_pixels:
-            raise ValueError("Resized image exceeds the pixel budget")
+        h, w = gh * 16, gw * 16
         rgb = image.convert("RGB").resize((w, h), Image.Resampling.BICUBIC)
         pixels = np.asarray(rgb, dtype=np.float32).transpose(2, 0, 1) / 127.5 - 1.0
-        gh, gw = h // 16, w // 16
         pixels = pixels.reshape(3, gh // 2, 2, 16, gw // 2, 2, 16)
         pixels = pixels.transpose(1, 4, 2, 5, 0, 3, 6)
         pixels = np.repeat(pixels[..., None, :, :], 2, axis=5)
@@ -90,6 +95,22 @@ class LFM3VLProcessor:
 
     def apply_chat_template(self, *args, **kwargs):
         return self.tokenizer.apply_chat_template(*args, **kwargs)
+
+    def expand_image_prompt(
+        self, prompt, image_sizes, *, min_pixels=65_536, max_pixels=None
+    ):
+        """Expand image markers using only ordered (width, height) sizes."""
+        token_ids = (
+            self.tokenizer.encode(prompt, add_special_tokens=False)
+            if isinstance(prompt, str)
+            else list(prompt)
+        )
+        max_pixels = min(int(max_pixels or DEFAULT_MAX_PIXELS), DEFAULT_MAX_PIXELS)
+        grids = [
+            image_grid(h, w, min_pixels=min_pixels, max_pixels=max_pixels)
+            for w, h in image_sizes
+        ]
+        return expand_image_tokens(token_ids, grids)
 
     def prepare_inputs(
         self, prompt, images=(), *, min_pixels=65_536, max_pixels=DEFAULT_MAX_PIXELS

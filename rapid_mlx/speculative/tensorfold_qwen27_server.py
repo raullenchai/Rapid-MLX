@@ -745,7 +745,14 @@ def run_tensorfold_qwen27_server(
     )
     model_info = ModelInfo(
         id=served_model_name,
-        capabilities=["text", "experimental"],
+        capabilities=[
+            "text",
+            *(["tools"] if supports_tools and tool_call_parser else []),
+            "experimental",
+        ],
+        tool_call_parser=tool_call_parser
+        if supports_tools and tool_call_parser
+        else None,
         reasoning_parser=reasoning_parser_name,
         speculative_decoding=speculative_info,
         fallback_model=fallback_model,

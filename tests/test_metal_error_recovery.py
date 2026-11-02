@@ -121,7 +121,9 @@ async def test_engine_loop_fails_in_flight_requests_on_step_exception():
     final = collector.get_nowait()
     assert final is not None, "collector must receive an error RequestOutput"
     assert final.finished is True
-    assert final.error and ("Metal" in final.error or "metal" in final.error.lower())
+    assert final.error_kind == "insufficient_memory"
+    assert final.error and "out of memory" in final.error
+    assert "kIOGPUCommandBuffer" not in final.error
 
 
 @pytest.mark.asyncio
@@ -438,4 +440,5 @@ def test_scheduler_generation_error_is_not_reported_as_normal_length_finish():
     assert terminal.finish_reason == "abort"
     assert terminal.finish_reason != "length"
     assert terminal.error is not None
-    assert "Resource limit" in terminal.error
+    assert "Resource limit" not in terminal.error
+    assert terminal.error_kind == "insufficient_memory"

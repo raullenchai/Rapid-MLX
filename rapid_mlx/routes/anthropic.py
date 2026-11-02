@@ -1644,24 +1644,29 @@ async def count_anthropic_tokens(request: Request):
                 if openai_request.tools
                 else None
             )
-            if callable(render_request_prompt):
-                prompt = render_request_prompt(
-                    engine,
-                    _ctx_messages,
-                    tools=rendered_tools,
-                    enable_thinking=effective_thinking,
-                )
-                count = count_prompt_tokens(engine, prompt)
-                if count > 0:
-                    total_tokens = count
-            elif callable(build_prompt):
-                prompt = build_prompt(
-                    _ctx_messages,
-                    tools=rendered_tools,
-                    enable_thinking=effective_thinking,
-                )
-                if isinstance(prompt, str) and prompt:
-                    total_tokens = count_prompt_tokens(engine, prompt)
+
+            def render_and_count():
+                if callable(render_request_prompt):
+                    prompt = render_request_prompt(
+                        engine,
+                        _ctx_messages,
+                        tools=rendered_tools,
+                        enable_thinking=effective_thinking,
+                    )
+                    count = count_prompt_tokens(engine, prompt)
+                    if count > 0:
+                        return count
+                elif callable(build_prompt):
+                    prompt = build_prompt(
+                        _ctx_messages,
+                        tools=rendered_tools,
+                        enable_thinking=effective_thinking,
+                    )
+                    if isinstance(prompt, str) and prompt:
+                        return count_prompt_tokens(engine, prompt)
+                return None
+
+            total_tokens = await asyncio.to_thread(render_and_count)
         except Exception:
             pass
 

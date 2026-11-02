@@ -107,7 +107,13 @@ def validate_request(
     ]
     if unsupported:
         raise UnsupportedRequest(
-            "TensorFold text profiles do not support: " + ", ".join(unsupported)
+            "TensorFold text profiles do not support: "
+            + ", ".join(unsupported)
+            + (
+                ". Tool calling is not supported on this TensorFold lane yet."
+                if "tools" in unsupported
+                else ""
+            )
         )
     unknown = set(sampling or ()) - SAMPLING_FIELDS
     if unknown:
