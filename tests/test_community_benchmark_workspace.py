@@ -7554,4 +7554,4 @@ def test_image_resolution_checks_every_case(monkeypatch) -> None:
     assert selected["protocol_id"] == "rapid-image-speed-4step-nocfg"
     assert [case["seed"] for case in calls] == [12648430, 99, 12648430]
     assert calls[0]["guidance"] == 3.5
-    assert "guidance" not in calls[-1]
+    assert calls[-1]["guidance"] is None

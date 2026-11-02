@@ -854,9 +854,11 @@ def _run_image(
         "size": f"{case['width']}x{case['height']}",
         "response_format": "b64_json",
         "steps": case["steps"],
-        **image_case_guidance(case),
         "seed": case["seed"],
     }
+    guidance = image_case_guidance(case)
+    if guidance is not None:
+        payload["guidance"] = guidance
     measurements: list[dict[str, Any]] = []
     _report(progress, f"Starting local image server for {alias} (loads the model)...")
     boot_started = _stage_started(progress)

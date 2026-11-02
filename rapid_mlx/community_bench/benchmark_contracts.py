@@ -52,10 +52,11 @@ class ImageProtocolUnavailableError(ValueError):
     """Every registered image schedule was rejected by the model engine."""
 
 
-def image_case_guidance(case: dict[str, Any]) -> dict[str, float]:
+def image_case_guidance(case: dict[str, Any]) -> float | None:
     """Map the no-CFG sentinel to omission for both probing and execution."""
     value = case["guidance_millionths"]
-    return {} if value == 1_000_000 else {"guidance": value / 1_000_000}
+    guidance: float | None = None if value == 1_000_000 else value / 1_000_000
+    return guidance
 
 
 def registered_workload(task_type: str, alias: str | None = None) -> dict[str, Any]:
@@ -67,7 +68,7 @@ def registered_workload(task_type: str, alias: str | None = None) -> dict[str, A
         raise ValueError(
             f"no registered community benchmark for {task_type!r}"
         ) from exc
-    workload = copy.deepcopy(_read_json(filename)["workload"])
+    workload: dict[str, Any] = copy.deepcopy(_read_json(filename)["workload"])
     if task_type != "image_generation" or alias is None:
         return workload
     try:
@@ -86,7 +87,7 @@ def registered_workload(task_type: str, alias: str | None = None) -> dict[str, A
                         height=case["height"],
                         num_inference_steps=case["steps"],
                         seed=case["seed"],
-                        **image_case_guidance(case),
+                        guidance=image_case_guidance(case),
                     )
                 return candidate
             except ImageRequestError as exc:
