@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Offline DDTree catalog pin propagation and override contracts."""
 
+import ast
+import inspect
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,6 +13,74 @@ from rapid_mlx.model_aliases import _coerce, list_profiles, resolve_profile
 from rapid_mlx.speculative.ddtree import runtime
 
 DRAFT_REVISION = "5fc3b3d474760f18c516db87d84c37edbfd3ede6"
+
+
+@pytest.mark.parametrize(
+    "preflight,expected_revision",
+    [
+        ({}, DRAFT_REVISION),
+        ({"_ddtree_drafter_repo": "user/drafter"}, None),
+        (
+            {
+                "_ddtree_drafter_repo": "user/drafter",
+                "_ddtree_drafter_revision": "a" * 40,
+            },
+            "a" * 40,
+        ),
+        ({"_ddtree_drafter_revision": "a" * 40}, DRAFT_REVISION),
+    ],
+)
+def test_serve_ddtree_drafter_revision_fallback(
+    monkeypatch, preflight, expected_revision
+):
+    from rapid_mlx import cli
+
+    # Execute the actual launch branch without the unrelated serve boot path.
+    function = ast.parse(inspect.getsource(cli.serve_command)).body[0]
+    branch = next(
+        node
+        for node in reversed(function.body)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "args.enable_ddtree"
+    )
+    function.body = [branch]
+    launch = Mock()
+    monkeypatch.setitem(
+        sys.modules,
+        "rapid_mlx.speculative.ddtree.server",
+        SimpleNamespace(run_ddtree_server=launch),
+    )
+    profile = resolve_profile("qwen3.5-9b-8bit")
+    preflight_check = Mock(return_value=("qwen3.5-9b-8bit", profile))
+    namespace = {
+        "__package__": "rapid_mlx",
+        "_preflight_ddtree_or_exit": preflight_check,
+        "_resolved_serve_port": lambda args: args.port,
+        "port_explicit_for": lambda args: False,
+        "cors_origins": [],
+        "uvicorn_log_level": "error",
+        "server": SimpleNamespace(_api_key=None),
+    }
+    exec(
+        compile(ast.Module(body=[function], type_ignores=[]), cli.__file__, "exec"),
+        namespace,
+    )
+    args = SimpleNamespace(
+        model="qwen3.5-9b-8bit",
+        enable_ddtree=True,
+        host="127.0.0.1",
+        port=8000,
+        served_model_name=None,
+        max_tokens=32,
+        no_thinking=False,
+        **preflight,
+    )
+    namespace["serve_command"](args)
+    preflight_check.assert_called_once_with(args)
+    launch.assert_called_once()
+    assert launch.call_args.kwargs["drafter_repo"] == preflight.get(
+        "_ddtree_drafter_repo", profile.ddtree_draft_model
+    )
+    assert launch.call_args.kwargs["drafter_revision"] == expected_revision
 
 
 @pytest.mark.parametrize("override", [None, "user/drafter"])
