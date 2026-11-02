@@ -2,7 +2,10 @@
 """Count tokens from the same rendered prompt used by text and vision chat."""
 
 import asyncio
+import base64
+import io
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -15,9 +18,12 @@ from rapid_mlx.api.anthropic_models import AnthropicRequest
 from rapid_mlx.api.tool_calling import convert_tools_for_template
 from rapid_mlx.config import reset_config
 from rapid_mlx.engine.base import GenerationOutput
-from rapid_mlx.engine.batched import BatchedEngine
 from rapid_mlx.middleware.exception_handlers import install_exception_handlers
-from rapid_mlx.routes.anthropic import _prepare_anthropic_engine_messages, router
+from rapid_mlx.routes.anthropic import (
+    _prepare_anthropic_engine_messages,
+    count_anthropic_tokens,
+    router,
+)
 from rapid_mlx.service.helpers import count_prompt_tokens
 
 
@@ -47,9 +53,17 @@ class _Tokenizer:
         return " ".join(parts)
 
 
+@pytest.fixture(scope="module")
+def batched_engine_class():
+    pytest.importorskip("mlx.core", exc_type=ImportError)
+    return pytest.importorskip(
+        "rapid_mlx.engine.batched", exc_type=ImportError
+    ).BatchedEngine
+
+
 @pytest.fixture(params=[True, False], ids=["mllm", "text"])
-def engine(request, monkeypatch):
-    engine = object.__new__(BatchedEngine)
+def engine(request, monkeypatch, batched_engine_class):
+    engine = object.__new__(batched_engine_class)
     engine._loaded = True
     engine._is_mllm = request.param
     engine._model_name = "test-model"
@@ -231,3 +245,96 @@ def test_shared_system_prompt_fallback_is_preserved(engine, monkeypatch):
     asyncio.run(engine.chat(messages))
     assert engine.generate.call_args.kwargs["prompt"] == [11, 22, 33]
     prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt_method", ["render_request_prompt", "build_prompt"])
+def test_count_tokens_render_and_count_off_event_loop(monkeypatch, prompt_method):
+    observations = []
+
+    def observe(stage):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        observations.append((stage, threading.current_thread(), loop))
+
+    def render(self, messages, **kwargs):
+        observe("render")
+        return "rendered prompt"
+
+    class Engine:
+        tokenizer = _Tokenizer()
+        is_mllm = False
+        preserve_native_tool_format = False
+
+    setattr(Engine, prompt_method, render)
+    engine = Engine()
+    _client(engine)
+    monkeypatch.setattr("rapid_mlx.routes.anthropic.ensure_engine_ready", AsyncMock())
+
+    def count(engine, prompt):
+        observe("count")
+        assert prompt == "rendered prompt"
+        return 17
+
+    monkeypatch.setattr("rapid_mlx.routes.anthropic.count_prompt_tokens", count)
+
+    async def run():
+        loop_thread = threading.current_thread()
+        request = SimpleNamespace(
+            json=AsyncMock(
+                return_value={"messages": [{"role": "user", "content": "hello"}]}
+            ),
+            headers={},
+        )
+        result = await count_anthropic_tokens(request)
+        assert result == {"input_tokens": 17}
+        assert [stage for stage, _, _ in observations] == ["render", "count"]
+        assert all(thread is not loop_thread for _, thread, _ in observations)
+        assert all(loop is None for _, _, loop in observations)
+
+    asyncio.run(run())
+
+
+def test_real_render_request_prompt_expands_sized_images(batched_engine_class):
+    from PIL import Image
+
+    from rapid_mlx.models.lfm3_vl_processor import IMAGE_TOKEN_ID, LFM3VLProcessor
+
+    image_data = io.BytesIO()
+    Image.new("RGB", (512, 512)).save(image_data, format="PNG")
+    image_url = "data:image/png;base64," + base64.b64encode(
+        image_data.getvalue()
+    ).decode("ascii")
+    engine = object.__new__(batched_engine_class)
+    engine._loaded = True
+    engine._is_mllm = True
+    engine._model_name = "test-model"
+    engine._tokenizer = SimpleNamespace(
+        chat_template="image template",
+        bos_token=None,
+        encode=lambda *a, **kw: [11, IMAGE_TOKEN_ID, 22],
+        apply_chat_template=lambda *a, **kw: "image prompt",
+    )
+    engine._processor = LFM3VLProcessor(engine._tokenizer)
+    engine._model = SimpleNamespace(
+        config=SimpleNamespace(
+            vision_config=SimpleNamespace(patch_size=16, spatial_merge_size=2)
+        )
+    )
+    engine._mllm_scheduler = SimpleNamespace(
+        config=SimpleNamespace(
+            vision_min_pixels=0,
+            vision_max_pixels=0,
+            vision_prefill_token_budget=8192,
+        )
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": image_url}}],
+        }
+    ]
+    prompt = type(engine).render_request_prompt(engine, messages)
+    assert prompt == [11] + [IMAGE_TOKEN_ID] * 256 + [22]
+    assert count_prompt_tokens(engine, prompt) == 258

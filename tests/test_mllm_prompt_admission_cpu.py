@@ -298,6 +298,7 @@ def test_count_tokens_includes_sized_image_expansion(
         "rapid_mlx/routes/anthropic.py",
         "count_anthropic_tokens",
         {
+            "asyncio": asyncio,
             "HTTPException": HTTPException,
             "get_engine": lambda *a: route_engine,
             "ensure_engine_ready": AsyncMock(),
