@@ -278,6 +278,49 @@ def test_repeated_admission_failures_preserve_healthy_work(
     assert scheduler._consecutive_step_failures == shared_failures
 
 
+def test_shared_admission_bookkeeping_failure_recovers_batch(monkeypatch):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    generator = MagicMock()
+    generator.insert.return_value = [1]
+    scheduler.batch_generator = generator
+    scheduler.request_id_to_uid["active"] = 2
+    scheduler.uid_to_request_id[2] = "active"
+    monkeypatch.setattr(scheduler, "_ensure_batch_generator", lambda params: True)
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", lambda request: True)
+    monkeypatch.setattr(
+        scheduler, "_pop_waiting_for_admission", lambda: scheduler.waiting.popleft()
+    )
+    recovery = MagicMock(wraps=scheduler._recover_from_generation_error)
+    monkeypatch.setattr(scheduler, "_recover_from_generation_error", recovery)
+    capacity_checks = 0
+
+    def check_capacity():
+        nonlocal capacity_checks
+        capacity_checks += 1
+        if capacity_checks == 1:
+            return 3
+        # The next loop condition is shared work after successful admission.
+        assert set(scheduler.running) == {"bad", "active"}
+        assert scheduler.requests["bad"].batch_uid == 1
+        raise RuntimeError("shared admission bookkeeping failed")
+
+    monkeypatch.setattr(scheduler, "_max_running_sequences", check_capacity)
+
+    output = scheduler.step()
+
+    assert capacity_checks == 2
+    generator.insert.assert_called_once()
+    recovery.assert_called_once_with()
+    assert output.finished_request_ids == {"bad", "active"}
+    assert all(out.error_kind == "engine_aborted" for out in output.outputs)
+    assert scheduler._step_request_id is None
+    assert not scheduler.running
+    assert [request.request_id for request in scheduler.waiting] == ["queued"]
+    generator.close.assert_called_once()
+
+
 def test_repeated_failures_escalate_to_queued_work(monkeypatch):
     engine = make_engine()
     seed(engine)

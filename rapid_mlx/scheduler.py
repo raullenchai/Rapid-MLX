@@ -10320,6 +10320,7 @@ class Scheduler:
             if not self._prefill_cohort_fits(request):
                 if not shortest_tail:
                     self.waiting.insert(waiting_order.index(request), request)
+                self._step_request_id = None
                 break
 
             # Ensure we have a batch generator. The False return means
@@ -10331,12 +10332,14 @@ class Scheduler:
             if not self._ensure_batch_generator(request.sampling_params):
                 if not shortest_tail:
                     self.waiting.appendleft(request)
+                self._step_request_id = None
                 break
 
             if self.batch_generator is None:
                 # Put back and try again later
                 if not shortest_tail:
                     self.waiting.appendleft(request)
+                self._step_request_id = None
                 break
 
             # Determine tokens to process and cache to use
@@ -10381,6 +10384,7 @@ class Scheduler:
                 ):
                     if not shortest_tail:
                         self.waiting.insert(waiting_order.index(request), request)
+                    self._step_request_id = None
                     break
             elif request.remaining_tokens:
                 tokens_to_process = request.remaining_tokens
@@ -10628,6 +10632,7 @@ class Scheduler:
                     if not self._prefill_cohort_fits(request):
                         if not shortest_tail:
                             self.waiting.insert(waiting_order.index(request), request)
+                        self._step_request_id = None
                         break
                     # The retry keeps only the message boundary split.
                     request.shared_prefix_snapshot_at = 0
@@ -10669,6 +10674,7 @@ class Scheduler:
             # request in place and retry on a later scheduler tick instead of
             # spinning forever in this unchanged loop.
             if not uids and shortest_tail:
+                self._step_request_id = None
                 break
 
             if uids:
@@ -10701,6 +10707,9 @@ class Scheduler:
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
+                # Admission is committed; later bookkeeping belongs to the batch.
+                self._step_request_id = None
+
                 self.total_prompt_tokens += request.num_prompt_tokens
                 cache_info = (
                     f", {request.cached_tokens} cached"
@@ -10715,6 +10724,9 @@ class Scheduler:
                     f"max_tokens={request.sampling_params.max_tokens} "
                     f"running={len(self.running)} waiting={len(self.waiting)}"
                 )
+
+            # Empty insert results also end request-local admission work.
+            self._step_request_id = None
 
         return scheduled
 
