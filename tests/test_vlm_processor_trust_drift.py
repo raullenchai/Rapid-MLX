@@ -107,11 +107,22 @@ def test_vlm_processor_trust_drift(vendored):
     assert all(len(lines) == 1 for lines in hits.values()), (
         f"Review the additional route and update the guard and classification: {hits}"
     )
-    for reason, model_types in classified.values():
-        if reason.startswith("forced:"):
-            assert model_types <= FORCED_TRUST_VLM_MODEL_TYPES
-        elif reason.startswith("external:"):
-            assert model_types <= EXTERNAL_TOKENIZER_VLM_MODEL_TYPES
+    if vendored:
+        return
+    # Guard sets must match the reviewed routes exactly, so a stale or stray
+    # guard entry fails as well as a missing one.
+    for prefix, guarded in (
+        ("forced:", FORCED_TRUST_VLM_MODEL_TYPES),
+        ("external:", EXTERNAL_TOKENIZER_VLM_MODEL_TYPES),
+    ):
+        reviewed = set().union(
+            *(
+                types
+                for reason, types in classified.values()
+                if reason.startswith(prefix)
+            )
+        )
+        assert reviewed == guarded, f"{prefix} reviewed {reviewed} != guard {guarded}"
 
 
 def test_scan_detects_forced_trust_forms(tmp_path):
