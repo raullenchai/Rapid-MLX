@@ -4438,12 +4438,9 @@ def main():
         if exc.code == 2:
             # argparse usage errors exit 2; bind the reason here, at the
             # parsing boundary, rather than inferring it from the exit code.
-            try:
-                from rapid_mlx.telemetry.server_start import set_exit_reason
+            from rapid_mlx.telemetry.server_start import set_exit_reason
 
-                set_exit_reason("usage_error", exc=exc)
-            except BaseException:
-                pass
+            set_exit_reason("usage_error", exc=exc)
         raise
     from .server_exposure import normalize_bind_host, validate_server_exposure
 

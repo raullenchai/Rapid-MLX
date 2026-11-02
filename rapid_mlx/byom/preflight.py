@@ -1300,12 +1300,9 @@ def _check_catalog_memory_fit(args: Any) -> None:
     )
     _emit_rejection(args, PreflightRejectedError(INSUFFICIENT_MEMORY))
     exc = SystemExit(1)
-    try:
-        from rapid_mlx.telemetry.server_start import set_exit_reason
+    from rapid_mlx.telemetry.server_start import set_exit_reason
 
-        set_exit_reason("memory_refused", exc=exc)
-    except BaseException:
-        pass
+    set_exit_reason("memory_refused", exc=exc)
     raise exc
 
 
@@ -1411,12 +1408,9 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         _emit_rejection(args, PreflightRejectedError(verdict.failure))
         exc = SystemExit(1)
         if verdict.failure == INSUFFICIENT_MEMORY:
-            try:
-                from rapid_mlx.telemetry.server_start import set_exit_reason
+            from rapid_mlx.telemetry.server_start import set_exit_reason
 
-                set_exit_reason("memory_refused", exc=exc)
-            except BaseException:
-                pass
+            set_exit_reason("memory_refused", exc=exc)
         raise exc
     funnel.set_preflight("passed")
     if not is_local and sys.stdout.isatty():

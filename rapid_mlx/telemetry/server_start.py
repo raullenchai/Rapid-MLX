@@ -707,7 +707,7 @@ def set_exit_reason(reason: object, *, exc: BaseException) -> None:
     try:
         if isinstance(reason, str) and reason in _EXIT_REASONS:
             setattr(exc, _EXIT_REASON_ATTR, reason)
-    except BaseException:
+    except BaseException:  # pragma: no cover - defensive telemetry boundary
         pass
 
 
@@ -737,7 +737,7 @@ def exit_reason_for(exc: BaseException | None) -> str:
                 break
             else:
                 current = current.__context__
-    except BaseException:
+    except BaseException:  # pragma: no cover - defensive telemetry boundary
         return "exception"
     return "exception"
 

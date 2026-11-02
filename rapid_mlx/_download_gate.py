@@ -2410,11 +2410,8 @@ def confirm_or_abort(
             else f"  Aborted. Set {auto_yes_env}=1 to skip this prompt."
         )
         exc = SystemExit(1)
-        try:
-            from rapid_mlx.telemetry.server_start import set_exit_reason
+        from rapid_mlx.telemetry.server_start import set_exit_reason
 
-            set_exit_reason(exit_reason, exc=exc)
-        except BaseException:
-            pass
+        set_exit_reason(exit_reason, exc=exc)
         raise exc
     return True
