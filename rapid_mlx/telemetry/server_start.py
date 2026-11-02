@@ -603,11 +603,7 @@ def failed(
         if isinstance(exit_reason, str) and exit_reason in _EXIT_REASONS
         else "exception"
     )
-    context: dict[str, object] = {}
-    if reason is not None:
-        context["exit_reason"] = reason
-    if failure_stage == "bind" and port_explicit is not None:
-        context["port_explicit"] = port_explicit
+    bind_port_explicit = port_explicit if failure_stage == "bind" else None
     try:
         from rapid_mlx.telemetry import model_events
         from rapid_mlx.telemetry.track import _enqueue_accepted, would_accept
@@ -624,7 +620,12 @@ def failed(
             return
         accepted_failed = would_accept(
             "server_start_state",
-            _server_start_props("failed", failure_stage=failure_stage, **context),
+            _server_start_props(
+                "failed",
+                failure_stage=failure_stage,
+                port_explicit=bind_port_explicit,
+                exit_reason=reason,
+            ),
         )
         accepted_attempted = (
             would_accept("server_start_state", _server_start_props("attempted"))
