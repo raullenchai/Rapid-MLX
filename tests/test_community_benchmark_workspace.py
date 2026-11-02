@@ -7342,17 +7342,21 @@ def test_draft_checkpoint_guard_uses_executed_identity(
     load.assert_not_called()
 
 
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
 @pytest.mark.parametrize(
     "stage", ["plan_for_alias", "preflight_benchmark_acceleration"]
 )
-def test_run_json_cancels_during_early_preflight(monkeypatch, capsys, stage):
+def test_run_json_cancels_during_early_preflight(monkeypatch, capsys, stage, signum):
     from rapid_mlx.cli_parser import build_parser
 
     previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
 
     def interrupt(*a, **kw):
-        assert signal.getsignal(signal.SIGINT) != previous[signal.SIGINT]
-        raise KeyboardInterrupt
+        # Deliver a real signal so the installed handler, not the mock,
+        # turns it into a cancellation.
+        assert signal.getsignal(signum) != previous[signum]
+        signal.raise_signal(signum)
+        raise AssertionError("signal did not interrupt preflight")
 
     monkeypatch.setattr(community_cli, "refuse_if_memory_does_not_fit", lambda *a: None)
     monkeypatch.setattr(community_cli, stage, interrupt)
@@ -7365,7 +7369,7 @@ def test_run_json_cancels_during_early_preflight(monkeypatch, capsys, stage):
             "--json",
         ]
     )
-    assert community_cli.benchmark_command(args) == 130
+    assert community_cli.benchmark_command(args) == 128 + signum
     captured = capsys.readouterr()
     assert captured.out == ""
     assert json.loads(captured.err) == {
