@@ -5457,7 +5457,8 @@ class _FakeWorkerConnection:
         self.closed = False
 
     def poll(self, timeout) -> bool:
-        return self._poll_result
+        # No extra messages are queued during the final nonblocking drain.
+        return self._poll_result and timeout != 0
 
     def recv(self):
         return self._recv()
@@ -5599,6 +5600,52 @@ def test_detached_worker_timeout_terminates_without_waiting_for_join(
         )
 
     assert cleanups == [process]
+    assert lifeline_sender.closed
+
+
+@pytest.mark.parametrize("pipe_error", [EOFError, OSError])
+@pytest.mark.parametrize("matching_pid", [False, True])
+def test_detached_worker_timeout_drains_queued_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+    pipe_error: type[Exception],
+    matching_pid: bool,
+) -> None:
+    messages = iter([("ok", None), ("detached", 99999 if matching_pid else 88888)])
+
+    def recv():
+        try:
+            return next(messages)
+        except StopIteration:
+            raise pipe_error from None
+
+    receiver, _, lifeline_sender, process = _fake_spawn_context(monkeypatch, recv=recv)
+    polls: list[float] = []
+
+    def poll(timeout):
+        assert not receiver.closed
+        polls.append(timeout)
+        return len(polls) > 1
+
+    monkeypatch.setattr(receiver, "poll", poll)
+    cleanups: list[tuple[object, int | None]] = []
+
+    def cleanup(proc, *, owned_pgid=None):
+        assert receiver.closed
+        assert not lifeline_sender.closed
+        assert proc.joins == []
+        assert not proc.is_alive()
+        cleanups.append((proc, owned_pgid))
+
+    monkeypatch.setattr(local_runner, "_terminate_worker_process", cleanup)
+
+    with pytest.raises(TimeoutError, match="exceeded its hard deadline"):
+        local_runner._run_detached_worker(
+            lambda *args: None, (), timeout_s=5, phase="probe"
+        )
+
+    assert cleanups == [(process, process.pid if matching_pid else None)]
+    assert polls[0] > 0
+    assert polls[1:] == [0, 0, 0]
     assert lifeline_sender.closed
 
 
@@ -5746,7 +5793,7 @@ def test_terminate_worker_kills_child_after_worker_exits(already_reaped: bool) -
     finally:
         try:
             os.killpg(worker.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         worker.wait(timeout=1)
         worker.stdout.close()
@@ -5789,34 +5836,63 @@ def test_terminate_worker_tolerates_group_races(
     assert process.calls == ["join", "join"]
 
 
-@pytest.mark.parametrize("denied_signal", [signal.SIGTERM, 0, signal.SIGKILL])
+@pytest.mark.parametrize("worker_alive", [False, True])
 def test_terminate_worker_falls_back_after_group_permission_error(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    denied_signal: int,
+    worker_alive: bool,
 ) -> None:
     signals: list[int] = []
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
 
     def killpg(pid, sig):
         signals.append(sig)
-        if sig == denied_signal:
-            raise PermissionError
+        raise PermissionError
 
-    # Expire the grace period immediately so SIGKILL is exercised without waiting.
-    times = iter([0, 1])
-    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(local_runner.os, "killpg", killpg)
-    process = _FakeSupervisedProcess(777, alive_sequence=[True, True, True])
+    process = _FakeSupervisedProcess(777, alive_sequence=[worker_alive, True, True])
 
     local_runner._terminate_worker_process(process)
 
-    expected_calls = [] if denied_signal == signal.SIGTERM else ["join"]
-    assert process.calls == expected_calls + ["terminate", "join", "kill", "join"]
-    assert signals[-1] == denied_signal
+    assert process.calls == ["terminate", "join", "kill", "join"]
+    assert signals == [signal.SIGTERM if worker_alive else 0]
     assert len(caplog.records) == 1
     assert caplog.records[0].levelname == "WARNING"
     assert "falling back to direct worker cleanup" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("worker_alive", "denied_signal"),
+    [(True, 0), (True, signal.SIGKILL), (False, signal.SIGKILL)],
+)
+def test_terminate_worker_tolerates_zombie_group_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    worker_alive: bool,
+    denied_signal: int,
+) -> None:
+    signals: list[int] = []
+
+    def killpg(pid, sig):
+        assert pid == 777
+        signals.append(sig)
+        if sig == denied_signal:
+            raise PermissionError
+
+    times = iter([0, 1])
+    monkeypatch.setattr(local_runner.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(local_runner.os, "killpg", killpg)
+    process = _FakeSupervisedProcess(777, alive_sequence=[worker_alive, False])
+
+    local_runner._terminate_worker_process(process, owned_pgid=777)
+
+    expected_signals = [signal.SIGTERM] if worker_alive else []
+    expected_signals.append(0)
+    if denied_signal == signal.SIGKILL:
+        expected_signals.append(signal.SIGKILL)
+    assert signals == expected_signals
+    assert process.calls == (["join"] if worker_alive else [])
+    assert not caplog.records
 
 
 @pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])

@@ -534,10 +534,12 @@ def _terminate_worker_process(
             pass
     deadline = time.monotonic() + 1
     if owned_pgid is not None:
+        group_signal_succeeded = False
         try:
             if process.is_alive():
                 try:
                     os.killpg(owned_pgid, signal.SIGTERM)
+                    group_signal_succeeded = True
                 except ProcessLookupError:
                     pass
                 process.join(timeout=1)
@@ -546,8 +548,14 @@ def _terminate_worker_process(
             while True:
                 try:
                     os.killpg(owned_pgid, 0)
+                    group_signal_succeeded = True
                 except ProcessLookupError:
                     break
+                except PermissionError:
+                    # macOS reports EPERM for groups containing only zombies.
+                    if group_signal_succeeded:
+                        break
+                    raise
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     group_alive = True
@@ -558,6 +566,10 @@ def _terminate_worker_process(
                     os.killpg(owned_pgid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    if not group_signal_succeeded:
+                        raise
+                    group_alive = False
             if process.is_alive() or group_alive:
                 process.join(timeout=1)
             return
@@ -615,6 +627,16 @@ def _run_detached_worker(
             if payload == process.pid:
                 owned_pgid = payload
     finally:
+        # A handshake can arrive just after the deadline, or before a worker
+        # exits without its result being consumed. Preserve group ownership
+        # before closing the pipe, even if the leader has already been reaped.
+        try:
+            while receiver.poll(0):
+                status_message, payload_message = receiver.recv()
+                if status_message == "detached" and payload_message == process.pid:
+                    owned_pgid = payload_message
+        except (EOFError, OSError):
+            pass
         receiver.close()
         if not timed_out:
             process.join(timeout=1)
