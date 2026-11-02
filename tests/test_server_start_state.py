@@ -1792,7 +1792,7 @@ def test_exit_reason_override_and_chains():
     assert server_start.exit_reason_for(None) == "exception"
     server_start.set_exit_reason("declined_download", exc=refusal)
     assert server_start.exit_reason_for(refusal) == "declined_download"
-    assert server_start.exit_reason_for(refusal) == "exception"
+    assert server_start.exit_reason_for(SystemExit(1)) == "exception"
 
 
 def test_exit_reason_binding_survives_unrelated_failure():
@@ -1869,6 +1869,53 @@ def test_invalid_exit_reason_never_reaches_event(monkeypatch, reason):
     )
 
 
+def test_failure_after_preflight_stage_skips_preflight_emission(monkeypatch):
+    """Only failures still inside the preflight stage use the new branch."""
+    from rapid_mlx.byom import preflight
+    from rapid_mlx.telemetry import consent_runtime
+
+    events = _capture(monkeypatch)
+    model_events._reset_for_tests()
+    monkeypatch.setattr(consent_runtime, "startup", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_start_v2_lifecycle", lambda _command: None)
+    monkeypatch.setattr(
+        cli,
+        "_parse_args_with_share_passthrough",
+        lambda *_: SimpleNamespace(
+            command="serve", model="qwen3.5-4b-4bit", no_telemetry=False
+        ),
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.resolved_model_ref", lambda ref: ref
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.raise_if_missing_local_model", lambda _: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.local_model_path.validate_local_model_for_serve", lambda _: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.raise_if_draft_only_model", lambda _: None
+    )
+    monkeypatch.setattr(preflight, "run_cli_preflight", lambda *_a, **_kw: None)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    def failing_serve(_args):
+        server_start.set_failure_stage("prepare")
+        raise RuntimeError("[metal::malloc] Resource limit exceeded")
+
+    monkeypatch.setattr(cli, "serve_command", failing_serve)
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+    try:
+        with pytest.raises(RuntimeError):
+            cli.main()
+        assert not [p for name, p in events if name == "model_serve_failed"]
+        starts = [p for name, p in events if name == "server_start_state"]
+        assert starts[-1]["failure_stage"] == "prepare"
+    finally:
+        model_events._reset_for_tests()
+
+
 @pytest.mark.parametrize(
     "answer, expected", [("n", "declined_download"), (None, "user_interrupt")]
 )
@@ -1942,19 +1989,24 @@ def test_known_preflight_failure_emits_sanitized_model(monkeypatch, model):
     )
     monkeypatch.setattr(preflight, "run_cli_preflight", lambda *_a, **_kw: None)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    monkeypatch.setattr(
-        cli,
-        "serve_command",
-        lambda _args: (_ for _ in ()).throw(
-            RuntimeError(
-                "[metal::malloc] Resource limit exceeded at /private/user-model"
-            )
-        ),
-    )
+    stages = []
+
+    def failing_serve(_args):
+        # main() must still be inside the preflight stage when serve fails.
+        stages.append(server_start.current_failure_stage())
+        raise RuntimeError(
+            "[metal::malloc] Resource limit exceeded at /private/user-model"
+        )
+
+    monkeypatch.setattr(cli, "serve_command", failing_serve)
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", model])
     try:
         with pytest.raises(RuntimeError):
             cli.main()
+        assert stages == ["preflight"]
+        starts = [props for name, props in events if name == "server_start_state"]
+        assert starts[-1]["state"] == "failed"
+        assert starts[-1]["failure_stage"] == "preflight"
         failed = [props for name, props in events if name == "model_serve_failed"]
         assert len(failed) == 1
         assert failed[0]["error_class"] == "insufficient_memory"

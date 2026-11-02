@@ -39,7 +39,8 @@ _EXIT_REASONS = frozenset(
         "exception",
     }
 )
-_pending_exit_reason: tuple[str, BaseException] | None = None
+# Attribute carrying an approved exit reason on the exception that ends startup.
+_EXIT_REASON_ATTR = "_rapid_mlx_exit_reason"
 
 _lock = threading.Lock()
 _attempted = False
@@ -698,27 +699,24 @@ def failure_stage(stage: str) -> Iterator[None]:
 
 
 def set_exit_reason(reason: object, *, exc: BaseException) -> None:
-    """Bind an approved reason to the specific exception that ends startup."""
-    global _pending_exit_reason
+    """Bind an approved reason to the specific exception that ends startup.
+
+    The reason travels on the exception object itself, so it cannot leak to
+    or be overwritten by any other failure, including a concurrent one.
+    """
     try:
-        _pending_exit_reason = None
         if isinstance(reason, str) and reason in _EXIT_REASONS:
-            _pending_exit_reason = (reason, exc)
+            setattr(exc, _EXIT_REASON_ATTR, reason)
     except BaseException:
         pass
 
 
 def exit_reason_for(exc: BaseException | None) -> str:
     """Classify startup failures without inspecting their messages."""
-    global _pending_exit_reason
     try:
-        pending = _pending_exit_reason
-        if pending is not None and pending[1] is exc:
-            # Consume only the binding for this exact exception; an unrelated
-            # failure must neither read nor clear it.
-            _pending_exit_reason = None
-            if isinstance(pending[0], str) and pending[0] in _EXIT_REASONS:
-                return pending[0]
+        bound = getattr(exc, _EXIT_REASON_ATTR, None)
+        if isinstance(bound, str) and bound in _EXIT_REASONS:
+            return bound
         if isinstance(exc, KeyboardInterrupt):
             return "user_interrupt"
         if isinstance(exc, SystemExit) and exc.code == 2:
@@ -766,7 +764,7 @@ def fail_current(exc: BaseException | None = None) -> None:
 def _reset_for_tests() -> None:
     global _attempted, _attempted_emitted, _attempted_deferred, _terminal
     global _model_type, _load_policy
-    global _current_failure_stage, _pending_exit_reason
+    global _current_failure_stage
     global _previous_run_unterminated, _owned_inflight_snapshot
     global _owns_inflight_marker, _start_failure_snapshot
     with _lock:
@@ -778,7 +776,6 @@ def _reset_for_tests() -> None:
         _model_type = None
         _load_policy = None
         _current_failure_stage = "resolve"
-        _pending_exit_reason = None
         _previous_run_unterminated = False
         _owns_inflight_marker = False
         _owned_inflight_snapshot = None
