@@ -331,13 +331,14 @@ def test_repeated_admission_failures_preserve_healthy_work(
     assert scheduler._consecutive_step_failures == shared_failures
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["insert", "insert_segments", "ensure"])
-def test_shared_insert_failure_recovers_batch(monkeypatch, operation):
+async def test_shared_insert_failure_recovers_batch(monkeypatch, operation):
     engine = make_engine()
     seed(engine)
     scheduler = engine.scheduler
     generator = MagicMock()
-    error = RuntimeError("shared insert failed")
+    error = RuntimeError("shared insert failed: private/model/path")
     generator.insert.side_effect = error
     generator.insert_segments.side_effect = error
     scheduler.batch_generator = generator
@@ -360,7 +361,31 @@ def test_shared_insert_failure_recovers_batch(monkeypatch, operation):
     recovery = MagicMock(wraps=scheduler._recover_from_generation_error)
     monkeypatch.setattr(scheduler, "_recover_from_generation_error", recovery)
 
-    output = scheduler.step()
+    monkeypatch.setattr(
+        "rapid_mlx.scheduler.mx", SimpleNamespace(clear_cache=MagicMock())
+    )
+    original_step = scheduler.step
+    outputs = []
+
+    def step():
+        if not outputs:
+            output = original_step()
+            outputs.append(output)
+            return output
+        return SchedulerOutput()
+
+    monkeypatch.setattr(scheduler, "step", step)
+    engine._running = True
+    task = asyncio.create_task(engine._engine_loop())
+    try:
+        await asyncio.wait_for(engine._finished_events["active"].wait(), 2)
+        assert engine._finished_events["bad"].is_set()
+        assert not engine._finished_events["queued"].is_set()
+    finally:
+        engine._running = False
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     recovery.assert_called_once_with()
     if operation == "ensure":
@@ -369,12 +394,92 @@ def test_shared_insert_failure_recovers_batch(monkeypatch, operation):
         generator.insert_segments.assert_not_called()
     else:
         getattr(generator, operation).assert_called_once()
-    assert output.finished_request_ids == {"active"}
-    assert all(out.error_kind == "engine_aborted" for out in output.outputs)
+    assert outputs[0].finished_request_ids == {"bad", "active"}
+    assert scheduler._admitting_request_id is None
+    for rid in ("bad", "active"):
+        output = engine._output_collectors[rid].get_nowait()
+        assert output.finished
+        assert output.finish_reason == "abort"
+        assert output.error_kind == "engine_aborted"
+        assert output.error
+        assert "private/model/path" not in output.error
+        assert scheduler.requests[rid].status == RequestStatus.FINISHED_ABORTED
+    assert engine._output_collectors["queued"].get_nowait() is None
+    assert not RequestStatus.is_finished(scheduler.requests["queued"].status)
     assert scheduler._step_request_id is None
     assert not scheduler.running
+    assert not scheduler.request_id_to_uid
+    assert not scheduler.uid_to_request_id
     assert [request.request_id for request in scheduler.waiting] == ["queued"]
     generator.close.assert_called_once()
+
+
+@pytest.mark.parametrize("shortest_tail", [False, True])
+@pytest.mark.parametrize(
+    "defer_at", ["cohort", "ensure", "generator", "exact_hit", "cache_retry", "empty"]
+)
+def test_deferred_admission_clears_inflight_request(
+    monkeypatch, defer_at, shortest_tail
+):
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    request = scheduler.requests["bad"]
+    generator = MagicMock()
+    generator.insert.return_value = []
+    scheduler.batch_generator = None if defer_at == "generator" else generator
+    monkeypatch.setattr(
+        "rapid_mlx.scheduler.mx", SimpleNamespace(clear_cache=MagicMock())
+    )
+    monkeypatch.setattr(scheduler, "_max_running_sequences", lambda: 2)
+    monkeypatch.setattr(
+        scheduler, "_pop_waiting_for_admission", lambda: scheduler.waiting.popleft()
+    )
+    if shortest_tail:
+        scheduler.config.scheduling_policy = "shortest_validated_tail"
+        monkeypatch.setattr(scheduler, "_shortest_tail_admission_capacity", lambda: 1)
+        monkeypatch.setattr(
+            scheduler, "_select_waiting_request", lambda: (scheduler.waiting[0], False)
+        )
+    monkeypatch.setattr(
+        scheduler, "_ensure_batch_generator", lambda params: defer_at != "ensure"
+    )
+    cohort = MagicMock(side_effect=[False] if defer_at == "cohort" else [True, False])
+    monkeypatch.setattr(scheduler, "_prefill_cohort_fits", cohort)
+    if defer_at == "exact_hit":
+        request.remaining_tokens = []
+
+        def resolve_exact_hit(request):
+            request.prompt_cache = None
+            return request.prompt_token_ids
+
+        monkeypatch.setattr(scheduler, "_resolve_exact_hit_tokens", resolve_exact_hit)
+    elif defer_at == "cache_retry":
+        request.prompt_cache = [object()]
+        monkeypatch.setattr(scheduler, "_validate_cache", lambda cache: True)
+        generator.insert.side_effect = RuntimeError("cache insert failed")
+
+    # The ordinary empty-result path continues to the next queue selection.
+    if defer_at == "empty" and not shortest_tail:
+        monkeypatch.setattr(
+            scheduler,
+            "_pop_waiting_for_admission",
+            MagicMock(side_effect=[request, None]),
+        )
+        scheduler.waiting.popleft()
+
+    assert scheduler._schedule_waiting() == []
+    assert scheduler._step_request_id is None
+    assert scheduler._admitting_request_id is None
+    expected_waiting = (
+        ["queued"] if defer_at == "empty" and not shortest_tail else ["bad", "queued"]
+    )
+    assert [r.request_id for r in scheduler.waiting] == expected_waiting
+
+    output = scheduler.fail_step(RuntimeError("later shared failure"))
+    assert output.finished_request_ids == {"active"}
+    assert not RequestStatus.is_finished(request.status)
+    assert [r.request_id for r in scheduler.waiting] == expected_waiting
 
 
 def test_shared_admission_bookkeeping_failure_recovers_batch(monkeypatch):
@@ -403,6 +508,7 @@ def test_shared_admission_bookkeeping_failure_recovers_batch(monkeypatch):
         # The next loop condition is shared work after successful admission.
         assert set(scheduler.running) == {"bad", "active"}
         assert scheduler.requests["bad"].batch_uid == 1
+        assert scheduler._admitting_request_id is None
         raise RuntimeError("shared admission bookkeeping failed")
 
     monkeypatch.setattr(scheduler, "_max_running_sequences", check_capacity)

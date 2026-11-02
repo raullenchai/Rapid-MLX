@@ -4451,6 +4451,7 @@ class Scheduler:
         self.running: dict[str, Request] = {}  # Running requests by ID
         self.requests: dict[str, Request] = {}  # All requests by ID
         self._step_request_id: str | None = None
+        self._admitting_request_id: str | None = None
         self._consecutive_step_failures: int = 0
         self._generation_paused = False
         self._paused_add_allowance = 0
@@ -10304,6 +10305,7 @@ class Scheduler:
                 selection_forced = False
 
             self._step_request_id = request.request_id
+            self._admitting_request_id = request.request_id
 
             # Resolve invalid-prefix fallback before pricing the cohort. A
             # cold retry needs the whole prompt, not the stale hit's suffix.
@@ -10321,6 +10323,7 @@ class Scheduler:
                 if not shortest_tail:
                     self.waiting.insert(waiting_order.index(request), request)
                 self._step_request_id = None
+                self._admitting_request_id = None
                 break
 
             # Ensure we have a batch generator. The False return means
@@ -10335,6 +10338,7 @@ class Scheduler:
                 if not shortest_tail:
                     self.waiting.appendleft(request)
                 self._step_request_id = None
+                self._admitting_request_id = None
                 break
 
             if self.batch_generator is None:
@@ -10342,6 +10346,7 @@ class Scheduler:
                 if not shortest_tail:
                     self.waiting.appendleft(request)
                 self._step_request_id = None
+                self._admitting_request_id = None
                 break
 
             self._step_request_id = request.request_id
@@ -10389,6 +10394,7 @@ class Scheduler:
                     if not shortest_tail:
                         self.waiting.insert(waiting_order.index(request), request)
                     self._step_request_id = None
+                    self._admitting_request_id = None
                     break
             elif request.remaining_tokens:
                 tokens_to_process = request.remaining_tokens
@@ -10640,6 +10646,7 @@ class Scheduler:
                         if not shortest_tail:
                             self.waiting.insert(waiting_order.index(request), request)
                         self._step_request_id = None
+                        self._admitting_request_id = None
                         break
                     # The retry keeps only the message boundary split.
                     request.shared_prefix_snapshot_at = 0
@@ -10683,6 +10690,7 @@ class Scheduler:
             # spinning forever in this unchanged loop.
             if not uids and shortest_tail:
                 self._step_request_id = None
+                self._admitting_request_id = None
                 break
 
             if uids:
@@ -10717,6 +10725,7 @@ class Scheduler:
 
                 # Admission is committed; later bookkeeping belongs to the batch.
                 self._step_request_id = None
+                self._admitting_request_id = None
 
                 self.total_prompt_tokens += request.num_prompt_tokens
                 cache_info = (
@@ -10735,6 +10744,7 @@ class Scheduler:
 
             # Empty insert results also end request-local admission work.
             self._step_request_id = None
+            self._admitting_request_id = None
 
         return scheduled
 
@@ -11672,6 +11682,9 @@ class Scheduler:
             fatal = failures >= 10
             # A shared forward pass has no trustworthy row attribution.
             aborted_ids = self._recover_from_generation_error()
+            if self._admitting_request_id is not None:
+                aborted_ids.add(self._admitting_request_id)
+            self._admitting_request_id = None
             if fatal:
                 aborted_ids.update(
                     rid
@@ -11727,6 +11740,7 @@ class Scheduler:
         """
         output = SchedulerOutput()
         self._step_request_id = None
+        self._admitting_request_id = None
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
         self._process_pending_aborts()
@@ -11741,6 +11755,7 @@ class Scheduler:
                 # Schedule waiting requests
                 scheduled = self._schedule_waiting()
                 self._step_request_id = None
+                self._admitting_request_id = None
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
                 # Use model_prompt_tokens — when PFlash engages the
                 # prefill workload is the compressed length, not the
