@@ -2407,5 +2407,11 @@ def confirm_or_abort(
             if suggest_pull
             else f"  Aborted. Set {auto_yes_env}=1 to skip this prompt."
         )
+        try:
+            from rapid_mlx.telemetry.server_start import set_exit_reason
+
+            set_exit_reason("declined_download")
+        except BaseException:
+            pass
         sys.exit(1)
     return True

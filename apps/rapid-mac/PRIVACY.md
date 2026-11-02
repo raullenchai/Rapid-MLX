@@ -105,6 +105,14 @@ service:
     string supplied by the request.
   * Closed-set error categories and non-reversible stack fingerprints; no
     exception message or raw traceback.
+  * A failed server start may include one closed cause (`exit_reason`):
+    `user_interrupt`, `declined_download`, `usage_error`, `port_in_use`,
+    `memory_refused`, or `exception`; never the exception message, command line,
+    or path.
+  * A failed serve classified as `other` includes one closed exception type
+    (`failure_subtype`): `config_parse`, `import_error`, `io_error`, `type_error`,
+    `memory_error`, `key_error`, `attribute_error`, `assertion_error`,
+    `value_error`, `runtime_error`, or `unknown`; never the message.
   * A failed model serve uses one closed error class: `unsupported_architecture`,
     `unsupported_format`, `insufficient_memory`, `corrupt_weights`,
     `download_failed`, `local_path_missing`, `missing_extra`, `invalid_config`,

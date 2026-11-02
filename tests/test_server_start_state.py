@@ -1759,3 +1759,56 @@ def test_entrypoint_guard_never_replaces_host_exception(monkeypatch, decorator):
 
     with pytest.raises(ValueError, match="host failure"):
         fail_host()
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (KeyboardInterrupt(), "user_interrupt"),
+        (SystemExit(2), "usage_error"),
+        (SystemExit(1), "exception"),
+        (MemoryError(), "memory_refused"),
+        (OSError(errno.EADDRINUSE, "private"), "port_in_use"),
+        (OSError(errno.EACCES, "private"), "exception"),
+        (None, "exception"),
+    ],
+)
+def test_exit_reason_for_types(exc, expected):
+    assert server_start.exit_reason_for(exc) == expected
+
+
+def test_exit_reason_override_and_chains():
+    from rapid_mlx.memory_budget import MetalPreflightError
+
+    for inner in (MemoryError(), MetalPreflightError()):
+        assert server_start.exit_reason_for(inner) == "memory_refused"
+        outer = RuntimeError()
+        outer.__cause__ = inner
+        assert server_start.exit_reason_for(outer) == "memory_refused"
+    server_start.set_exit_reason([])
+    server_start.set_exit_reason("private")
+    assert server_start.exit_reason_for(None) == "exception"
+    server_start.set_exit_reason("declined_download")
+    assert server_start.exit_reason_for(KeyboardInterrupt()) == "declined_download"
+
+
+def test_exit_reason_properties_and_failure_boundaries(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    events = _capture(monkeypatch)
+    assert "exit_reason" not in server_start._server_start_props(
+        "ready", exit_reason="exception"
+    )
+    assert "exit_reason" not in server_start._server_start_props(
+        "failed", exit_reason="private"
+    )
+    server_start.attempted()
+    assert not server_start.terminal_recorded()
+    with pytest.raises(MemoryError), server_start.failure_stage("preflight"):
+        assert server_start.current_failure_stage() == "preflight"
+        raise MemoryError()
+    assert server_start.terminal_recorded()
+    assert events[-1][1]["exit_reason"] == "memory_refused"
+    server_start._reset_for_tests()
+    server_start.attempted()
+    server_start.fail_current(OSError(errno.EADDRINUSE, "private"))
+    assert events[-1][1]["exit_reason"] == "port_in_use"

@@ -3947,11 +3947,11 @@ def _capture_start_failures(func):
                 auto_selected=False,
                 assume_yes=optional_runtime_assume_yes(),
             )
-        except BaseException:
+        except BaseException as exc:
             try:
                 from rapid_mlx.telemetry.server_start import fail_current
 
-                fail_current()
+                fail_current(exc)
             except BaseException:
                 pass
             raise

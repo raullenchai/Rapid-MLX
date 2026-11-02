@@ -213,6 +213,13 @@ def test_server_start_state_contract_is_exact(registry):
         "previous_run_unterminated",
         "port_explicit",
         "failure_stage",
+        "exit_reason",
+    }
+    assert props["exit_reason"] == {
+        "kind": "enum",
+        "enum": "server_start_exit_reason",
+        "required": False,
+        "only_when": {"state": ["failed"]},
     }
     assert props["state"] == {
         "kind": "enum",

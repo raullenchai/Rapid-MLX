@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import errno
 import json
 import logging
 import math
@@ -27,6 +28,18 @@ _LOAD_POLICIES = frozenset({"eager", "lazy", "none"})
 _FAILURE_STAGES = frozenset(
     {"resolve", "download", "preflight", "prepare", "engine_start", "bind"}
 )
+
+_EXIT_REASONS = frozenset(
+    {
+        "user_interrupt",
+        "declined_download",
+        "usage_error",
+        "port_in_use",
+        "memory_refused",
+        "exception",
+    }
+)
+_pending_exit_reason: str | None = None
 
 _lock = threading.Lock()
 _attempted = False
@@ -378,6 +391,7 @@ def _server_start_props(
     *,
     failure_stage: str | None = None,
     port_explicit: bool | None = None,
+    exit_reason: str | None = None,
 ) -> dict[str, object]:
     """Build only registry-approved properties for ``server_start_state``."""
     props: dict[str, object] = {"state": state}
@@ -389,6 +403,8 @@ def _server_start_props(
         props["failure_stage"] = failure_stage
     if state == "failed" and failure_stage == "bind" and port_explicit is not None:
         props["port_explicit"] = port_explicit
+    if state == "failed" and exit_reason in _EXIT_REASONS:
+        props["exit_reason"] = exit_reason
     if state == "attempted" and _previous_run_unterminated:
         props["previous_run_unterminated"] = True
     return props
@@ -551,7 +567,12 @@ def _clear_failure_ledger() -> None:
         return
 
 
-def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
+def failed(
+    failure_stage: object,
+    *,
+    port_explicit: bool | None = None,
+    exit_reason: object = None,
+) -> None:
     """Emit the sole failed terminal state with a closed startup stage.
 
     A repeat of the failure that was already recorded when this run started
@@ -573,7 +594,14 @@ def failed(failure_stage: object, *, port_explicit: bool | None = None) -> None:
         deferred = _attempted_deferred
         snapshot = _start_failure_snapshot
         _terminal = True
-    context: dict[str, bool] = {}
+    reason = (
+        exit_reason
+        if isinstance(exit_reason, str) and exit_reason in _EXIT_REASONS
+        else _pending_exit_reason
+    )
+    context: dict[str, object] = {}
+    if reason is not None:
+        context["exit_reason"] = reason
     if failure_stage == "bind" and port_explicit is not None:
         context["port_explicit"] = port_explicit
     try:
@@ -657,22 +685,71 @@ def failure_stage(stage: str) -> Iterator[None]:
     set_failure_stage(stage)
     try:
         yield
-    except BaseException:
-        failed(stage)
+    except BaseException as exc:
+        failed(stage, exit_reason=exit_reason_for(exc))
         raise
     finally:
         _current_failure_stage = previous
 
 
-def fail_current() -> None:
+def set_exit_reason(reason: object) -> None:
+    """Remember an approved reason without affecting startup."""
+    global _pending_exit_reason
+    try:
+        if isinstance(reason, str) and reason in _EXIT_REASONS:
+            _pending_exit_reason = reason
+    except BaseException:
+        pass
+
+
+def exit_reason_for(exc: BaseException | None) -> str:
+    """Classify startup failures without inspecting their messages."""
+    try:
+        if _pending_exit_reason is not None:
+            return _pending_exit_reason
+        if isinstance(exc, KeyboardInterrupt):
+            return "user_interrupt"
+        if isinstance(exc, SystemExit) and exc.code == 2:
+            return "usage_error"
+        from rapid_mlx.memory_budget import MetalPreflightError
+
+        seen: set[int] = set()
+        current = exc
+        for _ in range(32):
+            if current is None or id(current) in seen:
+                break
+            seen.add(id(current))
+            if isinstance(current, (MetalPreflightError, MemoryError)):
+                return "memory_refused"
+            if isinstance(current, OSError) and current.errno == errno.EADDRINUSE:
+                return "port_in_use"
+            current = current.__cause__ or current.__context__
+    except BaseException:
+        return "exception"
+    return "exception"
+
+
+def current_failure_stage() -> str:
+    return _current_failure_stage
+
+
+def terminal_recorded() -> bool:
+    with _lock:
+        return _terminal
+
+
+def fail_current(exc: BaseException | None = None) -> None:
     """Fail at the stage selected by the active entrypoint boundary."""
-    failed(_current_failure_stage)
+    failed(
+        _current_failure_stage,
+        exit_reason=exit_reason_for(exc) if exc is not None else None,
+    )
 
 
 def _reset_for_tests() -> None:
     global _attempted, _attempted_emitted, _attempted_deferred, _terminal
     global _model_type, _load_policy
-    global _current_failure_stage
+    global _current_failure_stage, _pending_exit_reason
     global _previous_run_unterminated, _owned_inflight_snapshot
     global _owns_inflight_marker, _start_failure_snapshot
     with _lock:
@@ -684,6 +761,7 @@ def _reset_for_tests() -> None:
         _model_type = None
         _load_policy = None
         _current_failure_stage = "resolve"
+        _pending_exit_reason = None
         _previous_run_unterminated = False
         _owns_inflight_marker = False
         _owned_inflight_snapshot = None

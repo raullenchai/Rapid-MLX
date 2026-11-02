@@ -134,11 +134,15 @@ def test_size_bucket_is_closed_and_half_open(size, expected):
         (OSError("/private/path"), "io_error"),
         (TypeError("/private/path"), "type_error"),
         (RuntimeError("/private/path"), "runtime_error"),
-        (ValueError("/private/path"), "unknown"),
+        (MemoryError("/private/path"), "memory_error"),
+        (KeyError("/private/path"), "key_error"),
+        (AttributeError("/private/path"), "attribute_error"),
+        (AssertionError("/private/path"), "assertion_error"),
+        (ValueError("/private/path"), "value_error"),
+        (Exception("/private/path"), "unknown"),
     ],
 )
 def test_serve_failure_subtype_uses_only_exception_types(failure, expected):
-    assert model_events.serve_error_class(failure) == "other"
     assert model_events.serve_failure_subtype(failure) == expected
     assert (
         expected in registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
@@ -176,7 +180,7 @@ def test_serve_failure_subtype_tolerates_hostile_cause(monkeypatch):
 
 def test_serve_failure_subtype_schema_is_closed_and_conditional():
     values = registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
-    assert len(values) <= 8
+    assert len(values) == 11
     assert registry.validate(
         "model_serve_failed", {"error_class": "other", "failure_subtype": "unknown"}
     ) == {"error_class": "other", "failure_subtype": "unknown"}
@@ -2514,3 +2518,9 @@ def test_incomplete_checkpoint_uses_closed_corrupt_weights_class():
     wrapper = RuntimeError("startup failed")
     wrapper.__cause__ = failure
     assert serve_error_class(wrapper) == "corrupt_weights"
+
+
+def test_serve_failure_subtype_prefers_key_error_cause():
+    outer = RuntimeError()
+    outer.__cause__ = KeyError("private")
+    assert model_events.serve_failure_subtype(outer) == "key_error"

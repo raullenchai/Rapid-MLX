@@ -867,6 +867,13 @@ def _emit_rejection(args: Any, exc: PreflightRejectedError) -> None:
         from rapid_mlx.telemetry.server_start import set_failure_stage
 
         set_failure_stage("preflight")
+        if exc.failure_class == INSUFFICIENT_MEMORY:
+            try:
+                from rapid_mlx.telemetry.server_start import set_exit_reason
+
+                set_exit_reason("memory_refused")
+            except BaseException:
+                pass
         emit_model_serve_failed(exc, alias_or_path=shown, failure_stage="preflight")
     else:
         from rapid_mlx.telemetry.model_events import emit_model_pull_failed
