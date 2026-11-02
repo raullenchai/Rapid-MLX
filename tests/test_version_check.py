@@ -1353,10 +1353,24 @@ def test_prompt_successful_command_without_upgrade_continues(
     assert "Upgrade complete" not in output
 
 
-def test_prompt_reports_verified_upgrade(monkeypatch, interactive, capsys):
+@pytest.mark.parametrize(
+    "target,installed,expected",
+    [
+        ("1.0.1", "1.0.1", True),
+        ("1.0.1", "1.0.2", True),
+        ("1.0.1", "1.0.1b1", False),
+        ("1.0.1", "1.0.2b1", False),
+        ("1.0.1", "1.0.2.dev0", False),
+        ("1.0.1rc1", "1.0.1", True),
+        ("1.0.1", "1.0.0", False),
+    ],
+)
+def test_prompt_reports_verified_upgrade(
+    monkeypatch, interactive, capsys, target, installed, expected
+):
     monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
-    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "99.0.0")
+    monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: target)
     monkeypatch.setattr(vc, "get_release_info", lambda **_: None)
     monkeypatch.setattr(
         vc,
@@ -1368,10 +1382,15 @@ def test_prompt_reports_verified_upgrade(monkeypatch, interactive, capsys):
             binary_path=None,
         ),
     )
-    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda _: "99.0.0")
+    monkeypatch.setattr(vc, "installed_version_in_fresh_process", lambda _: installed)
     monkeypatch.setattr("builtins.input", lambda _: "y")
-    assert vc.prompt_upgrade_if_available() is True
-    assert "Upgrade complete: rapid-mlx 99.0.0" in capsys.readouterr().out
+    assert vc.prompt_upgrade_if_available() is expected
+    output = capsys.readouterr().out
+    if expected:
+        assert f"Upgrade complete: rapid-mlx {installed}" in output
+    else:
+        assert f"is still {installed} (expected {target})" in output
+        assert "Upgrade complete" not in output
 
 
 def test_prompt_reports_unverified_upgrade(monkeypatch, interactive, capsys):
@@ -2103,10 +2122,19 @@ def test_fresh_process_rejects_foreign_venv_launcher(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "version",
-    ["0.6.62a1", "0.6.62b1", "0.6.62.dev0", "0.6.62rc1", "0.6.62.post1", "0.6.63"],
+    "version,expected",
+    [
+        ("0.6.62a1", False),
+        ("0.6.62b1", False),
+        ("0.6.62.dev0", False),
+        ("0.6.62rc1", False),
+        ("0.6.62.post1", True),
+        ("0.6.63", True),
+    ],
 )
-def test_prompt_requires_exact_upgrade_target(monkeypatch, interactive, version):
+def test_prompt_requires_satisfactory_upgrade_target(
+    monkeypatch, interactive, version, expected
+):
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
     monkeypatch.setattr(vc, "get_latest_version", lambda **_: "0.6.62")
     monkeypatch.setattr(
@@ -2119,7 +2147,7 @@ def test_prompt_requires_exact_upgrade_target(monkeypatch, interactive, version)
         patch("builtins.input", return_value=""),
         patch("subprocess.run", return_value=SimpleNamespace(returncode=0)),
     ):
-        assert vc.prompt_upgrade_if_available() is False
+        assert vc.prompt_upgrade_if_available() is expected
 
 
 @pytest.mark.parametrize("without_packaging", [False, True])
@@ -2177,3 +2205,43 @@ def test_versions_equal_without_packaging(monkeypatch, installed, target, expect
     monkeypatch.setitem(sys.modules, "packaging.version", None)
     monkeypatch.setitem(sys.modules, "packaging", None)
     assert vc._versions_equal(installed, target) is expected
+
+
+@pytest.mark.parametrize("without_packaging", [False, True])
+@pytest.mark.parametrize(
+    "installed,target,expected,fallback_expected",
+    [
+        ("1.0.1", "1.0.1", True, True),
+        ("1.0.2", "1.0.1", True, True),
+        ("1.0.1b1", "1.0.1", False, False),
+        ("1.0.2b1", "1.0.1", False, False),
+        ("1.0.2.dev0", "1.0.1", False, False),
+        ("1.0.1", "1.0.1rc1", True, False),
+        ("1.0.0", "1.0.1", False, False),
+        ("1.0.1rc1", "1.0.1rc1", True, True),
+        ("1.0.2b1", "1.0.1rc1", True, False),
+        ("1.0.2.dev0", "1.0.1rc1", True, False),
+        ("1.0.1.post1", "1.0.1", True, False),
+        ("v1.0.2.0", "1.0.1.0", True, True),
+        ("1.0.1.0", "v1.0.1", True, True),
+        ("1.0.2b1", "1.0.1garbage", False, False),
+        ("garbage", "1.0.1", False, False),
+        ("1.0.2", "garbage", False, False),
+    ],
+)
+def test_version_satisfies_target(
+    monkeypatch, without_packaging, installed, target, expected, fallback_expected
+):
+    import builtins
+
+    original = builtins.__import__
+
+    def import_module(name, *args, **kwargs):
+        if without_packaging and name == "packaging.version":
+            raise ImportError("packaging unavailable")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_module)
+    assert vc._version_satisfies_target(installed, target) is (
+        fallback_expected if without_packaging else expected
+    )

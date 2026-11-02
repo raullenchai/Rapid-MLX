@@ -243,6 +243,7 @@ def test_python_floor_guidance(monkeypatch, capsys, method, guidance, dry_run):
     assert guidance in out
 
 
+@pytest.mark.parametrize("target", ["1.0.1", "1.0.1rc1"])
 @pytest.mark.parametrize(
     "method,verified,code,expected",
     [
@@ -252,8 +253,10 @@ def test_python_floor_guidance(monkeypatch, capsys, method, guidance, dry_run):
         ("pip", "1.0.1b1", 1, "still 1.0.1b1"),
         ("pip", "1.0.1.dev0", 1, "still 1.0.1.dev0"),
         ("pip", "1.0.1rc1", 1, "still 1.0.1rc1"),
-        ("pip", "1.0.1.post1", 1, "still 1.0.1.post1"),
-        ("pip", "1.0.2", 1, "still 1.0.2"),
+        ("pip", "1.0.1.post1", 0, "now 1.0.1.post1"),
+        ("pip", "1.0.2", 0, "now 1.0.2"),
+        ("pip", "1.0.2b1", 1, "still 1.0.2b1"),
+        ("pip", "1.0.2.dev0", 1, "still 1.0.2.dev0"),
         ("brew", "1.0.0", 1, "brew update && brew upgrade rapid-mlx"),
         (
             "pip",
@@ -263,12 +266,17 @@ def test_python_floor_guidance(monkeypatch, capsys, method, guidance, dry_run):
         ),
     ],
 )
-def test_upgrade_verifies_result(monkeypatch, capsys, method, verified, code, expected):
+def test_upgrade_verifies_result(
+    monkeypatch, capsys, method, verified, code, expected, target
+):
+    if target == "1.0.1rc1" and verified in {"1.0.1rc1", "1.0.2b1", "1.0.2.dev0"}:
+        code = 0
+        expected = f"now {verified}"
     monkeypatch.setattr(vc, "_installed_version", lambda: "1.0.0")
     monkeypatch.setattr(
         vc,
         "get_release_info",
-        lambda **kw: vc.ReleaseInfo("1.0.1", brew_stable="1.0.1"),
+        lambda **kw: vc.ReleaseInfo(target, brew_stable=target),
     )
     monkeypatch.setattr(
         vc,
