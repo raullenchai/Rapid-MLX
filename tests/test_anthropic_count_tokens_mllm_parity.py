@@ -248,6 +248,38 @@ def test_shared_system_prompt_fallback_is_preserved(engine, monkeypatch):
 
 
 @pytest.mark.parametrize("prompt_method", ["render_request_prompt", "build_prompt"])
+def test_empty_rendered_prompt_uses_positive_legacy_count(monkeypatch, prompt_method):
+    class Engine:
+        tokenizer = _Tokenizer()
+        is_mllm = False
+        preserve_native_tool_format = False
+
+    render = Mock(return_value="")
+    setattr(Engine, prompt_method, render)
+    engine = Engine()
+    count = Mock(wraps=count_prompt_tokens)
+    monkeypatch.setattr("rapid_mlx.routes.anthropic.count_prompt_tokens", count)
+    monkeypatch.setattr("rapid_mlx.routes.anthropic.ensure_engine_ready", AsyncMock())
+
+    response = _client(engine).post(
+        "/v1/messages/count_tokens",
+        json={"messages": [{"role": "user", "content": "hello world"}]},
+    )
+
+    assert response.status_code == 200, response.text
+    render.assert_called_once()
+    if prompt_method == "render_request_prompt":
+        count.assert_called_once_with(engine, "")
+        assert count_prompt_tokens(engine, "") == 0
+    else:
+        count.assert_not_called()
+    input_tokens = response.json()["input_tokens"]
+    assert type(input_tokens) is int
+    assert input_tokens > 0
+    assert input_tokens == len(engine.tokenizer.encode("hello world"))
+
+
+@pytest.mark.parametrize("prompt_method", ["render_request_prompt", "build_prompt"])
 def test_count_tokens_render_and_count_off_event_loop(monkeypatch, prompt_method):
     observations = []
 
