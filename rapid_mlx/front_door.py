@@ -701,19 +701,20 @@ def _ready_probe(url: str) -> bool:
         with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
             return bool(response.status == 200)
     except urllib.error.HTTPError as exc:
-        if exc.code == 503:
-            try:
-                payload = json.load(exc)
-            except (OSError, ValueError):
-                payload = {}
-            finally:
-                exc.close()
-            if (
-                isinstance(payload, dict)
-                and payload.get("reason") == "model_code_consent_required"
-            ):
-                raise _ModelConsentRequiredError(payload["message"]) from None
-        return False
+        try:
+            if exc.code == 503:
+                try:
+                    payload = json.load(exc)
+                except (OSError, ValueError):
+                    payload = {}
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("reason") == "model_code_consent_required"
+                ):
+                    raise _ModelConsentRequiredError(payload["message"]) from None
+            return False
+        finally:
+            exc.close()
     except (urllib.error.URLError, OSError, ValueError):
         return False
 

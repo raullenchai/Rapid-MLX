@@ -79,8 +79,6 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         getattr(cfg.engine, "is_mllm", False),
     )
     cached = getattr(cfg, "_model_consent_cache", None)
-    if cached is not None and cached[0][:-1] == key:
-        return cached[1]
     snapshot_dir = None
     result = {}
     entry = next(
@@ -99,6 +97,8 @@ def _model_consent_blocker(cfg) -> dict[str, str]:
         if metadata is None or metadata.snapshot_dir is None:
             return {}
         snapshot_dir = metadata.snapshot_dir
+        if cached is not None and cached[0] == (*key, snapshot_dir):
+            return cached[1]
         config = metadata.config or {}
         if (entry and entry.type == "stt") or (
             getattr(cfg.engine, "is_mllm", False)

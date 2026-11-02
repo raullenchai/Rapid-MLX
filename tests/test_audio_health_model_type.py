@@ -130,31 +130,78 @@ def test_model_file_consent_blocks_readiness_during_startup(
 
 
 @pytest.mark.parametrize("blocked", [False, True])
-def test_consent_probe_caches_metadata_after_snapshot_found(
-    health_client, tmp_path, monkeypatch, blocked
+@pytest.mark.parametrize("audio", [False, True])
+def test_consent_probe_caches_validation_after_snapshot_found(
+    health_client, tmp_path, monkeypatch, blocked, audio
 ):
     from unittest.mock import patch
 
     from rapid_mlx import model_metadata
     from rapid_mlx.routes.health import _model_consent_blocker
+    from rapid_mlx.utils import model_file_guard
 
     cfg, _ = health_client
     cfg.model_path = str(tmp_path)
-    cfg.model_alias = "whisper-small"
+    cfg.model_alias = "whisper-small" if audio else None
     monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
     (tmp_path / "config.json").write_text(
         '{"model_file":"custom.py"}' if blocked else "{}"
     )
-    with patch.object(
-        model_metadata, "read_model_metadata", wraps=model_metadata.read_model_metadata
-    ) as read:
+    validator = "validate_processor_code" if audio else "validate_model_code"
+    with (
+        patch.object(
+            model_metadata,
+            "read_model_metadata",
+            wraps=model_metadata.read_model_metadata,
+        ) as read,
+        patch.object(
+            model_file_guard, validator, wraps=getattr(model_file_guard, validator)
+        ) as validate,
+    ):
         first = _model_consent_blocker(cfg)
         assert bool(first) == blocked
         assert _model_consent_blocker(cfg) == first
-        assert read.call_count == 1
+        assert read.call_count == 2
+        assert validate.call_count == 1
         cfg.model_name = "changed"
         assert _model_consent_blocker(cfg) == first
+        assert read.call_count == 3
+        assert validate.call_count == 2
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_consent_probe_revalidates_changed_snapshot(
+    health_client, tmp_path, monkeypatch, blocked
+):
+    from unittest.mock import Mock, patch
+
+    from rapid_mlx import model_metadata
+    from rapid_mlx.routes.health import _model_consent_blocker
+    from rapid_mlx.utils import model_file_guard
+
+    cfg, _ = health_client
+    cfg.model_path = "same-model"
+    monkeypatch.delenv("RAPID_MLX_TRUST_REMOTE_CODE", raising=False)
+    read = Mock(
+        side_effect=[
+            model_metadata.ModelMetadata(
+                config={"model_file": "custom.py"} if requires_consent else {},
+                chat_template=None,
+                snapshot_dir=tmp_path / snapshot,
+            )
+            for snapshot, requires_consent in (("old", blocked), ("new", not blocked))
+        ]
+    )
+    monkeypatch.setattr(model_metadata, "read_model_metadata", read)
+    with patch.object(
+        model_file_guard,
+        "validate_model_code",
+        wraps=model_file_guard.validate_model_code,
+    ) as validate:
+        assert bool(_model_consent_blocker(cfg)) == blocked
+        assert bool(_model_consent_blocker(cfg)) == (not blocked)
         assert read.call_count == 2
+        assert validate.call_count == 2
 
 
 def test_consent_probe_rechecks_missing_snapshot(health_client, tmp_path, monkeypatch):

@@ -1010,6 +1010,21 @@ def test_run_bare_s_hands_the_terminal_to_a_server_child(monkeypatch, capsys):
     assert "http://127.0.0.1:8000/v1" in out
 
 
+def test_ready_probe_closes_non_503_http_error(monkeypatch):
+    import io
+    import urllib.error
+    from unittest.mock import Mock
+
+    body = io.BytesIO(b"internal server error")
+    error = urllib.error.HTTPError(
+        "http://localhost/health/ready", 500, "error", {}, body
+    )
+    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=error))
+
+    assert fd._ready_probe("http://localhost/health/ready") is False
+    assert body.closed
+
+
 @pytest.mark.parametrize("reason", ["model_code_consent_required", "loading"])
 def test_wait_consent_blocker_stops_before_sleep(monkeypatch, capsys, reason):
     import io
