@@ -24,7 +24,7 @@ struct UpdateDiscoveryCard: View {
         return true
     }
 
-    private let restartNotice = "Restarting to install stops active generations and local API sessions."
+    private let restartNotice = String(localized: "Restarting to install stops active generations and local API sessions.")
 
     var body: some View {
         HStack(spacing: RapidTheme.Space.sm) {
@@ -55,7 +55,7 @@ struct UpdateDiscoveryCard: View {
                         if !sparkleCanCheck {
                             ProgressView().controlSize(.mini)
                         }
-                        Text(sparkleCanCheck ? "Update" : "Update in progress…")
+                        Text(sparkleCanCheck ? String(localized: "Update") : String(localized: "Update in progress…"))
                     }
                 }
                 .buttonStyle(.rapidPrimaryCompact)
@@ -88,7 +88,7 @@ struct UpdateDiscoveryCard: View {
             .foregroundStyle(RapidTheme.textSecondary)
             .fixedSize()
             .help("Dismiss this update")
-            .accessibilityLabel("Dismiss update v\(release.version)")
+            .accessibilityLabel(String(localized: "Dismiss update v\(release.version)"))
             .accessibilityIdentifier("UpdateCard.Dismiss")
         }
         .padding(.horizontal, 18)
@@ -96,7 +96,7 @@ struct UpdateDiscoveryCard: View {
         .background(.bar)
         .overlay(Divider(), alignment: .bottom)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Rapid-MLX update v\(release.version) available")
+        .accessibilityLabel(String(localized: "Rapid-MLX update v\(release.version) available"))
         .accessibilityIdentifier("UpdateCard")
         .transition(.opacity)
     }

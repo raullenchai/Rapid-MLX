@@ -455,7 +455,7 @@ struct AudioView: View {
                 }
                 .accessibilityIdentifier("\(identifier).\(entry.alias)")
                 .accessibilityLabel(
-                    "\(ModelDisplayName.name(for: entry.alias)), \(entry.cached ? "Downloaded" : "Not downloaded")"
+                    "\(ModelDisplayName.name(for: entry.alias)), \(entry.cached ? String(localized: "Downloaded") : String(localized: "Not downloaded"))"
                 )
                 .accessibilityAddTraits(
                     selection.wrappedValue == entry.alias ? .isSelected : []
@@ -766,7 +766,7 @@ private struct VoiceOptionRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled)
-            .accessibilityLabel("Select \(voice), \(details)")
+            .accessibilityLabel(String(localized: "Select \(voice), \(details)"))
             .accessibilityIdentifier("Audio.Speech.VoiceOption.\(voice)")
 
             if isPreviewing {
@@ -776,7 +776,7 @@ private struct VoiceOptionRow: View {
                         width: RapidTheme.ControlHeight.small,
                         height: RapidTheme.ControlHeight.small
                     )
-                    .accessibilityLabel("Generating \(voice) preview")
+                    .accessibilityLabel(String(localized: "Generating \(voice) preview"))
             } else {
                 QuietIconButton(
                     symbol: isPlaying ? "stop.circle.fill" : "play.circle.fill",

@@ -17,7 +17,7 @@ AXApplication title="Rapid-MLX"
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXBusyIndicator value=number enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText id="Images.Progress.WarmupName" value=text enabled=true
           AXButton id="Images.Cancel" desc="Close" help="Cancel" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText id="Images.Progress.ETA" value=text enabled=true

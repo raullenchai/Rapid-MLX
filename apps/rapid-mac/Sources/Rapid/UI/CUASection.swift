@@ -376,7 +376,7 @@ struct CUASection: View {
             if !brainDraftURL.isEmpty && !CUAViewModel.isLoopbackEndpoint(brainDraftURL) {
               Toggle(isOn: $brainDraftAllowRemote) {
                 Text(
-                  "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot\(brainDraftTextOnly ? "" : ", and screenshot")"
+                  "Allow this endpoint to receive the task goal and, during execution, the Accessibility snapshot\(brainDraftTextOnly ? "" : String(localized: ", and screenshot"))"
                 )
                 .fixedSize(horizontal: false, vertical: true)
               }
@@ -535,7 +535,7 @@ struct CUASection: View {
             Button("Remove…", role: .destructive) {
               modelPendingDeletion = model
                                 }
-            .accessibilityLabel("Remove \(model.displayName)")
+            .accessibilityLabel(String(localized: "Remove \(model.displayName)"))
             .accessibilityIdentifier("ComputerUse.Agent.ModelRemove")
           } else {
             Text("Built in")
@@ -570,7 +570,7 @@ struct CUASection: View {
       ),
       presenting: modelPendingDeletion
     ) { model in
-      Button("Remove \(model.name)", role: .destructive) {
+      Button(String(localized: "Remove \(model.name)"), role: .destructive) {
         Task {
           await viewModel.deleteModel(named: model.name)
           modelPendingDeletion = nil
@@ -598,7 +598,7 @@ struct CUASection: View {
                     if viewModel.canRequestPermission(permission) {
                         Button(
                             viewModel.permissionRequestInFlight == permission
-                                ? "Requesting…" : "Allow \(permission.title)…"
+                                ? String(localized: "Requesting…") : String(localized: "Allow \(permission.title)…")
                         ) {
                             Task { await viewModel.requestPermission(permission) }
                         }
@@ -612,7 +612,7 @@ struct CUASection: View {
                         MacAutomationPermissions.openSystemPrivacyPane(for: permission)
                     }
                     .buttonStyle(.bordered)
-                    .help("Open \(permission.title) in System Settings")
+                    .help(String(localized: "Open \(permission.title) in System Settings"))
                     .accessibilityIdentifier(
                         "ComputerUse.Agent.Permission.Settings.\(permission.rawValue)"
                     )
@@ -728,16 +728,16 @@ struct CUASection: View {
                 Label(
                     context.targets.isEmpty
                         ? context.targetDisplayName
-                        : "Active: \(viewModel.activeTargetDisplayName ?? context.targetDisplayName)",
+                        : String(localized: "Active: \(viewModel.activeTargetDisplayName ?? context.targetDisplayName)"),
                     systemImage: "macwindow"
                 )
                 Label(context.plannerDisplayName, systemImage: "cpu")
-                Label("Up to \(context.maxSteps) steps", systemImage: "list.number")
+                Label(String(localized: "Up to \(context.maxSteps) steps"), systemImage: "list.number")
             }
             .font(.rapid(.caption))
             .foregroundStyle(.secondary)
             if context.targets.isEmpty, !context.allowedDomain.isEmpty {
-                Label("Reviewed domain: \(context.allowedDomain)", systemImage: "network")
+                Label(String(localized: "Reviewed domain: \(context.allowedDomain)"), systemImage: "network")
                     .font(.rapid(.caption))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -750,7 +750,7 @@ struct CUASection: View {
                         HStack {
                             Text(target.displayName)
                             Spacer()
-                            Text(target.allowedDomain.isEmpty ? "No domain restriction" : target.allowedDomain)
+                            Text(target.allowedDomain.isEmpty ? String(localized: "No domain restriction") : target.allowedDomain)
                         }
                         .font(.rapid(.caption))
                         .foregroundStyle(
@@ -906,8 +906,8 @@ struct CUASection: View {
             } label: {
                 Text(
                     viewModel.events.isEmpty
-                        ? "Technical details"
-                        : "Technical details and run history (\(viewModel.events.count) events)"
+                        ? String(localized: "Technical details")
+                        : String(localized: "Technical details and run history (\(viewModel.events.count) events)")
                 )
                 .font(.rapid(.caption).weight(.semibold))
             }
@@ -953,8 +953,8 @@ struct CUASection: View {
 
     private func detailsLabel(hasEvidence: Bool, evidenceLabel: String) -> String {
         if viewModel.events.isEmpty { return evidenceLabel }
-        if hasEvidence { return "\(evidenceLabel) and run history (\(viewModel.events.count) events)" }
-        return "Run history (\(viewModel.events.count) events)"
+        if hasEvidence { return String(localized: "\(evidenceLabel) and run history (\(viewModel.events.count) events)") }
+        return String(localized: "Run history (\(viewModel.events.count) events)")
     }
 
     private var approvalCard: some View {
@@ -1057,7 +1057,7 @@ struct CUAEventList: View {
     private func eventLabel(for event: CUAEvent) -> String {
         switch event.kind {
         case "plan":
-            let instruction = event.stepInstruction ?? event.action ?? "plan"
+            let instruction = event.stepInstruction ?? event.action ?? String(localized: "plan")
             return ExperimentalSurfaceCopy.cuaStep(event.step ?? 0, instruction: instruction)
         case "executed":
             return ExperimentalSurfaceCopy.cuaStepFinished(event.step ?? 0)
@@ -1067,10 +1067,10 @@ struct CUAEventList: View {
             return String(localized: "Approval resolved")
         case "target_switched":
             let destination = event.targetID.flatMap { targetNames[$0] }
-                ?? "another app"
+                ?? String(localized: "another app")
             return ExperimentalSurfaceCopy.cuaSwitched(to: destination)
         case "terminal":
-            return ExperimentalSurfaceCopy.cuaRun(event.status ?? "ended")
+            return ExperimentalSurfaceCopy.cuaRun(event.status ?? String(localized: "ended"))
         default:
             return event.kind
         }
@@ -1078,12 +1078,12 @@ struct CUAEventList: View {
 
     private func outcomeLabel(_ outcome: String) -> String {
         switch outcome {
-        case "success": "Observed expected change"
-        case "no_effect": "No effect observed"
-        case "wrong_effect": "Unexpected result"
-        case "uncertain": "Could not verify"
-        case "unavailable": "Verification unavailable"
-        default: "Outcome unknown"
+        case "success": String(localized: "Observed expected change")
+        case "no_effect": String(localized: "No effect observed")
+        case "wrong_effect": String(localized: "Unexpected result")
+        case "uncertain": String(localized: "Could not verify")
+        case "unavailable": String(localized: "Verification unavailable")
+        default: String(localized: "Outcome unknown")
         }
     }
 }

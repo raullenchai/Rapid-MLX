@@ -4132,7 +4132,7 @@ struct QuickstartView: View {
                 }
 
                 if let fallback, warning.severity == .unsafe {
-                    Button("Switch to \(fallback.displayName)") {
+                    Button(String(localized: "Switch to \(fallback.displayName)")) {
                         server.cancelPendingMemoryLoad(warning)
                         coordinator.returnToChooser()
                         coordinator.select(fallback)

@@ -23,8 +23,8 @@ final class AudioViewModel {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .dictation: return "Speech to Text"
-            case .speech: return "Text to Speech"
+            case .dictation: return String(localized: "Speech to Text")
+            case .speech: return String(localized: "Text to Speech")
             }
         }
 
@@ -245,14 +245,14 @@ final class AudioViewModel {
 
     static func voiceDetails(for voice: String) -> String {
         switch voice.lowercased() {
-        case "vivian", "serena": return "Chinese · Female"
-        case "uncle_fu": return "Chinese · Male"
-        case "dylan": return "Chinese · Beijing · Male"
-        case "eric": return "Chinese · Sichuan · Male"
-        case "ryan", "aiden": return "English · Male"
-        case "ono_anna": return "Japanese · Female"
-        case "sohee": return "Korean · Female"
-        default: return "Multilingual"
+        case "vivian", "serena": return String(localized: "Chinese · Female")
+        case "uncle_fu": return String(localized: "Chinese · Male")
+        case "dylan": return String(localized: "Chinese · Beijing · Male")
+        case "eric": return String(localized: "Chinese · Sichuan · Male")
+        case "ryan", "aiden": return String(localized: "English · Male")
+        case "ono_anna": return String(localized: "Japanese · Female")
+        case "sohee": return String(localized: "Korean · Female")
+        default: return String(localized: "Multilingual")
         }
     }
 
@@ -286,102 +286,102 @@ final class AudioViewModel {
         case "whisper", "whisper-1", "whisper-large-v3":
             return .init(
                 displayName: "Whisper Large v3",
-                badge: "best quality",
-                summary: "Highest-accuracy Whisper model. Supports 99+ languages and difficult accents.",
+                badge: String(localized: "best quality"),
+                summary: String(localized: "Highest-accuracy Whisper model. Supports 99+ languages and difficult accents."),
                 isRecommended: false
             )
         case "whisper-large-v3-turbo":
             return .init(
                 displayName: "Whisper Large v3 Turbo",
-                badge: "balanced",
-                summary: "Near Large v3 accuracy with much faster transcription. Supports 99+ languages.",
+                badge: String(localized: "balanced"),
+                summary: String(localized: "Near Large v3 accuracy with much faster transcription. Supports 99+ languages."),
                 isRecommended: true
             )
         case "whisper-medium":
             return .init(
                 displayName: "Whisper Medium",
-                badge: "multilingual",
-                summary: "Good multilingual accuracy with lower memory use than the Large models.",
+                badge: String(localized: "multilingual"),
+                summary: String(localized: "Good multilingual accuracy with lower memory use than the Large models."),
                 isRecommended: false
             )
         case "whisper-small":
             return .init(
                 displayName: "Whisper Small",
-                badge: "fast",
-                summary: "Fast, lightweight multilingual transcription for everyday dictation.",
+                badge: String(localized: "fast"),
+                summary: String(localized: "Fast, lightweight multilingual transcription for everyday dictation."),
                 isRecommended: false
             )
         case "whisper-base":
             return .init(
                 displayName: "Whisper Base",
-                badge: "low memory",
-                summary: "A compact multilingual model for older Macs. Faster, with lower accuracy.",
+                badge: String(localized: "low memory"),
+                summary: String(localized: "A compact multilingual model for older Macs. Faster, with lower accuracy."),
                 isRecommended: false
             )
         case "parakeet-v3", "parakeet-tdt-0.6b-v3":
             return .init(
                 displayName: "Parakeet TDT v3",
-                badge: "25 languages",
-                summary: "Fast transcription across 25 European languages with automatic language detection. Chinese is not supported.",
+                badge: String(localized: "25 languages"),
+                summary: String(localized: "Fast transcription across 25 European languages with automatic language detection. Chinese is not supported."),
                 isRecommended: false
             )
         case "parakeet", "parakeet-tdt-0.6b", "parakeet-tdt-0.6b-v2":
             return .init(
                 displayName: "Parakeet TDT v2",
-                badge: "English",
-                summary: "English-only transcription. Very fast with strong punctuation and capitalization.",
+                badge: String(localized: "English"),
+                summary: String(localized: "English-only transcription. Very fast with strong punctuation and capitalization."),
                 isRecommended: false
             )
         case "qwen3-asr", "qwen3-asr-1.7b":
             return .init(
                 displayName: "Qwen3 ASR 1.7B",
-                badge: "code-switching",
-                summary: "Strong Chinese and English code-switching, punctuation, and custom vocabulary hints.",
+                badge: String(localized: "code-switching"),
+                summary: String(localized: "Strong Chinese and English code-switching, punctuation, and custom vocabulary hints."),
                 isRecommended: false
             )
         case "qwen3-asr-0.6b":
             return .init(
                 displayName: "Qwen3 ASR 0.6B",
-                badge: "fast",
-                summary: "A smaller, faster Chinese and English model with a modest accuracy tradeoff.",
+                badge: String(localized: "fast"),
+                summary: String(localized: "A smaller, faster Chinese and English model with a modest accuracy tradeoff."),
                 isRecommended: false
             )
         case "sensevoice", "sensevoice-small":
             return .init(
                 displayName: "SenseVoice Small",
-                badge: "Asian languages",
-                summary: "Fast Chinese, Cantonese, Japanese, Korean, and English recognition with sound-event tags.",
+                badge: String(localized: "Asian languages"),
+                summary: String(localized: "Fast Chinese, Cantonese, Japanese, Korean, and English recognition with sound-event tags."),
                 isRecommended: false
             )
         case "granite-speech", "granite-speech-5.0-470m-turboctc":
             return .init(
                 displayName: "Granite Speech 5.0",
-                badge: "fast",
-                summary: "Very fast transcription with punctuation for English, French, German, Spanish, Portuguese, Italian, and Japanese. Chinese is not supported.",
+                badge: String(localized: "fast"),
+                summary: String(localized: "Very fast transcription with punctuation for English, French, German, Spanish, Portuguese, Italian, and Japanese. Chinese is not supported."),
                 isRecommended: false
             )
         case "firered-asr2", "fireredasr2-aed":
             return .init(
                 displayName: "FireRedASR2",
-                badge: "Chinese",
-                summary: "High-accuracy Mandarin and Chinese dialect transcription with English code-switching. Output has no punctuation.",
+                badge: String(localized: "Chinese"),
+                summary: String(localized: "High-accuracy Mandarin and Chinese dialect transcription with English code-switching. Output has no punctuation."),
                 isRecommended: false
             )
         case "nemotron-asr", "nemotron-3.5-asr-streaming-0.6b":
             return .init(
                 displayName: "Nemotron ASR 0.6B",
-                badge: "40 languages",
-                summary: "Fast multilingual transcription with punctuation across 40 languages.",
+                badge: String(localized: "40 languages"),
+                summary: String(localized: "Fast multilingual transcription with punctuation across 40 languages."),
                 isRecommended: false
             )
         default:
             let familyName = family?
                 .replacingOccurrences(of: "_", with: " ")
-                .capitalized ?? "Speech"
+                .capitalized ?? String(localized: "Speech")
             return .init(
                 displayName: alias,
                 badge: familyName,
-                summary: "Local speech-to-text model. Runs offline after its first download.",
+                summary: String(localized: "Local speech-to-text model. Runs offline after its first download."),
                 isRecommended: false
             )
         }

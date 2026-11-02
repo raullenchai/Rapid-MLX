@@ -145,7 +145,7 @@ private struct DictationHUDView: View {
 
     private static func timeLabel(_ seconds: TimeInterval) -> String {
         seconds < 60
-            ? String(format: "%.1fs", seconds)
+            ? String(localized: "\(String(format: "%.1f", seconds))s")
             : String(format: "%d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }

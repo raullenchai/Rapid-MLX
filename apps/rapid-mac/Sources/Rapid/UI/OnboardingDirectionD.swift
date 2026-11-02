@@ -393,7 +393,7 @@ struct OnboardingRailFacts: View {
     /// Whole gibibytes, matching how macOS About reports memory. Pure so the
     /// rounding is pinned rather than re-derived at the call site.
     static func memoryText(_ hardware: MacHardware) -> String {
-        "\(Int(hardware.physicalRAMGB.rounded())) GB"
+        String(localized: "\(Int(hardware.physicalRAMGB.rounded())) GB")
     }
 
     /// The footer read aloud as one sentence, so VoiceOver gets the machine

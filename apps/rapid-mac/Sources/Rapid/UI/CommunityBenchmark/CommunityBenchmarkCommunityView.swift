@@ -231,7 +231,9 @@ struct CommunityBenchmarkCommunityView: View {
                 .foregroundStyle(RapidTheme.textSecondary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(isBounded ? "at least " : "")\(count) \(label)")
+        .accessibilityLabel(isBounded
+            ? String(localized: "at least \(count) \(label)")
+            : String(localized: "\(count) \(label)"))
     }
 
     private var separator: some View {

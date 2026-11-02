@@ -127,7 +127,7 @@ struct SettingsView: View {
             case .privacy: return String(localized: "Privacy")
             case .app: return String(localized: "App")
             #if DEBUG
-            case .developer: return "Developer"
+            case .developer: return String(localized: "Developer")
             #endif
             }
         }

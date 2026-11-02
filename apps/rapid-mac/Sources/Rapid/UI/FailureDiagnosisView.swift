@@ -76,7 +76,7 @@ struct FailureDiagnosisView: View {
         guard let action = diagnosis.action, onAction != nil else {
             return diagnosis.message
         }
-        return "\(diagnosis.message) Action: \(action.title)."
+        return String(localized: "\(diagnosis.message) Action: \(action.title).")
     }
 
     private var iconName: String {

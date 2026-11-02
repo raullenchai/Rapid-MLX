@@ -216,7 +216,7 @@ struct SettingsConnectorsPanel: View {
     /// One line saying what this server is doing right now — the question the
     /// panel exists to answer.
     private func statusLine(for entry: MCPServerConfig, status: MCPCatalog.ServerStatus?) -> String {
-        if !entry.enabled { return "Turned off" }
+        if !entry.enabled { return String(localized: "Turned off") }
         // The engine's error string can carry a connector's own stderr, so
         // scrub it the same way the tool rows and approval sheet scrub server
         // text — a bidi/zero-width scalar must not spoof this status line.
@@ -224,18 +224,18 @@ struct SettingsConnectorsPanel: View {
         if let status {
             if status.isConnected {
                 let n = status.toolsCount
-                return n == 1 ? "Connected · 1 tool" : "Connected · \(n) tools"
+                return n == 1 ? String(localized: "Connected · 1 tool") : String(localized: "Connected · \(n) tools")
             }
             return status.state.capitalized
         }
         // No row from the engine at all.
         if server.launchedChildAlias == nil {
-            return "Start a model to connect"
+            return String(localized: "Start a model to connect")
         }
         if catalog.fetchError != nil {
-            return "Couldn't check — the local server didn't answer"
+            return String(localized: "Couldn't check — the local server didn't answer")
         }
-        return needsRestart ? "Not applied yet" : "Not connected"
+        return needsRestart ? String(localized: "Not applied yet") : String(localized: "Not connected")
     }
 
     /// Shown when the running model predates the connectors being switched on.
@@ -266,7 +266,7 @@ struct SettingsConnectorsPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Button(isRestarting ? "Restarting…" : "Restart") { restartModel() }
+            Button(isRestarting ? String(localized: "Restarting…") : String(localized: "Restart")) { restartModel() }
                 .buttonStyle(.rapidSecondaryCompact)
                 .fixedSize()
                 .disabled(isRestarting || server.isOperating)

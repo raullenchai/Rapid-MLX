@@ -164,34 +164,34 @@ struct DictationView: View {
     }
 
     private var statusHeadline: String {
-        guard controller.isEnabled else { return "Dictation is off" }
+        guard controller.isEnabled else { return String(localized: "Dictation is off") }
         if controller.phase == .preparingModel {
-            return "Loading \(ModelDisplayName.name(for: controller.modelAlias)) into memory…"
+            return String(localized: "Loading \(ModelDisplayName.name(for: controller.modelAlias)) into memory…")
         }
         if controller.phase == .off {
             return controller.isHotkeyArmed
-                ? "Listening paused — press \(controller.trigger.label) to reconnect"
-                : "Not listening — the hotkey isn't armed"
+                ? String(localized: "Listening paused — press \(controller.trigger.label) to reconnect")
+                : String(localized: "Not listening — the hotkey isn't armed")
         }
-        return "Listening — press \(controller.trigger.label) in any app"
+        return String(localized: "Listening — press \(controller.trigger.label) in any app")
     }
 
     private var statusDetail: String {
         guard controller.isEnabled else {
             return controller.readinessSnapshot.isReady
-                ? "Turn it on to dictate into any app."
+                ? String(localized: "Turn it on to dictate into any app.")
                 : blockingReason
         }
         if controller.phase == .preparingModel {
-            return "The local model is warming up. Recording starts when it’s ready."
+            return String(localized: "The local model is warming up. Recording starts when it’s ready.")
         }
         if controller.phase == .off {
             return controller.lastError
-                ?? "Rapid will load \(ModelDisplayName.name(for: controller.modelAlias)) when you next use dictation."
+                ?? String(localized: "Rapid will load \(ModelDisplayName.name(for: controller.modelAlias)) when you next use dictation.")
         }
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
-            parts.append(String(format: "%.2f s last", latency))
+            parts.append(String(localized: "\(String(format: "%.2f", latency)) s last"))
         }
         // "why was that one slow" — present only when model bring-up ate
         // noticeable time, so the common warm line stays short.
@@ -477,20 +477,20 @@ struct DictationView: View {
             // Only name models the catalog can actually offer. The engine's STT
             // side is whisper/parakeet/sensevoice today; recommending anything
             // else here would point at a picker entry that does not exist.
-            return "whisper-large-v3-turbo is the usual pick — near large-v3 accuracy at a fraction of the latency."
+            return String(localized: "whisper-large-v3-turbo is the usual pick — near large-v3 accuracy at a fraction of the latency.")
         }
         if let entry = selectedModelEntry, !entry.cached {
             if case .running = downloads.job(for: controller.modelAlias)?.status {
-                return "Downloading — dictation can turn on when it finishes."
+                return String(localized: "Downloading — dictation can turn on when it finishes.")
             }
             return selectedModelDetails?.summary ?? ModelDisplayName.name(for: entry.alias)
         }
-        var detail = "Ready on disk."
+        var detail = String(localized: "Ready on disk.")
         if let serving = server.servingAlias, !serving.isEmpty, serving != controller.modelAlias {
             // Same honesty as the readiness banners elsewhere: one model at a
             // time, and the swap has a real cost the user should hear about
             // before the hotkey, not during it.
-            detail += " First dictation briefly switches the running model."
+            detail += String(localized: " First dictation briefly switches the running model.")
         }
         return detail
     }
@@ -551,7 +551,7 @@ struct DictationView: View {
     private var readyDetail: String {
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
-            parts.append(String(format: "%.2f s last", latency))
+            parts.append(String(localized: "\(String(format: "%.2f", latency)) s last"))
         }
         if let detail = controller.lastLatencyDetail {
             parts.append(detail)
@@ -678,7 +678,7 @@ struct DictationView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(term.text)")
+            .accessibilityLabel(String(localized: "Remove \(term.text)"))
             .accessibilityIdentifier("Dictation.RemoveTerm.\(term.text)")
         }
         .padding(.horizontal, RapidTheme.Space.sm)
@@ -693,7 +693,7 @@ struct DictationView: View {
         .onTapGesture {
             controller.vocabulary.setActive(term.text, !term.isActive)
         }
-        .help(term.isActive ? "Sent with each dictation. Click to park." : "Parked. Click to activate.")
+        .help(term.isActive ? String(localized: "Sent with each dictation. Click to park.") : String(localized: "Parked. Click to activate."))
     }
 
     private func addTerm() {
@@ -765,8 +765,8 @@ struct DictationView: View {
                     .textSelection(.enabled)
                 HStack(spacing: RapidTheme.Space.md) {
                     if let app = entry.appName { Text(app) }
-                    Text(String(format: "%.1fs", entry.duration))
-                    Text(String(format: "%.2fs", entry.latency))
+                    Text(String(localized: "\(String(format: "%.1f", entry.duration))s"))
+                    Text(String(localized: "\(String(format: "%.2f", entry.latency))s"))
                 }
                 .font(.rapid(.caption2))
                 .foregroundStyle(.tertiary)
@@ -927,7 +927,7 @@ private struct TranscriptionModelOptionRow: View {
 
     private var accessibilityLabel: String {
         var parts = [details.displayName, details.badge]
-        if details.isRecommended { parts.append("Recommended") }
+        if details.isRecommended { parts.append(String(localized: "Recommended")) }
         if case .downloading(let fraction) = downloadState {
             if let fraction {
                 parts.append(String(localized: "Downloading, \(Int((fraction * 100).rounded())) percent"))
@@ -935,7 +935,7 @@ private struct TranscriptionModelOptionRow: View {
                 parts.append(String(localized: "Downloading"))
             }
         } else {
-            parts.append(entry.cached ? "Downloaded" : "Not downloaded")
+            parts.append(entry.cached ? String(localized: "Downloaded") : String(localized: "Not downloaded"))
         }
         if let size = entry.displayedModelSize?.displayText { parts.append(size) }
         parts.append(details.summary)
@@ -994,7 +994,7 @@ private struct DictationFixSheet: View {
                     .buttonStyle(.rapidSecondary)
                     .accessibilityIdentifier("Dictation.Fix.Cancel")
                 Spacer()
-                Button(verifying ? "Checking…" : "Fix & remember") { apply() }
+                Button(verifying ? String(localized: "Checking…") : String(localized: "Fix & remember")) { apply() }
                     .buttonStyle(.rapidPrimary)
                     .disabled(verifying || correction.trimmingCharacters(in: .whitespaces).isEmpty)
                     .accessibilityIdentifier("Dictation.Fix.Apply")
@@ -1027,7 +1027,7 @@ private struct DictationFixSheet: View {
             } else {
                 // Kept in the vocabulary regardless — the user's correction is
                 // ground truth even when one hint is not enough to recover it.
-                verdict = "Saved “\(fixed)”, but re-running this recording still produced: \(rerun)"
+                verdict = String(localized: "Saved “\(fixed)”, but re-running this recording still produced: \(rerun)")
                 applyTextEdit(fixed)
             }
         }

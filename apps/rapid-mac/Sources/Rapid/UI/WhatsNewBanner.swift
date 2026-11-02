@@ -49,8 +49,8 @@ struct WhatsNewBanner: View {
         // to act on, so it stands alone.
         if let from = installTracker.upgradedFrom, !installTracker.failedReplaceDetected {
             let current = installTracker.currentVersion
-            let headline = "Updated to v\(current)"
-            let detail = "You were on v\(from). The release notes list what changed."
+            let headline = String(localized: "Updated to v\(current)")
+            let detail = String(localized: "You were on v\(from). The release notes list what changed.")
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(RapidTheme.brand)

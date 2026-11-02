@@ -904,7 +904,7 @@ final class DownloadProgress {
                     }
                 }
             } else {
-                parts.append("\(Self.formatBytes(bytes)) downloaded")
+                parts.append(String(localized: "\(Self.formatBytes(bytes)) downloaded"))
                 if let speed = bytesPerSecond {
                     parts.append(Self.formatSpeed(bytesPerSecond: speed))
                 }

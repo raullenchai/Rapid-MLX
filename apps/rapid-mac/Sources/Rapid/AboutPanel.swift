@@ -16,7 +16,7 @@ enum AboutPanel {
         let path: String
 
         var summary: String {
-            let versionLabel = version.map { "Engine \($0)" } ?? "Engine version unknown"
+            let versionLabel = version.map { String(localized: "Engine \($0)") } ?? String(localized: "Engine version unknown")
             return "\(versionLabel) · \(source.displayLabel)"
         }
 
@@ -66,7 +66,7 @@ enum AboutPanel {
         win.titlebarAppearsTransparent = true
         win.titleVisibility = .hidden
         win.isMovableByWindowBackground = true
-        win.title = "About Rapid-MLX"
+        win.title = String(localized: "About Rapid-MLX")
         win.setContentSize(NSSize(width: 360, height: 340))
         win.center()
         win.isReleasedWhenClosed = false
@@ -119,9 +119,9 @@ enum AboutPanel {
     ) -> String {
         var line: String
         if let build, !build.isEmpty, build != version {
-            line = "Version \(version) (\(build))"
+            line = String(localized: "Version \(version) (\(build))")
         } else {
-            line = "Version \(version)"
+            line = String(localized: "Version \(version)")
         }
         if let candidateIdentity, !candidateIdentity.isEmpty {
             line += " · \(candidateIdentity)"
@@ -196,7 +196,7 @@ private struct AboutView: View {
                 .font(.rapid(.caption).weight(engine.isOverride ? .semibold : .regular))
                 .foregroundStyle(engine.isOverride ? .primary : .secondary)
                 .help(engine.path)
-                .accessibilityLabel("\(engine.summary). Path: \(engine.path)")
+                .accessibilityLabel(String(localized: "\(engine.summary). Path: \(engine.path)"))
                 .textSelection(.enabled)
             }
 
@@ -238,11 +238,11 @@ private struct AboutView: View {
     private func aboutLink(_ label: String, _ urlString: String) -> some View {
         Group {
             if let url = URL(string: urlString) {
-                Link(label, destination: url)
+                Link(String(localized: String.LocalizationValue(label)), destination: url)
                     .tint(RapidTheme.brand)
                     .accessibilityIdentifier("About.Link.\(label)")
             } else {
-                Text(label)
+                Text(String(localized: String.LocalizationValue(label)))
             }
         }
     }

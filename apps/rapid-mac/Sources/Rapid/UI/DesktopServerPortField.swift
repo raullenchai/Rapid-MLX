@@ -33,7 +33,7 @@ struct DesktopServerPortField: View {
                     .frame(width: 80)
                     .accessibilityIdentifier("ConnectTools.ServerPort.Field")
                     .onAppear { draft = storedPortText }
-                Button(saved ? "Saved" : "Save") {
+                Button(saved ? String(localized: "Saved") : String(localized: "Save")) {
                     let t = draft.trimmingCharacters(in: .whitespaces)
                     if t.isEmpty {
                         UserDefaults.standard.removeObject(forKey: PortAllocator.storedPortKey)

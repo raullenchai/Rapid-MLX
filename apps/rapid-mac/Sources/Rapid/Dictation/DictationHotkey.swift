@@ -24,8 +24,8 @@ final class DictationHotkey {
 
         var label: String {
             switch self {
-            case .rightCommand: return "Right ⌘"
-            case .rightOption: return "Right ⌥"
+            case .rightCommand: return String(localized: "Right ⌘")
+            case .rightOption: return String(localized: "Right ⌥")
             }
         }
 
