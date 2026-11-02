@@ -724,9 +724,9 @@ def _audio_duration_seconds(
     except Exception:  # noqa: BLE001
         pass
     if allow_decode:
-        duration = _decoded_audio_duration(audio_path)
-        if duration is not None:
-            return duration
+        decoded_duration = _decoded_audio_duration(audio_path)
+        if decoded_duration is not None:
+            return decoded_duration
     return bounded_duration
 
 

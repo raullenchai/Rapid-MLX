@@ -2823,7 +2823,11 @@ async def create_transcription(
             model = model_merged
         else:
             served = _served_stt_default()
-            model = served if _is_aligner_model(served) else DEFAULT_ALIGNER_ALIAS
+            model = (
+                served
+                if served is not None and _is_aligner_model(served)
+                else DEFAULT_ALIGNER_ALIAS
+            )
         # Default to verbose_json so the timestamped ``segments`` are in
         # the body; the plain ``json`` envelope drops them. An explicit
         # response_format (srt/vtt/text/json) is honoured as-is.

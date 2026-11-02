@@ -833,11 +833,12 @@ class TTSEngine:
                     self.model = load_voxcpm_checkpoint(model_path)
                 elif kokoro_pipeline is not None:
                     with _scoped_snapshot_download(kokoro_pipeline):
-                        self.model = load_model(model_path)
+                        kokoro_model = load_model(model_path)
                     if Path(self.model_name).expanduser().is_dir():
                         # The lazy voice pipeline reads this source separately
                         # from the weight loader's checkpoint path.
-                        self.model.repo_id = str(model_path.resolve())
+                        kokoro_model.repo_id = str(model_path.resolve())
+                    self.model = kokoro_model
                 else:
                     self.model = load_model(model_path)
             if self._model_family == "moss_tts_nano":
