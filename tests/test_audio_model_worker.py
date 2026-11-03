@@ -438,6 +438,7 @@ async def test_server_shutdown_unloads_cached_audio_engines(monkeypatch):
 async def test_server_shutdown_continues_after_audio_unload_failure(
     monkeypatch, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.routes.audio")
     from rapid_mlx.routes import audio as audio_route
 
     class _Cached:
@@ -1108,6 +1109,7 @@ async def test_primary_reload_restores_old_config_when_new_load_fails(monkeypatc
 async def test_primary_reload_releases_handoff_when_cleanup_and_restore_fail(
     monkeypatch, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.resident_models")
     import rapid_mlx.server as server
     from rapid_mlx.runtime.audio_worker import bind_audio_worker, run_audio_mlx
     from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry

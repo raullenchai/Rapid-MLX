@@ -32,6 +32,9 @@ def cpu(monkeypatch):
 
 @pytest.mark.parametrize("result", [True, False, RuntimeError("launch")])
 def test_serialized_probe_is_cached_and_warns_once(result, caplog):
+    caplog.set_level(
+        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.self_check"
+    )
     check = SelfCheck("test kernel")
     barrier = Barrier(4)
     probe = Mock(
@@ -63,6 +66,9 @@ def gpu_gate(monkeypatch):
 @pytest.mark.parametrize("kind", ["rope", "attention", "route"])
 @pytest.mark.parametrize("failure", ["pass", "mismatch", "launch", "lazy"])
 def test_first_use_dispatch(kind, failure, monkeypatch, caplog):
+    caplog.set_level(
+        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.self_check"
+    )
     x = mx.ones((1, 1, 128))
     cos, sin = mx.ones((1, 32)), mx.zeros((1, 32))
     ring = mx.zeros((1, 8, 128))
@@ -182,6 +188,9 @@ def test_attention_probe_evaluates_output_and_preserves_inputs(
 )
 def test_probe_lazy_comparison_failure_falls_back(module, args, monkeypatch, caplog):
     # A fused graph can be built successfully and fail only at comparison eval.
+    caplog.set_level(
+        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.self_check"
+    )
     monkeypatch.setattr(module, "_fused", lambda *a, **kw: mx.array([1.0]))
 
     def fail(*a, **kw):

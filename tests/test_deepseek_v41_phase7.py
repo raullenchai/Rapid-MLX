@@ -191,6 +191,7 @@ def test_published_snapshot_rejects_unpinned_shards(monkeypatch, tmp_path, subdi
 def test_local_override_is_explicit_logged_and_bypasses_pins(
     monkeypatch, tmp_path, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.models.deepseek_v41_native.artifacts")
     monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
     assert a.local_product_path(a.FLASH_1017) is None
     root = _local_build(tmp_path)

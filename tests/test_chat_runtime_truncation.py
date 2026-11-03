@@ -121,6 +121,7 @@ async def test_length_tool_response_retries_without_dispatch(tmp_path, name, arg
 async def test_error_preserves_completed_write_and_visible_text(
     tmp_path, chinese, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.chat_runtime.runtime")
     requests = 0
 
     async def stream(messages, info):

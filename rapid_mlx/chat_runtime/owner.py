@@ -244,6 +244,10 @@ class ClientLeases:
         self.clients: dict[str, float] = {}
         self.idle_since = time.monotonic()
 
+    def touch(self) -> None:
+        """Record activity without creating or renewing a client lease."""
+        self.idle_since = time.monotonic()
+
     def attach(self, client_id: str) -> None:
         self.clients[client_id] = time.monotonic() + self.ttl
         self.idle_since = time.monotonic()
@@ -328,6 +332,8 @@ async def run_owner(profile: str) -> None:
             await store.recover_interrupted()
             atomic_write(credential, token.encode())
             atomic_write(run / "discovery.json", json.dumps(metadata).encode())
+            # Startup and recovery must not consume the discoverable idle window.
+            leases.touch()
             watcher = asyncio.create_task(watch_idle())
             await server.serve(sockets=[listener])
         finally:

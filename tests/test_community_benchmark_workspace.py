@@ -70,6 +70,15 @@ def _offline_metal_probe(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_archive_home(tmp_path, monkeypatch):
+    # RAPID_MLX_HOME still permits reads from ~/.rapid-mlx/benchmarks as a
+    # migration fallback. Neither that fallback nor an operator's explicit
+    # archive override may supply runs to these unit tests.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("RAPID_MLX_BENCHMARK_HOME", raising=False)
+
+
 class _Response:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
@@ -5951,6 +5960,7 @@ def test_terminate_worker_falls_back_after_group_permission_error(
     caplog: pytest.LogCaptureFixture,
     worker_alive: bool,
 ) -> None:
+    caplog.set_level("WARNING", logger="rapid_mlx.community_bench.local_runner")
     signals: list[int] = []
     monkeypatch.setattr(local_runner.os, "getpgid", lambda pid: pid)
 
@@ -5982,6 +5992,7 @@ def test_terminate_worker_tolerates_zombie_group_permission_error(
     worker_alive: bool,
     denied_signal: int,
 ) -> None:
+    caplog.set_level("WARNING", logger="rapid_mlx.community_bench.local_runner")
     signals: list[int] = []
 
     def killpg(pid, sig):

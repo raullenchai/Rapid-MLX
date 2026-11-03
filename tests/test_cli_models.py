@@ -1146,6 +1146,7 @@ def test_scan_hf_cache_models_skips_unresponsive_relocated_entry(
     tmp_path, monkeypatch, caplog
 ):
     """One stalled external cache link must not hang CLI or GUI inventory."""
+    caplog.set_level("WARNING", logger="rapid_mlx.cli")
     cache_root = tmp_path / "hub"
     local = cache_root / "models--acme--Local-4bit"
     _make_hf_cache_repo(local, {"sha_weights": 1024})

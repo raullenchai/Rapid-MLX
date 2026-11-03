@@ -304,6 +304,7 @@ def test_install_without_mlx_lm(monkeypatch):
 )
 def test_install_skips_unknown_runtime(monkeypatch, caplog, change):
     # Recover the real upstream definitions without mutating live modules.
+    caplog.set_level("WARNING", logger="rapid_mlx.patches.nemotron_h_ssm")
     import types
     from pathlib import Path
 

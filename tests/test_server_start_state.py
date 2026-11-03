@@ -603,6 +603,7 @@ def test_invalid_marker_removal_preserves_concurrent_replacement(monkeypatch, tm
 def test_quarantine_restore_does_not_overwrite_newer_replacement(
     monkeypatch, tmp_path, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.telemetry.server_start")
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -659,6 +660,7 @@ def test_quarantine_restores_racing_replacement_when_path_is_free(
 def test_restore_link_unsupported_claim_succeeds_without_warning(
     tmp_path, monkeypatch, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.telemetry.server_start")
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -687,6 +689,7 @@ def test_restore_link_unsupported_claim_succeeds_without_warning(
 
 
 def test_claim_is_cleaned_if_replace_fails(tmp_path, monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.telemetry.server_start")
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original-A", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -724,6 +727,7 @@ def test_claim_is_cleaned_if_replace_fails(tmp_path, monkeypatch, caplog):
 
 
 def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.telemetry.server_start")
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)
@@ -756,6 +760,7 @@ def test_restore_link_unsupported_preserves_newer_marker(tmp_path, monkeypatch, 
 def test_restore_fallback_does_not_overwrite_arrival_after_free_check(
     tmp_path, monkeypatch, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.telemetry.server_start")
     marker = tmp_path / "serve-inflight-999.json"
     marker.write_text("original-A", encoding="utf-8")
     snapshot = server_start._marker_snapshot(marker)

@@ -411,6 +411,7 @@ def test_runtime_finish_event_marks_mcp_errors(tmp_path):
 
 
 def test_runtime_tool_event_callback_failure_does_not_fail_tool(tmp_path, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.chat_mcp")
     path = _write_config(
         tmp_path,
         {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},

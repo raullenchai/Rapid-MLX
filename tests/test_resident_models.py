@@ -1684,6 +1684,7 @@ async def test_evict_first_partial_target_publication_is_cleared_on_failure():
 
 @pytest.mark.asyncio
 async def test_evict_first_cleanup_callback_failure_does_not_mask_publish_error(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.resident_models")
     registry = ModelRegistry()
     old_engine = FakeLifecycleEngine()
     primary = entry("chat-old", old_engine)
@@ -2065,6 +2066,7 @@ async def test_replacement_does_not_publish_target_until_old_engine_drains():
 
 @pytest.mark.asyncio
 async def test_committed_replacement_does_not_rollback_to_stopped_sibling(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.resident_models")
     registry = ModelRegistry()
     primary_engine = FakeLifecycleEngine()
     primary = entry("chat-primary", primary_engine)
@@ -2111,6 +2113,7 @@ async def test_committed_replacement_does_not_rollback_to_stopped_sibling(caplog
 async def test_primary_stop_failure_keeps_committed_replacement_routable(
     caplog,
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.resident_models")
     registry = ModelRegistry()
     old_engine = FailingStopLifecycleEngine()
     primary = entry("chat-old", old_engine)
@@ -3352,6 +3355,7 @@ async def test_restore_publication_failure_clears_partially_published_primary():
 @pytest.mark.asyncio
 async def test_restore_publication_failure_tolerates_cleanup_failures(caplog):
     """Cleanup failures cannot mask the original replacement error."""
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.resident_models")
     registry = ModelRegistry()
     primary = entry("chat")
     registry.add(primary, is_default=True)

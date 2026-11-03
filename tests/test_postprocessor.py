@@ -92,6 +92,8 @@ class TestStreamingPostProcessorBasic:
             assert "<|endoftext|>" not in content[0].content
 
     def test_reasoning_finish_failure_is_logged_and_does_not_abort(self, caplog):
+        caplog.set_level("WARNING", logger="rapid_mlx.service.postprocessor")
+
         class RaisingFinishParser(ReasoningParser):
             def extract_reasoning(self, model_output, **kwargs):
                 return None, model_output
