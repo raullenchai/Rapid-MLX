@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
+import importlib
 import json
 import logging
 import math
@@ -22,6 +23,7 @@ import warnings
 import weakref
 from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -957,8 +959,36 @@ def _video_capabilities(engine) -> dict:
             "requires_visual": True,
             "exclusive_with": ["input_reference", "last_frame"],
         }
+        available = _reference_decoder_kinds()
+        for kind in ("video", "audio"):
+            if kind not in available:
+                del capabilities["limits"]["references"][kind]
     capabilities["cancellation"] = {"queued": True, "in_progress": True}
     return capabilities
+
+
+@lru_cache(maxsize=1)
+def _reference_decoder_kinds() -> frozenset[str]:
+    """Pinned H3 input decoders use PATH, not the output FFMPEG_BINARY override.
+
+    Video soundtracks need ffmpeg as well as OpenCV frame decoding. Audio
+    delegates to mlx_audio.audio_io (miniaudio plus ffmpeg for AAC/M4A/OGG).
+    Check imports once so broken native decoder installations fail closed too.
+    """
+    if not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
+        return frozenset()
+    available = set()
+    for kind, modules in (
+        ("video", ("cv2",)),
+        ("audio", ("miniaudio", "mlx_audio.audio_io")),
+    ):
+        try:
+            for module in modules:
+                importlib.import_module(module)
+        except (ImportError, OSError):
+            continue
+        available.add(kind)
+    return frozenset(available)
 
 
 def _supports_references(engine) -> bool:
@@ -1193,6 +1223,10 @@ async def _store_packed_reference(upload, job_dir: Path, index: int, telemetry_m
         return "image", "img", None
 
     kind, extension, duration = await asyncio.to_thread(classify)
+    if kind != "image" and kind not in _reference_decoder_kinds():
+        raise HTTPException(
+            status_code=503, detail=f"{kind} references require media decoders"
+        )
     if kind != "video" and total > _MAX_REFERENCE_BYTES:
         raise HTTPException(status_code=413, detail=f"{field} exceeds 20 MB")
     destination = path.with_suffix(f".{extension}")

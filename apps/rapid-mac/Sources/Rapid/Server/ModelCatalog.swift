@@ -93,6 +93,7 @@ enum ImageModelCapability: String, Sendable, Hashable {
 enum VideoModelCapability: String, Codable, Sendable, Hashable {
     case textToVideo = "text-to-video"
     case imageToVideo = "image-to-video"
+    case referenceToVideo = "reference-to-video"
 }
 
 /// The product task a model picker is serving.
@@ -404,6 +405,8 @@ enum ModelCatalog {
     /// the signed Desktop sidecar. Exact names make a new engine alias fail
     /// closed until its runtime has been bundled and smoke-tested here.
     static let packagedVideoAliases: Set<String> = [
+        "minimax-h3",
+        "pika-h3-flex",
         "cogvideox-fun-5b-q4",
         "ltx-2.3-mlx-q4",
         "ltx-2.5-mlx-q8",

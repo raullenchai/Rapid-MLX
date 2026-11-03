@@ -197,3 +197,55 @@ def test_capabilities_route_precedes_dynamic_video_id_route() -> None:
     assert routes.index("/v1/videos/capabilities") < routes.index(
         "/v1/videos/{video_id}"
     )
+
+
+@pytest.mark.parametrize(
+    "available",
+    [
+        frozenset(),
+        frozenset({"video"}),
+        frozenset({"audio"}),
+        frozenset({"video", "audio"}),
+    ],
+)
+def test_ref2va_only_advertises_available_decoders(monkeypatch, available):
+    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: available)
+    engine = SimpleNamespace(
+        model_name="h3",
+        video_family="minimax-h3",
+        native_fps=24,
+        _minimax_engine=SimpleNamespace(supports_references=True),
+    )
+    limits = video._video_capabilities(engine)["limits"]["references"]
+    assert "image" in limits
+    for kind in ("video", "audio"):
+        assert (kind in limits) == (kind in available)
+
+
+@pytest.mark.parametrize(
+    "missing", ["ffprobe", "ffmpeg", "cv2", "miniaudio", "mlx_audio.audio_io", None]
+)
+def test_reference_decoder_dependencies(monkeypatch, missing):
+    monkeypatch.setenv("FFMPEG_BINARY", "/output-only/ffmpeg")
+    monkeypatch.setattr(
+        video.shutil, "which", lambda name: None if name == missing else "/bin/" + name
+    )
+
+    def import_module(name):
+        if name == missing:
+            raise ImportError(name)
+
+    monkeypatch.setattr(video.importlib, "import_module", import_module)
+    video._reference_decoder_kinds.cache_clear()
+    try:
+        actual = video._reference_decoder_kinds()
+        expected = {"video", "audio"}
+        if missing in {"ffprobe", "ffmpeg"}:
+            expected.clear()
+        elif missing == "cv2":
+            expected.remove("video")
+        elif missing in {"miniaudio", "mlx_audio.audio_io"}:
+            expected.remove("audio")
+        assert actual == expected
+    finally:
+        video._reference_decoder_kinds.cache_clear()
