@@ -1294,14 +1294,57 @@ with tempfile.TemporaryDirectory() as directory:
         family="smoke",
     )
     assert output.stat().st_size > 0
-    # H3 outputs synchronized audio. Exercise AAC conversion and MP4 audio
-    # remuxing with the same bounded encoder shipped in the signed bundle.
+    # H3 outputs synchronized 32 kHz audio. Exercise AAC conversion and MP4
+    # audio remuxing with the same bounded encoder shipped in the signed bundle.
     audio_output = Path(directory) / "smoke-audio.mp4"
     encode_rgb_video(
         np.zeros((2, 32, 16, 3), dtype=np.uint8), audio_output, 2,
-        audio=np.zeros((2, 24000), dtype=np.float32), sampling_rate=24000,
+        audio=np.zeros((2, 32000), dtype=np.float32), sampling_rate=32000,
     )
     assert audio_output.stat().st_size > 0
+    # A nonempty file is not proof of audio: walk the MP4 boxes and require
+    # both a video and a sound track. ``-shortest`` trims audio to the last
+    # frame timestamp (0.5 s for this 2-frame, 2 fps clip) plus AAC framing.
+    import struct
+    def mp4_tracks(data):
+        def boxes(start, end):
+            while start + 8 <= end:
+                size, kind = struct.unpack(">I4s", data[start:start + 8])
+                header = 8
+                if size == 1:
+                    size, header = struct.unpack(">Q", data[start + 8:start + 16])[0], 16
+                elif size == 0:
+                    size = end - start
+                if size < header:
+                    return
+                yield kind, start + header, start + size
+                start += size
+        tracks = {}
+        for kind, body, end in boxes(0, len(data)):
+            if kind != b"moov":
+                continue
+            for trak, tbody, tend in boxes(body, end):
+                if trak != b"trak":
+                    continue
+                for mdia, mbody, mend in boxes(tbody, tend):
+                    if mdia != b"mdia":
+                        continue
+                    handler, seconds = None, None
+                    for child, cbody, _ in boxes(mbody, mend):
+                        if child == b"hdlr":
+                            handler = data[cbody + 8:cbody + 12]
+                        elif child == b"mdhd":
+                            if data[cbody] == 1:
+                                scale, length = struct.unpack(">IQ", data[cbody + 20:cbody + 32])
+                            else:
+                                scale, length = struct.unpack(">II", data[cbody + 12:cbody + 20])
+                            seconds = length / scale if scale else None
+                    tracks[handler] = seconds
+        return tracks
+    tracks = mp4_tracks(audio_output.read_bytes())
+    assert {b"vide", b"soun"} <= set(tracks), f"audio smoke tracks: {tracks}"
+    assert (tracks[b"soun"] or 0) >= 0.45, f"audio smoke duration: {tracks}"
+    assert b"soun" not in mp4_tracks(output.read_bytes()), "silent smoke gained audio"
 print("video runtimes including H3 + VideoToolbox encode/crop + AAC audio OK")' 2>&1)" || {
         echo "ERR: bundled video runtime or encoder smoke failed:" >&2
         echo "$VIDEO_OUT" >&2
