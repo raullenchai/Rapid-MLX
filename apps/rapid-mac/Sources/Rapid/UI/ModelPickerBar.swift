@@ -1,61 +1,24 @@
 import SwiftUI
 
-/// Top bar: model picker + Start/Stop + server status pill. Sits above
-/// the chat surface, à la ChatGPT Desktop where the model selector lives
-/// in the title-bar region.
+/// Chat model selection grouped into Quickstart, Recommended,
+/// All models, and Not fit sections.
 ///
-/// v0.6.9 (picker-v2 / Option B mock) reorganises the menu around
-/// alias names rather than cache state. F-LWT-1 adds the Quickstart
-/// section above Recommended so a user who skipped the Quickstart
-/// card can still one-click install the demo model from the picker:
+/// Rows are limited to installed models plus the selected and serving aliases.
+/// Active downloads remain visible as disabled rows.
+/// Sections without eligible rows are omitted; empty states distinguish
+/// missing downloads from models hidden by the visibility rules.
 ///
-///   ┌── Quickstart ─────────────────────────────────┐
-///   │  qwen3.5-4b-4bit · Recommended first model   │ ← standard starter
-///   │  first install                                │
-///   ├── Recommended for your 18 GB Mac ─────────────┤
-///   │  Recommended qwen3.5-9b-4bit   [amber row     │ ← the RAM tier's
-///   │              when selected]                   │   smart pick
-///   │  Faster      qwen3.5-4b-4bit                  │ ← optional fast/light alt
-///   ├── All models (alphabetical) ──────────────────┤
-///   │  bonsai-1.7b-unpacked                         │
-///   │  deepseek-coder-v2-lite-16b-4bit            ● │ ← green dot = cached
-///   │  gemma-4-12b-4bit                           ● │
-///   │  qwen3.5-122b-8bit                            │
-///   │  …                                            │
-///   └──────────────────────────────────────────────┘
-///
-/// The Quickstart row is deduped from "All models" so the same
-/// alias never appears in both sections.
-///
-/// Recommended section: the RAM tier's smart pick plus an optional
-/// faster/lighter alternative (see ``RAMBucketedDefault`` and
-/// ``MacHardware/recommendedPicks``). The row whose
-/// alias matches the currently selected one paints in the
-/// Start-button amber — same accent as the CTA so the selection
-/// reads as a single colour story rather than two competing
-/// highlights.
-///
-/// All-models section: every alias in a single list — downloaded
-/// models first (each marked with a small green dot at the right
-/// edge, present when the HF cache directory exists), then
-/// alphabetical, so an alias the user already pulled surfaces at the
-/// top instead of being buried mid-alphabet. Kept as ONE list (no
-/// separate "Cached" section, so no alias renders twice). No size
-/// suffix, no fit suffix. Rows are
-/// fully clickable regardless of fit. Chat owns model lifecycle now;
-/// this component only owns selection and model details.
+/// When a settings router is available, the trailing “Browse all models…”
+/// action opens Settings > Model management.
 struct ModelPickerBar: View {
     nonisolated static func liveContextWindow(for alias: String, profile: ServerModelProfile?) -> Int? {
         guard let profile, profile.id.caseInsensitiveCompare(alias) == .orderedSame else { return nil }
         return profile.contextWindow
     }
     @Bindable var server: ServerManager
-    /// v0.5.7: side-car downloader so right-clicking an UN-cached
-    /// row can offer "Download in background" without disrupting the
-    /// active serve. The picker stays the same shape; the extra
-    /// affordance is opt-in via the context menu, mirroring how
-    /// "Delete from disk" landed in v0.5.2.
     @Bindable var downloads: DownloadManager
+    @Environment(\.openWindow) private var openWindow
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
     @Binding var alias: String
     /// Aliases proven to belong to Image, STT, or TTS. Unknown aliases remain
     /// valid for custom text-model compatibility; only explicit media
@@ -278,6 +241,16 @@ struct ModelPickerBar: View {
     /// entirely (forward/backward-compat skew), the row is omitted
     /// so the picker never tries to ``Start`` an alias rapid-mlx
     /// doesn't know about.
+    private var visibleEntries: [ModelEntry] {
+        ModelPickerVisibility.chatPickerEntries(
+            catalog,
+            selectedAlias: alias,
+            servingAlias: server.servingAlias,
+            includeAll: showAllModels,
+            isDownloading: { downloads.isDownloading($0) }
+        )
+    }
+
     private func recommendedPickRows() -> [(pick: RAMBucketedDefault.Pick, entry: ModelEntry, isPrimary: Bool)] {
         // isPrimary comes from the SOURCE position (index 0 = primary), not
         // the post-filter index — otherwise a primary missing from the
@@ -285,10 +258,10 @@ struct ModelPickerBar: View {
         // and mislabel it "Recommended" instead of "Faster".
         let resolved = RAMBucketedDefault.catalogPicks(
             from: hardware.recommendedPicks,
-            catalog: catalog
+            catalog: visibleEntries
         )
         return resolved.compactMap { item in
-            guard let entry = catalog.first(where: { $0.alias == item.pick.alias }) else {
+            guard let entry = visibleEntries.first(where: { $0.alias == item.pick.alias }) else {
                 return nil
             }
             return (item.pick, entry, item.isPrimary)
@@ -451,69 +424,58 @@ struct ModelPickerBar: View {
         )
     }
 
+    static func browseAllModels(router: SettingsRouter, open: () -> Void) {
+        router.route(.openModelManagement, open: open)
+    }
+
     @ViewBuilder
     private var menuContent: some View {
-        if loadingCatalog && catalog.isEmpty {
-            // A plain ``Text`` in a SwiftUI Menu renders as a
-            // disabled, non-selectable row — which is exactly the
-            // affordance we want while the catalog is in flight.
-            // "Type a model name…" stays reachable so a user who
-            // knows what they want isn't blocked on the fetch.
+        let state = ModelPickerVisibility.menuState(
+            catalogIsEmpty: catalog.isEmpty,
+            loading: loadingCatalog,
+            runnableIsEmpty: ModelPickerVisibility.runnableEntries(
+                catalog, selectedAlias: alias, servingAlias: server.servingAlias,
+                isDownloading: { downloads.isDownloading($0) }
+            ).isEmpty,
+            hasVisibleRows: hasVisibleRows
+        )
+        switch state {
+        case .loading:
             Text("Fetching models…")
             Divider()
             Button("Type a model name…") { showCustom = true }
                 .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
-        } else if !hasSelectableRows {
-            // v0.4.29: previously this state was a dead end — a
-            // failed first-load (bootstrapper still installing
-            // the sidecar, transient network blip, manual
-            // runtime-override deletion) left the user with only
-            // "Type alias…" and no way back to a populated picker
-            // short of restarting the app. Retry is a one-click
-            // rescue.
-            //
-            // Keyed on "nothing renders", NOT on ``catalog.isEmpty``.
-            // A catalog can be non-empty and still produce zero rows —
-            // every alias sub-1B with the size filter on, or every one
-            // denylisted, and no Quickstart or recommended alias among
-            // them. Testing emptiness of the SOURCE rather than of the
-            // OUTPUT put that state in the else-branch below, which
-            // renders three empty sections and no way out.
-            // Honest terminal state: the fetch finished and there is
-            // nothing to offer. Non-selectable, and never an
-            // indefinite placeholder posing as a model.
+        case .unavailable:
             Text("No models available")
-            Divider()
-            Button("Refresh catalog") {
-                Task { await refreshCatalog(force: true) }
-            }
-            .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
-            Button("Type a model name…") { showCustom = true }
-                .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
-        } else {
-            // v0.6.9: dropped the separate "Cached" section. Users
-            // skim the picker by alias name, not by cache-state —
-            // the on-disk affordance is now a small green dot at
-            // the right edge of each "All models" row, which keeps
-            // a single alphabetical list and removes the cognitive
-            // overhead of duplicate aliases appearing in two
-            // sections. Cached aliases were rendered once in
-            // "Cached" and (since they were filtered out of "All
-            // models") never in "All models" — meaning a user who
-            // remembered the alias's spelling would scroll right
-            // past the cached copy in the wrong section, then
-            // grumble that the alias was "missing".
-            // No "Refresh catalog" / "Type a model name…" here.
-            // Once the catalog HAS models, this menu has exactly one
-            // job — pick one — and two maintenance actions sitting
-            // above the Quickstart and Recommended sections made the
-            // list read as a settings pane. Both remain in the
-            // no-selectable-rows branch above, where they are not
-            // clutter but the only way out of a failed fetch.
+            recoveryActions
+        case .noDownloadedModels:
+            Text("No downloaded models yet").disabled(true)
+            recoveryActions
+        case .noVisibleModels:
+            Text("No downloaded models to show").disabled(true)
+            recoveryActions
+        case .rows:
             quickstartSection
             recommendedSection
             allAliasesSection
         }
+        if let settingsRouter {
+            Divider()
+            ModelPickerBrowseAllModelsButton(router: settingsRouter) {
+                openWindow(id: "settings")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var recoveryActions: some View {
+        Divider()
+        Button("Refresh catalog") {
+            Task { await refreshCatalog(force: true) }
+        }
+        .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
+        Button("Type a model name…") { showCustom = true }
+            .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
     }
 
     private var modelPicker: some View {
@@ -727,8 +689,7 @@ struct ModelPickerBar: View {
     /// suite catches accidental drift (the section's whole purpose
     /// is to be the bottom-anchored "I just want to try the app"
     /// affordance — the subtitle has to keep that promise).
-    /// Would the populated branch of the menu render anything the user can
-    /// click?
+    /// Include disabled download rows when deciding whether sections are empty.
     ///
     /// Deliberately asks the SAME three helpers the sections themselves
     /// ask — ``quickstartEntry()``, ``recommendedPickRows()`` and the
@@ -736,15 +697,11 @@ struct ModelPickerBar: View {
     /// re-deriving "is there anything here" from the raw catalog. A second,
     /// independent notion of emptiness is exactly how the picker ended up
     /// with a branch that believed it had rows while rendering none.
-    private var hasSelectableRows: Bool {
+    private var hasVisibleRows: Bool {
         let quickstartAlias = quickstartEntry()?.alias
         if quickstartAlias != nil { return true }
         if !recommendedPickRows().isEmpty { return true }
-        let filtered = ModelPickerVisibility.filter(
-            catalog,
-            selectedAlias: alias,
-            includeAll: showAllModels
-        )
+        let filtered = visibleEntries
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
             quickstartAlias: quickstartAlias
@@ -771,7 +728,7 @@ struct ModelPickerBar: View {
     /// can't be Started.
     private func quickstartEntry() -> ModelEntry? {
         let alias = QuickstartCoordinator.baselineChoice(hardware: hardware).alias
-        return catalog.first(where: { $0.alias == alias })
+        return visibleEntries.first(where: { $0.alias == alias })
     }
 
     /// One row for the Quickstart section. Mirrors ``aliasButton``'s
@@ -783,22 +740,24 @@ struct ModelPickerBar: View {
     /// trailing icons / multi-line ``VStack`` labels (see the
     /// ``entryLabel`` comment for the same trap).
     private func quickstartRow(entry: ModelEntry) -> some View {
+        let row = ModelPickerVisibility.rowPresentation(
+            title: ModelPickerBar.quickstartRowTitle(alias: entry.alias),
+            accessibilityLabel: ModelPickerBar.quickstartRowAccessibilityLabel(alias: entry.alias, cached: entry.cached),
+            isDownloading: downloads.isDownloading(entry.alias)
+        )
         return Button {
             onUserSelection(entry.alias)
             alias = entry.alias
         } label: {
             Label(
-                ModelPickerBar.quickstartRowTitle(alias: entry.alias),
+                row.title,
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
         .accessibilityIdentifier("ModelPickerBar.Quickstart.\(entry.alias)")
-        .disabled(deleting == entry.alias)
+        .disabled(deleting == entry.alias || !row.isSelectable)
         .help(ModelPickerBar.quickstartSubtitle)
-        .accessibilityLabel(ModelPickerBar.quickstartRowAccessibilityLabel(
-            alias: entry.alias,
-            cached: entry.cached
-        ))
+        .accessibilityLabel(row.accessibilityLabel)
     }
 
     /// Subtitle pinned to a single short phrase (~30 chars) so the
@@ -920,11 +879,7 @@ struct ModelPickerBar: View {
     /// discoverable where it lives, in Settings → Models.
     @ViewBuilder
     private var allAliasesSection: some View {
-        let filtered = ModelPickerVisibility.filter(
-            catalog,
-            selectedAlias: alias,
-            includeAll: showAllModels
-        )
+        let filtered = visibleEntries
         // F-LWT-1: dedupe — if the Quickstart row is rendered above,
         // strip the Quickstart alias from the All-models list so the
         // same alias doesn't appear in two sections. The
@@ -1024,6 +979,10 @@ struct ModelPickerBar: View {
         // open dropdown, since a SwiftUI ``.popover`` attached to a row
         // inside a ``Menu`` is silently dropped once the dropdown becomes
         // an NSMenu — and doubles as the row's accessibility label.
+        let row = ModelPickerVisibility.rowPresentation(
+            title: title, accessibilityLabel: "\(ModelDisplayName.name(for: entry.alias)). \(tagline)",
+            isDownloading: downloads.isDownloading(entry.alias)
+        )
         return Button {
             onUserSelection(entry.alias)
             alias = entry.alias
@@ -1033,17 +992,17 @@ struct ModelPickerBar: View {
             // section used to be the only one that never said whether
             // the model was already on disk, which is precisely the
             // section where that matters most.
-            Label(title, systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached))
+            Label(row.title, systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached))
         }
         .accessibilityIdentifier("ModelPickerBar.Recommended.\(entry.alias)")
-        .disabled(deleting == entry.alias)
+        .disabled(deleting == entry.alias || !row.isSelectable)
         // The recommendation shows only the curated capability / speed
         // tagline — the single source of truth for a pick. The per-axis
         // standard-benchmark meters live in "All models" (Settings), so
         // the recommendation never shows two conflicting sets of numbers
         // for the same model.
         .help(entry.alias + "\n" + tagline)
-        .accessibilityLabel("\(ModelDisplayName.name(for: entry.alias)). \(tagline)")
+        .accessibilityLabel(row.accessibilityLabel)
     }
 
     /// Pure helper so the menu title is pinnable by tests. " — " em
@@ -1188,18 +1147,27 @@ struct ModelPickerBar: View {
     private func aliasButton(_ entry: ModelEntry, notFit: Bool = false) -> some View {
         let bucket = ModelPickerVisibility.qualityBucket(for: entry.alias)
         let footprint = ModelSizing.estimate(alias: entry.alias)
+        let row = ModelPickerVisibility.rowPresentation(
+            title: ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
+                    + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : ""),
+            accessibilityLabel: ModelPickerBar.aliasRowAccessibilityLabel(
+                alias: entry.alias,
+                cached: entry.cached,
+                bucket: bucket
+            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : ""),
+            isDownloading: downloads.isDownloading(entry.alias)
+        )
         return Button {
             onUserSelection(entry.alias)
             alias = entry.alias
         } label: {
             Label(
-                ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
-                    + (notFit ? String(localized: " · needs ~\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : ""),
+                row.title,
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
         .accessibilityIdentifier("ModelPickerBar.Alias.\(entry.alias)")
-        .disabled(deleting == entry.alias)
+        .disabled(deleting == entry.alias || !row.isSelectable)
         // cycle-10: rows in the .tiny (< 1B) and .small (>= 1B,
         // cycle-11 < 3B) buckets get a richer hover tooltip surfacing
         // the multi-turn-contradiction risk. 3B+ rows fall back to
@@ -1222,11 +1190,7 @@ struct ModelPickerBar: View {
         // cycle-10: VoiceOver also gets the sticker word so blind
         // users get the same warning sighted users see in the suffix.
         .accessibilityLabel(
-            ModelPickerBar.aliasRowAccessibilityLabel(
-                alias: entry.alias,
-                cached: entry.cached,
-                bucket: bucket
-            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: footprint.totalGB * Double(1 << 30))))") : "")
+            row.accessibilityLabel
         )
         // v0.5.2: right-click → "Delete from disk". Cached rows
         // only — uncached models would just trigger "alias not
@@ -2140,6 +2104,18 @@ struct ModelPickerBar: View {
         )
         guard normalized != alias else { return }
         alias = normalized
+    }
+}
+
+struct ModelPickerBrowseAllModelsButton: View {
+    let router: SettingsRouter
+    let open: () -> Void
+
+    var body: some View {
+        Button("Browse all models…") {
+            ModelPickerBar.browseAllModels(router: router, open: open)
+        }
+        .accessibilityIdentifier("ModelPickerBar.BrowseAllModels")
     }
 }
 

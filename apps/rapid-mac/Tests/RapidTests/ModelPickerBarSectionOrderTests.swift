@@ -38,6 +38,63 @@ import Testing
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
 
+    @Test("Unavailable and empty model states share recovery actions")
+    func emptyMenuStatesIncludeRecoveryActions() throws {
+        let src = try modelPickerBarSource()
+        let menuStart = try #require(src.range(of: "private var menuContent: some View {"))
+        let helperStart = try #require(src.range(of: "private var recoveryActions: some View {"))
+        let menu = src[menuStart.upperBound..<helperStart.lowerBound]
+        for state in ["unavailable", "noDownloadedModels", "noVisibleModels"] {
+            let start = try #require(menu.range(of: "case .\(state):"))
+            let nextCase = try #require(menu[start.upperBound...].range(of: "case ."))
+            let branch = String(menu[start.upperBound..<nextCase.lowerBound])
+            #expect(branch.range(
+                of: #"(?m)^\s*recoveryActions\s*$"#,
+                options: .regularExpression
+            ) != nil, "\(state) must render the shared recovery actions")
+        }
+    }
+
+    @Test("Browse all models renders after the state switch, including both downloaded-empty states")
+    func browseButtonFollowsEveryMenuState() throws {
+        let src = try modelPickerBarSource()
+        let menuStart = try #require(src.range(of: "private var menuContent: some View {"))
+        let menuEnd = try #require(src.range(of: "private var modelPicker: some View {"))
+        let menu = src[menuStart.upperBound..<menuEnd.lowerBound]
+        let stateSwitch = try #require(menu.range(of: "switch state {"))
+        let rows = try #require(menu.range(of: "case .rows:"))
+        for message in ["No downloaded models yet", "No downloaded models to show"] {
+            #expect(menu.contains("Text(\"\(message)\").disabled(true)"))
+        }
+        #expect(menu.contains("case .noDownloadedModels:"))
+        #expect(menu.contains("case .noVisibleModels:"))
+        let button = try #require(menu.range(of: "ModelPickerBrowseAllModelsButton("))
+
+        // Balance the switch's braces rather than accepting an occurrence
+        // inside .rows (or any other case). The button must be shared by
+        // loading, unavailable, noDownloadedModels, noVisibleModels, and rows alike.
+        var depth = 1
+        var switchEnd: String.Index?
+        for index in menu.indices where index >= stateSwitch.upperBound {
+            if menu[index] == "{" { depth += 1 }
+            if menu[index] == "}" { depth -= 1 }
+            if depth == 0 {
+                switchEnd = menu.index(after: index)
+                break
+            }
+        }
+        let end = try #require(switchEnd)
+        #expect(rows.lowerBound < end)
+        try #require(button.lowerBound >= end,
+                     "Browse button must render outside and after the entire state switch")
+        // Only router availability may gate the shared trailing entry.
+        let trailingPrefix = String(menu[end..<button.lowerBound])
+        #expect(trailingPrefix.range(
+            of: #"^\s*if let settingsRouter\s*\{\s*Divider\(\)\s*$"#,
+            options: .regularExpression
+        ) != nil)
+    }
+
     @Test("Oversized aliases are separated from runnable All models")
     func partitionsByConservativeFit() {
         let hardware = MacHardware(
@@ -155,13 +212,13 @@ struct ModelPickerBarSectionOrderTests {
     func sectionOrderPinned() throws {
         // The view-builder call order in ``ModelPickerBar.modelPicker``
         // pins the section order. Source-grep the file for the three
-        // section calls inside the loaded-catalog `else` branch and
+        // section calls inside the loaded-catalog `.rows` branch and
         // assert the offsets sort Quickstart < Recommended < All.
         let src = try modelPickerBarSource()
         // Anchor to the populated-catalog branch (skip the "catalog
         // unavailable" branch above).
-        guard let anchor = src.range(of: "// v0.6.9: dropped the separate \"Cached\" section") else {
-            Issue.record("Anchor docstring for populated-catalog branch missing in ModelPickerBar.swift")
+        guard let anchor = src.range(of: "case .rows:") else {
+            Issue.record("Populated-catalog branch missing in ModelPickerBar.swift")
             return
         }
         let scanRegion = src[anchor.lowerBound...]
