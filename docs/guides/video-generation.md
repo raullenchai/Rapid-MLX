@@ -320,7 +320,7 @@ with either frame field. Reference limits are:
   At least one image or video is required.
 - Images: JPEG, PNG, or WebP, up to 20 MB and 16 megapixels, with aspect ratios
   from 1:4 to 4:1.
-- Videos: MP4, MOV, or WebM, up to 100 MB and 3840 × 2160 source pixels.
+- Videos: MP4, MOV, WebM, or Matroska (MKV), up to 100 MB and 3840 × 2160 source pixels.
 - Audio: WAV, MP3, M4A, AAC, FLAC, or OGG, up to 20 MB.
 - Each video and standalone audio clip must be 2–15 seconds. Video durations
   total at most 15 seconds; standalone audio durations independently total at

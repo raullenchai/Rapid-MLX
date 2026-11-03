@@ -1074,6 +1074,11 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
                 raise HTTPException(
                     status_code=400, detail=f"{field}: video exceeds 3840x2160 pixels"
                 )
+            if width > 4 * height or height > 4 * width:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field}: video aspect ratio must be within 1:4 and 4:1",
+                )
         elif (
             not videos
             and audios

@@ -955,9 +955,14 @@ def test_reference_http_total_duration(reference_app, monkeypatch, kind):
 
 
 @pytest.mark.parametrize(
-    "kind,formats", [("video", "mov,mp4,m4a,3gp,3g2,mj2"), ("audio", "wav")]
+    "kind,formats,extension",
+    [
+        ("video", "mov,mp4,m4a,3gp,3g2,mj2", "mp4"),
+        ("video", "matroska,webm", "webm"),
+        ("audio", "wav", "wav"),
+    ],
 )
-def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats):
+def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats, extension):
     from fastapi import HTTPException
 
     from rapid_mlx.routes import video
@@ -974,7 +979,11 @@ def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats):
         return SimpleNamespace(stdout=json.dumps(details))
 
     monkeypatch.setattr(video.subprocess, "run", probe)
-    assert video._probe_packed_reference(tmp_path / "file", "references[0]")[0] == kind
+    assert video._probe_packed_reference(tmp_path / "file", "references[0]") == (
+        kind,
+        extension,
+        2.0,
+    )
     for duration in ("1.9", "15.1", "nan"):
         details["format"]["duration"] = duration
         with pytest.raises(HTTPException) as exc:
@@ -1025,6 +1034,43 @@ def test_reference_ffprobe_video_resolution(
             video._probe_packed_reference(tmp_path / "file", "references[0]")
         assert exc.value.status_code == 400
         assert exc.value.detail == "references[0]: video exceeds 3840x2160 pixels"
+
+
+@pytest.mark.parametrize(
+    "width,height,accepted",
+    [(1920, 480, True), (1921, 480, False), (480, 1921, False)],
+)
+def test_reference_ffprobe_video_aspect_ratio(
+    monkeypatch, tmp_path, width, height, accepted
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    details = dict(
+        streams=[dict(codec_type="video", width=width, height=height)],
+        format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
+    )
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(details)),
+    )
+    if accepted:
+        assert video._probe_packed_reference(tmp_path / "file", "references[0]") == (
+            "video",
+            "mp4",
+            2.0,
+        )
+    else:
+        with pytest.raises(HTTPException) as exc:
+            video._probe_packed_reference(tmp_path / "file", "references[0]")
+        assert exc.value.status_code == 400
+        assert (
+            exc.value.detail
+            == "references[0]: video aspect ratio must be within 1:4 and 4:1"
+        )
 
 
 @pytest.mark.parametrize("initial_mode", ["ref2va", "fl2va"])
