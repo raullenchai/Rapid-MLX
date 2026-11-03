@@ -1066,7 +1066,11 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
             extension = "webm" if formats & {"matroska", "webm"} else "mp4"
             stream = videos[0]
             width, height = int(stream["width"]), int(stream["height"])
-            if min(width, height) <= 0 or width * height > 3840 * 2160:
+            if (
+                min(width, height) <= 0
+                or max(width, height) > 3840
+                or min(width, height) > 2160
+            ):
                 raise HTTPException(
                     status_code=400, detail=f"{field}: video exceeds 3840x2160 pixels"
                 )

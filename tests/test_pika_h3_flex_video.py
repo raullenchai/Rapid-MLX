@@ -986,6 +986,47 @@ def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats):
     assert exc.value.status_code == 503
 
 
+@pytest.mark.parametrize(
+    "width,height,accepted",
+    [
+        (3840, 2160, True),
+        (2160, 3840, True),
+        (7680, 1080, False),
+        (1080, 7680, False),
+        (1920, 4320, False),
+        (4096, 2160, False),
+        (2400, 2400, False),
+    ],
+)
+def test_reference_ffprobe_video_resolution(
+    monkeypatch, tmp_path, width, height, accepted
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    details = dict(
+        streams=[dict(codec_type="video", width=width, height=height)],
+        format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
+    )
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(details)),
+    )
+    if accepted:
+        assert (
+            video._probe_packed_reference(tmp_path / "file", "references[0]")[0]
+            == "video"
+        )
+    else:
+        with pytest.raises(HTTPException) as exc:
+            video._probe_packed_reference(tmp_path / "file", "references[0]")
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "references[0]: video exceeds 3840x2160 pixels"
+
+
 @pytest.mark.parametrize("initial_mode", ["ref2va", "fl2va"])
 def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
     from rapid_mlx import _mirror
