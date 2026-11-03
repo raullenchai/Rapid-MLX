@@ -1711,7 +1711,7 @@ def _install_mtp_vendored(
     _derived_controller_key = derive_controller_key(mtp_model)
 
     _orig_step = gb._step
-    _head_captures = {}
+    _head_captures: dict[Any, Any] = {}
     _close_head_capture = None
 
     # Per-uid MTP state. Each entry:
