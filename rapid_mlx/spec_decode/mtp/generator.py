@@ -1113,7 +1113,8 @@ def mtp_generate_step(
         source token; it never feeds the token being predicted.
         """
 
-        if accepted_count <= 0:
+        # Rebuild mode settles shifted target-hidden pairs via head_pending.
+        if rebuild_head_history or accepted_count <= 0:
             return
         started = time.perf_counter()
         source_tokens = mx.concatenate(
@@ -1593,6 +1594,8 @@ def mtp_generate_step(
                         head_pending = (hidden[:, -1:, :], main_tok)
                         _flush_head()
                     if plan == "lookup":
+                        if rebuild_head_history:
+                            head_seed = hidden[:, -1:, :]
                         pending_drafts = _lookup_drafts(plan_arg)
                         pending_is_prompt_lookup = True
                     elif plan == "mtp":
@@ -1683,8 +1686,9 @@ def mtp_generate_step(
                     capture_processor_states=True,
                 )
             except BaseException:
-                if rebuild_head_history and not pending_is_prompt_lookup:
-                    _trim_head(k_len)
+                if rebuild_head_history:
+                    if not pending_is_prompt_lookup:
+                        _trim_head(k_len)
                     head_pending = (head_seed, y)
                     _flush_head()
                 _restore_processor_state(processor_boundary)
@@ -1782,8 +1786,9 @@ def mtp_generate_step(
                     _rollback_verify_round(
                         k_len - accepted_count, verify_size=k_len + 1
                     )
-                if rebuild_head_history and not pending_is_prompt_lookup:
-                    _trim_head(k_len)
+                if rebuild_head_history:
+                    if not pending_is_prompt_lookup:
+                        _trim_head(k_len)
                     head_pending = (head_seed, y)
                     _flush_head()
                 _restore_processor_state(processor_boundary)
@@ -1913,11 +1918,13 @@ def mtp_generate_step(
                     round_done = True
                     break
 
-            if rebuild_head_history and not pending_is_prompt_lookup:
+            if rebuild_head_history:
                 # Remove every speculative row, even on all-accept/terminal
-                # rounds. H[i] predicted d[i+1]; head_seed predicted y.
+                # rounds. Lookup created none. H[i] predicted d[i+1];
+                # head_seed predicted y.
                 kept = len(emissions)
-                _trim_head(k_len)
+                if not pending_is_prompt_lookup:
+                    _trim_head(k_len)
                 head_pending = (
                     mx.concatenate([head_seed, hidden[:, :kept, :]], axis=1),
                     mx.concatenate([y, drafts_arr[:kept]]),
@@ -2021,6 +2028,8 @@ def mtp_generate_step(
                 # next chain (a park decision skips drafter cost).
                 plan, plan_arg = _plan_next(_next_depth())
                 if plan == "lookup":
+                    if rebuild_head_history:
+                        head_seed = last_committed_hidden
                     pending_drafts = _lookup_drafts(plan_arg)
                     pending_is_prompt_lookup = True
                 elif plan == "mtp":
@@ -2028,9 +2037,7 @@ def mtp_generate_step(
                     # advance by one extra position for the just-accepted
                     # LAST draft so the head's attention sees it before
                     # predicting the next round's first draft.
-                    if accepted_count == k_len and (
-                        not rebuild_head_history or pending_is_prompt_lookup
-                    ):
+                    if accepted_count == k_len and not rebuild_head_history:
                         align_h = hidden[:, accepted_count - 1 : accepted_count, :]
                         align_tok = draft_toks_arr[accepted_count - 1]
                         cache_commit = (align_h, align_tok)

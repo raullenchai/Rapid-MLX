@@ -99,6 +99,8 @@ def _harness(legacy=False, fused=False):
         "_step_mtp_chain",
         "_draft_chain_timed",
         "_prefill",
+        "_lookup_drafts",
+        "_sync_prompt_lookup_history",
     }
     funcs = [
         n for n in GENERATOR.body if isinstance(n, ast.FunctionDef) and n.name in names
@@ -113,14 +115,13 @@ def _harness(legacy=False, fused=False):
     return env, cache, quantized, target_drops
 
 
-def _settle_verify(env, accepted, emitted=None):
+def _settle_verify(env, accepted, emitted=None, *, lookup=False):
     """Execute the actual post-verify rebuild block, including terminal caps."""
     block = next(
         n
         for n in ast.walk(GENERATOR)
         if isinstance(n, ast.If)
-        and ast.unparse(n.test)
-        == "rebuild_head_history and (not pending_is_prompt_lookup)"
+        and ast.unparse(n.test) == "rebuild_head_history"
         and any(
             isinstance(c, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "kept" for t in c.targets)
@@ -128,7 +129,7 @@ def _settle_verify(env, accepted, emitted=None):
         )
     )
     env.update(
-        pending_is_prompt_lookup=False,
+        pending_is_prompt_lookup=lookup,
         k_len=3,
         accepted_count=accepted,
         emissions=[None] * (accepted if emitted is None else emitted),
@@ -139,9 +140,11 @@ def _settle_verify(env, accepted, emitted=None):
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), "exec"), env)
 
 
-def _generation_harness(max_tokens, depths, *, bootstrap=False, prefetch=False):
+def _generation_harness(
+    max_tokens, depths, *, bootstrap=False, prefetch=False, legacy=False
+):
     """Run the real park/verify loop with the existing CPU head and target +1."""
-    env, cache, _, _ = _harness()
+    env, cache, _, _ = _harness(legacy=legacy)
     picks = iter(depths)
     env["mx"].__dict__.update(
         int32=np.int32,
@@ -172,7 +175,9 @@ def _generation_harness(max_tokens, depths, *, bootstrap=False, prefetch=False):
         _remember_generated=lambda tok: None,
         _record_round=lambda *args, **kwargs: None,
         _gate_cost=lambda ms, rows: ms,
-        _copy_draft_gate=SimpleNamespace(observe=lambda **kwargs: None),
+        _copy_draft_gate=SimpleNamespace(
+            observe=lambda **kwargs: None, allow=lambda: True
+        ),
         _uniform=lambda **kwargs: np.zeros(kwargs["shape"]),
         accept_counter=SimpleNamespace(
             record_attempt=lambda: None,
@@ -317,6 +322,142 @@ def test_park_transitions_append_each_committed_head_pair_once(prefetch, parking
     assert trimmed == [(110.0, 12), (150.0, 16)]
 
 
+@pytest.mark.parametrize("accepted", [0, 1, 3])
+@pytest.mark.parametrize("prior_mtp", [False, True])
+@pytest.mark.parametrize("next_park", [False, True])
+def test_lookup_transitions_rebuild_true_committed_pairs(
+    accepted, prior_mtp, next_park
+):
+    env, cache = _generation_harness(14, [])
+    lookup_at = 3 if prior_mtp else 1
+    lookup_end = lookup_at + accepted + 1
+    env["_next_depth"] = lambda: 0 if next_park and env["ntoks"] == lookup_end else 1
+
+    def proposal():
+        if env["ntoks"] != lookup_at:
+            return None
+        drafts = list(range(11 + lookup_at, 14 + lookup_at))
+        if accepted < 3:
+            drafts[accepted] = 50
+        return drafts, 2
+
+    env["_lookup_proposal"] = proposal
+    forwards, trimmed, boundaries, parks = [], [], [], []
+    forward = env["model"].mtp_forward
+    trim = cache.trim
+    chain = env["_draft_chain_timed"]
+    backbone = env["_step_backbone"]
+
+    def counted_forward(hidden, ids, caches, **kwargs):
+        forwards.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        return forward(hidden, ids, caches, **kwargs)
+
+    def counted_trim(n):
+        if n:
+            trimmed.extend(cache.rows[-n:])
+        trim(n)
+
+    def checked_chain(*args, **kwargs):
+        pending = env["head_pending"]
+        deferred = (
+            []
+            if pending is None
+            else list(zip(pending[0][0, :, 0].tolist(), pending[1].tolist()))
+        )
+        assert cache.offset + len(deferred) == env["ntoks"] - 1
+        assert cache.rows + deferred == [
+            (10.0 * (t - 1), t) for t in range(11, 10 + env["ntoks"])
+        ]
+        assert kwargs.get("cache_commit") is None
+        boundaries.append(env["ntoks"])
+        return chain(*args, **kwargs)
+
+    def observed_backbone(ids, *args, **kwargs):
+        if ids.size == 1:
+            parks.append(env["ntoks"])
+        return backbone(ids, *args, **kwargs)
+
+    env["model"].mtp_forward = counted_forward
+    cache.trim = counted_trim
+    env["_draft_chain_timed"] = checked_chain
+    env["_step_backbone"] = observed_backbone
+    assert [tok for tok, _, _ in env["run"]()] == list(range(11, 25))
+    # Park depth is selected before the parked token advances ntoks, so the
+    # zero-depth choice also schedules a second park before MTP resumes.
+    assert lookup_end + 2 * int(next_park) in boundaries
+    assert (lookup_end in parks) == next_park
+    assert (1 in boundaries) == prior_mtp
+    expected = [(10.0 * (t - 1), t) for t in range(11, 25)]
+    assert cache.rows == expected
+    # Removing provisional rows leaves each committed pair exactly once.
+    assert Counter(forwards) == Counter(expected) + Counter(trimmed)
+
+
+@pytest.mark.parametrize(
+    "accepted,expected",
+    [
+        (0, [(110, 12), (120, 13), (130, 14), (140, 15), (150, 16)]),
+        (1, [(110, 11), (120, 13), (130, 14), (140, 15), (150, 16), (160, 17)]),
+        (
+            3,
+            [
+                (110, 11),
+                (120, 12),
+                (130, 13),
+                (130, 14),
+                (140, 15),
+                (150, 16),
+                (160, 17),
+            ],
+        ),
+    ],
+)
+def test_legacy_lookup_to_mtp_retains_original_history(accepted, expected):
+    env, cache = _generation_harness(8, [], legacy=True)
+    env["_next_depth"] = lambda: 1
+
+    def proposal():
+        if env["ntoks"] != 1:
+            return None
+        drafts = [12, 13, 14]
+        if accepted < 3:
+            drafts[accepted] = 50
+        return drafts, 2
+
+    env["_lookup_proposal"] = proposal
+    assert [tok for tok, _, _ in env["run"]()] == list(range(11, 19))
+    assert cache.rows == expected
+    assert env["head_seed"] is None
+    assert env["head_pending"] is None
+
+
+@pytest.mark.parametrize("accepted", [0, 1, 3])
+@pytest.mark.parametrize("cap", [2, 3, 4, 5])
+def test_lookup_terminal_flush_in_generation_loop(accepted, cap):
+    env, cache = _generation_harness(cap, [])
+    env["_next_depth"] = lambda: 1
+    drafts = [12, 13, 14]
+    if accepted < 3:
+        drafts[accepted] = 50
+    env["_lookup_proposal"] = lambda: (drafts, 2) if env["ntoks"] == 1 else None
+    tokens = [tok for tok, _, _ in env["run"]()]
+    assert tokens == list(range(11, 11 + cap))
+    assert cache.rows == [(10.0 * (t - 1), t) for t in tokens]
+    assert env["head_pending"] is None
+
+
+@pytest.mark.parametrize("eos", [12, 13, 14])
+def test_lookup_eos_flushes_only_committed_prefix(eos):
+    env, cache = _generation_harness(10, [])
+    env["_next_depth"] = lambda: 1
+    env["_lookup_proposal"] = lambda: ([12, 13, 14], 2)
+    env["stop_tokens"] = {eos}
+    tokens = [tok for tok, _, _ in env["run"]()]
+    assert tokens == list(range(11, eos + 1))
+    assert cache.rows == [(10.0 * (t - 1), t) for t in tokens]
+    assert env["head_pending"] is None
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("accepted", [0, 1, 2, 3])
 @pytest.mark.parametrize("fused", [False, True])
@@ -364,15 +505,19 @@ def test_committed_head_rows(legacy, accepted, fused):
 
 
 @pytest.mark.parametrize("accepted,emitted", [(0, 0), (1, 1), (2, 1), (3, 2), (3, 3)])
-def test_rebuild_flushes_terminal_or_park_handoff(accepted, emitted):
+@pytest.mark.parametrize("lookup", [False, True])
+def test_rebuild_flushes_terminal_or_park_handoff(accepted, emitted, lookup):
     env, cache, quantized, _ = _harness()
-    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
-    _settle_verify(env, accepted, emitted)
+    if lookup:
+        env["head_seed"] = np.array([[[100.0]]])
+    else:
+        env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, accepted, emitted, lookup=lookup)
     assert cache.offset == 0
     env["_flush_head"]()
     assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 12 + emitted)]
     assert env["head_pending"] is None
-    assert len(quantized) == 4
+    assert len(quantized) == (1 if lookup else 4)
 
 
 def test_rebuild_park_and_resume():
@@ -399,10 +544,16 @@ def test_rebuild_park_and_resume():
     assert cache.rows[:7] == [(float(10 * (t - 1)), t) for t in range(11, 18)]
 
 
-def test_failed_chain_restores_deferred_rows():
+@pytest.mark.parametrize("lookup", [False, True])
+def test_failed_chain_restores_deferred_rows(lookup):
     env, cache, _, _ = _harness()
     assert "_draft_chain_timed" in env
-    pending = (np.array([[[100.0]]]), np.array([11]))
+    count = 4 if lookup else 1
+    expected = [(float(10 * (t - 1)), t) for t in range(11, 11 + count)]
+    pending = (
+        np.array([[[h] for h, _ in expected]]),
+        np.array([t for _, t in expected]),
+    )
     env["head_pending"] = pending
     step = env["_step_mtp"]
     calls = 0
@@ -417,7 +568,7 @@ def test_failed_chain_restores_deferred_rows():
     env["_step_mtp"] = fail_second
     with pytest.raises(RuntimeError, match="injected draft fault"):
         env["_draft_chain_timed"](np.array([[[110.0]]]), np.array([12]), None, 3)
-    assert cache.rows == [(100.0, 11)]
+    assert cache.rows == expected
     assert env["head_pending"] is None
 
 
@@ -438,10 +589,14 @@ def test_prefill_shift_and_first_chain():
 
 
 @pytest.mark.parametrize("accepted", [0, 1, 2, 3])
-def test_terminal_bonus_or_residual_is_committed(accepted):
+@pytest.mark.parametrize("lookup", [False, True])
+def test_terminal_bonus_or_residual_is_committed(accepted, lookup):
     env, cache, _, _ = _harness()
-    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
-    _settle_verify(env, accepted)
+    if lookup:
+        env["head_seed"] = np.array([[[100.0]]])
+    else:
+        env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, accepted, lookup=lookup)
     env.update(
         round_done=True,
         eos_cut=False,
@@ -459,9 +614,14 @@ def test_terminal_bonus_or_residual_is_committed(accepted):
 
 
 @pytest.mark.parametrize("sync_failure", [False, True])
-def test_verify_exception_keeps_true_y(sync_failure):
+@pytest.mark.parametrize("lookup", [False, True])
+def test_verify_exception_keeps_true_y(sync_failure, lookup):
     env, cache, _, drops = _harness()
-    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    cache.rows = [(90.0, 10)]
+    if lookup:
+        env["head_seed"] = np.array([[[100.0]]])
+    else:
+        env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
     handlers = [
         n
         for n in ast.walk(GENERATOR)
@@ -486,7 +646,7 @@ def test_verify_exception_keeps_true_y(sync_failure):
         y=np.array([11]),
         k_len=3,
         accepted_count=0,
-        pending_is_prompt_lookup=False,
+        pending_is_prompt_lookup=lookup,
         processor_boundary=(),
     )
     fault = ast.parse('raise RuntimeError("injected verify fault")').body
@@ -500,7 +660,7 @@ def test_verify_exception_keeps_true_y(sync_failure):
             ),
             env,
         )
-    assert cache.rows == [(100.0, 11)]
+    assert cache.rows == [(90.0, 10), (100.0, 11)]
     assert bool(drops) == sync_failure
 
 
