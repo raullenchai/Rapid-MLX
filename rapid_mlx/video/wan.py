@@ -10,6 +10,8 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+from .cancel import cleanup_on_cancel
+
 logger = logging.getLogger(__name__)
 
 WAN_REVISIONS: dict[str, str] = {
@@ -231,6 +233,7 @@ class WanVideoEngine:
                 "input_reference"
             )
 
+    @cleanup_on_cancel
     def generate(
         self,
         *,
@@ -244,6 +247,7 @@ class WanVideoEngine:
         negative_prompt: str | None = None,
         guidance_scale: float | None = None,
         on_loaded: Callable[[], None] | None = None,
+        cancel_token=None,
     ) -> None:
         self.validate_request(
             width=width, height=height, num_frames=num_frames, image=image
@@ -285,6 +289,7 @@ class WanVideoEngine:
             wan_generator,
             generation_kwargs,
             on_loaded=on_loaded,
+            **({"cancel_token": cancel_token} if cancel_token is not None else {}),
         )
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise WanBackendError("Wan generation completed without an MP4 output")

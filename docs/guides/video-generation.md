@@ -10,10 +10,33 @@ rapid-mlx serve ltx-2.3-mlx-q4
 
 The server prints the local endpoint. Submit a video request as shown below.
 
-Rapid-MLX exposes LTX-2.3, LTX-2.5, CogVideoX-Fun and Wan through the asynchronous
-OpenAI-compatible Videos API.
+Rapid-MLX exposes LTX-2.3, LTX-2.5, MiniMax-H3, Pika H3 Flex, CogVideoX-Fun and Wan
+through the asynchronous OpenAI-compatible Videos API.
 
 The video runtime ships with the official installer and requires Python 3.12 or newer.
+
+## Cancel a video job
+
+`GET /v1/videos/capabilities` advertises
+`"cancellation": {"queued": true, "in_progress": true}`.
+`DELETE /v1/videos/{id}` on a queued job returns 200 with a cancellation error
+and removes the record; subsequent requests return 404. On a running job it
+returns 202 with `cancel_requested: true`. Cancellation is cooperative: the job
+ends with status `failed` and error code `video_generation_cancelled`. Its record
+remains available until deleted again. If successful completion wins the race,
+the job completes and clears `cancel_requested`.
+
+MiniMax-H3 (including Turbo), Pika H3 Flex, LTX-2.3, Wan and CogVideoX-Fun
+check cancellation between denoise steps. LTX-2.5 terminates its generation
+process. Lazy Ref2VA downloads check at chunk or file boundaries; a blocking
+network read must return before a chunk check can run. Completed cached files
+remain usable and interrupted transfers can resume.
+
+During a lazy Ref2VA download, job status stays `in_progress`, the optional
+`phase` field is `"downloading"`, and integer `progress` advances monotonically
+from 1 to 20 in proportion to the missing asset bytes. `phase` is omitted after
+the download, including on failure or cancellation. Completed generation reports
+progress 100. The public status values do not change.
 
 ## Keep completed videos across restarts
 

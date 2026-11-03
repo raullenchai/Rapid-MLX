@@ -1397,3 +1397,24 @@ def test_print_pull_summary_was_cached_branch(
     assert "Already cached" in out_str
     assert "Downloaded" not in out_str
     assert "verified (nothing to download)" in out_str
+
+
+@pytest.mark.parametrize("with_ref2va", [False, True])
+def test_flex_summary_sizes_only_requested_payloads(tmp_path, capsys, with_ref2va):
+    from rapid_mlx.video import minimax_h3, pika_h3_flex
+
+    payloads = minimax_h3.video_payloads(pika_h3_flex.REPO)
+    if with_ref2va:
+        payloads = (*payloads, *pika_h3_flex.REF2VA_PAYLOADS)
+    for repo, _, files in payloads:
+        root = tmp_path / repo.rsplit("/", 1)[-1]
+        for name in files:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"needed")
+        (root / "unrequested.bin").write_bytes(b"extra" * 1000)
+        cli._print_pull_summary(
+            repo, root, 0, was_cached=True, allow_patterns=list(files)
+        )
+        output = capsys.readouterr().out
+        assert f"{cli._format_bytes(6 * len(files))} verified" in output

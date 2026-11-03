@@ -1030,3 +1030,49 @@ def test_packaged_digest_rejects_corrupt_hub_fallback(tmp_path, monkeypatch):
     ):
         _mirror.download_with_mirror_fallback(REPO, cache_dir=tmp_path, revision=PIN)
     assert not (_snap(tmp_path) / "model.safetensors").exists()
+
+
+@pytest.mark.parametrize("error_type", [ValueError, OSError, RuntimeError])
+def test_byte_callback_failure_keeps_only_resumable_sidecar(
+    tmp_path, monkeypatch, error_type
+):
+    monkeypatch.setattr(_mirror, "_CHUNK_BYTES", 8)
+    seen = []
+
+    def stop(delta):
+        seen.append(delta)
+        if delta > 0:
+            raise error_type("stop transfer")
+
+    siblings = [_sibling("model.safetensors", WEIGHTS, lfs=True)]
+    with pytest.raises(error_type, match="stop transfer"):
+        _run(
+            tmp_path,
+            monkeypatch,
+            siblings,
+            {"model.safetensors": WEIGHTS},
+            on_bytes=stop,
+        )
+    assert 8 in seen
+    assert not (_snap(tmp_path) / "model.safetensors").exists()
+    repo = tmp_path / "models--org--pinned-image"
+    parts = list((repo / ".rapid-mlx-mirror").glob("*.part"))
+    assert len(parts) == 1 and parts[0].read_bytes() == WEIGHTS[:8]
+    assert not list((repo / "blobs").glob("*"))
+    # A subsequent attempt must validate or replace the prefix before publishing.
+    ok, _, hf_calls, _ = _run(
+        tmp_path, monkeypatch, siblings, {"model.safetensors": WEIGHTS}
+    )
+    assert ok and not hf_calls
+    assert (_snap(tmp_path) / "model.safetensors").read_bytes() == WEIGHTS
+    assert not parts[0].exists()
+
+
+def test_byte_callback_tracks_rollback_before_fallback():
+    deltas = []
+    tracker = _mirror._ProgressTracker(total=100, on_bytes=deltas.append)
+    tracker.add(40)
+    tracker.subtract(40)
+    tracker.add(100)
+    assert deltas == [40, -40, 100]
+    assert tracker._done == sum(deltas) == 100

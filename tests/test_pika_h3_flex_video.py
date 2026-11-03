@@ -2153,3 +2153,55 @@ def test_adapter_download_is_mode_specific(monkeypatch, tmp_path, mode):
         assert not any(name.startswith(other) for name in calls[0][1]["allow_patterns"])
     finally:
         engine.stop()
+
+
+@pytest.mark.parametrize("field", ["input_reference", "last_frame", "references"])
+def test_garbage_upload_errors_are_path_free(monkeypatch, reference_app, field):
+    client, _, _ = reference_app
+    if field == "references":
+        from rapid_mlx.routes import video
+
+        # Exercise the probe failure path without depending on a host ffprobe.
+        def reject(*args, **kwargs):
+            raise video.subprocess.CalledProcessError(1, ["ffprobe"])
+
+        monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+        monkeypatch.setattr(video.subprocess, "run", reject)
+    response = client.post(
+        "/v1/videos",
+        data={
+            "prompt": "test",
+            "model": "pika-h3-flex",
+            "seconds": "5",
+            "size": "832x480",
+        },
+        files=[(field, ("reference.img", b"not an image", "image/png"))],
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert field in detail
+    assert "/" not in detail
+    assert "reference.img" not in detail
+    assert "tmp" not in detail
+
+
+def test_ref2va_progress_counts_only_missing_assets(monkeypatch, ref2va_cache):
+    from rapid_mlx import _mirror
+
+    repo, rev, files = flex.REF2VA_PAYLOADS[0]
+    ref2va_cache.update((repo, rev, name) for name in files)
+    expected = sum(flex.REF2VA_FILE_SIZES[name] for name in flex.REF2VA_PAYLOADS[1][2])
+    events = []
+    requests = []
+
+    def download(repo, rev, *, allow_patterns, on_bytes, **kwargs):
+        requests.extend(allow_patterns)
+        for name in allow_patterns:
+            on_bytes(flex.REF2VA_FILE_SIZES[name])
+
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    flex.ensure_ref2va_assets(on_progress=lambda *args: events.append(args))
+    assert requests == list(flex.REF2VA_PAYLOADS[1][2])
+    assert events[0] == ("downloading", 0, expected)
+    assert events[-2] == ("downloading", expected, expected)
+    assert events[-1] == (None, 0, 0)

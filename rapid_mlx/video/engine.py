@@ -19,6 +19,8 @@ from concurrent.futures import Future, InvalidStateError
 from pathlib import Path
 from typing import Any
 
+from .cancel import cleanup_on_cancel
+
 logger = logging.getLogger(__name__)
 _COGVIDEOX_TOKENIZER_REPO = "alibaba-pai/CogVideoX-Fun-V1.5-5b-InP"
 
@@ -166,6 +168,7 @@ class VideoGenerationEngine:
             future.add_done_callback(cleanup_result)
             raise
 
+    @cleanup_on_cancel
     def generate_sync(self, *, output_path: Path, **kwargs) -> None:
         """Generate from a non-MLX caller thread using the persistent worker."""
         kwargs.setdefault("negative_prompt", "")
@@ -174,7 +177,12 @@ class VideoGenerationEngine:
         on_loaded = kwargs.pop("on_loaded", None)
 
         def generate_after_load():
+            token = kwargs.get("cancel_token")
+            if token is not None:
+                token.check()
             self._load_sync()
+            if token is not None:
+                token.check()
             if on_loaded is not None:
                 on_loaded()
             return self._generate_sync(**kwargs)
@@ -260,11 +268,17 @@ class VideoGenerationEngine:
         self._model_path = model_path
         return self._pipeline
 
+    @cleanup_on_cancel
     def _generate_sync(self, **kwargs) -> Path:
         import mlx.core as mx
         import numpy as np
 
+        cancel_token = kwargs.pop("cancel_token", None)
+        if cancel_token is not None:
+            cancel_token.check()
         pipe = self._load_sync()
+        if cancel_token is not None:
+            cancel_token.check()
         height = kwargs.pop("height")
         width = kwargs.pop("width")
         frames = kwargs.pop("frames")
@@ -277,9 +291,14 @@ class VideoGenerationEngine:
             video=video,
             mask=mask,
             num_inference_steps=steps,
+            **(
+                {"cancel_check": cancel_token.check} if cancel_token is not None else {}
+            ),
             **kwargs,
         )
         mx.eval(output)
+        if cancel_token is not None:
+            cancel_token.check()
         pixels = (
             (np.asarray(output[0].astype(mx.float32)) * 255.0)
             .clip(0, 255)
@@ -304,6 +323,8 @@ class VideoGenerationEngine:
         try:
             from .encoding import encode_rgb_video
 
+            if cancel_token is not None:
+                cancel_token.check()
             encode_rgb_video(pixels, output_path, fps)
         except Exception:
             output_path.unlink(missing_ok=True)

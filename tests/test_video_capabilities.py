@@ -78,6 +78,7 @@ async def test_ltx_capabilities_expose_combined_workload_budget(monkeypatch) -> 
 
     body = await video.video_capabilities()
 
+    assert body["cancellation"] == {"queued": True, "in_progress": True}
     assert body["object"] == "video.capabilities"
     assert body["model"] == engine.model_name
     assert body["modality"] == "video-gen"

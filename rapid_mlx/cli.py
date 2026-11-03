@@ -12009,6 +12009,7 @@ def _print_pull_summary(
     elapsed: float,
     *,
     was_cached: bool | None = None,
+    allow_patterns: list[str] | None = None,
 ) -> None:
     """Emit the one-line ``Downloaded ... — <size> in <duration>`` summary.
 
@@ -12027,7 +12028,25 @@ def _print_pull_summary(
     # A filtered pull fetched one folder, but the snapshot root may also
     # hold quant folders left by earlier pulls of a sibling alias. Sizing
     # the root would report those as part of THIS download.
-    size = _model_snapshot_size_bytes(repo_id, snapshot_dir)
+    if allow_patterns is None:
+        size = _model_snapshot_size_bytes(repo_id, snapshot_dir)
+    else:
+        import fnmatch
+        from pathlib import Path
+
+        try:
+            root = Path(snapshot_dir)
+            size = sum(
+                path.stat().st_size
+                for path in root.rglob("*")
+                if path.is_file()
+                and any(
+                    fnmatch.fnmatchcase(path.relative_to(root).as_posix(), pattern)
+                    for pattern in allow_patterns
+                )
+            )
+        except OSError:
+            size = None
     size_text = _format_bytes(size) if size is not None else "unknown size"
     # "Already cached" only on a proven no-transfer (``was_cached is True``);
     # ``None`` (unknown) falls through to "Downloaded" rather than a false
@@ -12401,6 +12420,11 @@ def _pull_repository(
             snapshot_dir,
             time.monotonic() - t0,
             was_cached=_was_cached,
+            **(
+                {"allow_patterns": allow_patterns_override}
+                if allow_patterns_override is not None
+                else {}
+            ),
         )
         return
     # Mirror returned False — fall through to plain snapshot_download.
@@ -12569,6 +12593,11 @@ def _pull_repository(
         path,
         time.monotonic() - t0,
         was_cached=_was_cached,
+        **(
+            {"allow_patterns": allow_patterns_override}
+            if allow_patterns_override is not None
+            else {}
+        ),
     )
 
 

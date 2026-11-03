@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .cancel import VideoGenerationCancelled
+
 logger = logging.getLogger(__name__)
 REPO = "MiniMaxAI/MiniMax-H3"
 REVISION = "b3c7290e66afdf293bef3b9077b7a266ef421f34"
@@ -250,6 +252,8 @@ class MiniMaxH3VideoEngine:
         last_image: Path | None = None,
         references: list[tuple[str, Path]] | None = None,
         on_loaded=None,
+        cancel_token=None,
+        on_progress=None,
     ) -> None:
         self.validate_request(
             width=width, height=height, num_frames=num_frames, image=image
@@ -274,12 +278,17 @@ class MiniMaxH3VideoEngine:
         self._needed_partition = "ref2va" if references else "fl2va"
         self._reference_canvas = (height, width)
 
+        self._cancel_token = cancel_token
+        self._on_progress = on_progress
+
         def progress(*_args):
+            if cancel_token is not None:
+                cancel_token.check()
             if self._stopping.is_set():
                 raise MiniMaxH3BackendError("MiniMax-H3 generation cancelled")
 
-        progress()
         try:
+            progress()
             from mlx_vlm.generate import (
                 VideoGenerationRequest,
                 generate_video,
@@ -303,6 +312,7 @@ class MiniMaxH3VideoEngine:
                 model = load_video_generation_model(
                     str(path), workflow=self._needed_partition
                 )
+                progress()
                 self._prepare_model(model)
                 self._model = model
                 if on_loaded:
@@ -344,6 +354,7 @@ class MiniMaxH3VideoEngine:
                 extra={"drop_adaln_weights": False},
             )
             output_path.unlink(missing_ok=True)
+            progress()
             result = generate_video(self._model, request)
             progress()
             import numpy as np
@@ -369,11 +380,13 @@ class MiniMaxH3VideoEngine:
                 raise MiniMaxH3BackendError(
                     "MiniMax-H3 generation completed without an MP4 output"
                 )
-        except MiniMaxH3BackendError:
+        except (VideoGenerationCancelled, MiniMaxH3BackendError):
             output_path.unlink(missing_ok=True)
             raise
         except Exception as exc:
             output_path.unlink(missing_ok=True)
+            if cancel_token is not None:
+                cancel_token.check()
             logger.exception("MiniMax-H3 generation failed")
             raise MiniMaxH3BackendError(
                 f"MiniMax-H3 generation failed ({type(exc).__name__}); check server logs"
@@ -382,6 +395,8 @@ class MiniMaxH3VideoEngine:
             # A job leaves tens of GB of activations in MLX's buffer cache;
             # release them so the next job starts from the resident weights.
             _clear_mlx_cache()
+            self._cancel_token = None
+            self._on_progress = None
 
 
 def video_payloads(repo_id: str):

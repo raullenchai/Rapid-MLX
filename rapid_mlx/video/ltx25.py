@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .cancel import VideoGenerationCancelled, cleanup_on_cancel
+
 LTX25_RUNTIME_COMMIT = "57952288076766abe27dda3a774b2c24f7346977"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/MrMoferFRAN/ltx-2-mlx.git"
 LTX25_RUNTIME_VERSION = "0.14.15"
@@ -799,6 +801,7 @@ class LTX25VideoEngine:
         if process is not None:
             self._terminate_process(process)
 
+    @cleanup_on_cancel
     def generate(
         self,
         *,
@@ -812,6 +815,7 @@ class LTX25VideoEngine:
         image: Path | None,
         conditioning_strength: float | None = None,
         on_loaded: Callable[[], None] | None = None,
+        cancel_token=None,
     ) -> None:
         command = [
             "generate",
@@ -847,8 +851,10 @@ class LTX25VideoEngine:
             prompt=prompt,
             output_path=output_path,
             on_loaded=on_loaded,
+            **({"cancel_token": cancel_token} if cancel_token is not None else {}),
         )
 
+    @cleanup_on_cancel
     def extend(
         self,
         *,
@@ -858,6 +864,7 @@ class LTX25VideoEngine:
         extend_frames: int,
         seed: int,
         on_loaded: Callable[[], None] | None = None,
+        cancel_token=None,
     ) -> None:
         """Append a multiple of eight pixel frames using video context."""
         if extend_frames < 8 or extend_frames % 8:
@@ -880,6 +887,7 @@ class LTX25VideoEngine:
             prompt=prompt,
             output_path=output_path,
             on_loaded=on_loaded,
+            **({"cancel_token": cancel_token} if cancel_token is not None else {}),
         )
 
     def _run_runtime(
@@ -889,7 +897,10 @@ class LTX25VideoEngine:
         prompt: str,
         output_path: Path,
         on_loaded: Callable[[], None] | None,
+        cancel_token=None,
     ) -> None:
+        if cancel_token is not None:
+            cancel_token.check()
         timeout = _generation_timeout_seconds()
         environment = os.environ.copy()
         # Selection is re-evaluated here rather than trusting a previously
@@ -950,7 +961,11 @@ class LTX25VideoEngine:
         ready_read: int | None = None
         ready_write: int | None = None
         readiness_thread: threading.Thread | None = None
+        watcher_done = threading.Event()
+        watcher = None
         try:
+            if cancel_token is not None:
+                cancel_token.check()
             # Prompts may contain private user data. Keep them out of argv and
             # local process listings by feeding the isolated runtime over stdin.
             with self._process_lock:
@@ -988,7 +1003,29 @@ class LTX25VideoEngine:
             readiness_thread = threading.Thread(target=await_readiness, daemon=True)
             readiness_thread.start()
             ready_read = None
+            if cancel_token is not None:
+                cancel_token.check()
+
+                def watch_cancel():
+                    while not watcher_done.is_set():
+                        if cancel_token.wait(0.05):
+                            if not watcher_done.is_set():
+                                self._terminate_process(process)
+                            return
+
+                watcher = threading.Thread(target=watch_cancel, daemon=True)
+                watcher.start()
             process.communicate(input=prompt, timeout=timeout)
+            watcher_done.set()
+            if watcher is not None:
+                watcher.join()
+            # A child that completed its MP4 successfully wins the cancel race.
+            if cancel_token is not None and (
+                process.returncode
+                or not staged_output.is_file()
+                or not staged_output.stat().st_size
+            ):
+                cancel_token.check()
             readiness_thread.join()
             if process.returncode == _CHILD_PROVENANCE_EXIT:
                 raise LTX25BackendError(
@@ -1012,7 +1049,7 @@ class LTX25VideoEngine:
             raise LTX25BackendError(
                 "LTX-2.5 generation exceeded its configured time limit."
             ) from exc
-        except LTX25BackendError:
+        except (VideoGenerationCancelled, LTX25BackendError):
             if process is not None:
                 self._terminate_process(process)
             raise
@@ -1025,6 +1062,9 @@ class LTX25VideoEngine:
                 "LTX-2.5 generation failed while running its isolated runtime."
             ) from exc
         finally:
+            watcher_done.set()
+            if watcher is not None:
+                watcher.join()
             if ready_read is not None:
                 os.close(ready_read)
             if readiness_thread is not None:

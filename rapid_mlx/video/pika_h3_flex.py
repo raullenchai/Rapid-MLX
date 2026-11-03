@@ -9,8 +9,10 @@ import json
 import logging
 import math
 import struct
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import minimax_h3
 from .minimax_h3 import MiniMaxH3BackendError, MiniMaxH3VideoEngine, merge_lora
@@ -78,7 +80,7 @@ REF2VA_FILE_SIZES = {
 REF2VA_EXTRA_BYTES = sum(REF2VA_FILE_SIZES.values())
 
 
-def ensure_ref2va_assets() -> None:
+def ensure_ref2va_assets(cancel_token=None, on_progress=None) -> None:
     """Provision only missing Ref2VA assets before loading its transformer."""
     from huggingface_hub import try_to_load_from_cache
 
@@ -89,12 +91,19 @@ def ensure_ref2va_assets() -> None:
         pinned_snapshot_download,
     )
 
+    if cancel_token is not None:
+        cancel_token.check()
+    missing = set()
     missing_bytes = REF2VA_EXTRA_BYTES
     for repo, revision, files in REF2VA_PAYLOADS:
         for filename in files:
+            if cancel_token is not None:
+                cancel_token.check()
             cached = try_to_load_from_cache(repo, filename, revision=revision)
             if isinstance(cached, str) and Path(cached).is_file():
                 missing_bytes -= REF2VA_FILE_SIZES[filename]
+            else:
+                missing.add((repo, filename))
     if not missing_bytes:
         return
     command = "rapid-mlx pull pika-h3-flex --with-ref2va"
@@ -123,13 +132,82 @@ def ensure_ref2va_assets() -> None:
         "Downloading Pika H3 Flex Ref2VA assets (%s, first Ref2VA request only)...",
         size,
     )
+    progress_kwargs: dict[str, Any] = {}
+    # Completed files count at their declared size; the in-flight file is capped
+    # below its size so mirror-then-Hub retries or resumed blobs cannot over- or
+    # under-report overall progress.
+    completed = 0
+    current = 0
+    current_size = 0
+    progress_lock = threading.Lock()
+
+    def report():
+        if on_progress is not None:
+            on_progress(
+                "downloading", min(completed + current, missing_bytes), missing_bytes
+            )
+
+    def on_bytes(delta):
+        nonlocal current
+        if cancel_token is not None:
+            cancel_token.check()
+        with progress_lock:
+            current = min(max(0, current + delta), max(0, current_size - 1))
+            report()
+
+    def start_file(size):
+        nonlocal current, current_size
+        with progress_lock:
+            current = 0
+            current_size = size
+
+    def finish_file():
+        nonlocal completed, current, current_size
+        with progress_lock:
+            completed += current_size
+            current = 0
+            current_size = 0
+            report()
+
+    if cancel_token is not None or on_progress is not None:
+        from huggingface_hub.utils import tqdm
+
+        class CancelProgress(tqdm):
+            def update(self, n=1):
+                on_bytes(n)
+                return super().update(n)
+
+        progress_kwargs.update(tqdm_class=CancelProgress, on_bytes=on_bytes)
     try:
+        if on_progress is not None:
+            on_progress("downloading", 0, missing_bytes)
         for repo, revision, files in REF2VA_PAYLOADS:
-            pinned_snapshot_download(repo, revision, allow_patterns=list(files))
+            if cancel_token is None and on_progress is None:
+                pinned_snapshot_download(repo, revision, allow_patterns=list(files))
+            else:
+                # Check cached-file boundaries too; they may have no progress updates.
+                # Leave incomplete cache blobs intact for resumable downloads.
+                for filename in files:
+                    if (repo, filename) not in missing:
+                        continue
+                    start_file(REF2VA_FILE_SIZES[filename])
+                    on_bytes(0)
+                    pinned_snapshot_download(
+                        repo, revision, allow_patterns=[filename], **progress_kwargs
+                    )
+                    on_bytes(0)
+                    finish_file()
+    except minimax_h3.VideoGenerationCancelled:
+        raise
     except Exception as exc:
+        if cancel_token is not None:
+            cancel_token.check()
         raise MiniMaxH3BackendError(
             f"Pika H3 Flex Ref2VA asset download failed. Retry with `{command}`: {exc}"
         ) from exc
+    finally:
+        if on_progress is not None:
+            on_progress(None, 0, 0)
     logger.info("Pika H3 Flex Ref2VA assets downloaded (%s).", size)
 
 
@@ -461,7 +539,12 @@ class PikaH3FlexVideoEngine(MiniMaxH3VideoEngine):
         if Path(self.model_name).expanduser().is_dir():
             return
         if partition == "ref2va":
-            ensure_ref2va_assets()
+            token = getattr(self, "_cancel_token", None)
+            on_progress = getattr(self, "_on_progress", None)
+            if token is None and on_progress is None:
+                ensure_ref2va_assets()
+            else:
+                ensure_ref2va_assets(cancel_token=token, on_progress=on_progress)
 
     def _merge_adapter(self, pipeline, mode):
         from .._mirror import pinned_snapshot_download

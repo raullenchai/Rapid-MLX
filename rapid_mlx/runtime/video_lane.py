@@ -16,6 +16,8 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import Literal
 
+from ..video.cancel import cleanup_on_cancel, scoped_step_hooks
+
 
 class VideoRuntimeError(RuntimeError):
     """Safe, actionable generation error suitable for the public API."""
@@ -428,6 +430,7 @@ class VideoEngine:
 
         _emit_primary_model_served_once(self)
 
+    @cleanup_on_cancel
     def extend(
         self,
         *,
@@ -436,6 +439,7 @@ class VideoEngine:
         output_path: Path,
         extend_frames: int,
         seed: int,
+        cancel_token=None,
     ) -> None:
         """Append video using the LTX-2.5 runtime's temporal conditioning."""
         if self._ltx25_engine is None:
@@ -444,6 +448,8 @@ class VideoEngine:
 
         try:
             with self._generation_lock:
+                if cancel_token is not None:
+                    cancel_token.check()
                 self._ltx25_engine.extend(
                     prompt=prompt,
                     source_video=source_video,
@@ -451,10 +457,16 @@ class VideoEngine:
                     extend_frames=extend_frames,
                     seed=seed,
                     on_loaded=self._emit_model_served,
+                    **(
+                        {"cancel_token": cancel_token}
+                        if cancel_token is not None
+                        else {}
+                    ),
                 )
         except LTX25BackendError as exc:
             raise VideoRuntimeError(str(exc)) from exc
 
+    @cleanup_on_cancel
     def generate(
         self,
         *,
@@ -473,6 +485,8 @@ class VideoEngine:
         conditioning_strength: float | None = None,
         output_width: int | None = None,
         output_height: int | None = None,
+        cancel_token=None,
+        on_progress=None,
     ) -> None:
         minimax_engine = getattr(self, "_minimax_engine", None)
         if references and not getattr(minimax_engine, "supports_references", False):
@@ -493,7 +507,11 @@ class VideoEngine:
                     "MiniMax-H3 does not support these conditioning controls"
                 )
             try:
+                if cancel_token is not None:
+                    cancel_token.check()
                 with self._generation_lock:
+                    if cancel_token is not None:
+                        cancel_token.check()
                     minimax_engine.generate(
                         prompt=prompt,
                         output_path=output_path,
@@ -505,10 +523,25 @@ class VideoEngine:
                         image=image,
                         last_image=last_image,
                         **({"references": references} if references else {}),
+                        **(
+                            {"on_progress": on_progress}
+                            if on_progress is not None
+                            else {}
+                        ),
                         on_loaded=self._emit_model_served,
+                        **(
+                            {"cancel_token": cancel_token}
+                            if cancel_token is not None
+                            else {}
+                        ),
                     )
             except (MiniMaxH3BackendError, MiniMaxH3RequestError) as exc:
                 raise VideoRuntimeError(str(exc)) from exc
+            if cancel_token is not None and (
+                output_width or width,
+                output_height or height,
+            ) != (width, height):
+                cancel_token.check()
             self._crop_generated_output(
                 output_path=output_path,
                 width=width,
@@ -531,7 +564,11 @@ class VideoEngine:
                     "LTX-2.5 conditioning_strength requires an input image."
                 )
             try:
+                if cancel_token is not None:
+                    cancel_token.check()
                 with self._generation_lock:
+                    if cancel_token is not None:
+                        cancel_token.check()
                     self._ltx25_engine.generate(
                         prompt=prompt,
                         output_path=output_path,
@@ -543,9 +580,19 @@ class VideoEngine:
                         image=image,
                         conditioning_strength=conditioning_strength,
                         on_loaded=self._emit_model_served,
+                        **(
+                            {"cancel_token": cancel_token}
+                            if cancel_token is not None
+                            else {}
+                        ),
                     )
             except LTX25BackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
+            if cancel_token is not None and (
+                output_width or width,
+                output_height or height,
+            ) != (width, height):
+                cancel_token.check()
             self._crop_generated_output(
                 output_path=output_path,
                 width=width,
@@ -559,7 +606,11 @@ class VideoEngine:
             from ..video.wan import WanBackendError
 
             try:
+                if cancel_token is not None:
+                    cancel_token.check()
                 with self._generation_lock:
+                    if cancel_token is not None:
+                        cancel_token.check()
                     self._wan_engine.generate(
                         prompt=prompt,
                         output_path=output_path,
@@ -571,9 +622,19 @@ class VideoEngine:
                         negative_prompt=negative_prompt,
                         guidance_scale=guidance_scale,
                         on_loaded=self._emit_model_served,
+                        **(
+                            {"cancel_token": cancel_token}
+                            if cancel_token is not None
+                            else {}
+                        ),
                     )
             except WanBackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc
+            if cancel_token is not None and (
+                output_width or width,
+                output_height or height,
+            ) != (width, height):
+                cancel_token.check()
             self._crop_generated_output(
                 output_path=output_path,
                 width=width,
@@ -588,7 +649,11 @@ class VideoEngine:
                 raise VideoRuntimeError(
                     "CogVideoX-Fun MVP currently supports text-to-video only."
                 )
+            if cancel_token is not None:
+                cancel_token.check()
             with self._generation_lock:
+                if cancel_token is not None:
+                    cancel_token.check()
                 self._cog_engine.generate_sync(
                     output_path=output_path,
                     prompt=prompt,
@@ -600,6 +665,11 @@ class VideoEngine:
                     negative_prompt=negative_prompt or "",
                     guidance_scale=(6.0 if guidance_scale is None else guidance_scale),
                     on_loaded=self._emit_model_served,
+                    **(
+                        {"cancel_token": cancel_token}
+                        if cancel_token is not None
+                        else {}
+                    ),
                 )
             return
         if _resolve_ffmpeg() is None:
@@ -619,7 +689,11 @@ class VideoEngine:
 
         # The 22B pipeline is not re-entrant and a second concurrent graph can
         # exhaust unified memory. Serialize jobs per served model.
+        if cancel_token is not None:
+            cancel_token.check()
         with self._generation_lock:
+            if cancel_token is not None:
+                cancel_token.check()
             generation_kwargs: dict[str, object] = {
                 "model_repo": self.model_name,
                 "text_encoder_repo": None,
@@ -648,7 +722,15 @@ class VideoEngine:
             )
             if supports_load_callback:
                 generation_kwargs["on_loaded"] = self._emit_model_served
-            generate_video_with_audio(**generation_kwargs)
+            with scoped_step_hooks(
+                cancel_token, "mlx_video.generate_av", "mlx_video.generate"
+            ):
+                generate_video_with_audio(**generation_kwargs)
+            # A fully written successful result wins a cancellation during mux.
+            if cancel_token is not None and not (
+                output_path.is_file() and output_path.stat().st_size
+            ):
+                cancel_token.check()
             if not supports_load_callback:
                 # The pinned mlx-video-with-audio 0.1.36 export is a
                 # ``(*args, **kwargs)`` wrapper without an on_loaded hook, so
@@ -659,6 +741,11 @@ class VideoEngine:
             raise VideoRuntimeError(
                 "LTX-2.3 generation completed without an MP4 output."
             )
+        if cancel_token is not None and (
+            output_width or width,
+            output_height or height,
+        ) != (width, height):
+            cancel_token.check()
         self._crop_generated_output(
             output_path=output_path,
             width=width,
