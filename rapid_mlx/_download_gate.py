@@ -1230,29 +1230,22 @@ def _is_repo_cached(repo_id: str, *, raise_on_probe_timeout: bool) -> bool:
         # otherwise a fully cached 4-bit checkpoint reads as uncached and
         # the gate re-prompts on every single serve.
         snap_dir = _descend_to_checkpoint(snap_dir, repo_id)
-        from .video.minimax_h3 import (
-            FILES,
-            REPO,
-            TURBO_FILE,
-            TURBO_REPO,
-            TURBO_REVISION,
-        )
+        from .video.minimax_h3 import video_payloads
 
-        if repo_id == REPO:
-            turbo_dir = os.path.join(
-                HF_HUB_CACHE,
-                f"models--{TURBO_REPO.replace('/', '--')}",
-                "snapshots",
-                TURBO_REVISION,
-            )
-            return _is_nonempty_snapshot_manifest_file(
-                os.path.join(turbo_dir, TURBO_FILE), turbo_dir
-            ) and all(
-                _is_nonempty_snapshot_manifest_file(
-                    os.path.join(snap_dir, name), snap_dir
+        if payloads := video_payloads(repo_id):
+            for payload_repo, revision, files in payloads:
+                root = os.path.join(
+                    HF_HUB_CACHE,
+                    f"models--{payload_repo.replace('/', '--')}",
+                    "snapshots",
+                    revision,
                 )
-                for name in FILES
-            )
+                if not all(
+                    _is_nonempty_snapshot_manifest_file(os.path.join(root, name), root)
+                    for name in files
+                ):
+                    return False
+            return True
         return _snapshot_is_complete(snap_dir)
     except ExternalCacheProbeError:
         raise

@@ -88,21 +88,10 @@ def _size_one(repo_id: str) -> tuple[str, int | None]:
         estimate_repo_size_bytes,
         image_runtime_assets_for,
     )
-    from rapid_mlx.video import minimax_h3
+    from rapid_mlx.video.minimax_h3 import video_payloads
 
     data_files = IMAGE_MODEL_DATA_FILES.get(repo_id)
-    payloads: tuple[tuple[str, str, tuple[str, ...]], ...] | None = None
-    if repo_id == minimax_h3.REPO:
-        # The H3 repository duplicates every component under per-workflow
-        # trees; only the pinned root payload is ever downloaded.
-        payloads = (
-            (repo_id, minimax_h3.REVISION, minimax_h3.FILES),
-            (
-                minimax_h3.TURBO_REPO,
-                minimax_h3.TURBO_REVISION,
-                (minimax_h3.TURBO_FILE,),
-            ),
-        )
+    payloads = video_payloads(repo_id)
     if data_files is not None or payloads is not None:
         # Vendored image runtimes deliberately fetch an audited subset of a
         # repository. Size that exact pinned payload: SDXL's repository also

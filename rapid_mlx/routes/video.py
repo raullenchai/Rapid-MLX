@@ -839,7 +839,7 @@ def _video_capabilities(engine) -> dict:
         seconds = {"minimum": 1, "maximum": 20, "default": 4}
         frames = {"minimum": 9, "maximum": 1201, "step": 8, "offset": 1}
 
-    return {
+    capabilities = {
         "object": "video.capabilities",
         "model": engine.model_name,
         "modality": "video-gen",
@@ -902,6 +902,18 @@ def _video_capabilities(engine) -> dict:
         },
     }
 
+    if _supports_last_frame(engine):
+        capabilities["limits"]["last_frame"] = dict(
+            capabilities["limits"]["input_reference"]
+        )
+    return capabilities
+
+
+def _supports_last_frame(engine) -> bool:
+    return bool(
+        getattr(getattr(engine, "_minimax_engine", None), "supports_last_frame", False)
+    )
+
 
 def _validate_reference_image(
     path: Path,
@@ -946,6 +958,28 @@ def _validate_reference_image(
         raise HTTPException(
             status_code=400, detail=f"invalid input_reference: {exc}"
         ) from exc
+
+
+async def _store_reference(upload, path: Path, field: str, telemetry_model) -> Path:
+    total = 0
+    target = await asyncio.to_thread(path.open, "xb")
+    try:
+        while chunk := await upload.read(1024 * 1024):
+            total += len(chunk)
+            if total > _MAX_REFERENCE_BYTES:
+                raise HTTPException(status_code=413, detail=f"{field} exceeds 20 MB")
+            await asyncio.to_thread(target.write, chunk)
+    finally:
+        await asyncio.to_thread(target.close)
+    try:
+        await asyncio.to_thread(
+            _validate_reference_image, path, telemetry_model=telemetry_model
+        )
+    except HTTPException as exc:
+        if field != "input_reference" and isinstance(exc.detail, str):
+            exc.detail = exc.detail.replace("input_reference", field)
+        raise
+    return path
 
 
 def _probe_extension_video(path: Path) -> tuple[int, int, int]:
@@ -1113,6 +1147,7 @@ async def _run_job(
     negative_prompt: str | None,
     guidance_scale: float | None,
     conditioning_strength: float | None,
+    last_image_path: Path | None = None,
     source_video: Path | None = None,
     extend_frames: int | None = None,
 ) -> None:
@@ -1154,6 +1189,11 @@ async def _run_job(
                     fps=fps,
                     seed=seed,
                     image=image_path,
+                    **(
+                        {"last_image": last_image_path}
+                        if last_image_path is not None
+                        else {}
+                    ),
                     negative_prompt=negative_prompt,
                     guidance_scale=guidance_scale,
                     conditioning_strength=conditioning_strength,
@@ -1282,6 +1322,7 @@ async def create_video(
     conditioning_strength: Annotated[float | None, Form()] = None,
     negative_prompt: Annotated[str | None, Form(max_length=4096)] = None,
     input_reference: UploadFile | None = File(None),
+    last_frame: Annotated[UploadFile | None, File()] = None,
 ):
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
@@ -1291,6 +1332,11 @@ async def create_video(
     is_wan = getattr(engine, "video_family", "") == "wan"
     is_ltx25 = getattr(engine, "video_family", "") == "ltx-2.5"
     is_h3 = getattr(engine, "video_family", "") == "minimax-h3"
+    supports_last_frame = _supports_last_frame(engine)
+    if last_frame is not None and not supports_last_frame:
+        raise HTTPException(
+            status_code=400, detail="last_frame is not supported by this model"
+        )
     if seconds is None:
         seconds = "5" if is_h3 else "4"
     with _jobs_lock:
@@ -1414,6 +1460,10 @@ async def create_video(
         request_frames = frames
     elif is_cogvideox:
         request_frames = 5
+    elif supports_last_frame:
+        from ..video.pika_h3_flex import align_frames
+
+        request_frames = align_frames(seconds_int)
     elif is_h3:
         request_frames = min(345, max(124, round((seconds_int * 24 - 5) / 17) * 17 + 5))
     else:
@@ -1470,6 +1520,7 @@ async def create_video(
     job_dir = _jobs_root / job_id
     job_dir.mkdir(mode=0o700)
     image_path = None
+    last_image_path = None
     enqueued = False
     evicted_id: str | None = None
     task: asyncio.Task | None = None
@@ -1480,23 +1531,18 @@ async def create_video(
                 detail="CogVideoX-Fun MVP currently supports text-to-video only",
             )
         if input_reference is not None:
-            image_path = job_dir / "reference.img"
-            total = 0
-            target = await asyncio.to_thread(image_path.open, "xb")
-            try:
-                while chunk := await input_reference.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > _MAX_REFERENCE_BYTES:
-                        raise HTTPException(
-                            status_code=413, detail="input_reference exceeds 20 MB"
-                        )
-                    await asyncio.to_thread(target.write, chunk)
-            finally:
-                await asyncio.to_thread(target.close)
-            await asyncio.to_thread(
-                _validate_reference_image,
-                image_path,
-                telemetry_model=telemetry_model,
+            image_path = await _store_reference(
+                input_reference,
+                job_dir / "reference.img",
+                "input_reference",
+                telemetry_model,
+            )
+        if last_frame is not None:
+            last_image_path = await _store_reference(
+                last_frame,
+                job_dir / "last_reference.img",
+                "last_frame",
+                telemetry_model,
             )
 
         num_frames = request_frames
@@ -1562,6 +1608,7 @@ async def create_video(
                     fps=request_fps,
                     seed=seed,
                     image_path=image_path,
+                    last_image_path=last_image_path,
                     negative_prompt=negative_prompt,
                     guidance_scale=guidance_scale,
                     conditioning_strength=conditioning_strength,

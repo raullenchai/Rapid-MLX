@@ -963,10 +963,10 @@ def subfolder_allow_patterns(name: str) -> list[str] | None:
     patterns, or the user waits for (and stores) seven checkpoints they
     did not ask for.
     """
-    from .video.minimax_h3 import FILES, is_minimax_h3_model
+    from .video.minimax_h3 import video_payloads
 
-    if is_minimax_h3_model(name):
-        return list(FILES)
+    if payloads := video_payloads(name):
+        return list(payloads[0][2])
     subfolder = resolve_subfolder(name)
     return [f"{subfolder}/*"] if subfolder else None
 

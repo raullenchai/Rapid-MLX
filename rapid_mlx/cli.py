@@ -10614,6 +10614,7 @@ def _runtime_asset_owners() -> dict[str, list[str]]:
         from rapid_mlx._download_gate import IMAGE_MODEL_RUNTIME_ASSETS
         from rapid_mlx.audio.registry import list_audio_aliases, runtime_assets_for
         from rapid_mlx.video.minimax_h3 import REPO, TURBO_REPO
+        from rapid_mlx.video.pika_h3_flex import REPO as FLEX_REPO
 
         owners: dict[str, set[str]] = {}
         for entry in list_audio_aliases():
@@ -10626,6 +10627,7 @@ def _runtime_asset_owners() -> dict[str, list[str]]:
             for primary, assets in IMAGE_MODEL_RUNTIME_ASSETS.items()
         }
         dependencies.setdefault(REPO, []).append(TURBO_REPO)
+        dependencies.setdefault(FLEX_REPO, []).append(REPO)
         for primary, assets in dependencies.items():
             aliases = {
                 alias
@@ -12678,17 +12680,23 @@ def pull_command(args):
             allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
             revision_override=IMAGE_MODEL_REVISIONS[primary_repo],
         )
-    elif primary_repo == "MiniMaxAI/MiniMax-H3":
-        from rapid_mlx.video.minimax_h3 import FILES, REVISION
+    elif primary_repo in ("MiniMaxAI/MiniMax-H3", "Pika-Labs/Pika-H3-Flex"):
+        from rapid_mlx.video.minimax_h3 import video_payloads
 
         if getattr(primary_args, "bits", None) or getattr(primary_args, "format", None):
-            raise ValueError(
-                "MiniMax-H3 does not support quantization or format variants"
+            label = (
+                "MiniMax-H3"
+                if primary_repo == "MiniMaxAI/MiniMax-H3"
+                else "Pika H3 Flex"
             )
+            raise ValueError(
+                f"{label} does not support quantization or format variants"
+            )
+        _, revision, files = video_payloads(primary_repo)[0]
         _pull_repository(
             primary_args,
-            allow_patterns_override=list(FILES),
-            revision_override=REVISION,
+            allow_patterns_override=list(files),
+            revision_override=revision,
         )
     elif (pinned_revision := _pinned_checkpoint_revision(primary_repo)) is not None:
         # Image and video checkpoints are served from their pinned commit, so
@@ -12729,10 +12737,10 @@ def pull_command(args):
         )
         verify_mtp_snapshot(sidecar)
     assets = image_runtime_assets_for(primary_repo)
-    if primary_repo == "MiniMaxAI/MiniMax-H3":
-        from rapid_mlx.video.minimax_h3 import TURBO_FILE, TURBO_REPO, TURBO_REVISION
+    from rapid_mlx.video.minimax_h3 import video_payloads
 
-        assets = (*assets, (TURBO_REPO, TURBO_REVISION, (TURBO_FILE,)))
+    if payloads := video_payloads(primary_repo):
+        assets = (*assets, *payloads[1:])
     for asset_repo, revision, allow_patterns in assets:
         print(f"\n  Runtime assets: {asset_repo}")
         dependency_args = copy.copy(args)

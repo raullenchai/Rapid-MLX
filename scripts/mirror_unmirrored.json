@@ -300,6 +300,11 @@
       "hf_path": "MiniMaxAI/MiniMax-H3",
       "reason": "license: MiniMax H3 Community License restricts redistribution by territory; serve from the upstream Hub only",
       "since": "2026-10-27"
+    },
+    {
+      "hf_path": "Pika-Labs/Pika-H3-Flex",
+      "reason": "license: MiniMax H3 Community License (Model Derivative; NOTICE attribution required) restricts redistribution by territory; serve from the upstream Hub only",
+      "since": "2026-11-02"
     }
   ]
 }
