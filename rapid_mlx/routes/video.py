@@ -930,11 +930,13 @@ def _video_capabilities(engine) -> dict:
             "video": {
                 "maximum": 3,
                 "maximum_bytes": _MAX_REFERENCE_VIDEO_BYTES,
+                "formats": ["mp4", "mov", "webm", "mkv"],
                 "duration_seconds": {"minimum": 2, "maximum": 15},
             },
             "audio": {
                 "maximum": 3,
                 "maximum_bytes": _MAX_REFERENCE_BYTES,
+                "formats": ["wav", "mp3", "m4a", "aac", "flac", "ogg"],
                 "duration_seconds": {"minimum": 2, "maximum": 15},
             },
             "total_duration_seconds_per_kind": 15,

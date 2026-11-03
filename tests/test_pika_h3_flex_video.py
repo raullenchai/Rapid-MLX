@@ -284,7 +284,7 @@ def test_catalog_and_payloads(monkeypatch, tmp_path):
     assert (profile.hf_path, profile.revision, profile.min_memory_gb) == (
         flex.REPO,
         flex.REVISION,
-        160,
+        192,
     )
     assert list(profile.video_modes) == ["text-to-video", "image-to-video"]
     assert subfolder_allow_patterns(flex.REPO) == list(flex.FILES)
@@ -952,11 +952,13 @@ def test_reference_http_order_and_capabilities(reference_app, monkeypatch):
         video=dict(
             maximum=3,
             maximum_bytes=100 * 1024 * 1024,
+            formats=["mp4", "mov", "webm", "mkv"],
             duration_seconds=dict(minimum=2, maximum=15),
         ),
         audio=dict(
             maximum=3,
             maximum_bytes=20 * 1024 * 1024,
+            formats=["wav", "mp3", "m4a", "aac", "flac", "ogg"],
             duration_seconds=dict(minimum=2, maximum=15),
         ),
         total_duration_seconds_per_kind=15,

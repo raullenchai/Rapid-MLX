@@ -277,7 +277,9 @@ scenes were usable in testing; fast subject motion remains experimental.
 
 ## Pika H3 Flex
 
-Serve `pika-h3-flex` with at least 160 GB of unified memory and the same runtime
+Serve `pika-h3-flex` with at least 192 GB of unified memory, with 256 GB recommended
+for Ref2VA (whose 480p 5-second render peaked near 181 GiB of process memory,
+including reusable buffer cache), and the same runtime
 requirements as MiniMax-H3. It reuses the MiniMax-H3 base download and adds
 FL2VA and Ref2VA adapters plus a second transformer partition. Generation uses
 a fixed six-step renoise schedule, 24 fps video, and synchronized 32 kHz stereo
