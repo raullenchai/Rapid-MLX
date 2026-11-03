@@ -1809,6 +1809,23 @@ def test_ref2va_download_and_warm_cache(monkeypatch, tmp_path, ref2va_cache, cap
     assert len(calls) == 2
 
 
+def test_ref2va_download_failure_is_actionable(monkeypatch, tmp_path, ref2va_cache):
+    from rapid_mlx import _mirror, model_downloads
+
+    def download(repo, rev, *, allow_patterns):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**15))
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    with pytest.raises(h3.MiniMaxH3BackendError) as exc:
+        flex.ensure_ref2va_assets()
+    message = str(exc.value)
+    assert "Ref2VA asset download failed" in message
+    assert "rapid-mlx pull pika-h3-flex --with-ref2va" in message
+    assert "connection reset" in message
+
+
 @pytest.mark.parametrize("disabled", [False, True])
 def test_ref2va_missing_error(monkeypatch, tmp_path, ref2va_cache, disabled):
     from rapid_mlx import _mirror, model_downloads
