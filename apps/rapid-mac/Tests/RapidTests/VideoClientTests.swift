@@ -12,6 +12,65 @@ struct VideoClientTests {
         return VideoClient(session: URLSession(configuration: configuration))
     }
 
+    @Test("Cancellation fields are optional and preserve legacy payloads")
+    func cancellationDecoding() throws {
+        let legacyJob = try JSONDecoder().decode(VideoJob.self, from: Data(Self.jobJSON.utf8))
+        #expect(!legacyJob.cancelRequested)
+        #expect(legacyJob.phase == nil)
+        let json = Self.jobJSON.replacingOccurrences(
+            of: "\"status\":\"queued\"",
+            with: "\"status\":\"in_progress\",\"cancel_requested\":true,\"phase\":\"downloading\""
+        )
+        let job = try JSONDecoder().decode(VideoJob.self, from: Data(json.utf8))
+        #expect(job.cancelRequested)
+        #expect(job.phase == "downloading")
+        #expect(job.status == .inProgress)
+        let legacy = try JSONDecoder().decode(VideoCapabilities.self, from: Data(Self.capabilitiesJSON.utf8))
+        #expect(legacy.cancellation == nil)
+        #expect(!legacy.supportsInProgressCancel)
+        for supported in [true, false] {
+            let json = Self.capabilitiesJSON.replacingOccurrences(
+                of: "\"limits\":", with: "\"cancellation\":{\"queued\":true,\"in_progress\":\(supported)},\"limits\":"
+            )
+            let value = try JSONDecoder().decode(VideoCapabilities.self, from: Data(json.utf8))
+            #expect(value.cancellation?.queued == true)
+            #expect(value.supportsInProgressCancel == supported)
+        }
+    }
+
+    @Test("Cancel accepts 200, 202 and already gone without removing cached content")
+    func cancelResponses() async throws {
+        var client = makeClient()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "rapid-video-cancel-tests-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        client.cacheDirectory = directory
+        client.removeCachedItem = { _ in Issue.record("Cancel must not remove cached content") }
+        let id = "video_cancel_test"
+        let cached = directory.appendingPathComponent(try VideoClient.cacheFileName(for: id))
+        try Data("video".utf8).write(to: cached)
+        for status in [200, 202, 404] {
+            VideoStubProtocol.response = (status, Data(Self.jobJSON.utf8))
+            try await client.cancel(id: id, port: 8123, bearer: "secret")
+            let request = try #require(VideoStubProtocol.requests.last)
+            #expect(request.httpMethod == "DELETE")
+            #expect(request.url?.path == "/v1/videos/\(id)")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+        }
+        #expect(try Data(contentsOf: cached) == Data("video".utf8))
+        VideoStubProtocol.response = (409, Data())
+        await #expect(throws: VideoClientError.self) {
+            try await client.cancel(id: id, port: 8123, bearer: nil)
+        }
+        let count = VideoStubProtocol.requests.count
+        await #expect(throws: VideoClientError.invalidJobID) {
+            try await client.cancel(id: "../invalid", port: 8123, bearer: nil)
+        }
+        #expect(VideoStubProtocol.requests.count == count)
+    }
+
     @Test("Capabilities authenticate and produce conservative controls")
     func capabilities() async throws {
         let client = makeClient()

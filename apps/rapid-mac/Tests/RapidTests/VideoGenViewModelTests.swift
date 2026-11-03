@@ -5,6 +5,145 @@ import Testing
 @MainActor
 @Suite("VideoGenViewModel")
 struct VideoGenViewModelTests {
+    private func cancellationModel(client: VideoCancellationClient) async -> VideoGenViewModel {
+        let model = ModelEntry(
+            alias: "ltx-2.3-mlx-q4", hfRepo: "org/ltx", sizeOnDisk: "9 GB", cached: true,
+            kind: .video, videoCapabilities: [.textToVideo], minimumMemoryGB: 24
+        )
+        let server = ServerManager(
+            testingState: .ready(alias: model.alias),
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"), activeBearer: "test-bearer"
+        )
+        let modelState = VideoGenViewModel(
+            server: server, client: client, physicalRAMGB: 32,
+            pollingInterval: .seconds(3600), catalogLoader: { _ in [model] }
+        )
+        await modelState.refreshCatalog()
+        await modelState.refreshServerData()
+        return modelState
+    }
+
+    @Test("Running cancel is immediate, deduplicated and polling ends as cancelled; next submit works")
+    func runningCancellation() async throws {
+        let client = VideoCancellationClient()
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        let cancel = Task { await model.cancel(job) }
+        // The fake suspends the DELETE so optimistic state is observable.
+        for _ in 0..<1000 where !model.cancellingJobIDs.contains(job.id) { await Task.yield() }
+        #expect(model.isCancelling(job))
+        #expect(model.hasLiveActiveJobs)
+        await model.cancel(job)
+        await client.waitForCancel()
+        #expect(await client.cancelCount() == 1)
+        await client.finishCancel()
+        await cancel.value
+        #expect(model.cancellingJobIDs.contains(job.id))
+        await model.pollJobs()
+        #expect(model.cancellingJobIDs.contains(job.id))
+        await client.setStatus(.failed)
+        await model.pollJobs()
+        #expect(model.selectedJob?.isCancelled == true)
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == nil)
+        #expect(!model.hasLiveActiveJobs)
+        #expect(model.canSwitchModels)
+        #expect(!model.isSubmitting)
+        model.prompt = "A new scene"
+        #expect(model.canSubmit)
+        await model.submit()
+        #expect(await client.createCount() == 1)
+        #expect(model.selectedJob?.status == .queued)
+        #expect(model.errorMessage == nil)
+        #expect(!model.isSubmitting)
+        await client.setStatus(.failed)
+        await model.pollJobs()
+    }
+
+    @Test("Successful completion wins a cancellation race and loads the video")
+    func cancellationCompletionRace() async throws {
+        let client = VideoCancellationClient()
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        let cancel = Task { await model.cancel(job) }
+        await client.waitForCancel()
+        await client.setStatus(.completed)
+        await model.pollJobs()
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.selectedJob?.status == .completed)
+        #expect(model.previewURL?.lastPathComponent == "finished.mp4")
+        await client.finishCancel()
+        await cancel.value
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("A failed cancellation request clears optimistic state and surfaces the error")
+    func cancellationRequestFailure() async throws {
+        let client = VideoCancellationClient()
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        let cancel = Task { await model.cancel(job) }
+        await client.waitForCancel()
+        #expect(model.cancellingJobIDs.contains(job.id))
+        await client.finishCancel(failing: true)
+        await cancel.value
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == "cancel unavailable")
+        #expect(model.hasLiveActiveJobs)
+        await client.setStatus(.failed)
+        await model.pollJobs()
+        #expect(model.selectedJob?.isCancelled == true)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("A cancel that fails after the job completed shows the video, not an error")
+    func cancellationFailureAfterCompletion() async throws {
+        let client = VideoCancellationClient()
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        let cancel = Task { await model.cancel(job) }
+        await client.waitForCancel()
+        await client.setStatus(.completed)
+        await model.pollJobs()
+        await client.finishCancel(failing: true)
+        await cancel.value
+        #expect(model.selectedJob?.status == .completed)
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("Polled cancel_requested restores cancelling state without a local tap")
+    func polledCancellation() async throws {
+        let client = VideoCancellationClient(cancelRequested: true)
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        #expect(model.cancellingJobIDs.contains(job.id))
+        await model.cancel(job)
+        #expect(await client.cancelCount() == 0)
+        await client.setStatus(.failed)
+        await model.pollJobs()
+        #expect(model.selectedJob?.isCancelled == true)
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == nil)
+    }
+
+    @Test("Older servers refuse running cancel and delete")
+    func legacyRunningCancellationRefused() async throws {
+        let client = VideoCancellationClient(supportsCancel: false)
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        #expect(!model.supportsInProgressCancel)
+        await model.cancel(job)
+        await model.delete(job)
+        #expect(await client.cancelCount() == 0)
+        #expect(await client.deleteCount() == 0)
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.jobs == [job])
+        await client.setStatus(.failed)
+        await model.pollJobs()
+    }
+
     @Test("Catalog fails closed to explicit Video rows and chooses a model that fits")
     func catalogFilteringAndMemoryChoice() async {
         let chat = ModelEntry(alias: "chat", hfRepo: nil, sizeOnDisk: nil, cached: true)
@@ -330,6 +469,7 @@ private actor VideoPollingClient: VideoClientProtocol {
         return listCalls <= 2 ? [] : [Self.job(status: .completed, progress: 100)]
     }
 
+    func cancel(id: String, port: Int, bearer: String?) async throws {}
     func delete(id: String, port: Int, bearer: String?) async throws {}
 
     func content(id: String, port: Int, bearer: String?) async throws -> URL {
@@ -395,6 +535,7 @@ private actor VideoFakeClient: VideoClientProtocol {
         }
         return []
     }
+    func cancel(id: String, port: Int, bearer: String?) async throws {}
     func delete(id: String, port: Int, bearer: String?) async throws {}
     func content(id: String, port: Int, bearer: String?) async throws -> URL {
         URL(fileURLWithPath: "/tmp/\(id).mp4")
@@ -457,8 +598,77 @@ private actor VideoSuspendingClient: VideoClientProtocol {
     }
 
     func list(port: Int, bearer: String?, limit: Int) async throws -> [VideoJob] { [] }
+    func cancel(id: String, port: Int, bearer: String?) async throws {}
     func delete(id: String, port: Int, bearer: String?) async throws {}
     func content(id: String, port: Int, bearer: String?) async throws -> URL {
         throw VideoClientError.invalidResponse
+    }
+}
+
+private actor VideoCancellationClient: VideoClientProtocol {
+    private var status: VideoJobStatus = .inProgress
+    private var requested: Bool
+    private let supportsCancel: Bool
+    private var cancels = 0
+    private var creates = 0
+    private var deletes = 0
+    private var cancelContinuation: CheckedContinuation<Void, Error>?
+
+    init(supportsCancel: Bool = true, cancelRequested: Bool = false) {
+        self.supportsCancel = supportsCancel
+        requested = cancelRequested
+    }
+
+    func capabilities(port: Int, bearer: String?) async throws -> VideoCapabilities {
+        var value = try VideoFakeClient.capabilitiesValue()
+        if supportsCancel { value.cancellation = .init(queued: true, inProgress: true) }
+        return value
+    }
+
+    func create(_ request: VideoCreateRequest, port: Int, bearer: String?) async throws -> VideoJob {
+        creates += 1
+        status = .queued
+        requested = false
+        return job()
+    }
+
+    func list(port: Int, bearer: String?, limit: Int) async throws -> [VideoJob] { [job()] }
+
+    func cancel(id: String, port: Int, bearer: String?) async throws {
+        cancels += 1
+        try await withCheckedThrowingContinuation { continuation in
+            cancelContinuation = continuation
+        }
+        requested = status == .inProgress
+    }
+
+    func delete(id: String, port: Int, bearer: String?) async throws { deletes += 1 }
+    func content(id: String, port: Int, bearer: String?) async throws -> URL {
+        URL(fileURLWithPath: "/tmp/finished.mp4")
+    }
+
+    func waitForCancel() async {
+        while cancelContinuation == nil { await Task.yield() }
+    }
+
+    func finishCancel(failing: Bool = false) {
+        if failing { cancelContinuation?.resume(throwing: VideoClientError.transport("cancel unavailable")) }
+        else { cancelContinuation?.resume() }
+        cancelContinuation = nil
+    }
+
+    func setStatus(_ status: VideoJobStatus) { self.status = status }
+    func cancelCount() -> Int { cancels }
+    func createCount() -> Int { creates }
+    func deleteCount() -> Int { deletes }
+
+    private func job() -> VideoJob {
+        VideoJob(
+            id: "video_cancel_test", model: "ltx-2.3-mlx-q4", prompt: "A scene",
+            seconds: "1", size: "512x512", status: status, progress: 20,
+            createdAt: 1, completedAt: status == .inProgress ? nil : 2,
+            error: status == .failed ? .init(code: "video_generation_cancelled", message: "Video generation was cancelled.") : nil,
+            cancelRequested: status == .inProgress && requested
+        )
     }
 }

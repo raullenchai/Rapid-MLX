@@ -287,14 +287,14 @@ struct VideoView: View {
                     .accessibilityLabel("Video generation progress")
                     .frame(maxWidth: 300)
             } else {
-                Image(systemName: job.status == .failed ? "exclamationmark.triangle" : "film")
+                Image(systemName: job.isCancelled ? "stop.circle" : (job.status == .failed ? "exclamationmark.triangle" : "film"))
                     .font(.system(size: 34, weight: .light))
-                    .foregroundStyle(job.status == .failed ? RapidTheme.statusError : RapidTheme.textTertiary)
+                    .foregroundStyle(job.status == .failed && !job.isCancelled ? RapidTheme.statusError : RapidTheme.textTertiary)
             }
             Text(jobStatusTitle(job))
                 .font(RapidFont.sectionTitle)
                 .foregroundStyle(RapidTheme.textPrimary)
-            Text(job.error?.message ?? job.prompt)
+            Text(job.isCancelled ? String(localized: "Generation was cancelled.") : (job.error?.message ?? job.prompt))
                 .font(RapidFont.body)
                 .foregroundStyle(RapidTheme.textSecondary)
                 .multilineTextAlignment(.center)
@@ -307,9 +307,27 @@ struct VideoView: View {
                 .buttonStyle(.rapidSecondary)
                 .accessibilityIdentifier("Video.Job.Cancel")
             } else if job.status == .inProgress {
-                Text("Generation can't be interrupted safely once Metal work begins.")
-                    .font(RapidFont.caption)
-                    .foregroundStyle(RapidTheme.textTertiary)
+                if viewModel.isCancelling(job) {
+                    Button {} label: {
+                        HStack(spacing: RapidTheme.Space.sm) {
+                            ProgressView().controlSize(.small)
+                            Text("Cancelling…")
+                        }
+                    }
+                    .buttonStyle(.rapidSecondary)
+                    .disabled(true)
+                    .accessibilityIdentifier("Video.Job.Cancelling")
+                } else if viewModel.supportsInProgressCancel {
+                    Button("Stop Generating") {
+                        Task { await viewModel.cancel(job) }
+                    }
+                    .buttonStyle(.rapidSecondary)
+                    .accessibilityIdentifier("Video.Job.Stop")
+                } else {
+                    Text("Generation can't be interrupted safely once Metal work begins.")
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textTertiary)
+                }
             } else if job.status == .completed && viewModel.previewURL == nil {
                 HStack {
                     Button("Load Preview") { Task { await viewModel.loadSelectedPreview() } }
@@ -329,9 +347,13 @@ struct VideoView: View {
     }
 
     private func jobStatusTitle(_ job: VideoJob) -> String {
+        if viewModel.isCancelling(job) { return String(localized: "Cancelling…") }
+        if job.isCancelled { return String(localized: "Cancelled") }
         switch job.status {
         case .queued: return String(localized: "Waiting to generate")
-        case .inProgress: return ExperimentalSurfaceCopy.videoProgress(job.progress)
+        case .inProgress:
+            if job.phase == "downloading" { return String(localized: "Downloading model assets…") }
+            return ExperimentalSurfaceCopy.videoProgress(job.progress)
         case .completed: return viewModel.isLoadingPreview ? String(localized: "Loading preview…") : String(localized: "Video ready")
         case .failed: return String(localized: "Generation failed")
         }
@@ -371,8 +393,8 @@ struct VideoView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                                 HStack {
-                                    Image(systemName: statusSymbol(job.status))
-                                    Text(jobStatusLabel(job.status))
+                                    Image(systemName: statusSymbol(job))
+                                    Text(jobStatusLabel(job))
                                     Spacer()
                                     Text("\(job.seconds)s")
                                 }
@@ -392,7 +414,7 @@ struct VideoView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(jobStatusLabel(job.status)): \(job.prompt)")
+                        .accessibilityLabel("\(jobStatusLabel(job)): \(job.prompt)")
                         .accessibilityIdentifier("Video.History.\(job.id)")
                     }
                 }
@@ -656,8 +678,10 @@ struct VideoView: View {
         }
     }
 
-    private func statusSymbol(_ status: VideoJobStatus) -> String {
-        switch status {
+    private func statusSymbol(_ job: VideoJob) -> String {
+        if viewModel.isCancelling(job) { return "hourglass" }
+        if job.isCancelled { return "stop.circle" }
+        switch job.status {
         case .queued: return "clock"
         case .inProgress: return "sparkles"
         case .completed: return "checkmark.circle.fill"
@@ -665,8 +689,10 @@ struct VideoView: View {
         }
     }
 
-    private func jobStatusLabel(_ status: VideoJobStatus) -> String {
-        switch status {
+    private func jobStatusLabel(_ job: VideoJob) -> String {
+        if viewModel.isCancelling(job) { return String(localized: "Cancelling…") }
+        if job.isCancelled { return String(localized: "Cancelled") }
+        switch job.status {
         case .queued: return String(localized: "Queued")
         case .inProgress: return String(localized: "Generating")
         case .completed: return String(localized: "Ready")
@@ -746,7 +772,7 @@ private struct VideoDeletionSheet: View {
         case .queued:
             return String(localized: "The queued request will be removed before generation begins.")
         case .failed:
-            return String(localized: "This failed request will be removed from recent videos.")
+            return job.isCancelled ? String(localized: "This cancelled request will be removed from recent videos.") : String(localized: "This failed request will be removed from recent videos.")
         case .completed:
             return String(localized: "The generated file will be removed from this Mac. This can't be undone.")
         case .inProgress:
