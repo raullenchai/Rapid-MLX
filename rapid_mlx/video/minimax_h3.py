@@ -91,8 +91,6 @@ class MiniMaxH3RequestError(ValueError):
 
 
 def _merge_turbo_lora(transformer: Any, path: Path) -> None:
-    import mlx.core as mx
-    from mlx.utils import tree_flatten
     from safetensors import safe_open
 
     # The scale is the file's metadata alpha over the rank (8/128); the
@@ -105,6 +103,28 @@ def _merge_turbo_lora(transformer: Any, path: Path) -> None:
             raise ValueError("invalid alpha")
     except (KeyError, ValueError, TypeError) as exc:
         raise MiniMaxH3BackendError("MiniMax-H3 Turbo LoRA has invalid alpha") from exc
+    with safe_open(str(path), "np") as reader:
+        ranks = [
+            reader.get_slice(key).get_shape()[0]
+            for key in reader.keys()  # noqa: SIM118 - safe_open is not iterable
+            if key.endswith(".lora_A.default.weight")
+        ]
+    if not ranks:
+        raise MiniMaxH3BackendError("MiniMax-H3 Turbo LoRA has no adapter weights")
+    merge_lora(transformer, path, scale=alpha / ranks[0], expected_rank=ranks[0])
+
+
+def merge_lora(
+    transformer: Any,
+    path: Path,
+    *,
+    scale: float,
+    allowed_suffixes: tuple[str, ...] | None = None,
+    expected_rank: int | None = None,
+) -> int:
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
     weights = dict(tree_flatten(transformer.parameters()))
     lora = mx.load(str(path))
     suffix = ".lora_A.default.weight"
@@ -113,12 +133,29 @@ def _merge_turbo_lora(transformer: Any, path: Path) -> None:
         if not name.endswith(suffix):
             continue
         prefix = name[: -len(suffix)]
+        if allowed_suffixes is not None and not any(
+            prefix == target or prefix.endswith("." + target)
+            for target in allowed_suffixes
+        ):
+            raise MiniMaxH3BackendError("LoRA has an unsupported target module")
         key = prefix + ".weight"
-        b = lora[prefix + ".lora_B.default.weight"]
+        b = lora.get(prefix + ".lora_B.default.weight")
+        if b is None:
+            raise MiniMaxH3BackendError("LoRA is missing lora_B")
+        if key not in weights:
+            raise MiniMaxH3BackendError("LoRA is missing a base weight")
         weight = weights.pop(key)
+        if (
+            a.ndim != 2
+            or b.ndim != 2
+            or a.shape[0] != b.shape[1]
+            or (expected_rank is not None and a.shape[0] != expected_rank)
+            or weight.shape != (b.shape[0], a.shape[1])
+        ):
+            raise MiniMaxH3BackendError("LoRA has an invalid rank or shape")
         merged = (
             weight.astype(mx.float32)
-            + (alpha / a.shape[0]) * (b.astype(mx.float32) @ a.astype(mx.float32))
+            + scale * (b.astype(mx.float32) @ a.astype(mx.float32))
         ).astype(weight.dtype)
         mx.eval(merged)
         # Swap one tensor at a time so the old copy is freed before the next.
@@ -127,7 +164,8 @@ def _merge_turbo_lora(transformer: Any, path: Path) -> None:
         mx.clear_cache()
         merged_count += 1
     if not merged_count:
-        raise MiniMaxH3BackendError("MiniMax-H3 Turbo LoRA has no adapter weights")
+        raise MiniMaxH3BackendError("LoRA has no adapter weights")
+    return merged_count
 
 
 def is_minimax_h3_model(name: str | None) -> bool:
@@ -135,6 +173,21 @@ def is_minimax_h3_model(name: str | None) -> bool:
 
 
 class MiniMaxH3VideoEngine:
+    supports_last_frame = False
+    steps = 9
+
+    def _prepare_model(self, model):
+        from .._mirror import pinned_snapshot_download
+
+        turbo = pinned_snapshot_download(
+            TURBO_REPO, TURBO_REVISION, allow_patterns=[TURBO_FILE]
+        )
+        _merge_turbo_lora(model.pipeline.transformer, Path(turbo) / TURBO_FILE)
+        model.pipeline.scheduler.set_shift(6.0)
+
+    def _prepare_request(self, seed: int) -> None:
+        pass
+
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
         self._model: Any = None
@@ -194,7 +247,7 @@ class MiniMaxH3VideoEngine:
         )
         if fps != 24:
             raise MiniMaxH3RequestError("MiniMax-H3 output is fixed at 24 fps")
-        if last_image is not None and image is None:
+        if last_image is not None and image is None and not self.supports_last_frame:
             raise MiniMaxH3RequestError("last image requires a first image")
 
         def progress(*_args):
@@ -223,18 +276,16 @@ class MiniMaxH3VideoEngine:
                 progress()
                 # Both workflows use the same FL2VA pipeline; the wrapper's
                 # workflow only labels results, so one loaded model serves both.
-                turbo = pinned_snapshot_download(
-                    TURBO_REPO, TURBO_REVISION, allow_patterns=[TURBO_FILE]
-                )
                 model = load_video_generation_model(str(path), workflow="fl2va")
-                _merge_turbo_lora(model.pipeline.transformer, Path(turbo) / TURBO_FILE)
-                # The 8-step adapter was distilled with a video shift of 6.
-                model.pipeline.scheduler.set_shift(6.0)
+                self._prepare_model(model)
                 self._model = model
                 if on_loaded:
                     on_loaded()
             progress()
-            self._model.workflow = "fl2va" if image is not None else "t2va"
+            self._prepare_request(seed)
+            self._model.workflow = (
+                "fl2va" if image is not None or last_image is not None else "t2va"
+            )
             request = VideoGenerationRequest(
                 prompt=prompt,
                 width=width,
@@ -243,7 +294,7 @@ class MiniMaxH3VideoEngine:
                 seed=seed,
                 # mlx-vlm spaces `steps` sigmas, so 9 gives the adapter's 8
                 # denoising forwards.
-                steps=9,
+                steps=self.steps,
                 image=image,
                 last_image=last_image,
                 progress_callback=progress,
@@ -292,3 +343,14 @@ class MiniMaxH3VideoEngine:
             # A job leaves tens of GB of activations in MLX's buffer cache;
             # release them so the next job starts from the resident weights.
             _clear_mlx_cache()
+
+
+def video_payloads(repo_id: str):
+    """Exact primary and companion downloads for the H3 video aliases."""
+    from . import pika_h3_flex
+
+    if is_minimax_h3_model(repo_id):
+        return ((REPO, REVISION, FILES), (TURBO_REPO, TURBO_REVISION, (TURBO_FILE,)))
+    if pika_h3_flex.is_pika_h3_flex_model(repo_id):
+        return pika_h3_flex.PAYLOADS
+    return None

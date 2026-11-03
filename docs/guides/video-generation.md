@@ -274,3 +274,33 @@ curl http://127.0.0.1:8000/v1/videos/video_ID/content --output result.mp4
 Generation is serialized and defaults to 50 diffusion steps. On an M3 Ultra,
 the q4 model produced a one-second 672×384 clip in about 338 seconds. Static
 scenes were usable in testing; fast subject motion remains experimental.
+
+## Pika H3 Flex
+
+Serve `pika-h3-flex` with at least 160 GB of unified memory and the same runtime
+requirements as MiniMax-H3. It reuses the MiniMax-H3 base download and adds a
+2.8 GB FL2VA adapter. Generation uses a fixed six-step renoise schedule, 24 fps
+video, and synchronized 32 kHz stereo audio.
+
+Use text alone, a first frame through `input_reference`, a last frame through
+`last_frame`, or both fields for first+last-frame conditioning. Recommended
+sizes are `832x480` (480p 16:9) and `480x832`. Durations are 5–15 seconds, rounded
+up to the 17n+5 frame grid: 5 seconds gives 124 frames. The maximum is 345 frames,
+including requests for 15 seconds. Explicit `frames` must follow the same grid.
+
+```sh
+rapid-mlx serve pika-h3-flex
+curl http://localhost:8000/v1/videos \
+  -F model=pika-h3-flex \
+  -F 'prompt=A quiet shoreline at sunrise, with gentle waves' \
+  -F seconds=5 -F size=832x480 \
+  -F input_reference=@first.png -F last_frame=@last.png
+```
+
+### License and attribution
+
+MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyright © 2026 MiniMax. All Rights Reserved.
+
+FL2VA adapter Copyright © 2026 Mellis, Inc. (Pika). It is a Model Derivative of MiniMax H3 distributed under the MiniMax H3 Community License Agreement.
+
+The weights are downloaded from the upstream Hugging Face repositories and are never mirrored.

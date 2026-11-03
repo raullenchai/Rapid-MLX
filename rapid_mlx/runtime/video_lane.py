@@ -108,8 +108,9 @@ def _is_wan_name(model_name: str | None) -> bool:
 
 def _is_minimax_name(model_name: str | None) -> bool:
     from ..video.minimax_h3 import is_minimax_h3_model
+    from ..video.pika_h3_flex import is_pika_h3_flex_model
 
-    return is_minimax_h3_model(model_name)
+    return is_minimax_h3_model(model_name) or is_pika_h3_flex_model(model_name)
 
 
 def _is_ltx25_name(model_name: str | None) -> bool:
@@ -402,8 +403,17 @@ class VideoEngine:
             self._wan_engine = WanVideoEngine(model_name)
         elif self.video_family == "minimax-h3":
             from ..video.minimax_h3 import MiniMaxH3VideoEngine
+            from ..video.pika_h3_flex import (
+                PikaH3FlexVideoEngine,
+                is_pika_h3_flex_model,
+            )
 
-            self._minimax_engine = MiniMaxH3VideoEngine(model_name)
+            engine_class = (
+                PikaH3FlexVideoEngine
+                if is_pika_h3_flex_model(model_name)
+                else MiniMaxH3VideoEngine
+            )
+            self._minimax_engine = engine_class(model_name)
         elif self.video_family == "ltx-2.5":
             from ..video.ltx25 import LTX25VideoEngine
 
@@ -456,6 +466,7 @@ class VideoEngine:
         fps: int,
         seed: int,
         image: Path | None,
+        last_image: Path | None = None,
         negative_prompt: str | None = None,
         guidance_scale: float | None = None,
         conditioning_strength: float | None = None,
@@ -463,6 +474,10 @@ class VideoEngine:
         output_height: int | None = None,
     ) -> None:
         minimax_engine = getattr(self, "_minimax_engine", None)
+        if last_image is not None and not getattr(
+            minimax_engine, "supports_last_frame", False
+        ):
+            raise VideoRuntimeError("last_frame is not supported by this model")
         if minimax_engine is not None:
             from ..video.minimax_h3 import MiniMaxH3BackendError, MiniMaxH3RequestError
 
@@ -485,6 +500,7 @@ class VideoEngine:
                         fps=fps,
                         seed=seed,
                         image=image,
+                        last_image=last_image,
                         on_loaded=self._emit_model_served,
                     )
             except (MiniMaxH3BackendError, MiniMaxH3RequestError) as exc:

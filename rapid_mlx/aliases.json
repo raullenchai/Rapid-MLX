@@ -3271,5 +3271,22 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "pika-h3-flex": {
+    "hf_path": "Pika-Labs/Pika-H3-Flex",
+    "revision": "3ff166447d5edb1406107ab8370c42000ce173e4",
+    "modality": "video-gen",
+    "video_modes": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "min_memory_gb": 160,
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
   }
 }
