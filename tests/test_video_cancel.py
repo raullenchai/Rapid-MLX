@@ -1093,3 +1093,42 @@ def test_ref2va_progress_caps_retried_bytes_per_file(monkeypatch, tmp_path):
     assert done == sorted(done)
     assert done[-1] == total
     assert done.count(total) == 1
+
+
+def test_job_phase_is_hidden_once_terminal():
+    job = video._VideoJob(id="t", model="fake", prompt="p", seconds="1", size="1x1")
+    job.status = "in_progress"
+    job.phase = "downloading"
+    assert job.public()["phase"] == "downloading"
+    job.status = "failed"
+    assert "phase" not in job.public()
+
+
+def test_wan_cancel_steps_compose_with_load_notification():
+    from rapid_mlx.video import wan_diffusers
+
+    token = VideoCancelToken()
+    events = []
+    namespace = {
+        "tqdm": lambda iterable, **kw: iterable,
+        "load_wan_model": lambda *args, **kwargs: events.append("loaded"),
+    }
+    exec(
+        "def generate(**kwargs):\n"
+        "    load_wan_model(None, None)\n"
+        "    for step in tqdm(range(5)):\n"
+        "        steps.append(step)\n"
+        "        if step == 1:\n"
+        "            token.cancel()\n",
+        namespace,
+    )
+    steps = []
+    namespace.update(steps=steps, token=token)
+    generate = wan_diffusers._notify_after_materialization(
+        namespace["generate"], lambda: events.append("notified")
+    )
+    generate = wan_diffusers._with_cancel_steps(generate, token)
+    with pytest.raises(VideoGenerationCancelled):
+        generate()
+    assert events == ["loaded", "notified"]
+    assert steps == [0, 1]

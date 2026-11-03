@@ -89,7 +89,8 @@ class _VideoJob:
             value.pop("fps")
         if not value["cancel_requested"]:
             value.pop("cancel_requested")
-        if value["phase"] is None:
+        # Phase describes in-progress work only; never leak it on terminal jobs.
+        if value["phase"] is None or value["status"] != "in_progress":
             value.pop("phase")
         value["object"] = "video"
         return value
