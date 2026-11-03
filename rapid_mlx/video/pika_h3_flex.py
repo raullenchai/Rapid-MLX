@@ -435,8 +435,10 @@ class PikaH3FlexVideoEngine(MiniMaxH3VideoEngine):
         pipeline._adaln_caches = None
         gc.collect()
         mx.clear_cache()
-        pipeline.transformer = load_transformer(self._model_root, partition=partition)
         try:
+            pipeline.transformer = load_transformer(
+                self._model_root, partition=partition
+            )
             self._merge_adapter(pipeline, partition)
         except Exception:
             pipeline.transformer = None

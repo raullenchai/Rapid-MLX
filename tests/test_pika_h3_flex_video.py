@@ -779,8 +779,9 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
 
 
 @pytest.mark.parametrize("recovery_partition", ["fl2va", "ref2va"])
+@pytest.mark.parametrize("failure_stage", ["load", "merge"])
 def test_failed_partition_switch_self_heals(
-    monkeypatch, tmp_path, array_core, recovery_partition
+    monkeypatch, tmp_path, array_core, recovery_partition, failure_stage
 ):
     class Trunk:
         pass
@@ -788,23 +789,28 @@ def test_failed_partition_switch_self_heals(
     pipeline = SimpleNamespace(
         transformer=Trunk(), _normalize_video_latents=lambda x: x
     )
-    loads, merges = [], []
+    loads, merges, events = [], [], []
+    monkeypatch.setattr(array_core, "clear_cache", lambda: events.append("clear"))
+    failure = RuntimeError(f"{failure_stage} failed")
     weights = ModuleType("mlx_vlm.models.minimax_h3.weights")
 
     def load(root, *, partition):
         assert root == tmp_path
         assert pipeline.transformer is None
         loads.append(partition)
+        if failure_stage == "load" and loads == ["ref2va"]:
+            events.append("failure")
+            raise failure
         return Trunk()
 
     weights.load_transformer = load
     monkeypatch.setitem(sys.modules, weights.__name__, weights)
-    failure = RuntimeError("adapter merge failed")
 
     def merge(pipeline, partition):
         assert isinstance(pipeline.transformer, Trunk)
         merges.append(partition)
-        if merges == ["fl2va", "ref2va"]:
+        if failure_stage == "merge" and merges == ["fl2va", "ref2va"]:
+            events.append("failure")
             raise failure
 
     engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
@@ -815,18 +821,22 @@ def test_failed_partition_switch_self_heals(
     try:
         engine._prepare_model(engine._model)
         assert engine._resident_partition == "fl2va"
-        with pytest.raises(RuntimeError, match="adapter merge failed") as exc:
+        with pytest.raises(RuntimeError, match=f"{failure_stage} failed") as exc:
             engine._ensure_partition("ref2va")
         assert exc.value is failure
         assert pipeline.transformer is None
         assert engine._resident_partition is None
+        assert events[-2:] == ["failure", "clear"]
 
         engine._ensure_partition(recovery_partition)
         assert isinstance(pipeline.transformer, Trunk)
         assert engine._resident_partition == recovery_partition
         assert pipeline.partition == recovery_partition
         assert loads == ["ref2va", recovery_partition]
-        assert merges == ["fl2va", "ref2va", recovery_partition]
+        expected_merges = ["fl2va"]
+        if failure_stage == "merge":
+            expected_merges.append("ref2va")
+        assert merges == [*expected_merges, recovery_partition]
     finally:
         engine.stop()
 
