@@ -103,7 +103,13 @@ def ensure_ref2va_assets() -> None:
             f"Pika H3 Flex Ref2VA assets are missing and model downloads are "
             f"disabled. Run `{command}` to pre-fetch them."
         )
-    cache, available = _cache_disk_space()
+    try:
+        cache, available = _cache_disk_space()
+    except OSError as exc:
+        raise MiniMaxH3BackendError(
+            f"Could not check free disk space for the Pika H3 Flex Ref2VA download "
+            f"({exc}). Run `{command}` to pre-fetch the assets."
+        ) from exc
     # Match the CLI's 10% headroom for temporary download files.
     size = f"{missing_bytes / 1e9:.1f} GB"
     if available < int(missing_bytes * (1 + _DOWNLOAD_DISK_HEADROOM)):

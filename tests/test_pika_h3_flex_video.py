@@ -1932,6 +1932,30 @@ def test_ref2va_missing_error(monkeypatch, tmp_path, ref2va_cache, disabled):
         assert f"only 1.0 GB free on {tmp_path}" in message
 
 
+def test_ref2va_disk_check_failure_is_actionable(monkeypatch, ref2va_cache):
+    from rapid_mlx import _mirror
+
+    error = OSError("statvfs failed")
+
+    def disk_space():
+        raise error
+
+    monkeypatch.setattr(_mirror, "_cache_disk_space", disk_space)
+    monkeypatch.setattr(
+        _mirror,
+        "pinned_snapshot_download",
+        lambda *a, **kw: pytest.fail("download attempted after disk check failure"),
+    )
+    with pytest.raises(h3.MiniMaxH3BackendError) as exc:
+        flex.ensure_ref2va_assets()
+    assert str(exc.value) == (
+        "Could not check free disk space for the Pika H3 Flex Ref2VA download "
+        "(statvfs failed). Run `rapid-mlx pull pika-h3-flex --with-ref2va` "
+        "to pre-fetch the assets."
+    )
+    assert exc.value.__cause__ is error
+
+
 def test_ref2va_disk_counts_only_missing(monkeypatch, ref2va_cache, tmp_path):
     from rapid_mlx import _mirror
 
