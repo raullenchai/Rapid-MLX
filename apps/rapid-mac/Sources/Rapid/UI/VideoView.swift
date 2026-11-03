@@ -8,6 +8,7 @@ enum VideoReferenceLoaderError: Error, Equatable {
     case notRegularFile
     case tooLarge
     case unsupportedFormat
+    case unavailableKind(String)
 }
 
 enum VideoReferenceLoader {
@@ -55,6 +56,27 @@ enum VideoReferenceLoader {
             }
         }
         return data
+    }
+
+    /// Timed media is bounded and classified here; duration is validated by the server.
+    static func loadReference(from url: URL, capabilities: VideoCapabilities?) throws -> VideoAttachment {
+        let mime = VideoAttachment.mimeType(for: url.pathExtension)
+            ?? UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+        guard let mime,
+              let kind = ["image", "video", "audio"].first(where: { mime.hasPrefix($0 + "/") }) else {
+            throw VideoReferenceLoaderError.unsupportedFormat
+        }
+        guard let limit = capabilities?.referenceLimit(for: kind) else {
+            throw VideoReferenceLoaderError.unavailableKind(kind)
+        }
+        guard limit.formats.compactMap(VideoAttachment.mimeType(for:)).contains(mime) else {
+            throw VideoReferenceLoaderError.unsupportedFormat
+        }
+        let data = try load(from: url, maximumBytes: limit.maximumBytes)
+        if kind == "image", mimeType(for: data) != mime {
+            throw VideoReferenceLoaderError.unsupportedFormat
+        }
+        return VideoAttachment(data: data, fileName: url.lastPathComponent, mimeType: mime)
     }
 
     static func mimeType(for data: Data) -> String? {
@@ -105,6 +127,8 @@ struct VideoView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
     @Environment(\.openWindow) private var openWindow
 
+    private enum ImportTarget { case first, last, references }
+    @State private var importTarget: ImportTarget = .first
     @State private var showingReferenceImporter = false
     @State private var pendingDeletion: VideoJob?
     @State private var isSavingPreview = false
@@ -134,7 +158,7 @@ struct VideoView: View {
         .fileImporter(
             isPresented: $showingReferenceImporter,
             allowedContentTypes: acceptedReferenceContentTypes,
-            allowsMultipleSelection: false,
+            allowsMultipleSelection: importTarget == .references,
             onCompletion: importReference
         )
         .sheet(item: $pendingDeletion) { job in
@@ -445,10 +469,12 @@ struct VideoView: View {
                     ForEach(viewModel.supportedModes) { mode in Text(mode.title).tag(mode) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 240)
+                .frame(maxWidth: 440)
                 .accessibilityIdentifier("Video.ModePicker")
             }
             if viewModel.mode == .image { referenceControls }
+            if viewModel.supportsLastFrame && viewModel.mode != .references { lastFrameControls }
+            if viewModel.mode == .references { multipleReferenceControls }
             ZStack(alignment: .topLeading) {
                 if viewModel.prompt.isEmpty {
                     Text("Describe the motion, subject, camera, and mood…")
@@ -574,7 +600,7 @@ struct VideoView: View {
                     .foregroundStyle(RapidTheme.statusError)
                     .accessibilityIdentifier("Video.Reference.Remove")
             } else {
-                Button { showingReferenceImporter = true } label: {
+                Button { importTarget = .first; showingReferenceImporter = true } label: {
                     Label("Add reference image", systemImage: "photo.badge.plus")
                 }
                 .buttonStyle(.rapidSecondary)
@@ -602,60 +628,142 @@ struct VideoView: View {
         DownloadProgress.formatBytes(Int64(viewModel.referenceMaximumBytes))
     }
 
+    private var importImageLimit: VideoCapabilities.Limits.InputReferenceLimit? {
+        importTarget == .last ? viewModel.capabilities?.limits.lastFrame : viewModel.capabilities?.limits.inputReference
+    }
+
+    private var importFormats: Set<String> {
+        let formats = importTarget == .references
+            ? viewModel.capabilities?.limits.references?.image?.formats
+            : importImageLimit?.formats
+        return Set((formats ?? []).compactMap(VideoAttachment.mimeType(for:)))
+    }
+
     private var acceptedReferenceContentTypes: [UTType] {
-        [
-            ("image/jpeg", UTType.jpeg),
-            ("image/png", UTType.png),
-            ("image/webp", UTType.webP),
-        ].compactMap { mime, type in
-            viewModel.acceptedReferenceMIMETypes.contains(mime) ? type : nil
+        if importTarget == .references {
+            return viewModel.capabilities?.referenceContentTypes ?? []
         }
+        return importFormats.sorted().compactMap(VideoAttachment.contentType(for:))
+    }
+
+    private var lastFrameControls: some View {
+        HStack(spacing: RapidTheme.Space.sm) {
+            Text("Last frame")
+                .font(RapidFont.caption)
+            if let frame = viewModel.lastFrame {
+                Text(frame.fileName).lineLimit(1)
+                Button("Remove") { viewModel.setLastFrame(nil) }
+                    .accessibilityLabel("Remove last frame")
+                    .accessibilityIdentifier("Video.LastFrame.Remove")
+            } else {
+                Button {
+                    importTarget = .last
+                    showingReferenceImporter = true
+                } label: {
+                    Label("Add last frame", systemImage: "photo.badge.plus")
+                }
+                .buttonStyle(.rapidSecondary)
+                .accessibilityLabel("Add last frame")
+                .accessibilityIdentifier("Video.LastFrame.Add")
+            }
+        }
+        .accessibilityIdentifier("Video.LastFrame")
+    }
+
+    private var multipleReferenceControls: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            ForEach(Array(viewModel.references.enumerated()), id: \.offset) { index, reference in
+                HStack {
+                    Label(reference.fileName, systemImage: "photo.fill").lineLimit(1)
+                    Button("Remove") { viewModel.references.remove(at: index) }
+                        .accessibilityLabel("Remove reference file")
+                        .accessibilityIdentifier("Video.References.Remove.\(index)")
+                }
+                .font(RapidFont.caption)
+            }
+            Button {
+                importTarget = .references
+                showingReferenceImporter = true
+            } label: {
+                Label("Add reference files", systemImage: "plus")
+            }
+            .buttonStyle(.rapidSecondary)
+            .accessibilityLabel("Add reference files")
+            .accessibilityIdentifier("Video.References.Add")
+            ForEach(viewModel.capabilities?.referenceDurationHints ?? [], id: \.self) { hint in
+                Text(hint)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+            }
+            if let message = viewModel.referencesValidationMessage {
+                Text(message)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Video.References.Validation")
+            }
+        }
+        .accessibilityIdentifier("Video.References")
     }
 
     private func importReference(_ result: Result<[URL], Error>) {
         do {
-            guard let url = try result.get().first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            Task {
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                await loadReference(url)
-            }
-        } catch {
-            viewModel.errorMessage = "Rapid couldn't open that reference image."
-        }
-    }
-
-    private func loadReference(_ url: URL) async {
-        do {
-            let maximumBytes = viewModel.referenceMaximumBytes
-            let maximumPixels = viewModel.referenceMaximumPixels
-            let acceptedMIMETypes = viewModel.acceptedReferenceMIMETypes
-            let (data, mime) = try await Task.detached(priority: .userInitiated) {
-                let data = try VideoReferenceLoader.load(
-                    from: url,
-                    maximumBytes: maximumBytes,
-                    maximumPixels: maximumPixels
-                )
-                guard let mime = VideoReferenceLoader.mimeType(for: data) else {
-                    throw VideoReferenceLoaderError.unsupportedFormat
+            let urls = try result.get()
+            let target = importTarget
+            let capabilities = viewModel.capabilities
+            if target == .references {
+                let total = capabilities?.limits.references?.maximumTotal ?? 0
+                guard urls.count <= total - viewModel.references.count else {
+                    viewModel.errorMessage = String(localized: "Too many reference files for this model.")
+                    return
                 }
-                return (data, mime)
-            }.value
-            guard maximumBytes == viewModel.referenceMaximumBytes,
-                  maximumPixels == viewModel.referenceMaximumPixels,
-                  acceptedMIMETypes == viewModel.acceptedReferenceMIMETypes else { return }
-            guard acceptedMIMETypes.contains(mime) else {
-                viewModel.errorMessage = "Choose a valid JPEG, PNG, or WebP image."
-                return
             }
-            viewModel.setReference(.init(data: data, fileName: url.lastPathComponent, mimeType: mime))
-            viewModel.errorMessage = nil
-        } catch VideoReferenceLoaderError.tooLarge {
-            viewModel.errorMessage = "That reference image exceeds this model's size limit."
-        } catch VideoReferenceLoaderError.unsupportedFormat {
-            viewModel.errorMessage = "Choose a valid JPEG, PNG, or WebP image."
+            let alias = viewModel.selectedAlias
+            let mode = viewModel.mode
+            let formats = importFormats
+            let limit = importImageLimit
+            let maximumBytes = min(limit?.maximumBytes ?? 0, VideoClient.maxReferenceBytes)
+            let maximumPixels = target == .references ? nil : limit?.maximumPixels
+            Task {
+                do {
+                    var files: [VideoAttachment] = []
+                    for url in urls {
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                        let file = try await Task.detached(priority: .userInitiated) {
+                            if target == .references {
+                                return try VideoReferenceLoader.loadReference(from: url, capabilities: capabilities)
+                            }
+                            let data = try VideoReferenceLoader.load(
+                                from: url, maximumBytes: maximumBytes, maximumPixels: maximumPixels
+                            )
+                            guard let mime = VideoReferenceLoader.mimeType(for: data), formats.contains(mime) else {
+                                throw VideoReferenceLoaderError.unsupportedFormat
+                            }
+                            return VideoAttachment(data: data, fileName: url.lastPathComponent, mimeType: mime)
+                        }.value
+                        files.append(file)
+                    }
+                    guard capabilities == viewModel.capabilities, alias == viewModel.selectedAlias,
+                          mode == viewModel.mode else { return }
+                    switch target {
+                    case .first: viewModel.setReference(files.first)
+                    case .last: viewModel.setLastFrame(files.first)
+                    case .references:
+                        guard viewModel.addReferences(files) else { return }
+                    }
+                    viewModel.errorMessage = nil
+                } catch VideoReferenceLoaderError.unavailableKind(let kind) {
+                    viewModel.errorMessage = VideoCapabilities.unavailableReferenceMessage(for: kind)
+                } catch VideoReferenceLoaderError.tooLarge {
+                    viewModel.errorMessage = String(localized: "That reference file exceeds this model's size limit.")
+                } catch VideoReferenceLoaderError.unsupportedFormat {
+                    viewModel.errorMessage = String(localized: "That reference format is not supported by this model.")
+                } catch {
+                    viewModel.errorMessage = String(localized: "Rapid couldn't open that reference file.")
+                }
+            }
         } catch {
-            viewModel.errorMessage = "Rapid couldn't open that reference image."
+            viewModel.errorMessage = String(localized: "Rapid couldn't open that reference file.")
         }
     }
 

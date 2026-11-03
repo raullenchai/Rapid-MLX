@@ -312,6 +312,36 @@ struct VideoClientTests {
         #expect(body.contains("reference-bytes"))
     }
 
+    @Test("H3 create sends last_frame and repeated references with their filenames and MIME types")
+    func h3CreateMultipart() async throws {
+        let client = makeClient()
+        VideoStubProtocol.response = (200, Data(Self.jobJSON.utf8))
+        let end = VideoAttachment(data: Data("end".utf8), fileName: "end.png", mimeType: "image/png")
+        let references = [
+            VideoAttachment(data: Data("subject".utf8), fileName: "subject.jpg", mimeType: "image/jpeg"),
+            VideoAttachment(data: Data("motion".utf8), fileName: "motion.mp4", mimeType: "video/mp4"),
+        ]
+        for useReferences in [false, true] {
+            var request = VideoCreateRequest(
+                prompt: "A scene", model: "pika-h3-flex", seconds: 5, size: "512x512", seed: 42,
+                reference: nil, referenceFileName: nil, referenceMIMEType: nil
+            )
+            request.lastFrame = useReferences ? nil : end
+            request.references = useReferences ? references : []
+            _ = try await client.create(request, port: 8123, bearer: "secret")
+            let body = String(decoding: try #require(VideoStubProtocol.bodies.last), as: UTF8.self)
+            if useReferences {
+                #expect(body.components(separatedBy: "name=\"references\"").count - 1 == 2)
+                #expect(body.contains("name=\"references\"; filename=\"subject.jpg\"\r\nContent-Type: image/jpeg\r\n\r\nsubject"))
+                #expect(body.contains("name=\"references\"; filename=\"motion.mp4\"\r\nContent-Type: video/mp4\r\n\r\nmotion"))
+                #expect(!body.contains("name=\"last_frame\""))
+            } else {
+                #expect(body.contains("name=\"last_frame\"; filename=\"end.png\"\r\nContent-Type: image/png\r\n\r\nend"))
+                #expect(!body.contains("name=\"references\""))
+            }
+        }
+    }
+
     @Test("Nested server errors remain actionable")
     func nestedError() async throws {
         let client = makeClient()

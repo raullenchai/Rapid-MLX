@@ -23228,6 +23228,186 @@
           }
         }
       }
+    },
+    "Add at least one image or video reference." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请至少添加一个图像或视频参考素材。"
+          }
+        }
+      }
+    },
+    "Add last frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加尾帧"
+          }
+        }
+      }
+    },
+    "Add reference files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加参考文件"
+          }
+        }
+      }
+    },
+    "Audio references: %@–%@ seconds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频参考：%@–%@ 秒。"
+          }
+        }
+      }
+    },
+    "Last frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尾帧"
+          }
+        }
+      }
+    },
+    "Rapid couldn't open that reference file." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapid 无法打开该参考文件。"
+          }
+        }
+      }
+    },
+    "Reference-to-video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "参考素材生成视频"
+          }
+        }
+      }
+    },
+    "Reference-to-video is unavailable for this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型不支持参考素材生成视频。"
+          }
+        }
+      }
+    },
+    "Remove last frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除尾帧"
+          }
+        }
+      }
+    },
+    "Remove reference file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除参考文件"
+          }
+        }
+      }
+    },
+    "That reference file exceeds this model's size limit." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "该参考文件超过此模型的大小限制。"
+          }
+        }
+      }
+    },
+    "That reference format is not supported by this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型不支持该参考文件格式。"
+          }
+        }
+      }
+    },
+    "This model's server does not accept audio references." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型的服务器不接受音频参考。"
+          }
+        }
+      }
+    },
+    "This model's server does not accept image references." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型的服务器不接受图像参考。"
+          }
+        }
+      }
+    },
+    "This model's server does not accept video references." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型的服务器不接受视频参考。"
+          }
+        }
+      }
+    },
+    "Too many reference files for this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "参考文件数量超过此模型的限制。"
+          }
+        }
+      }
+    },
+    "Too many references of this type for this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此类参考素材的数量超过此模型的限制。"
+          }
+        }
+      }
+    },
+    "Video references: %@–%@ seconds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频参考：%@–%@ 秒。"
+          }
+        }
+      }
     }
   }
 }

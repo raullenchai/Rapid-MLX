@@ -1254,6 +1254,19 @@ from videox_fun_mlx.pipeline.pipeline_cogvideox_fun_inpaint import CogVideoXFunI
 from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
 from rapid_mlx.runtime.video_lane import VideoEngine
 from rapid_mlx.video.encoding import encode_rgb_video
+from mlx_vlm.generate import (
+    VideoGenerationRequest,
+    generate_video as generate_h3_video,
+    load_video_generation_model,
+)
+from mlx_vlm.generate.video_generation import VideoReference
+from mlx_vlm.models.minimax_h3 import processing as h3_processing
+from mlx_vlm.models.minimax_h3.references import MiniMaxH3PreparedReference, validate_references
+from mlx_vlm.models.minimax_h3.weights import load_transformer
+from rapid_mlx.video.minimax_h3 import MiniMaxH3VideoEngine
+from rapid_mlx.video.pika_h3_flex import PikaH3FlexVideoEngine
+from safetensors import safe_open
+from huggingface_hub import try_to_load_from_cache
 import imageio_ffmpeg
 from rapid_mlx.runtime.video_lane import registered_wan_runtime_issue
 assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None
@@ -1281,7 +1294,15 @@ with tempfile.TemporaryDirectory() as directory:
         family="smoke",
     )
     assert output.stat().st_size > 0
-print("mlx_video runtime + VideoToolbox encode/crop OK")' 2>&1)" || {
+    # H3 outputs synchronized audio. Exercise AAC conversion and MP4 audio
+    # remuxing with the same bounded encoder shipped in the signed bundle.
+    audio_output = Path(directory) / "smoke-audio.mp4"
+    encode_rgb_video(
+        np.zeros((2, 32, 16, 3), dtype=np.uint8), audio_output, 2,
+        audio=np.zeros((2, 24000), dtype=np.float32), sampling_rate=24000,
+    )
+    assert audio_output.stat().st_size > 0
+print("video runtimes including H3 + VideoToolbox encode/crop + AAC audio OK")' 2>&1)" || {
         echo "ERR: bundled video runtime or encoder smoke failed:" >&2
         echo "$VIDEO_OUT" >&2
         exit 3

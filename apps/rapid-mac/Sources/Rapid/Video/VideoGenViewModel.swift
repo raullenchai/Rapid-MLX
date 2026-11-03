@@ -13,21 +13,26 @@ final class VideoGenViewModel {
     enum Mode: String, CaseIterable, Identifiable {
         case text
         case image
+        case references
 
         var id: String { rawValue }
         var title: String {
-            self == .text ? String(localized: "Text") : String(localized: "Image")
+            switch self {
+            case .text: String(localized: "Text")
+            case .image: String(localized: "Image")
+            case .references: String(localized: "Reference-to-video")
+            }
         }
         var capability: VideoModelCapability {
-            self == .text ? .textToVideo : .imageToVideo
+            switch self {
+            case .text: .textToVideo
+            case .image: .imageToVideo
+            case .references: .referenceToVideo
+            }
         }
     }
 
-    struct ReferenceImage: Equatable {
-        let data: Data
-        let fileName: String
-        let mimeType: String
-    }
+    typealias ReferenceImage = VideoAttachment
 
     var videoModels: [ModelEntry] = []
     var catalogLoaded = false
@@ -42,6 +47,8 @@ final class VideoGenViewModel {
     var size = ""
     var seed = Int.random(in: 1...999_999)
     var referenceImage: ReferenceImage?
+    var lastFrame: VideoAttachment?
+    var references: [VideoAttachment] = []
 
     var capabilities: VideoCapabilities?
     var jobs: [VideoJob] = []
@@ -101,6 +108,7 @@ final class VideoGenViewModel {
     var supportedModes: [Mode] {
         guard let model = selectedModel else { return [] }
         return Mode.allCases.filter { candidate in
+            if candidate == .references { return capabilities?.supportsReferences == true }
             guard model.videoCapabilities.contains(candidate.capability) else { return false }
             if candidate == .image {
                 return capabilities?.supportsImageInput == true
@@ -115,6 +123,10 @@ final class VideoGenViewModel {
     var referenceMaximumPixels: Int? { capabilities?.referenceMaximumPixels }
     var acceptedReferenceMIMETypes: Set<String> {
         capabilities?.acceptedReferenceMIMETypes ?? []
+    }
+    var supportsLastFrame: Bool { capabilities?.supportsLastFrame == true }
+    var referencesValidationMessage: String? {
+        capabilities?.referenceValidationMessage(references)
     }
 
     var isSelectedModelEligible: Bool {
@@ -143,7 +155,12 @@ final class VideoGenViewModel {
             && sizePresets.contains(size)
             && durationPresets.contains(seconds)
             && !isSubmitting
-            && (mode == .text || referenceImage != nil)
+            && (mode != .image || referenceImage != nil)
+            && (mode != .references || referencesValidationMessage == nil)
+            && (mode != .references || (referenceImage == nil && lastFrame == nil))
+            && (mode == .references || references.isEmpty)
+            && (mode == .references || frameIsValid(referenceImage, limit: capabilities?.limits.inputReference))
+            && (mode == .references || frameIsValid(lastFrame, limit: capabilities?.limits.lastFrame))
     }
 
     var hasActiveJobs: Bool {
@@ -229,11 +246,52 @@ final class VideoGenViewModel {
     func selectMode(_ next: Mode) {
         guard supportedModes.contains(next) else { return }
         mode = next
-        if next == .text { referenceImage = nil }
+        if next == .references {
+            referenceImage = nil
+            lastFrame = nil
+        } else {
+            references = []
+            if next == .text { referenceImage = nil }
+        }
     }
 
     func setReference(_ reference: ReferenceImage?) {
         referenceImage = reference
+        if reference != nil {
+            references = []
+            if mode == .references { mode = .image }
+        }
+    }
+
+    func setLastFrame(_ frame: VideoAttachment?) {
+        lastFrame = frame
+        if frame != nil {
+            references = []
+            if mode == .references { mode = .text }
+        }
+    }
+
+    @discardableResult
+    func addReferences(_ additions: [VideoAttachment]) -> Bool {
+        guard let capabilities else { return false }
+        let proposed = references + additions
+        if let message = capabilities.referenceValidationMessage(proposed, requireVisual: false) {
+            errorMessage = message
+            return false
+        }
+        references = proposed
+        referenceImage = nil
+        lastFrame = nil
+        mode = .references
+        errorMessage = nil
+        return true
+    }
+
+    private func frameIsValid(_ frame: VideoAttachment?, limit: VideoCapabilities.Limits.InputReferenceLimit?) -> Bool {
+        guard let frame else { return true }
+        guard let limit, limit.accepted != false, !frame.data.isEmpty,
+              frame.data.count <= limit.maximumBytes else { return false }
+        return limit.formats.compactMap(VideoAttachment.mimeType(for:)).contains(frame.mimeType)
     }
 
     func selectSize(_ value: String) {
@@ -387,7 +445,9 @@ final class VideoGenViewModel {
                     seed: seed,
                     reference: reference?.data,
                     referenceFileName: reference?.fileName,
-                    referenceMIMEType: reference?.mimeType
+                    referenceMIMEType: reference?.mimeType,
+                    lastFrame: mode == .references ? nil : lastFrame,
+                    references: mode == .references ? references : []
                 ),
                 port: context.port,
                 bearer: context.bearer
@@ -533,11 +593,15 @@ final class VideoGenViewModel {
         selectedJobID = nil
         previewURL = nil
         referenceImage = nil
+        lastFrame = nil
+        references = []
         errorMessage = nil
         if !supportedModes.contains(mode) { mode = supportedModes.first ?? .text }
     }
 
     private func reconcileControls() {
+        if !supportsLastFrame { lastFrame = nil }
+        if capabilities?.supportsReferences != true { references = [] }
         let modes = supportedModes.filter {
             capabilities?.modes.contains($0.capability) == true
         }

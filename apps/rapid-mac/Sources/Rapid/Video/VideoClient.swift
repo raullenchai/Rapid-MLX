@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import UniformTypeIdentifiers
 
 enum VideoJobStatus: String, Codable, Sendable, Hashable {
     case queued
@@ -154,12 +155,47 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             }
         }
 
+        struct ReferencesLimit: Decodable, Sendable, Hashable {
+            struct MediaLimit: Decodable, Sendable, Hashable {
+                struct Duration: Decodable, Sendable, Hashable {
+                    let minimum: Double
+                    let maximum: Double
+                }
+                let maximum: Int
+                let maximumBytes: Int
+                let formats: [String]
+                let durationSeconds: Duration?
+                enum CodingKeys: String, CodingKey {
+                    case maximum, formats
+                    case maximumBytes = "maximum_bytes"
+                    case durationSeconds = "duration_seconds"
+                }
+            }
+            let field: String
+            let maximumTotal: Int
+            let image: MediaLimit?
+            let video: MediaLimit?
+            let audio: MediaLimit?
+            let requiresVisual: Bool
+            let exclusiveWith: [String]
+            let totalDurationSecondsPerKind: Double?
+            enum CodingKeys: String, CodingKey {
+                case field, image, video, audio
+                case maximumTotal = "maximum_total"
+                case requiresVisual = "requires_visual"
+                case exclusiveWith = "exclusive_with"
+                case totalDurationSecondsPerKind = "total_duration_seconds_per_kind"
+            }
+        }
+
         let size: SizeLimit
         let seconds: SecondsLimit
         let fps: FPSLimit
         let frames: FramesLimit
         let workload: WorkloadLimit
         let inputReference: InputReferenceLimit?
+        let lastFrame: InputReferenceLimit?
+        let references: ReferencesLimit?
 
         init(
             size: SizeLimit,
@@ -167,7 +203,9 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             fps: FPSLimit,
             frames: FramesLimit,
             workload: WorkloadLimit,
-            inputReference: InputReferenceLimit? = nil
+            inputReference: InputReferenceLimit? = nil,
+            lastFrame: InputReferenceLimit? = nil,
+            references: ReferencesLimit? = nil
         ) {
             self.size = size
             self.seconds = seconds
@@ -175,11 +213,27 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
             self.frames = frames
             self.workload = workload
             self.inputReference = inputReference
+            self.lastFrame = lastFrame
+            self.references = references
         }
 
         enum CodingKeys: String, CodingKey {
             case size, seconds, fps, frames, workload
             case inputReference = "input_reference"
+            case lastFrame = "last_frame"
+            case references
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            size = try values.decode(SizeLimit.self, forKey: .size)
+            seconds = try values.decode(SecondsLimit.self, forKey: .seconds)
+            fps = try values.decode(FPSLimit.self, forKey: .fps)
+            frames = try values.decode(FramesLimit.self, forKey: .frames)
+            workload = try values.decode(WorkloadLimit.self, forKey: .workload)
+            inputReference = try values.decodeIfPresent(InputReferenceLimit.self, forKey: .inputReference)
+            lastFrame = try? values.decodeIfPresent(InputReferenceLimit.self, forKey: .lastFrame)
+            references = try? values.decodeIfPresent(ReferencesLimit.self, forKey: .references)
         }
     }
 
@@ -243,6 +297,94 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         modes.contains(.imageToVideo) && usableReferenceLimits
     }
 
+    var supportsLastFrame: Bool {
+        guard let limit = limits.lastFrame else { return false }
+        return limit.accepted != false && limit.maximumBytes > 0
+            && (limit.maximumPixels.map { $0 > 0 } ?? true)
+            && limit.formats.compactMap(VideoAttachment.mimeType(for:)).contains { $0.hasPrefix("image/") }
+    }
+
+    func referenceLimit(for kind: String) -> Limits.ReferencesLimit.MediaLimit? {
+        guard let references = limits.references else { return nil }
+        switch kind {
+        case "image": return references.image
+        case "video": return references.video
+        case "audio": return references.audio
+        default: return nil
+        }
+    }
+
+    var referenceMIMETypes: Set<String> {
+        Set(["image", "video", "audio"].flatMap { kind in
+            guard let limit = referenceLimit(for: kind), limit.maximum > 0,
+                  limit.maximumBytes > 0 else { return [String]() }
+            return limit.formats.compactMap(VideoAttachment.mimeType(for:))
+                .filter { $0.hasPrefix(kind + "/") }
+        })
+    }
+
+    var referenceContentTypes: [UTType] {
+        referenceMIMETypes.sorted().compactMap(VideoAttachment.contentType(for:))
+    }
+
+    var supportsReferences: Bool {
+        guard modes.contains(.referenceToVideo), let limit = limits.references,
+              limit.field == "references", limit.maximumTotal > 0 else { return false }
+        return !referenceMIMETypes.isEmpty
+    }
+
+    static func unavailableReferenceMessage(for kind: String) -> String {
+        switch kind {
+        case "video": String(localized: "This model's server does not accept video references.")
+        case "audio": String(localized: "This model's server does not accept audio references.")
+        default: String(localized: "This model's server does not accept image references.")
+        }
+    }
+
+    var referenceDurationHints: [String] {
+        ["video", "audio"].compactMap { kind in
+            guard let duration = referenceLimit(for: kind)?.durationSeconds else { return nil }
+            let minimum = duration.minimum.formatted()
+            let maximum = duration.maximum.formatted()
+            return kind == "video"
+                ? String(localized: "Video references: \(minimum)–\(maximum) seconds.")
+                : String(localized: "Audio references: \(minimum)–\(maximum) seconds.")
+        }
+    }
+
+    func referenceValidationMessage(_ files: [VideoAttachment], requireVisual: Bool = true) -> String? {
+        guard supportsReferences, let limits = limits.references else {
+            return String(localized: "Reference-to-video is unavailable for this model.")
+        }
+        guard files.count <= limits.maximumTotal else {
+            return String(localized: "Too many reference files for this model.")
+        }
+        for kind in ["image", "video", "audio"] {
+            let selected = files.filter { $0.kind == kind }
+            guard !selected.isEmpty else { continue }
+            guard let limit = referenceLimit(for: kind) else {
+                return Self.unavailableReferenceMessage(for: kind)
+            }
+            guard selected.count <= limit.maximum else {
+                return String(localized: "Too many references of this type for this model.")
+            }
+            let formats = Set(limit.formats.compactMap(VideoAttachment.mimeType(for:)))
+            guard selected.allSatisfy({ formats.contains($0.mimeType) }) else {
+                return String(localized: "That reference format is not supported by this model.")
+            }
+            guard selected.allSatisfy({ !$0.data.isEmpty && $0.data.count <= limit.maximumBytes }) else {
+                return String(localized: "That reference file exceeds this model's size limit.")
+            }
+        }
+        guard files.allSatisfy({ $0.kind != nil }) else {
+            return String(localized: "That reference format is not supported by this model.")
+        }
+        if requireVisual && (files.isEmpty || (limits.requiresVisual && !files.contains { $0.kind == "image" || $0.kind == "video" })) {
+            return String(localized: "Add at least one image or video reference.")
+        }
+        return nil
+    }
+
     /// Conservative, familiar output shapes. The API remains authoritative:
     /// candidates outside its dimensions, alignment, or area are removed.
     var sizePresets: [String] {
@@ -284,7 +426,9 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     }
 
     func durationPresets(for size: String) -> [Int] {
-        let candidates = Set([limits.seconds.minimum, 1, 2, 4]).sorted()
+        let candidates = Set(limits.seconds.minimum >= 5
+            ? [limits.seconds.minimum, limits.seconds.default, 10, limits.seconds.maximum]
+            : [limits.seconds.minimum, 1, 2, 4]).sorted()
         let values = candidates.filter {
             Self.contains($0, minimum: limits.seconds.minimum, maximum: limits.seconds.maximum)
                 && workloadAllows(seconds: $0, size: size)
@@ -401,7 +545,11 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         let (steppedFrames, stepOverflow) = steps.multipliedReportingOverflow(by: frameStep)
         let (normalizedFrames, offsetOverflow) = steppedFrames.addingReportingOverflow(frameOffset)
         guard !stepOverflow, !offsetOverflow else { return false }
-        let frames = max(limits.frames.minimum, normalizedFrames)
+        // H3 bounds its seconds-to-frame normalization at the advertised
+        // ceiling, so the longest duration remains selectable on its grid.
+        let frames = family == "minimax-h3"
+            ? min(limits.frames.maximum, max(limits.frames.minimum, normalizedFrames))
+            : max(limits.frames.minimum, normalizedFrames)
         guard frames <= limits.frames.maximum else { return false }
         let (pixelCount, pixelOverflow) = width.multipliedReportingOverflow(by: height)
         let (workload, workloadOverflow) = pixelCount.multipliedReportingOverflow(by: frames)
@@ -435,6 +583,45 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
     }
 }
 
+struct VideoAttachment: Sendable, Equatable {
+    let data: Data
+    let fileName: String
+    let mimeType: String
+
+    var kind: String? {
+        ["image", "video", "audio"].first { mimeType.hasPrefix($0 + "/") }
+    }
+
+    static func mimeType(for format: String) -> String? {
+        switch format.lowercased() {
+        case "jpg", "jpeg", "image/jpeg": "image/jpeg"
+        case "png", "image/png": "image/png"
+        case "webp", "image/webp": "image/webp"
+        case "mp4", "video/mp4": "video/mp4"
+        case "mov", "video/quicktime": "video/quicktime"
+        case "webm", "video/webm": "video/webm"
+        case "mkv", "video/x-matroska": "video/x-matroska"
+        case "wav", "audio/wav": "audio/wav"
+        case "mp3", "audio/mpeg": "audio/mpeg"
+        case "m4a", "audio/mp4": "audio/mp4"
+        case "flac", "audio/flac": "audio/flac"
+        case "aac", "audio/aac": "audio/aac"
+        case "ogg", "audio/ogg": "audio/ogg"
+        default: nil
+        }
+    }
+
+    static func contentType(for mime: String) -> UTType? {
+        switch mime {
+        case "video/webm": UTType(filenameExtension: "webm") ?? UTType(importedAs: "org.webmproject.webm", conformingTo: .movie)
+        case "video/x-matroska": UTType(filenameExtension: "mkv") ?? UTType(importedAs: "org.matroska.mkv", conformingTo: .movie)
+        case "audio/ogg": UTType(filenameExtension: "ogg") ?? UTType(importedAs: "org.xiph.ogg-audio", conformingTo: .audio)
+        default: UTType(mimeType: mime)
+        }
+    }
+
+}
+
 struct VideoCreateRequest: Sendable, Equatable {
     let prompt: String
     let model: String
@@ -444,6 +631,8 @@ struct VideoCreateRequest: Sendable, Equatable {
     let reference: Data?
     let referenceFileName: String?
     let referenceMIMEType: String?
+    var lastFrame: VideoAttachment? = nil
+    var references: [VideoAttachment] = []
 }
 
 enum VideoClientError: Error, LocalizedError, Equatable {
@@ -533,7 +722,9 @@ struct VideoClient: VideoClientProtocol, @unchecked Sendable {
                     mime: value.referenceMIMEType ?? "image/png",
                     data: $0
                 )
-            }
+            },
+            files: (value.lastFrame.map { [(field: "last_frame", name: $0.fileName, mime: $0.mimeType, data: $0.data)] } ?? [])
+                + value.references.map { (field: "references", name: $0.fileName, mime: $0.mimeType, data: $0.data) }
         )
         let job: VideoJob = try await decode(request)
         guard Self.isValidJobID(job.id) else { throw VideoClientError.invalidJobID }
@@ -623,7 +814,8 @@ struct VideoClient: VideoClientProtocol, @unchecked Sendable {
     static func multipartBody(
         boundary: String,
         fields: [(String, String)],
-        file: (field: String, name: String, mime: String, data: Data)?
+        file: (field: String, name: String, mime: String, data: Data)?,
+        files: [(field: String, name: String, mime: String, data: Data)] = []
     ) -> Data {
         var body = Data()
         func append(_ string: String) { body.append(Data(string.utf8)) }
@@ -633,7 +825,7 @@ struct VideoClient: VideoClientProtocol, @unchecked Sendable {
             append(value)
             append("\r\n")
         }
-        if let file {
+        for file in (file.map { [$0] } ?? []) + files {
             let fileName = escapedMultipartFilename(file.name)
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"\(file.field)\"; filename=\"\(fileName)\"\r\n")

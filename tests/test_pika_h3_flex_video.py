@@ -870,6 +870,9 @@ def reference_app(monkeypatch, tmp_path):
     async def run(job, **kw):
         calls.append(kw)
 
+    monkeypatch.setattr(
+        video, "_reference_decoder_kinds", lambda: frozenset({"video", "audio"})
+    )
     monkeypatch.setattr(video, "_run_job", run)
     monkeypatch.setattr(video, "_video_engine", lambda: fake)
     video.configure_video_jobs(tmp_path / "jobs")
@@ -2205,3 +2208,46 @@ def test_ref2va_progress_counts_only_missing_assets(monkeypatch, ref2va_cache):
     assert events[0] == ("downloading", 0, expected)
     assert events[-2] == ("downloading", expected, expected)
     assert events[-1] == (None, 0, 0)
+
+
+@pytest.mark.parametrize("kind", ["video", "audio"])
+def test_reference_http_rejects_missing_decoder(reference_app, monkeypatch, kind):
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: frozenset())
+    monkeypatch.setattr(
+        video,
+        "_probe_packed_reference",
+        lambda path, field: (kind, "mp4" if kind == "video" else "wav", 2.0),
+    )
+    response = post_references(client, ["image", kind])
+    assert response.status_code == 503
+    assert response.json()["detail"] == f"{kind} references require media decoders"
+    assert not calls
+
+
+def test_reference_http_without_ffprobe_keeps_existing_error(
+    reference_app, monkeypatch
+):
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: frozenset())
+    monkeypatch.setattr(video.shutil, "which", lambda name: None)
+    response = post_references(client, ["image", "video"])
+    assert response.status_code == 503
+    assert response.json()["detail"] == "references require ffprobe"
+    assert not calls
+
+
+def test_reference_http_accepts_images_without_timed_decoders(
+    reference_app, monkeypatch
+):
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: frozenset())
+    response = post_references(client, ["image"])
+    assert response.status_code == 200, response.text
+    assert [kind for kind, _ in calls[-1]["references"]] == ["image"]
