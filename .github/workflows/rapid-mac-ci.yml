@@ -358,10 +358,7 @@ jobs:
         working-directory: apps/rapid-mac
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Print release toolchain
-        run: |
-          xcodebuild -version
-          swift --version
+      - uses: ./.github/actions/select-release-xcode
       - name: Compile release configuration
         run: swift build -c release
 

@@ -1,0 +1,26 @@
+# Release toolchain parity: PR compile checks and release lanes use identical Xcode.
+name: Select release Xcode
+description: Select and verify the shared release toolchain.
+runs:
+  using: composite
+  steps:
+    - name: Select and verify release Xcode
+      shell: bash
+      run: |
+        set -euo pipefail
+        readonly RELEASE_XCODE_VERSION="16.4"
+        app="/Applications/Xcode_${RELEASE_XCODE_VERSION}.app"
+        if [[ ! -d "$app" ]]; then
+          echo "::error::Required release Xcode is missing: $app"
+          exit 1
+        fi
+        sudo xcode-select -s "$app/Contents/Developer"
+        export DEVELOPER_DIR="$app/Contents/Developer"
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+        version="$(xcodebuild -version)"
+        printf '%s\n' "$version"
+        swift --version
+        if [[ "${version%%$'\n'*}" != "Xcode $RELEASE_XCODE_VERSION" ]]; then
+          echo "::error::Selected Xcode does not match release Xcode $RELEASE_XCODE_VERSION"
+          exit 1
+        fi

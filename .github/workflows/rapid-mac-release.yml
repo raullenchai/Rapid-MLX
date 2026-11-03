@@ -95,7 +95,7 @@ jobs:
     if: >-
       github.event_name != 'workflow_dispatch'
       || (inputs.promote_run_id == '' && inputs.promote_sha == '')
-    runs-on: macos-15   # default Xcode 16 → Swift 6.0 (Package.swift tools 6.0)
+    runs-on: macos-15   # release Xcode selected by the shared desktop action
     timeout-minutes: 120
     outputs:
       # Published so the release-creating job can decide "--prerelease" without
