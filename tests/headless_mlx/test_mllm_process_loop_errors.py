@@ -401,7 +401,6 @@ def test_scheduler_step_marks_internal_failure_retryable_without_leaking_details
     caplog,
 ) -> None:
     """A runtime batch failure is an observable, retryable engine error."""
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_scheduler")
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     request = MLLMRequest(request_id="runtime-failure", prompt="hello")
     scheduler.requests = {request.request_id: request}

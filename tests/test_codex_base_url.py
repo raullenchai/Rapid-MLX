@@ -278,7 +278,6 @@ def test_cli_unusable_saved_endpoint_falls_back(cli_runner, tmp_path, contents, 
 def test_cli_endpoint_credentials_are_not_printed(
     tmp_path, monkeypatch, capsys, caplog, endpoint_source, refresh_fails
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.agents.testing")
     import httpx
 
     from rapid_mlx.cli import agents_command
@@ -345,7 +344,6 @@ def test_cli_endpoint_credentials_are_not_printed(
 def test_cli_derived_request_url_credentials_are_not_printed(
     monkeypatch, capsys, caplog, endpoint, secrets
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.agents.testing")
     import httpx
 
     from rapid_mlx.cli import agents_command

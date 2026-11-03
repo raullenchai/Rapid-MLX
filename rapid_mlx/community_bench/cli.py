@@ -26,7 +26,6 @@ from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
 from .local_runner import (
     LocalBenchmarkError,
-    _defer_executor_start_interrupt,
     _is_deepseek_v41_benchmark_target,
     abandoned_native_worker,
     refuse_if_memory_does_not_fit,
@@ -542,8 +541,6 @@ def _benchmark_command(args) -> int:
                     )
                     timer.daemon = True
                     timer.start()
-                if _defer_executor_start_interrupt():
-                    return
                 raise KeyboardInterrupt
 
             main_thread = threading.current_thread() is threading.main_thread()

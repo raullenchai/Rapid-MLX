@@ -234,21 +234,10 @@ def test_main_bootstrap_quiets_transport_and_advisory(monkeypatch, capsys, debug
             logger.filters = filters
 
 
-@pytest.fixture
-def transformers_config_logger(monkeypatch, caplog):
-    # A prior tokenizer/grammar import installs a non-propagating library
-    # parent. These filter tests emit synthetic records on the exact child;
-    # capture there, independently of the library's console logging policy.
-    logger = logging.getLogger("transformers.configuration_utils")
-    monkeypatch.setattr(logger, "handlers", [caplog.handler])
-    monkeypatch.setattr(logger, "propagate", False)
-    return logger
-
-
-def test_transformers_base_config_mismatch_context(caplog, transformers_config_logger):
+def test_transformers_base_config_mismatch_context(caplog):
     from rapid_mlx._hf_logging import suppress_transformers_base_config_mismatch
 
-    logger = transformers_config_logger
+    logger = logging.getLogger("transformers.configuration_utils")
     original_filters = list(logger.filters)
     msg = "You are using a model of type `%s` to instantiate a model of type `%s`."
     with caplog.at_level(logging.WARNING, logger=logger.name):
@@ -269,7 +258,7 @@ def test_transformers_base_config_mismatch_context(caplog, transformers_config_l
 
 
 def test_tts_security_loader_suppresses_base_config_mismatch(
-    tmp_path, monkeypatch, caplog, transformers_config_logger
+    tmp_path, monkeypatch, caplog
 ):
     import sys
     import types
@@ -282,7 +271,7 @@ def test_tts_security_loader_suppresses_base_config_mismatch(
         "You are using a model of type `voxcpm2` to instantiate a model of type ``. "
         "This is not supported for all configurations of models and can yield errors."
     )
-    logger = transformers_config_logger
+    logger = logging.getLogger("transformers.configuration_utils")
 
     def load_checkpoint(_path):
         logger.warning(message)

@@ -412,7 +412,6 @@ def test_buffered_structured_shapes(monkeypatch, req):
 
 
 def test_nemotron_boundaries_and_logging(caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.tool_parsers.nemotron_tool_parser")
     from rapid_mlx.tool_parsers.nemotron_tool_parser import NemotronToolParser
 
     pp = NemotronToolParser()
@@ -686,7 +685,6 @@ def test_nemotron_rejected_route_every_byte_boundary(text, expected):
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_forced_choice_uses_original_authorization(stream, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.routes.chat")
     text = '<tool_call>{"name":"send_email","arguments":{"body":"hi"}}</tool_call>'
     result = _route_reply(
         text,

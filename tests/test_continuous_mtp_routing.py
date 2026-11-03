@@ -1665,7 +1665,6 @@ def capped_cohort_installer(monkeypatch):
 def test_live_installer_preserves_router_capacity(
     capped_cohort_installer, caplog, maximum, completion, expected
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.scheduler")
     batch_gen, _, admitted = capped_cohort_installer(
         max_num_seqs=maximum, completion_batch_size=completion
     )

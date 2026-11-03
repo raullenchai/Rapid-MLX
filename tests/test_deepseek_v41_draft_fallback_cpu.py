@@ -30,7 +30,6 @@ def kernels():
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
 def test_deferred_flags_isolate_failure_and_warn_once(kernels, bad, caplog):
-    caplog.set_level("WARNING", logger="draft_fallback_cpu")
     draft = SimpleNamespace(adapter=SimpleNamespace(), w=SimpleNamespace())
     kernels.begin_round(draft)
     x = np.ones((5, 32))
@@ -303,7 +302,6 @@ def test_propose_projects_only_consumed_rows(kernels, depth, device, packed):
 
 def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
     """Four tiny target owners produce eight warnings, not repeated checks."""
-    caplog.set_level("WARNING", logger="target_qualification_cpu")
     path = (
         Path(__file__).resolve().parents[1]
         / "rapid_mlx/models/deepseek_v41_native/head_gemv.py"
@@ -352,7 +350,6 @@ def test_target_qualification_failure_is_cached_per_owner_weight(caplog):
 def test_serving_retries_at_existing_boundary_and_restores_cache(
     kernels, failure, caplog
 ):
-    caplog.set_level("WARNING", logger="draft_fallback_cpu")
     from dataclasses import dataclass
 
     from tests.test_deepseek_v41_draft_depth import DraftDepthPolicy

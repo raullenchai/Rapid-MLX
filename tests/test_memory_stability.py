@@ -826,7 +826,6 @@ def test_generation_recovery_continues_after_cache_release_failure(
     caplog: pytest.LogCaptureFixture,
     release_raises: bool,
 ) -> None:
-    caplog.set_level("WARNING", logger="rapid_mlx.scheduler")
     import mlx.core as mx
 
     from rapid_mlx.paged_cache import PagedCacheManager

@@ -1129,14 +1129,7 @@ class TestConfigureLogging:
     def _reset_loggers(self):
         import logging as _logging
 
-        names = (
-            "",
-            "rapid_mlx.server",
-            "httpx",
-            "httpcore",
-            "urllib3",
-            "huggingface_hub",
-        )
+        names = ("httpx", "httpcore", "urllib3", "huggingface_hub")
         saved = {n: _logging.getLogger(n).level for n in names}
         yield
         for n, lvl in saved.items():

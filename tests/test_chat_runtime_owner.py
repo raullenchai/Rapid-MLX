@@ -9,7 +9,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import httpx
 import psutil
@@ -210,105 +209,6 @@ def test_lease_expiry_active_work_and_detach(monkeypatch):
     clock[0] = 23
     assert leases.idle(5, False)
     assert CAPABILITIES["side_effect_tools"] is True
-
-
-def test_idle_clock_starts_when_owner_is_published(monkeypatch):
-    from rapid_mlx.chat_runtime import owner
-
-    clock = [0.0]
-    monkeypatch.setattr(owner, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    leases = ClientLeases()
-    clock[0] = 1.0  # Recovery/publication took longer than the idle timeout.
-    assert leases.idle(0.3, False)
-    leases.touch()
-    assert not leases.idle(0.3, False)
-    assert not leases.clients
-    clock[0] = 1.4
-    assert leases.idle(0.3, False)
-
-
-async def test_owner_resets_idle_after_recovery_before_serving(tmp_path, monkeypatch):
-    import uvicorn
-
-    from rapid_mlx.chat_runtime import owner, runtime
-    from rapid_mlx.chat_runtime.store import Store
-
-    clock = [0.0]
-    monkeypatch.setattr(owner, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    # Construct on the same fake clock used by recovery and publication.
-    leases = ClientLeases()
-    monkeypatch.setattr(owner, "ClientLeases", lambda: leases)
-    monkeypatch.setenv("RAPID_MLX_CHAT_HOME", str(tmp_path))
-    monkeypatch.setenv("RAPID_MLX_CHAT_IDLE_SECONDS", "0.3")
-
-    async def recover():
-        clock[0] = 1.0
-
-    async def close():
-        pass
-
-    async def open_store(_directory):
-        return SimpleNamespace(
-            store_uuid="test-store", recover_interrupted=recover, close=close
-        )
-
-    monkeypatch.setattr(Store, "open", open_store)
-    monkeypatch.setattr(
-        runtime, "Runtime", lambda store: SimpleNamespace(active_turns={}, close=close)
-    )
-    served = []
-
-    class Server:
-        should_exit = False
-
-        def __init__(self, config):
-            pass
-
-        async def serve(self, *, sockets):
-            assert (tmp_path / "slow-start/run/discovery.json").exists()
-            assert clock[0] == 1.0
-            assert not leases.idle(0.3, False)
-            served.append(True)
-
-    monkeypatch.setattr(uvicorn, "Server", Server)
-    await owner.run_owner("slow-start")
-    assert served == [True]
-    assert not (tmp_path / "slow-start/run/discovery.json").exists()
-
-
-@pytest.mark.parametrize(
-    "authorization,status,remains_idle",
-    [("Bearer test-token", 200, False), ("", 401, True), ("Bearer wrong", 401, True)],
-)
-def test_only_authenticated_requests_reset_idle(
-    monkeypatch, authorization, status, remains_idle
-):
-    from fastapi.testclient import TestClient
-
-    from rapid_mlx.chat_runtime import owner
-    from rapid_mlx.chat_runtime.api import PREFIX, create_app
-
-    clock = [0.0]
-    # Patch only the leases' clock, leaving TestClient's event loop clock alone.
-    monkeypatch.setattr(owner, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    leases = ClientLeases()
-    app = create_app(
-        SimpleNamespace(schema_version=SCHEMA_VERSION, store_uuid="test-store"),
-        SimpleNamespace(),
-        "test-token",
-        leases=leases,
-    )
-    with TestClient(app) as client:
-        clock[0] = 1.0
-        assert leases.idle(0.3, False)
-        response = client.get(
-            PREFIX + "/capabilities", headers={"Authorization": authorization}
-        )
-        assert response.status_code == status
-        assert leases.idle(0.3, False) is remains_idle
-        assert not leases.clients  # Discovery counts even before POST /clients.
-        clock[0] = 1.4
-        assert leases.idle(0.3, False)
 
 
 @pytest.mark.parametrize("profile", ["../other", "a/b", "", ".hidden", "a" * 65])

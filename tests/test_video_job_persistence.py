@@ -545,7 +545,6 @@ def test_persistence_orders_crash_consistency_barriers(
 async def test_metadata_failure_keeps_completed_video_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level("WARNING", logger="rapid_mlx.routes.video")
     video.configure_video_jobs(tmp_path / "videos")
     video.start_video_jobs()
 
@@ -582,7 +581,6 @@ async def test_metadata_failure_keeps_completed_video_available(
 async def test_persistence_thread_start_failure_keeps_completed_video(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level("WARNING", logger="rapid_mlx.routes.video")
     store = tmp_path / "videos"
     video.configure_video_jobs(store)
     video.start_video_jobs()

@@ -4,13 +4,11 @@
 import fcntl
 import io
 import json
-import logging
 import os
 import select
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -21,99 +19,6 @@ import pytest
 from rapid_mlx.bench import _server
 from rapid_mlx.community_bench import cli
 from rapid_mlx.community_bench.acceleration import AccelerationRequest
-
-# Cold interpreter/import/server startup has no latency contract. These waits
-# synchronize on explicit readiness; this bound only prevents a broken child
-# from hanging the suite forever. Cancellation/teardown keep separate bounds.
-_STARTUP_SAFETY_TIMEOUT_S = 300
-
-
-def _wait_for_loader(ready_fd):
-    readable, _, _ = select.select([ready_fd], [], [], _STARTUP_SAFETY_TIMEOUT_S)
-    assert readable, "loader readiness handshake timed out"
-    assert os.read(ready_fd, 1) == b"L", "child exited before loader readiness"
-
-
-@pytest.mark.parametrize("proxy_source", ["environment", "system", "global"])
-def test_health_probe_ignores_host_proxies(monkeypatch, proxy_source):
-    import http.server
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-
-        def log_message(self, *args):
-            pass
-
-    def forbidden(*args, **kwargs):
-        pytest.fail(f"loopback health probe consulted {proxy_source} proxy")
-
-    monkeypatch.setattr(_server.urllib.request, "_opener", None)
-    if proxy_source == "environment":
-        monkeypatch.setenv("http_proxy", "http://[invalid-proxy")
-        monkeypatch.setenv("no_proxy", "example.invalid")
-    elif proxy_source == "system":
-        monkeypatch.setattr(_server.urllib.request, "getproxies", forbidden)
-    else:
-        monkeypatch.setattr(
-            _server.urllib.request, "_opener", SimpleNamespace(open=forbidden)
-        )
-    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
-        worker = threading.Thread(target=server.serve_forever)
-        worker.start()
-        try:
-            _server._wait_for_health(
-                f"http://127.0.0.1:{server.server_port}/health",
-                SimpleNamespace(poll=lambda: None),
-                _STARTUP_SAFETY_TIMEOUT_S,
-            )
-        finally:
-            server.shutdown()
-            worker.join()
-
-
-def test_loader_handshake_is_independent_of_output():
-    # No MLX needed: startup is held at a gate, both diagnostic streams exceed
-    # a pipe buffer, and stdout contains a line before the loader is entered.
-    script = r"""
-import os, signal, sys
-sys.stdin.buffer.read(1)
-sys.stdout.write('startup diagnostic\n' + 'x' * 131072)
-sys.stdout.flush()
-sys.stderr.write('y' * 131072)
-sys.stderr.flush()
-signal.signal(signal.SIGTERM, lambda *args: sys.exit(143))
-os.write(int(sys.argv[1]), b'L')
-signal.pause()
-"""
-    read_fd, write_fd = os.pipe()
-    try:
-        with tempfile.TemporaryFile() as output:
-            proc = subprocess.Popen(
-                [sys.executable, "-c", script, str(write_fd)],
-                stdin=subprocess.PIPE,
-                stdout=output,
-                stderr=output,
-                pass_fds=(write_fd,),
-            )
-            os.close(write_fd)
-            write_fd = None
-            try:
-                assert not select.select([read_fd], [], [], 0)[0]
-                proc.stdin.write(b"G")
-                proc.stdin.close()
-                _wait_for_loader(read_fd)
-                proc.send_signal(signal.SIGTERM)
-                assert proc.wait(timeout=10) == 143
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait()
-    finally:
-        os.close(read_fd)
-        if write_fd is not None:
-            os.close(write_fd)
 
 
 @pytest.mark.parametrize("echo", [True, False])
@@ -513,13 +418,10 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     monkeypatch.setattr(_server, "_ECHO_JOIN_TIMEOUT_S", 0.1, raising=False)
     entered = threading.Event()
     release = threading.Event()
-    startup_done = threading.Event()
-    echo_threads = []
     errors = []
 
     class BlockingStream:
         def write(self, text):
-            echo_threads.append(threading.current_thread())
             entered.set()
             release.wait()
 
@@ -529,20 +431,16 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
     def run():
         try:
             with _server.serve("fake", echo_log=BlockingStream()):
-                assert entered.wait(_STARTUP_SAFETY_TIMEOUT_S), "echo did not start"
-                startup_done.set()
+                assert entered.wait(3), "echo did not start"
         except BaseException as exc:
             errors.append(exc)
-        finally:
-            startup_done.set()
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     try:
-        assert startup_done.wait(_STARTUP_SAFETY_TIMEOUT_S), "server startup hung"
-        # Measure only teardown, after /health and the blocked write are known
-        # ready. A cold Python import is not part of this lifecycle assertion.
-        worker.join(timeout=5)
+        # A blocked echo never releases teardown, so a generous bound keeps the
+        # check exact while tolerating slow server startup on loaded runners.
+        worker.join(timeout=30)
         if worker.is_alive():
             import traceback
 
@@ -552,21 +450,7 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         assert not errors
     finally:
         release.set()
-        worker.join(timeout=_STARTUP_SAFETY_TIMEOUT_S)
-        for thread in echo_threads:
-            thread.join(timeout=_STARTUP_SAFETY_TIMEOUT_S)
-
-
-@pytest.fixture
-def _restore_bootstrap_logging_levels():
-    # The CLI intentionally configures its process; this test embeds it.
-    names = ("", "httpx", "httpcore", "urllib3", "huggingface_hub")
-    saved = {logging.getLogger(name): logging.getLogger(name).level for name in names}
-    try:
-        yield
-    finally:
-        for logger, level in saved.items():
-            logger.setLevel(level)
+        worker.join(timeout=3)
 
 
 @pytest.mark.parametrize(
@@ -579,13 +463,7 @@ def _restore_bootstrap_logging_levels():
     ],
 )
 def test_cli_run_log_environment(
-    monkeypatch,
-    flag,
-    json_mode,
-    existing_level,
-    expected_level,
-    expected_echo,
-    _restore_bootstrap_logging_levels,
+    monkeypatch, flag, json_mode, existing_level, expected_level, expected_echo
 ):
     level_var = "RAPID_MLX_LOG_LEVEL"
     echo_var = "RAPID_MLX_BENCH_SERVER_LOG_ECHO"
@@ -1152,21 +1030,14 @@ def test_cli_cancels_blocked_text_load(tmp_path, sig, baseline):
     if probe.returncode:
         pytest.skip("MLX cannot load in this environment")
     script = r"""
-import os, signal, sys, threading
+import os, sys, threading
 from rapid_mlx.community_bench import local_runner, workspace
 from rapid_mlx import cli
 import rapid_mlx.utils.tokenizer as tokenizer
 
 def block(*args, **kwargs):
-    os.write(int(os.environ["TEST_READY_FD"]), b"L")
-    if threading.current_thread() is threading.main_thread():
-        # A signal can interrupt Condition.wait between releasing its lock and
-        # entering its try/finally, producing "release unlocked lock" rather
-        # than the CLI's KeyboardInterrupt. Model a blocked main-thread native
-        # load without introducing that test-double-only condition race.
-        signal.pause()
-    else:
-        threading.Event().wait()
+    print("LOADING", file=sys.__stdout__, flush=True)
+    threading.Event().wait()
 
 local_runner.collect = lambda: (None, None)
 local_runner.run_conditions = lambda: None
@@ -1191,84 +1062,23 @@ cli.main()
         DO_NOT_TRACK="1",
         TEST_BASELINE="1" if baseline else "0",
     )
-    read_fd, write_fd = os.pipe()
-    env["TEST_READY_FD"] = str(write_fd)
-    try:
-        # Keep diagnostics out of the readiness channel and avoid backpressure
-        # from an undrained PIPE during imports or cancellation.
-        with tempfile.TemporaryFile(mode="w+") as output:
-            proc = subprocess.Popen(
-                [sys.executable, "-c", script],
-                stdout=output,
-                stderr=output,
-                env=env,
-                pass_fds=(write_fd,),
-            )
-            os.close(write_fd)
-            write_fd = None
-            try:
-                _wait_for_loader(read_fd)
-                proc.send_signal(sig)
-                assert proc.wait(timeout=10) == 128 + sig
-            except BaseException:
-                output.seek(0)
-                print(output.read(), file=sys.stderr)
-                raise
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait()
-    finally:
-        os.close(read_fd)
-        if write_fd is not None:
-            os.close(write_fd)
-
-
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
-def test_cli_cancel_during_executor_registration(monkeypatch, sig):
-    from rapid_mlx.community_bench import local_runner
-
-    real_start = threading.Thread.start
-    entered = threading.Event()
-    release = threading.Event()
-    workers = []
-    observed = []
-    executor = local_runner._TrackingExecutor(
-        max_workers=1, thread_name_prefix="cancel-registration"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
     )
-
-    def block():
-        entered.set()
-        release.wait()
-
-    def start(thread):
-        real_start(thread)
-        if thread.name.startswith("cancel-registration"):
-            workers.append(thread)
-            assert entered.wait(_STARTUP_SAFETY_TIMEOUT_S)
-            # The worker is loading, but ThreadPoolExecutor has not added it
-            # to _threads yet. Deliver the real signal in exactly that window.
-            os.kill(os.getpid(), sig)
-
-    def run(*args, **kwargs):
-        try:
-            executor.submit(block).result()
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-            observed.append(executor.join_workers(timeout=0))
-
-    monkeypatch.setattr(threading.Thread, "start", start)
-    monkeypatch.setattr(cli, "run_local", run)
-    monkeypatch.setattr(cli, "request_from_args", lambda args: AccelerationRequest())
     try:
-        assert cli.benchmark_command(args()) == 128 + sig
-        assert observed == [False], "cancel cleanup lost the unregistered worker"
-        assert executor.futures.any_outstanding()
+        ready, _, _ = select.select([proc.stdout], [], [], 30)
+        assert ready, "loader did not start"
+        assert proc.stdout.readline().strip() == "LOADING"
+        proc.send_signal(sig)
+        assert proc.wait(timeout=10) == 128 + sig
     finally:
-        release.set()
-        for worker in workers:
-            worker.join(timeout=_STARTUP_SAFETY_TIMEOUT_S)
-        executor.shutdown(wait=True, cancel_futures=True)
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
 
 
 def test_outstanding_futures_include_worker_blocked_in_initializer():

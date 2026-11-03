@@ -231,9 +231,6 @@ def test_cancel_during_final_prefill_chunk_emits_no_token():
 
 @pytest.mark.parametrize("prefill_failure", [False, True])
 def test_step_error_is_delivered_and_backend_recovers(prefill_failure, caplog):
-    caplog.set_level(
-        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.batch_scheduler"
-    )
     model = CountingModel()
     entered, release = threading.Event(), threading.Event()
     first_step = True

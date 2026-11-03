@@ -960,14 +960,16 @@ def builtin_profiles(tmp_path, monkeypatch):
 
     ``load_profiles`` also overlays ``~/.rapid-mlx/agents``; a machine
     with user profiles there would change the counts the footer test
-    pins. Point HOME at an empty tmp dir for the reload. The shared registry
-    isolation fixture restores the previous in-memory state at teardown.
+    pins. Point HOME at an empty tmp dir for the reload, then restore
+    the real registry afterwards.
     """
     from rapid_mlx import agents as agents_registry
 
     monkeypatch.setenv("HOME", str(tmp_path))
     agents_registry.load_profiles()
-    return agents_registry
+    yield agents_registry
+    monkeypatch.undo()
+    agents_registry.load_profiles()
 
 
 def test_agents_continue_dev_resolves_to_the_continue_profile(builtin_profiles):
@@ -1110,10 +1112,14 @@ def test_user_continue_dev_overlay_wins_over_the_builtin_alias(tmp_path, monkeyp
     )
     monkeypatch.setenv("HOME", str(tmp_path))
     agents_registry.load_profiles()
-    profile = get_profile("continue-dev")
-    assert profile is not None
-    assert profile.display_name == "My Custom Continue", (
-        "user overlay must beat the built-in continue-dev alias"
-    )
-    # The alias still works when no overlay exists for the other slug.
-    assert get_profile("continue") is not None
+    try:
+        profile = get_profile("continue-dev")
+        assert profile is not None
+        assert profile.display_name == "My Custom Continue", (
+            "user overlay must beat the built-in continue-dev alias"
+        )
+        # The alias still works when no overlay exists for the other slug.
+        assert get_profile("continue") is not None
+    finally:
+        monkeypatch.undo()
+        agents_registry.load_profiles()

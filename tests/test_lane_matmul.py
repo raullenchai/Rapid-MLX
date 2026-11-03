@@ -311,7 +311,6 @@ def test_lane_group_results_are_released_after_every_member_took_them():
 
 
 def test_an_install_failure_leaves_the_model_on_stock(monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.kernels.lane_matmul")
     monkeypatch.setattr(lane, "available", lambda: True)
 
     def boom(model, **_kw):
@@ -364,7 +363,6 @@ def test_moe_models_and_uncovered_models_are_skipped(monkeypatch):
 
 
 def test_no_backend_is_reported_not_installed(monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.kernels.lane_matmul")
     monkeypatch.setattr(lane, "available", lambda: False)
     assert lane.install_lane_matmul(_Attention(), mode="exact") is None
     assert "no lane backend" in caplog.text

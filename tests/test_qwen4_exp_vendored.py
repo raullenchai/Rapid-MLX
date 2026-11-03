@@ -2156,7 +2156,6 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     monkeypatch,
     caplog,
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.spec_decode.mtp.qwen4_exp_inject")
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
@@ -2575,7 +2574,6 @@ def test_experimental_capability_uses_live_residency_truth(monkeypatch):
 
 
 def test_qwen4_registration_probes_native_and_fails_closed(monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.utils.tokenizer")
     import builtins
     import importlib.util
     import sys

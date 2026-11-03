@@ -56,9 +56,6 @@ def test_supported_dispatch_has_no_probes_or_host_sync(delta, monkeypatch):
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
 def test_deferred_fallback_is_per_layer_permanent_and_warns_once(bad, caplog):
-    caplog.set_level(
-        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.draft_kernels"
-    )
     draft = SimpleNamespace(adapter=SimpleNamespace(), w=SimpleNamespace())
     x = mx.ones((5, 4))
     kernels.begin_round(draft)
@@ -168,9 +165,6 @@ def test_packed_moe_keeps_draft_routing_and_post_down_weights(monkeypatch):
 
 
 def test_unsupported_shared_and_bias_fall_back(monkeypatch, caplog):
-    caplog.set_level(
-        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.draft_kernels"
-    )
     draft = install_tiny()
     base = "mtp.0.ffn"
     x = mx.ones((5, 32))
@@ -375,9 +369,6 @@ def test_external_routes_do_not_require_target_router_gemv():
 def test_serving_acceptance_and_retry_equal_draft_off(
     seed, failure, depth, monkeypatch, caplog
 ):
-    caplog.set_level(
-        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.draft_kernels"
-    )
     model, draft = bench.tiny_setup(seed)
     serving._install_vectorized_mtp_attention(draft)
     serving._install_packed_mtp_moe(draft)
@@ -440,9 +431,6 @@ def test_serving_acceptance_and_retry_equal_draft_off(
 
 @pytest.mark.parametrize("failure", ["mtp.0.ffn", "head"])
 def test_diagnostic_proposals_retry_nonfinite(failure, monkeypatch, caplog):
-    caplog.set_level(
-        "WARNING", logger="rapid_mlx.models.deepseek_v41_native.draft_kernels"
-    )
     _, draft = bench.tiny_setup()
     serving._install_packed_mtp_moe(draft)
     draft.observe_many(mx.random.normal((1, 3, 96)), 0)

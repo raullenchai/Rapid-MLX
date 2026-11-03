@@ -2835,7 +2835,6 @@ async def test_mcp_execution_preserves_sandbox_and_audit():
 
 @pytest.mark.asyncio
 async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.agent_runtime.server")
     from types import SimpleNamespace
 
     from rapid_mlx.config import reset_config

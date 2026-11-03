@@ -413,10 +413,6 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
     raised in review). ``time.time()`` would happily measure negative
     elapsed time if the clock stepped backwards.
     """
-    # This probe always targets the loopback child we spawned. Environment and
-    # macOS system proxies (and a previously installed global opener) must not
-    # intercept it or block startup while discovering host proxy settings.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if (rc := proc.poll()) is not None:
@@ -434,7 +430,7 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
                 message = f"The local model server exited with code {rc} while loading the model."
             raise ServerStartFailed(message)
         try:
-            with opener.open(health_url, timeout=2) as resp:  # noqa: S310
+            with urllib.request.urlopen(health_url, timeout=2) as resp:  # noqa: S310
                 if resp.status == 200:
                     return
         except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):

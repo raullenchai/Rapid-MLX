@@ -185,7 +185,6 @@ def test_lfm3_text_lane_even_when_vision_has_arch(monkeypatch):
 
 
 def test_registration_failure_is_nonfatal(monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.utils.tokenizer")
     import builtins
 
     from rapid_mlx.utils import tokenizer

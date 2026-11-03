@@ -1422,7 +1422,6 @@ def test_empty_crash_file_is_removed_at_clean_shutdown(monkeypatch, tmp_path):
 def test_crash_file_creation_failure_warns_and_does_not_block(
     monkeypatch, tmp_path, caplog
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx._signal_observability")
     from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
@@ -1445,7 +1444,6 @@ def test_crash_file_creation_failure_warns_and_does_not_block(
 
 
 def test_symlinked_crash_log_directory_is_refused(monkeypatch, tmp_path, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx._signal_observability")
     from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
@@ -1507,7 +1505,6 @@ def test_crash_log_directory_uses_windows_compatible_validation(monkeypatch, tmp
 
 
 def test_missing_tee_warns_once_and_uses_file_only(monkeypatch, tmp_path, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx._signal_observability")
     from rapid_mlx import _signal_observability as so
 
     so._reset_for_tests()
@@ -1629,7 +1626,6 @@ def test_stuck_tee_is_killed_and_reaped(monkeypatch):
 
 
 def test_ensure_crash_sink_rearms_and_warns_on_failure(monkeypatch, caplog, tmp_path):
-    caplog.set_level("WARNING", logger="rapid_mlx._signal_observability")
     from rapid_mlx import _signal_observability as so
 
     prior_fd = so._crash_fd
@@ -2580,7 +2576,6 @@ def test_crash_file_lock_failure_is_not_fatal(monkeypatch, tmp_path, caplog):
 
 
 def test_sigterm_chains_without_thread_dump(monkeypatch, capsys, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx._signal_observability")
     from unittest.mock import Mock
 
     from rapid_mlx import _signal_observability as so

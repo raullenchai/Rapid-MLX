@@ -146,7 +146,6 @@ def _scheduler(pflash_config: PFlashConfig) -> Scheduler:
 def test_threshold_basis_startup_warning(
     monkeypatch, caplog, mode, basis, prefix, paged, memory, expected
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.scheduler")
     import rapid_mlx.scheduler as scheduler_module
 
     # Exercise real cache selection without allocating cache storage or a model.

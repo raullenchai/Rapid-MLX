@@ -76,7 +76,6 @@ def test_online_unreachable_sidecar(preflight, capsys, error):
 
 
 def test_resolver_warning_does_not_duplicate_fallback(preflight, capsys, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.spec_decode.mtp.qwen3_5_inject")
     args, _, resolver = preflight
     filters_before = qwen3_5_inject.logger.filters.copy()
 

@@ -1444,7 +1444,6 @@ def test_confirmed_disconnect_does_not_synthesize_missing_finish(caplog):
     aborting the scheduler request, which previously made the route emit the
     R11-V2 warning and construct a terminal chunk for an already-dead socket.
     """
-    caplog.set_level("WARNING", logger="rapid_mlx.routes.chat")
 
     class _CancelledEngine:
         preserve_native_tool_format = False

@@ -40,7 +40,6 @@ def test_depth_default(monkeypatch):
 
 @pytest.mark.parametrize("value", ["", "-1", "5", "1.0", "yes"])
 def test_invalid_depth_warns(monkeypatch, caplog, value):
-    caplog.set_level("WARNING", logger="_dsv41_draft_depth_cpu")
     monkeypatch.setenv(DEPTH_ENV, value)
     assert draft_depth() == 2
     assert (

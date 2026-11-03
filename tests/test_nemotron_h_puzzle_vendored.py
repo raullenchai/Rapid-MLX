@@ -428,7 +428,6 @@ class TestNemotronBolt:
         assert bool(mx.array_equal(state[1], initial[1]))
 
     def test_registration_and_text_loader(self, tmp_path, monkeypatch, caplog):
-        caplog.set_level("WARNING", logger="rapid_mlx.utils.tokenizer")
         import builtins
         import importlib.util
         import json

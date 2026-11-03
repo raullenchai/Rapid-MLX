@@ -238,23 +238,6 @@ class _OutstandingFutures:
         return any(not future.done() for future in pending)
 
 
-_executor_start = threading.local()
-
-
-def _defer_executor_start_interrupt() -> bool:
-    """Let the CLI deliver cancellation after a worker is fully registered.
-
-    ThreadPoolExecutor starts a thread before adding it to ``_threads``. A
-    signal may arrive after that worker enters native loading but before the
-    main thread finishes submit(). Interrupting there loses the worker during
-    cleanup (and can interrupt Thread.start's own condition bookkeeping).
-    """
-    if getattr(_executor_start, "depth", 0):
-        _executor_start.interrupted = True
-        return True
-    return False
-
-
 class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
     def __init__(self, *args, initializer=None, initargs=(), **kwargs):
         self.futures = _OutstandingFutures()
@@ -266,16 +249,7 @@ class _TrackingExecutor(concurrent.futures.ThreadPoolExecutor):
         )
 
     def submit(self, *args, **kwargs):
-        _executor_start.depth = getattr(_executor_start, "depth", 0) + 1
-        try:
-            return self.futures.track(super().submit(*args, **kwargs))
-        finally:
-            _executor_start.depth -= 1
-            if not _executor_start.depth and getattr(
-                _executor_start, "interrupted", False
-            ):
-                _executor_start.interrupted = False
-                raise KeyboardInterrupt
+        return self.futures.track(super().submit(*args, **kwargs))
 
     def join_workers(self, timeout: float) -> bool:
         """Wait up to ``timeout`` for worker threads; True when all exited."""

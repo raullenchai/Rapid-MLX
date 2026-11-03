@@ -384,7 +384,6 @@ def test_offline_processor_single_tokenizer_failure_stays_offline(monkeypatch):
 def test_offline_processor_failed_composition_stays_offline(
     monkeypatch, caplog, failing_part
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.audio.stt")
     calls = []
 
     def load_part(name):

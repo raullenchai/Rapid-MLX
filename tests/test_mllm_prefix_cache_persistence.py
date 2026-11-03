@@ -377,7 +377,6 @@ def test_empty_missing_failed_write_and_unreadable_entry(tmp_path, monkeypatch, 
     ],
 )
 def test_invalid_index_preserves_live_entries(tmp_path, caplog, contents, reason):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     gen = generator()
     key = add(gen)
     live = gen._prefix_cache._exact_cache[key]
@@ -394,7 +393,6 @@ def test_invalid_index_preserves_live_entries(tmp_path, caplog, contents, reason
 
 
 def test_unreadable_index_preserves_live_entries(tmp_path, monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     gen = generator()
     key = add(gen)
     live = gen._prefix_cache._exact_cache[key]
@@ -456,7 +454,6 @@ def test_restore_builds_lazy_generator_first(tmp_path, with_executor):
 def test_save_oserror_preserves_committed_snapshot(
     tmp_path, monkeypatch, caplog, failure
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     gen = generator()
     old_key = add(gen)
     path = tmp_path / "cache"
@@ -511,7 +508,6 @@ def test_save_oserror_preserves_committed_snapshot(
 
 
 def test_save_rollback_oserror_keeps_backup_recoverable(tmp_path, monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     gen = generator()
     old_key = add(gen)
     path = tmp_path / "cache"
@@ -538,7 +534,6 @@ def test_save_rollback_oserror_keeps_backup_recoverable(tmp_path, monkeypatch, c
 
 @pytest.mark.parametrize("failure", ["construction", ".new", ".old", "close"])
 def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, failure):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     source = generator()
     add(source)
     add(source, (4, 5, 6))
@@ -579,7 +574,6 @@ def test_load_oserror_preserves_live_entries(tmp_path, monkeypatch, caplog, fail
 
 
 def test_unreadable_entry_is_skipped_and_others_restore(tmp_path, monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     source = generator()
     first = add(source)
     second = add(source, (4, 5, 6), tag=2)
@@ -639,7 +633,6 @@ def test_restore_rejects_decoded_footprint_over_budget_without_evicting_live(
 
 
 def test_restore_skips_entry_whose_size_probe_raises(tmp_path, monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     source = generator()
     add(source)
     path = tmp_path / "cache"
@@ -669,7 +662,6 @@ def test_restore_rechecks_budget_at_insertion(tmp_path, monkeypatch):
 
 
 def test_malformed_new_does_not_shadow_valid_old(tmp_path, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     source = generator()
     key = add(source)
     path = tmp_path / "cache"
@@ -685,7 +677,6 @@ def test_malformed_new_does_not_shadow_valid_old(tmp_path, caplog):
 
 
 def test_restore_rejects_entry_under_a_mismatched_key(tmp_path, monkeypatch, caplog):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     source = generator()
     add(source)
     path = tmp_path / "cache"
@@ -706,7 +697,6 @@ def test_restore_rejects_entry_under_a_mismatched_key(tmp_path, monkeypatch, cap
 def test_save_serialization_error_preserves_committed_snapshot(
     tmp_path, monkeypatch, caplog
 ):
-    caplog.set_level("WARNING", logger="rapid_mlx.mllm_batch_generator")
     gen = generator()
     key = add(gen)
     path = tmp_path / "cache"

@@ -24,13 +24,16 @@ from .full_unit import (
 # These tests still run in the local pr_validate mac-only stage.
 # The prefix cache tests need a locally cached model; telemetry needs
 # multi-process timing the hosted runner cannot meet; the GUI guard
-# needs OS permissions the hosted sandbox denies.
+# needs OS permissions the hosted sandbox denies. The blocked-echo teardown
+# test never sees its fake server's /health succeed on the hosted image
+# (the worker stays in the health poll); it still runs in the local stage.
 HOSTED_DESELECT = (
     "tests/test_mid_conversation_system_prefix_cache.py::TestRenderedTokenPrefixIsStable::test_leading_tokens_survive_an_injected_nudge",
     "tests/test_mid_conversation_system_prefix_cache.py::TestRenderedTokenPrefixIsStable::test_hoisting_would_have_failed_this_test",
     "tests/test_telemetry_track.py::test_simultaneous_missing_extra_serve_failures_emit_once",
     "tests/test_telemetry_track.py::test_server_start_ready_wire_order_and_opt_out",
     "tests/test_agent_test_gui_guard.py::test_launch_attempt_remains_failure_if_agent_times_out",
+    "tests/test_benchmark_cancel.py::test_serve_teardown_with_blocked_echo",
 )
 
 
