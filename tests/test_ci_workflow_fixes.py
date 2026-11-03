@@ -112,10 +112,8 @@ def test_release_toolchain_build_matches_release_lane_and_is_required():
     assert job["defaults"]["run"]["working-directory"] == "apps/rapid-mac"
     assert job["steps"][0]["uses"] == ci["build"]["steps"][0]["uses"]
     assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", job["steps"][0]["uses"])
-    assert [s["run"] for s in job["steps"][1:]] == [
-        "xcodebuild -version\nswift --version\n",
-        "swift build -c release",
-    ]
+    assert job["steps"][1] == {"uses": "./.github/actions/select-release-xcode"}
+    assert job["steps"][2]["run"] == "swift build -c release"
     assert "secrets." not in json.dumps(job)
     aggregate = ci["desktop-tests"]
     assert "release-toolchain-build" in aggregate["needs"]

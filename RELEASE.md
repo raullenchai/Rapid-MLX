@@ -17,7 +17,7 @@ extended operational guide, `docs/development/releasing.md`, defers to it.
    record its exact green run URL (procedure below).
 2. Bump `version` in `pyproject.toml` to `X.Y.Z`.
 3. In the same PR, `git mv docs/release-notes/unreleased.md
-   docs/release-notes/vX.Y.Z.md` (optional — see "Release notes" below).
+   docs/release-notes/vX.Y.Z.md` (required — see "Release notes" below).
 4. Open a PR whose commit subject is exactly `chore: bump version to X.Y.Z`
    (GitHub's `(#N)` squash suffix is fine).
 5. Run the secret/environment pre-flight on that exact bump-PR head (see
@@ -39,6 +39,47 @@ hand-run script. The reviewer's approval at the protected environment gate is
 the manual authorization inside the publishing transaction. Preparation,
 platform security approvals and incident recovery may still need operator
 action; they must not be described as already fully automated.
+
+## Bump PR order (do these in sequence)
+
+1. Run the auto-release dry run on the intended bump parent using the procedure
+   below; wait for green.
+2. The bump PR must contain exactly **ONE commit**, with subject
+   `chore: bump version to X.Y.Z`. Include the `pyproject.toml` version,
+   an `apps/rapid-mac/CHANGELOG.md` `## [X.Y.Z]` section with updated
+   `[Unreleased]` / `[X.Y.Z]` compare links, and a **non-empty**
+   `docs/release-notes/vX.Y.Z.md`. Both release-preflight (PF-1) and
+   version-check enforce these through `scripts/check_release_notes.py`.
+   Run locally first:
+
+   ```bash
+   python3 scripts/check_release_notes.py --version X.Y.Z --changelog apps/rapid-mac/CHANGELOG.md --notes-dir docs/release-notes
+   ```
+
+3. Dispatch release-preflight on the **exact bump-PR head** (procedure below);
+   wait for green.
+4. Paste `Release-Preflight: <run url>` into the PR body. Editing the body fires
+   a `pull_request: edited` event that re-runs `version-bump-guard`. A manual
+   **Re-run job** also works because the guard reads the PR body live through
+   the API. The guard is expected to be red before this step.
+5. Any rebase or new head invalidates the evidence: re-dispatch preflight and
+   replace the evidence line.
+6. Merge (squash). `l1-smoke` runs only on the `main` push, never on the PR;
+   its first result for the bump arrives after merge. `release-final-ci` waits
+   up to **180 minutes** for exact-SHA main CI.
+7. Review release-prep evidence and approve the protected `rapid-mac-tag`
+   deployment in the UI or with the API. The API returns HTTP 422 unless a
+   `comment` is supplied:
+
+   ```bash
+   RUN_ID=<auto-release run id>
+   gh api "repos/raullenchai/Rapid-MLX/actions/runs/$RUN_ID/pending_deployments" \
+     --jq '.[] | {id: .environment.id, name: .environment.name}'
+   ENV_ID=<id of rapid-mac-tag from the line above>
+   gh api -X POST "repos/raullenchai/Rapid-MLX/actions/runs/$RUN_ID/pending_deployments" \
+     -F "environment_ids[]=$ENV_ID" -f state=approved \
+     -f comment="Approve exact SHA <sha> after reviewing release-prep evidence"
+   ```
 
 ## Pre-bump auto-release dry run (no publication)
 

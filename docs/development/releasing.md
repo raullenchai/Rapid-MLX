@@ -64,10 +64,12 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
    While you're in this PR, also roll the release notes:
    `git mv docs/release-notes/unreleased.md docs/release-notes/vX.Y.Z.md`,
-   tidy the prose, and recreate an empty `unreleased.md`. Optional — skipping
-   it just gives you a plain commit list. See `docs/release-notes/README.md`.
+   tidy the prose, and recreate an empty `unreleased.md`. The versioned notes
+   file is required by the release gate. See `docs/release-notes/README.md`.
 
 3. **`auto-release.yml` fires** — the jobs run in this order; automation proceeds automatically up to a visible **approval wait** at the protected `rapid-mac-tag` gate, then resumes after a human approves:
+
+   Approval order and API commands: [Bump PR order](../../RELEASE.md#bump-pr-order-do-these-in-sequence).
 
    1. **`detect`** (GitHub-hosted, ~2s) — verifies the commit subject matches the bump regex, `pyproject.toml` agrees, and the tag doesn't already exist. Non-bump pushes stop here.
    2. **`release-final-ci`** (GitHub-hosted coordinator, starts in parallel) — waits for the ordinary `ci.yml::tests` and `rapid-mac-ci.yml::desktop-tests` aggregate jobs from the same immutable release SHA. A newer active retry waits; a cancelled duplicate does not hide earlier valid evidence; missing, malformed, red, or cancellation-only evidence fails closed. Force releases do not bypass this gate.
