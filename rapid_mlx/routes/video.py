@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..middleware.auth import verify_api_key, verify_api_key_for_scope
 from ..model_aliases import resolve_profile
+from ..video.cancel import VideoCancelToken, VideoGenerationCancelled
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ class _VideoJob:
     error: dict[str, str] | None = None
     output_path: str | None = None
     generation_finished: bool = False
+    phase: str | None = None
+    cancel_requested: bool = False
 
     def public(self) -> dict:
         value = asdict(self)
@@ -85,6 +88,10 @@ class _VideoJob:
             value.pop("frames")
         if value["fps"] is None:
             value.pop("fps")
+        if not value["cancel_requested"]:
+            value.pop("cancel_requested")
+        if value["phase"] is None:
+            value.pop("phase")
         value["object"] = "video"
         return value
 
@@ -115,6 +122,7 @@ def active_video_jobs() -> int:
 
 
 _tasks: dict[str, asyncio.Task] = {}
+_cancel_tokens: dict[str, VideoCancelToken] = {}
 _cleanup_tasks: set[asyncio.Task] = set()
 _generation_threads: set[threading.Thread] = set()
 _persistence_threads: set[threading.Thread] = set()
@@ -300,9 +308,11 @@ def configure_video_jobs(output_dir: str | Path | None) -> Path:
 
 
 def _completed_job_record(job: _VideoJob) -> dict:
+    public = job.public()
+    public.pop("cancel_requested", None)
     return {
         "schema_version": _VIDEO_JOB_SCHEMA_VERSION,
-        **job.public(),
+        **public,
     }
 
 
@@ -531,9 +541,9 @@ def start_video_jobs() -> None:
 async def shutdown_video_jobs(timeout: float = 30.0) -> None:
     """Stop admission and drain video jobs within a bounded shutdown budget.
 
-    MLX generation cannot be interrupted safely once a Metal graph is running.
-    Queued jobs are cancelled immediately; an active job gets ``timeout``
-    seconds to finish. Generation itself runs on a daemon thread, so exceeding
+    Active jobs stop cooperatively at their next step or stage boundary.
+    Queued jobs are cancelled immediately; active jobs get ``timeout``
+    seconds to drain. Generation itself runs on a daemon thread, so exceeding
     the budget cannot keep the Python process alive indefinitely.
     """
     global _accepting_jobs
@@ -548,6 +558,8 @@ async def shutdown_video_jobs(timeout: float = 30.0) -> None:
         ]
         for job_id, task in list(_tasks.items()):
             job = _jobs.get(job_id)
+            if task in current_tasks and job_id in _cancel_tokens:
+                _cancel_tokens[job_id].cancel()
             if task in current_tasks and job is not None and job.status == "queued":
                 job.status = "failed"
                 job.error = {
@@ -943,6 +955,7 @@ def _video_capabilities(engine) -> dict:
             "requires_visual": True,
             "exclusive_with": ["input_reference", "last_frame"],
         }
+    capabilities["cancellation"] = {"queued": True, "in_progress": True}
     return capabilities
 
 
@@ -998,8 +1011,18 @@ def _validate_reference_image(
                     raise ValueError("reference image must be JPEG, PNG, or WebP")
                 image.verify()
     except (OSError, ValueError, Image.DecompressionBombError, Warning) as exc:
+        logger.debug("Invalid reference image", exc_info=True)
+        message = (
+            str(exc)
+            if str(exc)
+            in {
+                "reference image exceeds 16 megapixels",
+                "reference image must be JPEG, PNG, or WebP",
+            }
+            else "not a supported image"
+        )
         raise HTTPException(
-            status_code=400, detail=f"invalid input_reference: {exc}"
+            status_code=400, detail=f"invalid input_reference: {message}"
         ) from exc
 
 
@@ -1113,6 +1136,7 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
         TypeError,
         subprocess.SubprocessError,
     ) as exc:
+        logger.debug("Invalid uploaded reference media", exc_info=True)
         raise HTTPException(
             status_code=400, detail=f"{field}: unsupported file type"
         ) from exc
@@ -1344,6 +1368,18 @@ async def _run_job(
     source_video: Path | None = None,
     extend_frames: int | None = None,
 ) -> None:
+    cancel_token = VideoCancelToken()
+    with _jobs_lock:
+        _cancel_tokens[job.id] = cancel_token
+
+    def on_progress(phase, done, total):
+        with _jobs_lock:
+            if job.status == "in_progress":
+                progress = max(job.progress, min(20, 1 + 19 * done // max(1, total)))
+                if job.phase != phase or job.progress != progress:
+                    job.phase = phase
+                    job.progress = progress
+
     started = False
     generation_completed = False
     completed_job: _VideoJob | None = None
@@ -1374,6 +1410,8 @@ async def _run_job(
             if source_video is None:
                 await _run_in_generation_thread(
                     engine.generate,
+                    on_progress=on_progress,
+                    cancel_token=cancel_token,
                     prompt=job.prompt,
                     output_path=output,
                     width=generation_width,
@@ -1398,6 +1436,7 @@ async def _run_job(
                 assert extend_frames is not None
                 await _run_in_generation_thread(
                     engine.extend,
+                    cancel_token=cancel_token,
                     prompt=job.prompt,
                     source_video=source_video,
                     output_path=output,
@@ -1412,9 +1451,12 @@ async def _run_job(
         generated = await asyncio.shield(runner)
         if not generated:
             return
+        # A successful backend return wins a concurrent cancellation: keep the video.
         completed_job = replace(
             job,
             status="completed",
+            cancel_requested=False,
+            phase=None,
             progress=100,
             completed_at=int(time.time()),
             output_path=str(output),
@@ -1438,6 +1480,8 @@ async def _run_job(
                     "Unable to persist completed video job metadata for %s", job.id
                 )
         with _jobs_lock:
+            job.cancel_requested = False
+            job.phase = None
             job.status = completed_job.status
             job.progress = completed_job.progress
             job.completed_at = completed_job.completed_at
@@ -1448,6 +1492,8 @@ async def _run_job(
             # and may finish in its detached daemon thread after shutdown.
             assert completed_job is not None
             with _jobs_lock:
+                job.cancel_requested = False
+                job.phase = None
                 job.status = completed_job.status
                 job.progress = completed_job.progress
                 job.completed_at = completed_job.completed_at
@@ -1480,7 +1526,9 @@ async def _run_job(
     except Exception as exc:  # noqa: BLE001
         from ..runtime.video_lane import VideoRuntimeError
 
-        logger.exception("Video generation job %s failed", job.id)
+        cancelled = isinstance(exc, VideoGenerationCancelled) or cancel_token.cancelled
+        if not cancelled:
+            logger.exception("Video generation job %s failed", job.id)
         message = (
             str(exc)
             if isinstance(exc, VideoRuntimeError)
@@ -1498,9 +1546,20 @@ async def _run_job(
         finally:
             with _jobs_lock:
                 job.status = "failed"
-                job.error = {"code": "video_generation_failed", "message": message}
+                job.error = {
+                    "code": "video_generation_cancelled"
+                    if cancelled
+                    else "video_generation_failed",
+                    "message": "Video generation was cancelled."
+                    if cancelled
+                    else message,
+                }
                 job.generation_finished = True
                 _touch_activity()
+    finally:
+        with _jobs_lock:
+            job.phase = None
+            _cancel_tokens.pop(job.id, None)
 
 
 @router.post("/v1/videos", dependencies=[Depends(verify_api_key)])
@@ -2085,9 +2144,11 @@ async def delete_video(video_id: str):
     with _jobs_lock:
         job = _jobs.get(video_id)
         if job is not None and job.status == "in_progress":
-            raise HTTPException(
-                status_code=409, detail="video generation is in progress"
-            )
+            token = _cancel_tokens.get(video_id)
+            if token is not None:
+                token.cancel()
+            job.cancel_requested = True
+            return JSONResponse(status_code=202, content=job.public())
         task = _tasks.get(video_id) if job is not None else None
         if job is not None and job.status == "queued":
             job.status = "failed"

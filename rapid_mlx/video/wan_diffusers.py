@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import FunctionType, ModuleType
 
+from .cancel import cancelling_tqdm
 from .wan import WanBackendError
 
 _TRANSFORMER_INDEX = "transformer/diffusion_pytorch_model.safetensors.index.json"
@@ -659,6 +660,7 @@ def generate_with_runtime(
     generation_kwargs: dict,
     *,
     on_loaded: Callable[[], None] | None = None,
+    cancel_token=None,
 ) -> None:
     """Generate through request-local loaders for the official layout."""
     if is_diffusers_wan21_layout(root):
@@ -668,11 +670,41 @@ def generate_with_runtime(
             generate = scoped_generate
             if on_loaded is not None:
                 generate = _notify_after_materialization(generate, on_loaded)
+            generate = _with_cancel_steps(generate, cancel_token)
             generate(**{**generation_kwargs, "model_dir": str(model_view)})
+            if cancel_token is not None and not _has_output(generation_kwargs):
+                cancel_token.check()
         return
     if _identifies_as_diffusers_wan21(root):
         raise WanBackendError("the Wan 2.1 checkpoint layout is incomplete")
     generate = generator.generate_video
     if on_loaded is not None:
         generate = _notify_after_materialization(generate, on_loaded)
+    generate = _with_cancel_steps(generate, cancel_token)
     generate(**generation_kwargs)
+    if cancel_token is not None and not _has_output(generation_kwargs):
+        cancel_token.check()
+
+
+def _has_output(kwargs):
+    # Preserve a complete successful return even if cancellation raced the mux.
+    output = Path(kwargs["output_path"])
+    return output.is_file() and output.stat().st_size > 0
+
+
+def _with_cancel_steps(generate, token):
+    if token is None:
+        return generate
+    token.check()
+    namespace = dict(generate.__globals__)
+    if "tqdm" in namespace:
+        namespace["tqdm"] = cancelling_tqdm(namespace["tqdm"], token)
+    scoped = FunctionType(
+        generate.__code__,
+        namespace,
+        generate.__name__,
+        generate.__defaults__,
+        generate.__closure__,
+    )
+    scoped.__kwdefaults__ = generate.__kwdefaults__
+    return scoped

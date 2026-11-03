@@ -172,7 +172,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/images/cancel` | POST | Stop the in-flight image render at the next denoise step |
 | `/v1/videos` | POST / GET | Start a video-generation job / list jobs — see the [Video Generation Guide](video-generation.md) |
 | `/v1/videos/capabilities` | GET | Video-lane capability report |
-| `/v1/videos/{id}` | GET / DELETE | Video job status / delete a job and its artifact |
+| `/v1/videos/{id}` | GET / DELETE | Video job status / cancel generation or delete a job and its artifact |
 | `/v1/videos/{id}/content` | GET | Download the finished video |
 | `/v1/mcp/tools` | GET | List tools discovered from the MCP config — see the [MCP Tools Guide](mcp-tools.md) |
 | `/v1/mcp/servers` | GET | List configured MCP servers |
@@ -204,6 +204,11 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cua/runs/{id}` | GET | Poll typed events, terminal state, and any pending approval gate |
 | `/v1/cua/runs/{id}/approval` | POST | Resolve the current gate with `{"gate_id": "...", "approved": true|false}` |
 | `/v1/cua/runs/{id}/cancel` | POST | Cancel a run |
+
+Video cancellation and download phase reporting are described in the
+[Videos API guide](video-generation.md#cancel-a-video-job). Queued DELETE returns
+200 then 404; running DELETE returns 202 with `cancel_requested: true`, then
+`failed` with `video_generation_cancelled` until deleted again.
 
 Image parameters that a model cannot accept return HTTP 400 with
 `error.type: "invalid_request_error"`, `code: "invalid_image_request"`,

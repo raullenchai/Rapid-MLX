@@ -127,6 +127,7 @@ class CogVideoXFunInpaintPipeline:
         num_inference_steps: int = 50,
         guidance_scale: float = 6.0,
         seed: Optional[int] = None,
+        cancel_check=None,
     ) -> mx.array:
         """Run video inpainting.
 
@@ -143,6 +144,8 @@ class CogVideoXFunInpaintPipeline:
         Returns:
             (B, D_out, H, W, C) output video, values in [0, 1].
         """
+        if cancel_check is not None:
+            cancel_check()
         do_cfg = guidance_scale > 1.0
         B, D_vid, H_vid, W_vid, C_vid = video.shape
 
@@ -156,6 +159,8 @@ class CogVideoXFunInpaintPipeline:
         if seed is not None:
             mx.random.seed(seed)
 
+        if cancel_check is not None:
+            cancel_check()
         # 2. Normalize video to [-1, 1] for VAE and encode
         video_norm = video * 2 - 1  # [0,1] -> [-1,1]
         posterior = self.vae.encode(video_norm)
@@ -182,6 +187,8 @@ class CogVideoXFunInpaintPipeline:
         if do_cfg:
             inpaint_cf = mx.concatenate([inpaint_cf, inpaint_cf], axis=0)
 
+        if cancel_check is not None:
+            cancel_check()
         # 4. Setup scheduler
         self.scheduler.set_timesteps(num_inference_steps)
 
@@ -194,6 +201,8 @@ class CogVideoXFunInpaintPipeline:
 
         # 7. Denoising loop
         for i, t in enumerate(self.scheduler.timesteps):
+            if cancel_check is not None:
+                cancel_check()
             # CFG: duplicate latents
             if do_cfg:
                 latent_model_input = mx.concatenate([current, current], axis=0)
@@ -218,6 +227,8 @@ class CogVideoXFunInpaintPipeline:
             current = self.scheduler.step(noise_pred, t, current)
             mx.eval(current)
 
+        if cancel_check is not None:
+            cancel_check()
         # 8. Decode latents
         decoded_latents = current.transpose(0, 1, 3, 4, 2)  # NFCHW -> NDHWC
         decoded_latents = decoded_latents / self.vae.scaling_factor

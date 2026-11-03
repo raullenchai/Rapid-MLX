@@ -227,6 +227,10 @@ def _desktop_progress_protocol() -> bool:
         return False
 
 
+class _DownloadCallbackError(RuntimeError):
+    """Carry callback failures past transport fallback handlers."""
+
+
 class _ProgressTracker:
     """Aggregate bytes-done counter for one R2 pull.
 
@@ -257,7 +261,8 @@ class _ProgressTracker:
       pipe or machine heartbeats to a terminal.
     """
 
-    def __init__(self, total: int = 0) -> None:
+    def __init__(self, total: int = 0, on_bytes=None) -> None:
+        self._on_bytes = on_bytes
         self._lock = threading.Lock()  # guards the byte counters (fast)
         self._io_lock = threading.Lock()  # serializes rendering + bar state
         self._done = 0
@@ -281,7 +286,15 @@ class _ProgressTracker:
         self._bar_live = False  # a bar is currently drawn on the TTY row
         self._last_line_len = 0  # width of the current row (no-ANSI erase)
 
+    def _notify_bytes(self, delta: int) -> None:
+        if self._on_bytes is not None:
+            try:
+                self._on_bytes(delta)
+            except Exception as exc:
+                raise _DownloadCallbackError() from exc
+
     def add(self, delta: int) -> None:
+        self._notify_bytes(delta)
         if delta <= 0:
             return
         do_emit = False
@@ -446,6 +459,7 @@ class _ProgressTracker:
         ``flush()`` carries the corrected total."""
         if delta <= 0:
             return
+        self._notify_bytes(-delta)
         with self._lock:
             self._done = max(0, self._done - int(delta))
 
@@ -712,6 +726,8 @@ def pinned_snapshot_download(
     revision: str,
     *,
     allow_patterns: str | list[str] | None = None,
+    tqdm_class=None,
+    on_bytes: Callable[[int], None] | None = None,
 ) -> str:
     """``snapshot_download(repo_id, revision=revision)``, mirror first.
 
@@ -729,6 +745,8 @@ def pinned_snapshot_download(
     kwargs: dict[str, Any] = {"revision": revision}
     if allow_patterns is not None:
         kwargs["allow_patterns"] = list(allow_patterns)
+    if tqdm_class is not None:
+        kwargs["tqdm_class"] = tqdm_class
     if model_downloads.disabled():
         from huggingface_hub.errors import LocalEntryNotFoundError
 
@@ -738,7 +756,10 @@ def pinned_snapshot_download(
             model_downloads.check(repo_id)
             raise
     if _is_commit_sha(revision) and download_with_mirror_fallback(
-        repo_id, revision=revision, allow_patterns=allow_patterns
+        repo_id,
+        revision=revision,
+        allow_patterns=allow_patterns,
+        **({"on_bytes": on_bytes} if on_bytes is not None else {}),
     ):
         owner, _, name = repo_id.partition("/")
         return str(
@@ -1802,10 +1823,15 @@ def download_with_mirror_fallback(
     *,
     revision: str | None = None,
     on_pull_start: Callable[[], None] | None = None,
+    on_bytes: Callable[[int], None] | None = None,
     allow_patterns: str | list[str] | None = None,
     out: dict | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
+
+    ``on_bytes(delta)`` runs at chunk/file boundaries and may raise to stop.
+    Rollbacks send negative deltas. Interrupted chunks retain a resumable sidecar;
+    snapshot entries are installed only after validation.
 
     ``out`` (optional) receives ``out["source"]`` according to the origin of
     transferred weight files: an HF weight fallback selects ``"hf"``, while
@@ -2141,7 +2167,10 @@ def download_with_mirror_fallback(
     # the user-visible signal. Per-call (not module-global) so two
     # concurrent ``download_with_mirror_fallback`` calls in one process
     # don't trample each other's totals (codex R1 BLOCKING on PR #682).
-    progress_tracker = _ProgressTracker(total=total_expected_bytes)
+    progress_tracker = _ProgressTracker(
+        total=total_expected_bytes,
+        **({"on_bytes": on_bytes} if on_bytes is not None else {}),
+    )
 
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
@@ -2201,6 +2230,8 @@ def download_with_mirror_fallback(
     def _do_file(
         item: tuple[str, int | None, str | None],
     ) -> tuple[str, str, int]:
+        if on_bytes is not None:
+            progress_tracker.add(0)
         fname, expected_size, expected_sha256 = item
         target = snap_dir / fname
         # Belt-and-braces: normalize against snap_dir to refuse symlink
@@ -2647,6 +2678,8 @@ def download_with_mirror_fallback(
                     f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
                     f"{_safe_display_name(fname)} {tag}"
                 )
+    except _DownloadCallbackError as exc:
+        raise exc.__cause__
     finally:
         # Final heartbeat: a sub-500 ms tail of bytes can finish between the
         # last throttle window and the loop exit. Emit one unconditional
