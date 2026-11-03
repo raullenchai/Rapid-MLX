@@ -2498,6 +2498,11 @@ def _add_pull_parser(
     pull_parser.add_argument(  # type: ignore[attr-defined]  # argcomplete attribute
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
+    pull_parser.add_argument(
+        "--with-ref2va",
+        action="store_true",
+        help="Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",
+    )
     # #2145: a multi-variant repo ships every quantization side by side as
     # top-level folders (e.g. LiquidAI/LFM2.5-2.6B-MLX holds 4bit/ 5bit/ 6bit/
     # 8bit/ mxfp4/...). Without selection, `pull <repo>` fetches ALL of them.

@@ -3881,6 +3881,21 @@
        "type": null
       },
       {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "with_ref2va",
+       "help": "Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--with-ref2va"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreAction",
        "completer": null,
        "const": null,
@@ -3959,6 +3974,7 @@
        "description": null,
        "dests": [
         "help",
+        "with_ref2va",
         "bits",
         "format",
         "request",

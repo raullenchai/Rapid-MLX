@@ -297,7 +297,7 @@ def test_catalog_and_payloads(monkeypatch, tmp_path):
         json.loads((root / "rapid_mlx/model_sizes.json").read_text())["sizes"][
             flex.REPO
         ]
-        == 215866360867
+        == 146818516457
     )
     assert any(
         e["hf_path"] == flex.REPO
@@ -679,6 +679,8 @@ def test_ref_adapter_verification(monkeypatch, tmp_path):
 def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_core):
     import weakref
 
+    monkeypatch.setattr(flex, "ensure_ref2va_assets", lambda: None)
+
     from rapid_mlx import _mirror
     from rapid_mlx.video import encoding
 
@@ -819,6 +821,7 @@ def test_failed_partition_switch_self_heals(
             events.append("failure")
             raise failure
 
+    monkeypatch.setattr(flex, "ensure_ref2va_assets", lambda: None)
     engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
     monkeypatch.setattr(engine, "_merge_adapter", merge)
     engine._model = SimpleNamespace(pipeline=pipeline)
@@ -1300,13 +1303,24 @@ def test_reference_ffprobe_video_aspect_ratio(
 
 @pytest.mark.parametrize("initial_mode", ["ref2va", "fl2va"])
 def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
-    from rapid_mlx import _mirror
+    import huggingface_hub
+
+    from rapid_mlx import _mirror, model_downloads
     from rapid_mlx.video import encoding
 
+    downloads = []
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**12))
     loads = []
     module = ModuleType("mlx_vlm.generate")
 
     def load(path, *, workflow):
+        if workflow == "ref2va":
+            assert downloads[:2] == [
+                ((repo, revision), {"allow_patterns": list(files)})
+                for repo, revision, files in flex.REF2VA_PAYLOADS
+            ]
         loads.append(workflow)
         return SimpleNamespace(pipeline=SimpleNamespace())
 
@@ -1320,7 +1334,9 @@ def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
     refs_module.VideoReference = lambda kind, path: (kind, path)
     monkeypatch.setitem(sys.modules, refs_module.__name__, refs_module)
     monkeypatch.setattr(
-        _mirror, "pinned_snapshot_download", lambda *a, **k: str(tmp_path)
+        _mirror,
+        "pinned_snapshot_download",
+        lambda *a, **k: downloads.append((a, k)) or str(tmp_path),
     )
     monkeypatch.setattr(
         encoding,
@@ -1347,6 +1363,18 @@ def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
             else None,
         )
         assert loads == [initial_mode]
+        expected = list(flex.REF2VA_PAYLOADS) if initial_mode == "ref2va" else []
+        expected.append((h3.REPO, h3.REVISION, flex.BASE_FILES))
+        assert downloads == [
+            ((repo, rev), {"allow_patterns": list(files)})
+            for repo, rev, files in expected
+        ]
+        if initial_mode == "fl2va":
+            assert not any(
+                name.startswith(("transformer_ref/", "ref2va/"))
+                for _, kwargs in downloads
+                for name in kwargs["allow_patterns"]
+            )
     finally:
         engine.stop()
 
@@ -1671,3 +1699,457 @@ def test_reference_unsupported_image(reference_app, format):
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "references[0]: unsupported file type"
+
+
+@pytest.mark.parametrize("with_ref2va", [False, True])
+def test_pull_optional_ref2va(monkeypatch, with_ref2va):
+    import argparse
+
+    from rapid_mlx import cli
+    from rapid_mlx.runtime import video_lane
+
+    calls = []
+    monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_pull_repository", lambda a, **kw: calls.append((a.model, kw))
+    )
+    monkeypatch.setattr(cli, "_missing_download_bytes", lambda repo, **kw: 0)
+    cli.pull_command(
+        argparse.Namespace(
+            model="pika-h3-flex", bits=None, format=None, with_ref2va=with_ref2va
+        )
+    )
+    expected = (*flex.PAYLOADS, *(flex.REF2VA_PAYLOADS if with_ref2va else ()))
+    assert calls == [
+        (repo, dict(allow_patterns_override=list(files), revision_override=rev))
+        for repo, rev, files in expected
+    ]
+    names = [name for _, kw in calls for name in kw["allow_patterns_override"]]
+    assert any(name.startswith("transformer_ref/") for name in names) == with_ref2va
+    assert any(name.startswith("ref2va/") for name in names) == with_ref2va
+    before = len(calls)
+    for model in ("minimax-h3", "qwen3.5-4b-4bit"):
+        with pytest.raises(ValueError, match="--with-ref2va.*only.*Pika"):
+            cli.pull_command(argparse.Namespace(model=model, with_ref2va=True))
+    assert len(calls) == before
+
+
+def test_pull_ref2va_parser():
+    from rapid_mlx.cli_parser import build_parser
+
+    args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
+    assert args.with_ref2va
+    assert not build_parser().parse_args(["pull", "pika-h3-flex"]).with_ref2va
+
+
+@pytest.mark.parametrize("enough_space", [False, True])
+def test_pull_ref2va_aggregate_disk_preflight(monkeypatch, tmp_path, enough_space):
+    from rapid_mlx import _mirror, cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.runtime import video_lane
+
+    payloads = (*flex.PAYLOADS, *flex.REF2VA_PAYLOADS)
+    sizes = {}
+    for repo, revision, files in payloads:
+        siblings = sizes.setdefault((repo, revision), {})
+        siblings.update({name: 10**9 for name in files})
+    cached_name = flex.PAYLOADS[0][2][0]
+    cached_file = tmp_path / "cached"
+    cached_file.write_bytes(b"cached")
+    missing = [
+        sum(10**9 for name in files if name != cached_name) for _, _, files in payloads
+    ]
+    required = int(sum(missing) * (1 + cli._DOWNLOAD_DISK_HEADROOM))
+    available = required if enough_space else required - 1
+    assert available >= max(missing) * (1 + cli._DOWNLOAD_DISK_HEADROOM)
+
+    lookups, downloads, probes = [], [], []
+
+    def model_info(repo, *, revision, files_metadata):
+        assert files_metadata
+        lookups.append((repo, revision))
+        return SimpleNamespace(
+            sha=revision,
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in {
+                    **sizes[(repo, revision)],
+                    "unselected.bin": required * 10,
+                }.items()
+            ],
+        )
+
+    def cache_lookup(repo, filename, *, revision):
+        assert (repo, revision) in sizes
+        return str(cached_file) if filename == cached_name else None
+
+    def disk_space():
+        probes.append(True)
+        return tmp_path, available
+
+    def pull(args, **kwargs):
+        assert len(lookups) == len(payloads)
+        downloads.append((args.model, kwargs))
+
+    monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *a: None)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", disk_space)
+    monkeypatch.setattr("huggingface_hub.model_info", model_info)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", cache_lookup)
+    monkeypatch.setattr(cli, "_pull_repository", pull)
+    args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
+    if enough_space:
+        cli.pull_command(args)
+        assert downloads == [
+            (repo, dict(revision_override=rev, allow_patterns_override=list(files)))
+            for repo, rev, files in payloads
+        ]
+    else:
+        with pytest.raises(SystemExit) as exc:
+            cli.pull_command(args)
+        assert exc.value.code == 1
+        assert downloads == []
+    assert lookups == [(repo, rev) for repo, rev, _ in payloads]
+    assert probes == [True]
+
+
+def test_ref2va_missing_bytes_with_cached_base_config(monkeypatch, tmp_path):
+    from rapid_mlx import _mirror, cli
+
+    cached_file = tmp_path / "cached"
+    cached_file.write_bytes(b"cached")
+    cached_names = {"config.json", *flex.BASE_FILES}
+
+    def cache_lookup(repo, filename, *, revision=None):
+        assert repo == h3.REPO
+        assert revision in (None, h3.REVISION)
+        return str(cached_file) if filename in cached_names else None
+
+    def model_info(repo, *, revision, files_metadata):
+        assert repo == h3.REPO
+        assert revision == h3.REVISION
+        assert files_metadata
+        return SimpleNamespace(
+            sha=revision,
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in {
+                    **dict.fromkeys(cached_names, 1),
+                    **flex.REF2VA_FILE_SIZES,
+                }.items()
+            ],
+        )
+
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *a: None)
+    monkeypatch.setattr("huggingface_hub.model_info", model_info)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", cache_lookup)
+
+    # A cached root config must not bypass sizing explicitly selected files.
+    assert cli._missing_download_bytes(
+        h3.REPO,
+        revision_override=h3.REVISION,
+        allow_patterns=list(flex.REF2VA_BASE_FILES),
+    ) == sum(
+        size
+        for name, size in flex.REF2VA_FILE_SIZES.items()
+        if name.startswith("transformer_ref/")
+    )
+
+
+def test_pull_ref2va_aggregate_disk_preflight_force(monkeypatch, tmp_path):
+    from rapid_mlx import _mirror, cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.runtime import video_lane
+
+    downloads = []
+    monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 0))
+    monkeypatch.setattr(cli, "_missing_download_bytes", lambda *a, **k: 10**9)
+    monkeypatch.setattr(
+        cli,
+        "_pull_repository",
+        lambda args, **kwargs: downloads.append((args.model, kwargs)),
+    )
+    args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
+    args.force_disk_check = True
+
+    cli.pull_command(args)
+
+    assert downloads == [
+        (repo, dict(revision_override=rev, allow_patterns_override=list(files)))
+        for repo, rev, files in (*flex.PAYLOADS, *flex.REF2VA_PAYLOADS)
+    ]
+
+
+@pytest.fixture
+def ref2va_cache(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from rapid_mlx import _mirror, model_downloads
+
+    cached = set()
+    present = tmp_path / "cached"
+    present.write_bytes(b"x")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, filename, *, revision: (
+            str(present) if (repo, revision, filename) in cached else None
+        ),
+    )
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**12))
+    return cached
+
+
+def test_local_model_skips_ref2va_assets(monkeypatch, tmp_path):
+    local_model = tmp_path / "model"
+    local_model.mkdir()
+    monkeypatch.setattr(
+        flex, "ensure_ref2va_assets", lambda: pytest.fail("local model download")
+    )
+    engine = flex.PikaH3FlexVideoEngine(str(local_model))
+    try:
+        engine._ensure_assets("ref2va")
+    finally:
+        engine.stop()
+
+
+def test_ref2va_download_and_warm_cache(monkeypatch, tmp_path, ref2va_cache, caplog):
+    from rapid_mlx import _mirror, model_downloads
+
+    calls = []
+
+    def download(repo, rev, *, allow_patterns):
+        calls.append((repo, rev, tuple(allow_patterns)))
+        ref2va_cache.update((repo, rev, name) for name in allow_patterns)
+
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    with caplog.at_level("INFO"):
+        flex.ensure_ref2va_assets()
+    assert calls == list(flex.REF2VA_PAYLOADS)
+    assert (
+        "Downloading Pika H3 Flex Ref2VA assets (69.0 GB, first Ref2VA request only)"
+        in caplog.text
+    )
+    assert "assets downloaded (69.0 GB)" in caplog.text
+    monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    monkeypatch.setattr(
+        _mirror, "_cache_disk_space", lambda: pytest.fail("warm disk probe")
+    )
+    flex.ensure_ref2va_assets()
+    assert len(calls) == 2
+
+
+def test_ref2va_download_failure_is_actionable(monkeypatch, tmp_path, ref2va_cache):
+    from rapid_mlx import _mirror, model_downloads
+
+    def download(repo, rev, *, allow_patterns):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**15))
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    with pytest.raises(h3.MiniMaxH3BackendError) as exc:
+        flex.ensure_ref2va_assets()
+    message = str(exc.value)
+    assert "Ref2VA asset download failed" in message
+    assert "rapid-mlx pull pika-h3-flex --with-ref2va" in message
+    assert "connection reset" in message
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_ref2va_missing_error(monkeypatch, tmp_path, ref2va_cache, disabled):
+    from rapid_mlx import _mirror, model_downloads
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: disabled)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 1_000_000_000))
+    with pytest.raises(h3.MiniMaxH3BackendError) as exc:
+        flex.ensure_ref2va_assets()
+    message = str(exc.value)
+    assert "rapid-mlx pull pika-h3-flex --with-ref2va" in message
+    if disabled:
+        assert "downloads are disabled" in message
+    else:
+        assert "additional 69.0 GB" in message
+        assert f"only 1.0 GB free on {tmp_path}" in message
+
+
+def test_ref2va_disk_check_failure_is_actionable(monkeypatch, ref2va_cache):
+    from rapid_mlx import _mirror
+
+    error = OSError("statvfs failed")
+
+    def disk_space():
+        raise error
+
+    monkeypatch.setattr(_mirror, "_cache_disk_space", disk_space)
+    monkeypatch.setattr(
+        _mirror,
+        "pinned_snapshot_download",
+        lambda *a, **kw: pytest.fail("download attempted after disk check failure"),
+    )
+    with pytest.raises(h3.MiniMaxH3BackendError) as exc:
+        flex.ensure_ref2va_assets()
+    assert str(exc.value) == (
+        "Could not check free disk space for the Pika H3 Flex Ref2VA download "
+        "(statvfs failed). Run `rapid-mlx pull pika-h3-flex --with-ref2va` "
+        "to pre-fetch the assets."
+    )
+    assert exc.value.__cause__ is error
+
+
+def test_ref2va_disk_counts_only_missing(monkeypatch, ref2va_cache, tmp_path):
+    from rapid_mlx import _mirror
+
+    # A cached second transformer leaves just the 2.77 GB adapter + manifest.
+    ref2va_cache.update(
+        (flex.BASE_REPO, flex.BASE_REVISION, f) for f in flex.REF2VA_BASE_FILES
+    )
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 2_000_000_000))
+    with pytest.raises(h3.MiniMaxH3BackendError, match="additional 2.8 GB"):
+        flex.ensure_ref2va_assets()
+    calls = []
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 3_100_000_000))
+    monkeypatch.setattr(
+        _mirror, "pinned_snapshot_download", lambda *a, **kw: calls.append((a, kw))
+    )
+    flex.ensure_ref2va_assets()
+    assert len(calls) == 2
+
+
+def test_ref2va_disk_failure_keeps_resident_transformer(
+    monkeypatch, ref2va_cache, tmp_path
+):
+    from rapid_mlx import _mirror
+
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 0))
+    engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    trunk = object()
+    engine._model = SimpleNamespace(pipeline=SimpleNamespace(transformer=trunk))
+    engine._resident_partition = "fl2va"
+    try:
+        with pytest.raises(h3.MiniMaxH3BackendError, match="69.0 GB"):
+            engine._ensure_partition("ref2va")
+        assert engine._model.pipeline.transformer is trunk
+        assert engine._resident_partition == "fl2va"
+    finally:
+        engine.stop()
+
+
+def test_pinned_payload_sizes(monkeypatch):
+    import huggingface_hub
+
+    from rapid_mlx import model_sizes
+    from scripts.gen_model_sizes import _size_one
+
+    # Metadata-only get_paths_info capture at BASE_REVISION / REVISION.
+    sizes = json.loads(
+        (Path(__file__).parent / "fixtures/pika_h3_flex_sizes.json").read_text()
+    )
+
+    def info(repo, *, revision, **kw):
+        assert revision == (flex.REVISION if repo == flex.REPO else flex.BASE_REVISION)
+        return SimpleNamespace(
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in sizes[repo].items()
+            ]
+        )
+
+    monkeypatch.setattr(huggingface_hub, "model_info", info)
+    total = sum(sizes[repo][f] for repo, _, files in flex.PAYLOADS for f in files)
+    extra = sum(
+        sizes[repo][f] for repo, _, files in flex.REF2VA_PAYLOADS for f in files
+    )
+    assert total == 146_818_516_457
+    assert extra == flex.REF2VA_EXTRA_BYTES == 69_047_844_410
+    assert total + extra == 215_866_360_867
+    assert _size_one(flex.REPO) == (flex.REPO, total)
+    assert model_sizes.size_bytes(flex.REPO) == total
+    for repo, _, files in flex.REF2VA_PAYLOADS:
+        assert {f: sizes[repo][f] for f in files} == {
+            f: flex.REF2VA_FILE_SIZES[f] for f in files
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_ref2va_asset_error_surfaces_in_failed_job(
+    monkeypatch, tmp_path, ref2va_cache, disabled
+):
+    from rapid_mlx import _mirror, model_downloads
+    from rapid_mlx.routes import video
+    from rapid_mlx.runtime import video_lane
+
+    monkeypatch.setattr(model_downloads, "disabled", lambda: disabled)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 0))
+    lane = video_lane.VideoEngine("pika-h3-flex")
+    monkeypatch.setattr(
+        lane._minimax_engine, "generate", lambda **kw: flex.ensure_ref2va_assets()
+    )
+    video.configure_video_jobs(tmp_path / "jobs")
+    video.start_video_jobs()
+    job = video._VideoJob(
+        id="video_" + "2" * 32,
+        model=flex.REPO,
+        prompt="test",
+        seconds="5",
+        size="832x480",
+    )
+    (video._jobs_root / job.id).mkdir()
+    try:
+        await video._run_job(
+            job,
+            engine=lane,
+            width=832,
+            height=480,
+            num_frames=124,
+            fps=24,
+            seed=1,
+            image_path=None,
+            negative_prompt=None,
+            guidance_scale=None,
+            conditioning_strength=None,
+            references=[("image", tmp_path / "ref")],
+        )
+        assert job.status == "failed"
+        assert "rapid-mlx pull pika-h3-flex --with-ref2va" in job.error["message"]
+        assert (
+            "downloads are disabled" if disabled else "additional 69.0 GB"
+        ) in job.error["message"]
+    finally:
+        lane._minimax_engine.stop()
+        video.configure_video_jobs(None)
+        video.start_video_jobs()
+
+
+@pytest.mark.parametrize("mode", ["fl2va", "ref2va"])
+def test_adapter_download_is_mode_specific(monkeypatch, tmp_path, mode):
+    from rapid_mlx import _mirror
+
+    calls = []
+    monkeypatch.setattr(
+        _mirror,
+        "pinned_snapshot_download",
+        lambda *a, **kw: calls.append((a, kw)) or str(tmp_path),
+    )
+    monkeypatch.setattr(flex, "verify_adapter", lambda *a: None)
+    monkeypatch.setattr(flex, "merge_lora", lambda *a, **kw: None)
+    engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    try:
+        engine._merge_adapter(SimpleNamespace(transformer=object()), mode)
+        assert calls == [
+            (
+                (flex.REPO, flex.REVISION),
+                {
+                    "allow_patterns": list(
+                        flex.REF2VA_FILES if mode == "ref2va" else flex.FILES
+                    )
+                },
+            )
+        ]
+        other = "fl2va/" if mode == "ref2va" else "ref2va/"
+        assert not any(name.startswith(other) for name in calls[0][1]["allow_patterns"])
+    finally:
+        engine.stop()

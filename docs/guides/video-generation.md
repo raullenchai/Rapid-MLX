@@ -280,8 +280,12 @@ scenes were usable in testing; fast subject motion remains experimental.
 Serve `pika-h3-flex` with at least 192 GB of unified memory, with 256 GB recommended
 for Ref2VA (whose 480p 5-second render peaked near 181 GiB of process memory,
 including reusable buffer cache), and the same runtime
-requirements as MiniMax-H3. It reuses the MiniMax-H3 base download and adds
-FL2VA and Ref2VA adapters plus a second transformer partition. Generation uses
+requirements as MiniMax-H3. The default FL2VA download is about 146.8 GB,
+including the MiniMax-H3 base and FL2VA adapter. The first Ref2VA request downloads
+about 69.0 GB more (a second transformer and Ref2VA adapter), which can take a
+long time. Pre-fetch these assets with
+`rapid-mlx pull pika-h3-flex --with-ref2va`. Cached assets are reused.
+Generation uses
 a fixed six-step renoise schedule, 24 fps video, and synchronized 32 kHz stereo
 audio. Set `RAPID_MLX_URL` to your server's base URL for the examples below.
 
