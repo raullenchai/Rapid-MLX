@@ -149,6 +149,7 @@ def create_app(
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        leases.touch()
         # Never include the request body in validation/error responses: it can
         # contain an inference credential or private conversation material.
         length = request.headers.get("content-length")

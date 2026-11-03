@@ -94,6 +94,7 @@ def client():
 def test_http_diagnostics_never_become_executable(
     client, stream, raw, rejected, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.tool_call_diagnostics")
     http, cfg = client
     cfg.engine = Engine(raw)
     before = diagnostics.rejected_tool_calls_total()
@@ -145,6 +146,7 @@ def test_http_diagnostics_never_become_executable(
 
 
 def test_scanner_rejection_and_literal_safety(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.tool_call_diagnostics")
     before = diagnostics.rejected_tool_calls_total()
     text = "<function=unknown><parameter=x>raw</parameter></function>"
     assert (
@@ -236,7 +238,7 @@ def test_counter_exported_without_engine():
 )
 @pytest.mark.asyncio
 async def test_grammar_ineligible_admission_causes(cause, monkeypatch, caplog):
-    caplog.set_level("INFO")
+    caplog.set_level("INFO", logger="rapid_mlx.routes.chat")
     cfg = SimpleNamespace(tool_call_parser="hermes")
     req = ChatCompletionRequest(
         model="test", messages=[{"role": "user", "content": "test"}], tools=TOOLS
@@ -282,7 +284,7 @@ async def test_grammar_ineligible_admission_causes(cause, monkeypatch, caplog):
 def test_grammar_builder_logs_actual_outcome(status, monkeypatch, caplog):
     from rapid_mlx.api import tool_grammar as grammar
 
-    caplog.set_level("INFO")
+    caplog.set_level("INFO", logger="rapid_mlx.routes.chat")
     monkeypatch.setattr(chat, "_tool_grammar_eligible", lambda *a: True)
     cfg = SimpleNamespace(tool_call_parser="hermes", reasoning_parser_name=None)
     req = SimpleNamespace(
@@ -339,7 +341,7 @@ def test_grammar_builder_logs_actual_outcome(status, monkeypatch, caplog):
 async def test_grammar_offload_failures_are_observable(status, monkeypatch, caplog):
     from concurrent.futures import Future
 
-    caplog.set_level("INFO")
+    caplog.set_level("INFO", logger="rapid_mlx.routes.chat")
     monkeypatch.setattr(chat, "_tool_grammar_eligible", lambda *a: True)
     monkeypatch.setattr(
         chat, "_try_admit_tool_grammar_build", lambda: status != "admission_full"

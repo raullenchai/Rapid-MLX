@@ -1475,6 +1475,7 @@ def test_strict_false_guided_unavailable_falls_through_to_prompt_injection(caplo
     that send ``strict=false`` are opting INTO that contract. Only
     strict=true triggers the enforcement gate.
     """
+    caplog.set_level("WARNING", logger="rapid_mlx.routes.chat")
     engine = _Engine(supports_guided=False)
     client = _make_client(engine)
 

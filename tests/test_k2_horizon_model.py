@@ -244,6 +244,7 @@ def test_registration_recovers_when_native_spec_probe_is_invalid(monkeypatch):
 
 
 def test_registration_failure_does_not_advertise_k2(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.utils.tokenizer")
     tokenizer = _reset_registration(monkeypatch)
     real_import_module = importlib.import_module
 

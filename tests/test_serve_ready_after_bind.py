@@ -247,6 +247,7 @@ async def test_supplied_socket_runs_callback_only_after_socket_accepts():
 async def test_throwing_callback_does_not_stop_bound_server(
     caplog, monkeypatch, log_failure
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx._uvicorn")
     callback_ran = asyncio.Event()
 
     def fail_after_bind() -> None:

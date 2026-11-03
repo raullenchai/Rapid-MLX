@@ -7,6 +7,7 @@ import copy
 import importlib
 import importlib.util
 import ipaddress
+import logging
 import os
 import shutil
 import signal
@@ -18,6 +19,62 @@ import time
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _aaa_isolate_logging_state():
+    """Keep logging configuration test-local without importing optional stacks.
+
+    Run before other function fixtures so their setup/teardown is covered too.
+    New application loggers stay registered (modules may retain references),
+    but return to the stdlib defaults. Never normalize state before the test:
+    import/setup bugs must remain observable in the test that triggers them.
+    """
+
+    def application_loggers():
+        return [logging.root] + [
+            logger
+            for name, logger in logging.root.manager.loggerDict.copy().items()
+            if (name == "rapid_mlx" or name.startswith("rapid_mlx."))
+            and isinstance(logger, logging.Logger)
+        ]
+
+    loggers = application_loggers()
+    saved = {
+        logger: (
+            logger.level,
+            logger.propagate,
+            logger.disabled,
+            logger.handlers[:],
+            logger.filters[:],
+        )
+        for logger in loggers
+    }
+    handlers = {
+        handler: (handler.level, handler.filters[:])
+        for logger in loggers
+        for handler in logger.handlers
+    }
+    disabled = logging.root.manager.disable
+    try:
+        yield
+    finally:
+        for logger in application_loggers():
+            level, propagate, is_disabled, attached, filters = saved.get(
+                logger, (logging.NOTSET, True, False, [], [])
+            )
+            if logger.level != level:
+                logger.setLevel(level)
+            logger.propagate = propagate
+            logger.disabled = is_disabled
+            logger.handlers[:] = attached
+            logger.filters[:] = filters
+        for handler, (level, filters) in handlers.items():
+            handler.setLevel(level)
+            handler.filters[:] = filters
+        if logging.root.manager.disable != disabled:
+            logging.disable(disabled)
+
 
 # Pytest updates PYTEST_CURRENT_TEST itself. The other names are set on first
 # import by cv2, mflux and rapid_mlx.benchmark, mlx_lm, mlx_vlm, mlx_audio,
@@ -906,6 +963,57 @@ _AGENT_CONFIG_HOME_ENV_VARS = ("CODEX_HOME", "HERMES_HOME", "DSH_HOME")
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_aliases(tmp_path, monkeypatch):
+    """Start with no user aliases, regardless of the inherited environment.
+
+    Alias tests can select their own file after this fixture runs. Leave the
+    default absent so reads exercise the real empty-store behavior.
+    """
+    monkeypatch.setenv(
+        "RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "user-aliases.json")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_config_env(monkeypatch):
+    """Server lifespans must not initialize the operator's MCP connectors."""
+    monkeypatch.delenv("RAPID_MLX_MCP_CONFIG", raising=False)
+    monkeypatch.delenv("VLLM_MLX_MCP_CONFIG", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_version_check_cache(tmp_path, monkeypatch):
+    """Serve notices must not depend on the operator's cached update status."""
+    from rapid_mlx import _version_check
+
+    monkeypatch.setattr(
+        _version_check, "_cache_path", lambda: tmp_path / "version_check.json"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_profile_registry(tmp_path, monkeypatch):
+    """Keep lazy profile loads and explicit reloads off the real user overlay.
+
+    Patch only the registry's Path constructor: changing HOME globally would
+    interfere with explicit real-cache tests and lazy HF imports. Tests with
+    a temporary HOME still exercise user-profile discovery at their own path.
+    This also covers load_profiles imported by tests during collection.
+    """
+    from rapid_mlx import agents
+
+    user_profiles = Path.home() / ".rapid-mlx" / "agents"
+
+    def isolated_path(value):
+        path = Path(value)
+        return tmp_path / "agent-profiles" if path == user_profiles else path
+
+    monkeypatch.setattr(agents, "_PROFILES", {})
+    monkeypatch.setattr(agents, "_LOADED", False)
+    monkeypatch.setattr(agents, "Path", isolated_path)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_hf_and_config_dirs(tmp_path, monkeypatch, request):
     """Isolate every test from the host's real HF cache and config dirs.
 
@@ -1452,6 +1560,7 @@ def _telemetry_tests_run_off_the_build_machine(request, monkeypatch):
 def isolate_default_external_model_roots(monkeypatch):
     """Never discover the host's model folders in tests."""
     monkeypatch.setattr("rapid_mlx.model_aliases.DEFAULT_EXTERNAL_MODEL_ROOTS", ())
+    monkeypatch.delenv("RAPID_MLX_EXTRA_MODEL_ROOTS", raising=False)
 
 
 @pytest.fixture(autouse=True)

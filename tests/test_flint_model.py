@@ -410,6 +410,7 @@ def test_sanitize_rejects_non_affine_and_unknown_packed_modules():
 
 
 def test_registration_handles_import_failure(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.utils.tokenizer")
     import rapid_mlx.models
     from rapid_mlx.utils import tokenizer as tok
 

@@ -921,6 +921,7 @@ def test_close_finalizes_provider_suspended_between_stream_pulls(
 def test_close_continues_after_tracked_iterator_cleanup_failure(
     stalled_provider, caplog
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.speculative.tensorfold_qwen27")
     backend, provider, _, stopped, _ = stalled_provider
 
     class Inner:

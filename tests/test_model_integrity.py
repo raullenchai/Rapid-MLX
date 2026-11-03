@@ -475,6 +475,7 @@ def test_unpinned_missing_revision_does_not_use_mirror(snapshot, monkeypatch):
 def test_receipt_write_errors_preserve_verified_readonly_pulls(
     snapshot, monkeypatch, caplog, stage
 ):
+    caplog.set_level("WARNING", logger="rapid_mlx.model_integrity")
     import json
     import os
     import tempfile

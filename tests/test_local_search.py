@@ -1527,6 +1527,8 @@ def test_refresh_loop_queues_folder_that_becomes_stale_between_ticks(
 
 
 def test_refresh_loop_recovers_after_store_error(tmp_path, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.local_search.service")
+
     async def scenario():
         search = engine(tmp_path, refresh_interval=0.01)
         search.folders = AsyncMock(
@@ -7627,6 +7629,8 @@ def test_indexed_unicode_filename_candidates_are_casefolded(tmp_path, name, quer
 
 
 def test_absorption_waits_for_dequeued_root_claim(tmp_path, monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.local_search.service")
+
     async def scenario():
         parent = folder(tmp_path)
         child = folder(parent, "docs")

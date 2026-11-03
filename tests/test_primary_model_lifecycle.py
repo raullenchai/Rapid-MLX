@@ -595,6 +595,7 @@ async def test_start_shutdown_and_detach_monitor_paths(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_shutdown_logs_failed_detached_load(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.primary_lifecycle")
     engine = FakeEngine()
     engine.start_gate = asyncio.Event()
     engine.fail_start = True
@@ -682,6 +683,7 @@ async def test_missing_or_ineffective_engine_lifecycle_methods():
 
 @pytest.mark.asyncio
 async def test_load_task_ready_shortcut_and_failed_cleanup_logging(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.primary_lifecycle")
     engine = FakeEngine(loaded=True)
     lifecycle = PrimaryModelLifecycle(engine)
     lifecycle.state = "standby"
@@ -848,6 +850,7 @@ async def test_stop_failure_publishes_truthful_state(remains_loaded):
 
 @pytest.mark.asyncio
 async def test_allocator_release_failure_is_best_effort(caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.primary_lifecycle")
     now = [10.0]
     engine = FakeEngine(loaded=True)
 
@@ -868,6 +871,7 @@ async def test_allocator_release_failure_is_best_effort(caplog):
 
 @pytest.mark.asyncio
 async def test_monitor_logs_failures_and_propagates_cancellation(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="rapid_mlx.runtime.primary_lifecycle")
     from rapid_mlx.runtime import primary_lifecycle as lifecycle_module
 
     engine = FakeEngine(loaded=True)
