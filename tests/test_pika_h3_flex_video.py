@@ -778,6 +778,59 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
         engine.stop()
 
 
+@pytest.mark.parametrize("recovery_partition", ["fl2va", "ref2va"])
+def test_failed_partition_switch_self_heals(
+    monkeypatch, tmp_path, array_core, recovery_partition
+):
+    class Trunk:
+        pass
+
+    pipeline = SimpleNamespace(
+        transformer=Trunk(), _normalize_video_latents=lambda x: x
+    )
+    loads, merges = [], []
+    weights = ModuleType("mlx_vlm.models.minimax_h3.weights")
+
+    def load(root, *, partition):
+        assert root == tmp_path
+        assert pipeline.transformer is None
+        loads.append(partition)
+        return Trunk()
+
+    weights.load_transformer = load
+    monkeypatch.setitem(sys.modules, weights.__name__, weights)
+    failure = RuntimeError("adapter merge failed")
+
+    def merge(pipeline, partition):
+        assert isinstance(pipeline.transformer, Trunk)
+        merges.append(partition)
+        if merges == ["fl2va", "ref2va"]:
+            raise failure
+
+    engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    monkeypatch.setattr(engine, "_merge_adapter", merge)
+    engine._model = SimpleNamespace(pipeline=pipeline)
+    engine._model_root = tmp_path
+    engine._needed_partition = "fl2va"
+    try:
+        engine._prepare_model(engine._model)
+        assert engine._resident_partition == "fl2va"
+        with pytest.raises(RuntimeError, match="adapter merge failed") as exc:
+            engine._ensure_partition("ref2va")
+        assert exc.value is failure
+        assert pipeline.transformer is None
+        assert engine._resident_partition is None
+
+        engine._ensure_partition(recovery_partition)
+        assert isinstance(pipeline.transformer, Trunk)
+        assert engine._resident_partition == recovery_partition
+        assert pipeline.partition == recovery_partition
+        assert loads == ["ref2va", recovery_partition]
+        assert merges == ["fl2va", "ref2va", recovery_partition]
+    finally:
+        engine.stop()
+
+
 @pytest.fixture
 def reference_app(monkeypatch, tmp_path):
     from fastapi import FastAPI
@@ -1349,6 +1402,40 @@ def test_flex_body_limit(monkeypatch):
             headers={"Content-Length": str(30 * 1024 * 1024)},
         )
         assert response.status_code == 413
+
+
+def test_flex_streaming_body_limit(monkeypatch):
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+
+    from rapid_mlx.routes import video
+
+    fake = SimpleNamespace(_minimax_engine=SimpleNamespace(supports_references=True))
+    monkeypatch.setattr(video, "_video_engine", lambda: fake)
+    monkeypatch.setattr(video, "_VIDEO_REQUEST_BYTES", 8)
+    monkeypatch.setattr(video, "_FLEX_REQUEST_BYTES", 16)
+
+    async def authorized(scope):
+        pass
+
+    monkeypatch.setattr(video, "verify_api_key_for_scope", authorized)
+    app = FastAPI()
+
+    @app.post("/v1/videos")
+    async def receive(request: Request):
+        assert "content-length" not in request.headers
+        return {"bytes": len(await request.body())}
+
+    video.install_video_body_limit_middleware(app)
+    with TestClient(app) as client:
+        response = client.post("/v1/videos", content=iter([b"x" * 8, b"x" * 9]))
+        assert "content-length" not in response.request.headers
+        assert response.status_code == 413
+
+        response = client.post("/v1/videos", content=iter([b"x" * 8, b"x" * 4]))
+        assert "content-length" not in response.request.headers
+        assert response.status_code == 200
+        assert response.json() == {"bytes": 12}
 
 
 @pytest.mark.asyncio
