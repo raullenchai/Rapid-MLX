@@ -1,0 +1,365 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Execute the generator's head helpers on CPU, without importing Metal."""
+
+import ast
+import os
+import time
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+SOURCE = Path(__file__).parents[1] / "rapid_mlx/spec_decode/mtp/generator.py"
+GENERATOR = next(
+    n
+    for n in ast.parse(SOURCE.read_text()).body
+    if isinstance(n, ast.FunctionDef) and n.name == "mtp_generate_step"
+)
+
+
+class _Cache:
+    def __init__(self):
+        self.rows = []
+
+    @property
+    def offset(self):
+        return len(self.rows)
+
+    def is_trimmable(self):
+        return True
+
+    def trim(self, n):
+        assert 0 <= n <= self.offset
+        if n:
+            del self.rows[-n:]
+
+
+def _harness(legacy=False, fused=False):
+    cache = _Cache()
+    quantized = []
+    target_drops = []
+
+    def forward(hidden, ids, caches, return_hidden=False):
+        cache.rows.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        logits = np.eye(64)[ids + 1]
+        cascade = np.full(hidden.shape, -99.0)
+        return (logits, cascade) if return_hidden else logits
+
+    def greedy(hidden, ids, caches):
+        logits, cascade = forward(hidden, ids, caches, return_hidden=True)
+        return logits.argmax(axis=-1), cascade
+
+    mx = SimpleNamespace(
+        concatenate=np.concatenate,
+        array=np.array,
+        uint32=np.uint32,
+        stream=lambda _: nullcontext(),
+        eval=lambda *args: None,
+    )
+    env = dict(
+        mx=mx,
+        rebuild_head_history=not legacy,
+        head_pending=None,
+        head_seed=None,
+        mtp_cache=[cache],
+        ntoks=1,
+        generation_stream=None,
+        _is_greedy=True,
+        _mtp_supports_fused_greedy=fused,
+        _mtp_supports_hidden=True,
+        model=SimpleNamespace(mtp_forward=forward, mtp_greedy=greedy),
+        quantize_cache_fn=lambda caches: quantized.append(caches),
+        _process_and_sample=lambda prev, logits, *a, **kw: (
+            logits.argmax(axis=-1),
+            None,
+            None,
+        ),
+        logits_processors=None,
+        _xtc_cell=None,
+        _rollback_draft=lambda n, **kw: target_drops.append((n, kw)),
+        _clear_rollback=lambda: None,
+        time=time,
+        pending_draft_ms=0,
+        _snapshot_processor_state=lambda: (),
+        _restore_processor_state=lambda state: None,
+        _timing_add=lambda *args: None,
+        _launch_drafts=lambda result: result,
+    )
+    # These nested functions use enclosing generator state. Executing them in
+    # one namespace preserves that state without importing the MLX runtime.
+    names = {
+        "_trim_head",
+        "_flush_head",
+        "_rollback_verify_round",
+        "_step_mtp",
+        "_step_mtp_chain",
+        "_draft_chain_timed",
+        "_prefill",
+    }
+    funcs = [
+        n for n in GENERATOR.body if isinstance(n, ast.FunctionDef) and n.name in names
+    ]
+
+    class _Standalone(ast.NodeTransformer):
+        def visit_Nonlocal(self, node):
+            return ast.copy_location(ast.Global(names=node.names), node)
+
+    module = _Standalone().visit(ast.Module(body=funcs, type_ignores=[]))
+    exec(compile(ast.fix_missing_locations(module), str(SOURCE), "exec"), env)
+    return env, cache, quantized, target_drops
+
+
+def _settle_verify(env, accepted, emitted=None):
+    """Execute the actual post-verify rebuild block, including terminal caps."""
+    block = next(
+        n
+        for n in ast.walk(GENERATOR)
+        if isinstance(n, ast.If)
+        and ast.unparse(n.test)
+        == "rebuild_head_history and (not pending_is_prompt_lookup)"
+        and any(
+            isinstance(c, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "kept" for t in c.targets)
+            for c in n.body
+        )
+    )
+    env.update(
+        pending_is_prompt_lookup=False,
+        k_len=3,
+        accepted_count=accepted,
+        emissions=[None] * (accepted if emitted is None else emitted),
+        hidden=np.array([[[110.0], [120.0], [130.0], [140.0]]]),
+        y=np.array([11]),
+        drafts_arr=np.array([12, 13, 14]),
+    )
+    exec(compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), "exec"), env)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("accepted", [0, 1, 2, 3])
+@pytest.mark.parametrize("fused", [False, True])
+def test_committed_head_rows(legacy, accepted, fused):
+    env, cache, quantized, drops = _harness(legacy, fused)
+    chain = env["_step_mtp_chain"]
+    chain(np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, accepted)
+    if accepted < 3:
+        env["_rollback_verify_round"](3 - accepted, verify_size=4)
+        assert drops == [(3 - accepted, {"verify_size": 4})]
+    else:
+        assert drops == []
+    commit = None
+    if legacy and accepted == 3:
+        commit = (np.array([[[130.0]]]), np.array([14]))
+    calls = []
+    original = env["_step_mtp"]
+
+    def observe(hidden, tok, prev, **kwargs):
+        # Before each chain's first *new* row, physical KV plus deferred
+        # committed rows must equal emitted tokens minus one.
+        pending = kwargs.get("cache_commit")
+        calls.append(cache.offset + (0 if pending is None else pending[1].size))
+        return original(hidden, tok, prev, **kwargs)
+
+    env["_step_mtp"] = observe
+    result = chain(
+        np.array([[[110.0 + accepted * 10]]]),
+        np.array([12 + accepted]),
+        None,
+        3,
+        cache_commit=commit,
+    )
+    assert result[0][0] == 13 + accepted
+    assert calls[0] == accepted + (0 if legacy and accepted < 3 else 1)
+    assert quantized
+    if not legacy:
+        assert cache.rows[: accepted + 2] == [
+            (float(10 * (t - 1)), t) for t in range(11, 13 + accepted)
+        ]
+    elif accepted >= 2:
+        # Old accepted rows retain predicted cascade hiddens.
+        assert cache.rows[1][0] == -99.0
+
+
+@pytest.mark.parametrize("accepted,emitted", [(0, 0), (1, 1), (2, 1), (3, 2), (3, 3)])
+def test_rebuild_flushes_terminal_or_park_handoff(accepted, emitted):
+    env, cache, quantized, _ = _harness()
+    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, accepted, emitted)
+    assert cache.offset == 0
+    env["_flush_head"]()
+    assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 12 + emitted)]
+    assert env["head_pending"] is None
+    assert len(quantized) == 4
+
+
+def test_rebuild_park_and_resume():
+    env, cache, _, _ = _harness()
+    chain = env["_step_mtp_chain"]
+    chain(np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, 3)
+    env.update(last_committed_hidden=np.array([[[140.0]]]), y=np.array([15]))
+    block = next(
+        n
+        for n in ast.walk(GENERATOR)
+        if isinstance(n, ast.If)
+        and ast.unparse(n.test) == "rebuild_head_history and head_pending is not None"
+    )
+    exec(compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), "exec"), env)
+    env["_flush_head"]()
+    assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 16)]
+    # One intervening parked step predicts 16 from true hidden(15).
+    env["head_pending"] = (np.array([[[150.0]]]), np.array([16]))
+    env["_flush_head"]()
+    env["ntoks"] = 7
+    assert cache.offset == 6  # seven emitted tokens, latest row not appended
+    chain(np.array([[[160.0]]]), np.array([17]), None, 3)
+    assert cache.rows[:7] == [(float(10 * (t - 1)), t) for t in range(11, 18)]
+
+
+def test_failed_chain_restores_deferred_rows():
+    env, cache, _, _ = _harness()
+    assert "_draft_chain_timed" in env
+    pending = (np.array([[[100.0]]]), np.array([11]))
+    env["head_pending"] = pending
+    step = env["_step_mtp"]
+    calls = 0
+
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected draft fault")
+        return step(*args, **kwargs)
+
+    env["_step_mtp"] = fail_second
+    with pytest.raises(RuntimeError, match="injected draft fault"):
+        env["_draft_chain_timed"](np.array([[[110.0]]]), np.array([12]), None, 3)
+    assert cache.rows == [(100.0, 11)]
+    assert env["head_pending"] is None
+
+
+def test_prefill_shift_and_first_chain():
+    env, cache, _, _ = _harness()
+    env["mx"].clear_cache = lambda: None
+    env.update(
+        model_cache=[],
+        prefill_step_size=3,
+        _target_forward=lambda ids, **kwargs: (None, ids[..., None] * 10),
+    )
+    remaining = env["_prefill"](np.arange(10, 18), None)
+    assert remaining.tolist() == [17]
+    assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 18)]
+    assert cache.offset == 7
+    env["_step_mtp_chain"](np.array([[[170.0]]]), np.array([18]), None, 3)
+    assert cache.rows[:8] == [(float(10 * (t - 1)), t) for t in range(11, 19)]
+
+
+@pytest.mark.parametrize("accepted", [0, 1, 2, 3])
+def test_terminal_bonus_or_residual_is_committed(accepted):
+    env, cache, _, _ = _harness()
+    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    _settle_verify(env, accepted)
+    env.update(
+        round_done=True,
+        eos_cut=False,
+        emissions=[(t,) for t in range(12, 13 + accepted)],
+    )
+    block = next(
+        n
+        for n in ast.walk(GENERATOR)
+        if isinstance(n, ast.If)
+        and "len(emissions) == accepted_count + 1" in ast.unparse(n.test)
+    )
+    exec(compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), "exec"), env)
+    env["_flush_head"]()
+    assert cache.rows == [(float(10 * (t - 1)), t) for t in range(11, 13 + accepted)]
+
+
+@pytest.mark.parametrize("sync_failure", [False, True])
+def test_verify_exception_keeps_true_y(sync_failure):
+    env, cache, _, drops = _harness()
+    env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+    handlers = [
+        n
+        for n in ast.walk(GENERATOR)
+        if isinstance(n, ast.ExceptHandler)
+        and any(
+            isinstance(child, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "head_pending"
+                for t in child.targets
+            )
+            and ast.unparse(child.value) == "(head_seed, y)"
+            for child in ast.walk(n)
+        )
+    ]
+    assert len(handlers) == 2
+    handler = next(
+        h
+        for h in handlers
+        if ("_rollback_verify_round" in ast.unparse(h)) == sync_failure
+    )
+    env.update(
+        y=np.array([11]),
+        k_len=3,
+        accepted_count=0,
+        pending_is_prompt_lookup=False,
+        processor_boundary=(),
+    )
+    fault = ast.parse('raise RuntimeError("injected verify fault")').body
+    block = ast.Try(body=fault, handlers=[handler], orelse=[], finalbody=[])
+    with pytest.raises(RuntimeError, match="injected verify fault"):
+        exec(
+            compile(
+                ast.fix_missing_locations(ast.Module(body=[block], type_ignores=[])),
+                str(SOURCE),
+                "exec",
+            ),
+            env,
+        )
+    assert cache.rows == [(100.0, 11)]
+    assert bool(drops) == sync_failure
+
+
+@pytest.mark.parametrize("value,expected", [(None, True), ("0", True), ("1", False)])
+@pytest.mark.parametrize("supported", [False, True])
+def test_history_default_and_emergency_rollback(
+    monkeypatch, value, expected, supported
+):
+    if value is None:
+        monkeypatch.delenv("RAPID_MLX_MTP_LEGACY_HEAD_HISTORY", raising=False)
+    else:
+        monkeypatch.setenv("RAPID_MLX_MTP_LEGACY_HEAD_HISTORY", value)
+    assignment = next(
+        n
+        for n in GENERATOR.body
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "rebuild_head_history"
+            for t in n.targets
+        )
+    )
+    env = {"os": os, "model": SimpleNamespace(mtp_head_prefill_capture=supported)}
+    exec(
+        compile(ast.Module(body=[assignment], type_ignores=[]), str(SOURCE), "exec"),
+        env,
+    )
+    assert env["rebuild_head_history"] is (expected and supported)
+
+
+def test_repeated_rejections_do_not_accumulate_missing_head_rows():
+    env, cache, _, drops = _harness()
+    for round_index in range(5):
+        # Each reject emits one target residual. Prior rows are deferred into
+        # the first call; settling before observation gives the logical offset.
+        env["_flush_head"]()
+        assert cache.offset == round_index
+        env["_step_mtp_chain"](np.array([[[100.0]]]), np.array([11]), None, 3)
+        _settle_verify(env, 0)
+        env["_rollback_verify_round"](3, verify_size=4)
+    env["_flush_head"]()
+    assert cache.offset == 5
+    assert drops == [(3, {"verify_size": 4})] * 5
