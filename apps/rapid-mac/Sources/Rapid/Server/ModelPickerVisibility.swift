@@ -39,7 +39,8 @@ enum ModelPickerVisibility {
     }
 
     /// Apply availability before the existing size and absolute denylist rules.
-    /// Serving and selected aliases share the same size-only exemption.
+    /// Selected, serving, and actively downloading aliases share the same
+    /// size-only exemption; the known-broken denylist still applies.
     static func chatPickerEntries(
         _ catalog: [ModelEntry],
         selectedAlias: String,
@@ -51,9 +52,11 @@ enum ModelPickerVisibility {
             catalog, selectedAlias: selectedAlias, servingAlias: servingAlias,
             isDownloading: isDownloading
         ).filter { entry in
-            shouldShow(
+            let exemptionAlias = entry.alias == servingAlias || isDownloading(entry.alias)
+                ? entry.alias : selectedAlias
+            return shouldShow(
                 alias: entry.alias,
-                selectedAlias: entry.alias == servingAlias ? entry.alias : selectedAlias,
+                selectedAlias: exemptionAlias,
                 includeAll: includeAll
             )
         }

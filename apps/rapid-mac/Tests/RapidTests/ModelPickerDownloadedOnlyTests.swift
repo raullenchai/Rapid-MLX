@@ -137,6 +137,15 @@ struct ModelPickerDownloadedOnlyTests {
         ).map(\.alias) == ["serving-0.6b"])
     }
 
+    @Test func chatPickerKeepsDownloadingUncachedTinyButDropsKnownBroken() {
+        let tiny = "tiny-0.6b"
+        let broken = "ministral-3b-4bit"
+        #expect(ModelPickerVisibility.chatPickerEntries(
+            [entry(tiny), entry(broken)], selectedAlias: "", servingAlias: nil,
+            includeAll: false, isDownloading: { _ in true }
+        ).map(\.alias) == [tiny])
+    }
+
     @Test func chatPickerDenylistOverridesSizeExemptions() {
         let broken = "ministral-3b-4bit"
         for includeAll in [false, true] {
