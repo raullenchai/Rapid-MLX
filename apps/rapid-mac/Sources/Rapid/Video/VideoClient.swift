@@ -25,10 +25,37 @@ struct VideoJob: Identifiable, Codable, Sendable, Hashable {
     let completedAt: Int?
     let error: VideoJobError?
 
+    var cancelRequested: Bool = false
+    var phase: String? = nil
+
+    var isCancelled: Bool {
+        status == .failed && error?.code == "video_generation_cancelled"
+    }
+
     enum CodingKeys: String, CodingKey {
+        case cancelRequested = "cancel_requested"
+        case phase
         case id, model, prompt, seconds, size, status, progress, error
         case createdAt = "created_at"
         case completedAt = "completed_at"
+    }
+}
+
+extension VideoJob {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        model = try values.decode(String.self, forKey: .model)
+        prompt = try values.decode(String.self, forKey: .prompt)
+        seconds = try values.decode(String.self, forKey: .seconds)
+        size = try values.decode(String.self, forKey: .size)
+        status = try values.decode(VideoJobStatus.self, forKey: .status)
+        progress = try values.decode(Int.self, forKey: .progress)
+        createdAt = try values.decode(Int.self, forKey: .createdAt)
+        completedAt = try values.decodeIfPresent(Int.self, forKey: .completedAt)
+        error = try values.decodeIfPresent(VideoJobError.self, forKey: .error)
+        cancelRequested = try values.decodeIfPresent(Bool.self, forKey: .cancelRequested) ?? false
+        phase = try values.decodeIfPresent(String.self, forKey: .phase)
     }
 }
 
@@ -156,9 +183,22 @@ struct VideoCapabilities: Decodable, Sendable, Hashable {
         }
     }
 
+    struct Cancellation: Decodable, Sendable, Hashable {
+        let queued: Bool?
+        let inProgress: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case queued
+            case inProgress = "in_progress"
+        }
+    }
+
     let model: String
     let family: String
     let modes: [VideoModelCapability]
+    var cancellation: Cancellation? = nil
+    var supportsInProgressCancel: Bool { cancellation?.inProgress == true }
+
     let limits: Limits
 
     /// Image MIME types advertised by the reference, independent of whether the
@@ -436,6 +476,7 @@ protocol VideoClientProtocol: Sendable {
     func capabilities(port: Int, bearer: String?) async throws -> VideoCapabilities
     func create(_ request: VideoCreateRequest, port: Int, bearer: String?) async throws -> VideoJob
     func list(port: Int, bearer: String?, limit: Int) async throws -> [VideoJob]
+    func cancel(id: String, port: Int, bearer: String?) async throws
     func delete(id: String, port: Int, bearer: String?) async throws
     func content(id: String, port: Int, bearer: String?) async throws -> URL
 }
@@ -513,6 +554,17 @@ struct VideoClient: VideoClientProtocol, @unchecked Sendable {
             throw VideoClientError.invalidJobID
         }
         return envelope.data
+    }
+
+    func cancel(id: String, port: Int, bearer: String?) async throws {
+        guard Self.isValidJobID(id) else { throw VideoClientError.invalidJobID }
+        var request = request(path: "v1/videos/\(id)", port: port, bearer: bearer)
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await send(request)
+        } catch let VideoClientError.http(status, _) where status == 404 {
+            // The job may already have been removed by another request.
+        }
     }
 
     func delete(id: String, port: Int, bearer: String?) async throws {

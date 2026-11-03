@@ -283,6 +283,27 @@ struct LocalizationTests {
         #expect(!strings.isEmpty)
     }
 
+    @Test("Video cancellation states have Simplified Chinese translations")
+    func videoCancellationTranslations() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let expected = [
+            "Stop Generating": "停止生成",
+            "Cancelling…": "正在取消…",
+            "Cancelled": "已取消",
+            "Generation was cancelled.": "生成已取消。",
+            "Downloading model assets…": "正在下载模型资源…",
+            "This cancelled request will be removed from recent videos.": "此已取消的请求将从最近的视频中移除。"
+        ]
+        for (key, translation) in expected {
+            let entry = try #require(strings[key] as? [String: Any])
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let zh = try #require(localizations["zh-Hans"] as? [String: Any])
+            let unit = try #require(zh["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(unit["value"] as? String == translation)
+        }
+    }
+
     @Test("Canonical user-visible keys carry a zh-Hans translation")
     func canonicalKeysTranslated() throws {
         let json = try loadCatalog()

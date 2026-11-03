@@ -45,6 +45,8 @@ final class VideoGenViewModel {
 
     var capabilities: VideoCapabilities?
     var jobs: [VideoJob] = []
+    private(set) var cancellingJobIDs = Set<String>()
+    var supportsInProgressCancel: Bool { capabilities?.supportsInProgressCancel == true }
     var selectedJobID: String?
     var previewURL: URL?
     var isPreparing = false
@@ -310,6 +312,7 @@ final class VideoGenViewModel {
                 jobs = reconciledJobs(from: newJobs, context: context)
                 jobsServerContext = context
                 jobsAreReconciled = true
+                reconcileCancellation()
                 reconcileSelection()
                 reconcileJobPolling()
             } catch {
@@ -347,7 +350,11 @@ final class VideoGenViewModel {
             jobs = reconciledJobs(from: newJobs, context: context)
             jobsServerContext = context
             jobsAreReconciled = true
+            reconcileCancellation()
             reconcileSelection()
+            if selectedJob?.isCancelled == true, previous != .failed {
+                errorMessage = nil
+            }
             if selectedJob?.status == .completed, previous != .completed {
                 await loadSelectedPreview()
             }
@@ -392,6 +399,7 @@ final class VideoGenViewModel {
             jobs.insert(job, at: 0)
             jobsServerContext = context
             missingActivePollCounts[job.id] = 0
+            cancellingJobIDs.remove(job.id)
             pendingCacheCleanupJobIDs.remove(job.id)
             selectedJobID = job.id
             previewURL = nil
@@ -444,6 +452,37 @@ final class VideoGenViewModel {
                   selectedJobID == job.id else { return }
             errorMessage = error.localizedDescription
         }
+    }
+
+    func isCancelling(_ job: VideoJob) -> Bool {
+        job.status == .inProgress && (cancellingJobIDs.contains(job.id) || job.cancelRequested)
+    }
+
+    func cancel(_ job: VideoJob) async {
+        guard supportsInProgressCancel,
+              let context = currentServerContext,
+              jobsServerContext == context,
+              let currentJob = jobs.first(where: { $0.id == job.id }),
+              currentJob.status == .inProgress,
+              !isCancelling(currentJob) else { return }
+        let contextGeneration = serverContextGeneration
+        cancellingJobIDs.insert(job.id)
+        errorMessage = nil
+        do {
+            try await client.cancel(id: job.id, port: context.port, bearer: context.bearer)
+            guard requestIsCurrent(context, contextGeneration: contextGeneration) else { return }
+            reconcileJobPolling()
+        } catch {
+            guard requestIsCurrent(context, contextGeneration: contextGeneration) else { return }
+            cancellingJobIDs.remove(job.id)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reconcileCancellation() {
+        let running = jobs.filter { $0.status == .inProgress }
+        cancellingJobIDs.formIntersection(running.map(\.id))
+        cancellingJobIDs.formUnion(running.filter(\.cancelRequested).map(\.id))
     }
 
     func delete(_ job: VideoJob) async {
@@ -570,6 +609,7 @@ final class VideoGenViewModel {
     }
 
     private func invalidateServerContext() {
+        cancellingJobIDs = []
         serverContextGeneration &+= 1
         serverRefreshGeneration &+= 1
         previewGeneration &+= 1

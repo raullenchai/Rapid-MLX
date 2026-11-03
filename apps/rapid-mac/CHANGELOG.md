@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stop video generation** on servers that support cancellation. A pending stop shows “Cancelling…”, then “Cancelled” without an error; if generation finishes first, the completed video remains available. Older servers keep their existing behavior.
+
 ## [1.0.1] — 2026-11-01
 
 Desktop improves speech models and dictation, download guidance, Community Benchmark, accessibility and Settings.
