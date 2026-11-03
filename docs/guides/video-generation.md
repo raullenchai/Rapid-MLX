@@ -277,10 +277,13 @@ scenes were usable in testing; fast subject motion remains experimental.
 
 ## Pika H3 Flex
 
-Serve `pika-h3-flex` with at least 160 GB of unified memory and the same runtime
-requirements as MiniMax-H3. It reuses the MiniMax-H3 base download and adds a
-2.8 GB FL2VA adapter. Generation uses a fixed six-step renoise schedule, 24 fps
-video, and synchronized 32 kHz stereo audio.
+Serve `pika-h3-flex` with at least 192 GB of unified memory, with 256 GB recommended
+for Ref2VA (whose 480p 5-second render peaked near 181 GiB of process memory,
+including reusable buffer cache), and the same runtime
+requirements as MiniMax-H3. It reuses the MiniMax-H3 base download and adds
+FL2VA and Ref2VA adapters plus a second transformer partition. Generation uses
+a fixed six-step renoise schedule, 24 fps video, and synchronized 32 kHz stereo
+audio. Set `RAPID_MLX_URL` to your server's base URL for the examples below.
 
 Use text alone, a first frame through `input_reference`, a last frame through
 `last_frame`, or both fields for first+last-frame conditioning. Recommended
@@ -290,17 +293,54 @@ including requests for 15 seconds. Explicit `frames` must follow the same grid.
 
 ```sh
 rapid-mlx serve pika-h3-flex
-curl http://localhost:8000/v1/videos \
+curl "$RAPID_MLX_URL/v1/videos" \
   -F model=pika-h3-flex \
   -F 'prompt=A quiet shoreline at sunrise, with gentle waves' \
   -F seconds=5 -F size=832x480 \
   -F input_reference=@first.png -F last_frame=@last.png
 ```
 
+Ref2VA generates video and synchronized audio from a prompt and ordered reference
+files. Repeat the `references` multipart field; upload order is the packed
+conditioning order:
+
+```sh
+curl "$RAPID_MLX_URL/v1/videos" \
+  -F model=pika-h3-flex \
+  -F 'prompt=The character walks along the shoreline as the waves break' \
+  -F seconds=5 -F size=832x480 \
+  -F references=@character.png \
+  -F references=@motion.mp4 \
+  -F references=@sound.wav
+```
+
+Supplying `references` selects Ref2VA. Without references, text alone selects T2VA,
+and `input_reference` or `last_frame` selects FL2VA. References cannot be combined
+with either frame field. Reference limits are:
+
+- Up to 9 images, 3 videos, and 3 standalone audio clips, with 12 files total.
+  At least one image or video is required.
+- Images: JPEG, PNG, or WebP, up to 20 MB and 16 megapixels, with aspect ratios
+  from 1:4 to 4:1.
+- Videos: MP4, MOV, WebM, or Matroska (MKV), up to 100 MB and 3840 × 2160 source pixels.
+- Audio: WAV, MP3, M4A, AAC, FLAC, or OGG, up to 20 MB.
+- Each video and standalone audio clip must be 2–15 seconds. Video durations
+  total at most 15 seconds; standalone audio durations independently total at
+  most 15 seconds. Video soundtracks count toward neither duration total.
+
+Media types are detected from file contents. Video and audio uploads require
+`ffprobe`. Reference video is resampled to 24 fps, and audio to 32 kHz stereo,
+before truncation to the requested output length. Reference image and video
+sizes follow the generated canvas tier; image references may be upscaled.
+
+Switching between FL2VA/T2VA and Ref2VA unloads one 33B transformer and loads the
+other (about a minute; the text encoder and VAEs stay loaded); peak memory stays
+in the same class as a single mode.
+
 ### License and attribution
 
 MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyright © 2026 MiniMax. All Rights Reserved.
 
-FL2VA adapter Copyright © 2026 Mellis, Inc. (Pika). It is a Model Derivative of MiniMax H3 distributed under the MiniMax H3 Community License Agreement.
+FL2VA and Ref2VA adapters Copyright © 2026 Mellis, Inc. (Pika). It is a Model Derivative of MiniMax H3 distributed under the MiniMax H3 Community License Agreement.
 
 The weights are downloaded from the upstream Hugging Face repositories and are never mirrored.

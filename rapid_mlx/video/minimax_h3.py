@@ -174,6 +174,8 @@ def is_minimax_h3_model(name: str | None) -> bool:
 
 class MiniMaxH3VideoEngine:
     supports_last_frame = False
+    supports_references = False
+    base_files = FILES
     steps = 9
 
     def _prepare_model(self, model):
@@ -184,6 +186,9 @@ class MiniMaxH3VideoEngine:
         )
         _merge_turbo_lora(model.pipeline.transformer, Path(turbo) / TURBO_FILE)
         model.pipeline.scheduler.set_shift(6.0)
+
+    def _ensure_partition(self, partition: str) -> None:
+        pass
 
     def _prepare_request(self, seed: int) -> None:
         pass
@@ -240,6 +245,7 @@ class MiniMaxH3VideoEngine:
         seed: int,
         image: Path | None,
         last_image: Path | None = None,
+        references: list[tuple[str, Path]] | None = None,
         on_loaded=None,
     ) -> None:
         self.validate_request(
@@ -249,6 +255,21 @@ class MiniMaxH3VideoEngine:
             raise MiniMaxH3RequestError("MiniMax-H3 output is fixed at 24 fps")
         if last_image is not None and image is None and not self.supports_last_frame:
             raise MiniMaxH3RequestError("last image requires a first image")
+
+        if references:
+            if not self.supports_references:
+                raise MiniMaxH3RequestError(
+                    "references are not supported by this model"
+                )
+            if image is not None or last_image is not None:
+                raise MiniMaxH3RequestError(
+                    "references cannot be combined with image or last_image"
+                )
+            from .pika_h3_flex import validate_reference_counts
+
+            validate_reference_counts([kind for kind, _ in references])
+        self._needed_partition = "ref2va" if references else "fl2va"
+        self._reference_canvas = (height, width)
 
         def progress(*_args):
             if self._stopping.is_set():
@@ -270,23 +291,37 @@ class MiniMaxH3VideoEngine:
                     str(local)
                     if local.is_dir()
                     else pinned_snapshot_download(
-                        REPO, REVISION, allow_patterns=list(FILES)
+                        REPO, REVISION, allow_patterns=list(self.base_files)
                     )
                 )
                 progress()
-                # Both workflows use the same FL2VA pipeline; the wrapper's
-                # workflow only labels results, so one loaded model serves both.
-                model = load_video_generation_model(str(path), workflow="fl2va")
+                self._model_root = Path(path)
+                model = load_video_generation_model(
+                    str(path), workflow=self._needed_partition
+                )
                 self._prepare_model(model)
                 self._model = model
                 if on_loaded:
                     on_loaded()
             progress()
+            self._ensure_partition(self._needed_partition)
             self._prepare_request(seed)
             self._model.workflow = (
-                "fl2va" if image is not None or last_image is not None else "t2va"
+                "ref2va"
+                if references
+                else (
+                    "fl2va" if image is not None or last_image is not None else "t2va"
+                )
             )
+            reference_kwargs = {}
+            if references:
+                from mlx_vlm.generate.video_generation import VideoReference
+
+                reference_kwargs["references"] = tuple(
+                    VideoReference(kind, path) for kind, path in references
+                )
             request = VideoGenerationRequest(
+                **reference_kwargs,
                 prompt=prompt,
                 width=width,
                 height=height,

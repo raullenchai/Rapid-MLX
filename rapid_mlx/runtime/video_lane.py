@@ -467,6 +467,7 @@ class VideoEngine:
         seed: int,
         image: Path | None,
         last_image: Path | None = None,
+        references: list[tuple[str, Path]] | None = None,
         negative_prompt: str | None = None,
         guidance_scale: float | None = None,
         conditioning_strength: float | None = None,
@@ -474,6 +475,8 @@ class VideoEngine:
         output_height: int | None = None,
     ) -> None:
         minimax_engine = getattr(self, "_minimax_engine", None)
+        if references and not getattr(minimax_engine, "supports_references", False):
+            raise VideoRuntimeError("references are not supported by this model")
         if last_image is not None and not getattr(
             minimax_engine, "supports_last_frame", False
         ):
@@ -501,6 +504,7 @@ class VideoEngine:
                         seed=seed,
                         image=image,
                         last_image=last_image,
+                        **({"references": references} if references else {}),
                         on_loaded=self._emit_model_served,
                     )
             except (MiniMaxH3BackendError, MiniMaxH3RequestError) as exc:

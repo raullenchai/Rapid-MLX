@@ -3280,7 +3280,7 @@
       "text-to-video",
       "image-to-video"
     ],
-    "min_memory_gb": 160,
+    "min_memory_gb": 192,
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,

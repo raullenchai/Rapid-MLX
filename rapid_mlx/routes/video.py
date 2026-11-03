@@ -8,6 +8,7 @@ import atexit
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -34,6 +35,10 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _MAX_REFERENCE_BYTES = 20 * 1024 * 1024
+_MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
+_FLEX_REQUEST_BYTES = (
+    3 * _MAX_REFERENCE_VIDEO_BYTES + 9 * _MAX_REFERENCE_BYTES + 1024 * 1024
+)
 _VIDEO_REQUEST_BYTES = _MAX_REFERENCE_BYTES + 1024 * 1024
 _MAX_JOBS = 100
 _MAX_PIXEL_FRAMES = 768 * 512 * 97
@@ -146,6 +151,12 @@ class VideoBodyLimitMiddleware:
             )
             return await response(scope, receive, send)
 
+        request_limit = _VIDEO_REQUEST_BYTES
+        if scope.get("path") == "/v1/videos":
+            with contextlib.suppress(HTTPException):
+                if _supports_references(_video_engine()):
+                    request_limit = _FLEX_REQUEST_BYTES
+        limit_detail = f"video request body exceeds {request_limit // (1024 * 1024)} MB"
         headers = {name.lower(): value for name, value in scope.get("headers", ())}
         advertised = headers.get(b"content-length")
         if advertised is not None:
@@ -153,10 +164,10 @@ class VideoBodyLimitMiddleware:
                 advertised_bytes = int(advertised.decode("ascii"))
             except (UnicodeDecodeError, ValueError):
                 advertised_bytes = None
-            if advertised_bytes is not None and advertised_bytes > _VIDEO_REQUEST_BYTES:
+            if advertised_bytes is not None and advertised_bytes > request_limit:
                 response = JSONResponse(
                     status_code=413,
-                    content={"detail": "video request body exceeds 21 MB"},
+                    content={"detail": limit_detail},
                 )
                 return await response(scope, receive, send)
 
@@ -172,7 +183,7 @@ class VideoBodyLimitMiddleware:
             if message.get("type") == "http.request":
                 chunk = message.get("body", b"") or b""
                 total += len(chunk)
-                if total > _VIDEO_REQUEST_BYTES:
+                if total > request_limit:
                     limit_tripped = True
                     raise _VideoBodyTooLargeError
             return message
@@ -187,7 +198,7 @@ class VideoBodyLimitMiddleware:
                 if not downstream_started and not replacement_sent:
                     response = JSONResponse(
                         status_code=413,
-                        content={"detail": "video request body exceeds 21 MB"},
+                        content={"detail": limit_detail},
                     )
                     await response(scope, receive, send)
                     replacement_sent = True
@@ -218,7 +229,7 @@ class VideoBodyLimitMiddleware:
                 return
             response = JSONResponse(
                 status_code=413,
-                content={"detail": "video request body exceeds 21 MB"},
+                content={"detail": limit_detail},
             )
             await response(scope, receive, send)
 
@@ -906,7 +917,39 @@ def _video_capabilities(engine) -> dict:
         capabilities["limits"]["last_frame"] = dict(
             capabilities["limits"]["input_reference"]
         )
+    if _supports_references(engine):
+        capabilities["modes"].append("reference-to-video")
+        capabilities["limits"]["references"] = {
+            "field": "references",
+            "maximum_total": 12,
+            "image": {
+                "maximum": 9,
+                "maximum_bytes": _MAX_REFERENCE_BYTES,
+                "formats": ["jpeg", "png", "webp"],
+            },
+            "video": {
+                "maximum": 3,
+                "maximum_bytes": _MAX_REFERENCE_VIDEO_BYTES,
+                "formats": ["mp4", "mov", "webm", "mkv"],
+                "duration_seconds": {"minimum": 2, "maximum": 15},
+            },
+            "audio": {
+                "maximum": 3,
+                "maximum_bytes": _MAX_REFERENCE_BYTES,
+                "formats": ["wav", "mp3", "m4a", "aac", "flac", "ogg"],
+                "duration_seconds": {"minimum": 2, "maximum": 15},
+            },
+            "total_duration_seconds_per_kind": 15,
+            "requires_visual": True,
+            "exclusive_with": ["input_reference", "last_frame"],
+        }
     return capabilities
+
+
+def _supports_references(engine) -> bool:
+    return bool(
+        getattr(getattr(engine, "_minimax_engine", None), "supports_references", False)
+    )
 
 
 def _supports_last_frame(engine) -> bool:
@@ -980,6 +1023,155 @@ async def _store_reference(upload, path: Path, field: str, telemetry_model) -> P
             exc.detail = exc.detail.replace("input_reference", field)
         raise
     return path
+
+
+def _finite_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
+    """Detect media from bytes, restricting demuxers and all external protocols."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise HTTPException(status_code=503, detail="references require ffprobe")
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                "mov,matroska,webm,wav,mp3,aac,flac,ogg",
+                "-show_entries",
+                "stream=codec_type,width,height,duration:stream_disposition=attached_pic"
+                ":format=format_name,duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        details = json.loads(result.stdout)
+        streams = details["streams"]
+        # Cover art in audio files is an attached picture, not a video track.
+        videos = [
+            stream
+            for stream in streams
+            if stream.get("codec_type") == "video"
+            and not stream.get("disposition", {}).get("attached_pic")
+        ]
+        audios = [stream for stream in streams if stream.get("codec_type") == "audio"]
+        formats = set(details["format"]["format_name"].split(","))
+        if videos and formats & {"mov", "mp4", "matroska", "webm"}:
+            kind = "video"
+            extension = "webm" if formats & {"matroska", "webm"} else "mp4"
+            stream = videos[0]
+            width, height = int(stream["width"]), int(stream["height"])
+            if (
+                min(width, height) <= 0
+                or max(width, height) > 3840
+                or min(width, height) > 2160
+            ):
+                raise HTTPException(
+                    status_code=400, detail=f"{field}: video exceeds 3840x2160 pixels"
+                )
+            if width > 4 * height or height > 4 * width:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field}: video aspect ratio must be within 1:4 and 4:1",
+                )
+        elif (
+            not videos
+            and audios
+            and formats & {"wav", "mp3", "mov", "mp4", "aac", "flac", "ogg"}
+        ):
+            kind = "audio"
+            extension = next(
+                (fmt for fmt in ("wav", "mp3", "aac", "flac", "ogg") if fmt in formats),
+                "m4a",
+            )
+            stream = audios[0]
+        else:
+            raise ValueError("unsupported streams")
+        duration = _finite_float(stream.get("duration"))
+        if duration is None:
+            duration = _finite_float(details["format"].get("duration"))
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"{field}: unsupported file type"
+        ) from exc
+    if duration is None or not 2 - 1e-6 <= duration <= 15 + 1e-6:
+        raise HTTPException(
+            status_code=400, detail=f"{field}: {kind} duration must be 2..15 seconds"
+        )
+    return kind, extension, duration
+
+
+async def _store_packed_reference(upload, job_dir: Path, index: int, telemetry_model):
+    from PIL import Image, UnidentifiedImageError
+
+    field = f"references[{index}]"
+    path = job_dir / f"ref-{index:02d}.upload"
+    total = 0
+    # Classification requires the complete container. Bound spooling by the
+    # largest allowed kind, then enforce the detected kind's smaller cap.
+    target = await asyncio.to_thread(path.open, "xb")
+    try:
+        while chunk := await upload.read(1024 * 1024):
+            total += len(chunk)
+            if total > _MAX_REFERENCE_VIDEO_BYTES:
+                raise HTTPException(status_code=413, detail=f"{field} exceeds 100 MB")
+            await asyncio.to_thread(target.write, chunk)
+    finally:
+        await asyncio.to_thread(target.close)
+
+    def classify():
+        try:
+            with Image.open(path) as image:
+                if image.format not in {"JPEG", "PNG", "WEBP"}:
+                    raise HTTPException(
+                        status_code=400, detail=f"{field}: unsupported file type"
+                    )
+                if total > _MAX_REFERENCE_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail=f"{field} exceeds 20 MB"
+                    )
+        except UnidentifiedImageError:
+            return _probe_packed_reference(path, field)
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"{field}: unsupported file type"
+            ) from exc
+        try:
+            _validate_reference_image(path, telemetry_model=telemetry_model)
+        except HTTPException as exc:
+            if exc.status_code == 400:
+                exc.detail = f"{field}: {exc.detail}"
+            raise
+        return "image", "img", None
+
+    kind, extension, duration = await asyncio.to_thread(classify)
+    if kind != "video" and total > _MAX_REFERENCE_BYTES:
+        raise HTTPException(status_code=413, detail=f"{field} exceeds 20 MB")
+    destination = path.with_suffix(f".{extension}")
+    await asyncio.to_thread(path.rename, destination)
+    return kind, destination, duration
 
 
 def _probe_extension_video(path: Path) -> tuple[int, int, int]:
@@ -1148,6 +1340,7 @@ async def _run_job(
     guidance_scale: float | None,
     conditioning_strength: float | None,
     last_image_path: Path | None = None,
+    references: list[tuple[str, Path]] | None = None,
     source_video: Path | None = None,
     extend_frames: int | None = None,
 ) -> None:
@@ -1189,6 +1382,7 @@ async def _run_job(
                     fps=fps,
                     seed=seed,
                     image=image_path,
+                    **({"references": references} if references else {}),
                     **(
                         {"last_image": last_image_path}
                         if last_image_path is not None
@@ -1323,6 +1517,7 @@ async def create_video(
     negative_prompt: Annotated[str | None, Form(max_length=4096)] = None,
     input_reference: UploadFile | None = File(None),
     last_frame: Annotated[UploadFile | None, File()] = None,
+    references: Annotated[list[UploadFile] | None, File()] = None,
 ):
     from rapid_mlx.telemetry.model_id import engine_telemetry_id
 
@@ -1332,6 +1527,20 @@ async def create_video(
     is_wan = getattr(engine, "video_family", "") == "wan"
     is_ltx25 = getattr(engine, "video_family", "") == "ltx-2.5"
     is_h3 = getattr(engine, "video_family", "") == "minimax-h3"
+    if references:
+        if not _supports_references(engine):
+            raise HTTPException(
+                status_code=400, detail="references are not supported by this model"
+            )
+        if input_reference is not None or last_frame is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="references cannot be combined with input_reference or last_frame",
+            )
+        if len(references) > 12:
+            raise HTTPException(
+                status_code=400, detail="references maximum total is 12"
+            )
     supports_last_frame = _supports_last_frame(engine)
     if last_frame is not None and not supports_last_frame:
         raise HTTPException(
@@ -1521,6 +1730,7 @@ async def create_video(
     job_dir.mkdir(mode=0o700)
     image_path = None
     last_image_path = None
+    stored_references = []
     enqueued = False
     evicted_id: str | None = None
     task: asyncio.Task | None = None
@@ -1544,6 +1754,32 @@ async def create_video(
                 "last_frame",
                 telemetry_model,
             )
+
+        if references:
+            from ..video.pika_h3_flex import (
+                validate_reference_counts,
+                validate_reference_durations,
+            )
+
+            durations = []
+            for index, upload in enumerate(references):
+                kind, path, duration = await _store_packed_reference(
+                    upload, job_dir, index, telemetry_model
+                )
+                stored_references.append((kind, path))
+                if duration is not None:
+                    durations.append((kind, duration))
+                try:
+                    validate_reference_counts(
+                        [kind for kind, _ in stored_references], require_visual=False
+                    )
+                    validate_reference_durations(durations)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+            try:
+                validate_reference_counts([kind for kind, _ in stored_references])
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         num_frames = request_frames
         if is_wan:
@@ -1609,6 +1845,7 @@ async def create_video(
                     seed=seed,
                     image_path=image_path,
                     last_image_path=last_image_path,
+                    references=stored_references,
                     negative_prompt=negative_prompt,
                     guidance_scale=guidance_scale,
                     conditioning_strength=conditioning_strength,
