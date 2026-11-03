@@ -999,8 +999,13 @@ def _isolate_agent_profile_registry(tmp_path, monkeypatch):
     interfere with explicit real-cache tests and lazy HF imports. Tests with
     a temporary HOME still exercise user-profile discovery at their own path.
     This also covers load_profiles imported by tests during collection.
+    Minimal-dependency CI lanes run without PyYAML; there is no registry to
+    isolate in that environment.
     """
-    from rapid_mlx import agents
+    try:
+        from rapid_mlx import agents
+    except ImportError:
+        return
 
     user_profiles = Path.home() / ".rapid-mlx" / "agents"
 
