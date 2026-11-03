@@ -1708,14 +1708,12 @@ def test_pull_optional_ref2va(monkeypatch, with_ref2va):
     from rapid_mlx import cli
     from rapid_mlx.runtime import video_lane
 
-    calls, checks = [], []
+    calls = []
     monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
     monkeypatch.setattr(
         cli, "_pull_repository", lambda a, **kw: calls.append((a.model, kw))
     )
-    monkeypatch.setattr(
-        cli, "_check_disk_space", lambda repo, **kw: checks.append((repo, kw))
-    )
+    monkeypatch.setattr(cli, "_missing_download_bytes", lambda repo, **kw: 0)
     cli.pull_command(
         argparse.Namespace(
             model="pika-h3-flex", bits=None, format=None, with_ref2va=with_ref2va
@@ -1729,11 +1727,6 @@ def test_pull_optional_ref2va(monkeypatch, with_ref2va):
     names = [name for _, kw in calls for name in kw["allow_patterns_override"]]
     assert any(name.startswith("transformer_ref/") for name in names) == with_ref2va
     assert any(name.startswith("ref2va/") for name in names) == with_ref2va
-    if with_ref2va:
-        assert checks == [
-            (repo, dict(revision_override=rev, allow_patterns=list(files)))
-            for repo, rev, files in flex.REF2VA_PAYLOADS
-        ]
     before = len(calls)
     for model in ("minimax-h3", "qwen3.5-4b-4bit"):
         with pytest.raises(ValueError, match="--with-ref2va.*only.*Pika"):
@@ -1747,6 +1740,77 @@ def test_pull_ref2va_parser():
     args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
     assert args.with_ref2va
     assert not build_parser().parse_args(["pull", "pika-h3-flex"]).with_ref2va
+
+
+@pytest.mark.parametrize("enough_space", [False, True])
+def test_pull_ref2va_aggregate_disk_preflight(monkeypatch, tmp_path, enough_space):
+    from rapid_mlx import _mirror, cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.runtime import video_lane
+
+    payloads = (*flex.PAYLOADS, *flex.REF2VA_PAYLOADS)
+    sizes = {}
+    for repo, revision, files in payloads:
+        siblings = sizes.setdefault((repo, revision), {})
+        siblings.update({name: 10**9 for name in files})
+    cached_name = flex.PAYLOADS[0][2][0]
+    cached_file = tmp_path / "cached"
+    cached_file.write_bytes(b"cached")
+    missing = [
+        sum(10**9 for name in files if name != cached_name) for _, _, files in payloads
+    ]
+    required = int(sum(missing) * (1 + cli._DOWNLOAD_DISK_HEADROOM))
+    available = required if enough_space else required - 1
+    assert available >= max(missing) * (1 + cli._DOWNLOAD_DISK_HEADROOM)
+
+    lookups, downloads, probes = [], [], []
+
+    def model_info(repo, *, revision, files_metadata):
+        assert files_metadata
+        lookups.append((repo, revision))
+        return SimpleNamespace(
+            sha=revision,
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in {
+                    **sizes[(repo, revision)],
+                    "unselected.bin": required * 10,
+                }.items()
+            ],
+        )
+
+    def cache_lookup(repo, filename, *, revision):
+        assert (repo, revision) in sizes
+        return str(cached_file) if filename == cached_name else None
+
+    def disk_space():
+        probes.append(True)
+        return tmp_path, available
+
+    def pull(args, **kwargs):
+        assert len(lookups) == len(payloads)
+        downloads.append((args.model, kwargs))
+
+    monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *a: None)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", disk_space)
+    monkeypatch.setattr("huggingface_hub.model_info", model_info)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", cache_lookup)
+    monkeypatch.setattr(cli, "_pull_repository", pull)
+    args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
+    if enough_space:
+        cli.pull_command(args)
+        assert downloads == [
+            (repo, dict(revision_override=rev, allow_patterns_override=list(files)))
+            for repo, rev, files in payloads
+        ]
+    else:
+        with pytest.raises(SystemExit) as exc:
+            cli.pull_command(args)
+        assert exc.value.code == 1
+        assert downloads == []
+    assert lookups == [(repo, rev) for repo, rev, _ in payloads]
+    assert probes == [True]
 
 
 @pytest.fixture

@@ -1672,9 +1672,26 @@ def _check_disk_space(
     burned 30+ minutes downloading a 141 GB model on an 8.8 GB disk before
     HF Hub crashed with ``OSError: No space left on device``.
     """
+    _check_download_disk_space(
+        _missing_download_bytes(
+            model_name,
+            revision_override=revision_override,
+            allow_patterns=allow_patterns,
+        ),
+        force=force,
+    )
+
+
+def _missing_download_bytes(
+    model_name: str,
+    *,
+    revision_override: str | None = None,
+    allow_patterns: list[str] | None = None,
+) -> int:
+    """Estimate uncached selected bytes; return zero when size is unavailable."""
     # Skip if model is a local path that already exists.
     if os.path.exists(model_name):
-        return
+        return 0
 
     from rapid_mlx.model_aliases import resolve_hub_model, resolve_revision
 
@@ -1693,7 +1710,7 @@ def _check_disk_space(
     if (
         revision_override is None or revision_override == catalog_revision
     ) and mflux_missing_weights(model_name) == []:
-        return
+        return 0
 
     # Which directory inside the repo this alias actually needs. Resolved
     # OUTSIDE the cache probe below: that probe is best-effort and swallows
@@ -1718,7 +1735,7 @@ def _check_disk_space(
                 f"{_prefix}config.json",
             )
             if isinstance(cached_config, str) and os.path.exists(cached_config):
-                return
+                return 0
     except Exception:
         pass
 
@@ -1783,6 +1800,15 @@ def _check_disk_space(
                 is_cached = False
             if not is_cached:
                 model_size_bytes += sibling.size or 0
+        return model_size_bytes
+    except Exception:
+        # Metadata failures defer to the loader's own error handling.
+        return 0
+
+
+def _check_download_disk_space(model_size_bytes: int, force: bool = False) -> None:
+    """Apply the download headroom and existing disk-space error policy."""
+    try:
         if model_size_bytes == 0:
             return  # Nothing left to download (or size unavailable).
 
@@ -12681,7 +12707,19 @@ def pull_command(args):
             raise ValueError(
                 f"{label} does not support quantization or format variants"
             )
-        _, revision, files = video_payloads(primary_repo)[0]
+        payloads = video_payloads(primary_repo)
+        if getattr(args, "with_ref2va", False):
+            from rapid_mlx.video.pika_h3_flex import REF2VA_PAYLOADS
+
+            _check_download_disk_space(
+                sum(
+                    _missing_download_bytes(
+                        repo, revision_override=rev, allow_patterns=list(files)
+                    )
+                    for repo, rev, files in (*payloads, *REF2VA_PAYLOADS)
+                )
+            )
+        _, revision, files = payloads[0]
         _pull_repository(
             primary_args,
             allow_patterns_override=list(files),
@@ -12733,11 +12771,6 @@ def pull_command(args):
     if getattr(args, "with_ref2va", False):
         from rapid_mlx.video.pika_h3_flex import REF2VA_PAYLOADS
 
-        # Preflight both optional payloads before starting either download.
-        for repo, revision, files in REF2VA_PAYLOADS:
-            _check_disk_space(
-                repo, revision_override=revision, allow_patterns=list(files)
-            )
         assets = (*assets, *REF2VA_PAYLOADS)
     for asset_repo, revision, allow_patterns in assets:
         print(f"\n  Runtime assets: {asset_repo}")
