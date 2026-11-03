@@ -3,7 +3,9 @@
 import asyncio
 import fnmatch
 import hashlib
+import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -16,8 +18,16 @@ from rapid_mlx.video import minimax_h3 as h3
 from rapid_mlx.video import pika_h3_flex as flex
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def mx():
+    # Native MLX initialization can abort when Metal is unavailable in a sandbox.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import mlx.core as mx; mx.eval(mx.ones((1,)))"],
+        capture_output=True,
+        timeout=30,
+    )
+    if probe.returncode:
+        pytest.skip("real MLX runtime unavailable on this host")
     return pytest.importorskip("mlx.core", exc_type=ImportError)
 
 
@@ -121,6 +131,16 @@ def test_real_noise_reproducible(mx):
     first = stream.normal((4,))
     stream.reset(7)
     np.testing.assert_array_equal(np.array(first), np.array(stream.normal((4,))))
+
+
+def test_real_scheduler_default_noise(mx):
+    scheduler = flex.RenoiseScheduler(12.0)
+    expected = flex.RenoiseNoise()
+    expected.reset(0)
+    assert isinstance(scheduler.noise, flex.RenoiseNoise)
+    np.testing.assert_array_equal(
+        np.array(scheduler.noise.normal((4,))), np.array(expected.normal((4,)))
+    )
 
 
 def test_merge_and_invalid_adapters(tmp_path, mx):
@@ -455,6 +475,47 @@ async def test_routes_and_lane(monkeypatch, tmp_path):
         with pytest.raises(HTTPException) as exc:
             await video.create_video(last_frame=object())
         assert exc.value.status_code == 400
+    finally:
+        video.configure_video_jobs(None)
+        video.start_video_jobs()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversized", [True, False], ids=["oversized", "invalid"])
+async def test_last_frame_validation(monkeypatch, tmp_path, oversized):
+    from fastapi import HTTPException, UploadFile
+
+    from rapid_mlx.routes import video
+
+    fake = SimpleNamespace(
+        model_name=flex.REPO,
+        video_family="minimax-h3",
+        native_fps=24,
+        _minimax_engine=SimpleNamespace(supports_last_frame=True),
+    )
+    monkeypatch.setattr(video, "_video_engine", lambda: fake)
+    payload = b"not an image"
+    if oversized:
+        monkeypatch.setattr(video, "_MAX_REFERENCE_BYTES", len(payload) - 1)
+    video.configure_video_jobs(tmp_path / "jobs")
+    video.start_video_jobs()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await video.create_video(
+                prompt="test",
+                model="pika-h3-flex",
+                seconds="6",
+                size="832x480",
+                input_reference=None,
+                last_frame=UploadFile(io.BytesIO(payload), filename="last.png"),
+            )
+        if oversized:
+            assert exc.value.status_code == 413
+            assert exc.value.detail == "last_frame exceeds 20 MB"
+        else:
+            assert exc.value.status_code == 400
+            assert exc.value.detail.startswith("invalid last_frame:")
+            assert "input_reference" not in exc.value.detail
     finally:
         video.configure_video_jobs(None)
         video.start_video_jobs()

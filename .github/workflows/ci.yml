@@ -638,6 +638,7 @@ jobs:
             tests/test_g9v3_model.py \
             tests/test_flint_model.py \
             tests/test_lfm3_native.py \
+            tests/test_pika_h3_flex_video.py \
             tests/test_lfm3_vl_native.py \
             tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
