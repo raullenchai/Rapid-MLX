@@ -8,6 +8,7 @@ without PyTorch and without materializing a second converted checkpoint.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import tempfile
@@ -15,9 +16,9 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from types import FunctionType, ModuleType
+from types import FunctionType, MethodType, ModuleType
 
-from .cancel import cancelling_tqdm
+from .cancel import cancelling_tqdm, scoped_step_hooks
 from .wan import WanBackendError
 
 _TRANSFORMER_INDEX = "transformer/diffusion_pytorch_model.safetensors.index.json"
@@ -696,10 +697,26 @@ def _with_cancel_steps(generate, token):
     if token is None:
         return generate
     token.check()
+    if isinstance(generate, functools.partial):
+        return functools.partial(
+            _with_cancel_steps(generate.func, token),
+            *generate.args,
+            **generate.keywords,
+        )
+    if isinstance(generate, MethodType):
+        return MethodType(
+            _with_cancel_steps(generate.__func__, token), generate.__self__
+        )
     if not isinstance(generate, FunctionType):
-        # Only plain functions can be re-scoped; other callables keep the
-        # stage-boundary checks around the call.
-        return generate
+        # Other callables cannot be re-scoped; hook their module's step bar
+        # for the duration of the call instead.
+        module_name = getattr(type(generate), "__module__", None)
+
+        def hooked(*args, **kwargs):
+            with scoped_step_hooks(token, *([module_name] if module_name else [])):
+                return generate(*args, **kwargs)
+
+        return hooked
     namespace = dict(generate.__globals__)
     if "tqdm" in namespace:
         namespace["tqdm"] = cancelling_tqdm(namespace["tqdm"], token)

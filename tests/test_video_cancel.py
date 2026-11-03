@@ -1012,20 +1012,57 @@ def test_cleanup_failure_does_not_mask_cancellation(
     assert cache_clears == [True]
 
 
-def test_wan_cancel_steps_leave_non_function_callables_unscoped():
+def test_wan_cancel_steps_cover_partials_methods_and_callable_objects(monkeypatch):
     import functools
+    import sys
+    import textwrap
+    import types
 
     from rapid_mlx.video.wan_diffusers import _with_cancel_steps
 
-    def generate(**kwargs):
-        return kwargs
+    module = types.ModuleType("fake_wan_runtime")
+    monkeypatch.setitem(sys.modules, "fake_wan_runtime", module)
+    source = textwrap.dedent(
+        """
+        tqdm = lambda iterable, **kw: iterable
 
-    partial = functools.partial(generate, model_dir="m")
+        def run(token, steps, **kwargs):
+            for step in tqdm(range(5)):
+                steps.append(step)
+                if step == 1:
+                    token.cancel()
+
+        class Runner:
+            def generate(self, token, steps):
+                for step in tqdm(range(5)):
+                    steps.append(step)
+                    if step == 1:
+                        token.cancel()
+
+            def __call__(self, token, steps):
+                for step in tqdm(range(5)):
+                    steps.append(step)
+                    if step == 1:
+                        token.cancel()
+        """
+    )
+    exec(source, module.__dict__)
+    original_tqdm = module.tqdm
+    shapes = [
+        functools.partial(module.run, model_dir="m"),
+        module.Runner().generate,
+        module.Runner(),
+    ]
+    for shape in shapes:
+        token, steps = VideoCancelToken(), []
+        with pytest.raises(VideoGenerationCancelled):
+            _with_cancel_steps(shape, token)(token, steps)
+        assert steps == [0, 1]
+    assert module.tqdm is original_tqdm
     token = VideoCancelToken()
-    assert _with_cancel_steps(partial, token) is partial
     token.cancel()
     with pytest.raises(VideoGenerationCancelled):
-        _with_cancel_steps(partial, token)
+        _with_cancel_steps(shapes[0], token)
 
 
 @pytest.mark.asyncio
