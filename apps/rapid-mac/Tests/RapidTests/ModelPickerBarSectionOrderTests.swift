@@ -155,13 +155,13 @@ struct ModelPickerBarSectionOrderTests {
     func sectionOrderPinned() throws {
         // The view-builder call order in ``ModelPickerBar.modelPicker``
         // pins the section order. Source-grep the file for the three
-        // section calls inside the loaded-catalog `else` branch and
+        // section calls inside the loaded-catalog `.rows` branch and
         // assert the offsets sort Quickstart < Recommended < All.
         let src = try modelPickerBarSource()
         // Anchor to the populated-catalog branch (skip the "catalog
         // unavailable" branch above).
-        guard let anchor = src.range(of: "// v0.6.9: dropped the separate \"Cached\" section") else {
-            Issue.record("Anchor docstring for populated-catalog branch missing in ModelPickerBar.swift")
+        guard let anchor = src.range(of: "case .rows:") else {
+            Issue.record("Populated-catalog branch missing in ModelPickerBar.swift")
             return
         }
         let scanRegion = src[anchor.lowerBound...]

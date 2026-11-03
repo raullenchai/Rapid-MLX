@@ -1172,6 +1172,16 @@
         }
       }
     },
+    "Browse all models…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "浏览全部模型…"
+          }
+        }
+      }
+    },
     "Built-in Agent Harness (Experimental)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2108,6 +2118,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "不限制域名"
+          }
+        }
+      }
+    },
+    "No downloaded models yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有已下载的模型"
           }
         }
       }

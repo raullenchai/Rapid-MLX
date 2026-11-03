@@ -24,6 +24,46 @@ import Foundation
 ///
 /// Tests live in ``ModelPickerVisibilityTests``.
 enum ModelPickerVisibility {
+    /// Catalog loading already incorporates installed local and external models
+    /// into `cached`; selection must not probe the filesystem again.
+    static func runnableEntries(
+        _ entries: [ModelEntry],
+        selectedAlias: String,
+        servingAlias: String?,
+        isDownloading: (String) -> Bool
+    ) -> [ModelEntry] {
+        entries.filter {
+            $0.cached || $0.alias == selectedAlias || $0.alias == servingAlias
+                || isDownloading($0.alias)
+        }
+    }
+
+    enum MenuState: Equatable {
+        case loading, unavailable, noDownloadedModels, rows
+    }
+
+    static func menuState(catalogIsEmpty: Bool, loading: Bool, hasVisibleRows: Bool) -> MenuState {
+        if catalogIsEmpty { return loading ? .loading : .unavailable }
+        return hasVisibleRows ? .rows : .noDownloadedModels
+    }
+
+    struct RowPresentation {
+        let title: String
+        let accessibilityLabel: String
+        let isSelectable: Bool
+    }
+
+    static func rowPresentation(
+        title: String, accessibilityLabel: String, isDownloading: Bool
+    ) -> RowPresentation {
+        let suffix = isDownloading ? " · " + String(localized: "Downloading…") : ""
+        return RowPresentation(
+            title: title + suffix,
+            accessibilityLabel: accessibilityLabel + suffix,
+            isSelectable: !isDownloading
+        )
+    }
+
     /// Inclusive lower bound on parameter count, in billions. A 1.0B
     /// alias (``gemma3-1b-qat-4bit``, ``llama3-1b-4bit``) is shown;
     /// a 0.6B alias (``qwen3-0.6b-4bit``) is hidden.
