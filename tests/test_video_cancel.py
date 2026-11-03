@@ -973,8 +973,12 @@ def test_pull_summary_reports_unknown_size_after_filesystem_error(
 ):
     from rapid_mlx import cli
 
+    real_rglob = Path.rglob
+
     def rglob(self, pattern):
-        raise OSError("snapshot unreadable")
+        if self == tmp_path:
+            raise OSError("snapshot unreadable")
+        return real_rglob(self, pattern)
 
     monkeypatch.setattr(Path, "rglob", rglob)
     cli._print_pull_summary("example/video", tmp_path, 2, allow_patterns=["weights/*"])
@@ -1022,3 +1026,70 @@ def test_wan_cancel_steps_leave_non_function_callables_unscoped():
     token.cancel()
     with pytest.raises(VideoGenerationCancelled):
         _with_cancel_steps(partial, token)
+
+
+@pytest.mark.asyncio
+async def test_delete_before_worker_registers_token_still_stops_job(route_store):
+    seen = []
+
+    class Engine:
+        def generate(self, *, output_path, cancel_token, **kwargs):
+            seen.append(cancel_token.cancelled)
+            cancel_token.check()
+            output_path.write_bytes(b"mp4")
+
+    job = video._VideoJob(
+        id="early", model="fake", prompt="test", seconds="1", size="256x256"
+    )
+    job.status = "in_progress"
+    (route_store / job.id).mkdir()
+    video._jobs[job.id] = job
+    response = await video.delete_video(job.id)
+    assert response.status_code == 202
+    assert video._cancel_tokens[job.id].cancelled
+    job.status = "queued"
+    await video._run_job(
+        job,
+        engine=Engine(),
+        width=256,
+        height=256,
+        num_frames=25,
+        fps=24,
+        seed=1,
+        image_path=None,
+        negative_prompt=None,
+        guidance_scale=None,
+        conditioning_strength=None,
+    )
+    assert seen == [True]
+    assert job.error["code"] == "video_generation_cancelled"
+    assert not video._cancel_tokens
+
+
+def test_ref2va_progress_caps_retried_bytes_per_file(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from rapid_mlx import _mirror, model_downloads
+
+    events = []
+    monkeypatch.setattr(
+        huggingface_hub, "try_to_load_from_cache", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**15))
+    sizes = pika_h3_flex.REF2VA_FILE_SIZES
+    total = pika_h3_flex.REF2VA_EXTRA_BYTES
+
+    def download(repo, revision, *, allow_patterns, on_bytes, tqdm_class, **kw):
+        size = sizes[allow_patterns[0]]
+        on_bytes(size)  # mirror attempt
+        bar = tqdm_class(disable=True)
+        bar.update(size)  # Hub fallback re-sends the same bytes
+        bar.close()
+
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    pika_h3_flex.ensure_ref2va_assets(on_progress=lambda *args: events.append(args))
+    done = [event[1] for event in events if event[0] == "downloading"]
+    assert done == sorted(done)
+    assert done[-1] == total
+    assert done.count(total) == 1

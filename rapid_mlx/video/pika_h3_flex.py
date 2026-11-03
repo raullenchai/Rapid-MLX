@@ -133,17 +133,41 @@ def ensure_ref2va_assets(cancel_token=None, on_progress=None) -> None:
         size,
     )
     progress_kwargs: dict[str, Any] = {}
-    done = 0
+    # Completed files count at their declared size; the in-flight file is capped
+    # below its size so mirror-then-Hub retries or resumed blobs cannot over- or
+    # under-report overall progress.
+    completed = 0
+    current = 0
+    current_size = 0
     progress_lock = threading.Lock()
 
+    def report():
+        if on_progress is not None:
+            on_progress(
+                "downloading", min(completed + current, missing_bytes), missing_bytes
+            )
+
     def on_bytes(delta):
-        nonlocal done
+        nonlocal current
         if cancel_token is not None:
             cancel_token.check()
         with progress_lock:
-            done = max(0, done + delta)
-            if on_progress is not None:
-                on_progress("downloading", min(done, missing_bytes), missing_bytes)
+            current = min(max(0, current + delta), max(0, current_size - 1))
+            report()
+
+    def start_file(size):
+        nonlocal current, current_size
+        with progress_lock:
+            current = 0
+            current_size = size
+
+    def finish_file():
+        nonlocal completed, current, current_size
+        with progress_lock:
+            completed += current_size
+            current = 0
+            current_size = 0
+            report()
 
     if cancel_token is not None or on_progress is not None:
         from huggingface_hub.utils import tqdm
@@ -166,11 +190,13 @@ def ensure_ref2va_assets(cancel_token=None, on_progress=None) -> None:
                 for filename in files:
                     if (repo, filename) not in missing:
                         continue
+                    start_file(REF2VA_FILE_SIZES[filename])
                     on_bytes(0)
                     pinned_snapshot_download(
                         repo, revision, allow_patterns=[filename], **progress_kwargs
                     )
                     on_bytes(0)
+                    finish_file()
     except minimax_h3.VideoGenerationCancelled:
         raise
     except Exception as exc:

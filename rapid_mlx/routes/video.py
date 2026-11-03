@@ -1371,9 +1371,8 @@ async def _run_job(
 ) -> None:
     from ..video.cancel import VideoCancelToken, VideoGenerationCancelled
 
-    cancel_token = VideoCancelToken()
     with _jobs_lock:
-        _cancel_tokens[job.id] = cancel_token
+        cancel_token = _cancel_tokens.setdefault(job.id, VideoCancelToken())
 
     def on_progress(phase, done, total):
         with _jobs_lock:
@@ -2153,9 +2152,11 @@ async def delete_video(video_id: str):
     with _jobs_lock:
         job = _jobs.get(video_id)
         if job is not None and job.status == "in_progress":
-            token = _cancel_tokens.get(video_id)
-            if token is not None:
-                token.cancel()
+            from ..video.cancel import VideoCancelToken
+
+            # Register the token here when the worker has not yet, so the
+            # acknowledged stop always reaches the job once it starts running.
+            _cancel_tokens.setdefault(video_id, VideoCancelToken()).cancel()
             job.cancel_requested = True
             return JSONResponse(status_code=202, content=job.public())
         task = _tasks.get(video_id) if job is not None else None
