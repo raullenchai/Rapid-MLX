@@ -625,6 +625,10 @@ def test_reference_durations(kind):
 
 
 def test_reference_layout_math():
+    with pytest.raises(ValueError, match="unsupported Flex partition: bogus"):
+        flex.adapter_spec("bogus")
+    with pytest.raises(ValueError, match="canvas dimensions must be positive"):
+        flex.reference_tier(0, 480)
     for (w, h), name in [
         ((832, 480), "p480"),
         ((1344, 768), "p768"),
@@ -640,6 +644,8 @@ def test_reference_layout_math():
     assert flex.reference_audio_max_samples(124) == 165333
     with pytest.raises(ValueError, match="1:4"):
         flex.reference_image_size(100, 500, low)
+    with pytest.raises(ValueError, match="reference video must be within 1:4 and 4:1"):
+        flex.reference_video_size(2000, 400, low)
 
 
 def test_ref_adapter_verification(monkeypatch, tmp_path):
@@ -1020,6 +1026,86 @@ def test_reference_http_oversized(reference_app, monkeypatch):
     assert response.status_code == 413
 
 
+@pytest.mark.parametrize("status,detail", [(400, "references[0]: bad"), (413, "bad")])
+def test_reference_http_image_validation_error(
+    reference_app, monkeypatch, status, detail
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+
+    def validate(*args, **kwargs):
+        raise HTTPException(status_code=status, detail="bad")
+
+    monkeypatch.setattr(video, "_validate_reference_image", validate)
+    response = post_references(client, ["image"])
+    assert response.status_code == status
+    assert response.json()["detail"] == detail
+    assert not calls
+
+
+def test_reference_http_image_decode_error(reference_app, monkeypatch):
+    from PIL import Image
+
+    client, _, calls = reference_app
+
+    def open_image(*args, **kwargs):
+        raise OSError("corrupt image")
+
+    monkeypatch.setattr(Image, "open", open_image)
+    response = post_references(client, ["image"])
+    assert response.status_code == 400
+    assert response.json()["detail"] == "references[0]: unsupported file type"
+    assert not calls
+
+
+def test_reference_http_oversized_audio(reference_app, monkeypatch):
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+    monkeypatch.setattr(video, "_MAX_REFERENCE_BYTES", 4)
+    monkeypatch.setattr(
+        video, "_probe_packed_reference", lambda *args: ("audio", "wav", 2.0)
+    )
+    response = post_references(client, ["audio"])
+    assert response.status_code == 413
+    assert response.json()["detail"] == "references[0] exceeds 20 MB"
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "kind,formats,duration,detail",
+    [
+        ("subtitle", "mp4", "2", "unsupported file type"),
+        ("audio", "matroska", "2", "unsupported file type"),
+        ("audio", "wav", "1.0", "audio duration must be 2..15 seconds"),
+        ("audio", "wav", "N/A", "audio duration must be 2..15 seconds"),
+    ],
+)
+def test_reference_http_probe_rejection(
+    reference_app, monkeypatch, kind, formats, duration, detail
+):
+    from rapid_mlx.routes import video
+
+    client, _, calls = reference_app
+    details = dict(
+        streams=[dict(codec_type=kind, duration=duration)],
+        format=dict(format_name=formats, duration=duration),
+    )
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(details)),
+    )
+    response = post_references(client, ["audio"])
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"references[0]: {detail}"
+    assert not calls
+
+
 @pytest.mark.parametrize("kind", ["video", "audio"])
 def test_reference_http_total_duration(reference_app, monkeypatch, kind):
     from rapid_mlx.routes import video
@@ -1265,6 +1351,29 @@ def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
         engine.stop()
 
 
+def test_base_engine_rejects_references(tmp_path):
+    engine = h3.MiniMaxH3VideoEngine("minimax-h3")
+    try:
+        assert not engine.supports_references
+        with pytest.raises(
+            h3.MiniMaxH3RequestError,
+            match="references are not supported by this model",
+        ):
+            engine._generate(
+                prompt="test",
+                output_path=tmp_path / "out",
+                width=832,
+                height=480,
+                num_frames=124,
+                fps=24,
+                seed=1,
+                image=None,
+                references=[("image", tmp_path / "image")],
+            )
+    finally:
+        engine.stop()
+
+
 def test_reference_preprocessing(monkeypatch, array_core):
     from dataclasses import dataclass
 
@@ -1332,6 +1441,59 @@ def test_reference_preprocessing(monkeypatch, array_core):
         flex.prepare_flex_references(pipeline, [video], 21, (480, 832))
     with pytest.raises(ValueError, match="num_frames"):
         flex.prepare_flex_references(pipeline, [image], None, (480, 832))
+
+    # File-backed video and audio share the soundtrack decoder, including
+    # containers with no decodable audio stream.
+    source_frames = video.video
+    media.decode_video = lambda path: (source_frames, 12)
+    decoded = []
+    soundtrack = None
+
+    def decode_soundtrack(path):
+        decoded.append(path)
+        return soundtrack
+
+    media.decode_video_soundtrack = decode_soundtrack
+    media.decode_audio = lambda audio: pytest.fail("unexpected fallback audio decoder")
+    for path in ("video.mp4", Path("video.mp4")):
+        video.video = path
+        for soundtrack in (None, (np.ones((1, 32000)), 16000)):
+            rates.clear()
+            prepared, _ = flex.prepare_flex_references(
+                pipeline, [video], 124, (480, 832)
+            )
+            assert decoded[-1] == path
+            assert prepared[0].has_audio == (soundtrack is not None)
+            if soundtrack is None:
+                assert not hasattr(prepared[0], "waveform")
+                assert rates == []
+            else:
+                assert rates == [((2, 32000), 16000, 32000)]
+                np.testing.assert_array_equal(prepared[0].waveform, np.ones((2, 64000)))
+
+    for path in ("audio.wav", Path("audio.wav")):
+        audio.audio = path
+        soundtrack = (np.ones((2, 32000)), 16000)
+        rates.clear()
+        prepared, _ = flex.prepare_flex_references(
+            pipeline, [image, audio], 124, (480, 832)
+        )
+        assert decoded[-1] == path
+        assert rates == [((2, 32000), 16000, 32000)]
+        np.testing.assert_array_equal(prepared[1].waveform, np.ones((2, 64000)))
+        soundtrack = None
+        with pytest.raises(
+            ValueError, match="audio reference has no decodable audio stream"
+        ):
+            flex.prepare_flex_references(pipeline, [image, audio], 124, (480, 832))
+        assert decoded[-1] == path
+
+    for shape in ((3, 32000), (32000,)):
+        soundtrack = (np.zeros(shape), 16000)
+        with pytest.raises(
+            ValueError, match="reference waveform must be mono or stereo"
+        ):
+            flex.prepare_flex_references(pipeline, [image, audio], 124, (480, 832))
 
 
 def test_reference_runtime_forwarding(monkeypatch, tmp_path):
@@ -1495,12 +1657,13 @@ async def test_run_job_forwards_references(monkeypatch, tmp_path):
         video.start_video_jobs()
 
 
-def test_reference_unsupported_image(reference_app):
+@pytest.mark.parametrize("format", ["GIF", "BMP"])
+def test_reference_unsupported_image(reference_app, format):
     from PIL import Image
 
     client, _, _ = reference_app
     output = io.BytesIO()
-    Image.new("RGB", (2, 2)).save(output, format="GIF")
+    Image.new("RGB", (2, 2)).save(output, format=format)
     response = client.post(
         "/v1/videos",
         data=dict(prompt="test", model="pika-h3-flex", size="832x480"),
