@@ -110,14 +110,28 @@ struct ModelPickerDownloadedOnlyTests {
         #expect(visible.map(\.alias) == ["selected-0.6b"])
     }
 
-    @Test func browseRoutesToModelManagementBeforeOpening() {
+    @Test func browseAllModelsRoutesBeforeOpeningOnce() {
         let router = SettingsRouter()
         var opens = 0
-        let routed = router.route(ModelPickerBar.browseAllModelsAction) {
+        ModelPickerBar.browseAllModels(router: router) {
             #expect(router.requestedCategory == .modelManagement)
             opens += 1
         }
-        #expect(routed)
+        #expect(router.requestedCategory == .modelManagement)
+        #expect(opens == 1)
+    }
+
+    @Test func browseButtonUsesModelManagementAction() async throws {
+        let router = SettingsRouter()
+        var opens = 0
+        let stage = GoldenStage(ModelPickerBrowseAllModelsButton(router: router) {
+            #expect(router.requestedCategory == .modelManagement)
+            opens += 1
+        })
+        try await stage.waitForIdentifier("ModelPickerBar.BrowseAllModels")
+        #expect(stage.treeText().contains("Browse all models…"))
+        try stage.press("ModelPickerBar.BrowseAllModels")
+        #expect(router.requestedCategory == .modelManagement)
         #expect(opens == 1)
     }
 }

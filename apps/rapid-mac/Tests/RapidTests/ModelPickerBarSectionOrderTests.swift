@@ -38,6 +38,41 @@ import Testing
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
 
+    @Test("Browse all models renders after the state switch, including the downloaded-empty state")
+    func browseButtonFollowsEveryMenuState() throws {
+        let src = try modelPickerBarSource()
+        let menuStart = try #require(src.range(of: "private var menuContent: some View {"))
+        let menuEnd = try #require(src.range(of: "private var modelPicker: some View {"))
+        let menu = src[menuStart.upperBound..<menuEnd.lowerBound]
+        let stateSwitch = try #require(menu.range(of: "switch state {"))
+        let rows = try #require(menu.range(of: "case .rows:"))
+        let button = try #require(menu.range(of: "ModelPickerBrowseAllModelsButton("))
+
+        // Balance the switch's braces rather than accepting an occurrence
+        // inside .rows (or any other case). The button must be shared by
+        // loading, unavailable, noDownloadedModels, and rows alike.
+        var depth = 1
+        var switchEnd: String.Index?
+        for index in menu.indices where index >= stateSwitch.upperBound {
+            if menu[index] == "{" { depth += 1 }
+            if menu[index] == "}" { depth -= 1 }
+            if depth == 0 {
+                switchEnd = menu.index(after: index)
+                break
+            }
+        }
+        let end = try #require(switchEnd)
+        #expect(rows.lowerBound < end)
+        try #require(button.lowerBound >= end,
+                     "Browse button must render outside and after the entire state switch")
+        // Only router availability may gate the shared trailing entry.
+        let trailingPrefix = String(menu[end..<button.lowerBound])
+        #expect(trailingPrefix.range(
+            of: #"^\s*if let settingsRouter\s*\{\s*Divider\(\)\s*$"#,
+            options: .regularExpression
+        ) != nil)
+    }
+
     @Test("Oversized aliases are separated from runnable All models")
     func partitionsByConservativeFit() {
         let hardware = MacHardware(

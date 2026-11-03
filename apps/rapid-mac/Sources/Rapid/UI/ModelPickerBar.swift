@@ -427,7 +427,9 @@ struct ModelPickerBar: View {
         )
     }
 
-    static var browseAllModelsAction: FailureDiagnosis.Action { .openModelManagement }
+    static func browseAllModels(router: SettingsRouter, open: () -> Void) {
+        router.route(.openModelManagement, open: open)
+    }
 
     @ViewBuilder
     private var menuContent: some View {
@@ -458,12 +460,11 @@ struct ModelPickerBar: View {
             recommendedSection
             allAliasesSection
         }
-        if settingsRouter != nil {
+        if let settingsRouter {
             Divider()
-            Button("Browse all models…") {
-                settingsRouter?.route(Self.browseAllModelsAction) { openWindow(id: "settings") }
+            ModelPickerBrowseAllModelsButton(router: settingsRouter) {
+                openWindow(id: "settings")
             }
-            .accessibilityIdentifier("ModelPickerBar.BrowseAllModels")
         }
     }
 
@@ -2093,6 +2094,18 @@ struct ModelPickerBar: View {
         )
         guard normalized != alias else { return }
         alias = normalized
+    }
+}
+
+struct ModelPickerBrowseAllModelsButton: View {
+    let router: SettingsRouter
+    let open: () -> Void
+
+    var body: some View {
+        Button("Browse all models…") {
+            ModelPickerBar.browseAllModels(router: router, open: open)
+        }
+        .accessibilityIdentifier("ModelPickerBar.BrowseAllModels")
     }
 }
 
