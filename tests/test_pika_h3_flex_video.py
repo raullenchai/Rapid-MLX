@@ -1813,6 +1813,49 @@ def test_pull_ref2va_aggregate_disk_preflight(monkeypatch, tmp_path, enough_spac
     assert probes == [True]
 
 
+def test_ref2va_missing_bytes_with_cached_base_config(monkeypatch, tmp_path):
+    from rapid_mlx import _mirror, cli
+
+    cached_file = tmp_path / "cached"
+    cached_file.write_bytes(b"cached")
+    cached_names = {"config.json", *flex.BASE_FILES}
+
+    def cache_lookup(repo, filename, *, revision=None):
+        assert repo == h3.REPO
+        assert revision in (None, h3.REVISION)
+        return str(cached_file) if filename in cached_names else None
+
+    def model_info(repo, *, revision, files_metadata):
+        assert repo == h3.REPO
+        assert revision == h3.REVISION
+        assert files_metadata
+        return SimpleNamespace(
+            sha=revision,
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in {
+                    **dict.fromkeys(cached_names, 1),
+                    **flex.REF2VA_FILE_SIZES,
+                }.items()
+            ],
+        )
+
+    monkeypatch.setattr(_mirror, "_packaged_digest_info", lambda *a: None)
+    monkeypatch.setattr("huggingface_hub.model_info", model_info)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", cache_lookup)
+
+    # A cached root config must not bypass sizing explicitly selected files.
+    assert cli._missing_download_bytes(
+        h3.REPO,
+        revision_override=h3.REVISION,
+        allow_patterns=list(flex.REF2VA_BASE_FILES),
+    ) == sum(
+        size
+        for name, size in flex.REF2VA_FILE_SIZES.items()
+        if name.startswith("transformer_ref/")
+    )
+
+
 def test_pull_ref2va_aggregate_disk_preflight_force(monkeypatch, tmp_path):
     from rapid_mlx import _mirror, cli
     from rapid_mlx.cli_parser import build_parser
