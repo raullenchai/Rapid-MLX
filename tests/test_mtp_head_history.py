@@ -2,8 +2,10 @@
 """Execute the generator's head helpers on CPU, without importing Metal."""
 
 import ast
+import copy
 import os
 import time
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -135,6 +137,184 @@ def _settle_verify(env, accepted, emitted=None):
         drafts_arr=np.array([12, 13, 14]),
     )
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), "exec"), env)
+
+
+def _generation_harness(max_tokens, depths, *, bootstrap=False, prefetch=False):
+    """Run the real park/verify loop with the existing CPU head and target +1."""
+    env, cache, _, _ = _harness()
+    picks = iter(depths)
+    env["mx"].__dict__.update(
+        int32=np.int32,
+        stack=np.stack,
+        async_eval=lambda *args: None,
+        clear_cache=lambda: None,
+    )
+
+    def backbone(ids, prev, n_predict=1, **kwargs):
+        toks = ids[-n_predict:] + 1
+        lps = np.zeros((n_predict, 64))
+        return toks, lps, lps, ids[None, :, None] * 10.0, prev, [()] * n_predict
+
+    env.update(
+        ntoks=0,
+        y=np.array([11 if bootstrap else 10]),
+        server_bootstrap=(np.array([[[100.0]]]), np.zeros(64)) if bootstrap else None,
+        max_tokens=max_tokens,
+        prev_tokens=None,
+        pending_drafts=None,
+        pending_is_prompt_lookup=False,
+        _request_depth=None,
+        _prompt_lookup_index=None,
+        _next_depth=lambda: next(picks),
+        _lookup_proposal=lambda: None,
+        _admit_mtp_depth=lambda k: k,
+        _step_backbone=backbone,
+        _remember_generated=lambda tok: None,
+        _record_round=lambda *args, **kwargs: None,
+        _gate_cost=lambda ms, rows: ms,
+        _copy_draft_gate=SimpleNamespace(observe=lambda **kwargs: None),
+        _uniform=lambda **kwargs: np.zeros(kwargs["shape"]),
+        accept_counter=SimpleNamespace(
+            record_attempt=lambda: None,
+            record_verify=lambda *args: None,
+            record_accept=lambda **kwargs: None,
+            record_reject=lambda: None,
+        ),
+        stop_tokens=None,
+        may_run_ahead=lambda: prefetch,
+        _CACHE_CLEAR_INTERVAL=256,
+        last_cache_block=0,
+    )
+    planner = copy.deepcopy(
+        next(n for n in GENERATOR.body if getattr(n, "name", None) == "_plan_next")
+    )
+    exec(compile(ast.Module(body=[planner], type_ignores=[]), str(SOURCE), "exec"), env)
+    start = next(
+        i
+        for i, n in enumerate(GENERATOR.body)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_pipeline_parks" for t in n.targets
+        )
+    )
+    body = copy.deepcopy(GENERATOR.body[start:])
+
+    class SharedState(ast.NodeTransformer):
+        # The existing head helpers and loop must share enclosing state.
+        def visit_Nonlocal(self, node):
+            return ast.copy_location(ast.Global(names=node.names), node)
+
+        def visit_AnnAssign(self, node):
+            return ast.copy_location(
+                ast.Assign(targets=[node.target], value=node.value), node
+            )
+
+    class LoopStores(ast.NodeVisitor):
+        def __init__(self):
+            self.names = set()
+
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Store):
+                self.names.add(node.id)
+
+        def visit_FunctionDef(self, node):
+            pass  # Nested helpers keep their own local variables.
+
+    body = [SharedState().visit(n) for n in body]
+    stores = LoopStores()
+    for node in body:
+        stores.visit(node)
+    runner = ast.parse("def run(): pass").body[0]
+    runner.body = [ast.Global(names=sorted(stores.names)), *body]
+    exec(
+        compile(
+            ast.fix_missing_locations(ast.Module(body=[runner], type_ignores=[])),
+            str(SOURCE),
+            "exec",
+        ),
+        env,
+    )
+    return env, cache
+
+
+@pytest.mark.parametrize("max_tokens", [1, 2, 5])
+@pytest.mark.parametrize("depth", [0, 1])
+def test_server_bootstrap_counts_the_already_delivered_token(max_tokens, depth):
+    direct, _ = _generation_harness(max_tokens, [depth] * max_tokens)
+    server, _ = _generation_harness(max_tokens, [depth] * max_tokens, bootstrap=True)
+    direct_tokens = [tok for tok, _, _ in direct["run"]()]
+    server_tokens = [tok for tok, _, _ in server["run"]()]
+    assert direct_tokens == list(range(11, 11 + max_tokens))
+    assert len(server_tokens) == max_tokens - 1
+    assert 11 not in server_tokens
+    assert server_tokens == direct_tokens[1:][: max_tokens - 1]
+    # The scheduler delivers 11 before entering this generator.
+    assert [11, *server_tokens] == direct_tokens[:max_tokens]
+    # The old scheduler handoff starts from that sample without suppression;
+    # its extra token is truncated by the batch's outer request limit.
+    legacy, _ = _generation_harness(max_tokens, [depth] * max_tokens)
+    legacy["y"] = np.array([11])
+    legacy_tokens = [tok for tok, _, _ in legacy["run"]()]
+    assert len(legacy_tokens) == max_tokens
+    assert server_tokens == legacy_tokens[: max_tokens - 1]
+
+
+@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize("parking_route", ["zero_depth", "admission"])
+def test_park_transitions_append_each_committed_head_pair_once(prefetch, parking_route):
+    # park->park, park->mtp, mtp->park, then repeat to observe resumed chains.
+    env, cache = _generation_harness(10, [0, 1, 0, 0, 1, 0, 0], prefetch=prefetch)
+    if parking_route == "admission":
+        # Positive desired depth which the real planner cannot admit exercises
+        # plan == 'park', whereas zero depth exercises parks_next directly.
+        env["_next_depth"] = lambda: 1
+        env["_admit_mtp_depth"] = lambda k: k if env["ntoks"] in (2, 6) else 0
+    forwards = []
+    trimmed = []
+    chain_boundaries = []
+    target_boundaries = []
+    delivered = []
+    forward = env["model"].mtp_forward
+    trim = cache.trim
+    chain = env["_draft_chain_timed"]
+    backbone = env["_step_backbone"]
+
+    def observed_backbone(*args, **kwargs):
+        target_boundaries.append(len(delivered))
+        return backbone(*args, **kwargs)
+
+    def counted_forward(hidden, ids, caches, **kwargs):
+        forwards.extend(zip(hidden[0, :, 0].tolist(), ids[0].tolist()))
+        return forward(hidden, ids, caches, **kwargs)
+
+    def counted_trim(n):
+        if n:
+            trimmed.extend(cache.rows[-n:])
+        trim(n)
+
+    def checked_chain(*args, **kwargs):
+        assert env["head_pending"] is None
+        assert cache.offset == env["ntoks"] - 1
+        assert cache.rows == [(10.0 * (t - 1), t) for t in range(11, 10 + env["ntoks"])]
+        chain_boundaries.append(env["ntoks"])
+        return chain(*args, **kwargs)
+
+    env["model"].mtp_forward = counted_forward
+    cache.trim = counted_trim
+    env["_draft_chain_timed"] = checked_chain
+    env["_step_backbone"] = observed_backbone
+    for tok, _, _ in env["run"]():
+        delivered.append(tok)
+    assert delivered == list(range(11, 21))
+    # Prove that the requested prefetch mode actually changed launch timing.
+    assert target_boundaries[:2] == ([0, 0] if prefetch else [0, 1])
+    assert chain_boundaries == [2, 6]
+    expected = [(10.0 * (t - 1), t) for t in range(11, 21)]
+    assert cache.rows == expected
+    # Verify deliberately trims provisional draft rows and rebuilds them.
+    # Every other mtp_forward row must commit exactly once, including parks.
+    assert Counter(forwards) == Counter(expected) + Counter(trimmed)
+    assert trimmed == [(110.0, 12), (150.0, 16)]
 
 
 @pytest.mark.parametrize("legacy", [False, True])
