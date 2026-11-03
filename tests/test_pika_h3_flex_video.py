@@ -66,6 +66,19 @@ def offline(monkeypatch):
 
 
 def test_ladders_and_alignment():
+    assert flex.KNOTS == (1000, 750, 500, 250, 100, 40, 0)
+    assert flex.VIDEO_SHIFT == 12.0
+    assert flex.AUDIO_SHIFT == 3.0
+    assert flex.shifted_sigmas(flex.KNOTS, flex.VIDEO_SHIFT) == pytest.approx(
+        [1.0, 0.9729730, 0.9230769, 0.8, 0.5714286, 0.3333333, 0.0],
+        rel=1e-6,
+        abs=1e-6,
+    )
+    assert flex.shifted_sigmas(flex.KNOTS, flex.AUDIO_SHIFT) == pytest.approx(
+        [1.0, 0.9, 0.75, 0.5, 0.25, 0.1111111, 0.0],
+        rel=1e-6,
+        abs=1e-6,
+    )
     for shift in (12, 3):
         sigmas = flex.shifted_sigmas(flex.KNOTS, shift)
         expected = [
@@ -123,6 +136,40 @@ def test_renoise_math_and_shared_order(array_core):
     np.testing.assert_allclose(
         np.array(video.scale_noise(mx.array([4.0]), 0.25, mx.array([2.0]))), [2.5]
     )
+
+    # Literal reference vectors from the released sampler equations.
+    def reference_normal(shape):
+        draws.append(shape)
+        return mx.array([0.1, -0.2], dtype=mx.float32)
+
+    noise = SimpleNamespace(normal=reference_normal)
+    video, audio = flex.RenoiseScheduler(12, noise), flex.RenoiseScheduler(3, noise)
+    x = mx.array([1.0, 2.0], dtype=mx.float32)
+    v = mx.array([0.5, -1.0], dtype=mx.float32)
+    assert video.timesteps[0] == audio.timesteps[0] == 0.0
+    np.testing.assert_allclose(
+        video.step(v, video.timesteps[0], x),
+        [0.1378378, -0.1675676],
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        audio.step(v, audio.timesteps[0], x),
+        [0.24, -0.08],
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    for t in video.timesteps[1:-1]:
+        video.step(v, t, x)
+    assert video.timesteps[-1] == pytest.approx(0.6666667)
+    draws_before_final = len(draws)
+    np.testing.assert_allclose(
+        video.step(v, video.timesteps[-1], x),
+        [1.1666667, 1.6666667],
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert len(draws) == draws_before_final
 
 
 def test_real_noise_reproducible(mx):
