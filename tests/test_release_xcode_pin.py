@@ -21,9 +21,11 @@ def assert_selected_before_builds(root, steps, selected=False):
             assert "if" not in step
             selected = True
         elif uses.startswith("./"):
-            selected = assert_selected_before_builds(
+            composite_selected = assert_selected_before_builds(
                 root, load(root, uses[2:] + "/action.yml")["runs"]["steps"], selected
             )
+            if "if" not in step:
+                selected = composite_selected
         # Comments describing a build do not execute toolchain commands.
         commands = "\n".join(
             line.split("#", 1)[0] for line in step.get("run", "").splitlines()
@@ -75,4 +77,7 @@ def test_release_lanes_select_before_toolchain_use():
         assert "if" not in steps[0]
         expected = SELECTOR if name == "release-toolchain-build" else DESKTOP
         assert any(s.get("uses") == expected for s in steps)
+        for step in steps:
+            if step.get("uses") == DESKTOP:
+                assert "if" not in step
         assert assert_selected_before_builds(ROOT, steps)
