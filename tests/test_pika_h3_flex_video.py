@@ -928,6 +928,21 @@ def test_reference_http_exclusive(reference_app, field):
     assert response.status_code == 400 and "combined" in response.text
 
 
+def test_reference_http_oversized_image_skips_validation(reference_app, monkeypatch):
+    from rapid_mlx.routes import video
+
+    client, _, _ = reference_app
+    calls = []
+    monkeypatch.setattr(video, "_MAX_REFERENCE_BYTES", 5)
+    monkeypatch.setattr(
+        video, "_validate_reference_image", lambda *a, **kw: calls.append(a)
+    )
+    response = post_references(client, ["image"])
+    assert response.status_code == 413
+    assert response.json()["detail"] == "references[0] exceeds 20 MB"
+    assert calls == []
+
+
 def test_reference_http_oversized(reference_app, monkeypatch):
     from rapid_mlx.routes import video
 

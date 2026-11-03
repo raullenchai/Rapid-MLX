@@ -1146,6 +1146,10 @@ async def _store_packed_reference(upload, job_dir: Path, index: int, telemetry_m
                     raise HTTPException(
                         status_code=400, detail=f"{field}: unsupported file type"
                     )
+                if total > _MAX_REFERENCE_BYTES:
+                    raise HTTPException(
+                        status_code=413, detail=f"{field} exceeds 20 MB"
+                    )
         except UnidentifiedImageError:
             return _probe_packed_reference(path, field)
         except (OSError, ValueError, Image.DecompressionBombError) as exc:
