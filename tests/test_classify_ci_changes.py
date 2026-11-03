@@ -129,12 +129,21 @@ def test_pr_validate_dependency_and_test_diff_is_engine_only():
         "pyproject.toml",
         "scripts/pr_validate/_xdist.py",
         "scripts/pr_validate/steps/full_unit.py",
-        "tests/conftest.py",
         "tests/test_pr_validate_full_unit.py",
     ]
     assert classify(paths) == Lanes(engine=True, desktop=False, docs_only=False)
     assert classify_policy(paths).linux_matrix_mode == "py312"
     assert classify_policy(paths).linux_matrix_reason == "pr-single-python"
+
+
+@pytest.mark.parametrize("path", ["tests/conftest.py", "pytest.ini", "conftest.py"])
+def test_shared_pytest_infra_selects_desktop_and_engine(path):
+    assert classify([path]) == Lanes(engine=True, desktop=True, docs_only=False)
+
+
+def test_pyproject_has_no_pytest_config_while_pytest_ini_exists():
+    assert "[tool.pytest" not in (ROOT / "pyproject.toml").read_text()
+    assert (ROOT / "pytest.ini").exists()
 
 
 @pytest.mark.parametrize(

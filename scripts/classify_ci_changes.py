@@ -82,6 +82,9 @@ _ENGINE_FILES = {
     "requirements.txt",
     "install.sh",
 }
+# Both lanes load shared pytest infrastructure. pytest.ini is active;
+# pyproject.toml has no [tool.pytest.ini_options] and is ignored while it exists.
+_SHARED_PYTEST_INFRA = {"tests/conftest.py", "pytest.ini", "conftest.py"}
 _DESKTOP_PREFIX = "apps/rapid-mac/"
 _DESKTOP_SUPPORT_PREFIXES = ("tests/fixtures/ax_baseline/",)
 _DESKTOP_SUPPORT = {
@@ -161,6 +164,11 @@ def classify(paths: Iterable[str]) -> Lanes:
         root = pure.parts[0] if pure.parts else ""
         is_doc = root in _DOC_ROOTS or path in _DOC_FILES
         docs_only &= is_doc
+
+        if path in _SHARED_PYTEST_INFRA:
+            engine = True
+            desktop = True
+            continue
 
         if (
             path.startswith(_DESKTOP_PREFIX)
