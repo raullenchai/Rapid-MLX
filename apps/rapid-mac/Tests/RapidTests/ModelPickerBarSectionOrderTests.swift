@@ -38,7 +38,7 @@ import Testing
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
 
-    @Test("Browse all models renders after the state switch, including the downloaded-empty state")
+    @Test("Browse all models renders after the state switch, including both downloaded-empty states")
     func browseButtonFollowsEveryMenuState() throws {
         let src = try modelPickerBarSource()
         let menuStart = try #require(src.range(of: "private var menuContent: some View {"))
@@ -46,11 +46,16 @@ struct ModelPickerBarSectionOrderTests {
         let menu = src[menuStart.upperBound..<menuEnd.lowerBound]
         let stateSwitch = try #require(menu.range(of: "switch state {"))
         let rows = try #require(menu.range(of: "case .rows:"))
+        for message in ["No downloaded models yet", "No downloaded models to show"] {
+            #expect(menu.contains("Text(\"\(message)\").disabled(true)"))
+        }
+        #expect(menu.contains("case .noDownloadedModels:"))
+        #expect(menu.contains("case .noVisibleModels:"))
         let button = try #require(menu.range(of: "ModelPickerBrowseAllModelsButton("))
 
         // Balance the switch's braces rather than accepting an occurrence
         // inside .rows (or any other case). The button must be shared by
-        // loading, unavailable, noDownloadedModels, and rows alike.
+        // loading, unavailable, noDownloadedModels, noVisibleModels, and rows alike.
         var depth = 1
         var switchEnd: String.Index?
         for index in menu.indices where index >= stateSwitch.upperBound {

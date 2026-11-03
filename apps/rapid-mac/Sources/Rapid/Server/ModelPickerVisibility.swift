@@ -38,13 +38,37 @@ enum ModelPickerVisibility {
         }
     }
 
-    enum MenuState: Equatable {
-        case loading, unavailable, noDownloadedModels, rows
+    /// Apply availability before the existing size and absolute denylist rules.
+    /// Serving and selected aliases share the same size-only exemption.
+    static func chatPickerEntries(
+        _ catalog: [ModelEntry],
+        selectedAlias: String,
+        servingAlias: String?,
+        includeAll: Bool,
+        isDownloading: (String) -> Bool
+    ) -> [ModelEntry] {
+        runnableEntries(
+            catalog, selectedAlias: selectedAlias, servingAlias: servingAlias,
+            isDownloading: isDownloading
+        ).filter { entry in
+            shouldShow(
+                alias: entry.alias,
+                selectedAlias: entry.alias == servingAlias ? entry.alias : selectedAlias,
+                includeAll: includeAll
+            )
+        }
     }
 
-    static func menuState(catalogIsEmpty: Bool, loading: Bool, hasVisibleRows: Bool) -> MenuState {
+    enum MenuState: Equatable {
+        case loading, unavailable, noDownloadedModels, noVisibleModels, rows
+    }
+
+    static func menuState(
+        catalogIsEmpty: Bool, loading: Bool, runnableIsEmpty: Bool, hasVisibleRows: Bool
+    ) -> MenuState {
         if catalogIsEmpty { return loading ? .loading : .unavailable }
-        return hasVisibleRows ? .rows : .noDownloadedModels
+        if runnableIsEmpty { return .noDownloadedModels }
+        return hasVisibleRows ? .rows : .noVisibleModels
     }
 
     struct RowPresentation {

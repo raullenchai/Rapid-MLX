@@ -5,8 +5,8 @@ import SwiftUI
 ///
 /// Rows are limited to installed models plus the selected and serving aliases.
 /// Active downloads remain visible as disabled rows.
-/// Sections without eligible rows are omitted; no eligible rows shows
-/// “No downloaded models yet”.
+/// Sections without eligible rows are omitted; empty states distinguish
+/// missing downloads from models hidden by the visibility rules.
 ///
 /// When a settings router is available, the trailing “Browse all models…”
 /// action opens Settings > Model management.
@@ -242,15 +242,12 @@ struct ModelPickerBar: View {
     /// so the picker never tries to ``Start`` an alias rapid-mlx
     /// doesn't know about.
     private var visibleEntries: [ModelEntry] {
-        ModelPickerVisibility.filter(
-            ModelPickerVisibility.runnableEntries(
-                catalog,
-                selectedAlias: alias,
-                servingAlias: server.servingAlias,
-                isDownloading: { downloads.isDownloading($0) }
-            ),
+        ModelPickerVisibility.chatPickerEntries(
+            catalog,
             selectedAlias: alias,
-            includeAll: showAllModels
+            servingAlias: server.servingAlias,
+            includeAll: showAllModels,
+            isDownloading: { downloads.isDownloading($0) }
         )
     }
 
@@ -436,6 +433,10 @@ struct ModelPickerBar: View {
         let state = ModelPickerVisibility.menuState(
             catalogIsEmpty: catalog.isEmpty,
             loading: loadingCatalog,
+            runnableIsEmpty: ModelPickerVisibility.runnableEntries(
+                catalog, selectedAlias: alias, servingAlias: server.servingAlias,
+                isDownloading: { downloads.isDownloading($0) }
+            ).isEmpty,
             hasVisibleRows: hasVisibleRows
         )
         switch state {
@@ -455,6 +456,8 @@ struct ModelPickerBar: View {
                 .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
         case .noDownloadedModels:
             Text("No downloaded models yet").disabled(true)
+        case .noVisibleModels:
+            Text("No downloaded models to show").disabled(true)
         case .rows:
             quickstartSection
             recommendedSection

@@ -2122,6 +2122,16 @@
         }
       }
     },
+    "No downloaded models to show" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可显示的已下载模型"
+          }
+        }
+      }
+    },
     "No downloaded models yet" : {
       "localizations" : {
         "zh-Hans" : {

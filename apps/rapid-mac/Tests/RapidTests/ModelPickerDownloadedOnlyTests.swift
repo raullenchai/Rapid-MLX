@@ -85,29 +85,85 @@ struct ModelPickerDownloadedOnlyTests {
         let entries = runnable([entry("remote-4b"), entry("remote-8b")])
         #expect(entries.isEmpty)
         #expect(ModelPickerVisibility.menuState(
-            catalogIsEmpty: false, loading: false, hasVisibleRows: !entries.isEmpty
+            catalogIsEmpty: false, loading: false, runnableIsEmpty: entries.isEmpty,
+            hasVisibleRows: !entries.isEmpty
         ) == .noDownloadedModels)
     }
 
     @Test func loadingAndUnavailableStatesRemainDistinct() {
         #expect(ModelPickerVisibility.menuState(
-            catalogIsEmpty: true, loading: true, hasVisibleRows: false
+            catalogIsEmpty: true, loading: true, runnableIsEmpty: true, hasVisibleRows: false
         ) == .loading)
         #expect(ModelPickerVisibility.menuState(
-            catalogIsEmpty: true, loading: false, hasVisibleRows: false
+            catalogIsEmpty: true, loading: false, runnableIsEmpty: true, hasVisibleRows: false
         ) == .unavailable)
         #expect(ModelPickerVisibility.menuState(
-            catalogIsEmpty: false, loading: false, hasVisibleRows: true
+            catalogIsEmpty: false, loading: false, runnableIsEmpty: false, hasVisibleRows: true
         ) == .rows)
     }
 
-    @Test func runnableFilterPrecedesSizeAndDenylist() {
-        let entries = runnable([
-            entry("remote-4b"), entry("tiny-0.6b", cached: true),
-            entry("selected-0.6b"), entry("ministral-3b-4bit", cached: true)
-        ], selected: "selected-0.6b")
-        let visible = ModelPickerVisibility.filter(entries, selectedAlias: "selected-0.6b", includeAll: false)
-        #expect(visible.map(\.alias) == ["selected-0.6b"])
+    @Test func chatPickerDropsUncachedRemoteEvenWithIncludeAll() {
+        for includeAll in [false, true] {
+            #expect(ModelPickerVisibility.chatPickerEntries(
+                [entry("remote-4b")], selectedAlias: "", servingAlias: nil,
+                includeAll: includeAll, isDownloading: { _ in false }
+            ).isEmpty)
+        }
+    }
+
+    @Test func chatPickerCachedTinyRespectsIncludeAll() {
+        let catalog = [entry("tiny-0.6b", cached: true)]
+        #expect(ModelPickerVisibility.chatPickerEntries(
+            catalog, selectedAlias: "", servingAlias: nil,
+            includeAll: false, isDownloading: { _ in false }
+        ).isEmpty)
+        #expect(ModelPickerVisibility.chatPickerEntries(
+            catalog, selectedAlias: "", servingAlias: nil,
+            includeAll: true, isDownloading: { _ in false }
+        ).map(\.alias) == ["tiny-0.6b"])
+    }
+
+    @Test func chatPickerKeepsSelectedUncachedTiny() {
+        #expect(ModelPickerVisibility.chatPickerEntries(
+            [entry("selected-0.6b")], selectedAlias: "selected-0.6b", servingAlias: nil,
+            includeAll: false, isDownloading: { _ in false }
+        ).map(\.alias) == ["selected-0.6b"])
+    }
+
+    @Test func chatPickerKeepsServingUncachedTiny() {
+        #expect(ModelPickerVisibility.chatPickerEntries(
+            [entry("serving-0.6b")], selectedAlias: "other-4b", servingAlias: "serving-0.6b",
+            includeAll: false, isDownloading: { _ in false }
+        ).map(\.alias) == ["serving-0.6b"])
+    }
+
+    @Test func chatPickerDenylistOverridesSizeExemptions() {
+        let broken = "ministral-3b-4bit"
+        for includeAll in [false, true] {
+            for (selected, serving) in [("", nil), (broken, nil), ("", Optional(broken))] {
+                #expect(ModelPickerVisibility.chatPickerEntries(
+                    [entry(broken, cached: true)], selectedAlias: selected, servingAlias: serving,
+                    includeAll: includeAll, isDownloading: { _ in false }
+                ).isEmpty)
+            }
+        }
+    }
+
+    @Test func downloadedButFilteredShowsNoVisibleModels() {
+        for alias in ["tiny-0.6b", "ministral-3b-4bit"] {
+            let catalog = [entry(alias, cached: true)]
+            let runnableEntries = runnable(catalog)
+            let visible = ModelPickerVisibility.chatPickerEntries(
+                catalog, selectedAlias: "", servingAlias: nil,
+                includeAll: false, isDownloading: { _ in false }
+            )
+            #expect(!runnableEntries.isEmpty)
+            #expect(visible.isEmpty)
+            #expect(ModelPickerVisibility.menuState(
+                catalogIsEmpty: catalog.isEmpty, loading: false,
+                runnableIsEmpty: runnableEntries.isEmpty, hasVisibleRows: !visible.isEmpty
+            ) == .noVisibleModels)
+        }
     }
 
     @Test func browseAllModelsRoutesBeforeOpeningOnce() {
