@@ -755,11 +755,14 @@ def pinned_snapshot_download(
         except LocalEntryNotFoundError:
             model_downloads.check(repo_id)
             raise
+    mirror_kwargs: dict[str, Any] = {}
+    if on_bytes is not None:
+        mirror_kwargs["on_bytes"] = on_bytes
     if _is_commit_sha(revision) and download_with_mirror_fallback(
         repo_id,
         revision=revision,
         allow_patterns=allow_patterns,
-        **({"on_bytes": on_bytes} if on_bytes is not None else {}),
+        **mirror_kwargs,
     ):
         owner, _, name = repo_id.partition("/")
         return str(
@@ -2169,7 +2172,7 @@ def download_with_mirror_fallback(
     # don't trample each other's totals (codex R1 BLOCKING on PR #682).
     progress_tracker = _ProgressTracker(
         total=total_expected_bytes,
-        **({"on_bytes": on_bytes} if on_bytes is not None else {}),
+        on_bytes=on_bytes,
     )
 
     # Per-file plan: for each file, attempt R2 first (if eligible),
@@ -2679,7 +2682,10 @@ def download_with_mirror_fallback(
                     f"{_safe_display_name(fname)} {tag}"
                 )
     except _DownloadCallbackError as exc:
-        raise exc.__cause__
+        cause = exc.__cause__
+        if cause is None:  # pragma: no cover - always chained by _notify_bytes
+            raise
+        raise cause from None
     finally:
         # Final heartbeat: a sub-500 ms tail of bytes can finish between the
         # last throttle window and the loop exit. Emit one unconditional
