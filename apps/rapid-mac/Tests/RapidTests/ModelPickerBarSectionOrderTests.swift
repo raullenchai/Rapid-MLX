@@ -38,6 +38,23 @@ import Testing
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
 
+    @Test("Unavailable and empty model states share recovery actions")
+    func emptyMenuStatesIncludeRecoveryActions() throws {
+        let src = try modelPickerBarSource()
+        let menuStart = try #require(src.range(of: "private var menuContent: some View {"))
+        let helperStart = try #require(src.range(of: "private var recoveryActions: some View {"))
+        let menu = src[menuStart.upperBound..<helperStart.lowerBound]
+        for state in ["unavailable", "noDownloadedModels", "noVisibleModels"] {
+            let start = try #require(menu.range(of: "case .\(state):"))
+            let nextCase = try #require(menu[start.upperBound...].range(of: "case ."))
+            let branch = String(menu[start.upperBound..<nextCase.lowerBound])
+            #expect(branch.range(
+                of: #"(?m)^\s*recoveryActions\s*$"#,
+                options: .regularExpression
+            ) != nil, "\(state) must render the shared recovery actions")
+        }
+    }
+
     @Test("Browse all models renders after the state switch, including both downloaded-empty states")
     func browseButtonFollowsEveryMenuState() throws {
         let src = try modelPickerBarSource()

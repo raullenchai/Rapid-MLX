@@ -447,17 +447,13 @@ struct ModelPickerBar: View {
                 .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
         case .unavailable:
             Text("No models available")
-            Divider()
-            Button("Refresh catalog") {
-                Task { await refreshCatalog(force: true) }
-            }
-            .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
-            Button("Type a model name…") { showCustom = true }
-                .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
+            recoveryActions
         case .noDownloadedModels:
             Text("No downloaded models yet").disabled(true)
+            recoveryActions
         case .noVisibleModels:
             Text("No downloaded models to show").disabled(true)
+            recoveryActions
         case .rows:
             quickstartSection
             recommendedSection
@@ -469,6 +465,17 @@ struct ModelPickerBar: View {
                 openWindow(id: "settings")
             }
         }
+    }
+
+    @ViewBuilder
+    private var recoveryActions: some View {
+        Divider()
+        Button("Refresh catalog") {
+            Task { await refreshCatalog(force: true) }
+        }
+        .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
+        Button("Type a model name…") { showCustom = true }
+            .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
     }
 
     private var modelPicker: some View {
