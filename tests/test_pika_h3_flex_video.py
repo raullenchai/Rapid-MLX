@@ -2156,8 +2156,17 @@ def test_adapter_download_is_mode_specific(monkeypatch, tmp_path, mode):
 
 
 @pytest.mark.parametrize("field", ["input_reference", "last_frame", "references"])
-def test_garbage_upload_errors_are_path_free(reference_app, field):
+def test_garbage_upload_errors_are_path_free(monkeypatch, reference_app, field):
     client, _, _ = reference_app
+    if field == "references":
+        from rapid_mlx.routes import video
+
+        # Exercise the probe failure path without depending on a host ffprobe.
+        def reject(*args, **kwargs):
+            raise video.subprocess.CalledProcessError(1, ["ffprobe"])
+
+        monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+        monkeypatch.setattr(video.subprocess, "run", reject)
     response = client.post(
         "/v1/videos",
         data={

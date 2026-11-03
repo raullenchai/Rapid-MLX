@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..middleware.auth import verify_api_key, verify_api_key_for_scope
 from ..model_aliases import resolve_profile
-from ..video.cancel import VideoCancelToken, VideoGenerationCancelled
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -122,7 +121,9 @@ def active_video_jobs() -> int:
 
 
 _tasks: dict[str, asyncio.Task] = {}
-_cancel_tokens: dict[str, VideoCancelToken] = {}
+# Values are rapid_mlx.video.cancel.VideoCancelToken; imported lazily so that
+# importing the server does not load the optional video lane.
+_cancel_tokens: dict[str, Any] = {}
 _cleanup_tasks: set[asyncio.Task] = set()
 _generation_threads: set[threading.Thread] = set()
 _persistence_threads: set[threading.Thread] = set()
@@ -1368,6 +1369,8 @@ async def _run_job(
     source_video: Path | None = None,
     extend_frames: int | None = None,
 ) -> None:
+    from ..video.cancel import VideoCancelToken, VideoGenerationCancelled
+
     cancel_token = VideoCancelToken()
     with _jobs_lock:
         _cancel_tokens[job.id] = cancel_token
