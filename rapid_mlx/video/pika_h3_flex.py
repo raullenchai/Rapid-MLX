@@ -244,7 +244,10 @@ def reference_image_size(
 def reference_video_size(
     width: int, height: int, tier: ReferenceTier
 ) -> tuple[int, int]:
-    # Same canvas formula as the runtime, parameterized by the output tier.
+    # Authors' canvas rule: scale short edge to tier, cap area at max_pixels, round axes to nearest 32.
+    # As in their pipeline, rounding may exceed max_pixels by < one 32-pixel row/column (p480: 448x896).
+    # max_pixels is the tier's trained size target, not a memory/safety bound; overshoot is intentional.
+    # Do not clamp: that would move conditioning off the trained geometry.
     if min(width, height) <= 0 or width > 4 * height or height > 4 * width:
         raise ValueError("reference video must be within 1:4 and 4:1")
     scale = tier.short_edge / min(width, height)
