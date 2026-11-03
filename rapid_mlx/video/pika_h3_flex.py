@@ -238,7 +238,9 @@ def reference_image_size(
     if min(width, height) <= 0 or width > 4 * height or height > 4 * width:
         raise ValueError("reference image must be within 1:4 and 4:1")
     scale = tier.ref_short_edge / min(width, height)
-    return tuple(max(32, round(dim * scale / 32) * 32) for dim in (height, width))
+    height = max(32, round(height * scale / 32) * 32)
+    width = max(32, round(width * scale / 32) * 32)
+    return height, width
 
 
 def reference_video_size(
@@ -255,7 +257,9 @@ def reference_video_size(
     if h * w > tier.max_pixels:
         scale = math.sqrt(tier.max_pixels / (h * w))
         h, w = h * scale, w * scale
-    return tuple(max(32, round(dim / 32) * 32) for dim in (h, w))
+    height = max(32, round(h / 32) * 32)
+    width = max(32, round(w / 32) * 32)
+    return height, width
 
 
 def reference_audio_max_samples(num_frames: int, sample_rate: int = 32000) -> int:
