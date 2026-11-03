@@ -12717,7 +12717,8 @@ def pull_command(args):
                         repo, revision_override=rev, allow_patterns=list(files)
                     )
                     for repo, rev, files in (*payloads, *REF2VA_PAYLOADS)
-                )
+                ),
+                force=getattr(args, "force_disk_check", False),
             )
         _, revision, files = payloads[0]
         _pull_repository(

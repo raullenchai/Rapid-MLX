@@ -1813,6 +1813,31 @@ def test_pull_ref2va_aggregate_disk_preflight(monkeypatch, tmp_path, enough_spac
     assert probes == [True]
 
 
+def test_pull_ref2va_aggregate_disk_preflight_force(monkeypatch, tmp_path):
+    from rapid_mlx import _mirror, cli
+    from rapid_mlx.cli_parser import build_parser
+    from rapid_mlx.runtime import video_lane
+
+    downloads = []
+    monkeypatch.setattr(video_lane, "video_runtime_issue", lambda *a, **k: None)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 0))
+    monkeypatch.setattr(cli, "_missing_download_bytes", lambda *a, **k: 10**9)
+    monkeypatch.setattr(
+        cli,
+        "_pull_repository",
+        lambda args, **kwargs: downloads.append((args.model, kwargs)),
+    )
+    args = build_parser().parse_args(["pull", "pika-h3-flex", "--with-ref2va"])
+    args.force_disk_check = True
+
+    cli.pull_command(args)
+
+    assert downloads == [
+        (repo, dict(revision_override=rev, allow_patterns_override=list(files)))
+        for repo, rev, files in (*flex.PAYLOADS, *flex.REF2VA_PAYLOADS)
+    ]
+
+
 @pytest.fixture
 def ref2va_cache(monkeypatch, tmp_path):
     import huggingface_hub
