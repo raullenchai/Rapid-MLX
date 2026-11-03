@@ -1532,6 +1532,12 @@ async def _run_job(
         cancelled = isinstance(exc, VideoGenerationCancelled) or cancel_token.cancelled
         if not cancelled:
             logger.exception("Video generation job %s failed", job.id)
+        elif not isinstance(exc, VideoGenerationCancelled):
+            # A user-requested stop wins the terminal state, but an unrelated
+            # failure raised while stopping must stay visible in the logs.
+            logger.warning(
+                "Video generation job %s raised while cancelling", job.id, exc_info=exc
+            )
         message = (
             str(exc)
             if isinstance(exc, VideoRuntimeError)

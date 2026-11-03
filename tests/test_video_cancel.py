@@ -982,3 +982,43 @@ def test_pull_summary_reports_unknown_size_after_filesystem_error(
     assert "Downloaded example/video" in output
     assert "unknown size" in output
     assert "Already cached" not in output
+
+
+def test_cleanup_failure_does_not_mask_cancellation(
+    monkeypatch, tmp_path, cache_clears
+):
+    from pathlib import Path
+
+    from rapid_mlx.video.cancel import cleanup_on_cancel
+
+    token = VideoCancelToken()
+
+    def refuse(self, missing_ok=False):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    @cleanup_on_cancel
+    def generate(*, output_path, cancel_token):
+        cancel_token.cancel()
+        cancel_token.check()
+
+    with pytest.raises(VideoGenerationCancelled):
+        generate(output_path=tmp_path / "result.mp4", cancel_token=token)
+    assert cache_clears == [True]
+
+
+def test_wan_cancel_steps_leave_non_function_callables_unscoped():
+    import functools
+
+    from rapid_mlx.video.wan_diffusers import _with_cancel_steps
+
+    def generate(**kwargs):
+        return kwargs
+
+    partial = functools.partial(generate, model_dir="m")
+    token = VideoCancelToken()
+    assert _with_cancel_steps(partial, token) is partial
+    token.cancel()
+    with pytest.raises(VideoGenerationCancelled):
+        _with_cancel_steps(partial, token)

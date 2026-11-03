@@ -696,6 +696,10 @@ def _with_cancel_steps(generate, token):
     if token is None:
         return generate
     token.check()
+    if not isinstance(generate, FunctionType):
+        # Only plain functions can be re-scoped; other callables keep the
+        # stage-boundary checks around the call.
+        return generate
     namespace = dict(generate.__globals__)
     if "tqdm" in namespace:
         namespace["tqdm"] = cancelling_tqdm(namespace["tqdm"], token)

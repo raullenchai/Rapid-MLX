@@ -1,9 +1,12 @@
 """Cooperative cancellation at video generation stage and step boundaries."""
 
+import logging
 import threading
 from contextlib import contextmanager
 from functools import wraps
 from importlib import import_module
+
+_logger = logging.getLogger(__name__)
 
 
 class VideoGenerationCancelled(RuntimeError):  # noqa: N818 - shared cancellation contract
@@ -103,13 +106,24 @@ def cleanup_on_cancel(function):
                 raise
             output = kwargs.get("output_path")
             if output is not None:
-                output.unlink(missing_ok=True)
-                output.with_suffix(".temp.mp4").unlink(missing_ok=True)
+                # Best effort: a cleanup failure must not mask the cancellation.
+                for partial in (output, output.with_suffix(".temp.mp4")):
+                    try:
+                        partial.unlink(missing_ok=True)
+                    except OSError:
+                        _logger.warning("Could not remove partial video %s", partial)
             from .minimax_h3 import _clear_mlx_cache
 
             _clear_mlx_cache()
             if isinstance(exc, VideoGenerationCancelled):
                 raise
+            # The user asked to stop; a backend error raised while stopping (for
+            # example a terminated child process) is reported as the cancel, but
+            # keep the underlying failure visible to operators.
+            _logger.warning(
+                "Video backend raised while cancelling",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             raise VideoGenerationCancelled("Video generation was cancelled.") from exc
 
     return wrapped
