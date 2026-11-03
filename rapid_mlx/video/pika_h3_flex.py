@@ -12,6 +12,7 @@ import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import minimax_h3
 from .minimax_h3 import MiniMaxH3BackendError, MiniMaxH3VideoEngine, merge_lora
@@ -131,7 +132,7 @@ def ensure_ref2va_assets(cancel_token=None, on_progress=None) -> None:
         "Downloading Pika H3 Flex Ref2VA assets (%s, first Ref2VA request only)...",
         size,
     )
-    progress_kwargs = {}
+    progress_kwargs: dict[str, Any] = {}
     done = 0
     progress_lock = threading.Lock()
 
