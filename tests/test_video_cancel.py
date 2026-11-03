@@ -676,3 +676,309 @@ def test_ref2va_mirror_byte_progress(monkeypatch, tmp_path, cancel):
         )
     assert events[0] == ("downloading", 0, pika_h3_flex.REF2VA_EXTRA_BYTES)
     assert events[-1] == (None, 0, 0)
+
+
+def test_progress_wrapper_delegates_context_attributes_and_updates():
+    from rapid_mlx.video.cancel import cancelling_tqdm
+
+    calls = []
+
+    class Bar:
+        total = 10
+
+        def __enter__(self):
+            calls.append("enter")
+            return self
+
+        def __exit__(self, *args):
+            calls.append(args)
+            return True
+
+        def update(self, n=1):
+            calls.append(n)
+            return "updated"
+
+    token = VideoCancelToken()
+    bar = cancelling_tqdm(Bar, token)()
+    assert bar.total == 10
+    with bar as entered:
+        assert entered is bar
+        assert bar.update(3) == "updated"
+        raise ValueError("suppressed by underlying bar")
+    assert calls[:2] == ["enter", 3]
+    assert calls[2][0] is ValueError
+    token.cancel()
+    with pytest.raises(VideoGenerationCancelled):
+        bar.update(1)
+    assert len(calls) == 3
+
+
+def test_scoped_hooks_skip_missing_module_and_restore_after_failure(monkeypatch):
+    from rapid_mlx.video.cancel import scoped_step_hooks
+
+    missing = "mlx_video.absent_cancel_test"
+    monkeypatch.setitem(sys.modules, missing, None)
+    module = ModuleType("fake_video_progress")
+    original = module.tqdm = lambda iterable: iterable
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    token = VideoCancelToken()
+    with (
+        pytest.raises(ValueError, match="generation failed"),
+        scoped_step_hooks(token, missing, module.__name__),
+    ):
+        assert module.tqdm is not original
+        assert list(module.tqdm(range(2))) == [0, 1]
+        raise ValueError("generation failed")
+    assert module.tqdm is original
+
+
+def test_cleanup_normalizes_backend_error_after_cancel(tmp_path, cache_clears):
+    from rapid_mlx.video.cancel import cleanup_on_cancel
+
+    token = VideoCancelToken()
+    output = tmp_path / "result.mp4"
+    error = RuntimeError("backend interrupted")
+
+    @cleanup_on_cancel
+    def generate(*, output_path, cancel_token):
+        output_path.write_bytes(b"partial")
+        output_path.with_suffix(".temp.mp4").write_bytes(b"partial mux")
+        cancel_token.cancel()
+        raise error
+
+    with pytest.raises(VideoGenerationCancelled) as exc:
+        generate(output_path=output, cancel_token=token)
+    assert exc.value.__cause__ is error
+    assert not list(tmp_path.iterdir())
+    assert cache_clears == [True]
+
+
+def test_lane_extend_checks_and_forwards_token(monkeypatch, tmp_path):
+    token = VideoCancelToken()
+    calls = []
+    engine = object.__new__(video_lane.VideoEngine)
+    engine._generation_lock = threading.Lock()
+    engine._ltx25_engine = SimpleNamespace(extend=lambda **kw: calls.append(kw))
+    output = tmp_path / "extended.mp4"
+    engine.extend(
+        prompt="continue",
+        source_video=tmp_path / "source.mp4",
+        output_path=output,
+        extend_frames=8,
+        seed=1,
+        cancel_token=token,
+    )
+    assert len(calls) == 1
+    assert calls[0]["cancel_token"] is token
+    assert calls[0]["output_path"] == output
+    assert not engine._generation_lock.locked()
+
+
+@pytest.mark.parametrize("crop", [False, True])
+def test_ltx23_post_generation_cancel_checks(monkeypatch, tmp_path, cache_clears, crop):
+    package = ModuleType("mlx_video")
+    token = VideoCancelToken()
+    output = tmp_path / "result.mp4"
+
+    def generate(**kw):
+        if crop:
+            output.write_bytes(b"mp4")
+        token.cancel()
+
+    package.generate_video_with_audio = generate
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    # These optional modules need not be installed to use the public entry point.
+    for name in ("mlx_video.generate_av", "mlx_video.generate"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setattr(video_lane, "_resolve_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(video_lane.VideoEngine, "_emit_model_served", lambda _: None)
+    engine = video_lane.VideoEngine("ltx-2.3-mlx-q4")
+    monkeypatch.setattr(
+        engine,
+        "_crop_generated_output",
+        lambda **kw: pytest.fail("crop after cancellation"),
+    )
+    with pytest.raises(VideoGenerationCancelled):
+        engine.generate(
+            prompt="test",
+            output_path=output,
+            width=256,
+            height=256,
+            num_frames=25,
+            fps=24,
+            seed=1,
+            image=None,
+            output_width=240 if crop else None,
+            cancel_token=token,
+        )
+    assert not output.exists()
+    assert cache_clears == [True]
+
+
+@pytest.mark.parametrize("cancel_during_load", [False, True])
+def test_cog_load_callback_checks_cancel(
+    monkeypatch, tmp_path, cache_clears, cancel_during_load
+):
+    token = VideoCancelToken()
+    engine = VideoGenerationEngine("fake", output_dir=tmp_path)
+    generated = tmp_path / "worker.mp4"
+    output = tmp_path / "result.mp4"
+    calls = []
+
+    def load():
+        calls.append("load")
+        if cancel_during_load:
+            token.cancel()
+
+    def generate(**kwargs):
+        assert kwargs["cancel_token"] is token
+        calls.append("generate")
+        generated.write_bytes(b"mp4")
+        return generated
+
+    monkeypatch.setattr(engine, "_load_sync", load)
+    monkeypatch.setattr(engine, "_generate_sync", generate)
+    try:
+        kwargs = dict(
+            output_path=output,
+            cancel_token=token,
+            on_loaded=lambda: calls.append("loaded"),
+        )
+        if cancel_during_load:
+            with pytest.raises(VideoGenerationCancelled):
+                engine.generate_sync(**kwargs)
+            assert calls == ["load"]
+            assert not output.exists() and cache_clears
+        else:
+            engine.generate_sync(**kwargs)
+            assert calls == ["load", "loaded", "generate"]
+            assert output.read_bytes() == b"mp4"
+            assert not generated.exists()
+    finally:
+        asyncio.run(engine.close())
+
+
+def test_h3_error_checks_cancel_before_wrapping(monkeypatch, tmp_path, cache_clears):
+    token = VideoCancelToken()
+    error = RuntimeError("native backend interrupted")
+    module = ModuleType("mlx_vlm.generate")
+    module.VideoGenerationRequest = lambda **kw: SimpleNamespace(**kw)
+    module.load_video_generation_model = lambda *a, **kw: pytest.fail(
+        "resident model reloaded"
+    )
+    output = tmp_path / "partial.mp4"
+
+    def generate(*args):
+        output.write_bytes(b"partial")
+        token.cancel()
+        raise error
+
+    module.generate_video = generate
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    engine = minimax_h3.MiniMaxH3VideoEngine(str(tmp_path))
+    engine._model = SimpleNamespace()
+    monkeypatch.setattr(engine, "_ensure_partition", lambda _: None)
+    monkeypatch.setattr(engine, "_prepare_request", lambda _: None)
+    try:
+        with pytest.raises(VideoGenerationCancelled):
+            engine.generate(
+                prompt="test",
+                output_path=output,
+                width=768,
+                height=512,
+                num_frames=124,
+                fps=24,
+                seed=1,
+                image=None,
+                cancel_token=token,
+            )
+        assert not output.exists() and cache_clears == [True]
+        assert engine._cancel_token is None and engine._on_progress is None
+    finally:
+        engine.stop()
+
+
+def test_ref2va_download_error_checks_cancel(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from rapid_mlx import _mirror, model_downloads
+
+    token = VideoCancelToken()
+    events = []
+    monkeypatch.setattr(
+        huggingface_hub, "try_to_load_from_cache", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(model_downloads, "disabled", lambda: False)
+    monkeypatch.setattr(_mirror, "_cache_disk_space", lambda: (tmp_path, 10**15))
+
+    def download(*args, **kwargs):
+        token.cancel()
+        raise OSError("transfer interrupted")
+
+    monkeypatch.setattr(_mirror, "pinned_snapshot_download", download)
+    engine = pika_h3_flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    engine._cancel_token = token
+    engine._on_progress = lambda *args: events.append(args)
+    try:
+        with pytest.raises(VideoGenerationCancelled):
+            engine._ensure_assets("ref2va")
+        assert events[0] == ("downloading", 0, pika_h3_flex.REF2VA_EXTRA_BYTES)
+        assert events[-1] == (None, 0, 0)
+    finally:
+        engine.stop()
+
+
+@pytest.mark.parametrize("diffusers", [False, True])
+def test_wan_checks_cancel_after_return_without_output(
+    monkeypatch, tmp_path, diffusers
+):
+    from contextlib import contextmanager
+
+    token = VideoCancelToken()
+    calls = []
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        token.cancel()
+
+    @contextmanager
+    def runtime(root, generator):
+        try:
+            yield tmp_path / "view", generate
+        finally:
+            calls.append("runtime closed")
+
+    monkeypatch.setattr(wan_diffusers, "is_diffusers_wan21_layout", lambda _: diffusers)
+    monkeypatch.setattr(
+        wan_diffusers, "_identifies_as_diffusers_wan21", lambda _: False
+    )
+    monkeypatch.setattr(wan_diffusers, "diffusers_runtime", runtime)
+    kwargs = {"model_dir": "original", "output_path": str(tmp_path / "missing.mp4")}
+    with pytest.raises(VideoGenerationCancelled):
+        wan_diffusers.generate_with_runtime(
+            tmp_path,
+            SimpleNamespace(generate_video=generate),
+            kwargs,
+            cancel_token=token,
+        )
+    expected_model_dir = str(tmp_path / "view") if diffusers else "original"
+    assert calls[0]["model_dir"] == expected_model_dir
+    assert kwargs["model_dir"] == "original"
+    if diffusers:
+        assert calls[-1] == "runtime closed"
+
+
+def test_pull_summary_reports_unknown_size_after_filesystem_error(
+    monkeypatch, tmp_path, capsys
+):
+    from rapid_mlx import cli
+
+    def rglob(self, pattern):
+        raise OSError("snapshot unreadable")
+
+    monkeypatch.setattr(Path, "rglob", rglob)
+    cli._print_pull_summary("example/video", tmp_path, 2, allow_patterns=["weights/*"])
+    output = capsys.readouterr().out
+    assert "Downloaded example/video" in output
+    assert "unknown size" in output
+    assert "Already cached" not in output
