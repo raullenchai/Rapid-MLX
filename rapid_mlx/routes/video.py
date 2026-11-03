@@ -1023,6 +1023,14 @@ async def _store_reference(upload, path: Path, field: str, telemetry_model) -> P
     return path
 
 
+def _finite_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
     """Detect media from bytes, restricting demuxers and all external protocols."""
     ffprobe = shutil.which("ffprobe")
@@ -1092,9 +1100,9 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
             stream = audios[0]
         else:
             raise ValueError("unsupported streams")
-        duration = float(
-            stream.get("duration", details["format"].get("duration", "nan"))
-        )
+        duration = _finite_float(stream.get("duration"))
+        if duration is None:
+            duration = _finite_float(details["format"].get("duration"))
     except (
         OSError,
         ValueError,
@@ -1106,7 +1114,7 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
         raise HTTPException(
             status_code=400, detail=f"{field}: unsupported file type"
         ) from exc
-    if not math.isfinite(duration) or not 2 - 1e-6 <= duration <= 15 + 1e-6:
+    if duration is None or not 2 - 1e-6 <= duration <= 15 + 1e-6:
         raise HTTPException(
             status_code=400, detail=f"{field}: {kind} duration must be 2..15 seconds"
         )

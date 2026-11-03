@@ -996,6 +996,65 @@ def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats, extension):
 
 
 @pytest.mark.parametrize(
+    "kind,formats,extension", [("video", "mp4", "mp4"), ("audio", "wav", "wav")]
+)
+@pytest.mark.parametrize(
+    "stream_duration,format_duration,expected",
+    [
+        ("N/A", "5.0", 5.0),
+        ("", "5.0", 5.0),
+        ("nan", "5.0", 5.0),
+        ("inf", "5.0", 5.0),
+        (None, "5.0", 5.0),
+        ("3.0", "5.0", 3.0),
+        ("N/A", "N/A", None),
+        (None, None, None),
+    ],
+)
+def test_reference_ffprobe_duration_fallback(
+    monkeypatch,
+    tmp_path,
+    kind,
+    formats,
+    extension,
+    stream_duration,
+    format_duration,
+    expected,
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    details = dict(
+        streams=[dict(codec_type=kind, width=1920, height=1080)],
+        format=dict(format_name=formats),
+    )
+    if stream_duration is not None:
+        details["streams"][0]["duration"] = stream_duration
+    if format_duration is not None:
+        details["format"]["duration"] = format_duration
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(details)),
+    )
+    if expected is not None:
+        assert video._probe_packed_reference(tmp_path / "file", "references[0]") == (
+            kind,
+            extension,
+            expected,
+        )
+    else:
+        with pytest.raises(HTTPException) as exc:
+            video._probe_packed_reference(tmp_path / "file", "references[0]")
+        assert exc.value.status_code == 400
+        assert (
+            exc.value.detail == f"references[0]: {kind} duration must be 2..15 seconds"
+        )
+
+
+@pytest.mark.parametrize(
     "width,height,accepted",
     [
         (3840, 2160, True),
