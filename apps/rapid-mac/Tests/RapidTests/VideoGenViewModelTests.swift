@@ -97,6 +97,22 @@ struct VideoGenViewModelTests {
         #expect(model.errorMessage == nil)
     }
 
+    @Test("A cancel that fails after the job completed shows the video, not an error")
+    func cancellationFailureAfterCompletion() async throws {
+        let client = VideoCancellationClient()
+        let model = await cancellationModel(client: client)
+        let job = try #require(model.selectedJob)
+        let cancel = Task { await model.cancel(job) }
+        await client.waitForCancel()
+        await client.setStatus(.completed)
+        await model.pollJobs()
+        await client.finishCancel(failing: true)
+        await cancel.value
+        #expect(model.selectedJob?.status == .completed)
+        #expect(model.cancellingJobIDs.isEmpty)
+        #expect(model.errorMessage == nil)
+    }
+
     @Test("Polled cancel_requested restores cancelling state without a local tap")
     func polledCancellation() async throws {
         let client = VideoCancellationClient(cancelRequested: true)

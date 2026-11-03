@@ -475,6 +475,9 @@ final class VideoGenViewModel {
         } catch {
             guard requestIsCurrent(context, contextGeneration: contextGeneration) else { return }
             cancellingJobIDs.remove(job.id)
+            // A job that finished or was cancelled while the request was in
+            // flight has nothing left to stop; don't paint its result as an error.
+            guard jobs.first(where: { $0.id == job.id })?.status == .inProgress else { return }
             errorMessage = error.localizedDescription
         }
     }
