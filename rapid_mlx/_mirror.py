@@ -764,6 +764,19 @@ def _hf_cache_root() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+_DOWNLOAD_DISK_HEADROOM = 0.10
+
+
+def _cache_disk_space() -> tuple[Path, int]:
+    """Cache filesystem and free bytes, including before the cache exists."""
+    cache = _hf_cache_root().absolute()
+    probe = cache
+    while not os.path.exists(str(probe)) and probe != probe.parent:
+        probe = probe.parent
+    stat = os.statvfs(str(probe))
+    return cache, stat.f_bavail * stat.f_frsize
+
+
 def _validate_relative_filename(fname: str) -> bool:
     """Reject path-traversal / absolute paths in catalog or sibling listings.
 

@@ -187,6 +187,9 @@ class MiniMaxH3VideoEngine:
         _merge_turbo_lora(model.pipeline.transformer, Path(turbo) / TURBO_FILE)
         model.pipeline.scheduler.set_shift(6.0)
 
+    def _ensure_assets(self, partition: str) -> None:
+        pass
+
     def _ensure_partition(self, partition: str) -> None:
         pass
 
@@ -286,6 +289,7 @@ class MiniMaxH3VideoEngine:
             if self._model is None:
                 from .._mirror import pinned_snapshot_download
 
+                self._ensure_assets(self._needed_partition)
                 local = Path(self.model_name).expanduser()
                 path = (
                     str(local)

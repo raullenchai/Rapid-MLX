@@ -26,8 +26,6 @@ FILES = (
     "README.md",
     "fl2va/manifest.json",
     ADAPTER_FILE,
-    "ref2va/manifest.json",
-    REF_ADAPTER_FILE,
 )
 ADAPTER_SHA256 = "8ed6115d647ab11c1b38d04e63c4c6e1594128ae312f7b5635cd50563b7b9327"
 ADAPTER_RANK = ADAPTER_ALPHA = 128
@@ -40,17 +38,93 @@ AUDIO_SHIFT = 3.0
 BASE_REPO, BASE_REVISION, BASE_FILES = (
     minimax_h3.REPO,
     minimax_h3.REVISION,
-    (
-        *minimax_h3.FILES,
-        "transformer_ref/config.json",
-        "transformer_ref/diffusion_pytorch_model.safetensors.index.json",
-        *(
-            f"transformer_ref/diffusion_pytorch_model-{i:05d}-of-00014.safetensors"
-            for i in range(1, 15)
-        ),
+    minimax_h3.FILES,
+)
+REF2VA_FILES = ("ref2va/manifest.json", REF_ADAPTER_FILE)
+REF2VA_BASE_FILES = (
+    "transformer_ref/config.json",
+    "transformer_ref/diffusion_pytorch_model.safetensors.index.json",
+    *(
+        f"transformer_ref/diffusion_pytorch_model-{i:05d}-of-00014.safetensors"
+        for i in range(1, 15)
     ),
 )
 PAYLOADS = ((REPO, REVISION, FILES), (BASE_REPO, BASE_REVISION, BASE_FILES))
+REF2VA_PAYLOADS = (
+    (BASE_REPO, BASE_REVISION, REF2VA_BASE_FILES),
+    (REPO, REVISION, REF2VA_FILES),
+)
+# Hub get_paths_info metadata at the pinned revisions above (bytes).
+REF2VA_FILE_SIZES = {
+    "ref2va/manifest.json": 1040,
+    "ref2va/adapter.safetensors": 2767274120,
+    "transformer_ref/config.json": 546,
+    "transformer_ref/diffusion_pytorch_model.safetensors.index.json": 64488,
+    "transformer_ref/diffusion_pytorch_model-00001-of-00014.safetensors": 4825958704,
+    "transformer_ref/diffusion_pytorch_model-00002-of-00014.safetensors": 4702158032,
+    "transformer_ref/diffusion_pytorch_model-00003-of-00014.safetensors": 4933368192,
+    "transformer_ref/diffusion_pytorch_model-00004-of-00014.safetensors": 4567069608,
+    "transformer_ref/diffusion_pytorch_model-00005-of-00014.safetensors": 4702158080,
+    "transformer_ref/diffusion_pytorch_model-00006-of-00014.safetensors": 4933368232,
+    "transformer_ref/diffusion_pytorch_model-00007-of-00014.safetensors": 4567069608,
+    "transformer_ref/diffusion_pytorch_model-00008-of-00014.safetensors": 4702158080,
+    "transformer_ref/diffusion_pytorch_model-00009-of-00014.safetensors": 4933368232,
+    "transformer_ref/diffusion_pytorch_model-00010-of-00014.safetensors": 4567069608,
+    "transformer_ref/diffusion_pytorch_model-00011-of-00014.safetensors": 4702158080,
+    "transformer_ref/diffusion_pytorch_model-00012-of-00014.safetensors": 4933368232,
+    "transformer_ref/diffusion_pytorch_model-00013-of-00014.safetensors": 4567069608,
+    "transformer_ref/diffusion_pytorch_model-00014-of-00014.safetensors": 4644161920,
+}
+REF2VA_EXTRA_BYTES = sum(REF2VA_FILE_SIZES.values())
+
+
+def ensure_ref2va_assets() -> None:
+    """Provision only missing Ref2VA assets before loading its transformer."""
+    from huggingface_hub import try_to_load_from_cache
+
+    from .. import model_downloads
+    from .._mirror import (
+        _DOWNLOAD_DISK_HEADROOM,
+        _cache_disk_space,
+        pinned_snapshot_download,
+    )
+
+    missing_bytes = REF2VA_EXTRA_BYTES
+    for repo, revision, files in REF2VA_PAYLOADS:
+        for filename in files:
+            cached = try_to_load_from_cache(repo, filename, revision=revision)
+            if isinstance(cached, str) and Path(cached).is_file():
+                missing_bytes -= REF2VA_FILE_SIZES[filename]
+    if not missing_bytes:
+        return
+    command = "rapid-mlx pull pika-h3-flex --with-ref2va"
+    if model_downloads.disabled():
+        raise MiniMaxH3BackendError(
+            f"Pika H3 Flex Ref2VA assets are missing and model downloads are "
+            f"disabled. Run `{command}` to pre-fetch them."
+        )
+    cache, available = _cache_disk_space()
+    # Match the CLI's 10% headroom for temporary download files.
+    size = f"{missing_bytes / 1e9:.1f} GB"
+    if available < int(missing_bytes * (1 + _DOWNLOAD_DISK_HEADROOM)):
+        raise MiniMaxH3BackendError(
+            f"Ref2VA needs an additional {size} download "
+            f"(second transformer + Ref2VA adapter); only {available / 1e9:.1f} GB "
+            f"free on {cache}. Free space or run `{command}` after freeing space."
+        )
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Downloading Pika H3 Flex Ref2VA assets (%s, first Ref2VA request only)...",
+        size,
+    )
+    try:
+        for repo, revision, files in REF2VA_PAYLOADS:
+            pinned_snapshot_download(repo, revision, allow_patterns=list(files))
+    except Exception as exc:
+        raise MiniMaxH3BackendError(
+            f"Pika H3 Flex Ref2VA asset download failed. Retry with `{command}`: {exc}"
+        ) from exc
+    logger.info("Pika H3 Flex Ref2VA assets downloaded (%s).", size)
 
 
 def is_pika_h3_flex_model(name: str | None) -> bool:
@@ -377,11 +451,21 @@ class PikaH3FlexVideoEngine(MiniMaxH3VideoEngine):
     base_files = BASE_FILES
     steps = len(KNOTS)
 
+    def _ensure_assets(self, partition):
+        if Path(self.model_name).expanduser().is_dir():
+            return
+        if partition == "ref2va":
+            ensure_ref2va_assets()
+
     def _merge_adapter(self, pipeline, mode):
         from .._mirror import pinned_snapshot_download
 
         root = Path(
-            pinned_snapshot_download(REPO, REVISION, allow_patterns=list(FILES))
+            pinned_snapshot_download(
+                REPO,
+                REVISION,
+                allow_patterns=list(REF2VA_FILES if mode == "ref2va" else FILES),
+            )
         )
         verify_adapter(root, mode)
         merge_lora(
@@ -429,6 +513,7 @@ class PikaH3FlexVideoEngine(MiniMaxH3VideoEngine):
     def _ensure_partition(self, partition):
         if self._resident_partition == partition:
             return
+        self._ensure_assets(partition)
         import mlx.core as mx
         from mlx_vlm.models.minimax_h3.weights import load_transformer
 

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 from rapid_mlx._download_cancel import run_cancellable_download
 from rapid_mlx._env import env_truthy
+from rapid_mlx._mirror import _DOWNLOAD_DISK_HEADROOM
 from rapid_mlx.cli_parser import (  # noqa: F401 - re-exported CLI API
     _add_pflash_args,
     _add_video_job_args,
@@ -65,8 +66,6 @@ from rapid_mlx.runtime.optional_runtime import (
 # rate-limit + Range-request passthrough. Override with the env var
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
-
-_DOWNLOAD_DISK_HEADROOM = 0.10
 
 _MODEL_CONSENT_REQUIRED_MESSAGE = (
     "Model requires repository code consent. Review the repository code, "
@@ -1731,7 +1730,6 @@ def _check_disk_space(
     # otherwise demand disk for seven quantizations nobody asked for.
     try:
         from huggingface_hub import model_info, try_to_load_from_cache
-        from huggingface_hub.constants import HF_HUB_CACHE
 
         from rapid_mlx._mirror import _packaged_digest_info
         from rapid_mlx.model_aliases import subfolder_allow_patterns
@@ -1788,21 +1786,9 @@ def _check_disk_space(
         if model_size_bytes == 0:
             return  # Nothing left to download (or size unavailable).
 
-        # statvfs needs an existing path; HF_HUB_CACHE may not exist yet on
-        # a fresh install. Walk up to the first ancestor that does.
-        # Resolve to absolute up front so a relative HF_HUB_CACHE doesn't
-        # short-circuit to CWD when an ancestor walk hits ".".
-        probe = os.path.abspath(HF_HUB_CACHE) if HF_HUB_CACHE else ""
-        while probe and not os.path.exists(probe):
-            parent = os.path.dirname(probe)
-            if parent == probe:
-                break
-            probe = parent
-        if not probe or not os.path.exists(probe):
-            probe = os.path.expanduser("~")
+        from rapid_mlx._mirror import _cache_disk_space
 
-        stat = os.statvfs(probe)
-        available_bytes = stat.f_bavail * stat.f_frsize
+        probe, available_bytes = _cache_disk_space()
 
         # ~10% headroom for temp files during xet_get / move-into-place.
         required_bytes = int(model_size_bytes * (1 + _DOWNLOAD_DISK_HEADROOM))
@@ -12622,6 +12608,9 @@ def pull_command(args):
         primary_args.model = resolved_primary
         primary_repo = resolved_primary
 
+    if getattr(args, "with_ref2va", False) and primary_repo != "Pika-Labs/Pika-H3-Flex":
+        raise ValueError("--with-ref2va is only supported for Pika H3 Flex")
+
     # Run the same video runtime preflight as ``serve`` BEFORE downloading
     # multi-gigabyte weights. A host that cannot run the alias must fail here,
     # not after a long pull and a second failed launch.
@@ -12741,6 +12730,15 @@ def pull_command(args):
 
     if payloads := video_payloads(primary_repo):
         assets = (*assets, *payloads[1:])
+    if getattr(args, "with_ref2va", False):
+        from rapid_mlx.video.pika_h3_flex import REF2VA_PAYLOADS
+
+        # Preflight both optional payloads before starting either download.
+        for repo, revision, files in REF2VA_PAYLOADS:
+            _check_disk_space(
+                repo, revision_override=revision, allow_patterns=list(files)
+            )
+        assets = (*assets, *REF2VA_PAYLOADS)
     for asset_repo, revision, allow_patterns in assets:
         print(f"\n  Runtime assets: {asset_repo}")
         dependency_args = copy.copy(args)
