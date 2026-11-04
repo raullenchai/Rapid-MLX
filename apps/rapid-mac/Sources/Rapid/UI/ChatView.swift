@@ -1106,7 +1106,10 @@ struct ChatView: View {
             // Require the live residency snapshot, not merely a ready process:
             // legacy engines and the brief pre-refresh window can expose a
             // serving alias without confirming anything this control can free.
-            if server.residency.contains(alias) {
+            // A standby primary (native idle unload) stays routable but holds
+            // no memory, so there is nothing for this control to free.
+            if server.residency.contains(alias),
+               SidebarView.hasResidentWorkloads(server.residency) {
                 composerResidentUnloadButton(snapshot: server.residency)
                     .fixedSize()
             }

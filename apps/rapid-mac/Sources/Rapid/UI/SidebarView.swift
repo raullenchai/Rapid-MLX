@@ -409,7 +409,7 @@ struct SidebarView: View {
 
             Spacer(minLength: 0)
 
-            if let server, Self.hasResidentWorkloads(server.residency) {
+            if let server, server.residency.models.contains(where: { $0.isRoutable }) || Self.hasResidentWorkloads(server.residency) {
                 residencyFooter(
                     server.residency,
                     preferredAlias: server.servingAlias,
@@ -841,14 +841,17 @@ struct SidebarView: View {
                     Spacer(minLength: 0)
                 }
 
-                residentUnloadButton(snapshot: snapshot, server: server)
+                if Self.hasResidentWorkloads(snapshot) {
+                    residentUnloadButton(snapshot: snapshot, server: server)
+                }
             }
 
             ForEach(snapshot.models.prefix(4)) { model in
                 HStack(spacing: RapidTheme.Space.xs) {
-                    Image(systemName: model.pinned ? "lock.fill" : "circle.fill")
+                    Image(systemName: model.isHoldingMemory ? (model.pinned ? "lock.fill" : "circle.fill") : "circle")
                         .font(.system(size: model.pinned ? 9 : 6, weight: .semibold))
-                        .foregroundStyle(model.pinned ? RapidTheme.brandAmber : .secondary)
+                        .foregroundStyle(model.isHoldingMemory && model.pinned ? RapidTheme.brandAmber : .secondary)
+                        .opacity(model.isHoldingMemory ? 1 : 0.5)
                         .frame(width: 12)
                     Text(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
                         .help(model.displayName(preferredAlias: preferredAlias))
@@ -856,7 +859,7 @@ struct SidebarView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Text(Self.formatBytes(model.displayBytes))
+                    Text(Self.residentMemoryLabel(model))
                         .font(.rapid(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
@@ -978,12 +981,18 @@ struct SidebarView: View {
         }
     }
 
+    nonisolated static func residentMemoryLabel(_ model: ResidentModelStatus) -> String {
+        if model.state == "loading" { return String(localized: "Reloading…") }
+        if !model.isHoldingMemory { return String(localized: "Unloaded") }
+        return formatBytes(model.displayBytes)
+    }
+
     nonisolated static func hasResidentWorkloads(_ snapshot: ModelResidencySnapshot) -> Bool {
         residentWorkloadCount(snapshot) > 0
     }
 
     nonisolated static func residentWorkloadCount(_ snapshot: ModelResidencySnapshot) -> Int {
-        snapshot.models.filter { $0.state != "evicting" }.count
+        snapshot.models.filter { $0.isHoldingMemory }.count
             + snapshot.audioLanes.filter { $0.state == "resident" }.count
     }
 

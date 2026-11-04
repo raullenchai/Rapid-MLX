@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- **Unload model when idle** now keeps the local API online: after the chosen idle time (new 5-minute option), model memory is freed and the next request reloads it automatically, like Ollama. The sidebar shows the model as Unloaded until then.
+
 ### Fixed
 
 - **Stop video generation** on servers that support cancellation. A pending stop shows “Cancelling…”, then “Cancelled” without an error; if generation finishes first, the completed video remains available. Older servers keep their existing behavior.

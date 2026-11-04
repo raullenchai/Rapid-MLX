@@ -10,10 +10,12 @@ struct ServerRuntimeCapabilitiesTests {
         let capabilities = ServerRuntimeCapabilities.parse(serveHelp: """
         usage: rapid-mlx serve [-h] [--resident-memory-limit-gb RESIDENT_MEMORY_LIMIT_GB]
                                [--resident-model-idle-ttl RESIDENT_MODEL_IDLE_TTL]
+                               [--idle-unload-seconds IDLE_UNLOAD_SECONDS]
         """)
 
         #expect(capabilities.supportsResidentMemoryLimitGB)
         #expect(capabilities.supportsResidentModelIdleTTL)
+        #expect(capabilities.supportsPrimaryIdleUnload)
     }
 
     @Test("serve help without resident flags disables both residency arguments")
@@ -24,6 +26,7 @@ struct ServerRuntimeCapabilitiesTests {
 
         #expect(!capabilities.supportsResidentMemoryLimitGB)
         #expect(!capabilities.supportsResidentModelIdleTTL)
+        #expect(!capabilities.supportsPrimaryIdleUnload)
     }
 
     @Test("resident launch flags are omitted for older runtimes")
@@ -47,6 +50,38 @@ struct ServerRuntimeCapabilitiesTests {
             "--resident-memory-limit-gb", "14",
             "--resident-model-idle-ttl", "1800",
         ])
+    }
+
+    @Test("idle settings adjust primary unload and secondary TTL independently")
+    func idleLaunchFlags() {
+        for (setting, ttl) in [(0, "1800"), (300, "300"), (3600, "1800")] {
+            let base = ["--resident-memory-limit-gb", "14",
+                        "--resident-model-idle-ttl", ttl]
+            #expect(ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: .allKnown, idleSetting: setting
+            ) == base + (setting > 0 ? ["--idle-unload-seconds", String(setting)] : []))
+            var older = ServerRuntimeCapabilities.allKnown
+            older.supportsPrimaryIdleUnload = false
+            #expect(ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: older, idleSetting: setting
+            ) == base)
+            #expect(ServerManager.residentLaunchFlags(
+                memoryCeilingGB: 14, capabilities: .conservative, idleSetting: setting
+            ).isEmpty)
+            #expect(ServerManager.unsupportedResidentLaunchFlagNames(
+                idleSetting: setting, capabilities: older
+            ) == (setting > 0 ? ["--idle-unload-seconds"] : []))
+        }
+    }
+
+    @Test("streaming probe detects a split idle-unload marker and its absence")
+    func probeIdleUnloadMarker() async throws {
+        let current = try makeRuntimeScript(splitIdleUnloadMarker: true)
+        #expect(await ServerRuntimeCapabilities.probe(binary: current) == .allKnown)
+        let old = try makeRuntimeScript(primaryIdleUnload: false)
+        var expected = ServerRuntimeCapabilities.allKnown
+        expected.supportsPrimaryIdleUnload = false
+        #expect(await ServerRuntimeCapabilities.probe(binary: old) == expected)
     }
 
     @Test("probe reads the selected runtime serve help")
@@ -468,6 +503,8 @@ struct ServerRuntimeCapabilitiesTests {
     }
 
     private func makeRuntimeScript(
+        primaryIdleUnload: Bool = true,
+        splitIdleUnloadMarker: Bool = false,
         helpPaddingLines: Int = 0,
         helpExitStatus: Int = 0,
         retainedOutputPipe: Bool = false,
@@ -487,6 +524,11 @@ struct ServerRuntimeCapabilitiesTests {
         let hangingDescendantCommand = hangingDescendantPIDFile.map {
             "( sleep 30 ) & echo $! > '\($0.path)'; sleep 30"
         } ?? ":"
+        let idleUnloadCommand = primaryIdleUnload
+            ? (splitIdleUnloadMarker
+               ? "printf '%s' '--idle-un'; sleep 0.05; echo 'load-seconds'"
+               : "echo '--idle-unload-seconds'")
+            : ":"
         try """
         #!/bin/sh
         if [ "$1" = "serve" ] && [ "$2" = "--help" ]; then
@@ -502,6 +544,7 @@ struct ServerRuntimeCapabilitiesTests {
           done
           echo '--resident-memory-limit-gb'
           echo '--resident-model-idle-ttl'
+          \(idleUnloadCommand)
           echo '--enable-local-search'
           echo '--local-search-dir'
           exit \(helpExitStatus)

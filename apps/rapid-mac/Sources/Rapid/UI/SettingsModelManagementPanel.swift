@@ -388,11 +388,12 @@ struct SettingsModelManagementPanel: View {
                 SettingsRowDivider()
 
                 SettingsRow(
-                    title: String(localized: "Release model when idle"),
-                    description: String(localized: "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds.")
+                    title: String(localized: "Unload model when idle"),
+                    description: String(localized: "Frees the model's memory after this long without requests. The local API stays online, and the next request reloads the model in a few seconds.")
                 ) {
-                    Picker("Release model when idle", selection: $idleReleaseSeconds) {
+                    Picker("Unload model when idle", selection: $idleReleaseSeconds) {
                         Text("Never").tag(0)
+                        Text("After 5 minutes").tag(300)
                         Text("After 15 minutes").tag(900)
                         Text("After 30 minutes").tag(1800)
                         Text("After 1 hour").tag(3600)
@@ -402,7 +403,7 @@ struct SettingsModelManagementPanel: View {
                     .accessibilityIdentifier("Settings.Models.IdleModelReleasePicker")
                 }
                 .onChange(of: idleReleaseSeconds) { _, value in
-                    server.configureIdleModelRelease(value)
+                    Task { await server.applyIdleModelRelease(value) }
                 }
 
                 SettingsRowDivider()

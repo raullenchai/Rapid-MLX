@@ -4,6 +4,41 @@ import Testing
 
 @Suite("Idle model release")
 struct IdleModelReleaseTests {
+    @Test func modes() {
+        #expect(IdleModelReleasePreference.choices == [0, 300, 900, 1800, 3600])
+        for supportsNative in [false, true] {
+            #expect(IdleModelReleasePreference.mode(setting: 0, runtimeSupportsNativeUnload: supportsNative) == .off)
+            #expect(IdleModelReleasePreference.mode(setting: 123, runtimeSupportsNativeUnload: supportsNative) == .off)
+            for setting in [300, 900, 1800, 3600] {
+                #expect(IdleModelReleasePreference.mode(setting: setting, runtimeSupportsNativeUnload: supportsNative)
+                    == (supportsNative ? .native : .legacyStop))
+            }
+        }
+    }
+
+    @Test func restartOnChange() {
+        func decide(_ setting: Int = 300, _ spawned: Int? = 0, ready: Bool = true,
+                    operating: Bool = false, requests: Bool = false,
+                    loads: Bool = false, alias: String? = "chat") -> IdleModelReleasePreference.RestartDecision {
+            IdleModelReleasePreference.restartDecision(
+                setting: setting, secondsAtSpawn: spawned, isReady: ready,
+                isOperating: operating, hasActiveRequests: requests,
+                hasResidentLoadsInFlight: loads, alias: alias
+            )
+        }
+        #expect(decide() == .restart(alias: "chat"))
+        #expect(decide(0, 300) == .restart(alias: "chat"))
+        #expect(decide(300, 300) == .none)
+        #expect(decide(300, nil) == .none)
+        #expect(decide(123) == .none)
+        #expect(decide(ready: false) == .none)
+        #expect(decide(alias: nil) == .none)
+        #expect(decide(operating: true) == .deferred)
+        #expect(decide(requests: true) == .deferred)
+        #expect(decide(loads: true) == .deferred)
+        #expect(decide(alias: "preferred-text") == .restart(alias: "preferred-text"))
+    }
+
     @Test func decision() {
         let now = Date(timeIntervalSince1970: 10_000)
         func decide(_ setting: Int = 900, _ age: TimeInterval = 901, _ busy: Bool = false, _ loaded: Bool = true, _ operating: Bool = false) -> Bool {
@@ -21,6 +56,8 @@ struct IdleModelReleaseTests {
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         #expect(IdleModelReleasePreference.value(in: defaults) == 0)
+        defaults.set(300, forKey: IdleModelReleasePreference.storageKey)
+        #expect(IdleModelReleasePreference.value(in: defaults) == 300)
         defaults.set(1800, forKey: IdleModelReleasePreference.storageKey)
         #expect(IdleModelReleasePreference.value(in: defaults) == 1800)
         defaults.set(123, forKey: IdleModelReleasePreference.storageKey)
