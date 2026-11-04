@@ -372,7 +372,10 @@ def test_scan_prefers_socket_and_ignores_caffeinate(
             "cmdline": ["python", "/tmp/rapid-mlx", "serve", "tiny", "--port", "8000"]
         },
         net_connections=lambda **_k: [
-            SimpleNamespace(status=psutil.CONN_LISTEN, laddr=SimpleNamespace(port=8462))
+            SimpleNamespace(
+                status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(ip="127.0.0.1", port=8462),
+            )
         ],
     )
     wrapper = SimpleNamespace(
@@ -394,7 +397,8 @@ def test_scan_keeps_server_with_unusable_argv_port(
         info={"cmdline": ["python", "rapid-mlx", "serve", "tiny", "--port", port_arg]},
         net_connections=lambda **_k: [
             SimpleNamespace(
-                status=psutil.CONN_LISTEN, laddr=SimpleNamespace(port=59001)
+                status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(ip="0.0.0.0", port=59001),
             )
         ],
     )
@@ -766,3 +770,33 @@ def test_uninspectable_unknown_port_server_owns_no_endpoint(monkeypatch):
     assert discovery.server_for_url("http://localhost:8003/v1") is None
     monkeypatch.setattr(discovery, "scan_servers", lambda: [hidden, unbound])
     assert discovery.server_for_url("http://localhost:8003/v1") == unbound
+
+
+def test_scan_skips_servers_bound_only_to_a_lan_address(
+    monkeypatch, agent_discovery_defaults
+):
+    """Setup writes a localhost URL; a LAN-only listener is never a candidate."""
+    import psutil
+
+    def proc(pid, cmdline, ip):
+        return SimpleNamespace(
+            pid=pid,
+            info={"cmdline": cmdline},
+            net_connections=lambda **_k: [
+                SimpleNamespace(
+                    status=psutil.CONN_LISTEN, laddr=SimpleNamespace(ip=ip, port=8100)
+                )
+            ],
+        )
+
+    lan_argv = proc(
+        1, ["rapid-mlx", "serve", "a", "--host", "192.168.1.10"], "192.168.1.10"
+    )
+    lan_socket = proc(2, ["rapid-mlx", "serve", "b"], "192.168.1.10")
+    local = proc(3, ["rapid-mlx", "serve", "c"], "127.0.0.1")
+    monkeypatch.setattr(
+        psutil, "process_iter", lambda *_a: [lan_argv, lan_socket, local]
+    )
+    servers = agent_discovery_defaults()
+    assert [s.pid for s in servers if s.port is not None] == [3]
+    assert all(s.pid != 1 for s in servers)

@@ -27,6 +27,17 @@ class Server:
     inspected: bool = field(default=True, compare=False)
 
 
+def _loopback_reachable(host: str | None) -> bool:
+    """True when a listener bound to *host* accepts ``localhost`` connections.
+
+    Setup only ever configures a ``localhost`` URL, so a server bound to a
+    specific LAN address is not one it can verify or wait on.
+    """
+    if host in (None, "", "localhost", "0.0.0.0", "::", "::1"):
+        return True
+    return host.startswith("127.")
+
+
 @lru_cache(maxsize=1)
 def _serve_actions():
     from rapid_mlx.cli_parser import build_parser
@@ -58,6 +69,7 @@ def scan_servers() -> list[Server]:
             tokens = cmd[cmd.index("serve") + 1 :]
             port = None
             alias = None
+            host = None
             model = "(unknown)"
             # Reuse the parser's option arities rather than treating option
             # values (host, parsers, etc.) as a positional model.
@@ -81,16 +93,22 @@ def scan_servers() -> list[Server]:
                             port = None
                     elif key == "--served-model-name":
                         alias = value
+                    elif key == "--host":
+                        host = value
                 elif not token.startswith("-") and model == "(unknown)":
                     model = token
                 i += 1
+            if not _loopback_reachable(host):
+                continue
             listening = False
             inspected = True
             try:
                 listeners = {
                     c.laddr.port
                     for c in proc.net_connections(kind="inet")
-                    if c.status == psutil.CONN_LISTEN and c.laddr
+                    if c.status == psutil.CONN_LISTEN
+                    and c.laddr
+                    and _loopback_reachable(c.laddr.ip)
                 }
                 if port in listeners:
                     listening = True
