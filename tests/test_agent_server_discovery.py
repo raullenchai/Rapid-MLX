@@ -803,3 +803,121 @@ def test_scan_skips_servers_bound_only_to_a_lan_address(
     # Only the 127.0.0.1 listener is reachable at the localhost URL setup
     # writes; the others must not linger as "unbound, still starting".
     assert [s.pid for s in agent_discovery_defaults()] == [3]
+
+
+def _listen(port, ip="127.0.0.1"):
+    import psutil
+
+    return SimpleNamespace(
+        status=psutil.CONN_LISTEN, laddr=SimpleNamespace(ip=ip, port=port)
+    )
+
+
+def test_scan_edge_cases(monkeypatch, agent_discovery_defaults):
+    import psutil
+
+    def denied_iter(*_a):
+        raise psutil.AccessDenied(1)
+
+    monkeypatch.setattr(psutil, "process_iter", denied_iter)
+    assert agent_discovery_defaults() == []
+
+    class Vanished:
+        pid = 9
+
+        @property
+        def info(self):
+            raise psutil.NoSuchProcess(9)
+
+    foreign = SimpleNamespace(pid=7, info={"cmdline": ["python", "other", "serve"]})
+    pinned = SimpleNamespace(
+        pid=8,
+        info={"cmdline": ["rapid-mlx", "serve", "tiny", "--port", "8462"]},
+        net_connections=lambda **_k: [_listen(8462), _listen(9999)],
+    )
+    monkeypatch.setattr(
+        psutil, "process_iter", lambda *_a: [foreign, Vanished(), pinned]
+    )
+    servers = agent_discovery_defaults()
+    assert servers == [discovery.Server(8, 8462, "tiny")]
+    assert servers[0].listening is True
+
+
+def test_startup_loading_and_pid_alive(monkeypatch):
+    import contextlib
+    import os
+
+    import psutil
+
+    def answer(code):
+        def urlopen(url, **_k):
+            if code == 200:
+                return contextlib.nullcontext()
+            raise urllib.error.HTTPError(url, code, "x", None, None)
+
+        return urlopen
+
+    for code, loading in [(200, False), (503, True), (500, False)]:
+        monkeypatch.setattr(discovery.urllib.request, "urlopen", answer(code))
+        assert discovery.startup_loading("http://localhost:8462/v1") is loading
+
+    assert discovery.pid_alive(os.getpid()) is True
+    for exc, alive in [
+        (psutil.NoSuchProcess(1), False),
+        (psutil.AccessDenied(1), True),
+    ]:
+
+        def process(_pid, exc=exc):
+            raise exc
+
+        monkeypatch.setattr(psutil, "Process", process)
+        assert discovery.pid_alive(1) is alive
+
+
+def test_default_endpoint_ready_states(monkeypatch):
+    import contextlib
+
+    # Drop the autouse stub so the real probe runs against a fake urlopen.
+    monkeypatch.undo()
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [])
+
+    def respond(outcome):
+        def urlopen(url, **_k):
+            if outcome == "http-error":
+                raise urllib.error.HTTPError(url, 503, "x", None, None)
+            if outcome == "refused":
+                raise urllib.error.URLError("refused")
+            return contextlib.nullcontext(SimpleNamespace(status=outcome))
+
+        return urlopen
+
+    for outcome, expected in [
+        (200, (True, True)),
+        (204, (False, True)),
+        ("http-error", (False, True)),
+        ("refused", (False, False)),
+    ]:
+        monkeypatch.setattr(discovery.urllib.request, "urlopen", respond(outcome))
+        assert discovery._default_endpoint_ready() == expected
+
+
+def test_refresh_skips_other_pids_and_unbound_rescans(monkeypatch):
+    selected = discovery.Server(5, 8001, "tiny")
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(4, 8002, "other"), discovery.Server(5, None, "tiny")],
+    )
+    endpoint = discovery.Endpoint("http://localhost:8001/v1", selected)
+    endpoint.refresh()
+    assert endpoint.server is selected
+    assert endpoint.base_url == "http://localhost:8001/v1"
+
+
+def test_remote_url_has_no_local_server_and_bad_progress_payload(monkeypatch, capsys):
+    assert discovery.server_for_url("http://192.0.2.10:8000/v1") is None
+    monkeypatch.setattr(
+        discovery.urllib.request, "urlopen", lambda *_a, **_k: BytesIO(b"[1, 2]")
+    )
+    discovery.Progress().show("http://localhost:8462/v1", 0)
+    assert "downloading or preparing" in capsys.readouterr().out
