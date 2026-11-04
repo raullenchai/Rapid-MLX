@@ -1418,6 +1418,22 @@ def test_start_refuses_non_chat_server_before_attach(monkeypatch, capsys, model)
     assert "coding agents need a chat model" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("requested", [None, "chat", "video"])
+def test_discovery_mixed_listing_checks_requested_model(monkeypatch, requested):
+    video = {"id": "video", "modality": "video-gen"}
+    fake_model_server(monkeypatch, {18403: [video, {"id": "chat", "modality": "text"}]})
+
+    error = discovery.non_chat_server(18403, requested)
+
+    if requested == "video":
+        assert isinstance(error, discovery.NonChatModelError)
+        assert error.port == 18403
+        assert error.model == video
+        assert "video model (video), not a chat model" in error.skip_hint
+    else:
+        assert error is None
+
+
 def test_mixed_model_listing_selects_chat_and_rejects_explicit_video(monkeypatch):
     from rapid_mlx.agents import isolated
 
