@@ -41,13 +41,15 @@ def tools(tmp_path, monkeypatch):
         stall=False,
         videotoolbox=False,
         hardware_failure=None,
+        no_stream=False,
+        ppm=b"",
     ):
         probe = tmp_path / "ffprobe"
         probe_calls = tmp_path / "probe-calls.jsonl"
         probe.write_text(
             f"#!{sys.executable}\nimport json, sys\n"
             f"with open({str(probe_calls)!r}, 'a') as log: log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-            f"print({json.dumps({'streams': [{'avg_frame_rate': avg, 'r_frame_rate': rate, 'codec_name': codec}]})!r})\n"
+            f"print({json.dumps({'streams': [] if no_stream else [{'avg_frame_rate': avg, 'r_frame_rate': rate, 'codec_name': codec}]})!r})\n"
             f"sys.exit({probe_exit})\n"
         )
         ffmpeg = tmp_path / "ffmpeg"
@@ -65,6 +67,7 @@ def tools(tmp_path, monkeypatch):
             f"    sys.exit({hardware_failure!r})\n"
             f"sys.stdout.buffer.write((b'P6\\n2 1\\n255\\n' + bytes([255, 0, 0, 0, 255, 0])) * {frames})\n"
             f"sys.stdout.buffer.write(b'P6\\n2 1\\n255\\nx' if {partial} else b'')\n"
+            f"sys.stdout.buffer.write({ppm!r})\n"
             "sys.stdout.flush()\n"
             f"time.sleep(10 if {stall} else 0)\n"
             "sys.stderr.write('decoder failed')\n"
@@ -162,12 +165,89 @@ def test_fps_fallback(tools, avg, rate, expected):
         ({"exit_code": 1}, "decoder failed"),
         ({"probe_exit": 1}, "cannot open video"),
         ({"partial": True}, "incomplete reference-video frame"),
+        ({"no_stream": True}, "cannot open video: clip.mp4: no video stream"),
     ],
 )
 def test_failed_decode(tools, options, message):
     tools(**options)
     with pytest.raises(ValueError, match=message):
         media.decode_video_with_ffmpeg("clip.mp4")
+
+
+@pytest.mark.parametrize("missing", ["ffmpeg", "ffprobe"])
+def test_missing_tool(tools, missing):
+    calls = tools()
+    (calls.parent / missing).unlink()
+    with pytest.raises(ValueError, match="ffmpeg and ffprobe required"):
+        media.decode_video_with_ffmpeg("clip.mp4")
+    assert not calls.exists()
+    assert not (calls.parent / "probe-calls.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    "ppm,message",
+    [
+        (b"P3\n", "invalid PPM frame header"),
+        (b"P6\n2 1\n", "incomplete PPM frame header"),
+        (b"P6\n0 1\n255\n", "invalid PPM frame dimensions or sample depth"),
+        (b"P6\n2 -1\n255\n", "invalid PPM frame dimensions or sample depth"),
+        (b"P6\n2 1\n256\n", "invalid PPM frame dimensions or sample depth"),
+    ],
+)
+def test_invalid_ppm_is_wrapped(tools, ppm, message):
+    tools(frames=0, ppm=ppm)
+    with pytest.raises(
+        ValueError, match=f"cannot decode video: clip.mp4: {message}"
+    ) as error:
+        media.decode_video_with_ffmpeg("clip.mp4")
+    assert isinstance(error.value.__cause__, ValueError)
+    assert isinstance(error.value.__cause__.__cause__, ValueError)
+    assert str(error.value.__cause__.__cause__) == message
+
+
+def test_decoder_oserror_is_wrapped(tools, monkeypatch):
+    tools()
+    original_popen = subprocess.Popen
+    failure = OSError("decoder executable disappeared")
+
+    def popen(command, **kwargs):
+        if "-i" in command:
+            raise failure
+        return original_popen(command, **kwargs)
+
+    monkeypatch.setattr(media.subprocess, "Popen", popen)
+    with pytest.raises(
+        ValueError,
+        match="cannot decode video: clip.mp4: decoder executable disappeared",
+    ) as error:
+        media.decode_video_with_ffmpeg("clip.mp4")
+    assert error.value.__cause__ is failure
+
+
+def test_timeout_races_exited_decoder(tools, monkeypatch):
+    calls = tools(videotoolbox=True)
+    exited = []
+
+    class ExitedBeforeKill(subprocess.Popen):
+        def kill(self):
+            # Deterministically finish the real fake process before the kill.
+            exited.append(self.wait(timeout=5))
+            raise ProcessLookupError("process already exited")
+
+    monkeypatch.setattr(media.subprocess, "Popen", ExitedBeforeKill)
+    monkeypatch.setattr(
+        media.threading,
+        "Timer",
+        lambda interval, expire: SimpleNamespace(start=expire, cancel=lambda: None),
+    )
+    with pytest.raises(
+        ValueError,
+        match="cannot decode video: clip.mp4: reference video decode timed out",
+    ):
+        media.decode_video_with_ffmpeg("clip.mp4")
+    assert exited == [0]
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(commands) == 2  # The race must not trigger a software retry.
 
 
 def test_timeout_kills_decoder(tools, monkeypatch):

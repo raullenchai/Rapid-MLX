@@ -149,8 +149,8 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
         "rgb24",
         "-",
     ]
-    hardware = _supports_videotoolbox(str(Path(ffmpeg).resolve()))
-    for use_hwaccel in (True, False) if hardware else (False,):
+    use_hwaccel = _supports_videotoolbox(str(Path(ffmpeg).resolve()))
+    while True:
         attempt = command.copy()
         if use_hwaccel:
             attempt[1:1] = ["-hwaccel", "videotoolbox"]
@@ -189,6 +189,7 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
                 if timed_out.is_set():
                     raise ValueError("reference video decode timed out")
                 if use_hwaccel and (status or (frame_error is None and not frames)):
+                    use_hwaccel = False
                     continue
                 if frame_error is not None:
                     raise ValueError(f"{frame_error}: {detail}") from frame_error
@@ -199,7 +200,6 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
         if not frames:
             raise ValueError(f"video contains no decodable frames: {video}")
         return mx.stack(frames), _fps(stream)
-    raise AssertionError("unreachable: the software attempt always returns or raises")
 
 
 def install_reference_decoders():
