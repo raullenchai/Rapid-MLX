@@ -567,6 +567,20 @@ enum IdleModelReleasePreference {
         return runtimeSupportsNativeUnload ? .native : .legacyStop
     }
 
+    /// Whether automatic idle release still has to stop the process. Native
+    /// unload frees chat models with the API online; the engine has no idle
+    /// release for audio lanes, so a resident lane keeps the stop path.
+    static func requiresProcessStop(nativeUnloadActive: Bool, residentAudioLanes: Int) -> Bool {
+        !nativeUnloadActive || residentAudioLanes > 0
+    }
+
+    /// A model mid-transition is never stopped. Without native unload any
+    /// non-resident model means work is under way; with it, a standby
+    /// primary is simply idle.
+    static func blocksProcessStop(_ model: ResidentModelStatus, nativeUnloadActive: Bool) -> Bool {
+        model.isTransitioning || (!nativeUnloadActive && !model.isHoldingMemory)
+    }
+
     static func restartDecision(
         setting: Int,
         secondsAtSpawn: Int?,

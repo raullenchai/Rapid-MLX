@@ -3484,14 +3484,17 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
-    /// Legacy runtimes need polling; native idle unload keeps the child online.
+    /// Native idle unload frees chat models with the API online. The engine
+    /// has no idle release for audio lanes yet, so the poll keeps stopping
+    /// the process when an idle dictation/speech lane still holds memory, and
+    /// remains the whole mechanism for runtimes without the native flag.
     /// The server's activity clock decides idleness, while observed busy
     /// intervals also reset the local clock. Missing activity disables release.
     func configureIdleModelRelease(_ setting: Int) {
         idleReleaseTask?.cancel()
         idleReleaseTask = nil
         observedIdleActivity = Date()
-        guard IdleModelReleasePreference.mode(setting: setting, runtimeSupportsNativeUnload: idleUnloadSecondsAtSpawn != nil) == .legacyStop else { return }
+        guard IdleModelReleasePreference.mode(setting: setting, runtimeSupportsNativeUnload: idleUnloadSecondsAtSpawn != nil) != .off else { return }
         idleReleaseTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -3533,21 +3536,30 @@ final class ServerManager {
         }
     }
 
+    /// The running child frees its own chat models when idle.
+    private var nativeIdleUnloadActive: Bool { (idleUnloadSecondsAtSpawn ?? 0) > 0 }
+
     private func checkIdleModelRelease(setting: Int) async {
-        guard IdleModelReleasePreference.mode(setting: setting, runtimeSupportsNativeUnload: idleUnloadSecondsAtSpawn != nil) == .legacyStop else { return }
         guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
               !communityBenchmarkReserved, case .ready = state else {
             observedIdleActivity = Date()
             return
         }
-        guard await refreshResidency(), !Task.isCancelled,
-              idleUnloadSecondsAtSpawn == nil else {
+        guard await refreshResidency(), !Task.isCancelled else {
             observedIdleActivity = Date()
             return
         }
         let now = Date()
         let audio = residency.audioLanes.filter { $0.state == "resident" }
-        let busy = residency.models.contains { $0.activeRequests > 0 || !$0.isHoldingMemory || $0.isTransitioning }
+        let native = nativeIdleUnloadActive
+        guard IdleModelReleasePreference.requiresProcessStop(
+            nativeUnloadActive: native,
+            residentAudioLanes: audio.count
+        ) else { return }
+        let busy = residency.models.contains {
+            $0.activeRequests > 0
+                || IdleModelReleasePreference.blocksProcessStop($0, nativeUnloadActive: native)
+        }
             || audio.contains { $0.activeRequests == nil || $0.activeRequests! > 0 }
         if busy { observedIdleActivity = now }
         // Automatic release needs the server-wide activity clock; servers
@@ -3575,7 +3587,8 @@ final class ServerManager {
         if let idleSetting {
             // The refresh suspended; the setting may have changed or an app
             // operation may have started since.
-            guard !Task.isCancelled, idleUnloadSecondsAtSpawn == nil,
+            let native = nativeIdleUnloadActive
+            guard !Task.isCancelled,
                   IdleModelReleasePreference.value() == idleSetting,
                   !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
                   !communityBenchmarkReserved else { return .busy }
@@ -3583,7 +3596,13 @@ final class ServerManager {
             // model load, or an audio job may have started during the refresh.
             guard let activity = residency.activity, activity.inFlight == 0,
                   activity.idleSeconds >= Double(idleSetting),
-                  !residency.models.contains(where: { !$0.isHoldingMemory || $0.isTransitioning }) else { return .busy }
+                  !residency.models.contains(where: {
+                      IdleModelReleasePreference.blocksProcessStop($0, nativeUnloadActive: native)
+                  }),
+                  IdleModelReleasePreference.requiresProcessStop(
+                      nativeUnloadActive: native,
+                      residentAudioLanes: residency.audioLanes.filter { $0.state == "resident" }.count
+                  ) else { return .busy }
         }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy

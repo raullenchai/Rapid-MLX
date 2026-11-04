@@ -16,6 +16,30 @@ struct IdleModelReleaseTests {
         }
     }
 
+    @Test func nativeUnloadStillStopsForIdleAudioLanes() throws {
+        // Native unload frees chat models with the API online; only a
+        // resident audio lane (no engine idle release) keeps the stop path.
+        #expect(!IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 0))
+        #expect(IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 1))
+        #expect(IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: false, residentAudioLanes: 0))
+
+        func model(_ state: String) throws -> ResidentModelStatus {
+            try JSONDecoder().decode(ResidentModelStatus.self, from: Data("""
+            {"id":"m","model_path":"m","aliases":[],"modality":"text","state":"\(state)",
+             "pinned":true,"primary":true,"active_requests":0,"estimated_bytes":1,
+             "measured_bytes":null,"idle_seconds":1}
+            """.utf8))
+        }
+        // A standby primary is idle under native unload but blocks the legacy path.
+        #expect(!IdleModelReleasePreference.blocksProcessStop(try model("standby"), nativeUnloadActive: true))
+        #expect(IdleModelReleasePreference.blocksProcessStop(try model("standby"), nativeUnloadActive: false))
+        for state in ["loading", "unloading", "evicting"] {
+            #expect(IdleModelReleasePreference.blocksProcessStop(try model(state), nativeUnloadActive: true))
+        }
+        #expect(!IdleModelReleasePreference.blocksProcessStop(try model("resident"), nativeUnloadActive: true))
+        #expect(!IdleModelReleasePreference.blocksProcessStop(try model("resident"), nativeUnloadActive: false))
+    }
+
     @Test func restartOnChange() {
         func decide(_ setting: Int = 300, _ spawned: Int? = 0, ready: Bool = true,
                     operating: Bool = false, requests: Bool = false,
