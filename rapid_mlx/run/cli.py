@@ -651,15 +651,13 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     cfg = profile.get_config_for_version(None)
     requires_context = bool(cfg and cfg.template and "{context_length}" in cfg.template)
     needs_context = profile.name == "claude-code" or requires_context
-    if needs_context and not args.dry_run:
-        from rapid_mlx.agents.adapter import fetch_context_window
+    from rapid_mlx.agents.context_budget import agent_context_budget
 
-        try:
-            context_length = fetch_context_window(api_base_url, model)
-        except Exception:
-            context_length = None
-    else:
-        context_length = _cached_context_window(model) if needs_context else None
+    context_length = (
+        agent_context_budget(profile.name, api_base_url, model, offline=args.dry_run)
+        if needs_context
+        else None
+    )
 
     if args.dry_run and requires_context and context_length is None:
         print(
@@ -816,28 +814,10 @@ def _confirm_config_write() -> bool:
 
 
 def _cached_context_window(model: str) -> int | None:
-    """Read a cached/local config context limit without network or weights."""
-    from rapid_mlx.model_metadata import read_model_metadata
+    """Read the common offline memory-fitted ceiling without loading weights."""
+    from rapid_mlx.agents.context_budget import offline_context_ceiling
 
-    try:
-        metadata = read_model_metadata(_hf_id(model))
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return None
-    config = metadata.config if metadata is not None else None
-    if not isinstance(config, dict):
-        return None
-    candidates = [config.get("max_position_embeddings")]
-    text_config = config.get("text_config")
-    if isinstance(text_config, dict):
-        candidates.append(text_config.get("max_position_embeddings"))
-    for candidate in candidates:
-        if (
-            isinstance(candidate, int)
-            and not isinstance(candidate, bool)
-            and candidate > 0
-        ):
-            return candidate
-    return None
+    return offline_context_ceiling(model)
 
 
 def _print_instructions(profile, base_url, model) -> bool:

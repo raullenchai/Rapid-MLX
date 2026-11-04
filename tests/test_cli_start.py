@@ -1002,11 +1002,11 @@ def test_attach_first_class_template_fetch_context(monkeypatch, capsys):
     prof.config = _FakeCfg(template="  {context_length}")
 
     import rapid_mlx.agents.setup as setup_mod
-    from rapid_mlx.agents import adapter as ad
 
     fetches = {}
     monkeypatch.setattr(
-        ad, "fetch_context_window", lambda b, m: fetches.update(b=b, m=m) or 32768
+        "rapid_mlx.agents.context_budget.served_context_ceiling",
+        lambda b, m, **_k: fetches.update(b=b, m=m) or 32768,
     )
     monkeypatch.setattr(
         setup_mod,
@@ -1029,9 +1029,11 @@ def test_attach_claude_fetches_context_without_template_placeholder(monkeypatch)
     prof.config = _FakeCfg(template=None, config_type="env")
 
     import rapid_mlx.agents.setup as setup_mod
-    from rapid_mlx.agents import adapter as ad
 
-    monkeypatch.setattr(ad, "fetch_context_window", lambda *_args: 131072)
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.served_context_ceiling",
+        lambda *_args, **_k: 131072,
+    )
     planned = {}
     monkeypatch.setattr(
         setup_mod,
@@ -1050,12 +1052,13 @@ def test_attach_first_class_context_fetch_fails(monkeypatch, capsys):
     prof.config = _FakeCfg(template="  {context_length}")
 
     import rapid_mlx.agents.setup as setup_mod
-    from rapid_mlx.agents import adapter as ad
 
-    def boom(base_url, model):
-        raise RuntimeError("server not ready")
-
-    monkeypatch.setattr(ad, "fetch_context_window", boom)
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.served_context_ceiling", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.offline_context_ceiling", lambda _: None
+    )
     planned = {}
     monkeypatch.setattr(
         setup_mod,

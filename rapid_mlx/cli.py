@@ -15445,8 +15445,15 @@ def agents_command(args):
     if args.setup:
         from rapid_mlx.agents.adapter import (
             _detect_running_model,
-            fetch_context_window,
         )
+        from rapid_mlx.agents.context_budget import agent_context_budget
+
+        def setup_context_budget(model_id):
+            try:
+                return agent_context_budget(profile.name, base_url, model_id)
+            except ValueError as exc:
+                print(f"\n  {profile.display_name} setup failed: {exc}")
+                sys.exit(1)
 
         # Detect model + context window from running server.
         # Only query the server when the profile template uses
@@ -15477,13 +15484,12 @@ def agents_command(args):
             # Previews, --no-check and env-only profiles still use the best
             # metadata a running server offers, without waiting for one.
             if model_id == "default":
-                detected_model, detected_ctx = _detect_running_model(base_url)
+                detected_model, _detected_ctx = _detect_running_model(base_url)
                 if detected_model:
                     model_id = detected_model
-                if needs_ctx:
-                    context_length = detected_ctx
-            elif needs_ctx:
-                context_length = fetch_context_window(base_url, model_id)
+            if needs_ctx:
+                # Served memory-fitted window, else the offline memory fit.
+                context_length = setup_context_budget(model_id)
 
         if wait_for_live_server:
             from rapid_mlx.agents.server_discovery import Endpoint, resolve_endpoint
@@ -15502,14 +15508,12 @@ def agents_command(args):
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
                 if model_id == "default":
-                    # A server that is already up names its model (and context
-                    # window) up front, as before; a starting one is resolved
-                    # by the readiness wait below.
-                    detected_model, detected_ctx = _detect_running_model(base_url)
+                    # A server that is already up names its model up front, as
+                    # before; a starting one is resolved by the readiness wait
+                    # below. The context budget is read once the server is ready.
+                    detected_model, _detected_ctx = _detect_running_model(base_url)
                     if detected_model:
                         model_id = detected_model
-                        if needs_ctx:
-                            context_length = detected_ctx
                 advertised = wait_for_server(
                     base_url, model_id, agent=profile.name, endpoint=endpoint
                 )
@@ -15557,8 +15561,8 @@ def agents_command(args):
             if not offline:
                 if model_id == "default":
                     model_id = advertised
-                if needs_ctx and context_length is None:
-                    context_length = fetch_context_window(base_url, model_id)
+                if needs_ctx:
+                    context_length = setup_context_budget(model_id)
 
         # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
         # flows. They verify server readiness, preview an exact diff, require

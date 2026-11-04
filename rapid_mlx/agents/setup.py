@@ -340,6 +340,17 @@ def build_setup_plan(
     agent_version: str | None = None,
 ) -> SetupPlan:
     """Build a side-effect-free setup plan for a supported client."""
+    from .context_budget import agent_context_budget, context_fallback
+
+    if context_length is None and agent in {
+        "claude",
+        "claude-code",
+        "dsh",
+        "deepseek-harness",
+        "pi",
+        "qwen-code",
+    }:
+        context_length = agent_context_budget(agent, base_url, model)
     if agent == "cline":
         path = cline.current_config_path()
         assert path is not None
@@ -419,7 +430,7 @@ def build_setup_plan(
             "deepseek-harness",
             emit_telemetry=emit_telemetry,
         )
-        context = context_length if context_length and context_length > 0 else 32768
+        context = context_length or context_fallback(agent)
         # Report the model's ACTUAL reasoning capability rather than
         # asserting the graded ladder for everything we serve.
         #

@@ -22,6 +22,7 @@ boundary without flaky BPE drift.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -161,6 +162,32 @@ def _extract_error(body: dict) -> dict:
             return inner["error"]
         return inner
     return body
+
+
+def _responses_overflow_error(response) -> dict:
+    """Parse and validate the complete preflight rejection SSE lifecycle."""
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/event-stream")
+    frames = [frame for frame in response.text.split("\n\n") if frame.strip()]
+    events = []
+    for frame in frames:
+        event_line, data_line = frame.splitlines()
+        event = json.loads(data_line.removeprefix("data: "))
+        assert event_line == f"event: {event['type']}"
+        events.append(event)
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.failed",
+    ]
+    assert [event["sequence_number"] for event in events] == [0, 1]
+    created, failed = [event["response"] for event in events]
+    assert created["status"] == "in_progress"
+    assert failed["status"] == "failed"
+    assert failed["id"] == created["id"]
+    assert failed["output"] == []
+    assert set(failed["error"]) == {"code", "message"}
+    assert failed["error"]["code"] == "context_length_exceeded"
+    return failed["error"]
 
 
 @pytest.mark.parametrize(
@@ -726,6 +753,8 @@ def test_context_length_override_keeps_native_model_window_visible():
     cfg.context_length = 32_768
     assert _resolve_context_window(cfg.model_name) == _CONTEXT_WINDOW
     assert _resolve_max_model_len(cfg.model_name, _CONTEXT_WINDOW) == 32_768
+    cfg.engine.scheduler.memory_context_ceiling = lambda native: 4_096
+    assert _resolve_max_model_len(cfg.model_name, _CONTEXT_WINDOW) == 4_096
 
 
 def test_context_length_above_model_declared_window_is_rejected():
@@ -814,8 +843,11 @@ def test_agent_routes_surface_protocol_correct_context_error(route, stream):
         payload["max_tokens"] = 16
 
     resp = _make_app([router], context_length=80).post(path, json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
+    if route == "responses" and stream:
+        body = {"error": _responses_overflow_error(resp)}
+    else:
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
     if route == "messages":
         assert body == {
             "type": "error",
@@ -835,10 +867,16 @@ def test_agent_routes_surface_protocol_correct_context_error(route, stream):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("route", ["chat", "responses", "messages"])
-def test_agent_routes_surface_operational_prompt_cap(route, stream):
+def test_agent_routes_surface_operational_prompt_cap(route, stream, monkeypatch):
     from rapid_mlx.routes.anthropic import router as anthropic_router
     from rapid_mlx.routes.chat import router as chat_router
     from rapid_mlx.routes.responses import router as responses_router
+    from rapid_mlx.telemetry import inference
+
+    events = []
+    monkeypatch.setattr(
+        inference, "emit_capability_rejected", lambda *a, **kw: events.append((a, kw))
+    )
 
     cases = {
         "chat": (
@@ -867,8 +905,11 @@ def test_agent_routes_surface_operational_prompt_cap(route, stream):
     response = _make_app([router], max_prompt_tokens=80).post(
         path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload}
     )
-    assert response.status_code == 400, response.text
-    error = response.json()["error"]
+    if route == "responses" and stream:
+        error = _responses_overflow_error(response)
+    else:
+        assert response.status_code == 400, response.text
+        error = response.json()["error"]
     if route == "messages":
         assert error == {
             "type": "invalid_request_error",
@@ -879,30 +920,46 @@ def test_agent_routes_surface_operational_prompt_cap(route, stream):
         assert "100 tokens" in error["message"]
         assert "80 tokens" in error["message"]
         assert "--max-prompt-tokens" in error["message"]
+    assert len(events) == 1
+    assert events[0][1]["reject_reason"] == "operational_cap"
 
 
 # ─── /v1/responses ──────────────────────────────────────────────────
 
 
-def test_responses_rejects_over_context_window():
+@pytest.mark.parametrize("stream", [False, True])
+def test_responses_rejects_over_context_window(stream, monkeypatch):
     """``/v1/responses`` (OpenAI Responses API) must enforce the
     same cap. The route re-extracts multimodal content before the
     gate, so this also pins that the gate fires on the re-extracted
     text-only shape."""
     from rapid_mlx.routes.responses import router as responses_router
+    from rapid_mlx.telemetry import inference
 
+    events = []
+    monkeypatch.setattr(
+        inference, "emit_capability_rejected", lambda *a, **kw: events.append((a, kw))
+    )
     client = _make_app([responses_router])
 
     payload = {
         "model": "qwen3-0.6b-8bit",
         "input": _huge_text(41_000),
+        "stream": stream,
         "max_output_tokens": 16,
     }
     resp = client.post("/v1/responses", json=payload)
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    err = _extract_error(body)
-    assert err.get("code") == "context_length_exceeded"
+    if stream:
+        err = _responses_overflow_error(resp)
+    else:
+        assert resp.status_code == 400, resp.text
+        err = _extract_error(resp.json())
+    assert err["code"] == "context_length_exceeded"
+    assert err["message"].startswith(
+        f"This model's maximum context length is {_CONTEXT_WINDOW} tokens."
+    )
+    assert len(events) == 1
+    assert events[0][1]["reject_reason"] == "prompt_over_window"
 
 
 # ─── Under-cap requests still pass through the gate ────────────────
@@ -1053,7 +1110,7 @@ def test_expanded_media_late_overflow_uses_route_protocol(surface, stream):
     response = _make_app(
         [router], context_length=80, engine=_LateOverflowEngine()
     ).post(path, json={"model": "qwen3-0.6b-8bit", "stream": stream, **payload})
-    expected_status = 200 if stream else 400
+    expected_status = 200 if stream and surface == "responses" else 400
     assert response.status_code == expected_status, response.text
     if response.status_code == 400:
         body = response.json()
@@ -1274,3 +1331,198 @@ def test_empty_completion_prompt_keeps_requested_budget(monkeypatch):
         helpers.enforce_context_length_for_prompt(_StubEngine(), "", max_tokens=321)
         == 321
     )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("route", ["chat", "completions", "responses", "messages"])
+def test_memory_window_rejected_before_generation(route, stream, monkeypatch):
+    from rapid_mlx.routes import anthropic, chat, completions, responses
+    from rapid_mlx.telemetry import inference
+
+    events = []
+    monkeypatch.setattr(
+        inference, "emit_capability_rejected", lambda *a, **kw: events.append((a, kw))
+    )
+    routers = {
+        "chat": (chat.router, "/v1/chat/completions"),
+        "completions": (completions.router, "/v1/completions"),
+        "responses": (responses.router, "/v1/responses"),
+        "messages": (anthropic.router, "/v1/messages"),
+    }
+    engine = _StubEngine()
+    engine.scheduler = SimpleNamespace(
+        projected_memory_max_context=lambda native: 80,
+        memory_context_ceiling=lambda native: 80,
+    )
+    payload = {"model": "qwen3-0.6b-8bit", "stream": stream}
+    if route == "responses":
+        payload.update(input=_huge_text(100), max_output_tokens=16)
+    elif route == "completions":
+        payload.update(prompt=_huge_text(100), max_tokens=16)
+    else:
+        payload.update(
+            messages=[{"role": "user", "content": _huge_text(100)}], max_tokens=16
+        )
+    router, path = routers[route]
+    response = _make_app([router], engine=engine).post(path, json=payload)
+    if route == "responses" and stream:
+        error = _responses_overflow_error(response)
+    else:
+        assert response.status_code == 400, response.text
+        error = _extract_error(response.json())
+    if route == "messages":
+        assert error == {
+            "type": "invalid_request_error",
+            "message": "prompt is too long: 100 tokens > 80 maximum",
+        }
+    else:
+        assert error["code"] == "context_length_exceeded"
+        assert error["message"].startswith(
+            "This model's maximum context length is 80 tokens."
+        )
+        assert "available memory" in error["message"]
+    assert len(events) == 1
+    assert events[0][1]["reject_reason"] == "memory_window"
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, "80", True])
+def test_invalid_memory_ceiling_keeps_native_window(value):
+    from rapid_mlx.service.helpers import enforce_context_length, memory_context_ceiling
+
+    reset_config()
+    engine = _StubEngine()
+    engine.scheduler = SimpleNamespace(
+        projected_memory_max_context=lambda native: value,
+        memory_context_ceiling=lambda native: value,
+    )
+    assert memory_context_ceiling(engine) is None
+    assert enforce_context_length(engine, 100, max_tokens=16) == 16
+
+
+def test_memory_window_clamps_completion_and_preserves_operational_cap():
+    from rapid_mlx.service.helpers import ContextLengthExceeded, enforce_context_length
+
+    cfg = reset_config()
+    engine = _StubEngine()
+    engine.scheduler = SimpleNamespace(
+        projected_memory_max_context=lambda native: 80,
+        memory_context_ceiling=lambda native: 80,
+    )
+    assert enforce_context_length(engine, 60, max_tokens=30) == 20
+    assert enforce_context_length(engine, 60) is None
+    cfg.max_prompt_tokens = 50
+    with pytest.raises(ContextLengthExceeded) as exc:
+        enforce_context_length(engine, 100, max_tokens=30)
+    assert exc.value.limit == 50
+    assert "--max-prompt-tokens" in exc.value.error_payload["message"]
+
+
+@pytest.mark.parametrize(
+    "native,served,expected",
+    [(262144, 60000, 60000), (60000, 262144, 60000), (None, None, 262144)],
+)
+def test_live_codex_catalog_uses_served_budget(native, served, expected):
+    from rapid_mlx.api.models import ModelInfo
+    from rapid_mlx.routes.models import _build_codex_model_info
+
+    result = _build_codex_model_info(
+        ModelInfo(id="local-model", context_window=native, max_model_len=served)
+    )
+    assert result["context_window"] == expected
+    assert result["max_context_window"] == expected
+
+
+@pytest.mark.parametrize("has_scheduler", [False, True])
+def test_explicit_window_survives_unknown_memory_estimate(has_scheduler):
+    from rapid_mlx.routes.models import _resolve_max_model_len
+
+    cfg = reset_config()
+    cfg.engine = _StubEngine()
+    cfg.model_name = "qwen3-0.6b-8bit"
+    cfg.context_length = 80
+    if has_scheduler:
+        cfg.engine.scheduler = SimpleNamespace(
+            projected_memory_max_context=lambda _: None,
+            memory_context_ceiling=lambda _: None,
+        )
+    assert _resolve_max_model_len(cfg.model_name, _CONTEXT_WINDOW) == 80
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "phase,kind",
+    [
+        ("admission", "scheduler"),
+        ("admission", "pressure"),
+        ("strict_generation", "scheduler"),
+        ("strict_generation", "oom"),
+        ("strict_generation", "pressure"),
+    ],
+)
+def test_responses_context_error_before_stream_headers(
+    phase, kind, stream, monkeypatch
+):
+    from rapid_mlx.errors import (
+        MemoryContextExceededError,
+        MetalMemoryBackpressureError,
+    )
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.routes.responses import router
+    from rapid_mlx.service import helpers
+    from rapid_mlx.telemetry import inference
+
+    events = []
+    monkeypatch.setattr(
+        inference, "emit_capability_rejected", lambda *a, **kw: events.append((a, kw))
+    )
+    monkeypatch.setattr(helpers, "memory_context_ceiling", lambda *a, **kw: 80)
+
+    def reject():
+        if kind == "scheduler":
+            raise MemoryContextExceededError(prompt_tokens=101, memory_ceiling=80)
+        if kind == "oom":
+            raise InferenceAbortedError(
+                "private", error_kind="insufficient_memory", prompt_tokens=101
+            )
+        raise MetalMemoryBackpressureError("busy")
+
+    class RejectingEngine(_StubEngine):
+        def check_admission(self):
+            if phase == "admission":
+                reject()
+
+        async def chat(self, **kwargs):
+            reject()
+
+    payload = {
+        "model": "qwen3-0.6b-8bit",
+        "input": "hi",
+        "stream": stream,
+        "max_output_tokens": 2,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "answer",
+                "strict": True,
+                "schema": {"type": "object", "properties": {}},
+            }
+        },
+    }
+    response = _make_app([router], engine=RejectingEngine()).post(
+        "/v1/responses", json=payload
+    )
+    if kind == "pressure":
+        assert response.status_code == 503, response.text
+        assert response.headers["retry-after"] == "1"
+        assert events == []
+        return
+    if stream:
+        error = _responses_overflow_error(response)
+    else:
+        assert response.status_code == 400, response.text
+        error = response.json()["error"]
+    assert error["message"].startswith(
+        "This model's maximum context length is 80 tokens."
+    )
+    assert len(events) == 1
+    assert events[0][1]["reject_reason"] == "memory_window"

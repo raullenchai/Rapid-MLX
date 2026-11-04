@@ -23,6 +23,27 @@ class MetalMemoryBackpressureError(BackpressureError):
     """
 
 
+class MemoryContextExceededError(Exception):
+    """A request cannot fit even after all reclaimable request KV is freed."""
+
+    def __init__(
+        self,
+        *,
+        prompt_tokens: int,
+        memory_ceiling: int,
+        requested_tokens: int | None = None,
+    ):
+        self.prompt_tokens = prompt_tokens
+        self.memory_ceiling = memory_ceiling
+        self.requested_tokens = (
+            requested_tokens if requested_tokens is not None else prompt_tokens
+        )
+        super().__init__(
+            f"Request needs {self.requested_tokens} tokens; available memory permits "
+            f"a {memory_ceiling}-token context."
+        )
+
+
 class PagedCacheUnsupportedLayoutError(Exception):
     """Raised at startup when ``--use-paged-cache`` cannot serve the model.
 

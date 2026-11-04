@@ -1813,6 +1813,7 @@ class BatchedEngine(BaseEngine):
         """
         if not self._loaded or self._model is None or self._is_mllm:
             return
+        engine_core = getattr(self._engine, "engine", None) if self._engine else None
         try:
             import mlx.core as mx
 
@@ -1828,9 +1829,6 @@ class BatchedEngine(BaseEngine):
                 out = self._model(input_ids)
                 mx.eval(out)
 
-            engine_core = (
-                getattr(self._engine, "engine", None) if self._engine else None
-            )
             if (
                 engine_core is not None
                 and getattr(engine_core, "_mlx_executor", None) is not None
@@ -1840,6 +1838,9 @@ class BatchedEngine(BaseEngine):
                 _warmup_forward()
         except Exception:
             pass  # Non-fatal
+        scheduler = getattr(engine_core, "scheduler", None)
+        if scheduler is not None:
+            scheduler.observe_idle_resident_floor()
 
     async def start(self) -> None:
         """Start the engine (load model if not loaded)."""
@@ -2564,6 +2565,9 @@ class BatchedEngine(BaseEngine):
             weights_bytes = int(mx.get_active_memory())
         except Exception:
             weights_bytes = 0
+        from ..memory_budget import model_weights_bytes
+
+        self._model_weights_bytes = model_weights_bytes(getattr(self, "_model", None))
         plan = plan_metal_limit(
             weights_bytes=weights_bytes,
             device_budget_bytes=int(max_recommended),
@@ -2650,9 +2654,11 @@ class BatchedEngine(BaseEngine):
         preflight_executor = self._model_load_executor
         preflight_engine = self._engine
         assert preflight_executor is not None and preflight_engine is not None
-        preflight_executor.submit(
-            preflight_engine.engine.scheduler.preflight_metal_admission
-        ).result()
+        scheduler = preflight_engine.engine.scheduler
+        weights = getattr(self, "_model_weights_bytes", None)
+        if isinstance(weights, int) and weights > 0:
+            scheduler._model_weights_bytes = weights
+        preflight_executor.submit(scheduler.preflight_metal_admission).result()
 
     async def execute_on_model_worker(self, func, *args, **kwargs):
         """Execute auxiliary MLX work on this model's owning worker.

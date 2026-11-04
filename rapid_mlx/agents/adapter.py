@@ -725,7 +725,7 @@ def _valid_context_window(value) -> int | None:
     return value if value > 0 else None
 
 
-def _fetch_models(base_url: str) -> list[dict]:
+def _fetch_models(base_url: str, *, api_key: str | None = None) -> list[dict]:
     """Fetch the ``/models`` listing from a running server, or ``[]``.
 
     Validates that the response ``data`` field is a list of mappings;
@@ -737,8 +737,11 @@ def _fetch_models(base_url: str) -> list[dict]:
     from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
     try:
-        url = base_url.rstrip("/") + "/models"
-        request = urllib.request.Request(url, headers=rapid_mlx_auth_headers())
+        url = base_url.rstrip("/").removesuffix("/v1") + "/v1/models"
+        headers = rapid_mlx_auth_headers()
+        if api_key is not None:
+            headers["Authorization"] = f"Bearer {api_key}"
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=2) as resp:
             body = json.loads(resp.read())
             entries = body.get("data") if isinstance(body, dict) else None
@@ -818,7 +821,7 @@ def fetch_reasoning_support(base_url: str, model_id: str) -> bool | None:
 
 
 def fetch_context_window(base_url: str, model_id: str) -> int | None:
-    """Fetch ``context_window`` for a specific *model_id* from the server.
+    """Fetch the served context ceiling for a specific *model_id*.
 
     Iterates the ``/v1/models`` listing and returns the context window
     for the entry whose ``id`` matches *model_id*.  Only falls back to
@@ -826,14 +829,16 @@ def fetch_context_window(base_url: str, model_id: str) -> int | None:
     serve); multi-model servers require an exact match to avoid
     advertising the wrong context window.
     """
+    from .context_budget import _entry_ceiling
+
     models = _fetch_models(base_url)
     # Exact match first
     for m in models:
         if m.get("id") == model_id:
-            return _valid_context_window(m.get("context_window"))
+            return _entry_ceiling(m)
     # Fallback only for single-model serve
     if len(models) == 1:
-        return _valid_context_window(models[0].get("context_window"))
+        return _entry_ceiling(models[0])
     return None
 
 
@@ -851,13 +856,16 @@ def get_setup_instructions(
         detected_model, detected_ctx = _detect_running_model(base_url)
         if detected_model:
             model_id = detected_model
-        if context_length is None and detected_ctx is not None:
-            context_length = detected_ctx
 
     if profile.name == "opencode" and agent_version is None:
         from .opencode_version import installed_version
 
         agent_version = installed_version()
+
+    from .context_budget import agent_context_budget
+
+    if context_length is None:
+        context_length = agent_context_budget(profile.name, base_url, model_id)
 
     cfg = profile.get_config_for_version(agent_version)
     rendered = profile.render_config(

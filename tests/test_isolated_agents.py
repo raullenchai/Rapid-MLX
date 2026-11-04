@@ -599,14 +599,17 @@ def test_hermes_requires_live_limit_at_launch(private_home, capsys):
 def test_hermes_uses_cached_window_only_while_server_is_stopped(private_home):
     with (
         patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()),
-        patch("rapid_mlx.run.cli._cached_context_window", return_value=262144),
+        patch(
+            "rapid_mlx.agents.context_budget.offline_context_ceiling",
+            return_value=262144,
+        ),
     ):
         assert isolated.hermes_context_length(7660, "a" * 64, "model") == 131072
         with pytest.raises(ValueError, match="ready local server"):
             isolated.hermes_context_length(7660, "a" * 64, "model", require_live=True)
 
 
-def test_hermes_ignores_unrelated_single_model_listing(private_home):
+def test_hermes_uses_shared_single_model_fallback(private_home):
     class Response:
         def __enter__(self):
             return self
@@ -615,17 +618,22 @@ def test_hermes_ignores_unrelated_single_model_listing(private_home):
             return None
 
         def read(self):
-            return b'{"data":[{"id":"another-model","context_window":32768,"max_model_len":32768}]}'
+            return b'{"data":[{"id":"another-model","context_window":131072,"max_model_len":98304}]}'
 
     with (
         patch("urllib.request.urlopen", return_value=Response()),
-        patch("rapid_mlx.run.cli._cached_context_window", return_value=262144),
+        patch(
+            "rapid_mlx.agents.context_budget.offline_context_ceiling",
+            return_value=262144,
+        ),
     ):
-        assert isolated.hermes_context_length(7660, "a" * 64, "wanted-model") == 131072
-        with pytest.raises(ValueError, match="ready local server"):
+        assert isolated.hermes_context_length(7660, "a" * 64, "wanted-model") == 98304
+        assert (
             isolated.hermes_context_length(
                 7660, "a" * 64, "wanted-model", require_live=True
             )
+            == 98304
+        )
 
 
 def test_hermes_failed_preflight_stops_only_new_server(private_home):

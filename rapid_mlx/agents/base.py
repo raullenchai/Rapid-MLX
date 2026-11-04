@@ -209,9 +209,8 @@ class AgentProfile:
         """Render the config file content or env vars for this agent.
 
         Args:
-            context_length: Model context window size.  When ``None`` the
-                placeholder ``{context_length}`` is replaced with a
-                conservative default (``32768``).
+            context_length: Resolved agent budget. When absent, use the shared
+                served/offline policy, then the conservative unknown fallback.
 
         Returns:
             str for file-based configs (yaml/json/toml)
@@ -220,7 +219,20 @@ class AgentProfile:
         cfg = self.get_config_for_version(agent_version)
         base_url = self.normalize_base_url(base_url)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
-        ctx_str = str(context_length if context_length is not None else 32768)
+        from .context_budget import (
+            agent_context_budget,
+            context_fallback,
+            context_output_budget,
+        )
+
+        if (
+            context_length is None
+            and cfg.template
+            and "{context_length}" in cfg.template
+        ):
+            context_length = agent_context_budget(self.name, base_url, model_id)
+        context_length = context_length or context_fallback(self.name)
+        ctx_str = str(context_length)
         has_rapid_key = bool(os.environ.get("RAPID_MLX_API_KEY"))
 
         def _sub(text: str) -> str:
@@ -229,6 +241,7 @@ class AgentProfile:
                 .replace("{model_id}", model_id)
                 .replace("{base_url_no_v1}", base_url_no_v1)
                 .replace("{context_length}", ctx_str)
+                .replace("{context_output}", str(context_output_budget(context_length)))
                 .replace(
                     "{codex_auth_line}",
                     'env_key = "RAPID_MLX_API_KEY"' if has_rapid_key else "",

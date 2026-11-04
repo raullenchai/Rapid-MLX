@@ -96,7 +96,10 @@ def _make_scheduler(
     tokenizer = MagicMock()
     tokenizer.encode = lambda s: list(range(len(s)))
     model = MagicMock()
-    return Scheduler(model=model, tokenizer=tokenizer, config=config)
+    # Constructor residency must not inherit native allocations from earlier
+    # tests (or other models on the host). Each test supplies its own readings.
+    with patch.object(Scheduler, "_current_metal_active_bytes", return_value=0):
+        return Scheduler(model=model, tokenizer=tokenizer, config=config)
 
 
 class TestMetalCapAdmissionEnforcement:
@@ -310,6 +313,7 @@ class TestProjectedKVAdmissionGate:
         ``active + projected_kv >= cap`` → reject."""
         # 1 MB per token × (32_000 prompt + 1024 max_tokens) ≈ 33 GB
         sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=1_000_000)
+        sched.requests["live"] = _make_request("live")
         req = _make_request(tokens=32_000)
         req.sampling_params = SamplingParams(max_tokens=1024)
         # 80 GB active + ~33 GB projected = 113 GB > 100 GB cap
@@ -959,7 +963,7 @@ class TestArchitectureAwareKVEstimate:
             dtype="bfloat16",
         )
         sched = self._sched(cfg)
-        assert sched._resolve_kv_bytes_per_token() == 2 * 32 * 8 * 128 * 4
+        assert sched._resolve_kv_bytes_per_token() == 2 * 32 * 8 * 128 * 2
         assert sched._resolve_kv_fixed_baseline_bytes() == 0
 
     def test_operator_override_wins_and_zeroes_baseline(self):
@@ -991,7 +995,7 @@ class TestArchitectureAwareKVEstimate:
         )
         sched = self._sched(cfg)
         with patch(
-            "rapid_mlx.scheduler.estimate_kv_footprint",
+            "rapid_mlx.kv_estimation.estimate_kv_footprint",
             side_effect=RuntimeError("boom"),
         ):
             per_tok = sched._resolve_kv_bytes_per_token()
@@ -1242,6 +1246,7 @@ class TestArchitectureAwareKVEstimate:
             dtype="bfloat16",  # NO layer_types / sliding_window → uniform, base 0
         )
         dense_sched = self._sched(dense_cfg)
+        dense_sched.requests["live"] = _make_request("live")
         dense_req = _make_request(tokens=16)
         dense_req.sampling_params = SamplingParams(max_tokens=8_000)
         # The dense scheduler really is on the uniform estimate with no baseline,
@@ -2623,3 +2628,109 @@ def test_issue4824_non_fused_softcapped_attention_is_not_under_counted():
     _workspace_sample(sched, 512, 256, 85_000_000)
     row = _make_request(tokens=8192)
     assert sched._prefill_workspace_bytes(row) >= 544_300_000
+
+
+@pytest.mark.parametrize(
+    "active,projected,never_fits,per_token,ceiling",
+    [
+        (100, 1000, True, 10, 89),
+        (100, 1000, True, 1000, 0),
+        (900, 500, True, 10, 9),
+        (1000, 1000, False, 10, None),
+    ],
+)
+def test_admission_distinguishes_request_size_from_capacity(
+    active, projected, never_fits, per_token, ceiling
+):
+    from rapid_mlx.errors import MemoryContextExceededError
+
+    # Model the native allocator retaining memory from an earlier test. The
+    # synthetic scheduler must start independently of that process-wide state.
+    with patch.object(Scheduler, "_current_metal_active_bytes", return_value=4096):
+        sched = _make_scheduler()
+    sched._model_weights_bytes = 100
+    sched._kv_bytes_per_token = per_token
+    sched._kv_bytes_per_token_resolved = True
+    request = _make_request(tokens=100)
+    with (
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=1000),
+        patch.object(sched, "_current_metal_active_bytes", return_value=active),
+        patch.object(sched, "_estimate_request_kv_bytes", return_value=projected),
+        patch.object(sched, "_reclaim_unreachable_metal", return_value=False),
+    ):
+        expected = (
+            MemoryContextExceededError if never_fits else MetalMemoryBackpressureError
+        )
+        with pytest.raises(expected) as caught:
+            sched._enforce_metal_cap_at_admission(request)
+    if never_fits:
+        assert caught.value.prompt_tokens == 100
+        assert caught.value.memory_ceiling == ceiling
+        assert caught.value.requested_tokens == 100 + request.sampling_params.max_tokens
+
+
+@pytest.mark.parametrize("weights", [100, None])
+@pytest.mark.parametrize("projected,expected", [(500, "transient"), (850, "permanent")])
+def test_busy_admission_uses_idle_floor_without_learning_live_kv(
+    projected, expected, weights
+):
+    from rapid_mlx.errors import MemoryContextExceededError
+
+    sched = _make_scheduler()
+    sched._model_weights_bytes = weights
+    sched._steady_resident_bytes = 200
+    sched._kv_bytes_per_token = 10
+    sched._kv_bytes_per_token_resolved = True
+    sched.requests = {"live": _make_request("live")}
+    with (
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=1000),
+        patch.object(sched, "_current_metal_active_bytes", return_value=900),
+        patch.object(sched, "_estimate_request_kv_bytes", return_value=projected),
+    ):
+        error = (
+            MemoryContextExceededError
+            if expected == "permanent"
+            else MetalMemoryBackpressureError
+        )
+        with pytest.raises(error) as caught:
+            sched._enforce_metal_cap_at_admission(_make_request())
+    assert sched._steady_resident_bytes == 200
+    if expected == "permanent":
+        assert caught.value.memory_ceiling == 79
+
+
+@pytest.mark.parametrize("cache_kind", ["prefix", "paged"])
+def test_idle_floor_is_observed_only_after_pressure_reclamation(cache_kind):
+    sched = _make_scheduler()
+    sched._model_weights_bytes = 100
+    sched._steady_resident_bytes = 100
+    readings = iter([900, 200])
+    entries = {"cached": object()}
+    if cache_kind == "prefix":
+        sched.memory_aware_cache = SimpleNamespace(_entries=entries)
+
+        def evict():
+            entries.clear()
+            return True
+
+        sched._evict_one_prefix_cache_entry = evict
+    else:
+        blocks = [SimpleNamespace(cache_data=object())]
+
+        def release(**kwargs):
+            blocks[0].cache_data = None
+            return 1
+
+        sched.paged_cache_manager = SimpleNamespace(
+            blocks=blocks, release_pressure_blocks=release
+        )
+    with (
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=1000),
+        patch.object(
+            sched, "_current_metal_active_bytes", side_effect=lambda: next(readings)
+        ),
+        patch.object(sched, "_estimate_request_kv_bytes", return_value=500),
+        patch.object(sched, "_reclaim_unreachable_metal", return_value=False),
+    ):
+        sched._enforce_metal_cap_at_admission(_make_request())
+    assert sched._steady_resident_bytes == 200

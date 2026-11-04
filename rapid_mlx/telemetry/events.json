@@ -435,6 +435,7 @@
       "values": [
         "format_type_unsupported",
         "prompt_over_window",
+        "memory_window",
         "operational_cap",
         "other"
       ]

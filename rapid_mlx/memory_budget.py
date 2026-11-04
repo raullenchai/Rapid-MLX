@@ -231,3 +231,33 @@ def format_preflight_error(
         f"{device_budget_bytes / 1e9:.1f} GB Metal working-set budget). "
         f"{remediation}"
     )
+
+
+def model_weights_bytes(model: object) -> int | None:
+    """Size unique loaded parameter arrays, excluding all live request caches.
+
+    Process allocator residency includes other engines' KV during dynamic
+    loads. A permanent context ceiling must instead depend only on weights.
+    """
+    from collections.abc import Mapping
+
+    seen: set[int] = set()
+
+    def size(value: object) -> int:
+        if isinstance(value, Mapping):
+            return sum(size(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return sum(size(item) for item in value)
+        if id(value) in seen:
+            return 0
+        seen.add(id(value))
+        nbytes = getattr(value, "nbytes", None)
+        if not isinstance(nbytes, int) or isinstance(nbytes, bool) or nbytes < 0:
+            raise ValueError("unknown parameter size")
+        return nbytes
+
+    try:
+        total = size(model.parameters())
+        return total if total > 0 else None
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return None

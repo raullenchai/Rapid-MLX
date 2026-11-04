@@ -107,16 +107,24 @@ def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | N
     if engine is None:
         return None
     configured = get_config().context_length
-    if configured is not None:
-        # An explicit operator window overrides the advisory memory
-        # projection. An explicit memory-utilization cap still applies.
-        return min(configured, native_context) if native_context else configured
     scheduler = _scheduler_of(engine)
+    configured_window = (
+        (min(configured, native_context) if native_context else configured)
+        if configured is not None
+        else None
+    )
     if scheduler is None:
-        return None
-    probe = getattr(scheduler, "projected_memory_max_context", None)
+        return configured_window
+    # A logical override may exceed an advisory estimate, but cannot promise
+    # a window that an explicitly active admission cap would always refuse.
+    probe_name = (
+        "memory_context_ceiling"
+        if configured is not None
+        else "projected_memory_max_context"
+    )
+    probe = getattr(scheduler, probe_name, None)
     if not callable(probe):
-        return None
+        return configured_window
     try:
         value = probe(native_context)
     except Exception as exc:  # noqa: BLE001
@@ -125,7 +133,9 @@ def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | N
         )
         return None
     if not isinstance(value, int) or value <= 0:
-        return None
+        return configured_window
+    if configured_window is not None:
+        value = min(value, configured_window)
     # Defensive cap: the scheduler already bounds by ``native_context``, but
     # never advertise a memory ceiling larger than the model's own window.
     if isinstance(native_context, int) and native_context > 0:
@@ -1262,7 +1272,19 @@ def _build_codex_model_info(info: ModelInfo) -> dict:
     prompt.  Local models are substantially more reliable with the direct
     ``shell_command`` surface and an explicit act-before-narrating contract.
     """
-    return build_codex_model_info(info.id, info.context_window)
+    from ..agents.context_budget import context_budget_for_ceiling
+
+    ceiling = min(
+        (
+            value
+            for value in (info.context_window, info.max_model_len)
+            if isinstance(value, int) and value > 0
+        ),
+        default=None,
+    )
+    return build_codex_model_info(
+        info.id, context_budget_for_ceiling("codex", ceiling, model=info.id)
+    )
 
 
 @router.get(

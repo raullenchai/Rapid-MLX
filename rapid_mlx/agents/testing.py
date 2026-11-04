@@ -1775,9 +1775,12 @@ class AgentTestRunner:
         # ``setup_agent_config`` is a no-op for env-var-style profiles
         # (codex, opencode, aider) since those carry config via env only.
         try:
-            from .adapter import fetch_context_window, setup_agent_config
+            from .adapter import setup_agent_config
+            from .context_budget import agent_context_budget
 
-            context_length = fetch_context_window(self.base_url, self.model_id)
+            context_length = agent_context_budget(
+                self.profile.name, self.base_url, self.model_id
+            )
 
             redirected = {"HOME": isolated_config_home.name}
             if self.profile.name == "goose":
@@ -1893,9 +1896,11 @@ class AgentTestRunner:
         # profiles with the 32K fallback here would make the test sweep and
         # `agents --setup` exercise materially different configurations.
         try:
-            from .adapter import fetch_context_window
+            from .context_budget import agent_context_budget
 
-            context_length = fetch_context_window(self.base_url, self.model_id)
+            context_length = agent_context_budget(
+                self.profile.name, self.base_url, self.model_id
+            )
         except Exception:  # noqa: BLE001 — retain the documented fallback
             context_length = None
         rendered_config = self.profile.render_config(
