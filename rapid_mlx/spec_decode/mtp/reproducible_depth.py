@@ -274,6 +274,10 @@ def reproducible_schedule(
                 ):
                     raise ValueError("incomplete real-round timings")
                 costs = tuple(c / measured_rounds[0] for c in measured_rounds)
+                # Reject an unreliable curve here, so its depth gate and its
+                # costs fall back together instead of a bad depth surviving.
+                if any(b - a < -0.1 for a, b in zip(costs, costs[1:])):
+                    raise ValueError(f"inverted real-round timings {costs}")
             else:
                 # Legacy measurement providers keep their isolated-cost contract.
                 costs = round_costs(step_ms, verify_ms, draft_ms, steep=steep)

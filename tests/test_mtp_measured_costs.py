@@ -292,3 +292,12 @@ def test_invalid_real_round_timings_keep_fallback_depth(bad):
     )
     assert schedule.depth == 3
     assert schedule.round_costs == class_round_costs(False, 3)
+
+
+def test_inverted_real_round_timings_fall_back_depth_and_costs_together():
+    # A rejected curve must not leave its own (here: zero) depth behind.
+    schedule = reproducible_schedule(
+        "inverted-real", 2, lambda k: Timings(50, (51, 52), 1, (1, 4, 3.8))
+    )
+    assert schedule.depth == 2
+    assert schedule.round_costs == class_round_costs(False, 2)
