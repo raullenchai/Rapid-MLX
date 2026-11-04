@@ -14,6 +14,8 @@ from rapid_mlx.agents import server_discovery as discovery
 from rapid_mlx.agents.server_hint import ServerNotRunningError
 from rapid_mlx.cli_parser import build_parser
 
+pytestmark = pytest.mark.usefixtures("agent_setup_host")
+
 
 @pytest.fixture(autouse=True)
 def no_live_http(monkeypatch):

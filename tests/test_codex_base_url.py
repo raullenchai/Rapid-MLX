@@ -10,6 +10,8 @@ from rapid_mlx.agents import get_profile
 from rapid_mlx.agents.adapter import setup_agent_config
 from rapid_mlx.agents.testing import AgentTestRunner
 
+pytestmark = pytest.mark.usefixtures("agent_setup_host")
+
 
 @pytest.mark.parametrize(
     "supplied,expected",
@@ -137,16 +139,17 @@ def test_cli_normalizes_before_discovery_verification_and_write(tmp_path, monkey
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     calls = []
 
-    def discover(url):
+    def models(url):
         calls.append(("discover", url))
-        return "local-qwen", 32768
+        return [{"id": "local-qwen", "context_window": 32768}]
 
     def verify(url, model, **kwargs):
         calls.append(("verify", url))
-        assert model == "local-qwen"
-        return model
+        # Checked setup discovers the advertised model during verification.
+        assert model == "default"
+        return "local-qwen"
 
-    monkeypatch.setattr("rapid_mlx.agents.adapter._detect_running_model", discover)
+    monkeypatch.setattr("rapid_mlx.agents.adapter._fetch_models", models)
     monkeypatch.setattr("rapid_mlx.agents.setup.verify_server", verify)
     agents_command(
         Namespace(
@@ -162,10 +165,11 @@ def test_cli_normalizes_before_discovery_verification_and_write(tmp_path, monkey
         )
     )
     assert calls == [
-        ("discover", "http://127.0.0.1:8899/v1"),
         ("verify", "http://127.0.0.1:8899/v1"),
+        ("discover", "http://127.0.0.1:8899/v1"),
     ]
     config = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert config["model"] == "local-qwen"
     assert (
         config["model_providers"]["rapid-mlx"]["base_url"] == "http://127.0.0.1:8899/v1"
     )

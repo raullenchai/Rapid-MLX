@@ -8,7 +8,6 @@ instead of failing. Only a generic writer with no model to write still refuses.
 
 from __future__ import annotations
 
-import socket
 import urllib.error
 from types import SimpleNamespace
 
@@ -24,6 +23,8 @@ from rapid_mlx.agents.server_hint import (
     start_server_command,
 )
 
+pytestmark = pytest.mark.usefixtures("agent_setup_host")
+
 
 @pytest.fixture(autouse=True)
 def short_readiness_wait(monkeypatch):
@@ -37,10 +38,8 @@ def short_readiness_wait(monkeypatch):
 
 @pytest.fixture
 def dead_url():
-    """A loopback base URL whose port has nothing listening on it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    """HTTP is refused by agent_setup_host, regardless of real listeners."""
+    port = 18731
     return f"http://127.0.0.1:{port}/v1", port
 
 
@@ -103,10 +102,25 @@ def test_start_command_uses_requested_model_and_pins_port():
     )
 
 
-def test_start_command_falls_back_to_recommended_model_for_default():
+@pytest.mark.parametrize(
+    "ram,cached,expected",
+    [
+        (512.0, False, "qwen3.6-35b-4bit"),
+        (16.0, False, "qwen3.5-4b-4bit"),
+        (64.0, True, "qwen3.5-9b-4bit"),
+    ],
+)
+def test_start_command_falls_back_to_recommended_model_for_default(
+    monkeypatch, ram, cached, expected
+):
+    # Recovery uses the first fitting cached model, then the first fitting model.
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.is_repo_cached", lambda repo: cached and "9B" in repo
+    )
     profile = get_profile("claude-code")
     assert start_server_command(profile, "http://127.0.0.1:8000/v1", "default") == (
-        f"rapid-mlx serve {profile.recommended_models[0]} --port 8000"
+        f"rapid-mlx serve {expected} --port 8000"
     )
 
 
