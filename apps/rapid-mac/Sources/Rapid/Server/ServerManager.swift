@@ -546,6 +546,7 @@ final class ServerManager {
         return minimumMemoryGB * MacHardware.modelUsableMemoryFraction
     }
 
+    /// A routable model may be in standby and will reload on the next request.
     func isModelResident(_ alias: String) -> Bool {
         guard case .ready = state else { return false }
         return residency.contains(alias) || servingAlias == alias
@@ -669,6 +670,8 @@ final class ServerManager {
             ? .approved
             : .cancelled
     }
+
+    private(set) var idleUnloadSecondsAtSpawn: Int?
 
     private(set) var localSearchEnabledAtSpawn = false
     private(set) var localSearchSupportedAtSpawn: Bool?
@@ -2263,7 +2266,7 @@ final class ServerManager {
         }
         var reclaimableBytes: UInt64 = 0
         let residentsToRelease = residency.models.filter { resident in
-            guard resident.state != "evicting" else { return false }
+            guard resident.isHoldingMemory else { return false }
             switch plan {
             case .keepResidentModels: return false
             case .releaseResidentModels: return true
@@ -2288,6 +2291,8 @@ final class ServerManager {
     /// Rebuild only the named resident engine with its current performance
     /// config. The sidecar and sibling residents stay alive; this is the
     /// multi-model-safe replacement for Settings' former process-wide stop.
+    /// Standby primaries remain registered, so the same reload endpoint can
+    /// apply their config without requiring an inference request first.
     func reloadResidentPerformance(
         alias: String,
         hfPath: String? = nil,
@@ -3098,10 +3103,12 @@ final class ServerManager {
             userOverrides: safeUserOverrides,
             existing: mergedPerformanceFlags
         )
+        let idleUnloadSeconds = IdleModelReleasePreference.value()
         var extraFlags = performanceFlags
         extraFlags.append(contentsOf: Self.residentLaunchFlags(
             memoryCeilingGB: ModelSizing.residentMemoryCeilingGB(on: hardware),
-            capabilities: runtimeCapabilities
+            capabilities: runtimeCapabilities,
+            idleSetting: idleUnloadSeconds
         ))
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
@@ -3118,6 +3125,8 @@ final class ServerManager {
             localSearchEnabled: LocalSearchFeatureConfig.isEnabled()
         )
 
+        idleUnloadSecondsAtSpawn = runtimeCapabilities.supportsPrimaryIdleUnload ? idleUnloadSeconds : nil
+        configureIdleModelRelease(idleUnloadSeconds)
         localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
         localSearchSupportedAtSpawn = runtimeCapabilities.supportsLocalSearch
 
@@ -3136,6 +3145,7 @@ final class ServerManager {
             ])
         }
         let unsupportedResidentFlags = Self.unsupportedResidentLaunchFlagNames(
+            idleSetting: idleUnloadSeconds,
             capabilities: runtimeCapabilities
         )
         if !unsupportedResidentFlags.isEmpty {
@@ -3474,14 +3484,17 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
-    /// Poll only while enabled. The server's activity clock decides idleness;
-    /// observed busy intervals also reset the local clock. Servers without the
-    /// activity clock never auto-release.
+    /// Native idle unload frees chat models with the API online. The engine
+    /// has no idle release for audio lanes yet, so the poll keeps stopping
+    /// the process when an idle dictation/speech lane still holds memory, and
+    /// remains the whole mechanism for runtimes without the native flag.
+    /// The server's activity clock decides idleness, while observed busy
+    /// intervals also reset the local clock. Missing activity disables release.
     func configureIdleModelRelease(_ setting: Int) {
         idleReleaseTask?.cancel()
         idleReleaseTask = nil
         observedIdleActivity = Date()
-        guard IdleModelReleasePreference.choices.contains(setting), setting > 0 else { return }
+        guard IdleModelReleasePreference.mode(setting: setting, runtimeSupportsNativeUnload: idleUnloadSecondsAtSpawn != nil) != .off else { return }
         idleReleaseTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -3490,6 +3503,44 @@ final class ServerManager {
             }
         }
     }
+
+    func applyIdleModelRelease(_ setting: Int) async {
+        configureIdleModelRelease(setting)
+        guard case .ready = state, let secondsAtSpawn = idleUnloadSecondsAtSpawn,
+              IdleModelReleasePreference.choices.contains(setting), setting != secondsAtSpawn else { return }
+        let session = activeServerSessionID
+        let refreshed = await refreshResidency()
+        guard !Task.isCancelled, session == activeServerSessionID,
+              IdleModelReleasePreference.value() == setting else { return }
+        let isReady: Bool
+        if case .ready = state { isReady = true } else { isReady = false }
+        let decision = IdleModelReleasePreference.restartDecision(
+            setting: setting,
+            secondsAtSpawn: idleUnloadSecondsAtSpawn,
+            isReady: isReady,
+            isOperating: !refreshed || isOperating || communityBenchmarkReserved || runtimeProbeOperation != nil,
+            hasActiveRequests: residency.hasActiveRequests
+                || residency.models.contains { $0.isTransitioning }
+                || residency.audioLanes.contains { $0.state == "resident" && $0.activeRequests == nil },
+            hasResidentLoadsInFlight: !residentLoadsInFlight.isEmpty,
+            alias: residency.preferredTextAlias(fallback: launchedChildAlias)
+        )
+        switch decision {
+        case .none: break
+        case .deferred:
+            appendLogLines([String(localized: "The idle unload setting will apply the next time a model starts.")])
+        case .restart(let alias):
+            if !(await restartForSpawnSettings(alias: alias)) {
+                appendLogLines([String(localized: "Could not restart the model after changing the idle unload setting.")])
+            }
+        }
+    }
+
+    /// The running child supports native unload. Chat-only children are then
+    /// never stopped by the poll, even when a busy child deferred the restart
+    /// that would apply a newly enabled setting: stopping it would take the
+    /// API offline, which is exactly what native unload exists to avoid.
+    private var nativeIdleUnloadSupported: Bool { idleUnloadSecondsAtSpawn != nil }
 
     private func checkIdleModelRelease(setting: Int) async {
         guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
@@ -3503,7 +3554,15 @@ final class ServerManager {
         }
         let now = Date()
         let audio = residency.audioLanes.filter { $0.state == "resident" }
-        let busy = residency.models.contains { $0.activeRequests > 0 || $0.state != "resident" }
+        let native = nativeIdleUnloadSupported
+        guard IdleModelReleasePreference.requiresProcessStop(
+            nativeUnloadActive: native,
+            residentAudioLanes: audio.count
+        ) else { return }
+        let busy = residency.models.contains {
+            $0.activeRequests > 0
+                || IdleModelReleasePreference.blocksProcessStop($0, nativeUnloadActive: native)
+        }
             || audio.contains { $0.activeRequests == nil || $0.activeRequests! > 0 }
         if busy { observedIdleActivity = now }
         // Automatic release needs the server-wide activity clock; servers
@@ -3531,14 +3590,22 @@ final class ServerManager {
         if let idleSetting {
             // The refresh suspended; the setting may have changed or an app
             // operation may have started since.
-            guard !Task.isCancelled, IdleModelReleasePreference.value() == idleSetting,
+            let native = nativeIdleUnloadSupported
+            guard !Task.isCancelled,
+                  IdleModelReleasePreference.value() == idleSetting,
                   !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
                   !communityBenchmarkReserved else { return .busy }
             // Re-check everything on the refreshed snapshot: a request, a
             // model load, or an audio job may have started during the refresh.
             guard let activity = residency.activity, activity.inFlight == 0,
                   activity.idleSeconds >= Double(idleSetting),
-                  !residency.models.contains(where: { $0.state != "resident" }) else { return .busy }
+                  !residency.models.contains(where: {
+                      IdleModelReleasePreference.blocksProcessStop($0, nativeUnloadActive: native)
+                  }),
+                  IdleModelReleasePreference.requiresProcessStop(
+                      nativeUnloadActive: native,
+                      residentAudioLanes: residency.audioLanes.filter { $0.state == "resident" }.count
+                  ) else { return .busy }
         }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
             return .busy
@@ -5084,7 +5151,8 @@ final class ServerManager {
 
     nonisolated internal static func residentLaunchFlags(
         memoryCeilingGB: Double,
-        capabilities: ServerRuntimeCapabilities
+        capabilities: ServerRuntimeCapabilities,
+        idleSetting: Int = 0
     ) -> [String] {
         var flags: [String] = []
         if capabilities.supportsResidentMemoryLimitGB {
@@ -5096,16 +5164,27 @@ final class ServerManager {
         if capabilities.supportsResidentModelIdleTTL {
             flags.append(contentsOf: [
                 "--resident-model-idle-ttl",
-                "1800",
+                // Follow a shorter idle setting only where native unload is
+                // supported: that is where a changed setting restarts the
+                // child, so the TTL never outlives the setting that chose it.
+                String(capabilities.supportsPrimaryIdleUnload && idleSetting > 0
+                    ? min(1800, idleSetting) : 1800),
             ])
+        }
+        if capabilities.supportsPrimaryIdleUnload, idleSetting > 0 {
+            flags.append(contentsOf: ["--idle-unload-seconds", String(idleSetting)])
         }
         return flags
     }
 
-    nonisolated private static func unsupportedResidentLaunchFlagNames(
+    nonisolated internal static func unsupportedResidentLaunchFlagNames(
+        idleSetting: Int = 0,
         capabilities: ServerRuntimeCapabilities
     ) -> [String] {
         var names: [String] = []
+        if idleSetting > 0, !capabilities.supportsPrimaryIdleUnload {
+            names.append("--idle-unload-seconds")
+        }
         if !capabilities.supportsResidentMemoryLimitGB {
             names.append("--resident-memory-limit-gb")
         }

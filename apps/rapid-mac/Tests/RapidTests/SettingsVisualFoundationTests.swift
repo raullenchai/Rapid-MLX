@@ -384,7 +384,7 @@ struct SettingsVisualFoundationTests {
     @Test("Idle release picker uses the shared settings row")
     func idleReleasePickerUsesSettingsRow() throws {
         let panel = try strippedSource("Sources/Rapid/UI/SettingsModelManagementPanel.swift")
-        #expect(panel.contains(#"SettingsRow(title:String(localized:"Releasemodelwhenidle"),description:String(localized:"Freesmemoryafterthislongwithoutanyrequests.Thenextmessagereloadsthemodel,whichtakesafewseconds.")){Picker("Releasemodelwhenidle",selection:$idleReleaseSeconds)"#))
+        #expect(panel.contains(#"SettingsRow(title:String(localized:"Unloadmodelwhenidle"),description:String(localized:"IdlechatmodelsareunloadedwhilethelocalAPIstaysonline;thenextrequestreloadsthem.Theserverstillstopsifadictationorspeechmodelisidle,oriftheruntimeistoooldforidleunload.")){Picker("Unloadmodelwhenidle",selection:$idleReleaseSeconds)"#))
     }
 
     @Test("The regular button tiers share one height")

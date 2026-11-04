@@ -31,6 +31,12 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
         case replacementProjection = "replacement_projection"
     }
 
+    /// Routability survives native idle unload; memory residency does not.
+    var isRoutable: Bool { state != "evicting" }
+    /// Count loaded weights and active acquisition, excluding routes releasing memory.
+    var isHoldingMemory: Bool { state == "resident" || state == "loading" }
+    var isTransitioning: Bool { state == "loading" || state == "unloading" || state == "evicting" }
+
     func matches(_ alias: String) -> Bool {
         id == alias || modelPath == alias || aliases.contains(alias)
     }
@@ -249,8 +255,18 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
         audioLanes: []
     )
 
+    var hasActiveRequests: Bool {
+        (activity?.inFlight ?? 0) > 0
+            || models.contains { $0.activeRequests > 0 }
+            || audioLanes.contains { ($0.activeRequests ?? 0) > 0 }
+    }
+
+    func isHoldingMemory(for alias: String) -> Bool {
+        models.contains { $0.matches(alias) && $0.isHoldingMemory }
+    }
+
     func contains(_ alias: String) -> Bool {
-        models.contains { $0.matches(alias) && $0.state != "evicting" }
+        models.contains { $0.matches(alias) && $0.isRoutable }
     }
 
     func containsResidentAudioLane(modelPath: String) -> Bool {
@@ -262,7 +278,7 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     /// visits Speech, even while a text engine is resident in that process.
     func preferredTextAlias(fallback: String?) -> String? {
         let textModels = models.filter {
-            $0.modality == "text" && $0.state != "evicting"
+            $0.modality == "text" && $0.isRoutable
         }
         guard let model = textModels.first(where: { $0.primary }) ?? textModels.first else {
             return fallback
@@ -280,14 +296,14 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     /// as vision — accurate enough for "might accept an image", far too broad
     /// for "is this the serialised one-at-a-time lane".
     func modality(for alias: String) -> String? {
-        models.first { $0.matches(alias) && $0.state != "evicting" }?.modality
+        models.first { $0.matches(alias) && $0.isRoutable }?.modality
     }
 
     /// Requests the engine currently has in flight on `alias`. On the
     /// serialised `--mllm` lane a non-zero value means anything we send now
     /// queues behind real work.
     func activeRequests(for alias: String) -> Int? {
-        models.first { $0.matches(alias) && $0.state != "evicting" }?.activeRequests
+        models.first { $0.matches(alias) && $0.isRoutable }?.activeRequests
     }
 }
 
@@ -306,7 +322,7 @@ struct ModelSwitchRisk: Equatable, Sendable {
     ) -> ModelSwitchRisk? {
         guard currentAlias != targetAlias else { return nil }
         let activeRequests = residency?.models.first {
-            $0.matches(currentAlias) && $0.state != "evicting"
+            $0.matches(currentAlias) && $0.isRoutable
         }?.activeRequests ?? 0
         guard activeRequests > 0 else { return nil }
         return ModelSwitchRisk(
@@ -537,7 +553,49 @@ struct ServerResidencyClient {
 enum IdleModelReleasePreference {
     static let storageKey = "rapid.server.idle_model_release.v1"
     static let defaultValue = 0
-    static let choices = [0, 900, 1800, 3600]
+    static let choices = [0, 300, 900, 1800, 3600]
+
+    enum Mode: Equatable, Sendable { case off, native, legacyStop }
+    enum RestartDecision: Equatable, Sendable {
+        case none
+        case deferred
+        case restart(alias: String)
+    }
+
+    static func mode(setting: Int, runtimeSupportsNativeUnload: Bool) -> Mode {
+        guard choices.contains(setting), setting > 0 else { return .off }
+        return runtimeSupportsNativeUnload ? .native : .legacyStop
+    }
+
+    /// Whether automatic idle release still has to stop the process. A child
+    /// that supports native unload keeps the API online for chat models (a
+    /// restart applies a changed setting); the engine has no idle release for
+    /// audio lanes, so a resident lane keeps the stop path.
+    static func requiresProcessStop(nativeUnloadActive: Bool, residentAudioLanes: Int) -> Bool {
+        !nativeUnloadActive || residentAudioLanes > 0
+    }
+
+    /// A model mid-transition is never stopped. Without native unload any
+    /// non-resident model means work is under way; with it, a standby
+    /// primary is simply idle.
+    static func blocksProcessStop(_ model: ResidentModelStatus, nativeUnloadActive: Bool) -> Bool {
+        model.isTransitioning || (!nativeUnloadActive && !model.isHoldingMemory)
+    }
+
+    static func restartDecision(
+        setting: Int,
+        secondsAtSpawn: Int?,
+        isReady: Bool,
+        isOperating: Bool,
+        hasActiveRequests: Bool,
+        hasResidentLoadsInFlight: Bool,
+        alias: String?
+    ) -> RestartDecision {
+        guard choices.contains(setting), let secondsAtSpawn, setting != secondsAtSpawn,
+              isReady, let alias else { return .none }
+        guard !isOperating, !hasActiveRequests, !hasResidentLoadsInFlight else { return .deferred }
+        return .restart(alias: alias)
+    }
 
     static func value(in defaults: UserDefaults = .standard) -> Int {
         let value = defaults.object(forKey: storageKey) as? Int ?? defaultValue

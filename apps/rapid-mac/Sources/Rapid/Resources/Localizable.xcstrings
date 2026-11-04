@@ -962,6 +962,16 @@
         }
       }
     },
+    "After 5 minutes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "5 分钟后"
+          }
+        }
+      }
+    },
     "Allow %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1628,6 +1638,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制设置"
+          }
+        }
+      }
+    },
+    "Could not restart the model after changing the idle unload setting." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更改闲置卸载设置后无法重新启动模型。"
           }
         }
       }
@@ -3192,12 +3212,12 @@
         }
       }
     },
-    "Frees memory after this long without any requests. The next message reloads the model, which takes a few seconds." : {
+    "Idle chat models are unloaded while the local API stays online; the next request reloads them. The server still stops if a dictation or speech model is idle, or if the runtime is too old for idle unload." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在指定时间内没有请求时释放内存。下一条消息会重新加载模型，需要几秒钟。"
+            "value" : "闲置的聊天模型会被卸载，本地 API 保持在线，下一次请求会重新载入。若听写或语音模型闲置，或运行时版本过旧不支持闲置卸载，服务器仍会停止。"
           }
         }
       }
@@ -4220,12 +4240,12 @@
         }
       }
     },
-    "Release model when idle" : {
+    "Reloading…" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "空闲时释放模型"
+            "value" : "正在重新载入"
           }
         }
       }
@@ -4606,6 +4626,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "大内存 Mac 的高速之选 — 相同内存占用，出色速度。"
+          }
+        }
+      }
+    },
+    "The idle unload setting will apply the next time a model starts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "闲置卸载设置将在下次启动模型时生效。"
           }
         }
       }
@@ -5957,6 +5987,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "卸载当前模型"
+          }
+        }
+      }
+    },
+    "Unload model when idle" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "闲置时卸载模型"
           }
         }
       }
