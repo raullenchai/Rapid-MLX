@@ -137,6 +137,14 @@ class Timings(NamedTuple):
     round_ms: tuple[float, ...] = ()
 
 
+class RoundCalibrationError(RuntimeError):
+    """Real-round timing failed after the target widths classified the host."""
+
+    def __init__(self, steep: bool):
+        super().__init__("startup round calibration failed")
+        self.steep = steep
+
+
 def _check(step_ms: float, verify_ms: tuple[float, ...], draft_ms: float) -> None:
     if (
         not all(math.isfinite(v) for v in (step_ms, *verify_ms, draft_ms))
@@ -291,7 +299,9 @@ def reproducible_schedule(
                 steep_verify=steep,
                 round_costs=bounded_round_costs(costs, steep, max_k),
             )
-        except Exception:  # noqa: BLE001 -- measurement must never fail a request
+        except Exception as exc:  # noqa: BLE001 -- measurement must never fail a request
+            if isinstance(exc, RoundCalibrationError):
+                steep = exc.steep
             logger.warning(
                 "[MTP] could not time the target forward for reproducible "
                 "requests on %r; using class costs at depth <= %d",
@@ -421,43 +431,52 @@ def time_target_forwards(model: Any, max_k: int) -> Timings:
                 )
             mx.eval(result)
             draft_ms = (time.perf_counter() - t0) * 1000
-            for depth in range(max_k + 1):
-                check_budget()
-                gen = calibration_generator(model, prompt, depth, stats[depth])
-                generators.append(gen)
-                advance_greedy_round(gen, stats[depth])  # prefill/bootstrap
-            for turn in range(TIMING_WARMUP_ROUNDS + TIMING_ROUNDS):
-                if time.perf_counter() - started > TIMING_BUDGET_SECONDS:
-                    break
-                for depth, gen in enumerate(generators):
-                    mx.synchronize()
-                    advance_greedy_round(gen, stats[depth])  # restore pipeline
-                    t0 = time.perf_counter()
-                    advance_greedy_round(gen, stats[depth])
-                    elapsed = (time.perf_counter() - t0) * 1000
-                    if int(stats[depth]["round_depth"]) != depth:
-                        raise ValueError(
-                            "scratch cache cannot exercise requested depth"
-                        )
-                    if turn >= TIMING_WARMUP_ROUNDS:
-                        samples[depth].append(elapsed)
-            if min(map(len, samples)) < 3:
-                raise TimeoutError("insufficient startup round samples within budget")
+            width_ms = tuple(statistics.median(values) for values in widths)
+            try:
+                for depth in range(max_k + 1):
+                    check_budget()
+                    gen = calibration_generator(model, prompt, depth, stats[depth])
+                    generators.append(gen)
+                    advance_greedy_round(gen, stats[depth])  # prefill/bootstrap
+                for turn in range(TIMING_WARMUP_ROUNDS + TIMING_ROUNDS):
+                    if time.perf_counter() - started > TIMING_BUDGET_SECONDS:
+                        break
+                    for depth, gen in enumerate(generators):
+                        mx.synchronize()
+                        advance_greedy_round(gen, stats[depth])  # restore pipeline
+                        t0 = time.perf_counter()
+                        advance_greedy_round(gen, stats[depth])
+                        elapsed = (time.perf_counter() - t0) * 1000
+                        if int(stats[depth]["round_depth"]) != depth:
+                            raise ValueError(
+                                "scratch cache cannot exercise requested depth"
+                            )
+                        if turn >= TIMING_WARMUP_ROUNDS:
+                            samples[depth].append(elapsed)
+                if min(map(len, samples)) < 3:
+                    raise TimeoutError(
+                        "insufficient startup round samples within budget"
+                    )
+                medians = tuple(statistics.median(values) for values in samples)
+                for values, median in zip(samples, medians):
+                    if (
+                        not math.isfinite(median)
+                        or median <= 0
+                        or statistics.median(abs(v - median) for v in values)
+                        > 0.2 * median
+                    ):
+                        raise ValueError("unstable startup round timings")
+            except Exception as exc:
+                # Widths were measured: keep the host's class for the fallback.
+                raise RoundCalibrationError(
+                    verify_is_steep(width_ms[0], width_ms[1:], max_k)
+                ) from exc
         finally:
             # Flush pending async work before releasing private caches, even
             # if calibration fails. No serving controller/counter was touched.
             mx.synchronize()
             for gen in generators:
                 gen.close()
-    medians = tuple(statistics.median(values) for values in samples)
-    for values, median in zip(samples, medians):
-        if (
-            not math.isfinite(median)
-            or median <= 0
-            or statistics.median(abs(v - median) for v in values) > 0.2 * median
-        ):
-            raise ValueError("unstable startup round timings")
-    width_ms = tuple(statistics.median(values) for values in widths)
     return Timings(width_ms[0], width_ms[1:], draft_ms, medians)
 
 

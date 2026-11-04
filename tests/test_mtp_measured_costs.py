@@ -294,6 +294,18 @@ def test_invalid_real_round_timings_keep_fallback_depth(bad):
     assert schedule.round_costs == class_round_costs(False, 3)
 
 
+def test_failed_round_calibration_keeps_measured_host_class():
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import RoundCalibrationError
+
+    def measure(k):
+        raise RoundCalibrationError(True)
+
+    schedule = reproducible_schedule("round-fail-steep", 3, measure)
+    assert schedule.depth == 3
+    assert schedule.steep_verify is True
+    assert schedule.round_costs == class_round_costs(True, 3)
+
+
 def test_inverted_real_round_timings_fall_back_depth_and_costs_together():
     # A rejected curve must not leave its own (here: zero) depth behind.
     schedule = reproducible_schedule(
