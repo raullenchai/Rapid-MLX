@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 
 @dataclass
@@ -156,14 +157,18 @@ class Endpoint:
     server: Server | None = None
     follow: bool = False
     model: str | None = None
+    skipped_auth: list[Server] = field(default_factory=list)
     _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
 
     def refresh(self) -> None:
         # Explicit URLs/ports are authoritative, even if an unbound serve
         # process eventually chooses another port.
         if self.server is None and self.follow:
-            resolved = resolve_endpoint(self.model, report_ignored=False)
+            resolved = resolve_endpoint(
+                self.model, report_ignored=False, skipped_auth=self.skipped_auth
+            )
             self.base_url, self.server = resolved.base_url, resolved.server
+            self.skipped_auth = resolved.skipped_auth
         # An argv port is only a guess until the process listens: keep
         # re-reading the selected pid's real listener (throttled) so a server
         # that binds somewhere else is followed instead of waited on forever.
@@ -243,16 +248,94 @@ def _default_endpoint_ready() -> tuple[bool, bool]:
         return False, False
 
 
+def requires_missing_key(port: int) -> bool:
+    """Only an observed auth rejection excludes an automatic candidate.
+
+    Health alone is insufficient: the server can expose it publicly while
+    protecting models. Refused connections and startup errors remain eligible.
+    Never read credentials from another process or Desktop's storage.
+    """
+    if os.environ.get("RAPID_MLX_API_KEY"):
+        return False
+    for path in ("/health", "/v1/models"):
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}{path}", timeout=0.25):
+                pass
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            if exc.code in (401, 403):
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
+def desktop_owned(server: Server) -> bool:
+    """Identify Desktop only when its record matches both process and port."""
+    try:
+        record = json.loads(
+            (
+                Path.home() / "Library/Application Support/Rapid/owned-server.json"
+            ).read_text()
+        )
+        return (
+            isinstance(record, dict)
+            and record.get("pid") == server.pid
+            and record.get("port") == server.port
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def skipped_auth_hint(server: Server, agent: str) -> str:
+    owner = (
+        "belongs to Rapid-MLX Desktop"
+        if desktop_owned(server)
+        else "requires an API key"
+    )
+    return (
+        f"  Server on :{server.port} {owner}; copy the API key from Rapid-MLX "
+        "Desktop's Agent > Connection details > API key, and rerun with "
+        f"RAPID_MLX_API_KEY=<key> rapid-mlx agents {agent} --setup --port {server.port}; "
+        "or start a CLI server with rapid-mlx serve."
+    )
+
+
 def resolve_endpoint(
-    model: str | None = None, *, report_ignored: bool = True
+    model: str | None = None,
+    *,
+    report_ignored: bool = True,
+    skipped_auth: list[Server] | None = None,
 ) -> Endpoint:
     default = "http://localhost:8000/v1"
     healthy, answered = _default_endpoint_ready()
-    if healthy:
+    skipped = (
+        list(skipped_auth or []) if not os.environ.get("RAPID_MLX_API_KEY") else []
+    )
+    rejected: dict[int, bool] = {s.port: True for s in skipped if s.port is not None}
+
+    def missing_key(port: int) -> bool:
+        if port not in rejected:
+            rejected[port] = requires_missing_key(port)
+        return rejected[port]
+
+    if healthy and not missing_key(8000):
         return Endpoint(default)
     # A process whose sockets cannot be read and whose argv names no port
     # cannot be shown to own any endpoint; waiting on it could never end.
     servers = [s for s in scan_servers() if s.port is not None or s.inspected]
+    skipped.extend(
+        s
+        for s in servers
+        if s.port is not None and missing_key(s.port) and s not in skipped
+    )
+    if (
+        (healthy or answered)
+        and missing_key(8000)
+        and not any(s.port == 8000 for s in skipped)
+    ):
+        skipped.append(Server(0, 8000, "(unknown)"))
+    servers = [s for s in servers if s.port is None or not missing_key(s.port)]
     candidates = (
         [
             s
@@ -264,7 +347,9 @@ def resolve_endpoint(
     )
     default_server = next((s for s in candidates if s.port == 8000), None)
     if answered and default_server is not None:
-        return Endpoint(default, default_server, follow=True, model=model)
+        return Endpoint(
+            default, default_server, follow=True, model=model, skipped_auth=skipped
+        )
     if model and not candidates and report_ignored:
         for server in servers[:5]:
             port = str(server.port) if server.port else "unknown"
@@ -292,8 +377,9 @@ def resolve_endpoint(
             server,
             follow=True,
             model=model,
+            skipped_auth=skipped,
         )
-    return Endpoint(default, follow=True, model=model)
+    return Endpoint(default, follow=True, model=model, skipped_auth=skipped)
 
 
 def server_for_url(base_url: str) -> Server | None:

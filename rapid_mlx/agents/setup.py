@@ -58,6 +58,10 @@ class ServerLoadingError(RuntimeError):
     """The startup health probe returned HTTP 503 while loading."""
 
 
+class ServerAuthenticationError(RuntimeError):
+    """The endpoint rejected the caller's credentials."""
+
+
 @dataclass(frozen=True)
 class SetupPlan:
     agent: str
@@ -729,7 +733,7 @@ def verify_server(
         if checking_health and exc.code == 503:
             raise ServerLoadingError(f"health returned HTTP 503 at {root}") from exc
         if exc.code in (401, 403):
-            raise RuntimeError(
+            raise ServerAuthenticationError(
                 f"server authentication failed at {root}: HTTP {exc.code}; "
                 "check RAPID_MLX_API_KEY"
             ) from exc
@@ -792,6 +796,8 @@ def wait_for_server(
             endpoint.refresh()
             base_url = endpoint.base_url
             server = endpoint.server
+            if server is None and any(s.port == 8000 for s in endpoint.skipped_auth):
+                raise ServerNotRunningError("no accessible server is running")
         if server is not None and not pid_alive(server.pid):
             track_agent_configure_failed("server_not_ready", agent)
             raise RuntimeError(
@@ -810,6 +816,23 @@ def wait_for_server(
                 track_failure=False,
             )
         except RuntimeError as exc:
+            if (
+                isinstance(exc, ServerAuthenticationError)
+                and endpoint is not None
+                and endpoint.follow
+                and not os.environ.get("RAPID_MLX_API_KEY")
+            ):
+                # A starting process may only begin enforcing auth after the
+                # first discovery probe. Re-run selection rather than pinning it.
+                from rapid_mlx.connect import _parse_base_url
+
+                from .server_discovery import Server
+
+                endpoint.skipped_auth.append(
+                    server or Server(0, _parse_base_url(base_url)[1], "(unknown)")
+                )
+                endpoint.server = None
+                continue
             # Healthy servers advertising the wrong/no model are real failures,
             # independent of how long downloading/loading took.
             if isinstance(exc, (ModelNotAdvertisedError, ServerNoModelsError)):
@@ -835,7 +858,12 @@ def wait_for_server(
                 raise
             elif not is_local_base_url(base_url) or time.monotonic() >= deadline:
                 track_agent_configure_failed("server_not_ready", agent)
-                raise RuntimeError(
+                error_type = (
+                    ServerAuthenticationError
+                    if isinstance(exc, ServerAuthenticationError)
+                    else RuntimeError
+                )
+                raise error_type(
                     f"server did not become ready at {base_url}: {exc}"
                 ) from exc
             time.sleep(0.25)

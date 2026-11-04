@@ -2330,3 +2330,22 @@ def test_opencode_only_known_supported_major_gets_standalone(private_home, versi
         "opencode", private_home, "model", 7660, version=version
     )
     assert "--standalone" not in command
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_short_launch_does_not_adopt_server_rejecting_saved_key(
+    private_home, capsys, status
+):
+    from rapid_mlx.launch.cli import launch_command
+
+    isolated.stable_key()
+    with (
+        patch(
+            "rapid_mlx.agents.isolated.urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError("url", status, "denied", {}, None),
+        ),
+        pytest.raises(SystemExit, match="1"),
+    ):
+        launch_command(_launch_args("goose"))
+    assert isolated.saved_model("goose") is None
+    assert "could not verify" in capsys.readouterr().err

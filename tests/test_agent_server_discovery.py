@@ -15,6 +15,14 @@ from rapid_mlx.agents.server_hint import ServerNotRunningError
 from rapid_mlx.cli_parser import build_parser
 
 
+@pytest.fixture(autouse=True)
+def no_live_http(monkeypatch):
+    def refuse_http(*_args, **_kwargs):
+        raise ConnectionRefusedError()
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", refuse_http)
+
+
 @pytest.fixture
 def clock(monkeypatch):
     now = [0.0]
@@ -209,7 +217,15 @@ def test_default_ready_endpoint_takes_priority(monkeypatch):
     monkeypatch.setattr(
         discovery, "scan_servers", lambda: pytest.fail("default endpoint already ready")
     )
-    assert discovery.resolve_endpoint().base_url == "http://localhost:8000/v1"
+    endpoint = discovery.resolve_endpoint("tiny-model")
+    assert endpoint == discovery.Endpoint("http://localhost:8000/v1")
+    monkeypatch.setattr(
+        discovery,
+        "resolve_endpoint",
+        lambda *_a, **_k: pytest.fail("healthy endpoint is fixed"),
+    )
+    endpoint.refresh()
+    assert endpoint == discovery.Endpoint("http://localhost:8000/v1")
 
 
 @pytest.mark.parametrize("requested", [None, "model-a", "public-a", "model-b"])
@@ -921,3 +937,210 @@ def test_remote_url_has_no_local_server_and_bad_progress_payload(monkeypatch, ca
     )
     discovery.Progress().show("http://localhost:8462/v1", 0)
     assert "downloading or preparing" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("port", [8000, 62801])
+@pytest.mark.parametrize("protected_path", ["/health", "/v1/models"])
+def test_auto_setup_skips_inaccessible_server(
+    clock, events, configs, monkeypatch, capsys, status, port, protected_path
+):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    server = discovery.Server(123, port, "tiny-model", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    record = configs / "Library/Application Support/Rapid/owned-server.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"pid": 123, "port": port}))
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if f":{port}/" not in url:
+            raise ConnectionRefusedError()
+        if url.endswith(protected_path):
+            raise urllib.error.HTTPError(url, status, "auth", {}, BytesIO())
+        return Response(b"{}")
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args("codex", port=None))
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "No Rapid-MLX server" in output
+    assert "setup failed" not in output
+    assert f"Server on :{port} belongs to Rapid-MLX Desktop" in output
+    hint_lines = [line for line in output.splitlines() if f"Server on :{port}" in line]
+    assert len(hint_lines) == 1
+    assert "Agent > Connection details > API key" in hint_lines[0]
+    assert "Connect Tools" not in output
+    assert (
+        f"RAPID_MLX_API_KEY=<key> rapid-mlx agents codex --setup --port {port}"
+        in hint_lines[0]
+    )
+    assert "rapid-mlx serve" in output
+    assert "Using the Rapid-MLX server" not in output
+    assert not list(configs.rglob("config.toml"))
+    assert events == [("failed", "server_not_running", "codex")]
+
+
+@pytest.mark.parametrize("explicit", ["port", "url"])
+def test_explicit_auth_failure_retry_includes_key(
+    clock, events, configs, monkeypatch, capsys, explicit
+):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if url.endswith("/models"):
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        return Response(b"{}")
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    options = args("codex", port=62801)
+    if explicit == "url":
+        options.port = None
+        options.base_url = "http://localhost:62801/v1"
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(options)
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "authentication failed" in output
+    assert "Retry: RAPID_MLX_API_KEY=<key> rapid-mlx agents codex --setup" in output
+    assert "Agent > Connection details > API key" in output
+    assert "Connect Tools" not in output
+    assert not list(configs.rglob("config.toml"))
+
+
+@pytest.mark.parametrize("port", [8000, 62801])
+def test_valid_key_auto_setup_uses_protected_server(
+    clock, events, configs, monkeypatch, capsys, port
+):
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "test-key")
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, port, "tiny-model", listening=True)],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if f":{port}/" not in url:
+            raise ConnectionRefusedError()
+        if url.endswith("/models"):
+            assert request.get_header("Authorization") == "Bearer test-key"
+            return Response(b'{"data": [{"id": "tiny-model"}]}')
+        return Response(b"{}")
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    cli.agents_command(args("codex", port=None))
+    config = configs / "codex/config.toml"
+    assert f"localhost:{port}" in config.read_text()
+    assert "tiny-model" in config.read_text()
+    assert "Connect Tools" not in capsys.readouterr().out
+    assert events == [("configured", "codex")]
+
+
+def test_auto_discovery_continues_after_auth_rejection(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(1, 62801, "a"), discovery.Server(2, 8462, "b")],
+    )
+
+    def response(url, **_kwargs):
+        if ":62801/" in url:
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        raise ConnectionRefusedError()
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    assert discovery.resolve_endpoint().base_url == "http://localhost:8462/v1"
+
+
+@pytest.mark.parametrize(
+    "record", [None, [], {"pid": 999, "port": 62801}, {"pid": 123, "port": 8000}]
+)
+def test_desktop_recognition_requires_matching_record(configs, record):
+    path = configs / "Library/Application Support/Rapid/owned-server.json"
+    path.parent.mkdir(parents=True)
+    if record is not None:
+        path.write_text(json.dumps(record))
+    hint = discovery.skipped_auth_hint(discovery.Server(123, 62801, "tiny"), "codex")
+    assert "requires an API key" in hint
+    assert "belongs to" not in hint
+
+
+@pytest.mark.parametrize("discovery_times_out", [False, True])
+def test_auto_setup_reselects_when_starting_server_begins_requiring_auth(
+    clock, events, configs, monkeypatch, capsys, discovery_times_out
+):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, 62801, "tiny-model", listening=True)],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    protected = False
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if ":62801/" not in url:
+            raise ConnectionRefusedError()
+        if protected and url.endswith("/models"):
+            if discovery_times_out and isinstance(request, str):
+                raise TimeoutError()
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        return Response(b'{"data": [{"id": "tiny-model"}]}')
+
+    original_verify = setup.verify_server
+
+    def verify(*a, **kw):
+        nonlocal protected
+        protected = True
+        return original_verify(*a, **kw)
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    monkeypatch.setattr(setup, "verify_server", verify)
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args("codex", port=None))
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "No Rapid-MLX server" in output
+    assert "Server on :62801 requires an API key" in output
+    assert events == [("failed", "server_not_running", "codex")]
+
+
+def test_public_default_health_does_not_bypass_auth_filter(monkeypatch):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr(discovery, "_default_endpoint_ready", lambda: (True, True))
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [])
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(url, **_kwargs):
+        if url.endswith("/models"):
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        return Response(b"{}")
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    endpoint = discovery.resolve_endpoint()
+    assert endpoint.server is None
+    assert [s.port for s in endpoint.skipped_auth] == [8000]
+    with pytest.raises(ServerNotRunningError):
+        setup.wait_for_server(
+            endpoint.base_url, "default", agent="codex", endpoint=endpoint
+        )

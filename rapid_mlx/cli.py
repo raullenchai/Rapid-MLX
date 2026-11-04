@@ -15522,6 +15522,11 @@ def agents_command(args):
                 print("\n  Setup cancelled; nothing was written.")
                 sys.exit(130)
             except ServerNotRunningError:
+                from rapid_mlx.agents.server_discovery import skipped_auth_hint
+
+                if endpoint is not None:
+                    for server in endpoint.skipped_auth:
+                        print(skipped_auth_hint(server, profile.name))
                 if requested_model:
                     offline = True
                     if needs_ctx:
@@ -15551,12 +15556,19 @@ def agents_command(args):
                     )
                     sys.exit(1)
             except RuntimeError as exc:
+                from rapid_mlx.agents.setup import ServerAuthenticationError
+
                 if endpoint is not None:
                     base_url = profile.normalize_base_url(endpoint.base_url)
                 print(f"\n  {profile.display_name} setup failed: {exc}")
-                print(
-                    f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
-                )
+                retry = _agent_setup_retry_command(args, profile.name, base_url)
+                if isinstance(exc, ServerAuthenticationError):
+                    print(
+                        "  Copy the API key from Rapid-MLX Desktop's "
+                        "Agent > Connection details > API key."
+                    )
+                    retry = f"RAPID_MLX_API_KEY=<key> {retry}"
+                print(f"  Retry: {retry}\n")
                 sys.exit(1)
             if not offline:
                 if model_id == "default":
