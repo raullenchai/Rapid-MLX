@@ -946,6 +946,9 @@ def get_setup_instructions(
         lines.append("")
         lines.append(f"## 3. Install {profile.display_name}")
         lines.append("")
+        if profile.kind == "framework":
+            lines.append("Install in your project's Python environment:")
+            lines.append("")
         lines.append("```bash")
         lines.append(install_cmd)
         lines.append("```")

@@ -15821,6 +15821,7 @@ def _connect_target(args, eps):
         key_allowed = allows_api_key(
             eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
         )
+        print("  Install the SDK in your project's Python environment:")
         print("     ", client_sdk_install_hint("openai"))
         print()
         if key_allowed:

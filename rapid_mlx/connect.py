@@ -53,10 +53,11 @@ def client_sdk_install_hint(package: str, *packages: str) -> str:
     """Suggest installing libraries imported by the user's own project.
 
     Never bind client SDKs to the CLI's Python: packaged installs run in a
-    private environment. A shell comment keeps the environment note copyable.
+    private environment. Keep prose separate so the command works in shells
+    that do not recognize interactive comments, including default zsh.
     """
     quoted = " ".join(shlex.quote(p) for p in (package, *packages))
-    return f"python3 -m pip install {quoted}  # in your project's Python environment"
+    return f"python3 -m pip install {quoted}"
 
 
 def _authority(host: str) -> str:
@@ -266,7 +267,9 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
         "    from openai import OpenAI; "
         f"client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key}); "
         f"print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)\n"
-        f"    SDK: {client_sdk_install_hint('openai')}. This tip appears only once; you can ignore it.\n"
+        "    Install the SDK in your project's Python environment:\n"
+        f"      {client_sdk_install_hint('openai')}\n"
+        "    This tip appears only once; you can ignore it.\n"
     )
 
 

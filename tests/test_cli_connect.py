@@ -90,6 +90,15 @@ def test_render_banner_matches_spec():
     assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
 
 
+def _assert_sdk_install_command(output, *packages):
+    commands = [line.strip() for line in output.splitlines() if "pip install" in line]
+    assert len(commands) == 1
+    command = commands[0]
+    assert "#" not in command
+    # Default interactive zsh treats comments as arguments; parse without comments.
+    assert shlex.split(command) == ["python3", "-m", "pip", "install", *packages]
+
+
 @pytest.mark.parametrize("uv", [None, "/usr/bin/uv"])
 def test_client_sdk_hints_use_project_environment(monkeypatch, uv):
     managed_python = "/home/test/.rapid-mlx/bin/python3"
@@ -103,28 +112,34 @@ def test_client_sdk_hints_use_project_environment(monkeypatch, uv):
             for target in ("openai-python", "openai", "python")
         ),
     ):
-        assert (
-            "python3 -m pip install openai  # in your project's Python environment"
-            in out
-        )
+        _assert_sdk_install_command(out, "openai")
+        assert "in your project's Python environment:" in out
         assert managed_python not in out
         assert "--python" not in out
 
 
 @pytest.mark.parametrize(
     "package",
-    ["openai", "anthropic", "llama-index[openai]", "sdk; echo unsafe", "sdk$(id)"],
+    [
+        "openai",
+        "anthropic",
+        "llama-index[openai]",
+        "sdk; echo unsafe",
+        "sdk$(id)",
+        "sdk's",
+    ],
 )
 def test_client_sdk_install_hint_is_shell_safe(package):
     hint = connect.client_sdk_install_hint(package)
-    assert shlex.split(hint, comments=True) == [
+    assert "#" not in hint
+    assert "\n" not in hint
+    assert shlex.split(hint) == [
         "python3",
         "-m",
         "pip",
         "install",
         package,
     ]
-    assert "# in your project's Python environment" in hint
 
 
 @pytest.mark.parametrize(
@@ -142,10 +157,11 @@ def test_framework_setup_install_hint_uses_project_environment(name, package):
     out = get_setup_instructions(
         get_profile(name), model_id="local-model", context_length=8192
     )
+    _assert_sdk_install_command(out, package)
     assert (
-        f"python3 -m pip install {package}  # in your project's Python environment"
-        in out
-    )
+        "Install in your project's Python environment:\n\n"
+        f"```bash\npython3 -m pip install {package}\n```"
+    ) in out
 
 
 @pytest.mark.parametrize(
@@ -165,9 +181,10 @@ def test_framework_setup_rewrites_pip_install_forms(prefix):
         ),
     )
     out = get_setup_instructions(profile, model_id="local-model", context_length=8192)
+    _assert_sdk_install_command(out, "langchain-openai", "llama-index[openai]")
     assert (
-        "python3 -m pip install langchain-openai 'llama-index[openai]'"
-        "  # in your project's Python environment"
+        "Install in your project's Python environment:\n\n"
+        "```bash\npython3 -m pip install langchain-openai 'llama-index[openai]'\n```"
     ) in out
 
 
@@ -597,7 +614,8 @@ def test_serve_next_uses_bound_endpoint_served_name_and_auth(monkeypatch):
     monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
     ep = connect.ServerEndpoints("::1", 9123, model="my served model")
     out = connect.render_serve_next(ep, api_key="secret-key")
-    assert len(out.splitlines()) == 3
+    assert len(out.splitlines()) == 5
+    _assert_sdk_install_command(out, "openai")
     assert "http://[::1]:9123/v1" in out
     assert "my served model" in out
     assert "Set RAPID_MLX_API_KEY to the server key first." in out
