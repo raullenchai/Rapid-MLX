@@ -142,13 +142,15 @@ def test_provisioning_respects_explicit_serving_choices(provision, override):
         "offline",
         "disabled",
         "cached",
+        "local-folder",
     ],
 )
 def test_unselected_or_unavailable_sidecar_is_not_downloaded(
-    provision, monkeypatch, condition
+    provision, monkeypatch, tmp_path, condition
 ):
     profile, state = provision
     state.target = True
+    args = SimpleNamespace(model=ALIAS)
     if condition == "default-off":
         monkeypatch.setattr(cli, "_alias_mtp_default_enabled", lambda _: False)
     elif condition == "blocked":
@@ -167,9 +169,12 @@ def test_unselected_or_unavailable_sidecar_is_not_downloaded(
         monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
     elif condition == "disabled":
         monkeypatch.setattr(model_downloads, "disabled", lambda: True)
+    elif condition == "local-folder":
+        args.model = str(tmp_path)
+        args._original_alias = ALIAS
     else:
         state.head = True
-    cli._provision_automatic_mtp_sidecar(SimpleNamespace(model=ALIAS))
+    cli._provision_automatic_mtp_sidecar(args)
     assert state.calls == []
 
 

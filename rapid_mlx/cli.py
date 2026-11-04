@@ -4273,10 +4273,14 @@ def _normalize_speculative_config_or_exit(args):
                         file=sys.stderr,
                     )
                 elif sidecar and cached_sidecar is None:
-                    if not getattr(args, "_auto_mtp_retry", False):
+                    if not os.path.exists(args.model) and not getattr(
+                        args, "_auto_mtp_retry", False
+                    ):
                         # Retry after provisioning either an external sidecar or a same-repo head.
                         args._auto_mtp_deferred = True
                     else:
+                        # Local folders bypass automatic provisioning, so
+                        # report the missing dependency on the first pass.
                         _automatic_mtp_missing_message(sidecar)
                 else:
                     raw_config = json.dumps({"method": "mtp", "model": cached_sidecar})
