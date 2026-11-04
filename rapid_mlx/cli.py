@@ -15501,6 +15501,15 @@ def agents_command(args):
                     else Endpoint(base_url)
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
+                if model_id == "default":
+                    # A server that is already up names its model (and context
+                    # window) up front, as before; a starting one is resolved
+                    # by the readiness wait below.
+                    detected_model, detected_ctx = _detect_running_model(base_url)
+                    if detected_model:
+                        model_id = detected_model
+                        if needs_ctx:
+                            context_length = detected_ctx
                 advertised = wait_for_server(
                     base_url, model_id, agent=profile.name, endpoint=endpoint
                 )
@@ -15548,7 +15557,7 @@ def agents_command(args):
             if not offline:
                 if model_id == "default":
                     model_id = advertised
-                if needs_ctx:
+                if needs_ctx and context_length is None:
                     context_length = fetch_context_window(base_url, model_id)
 
         # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
