@@ -272,6 +272,51 @@ def test_agents_setup_cli_writer(
     assert "262144" not in output
 
 
+@pytest.mark.parametrize("agent, expected", [("opencode", 54000), ("pi", 54000)])
+def test_agents_setup_live_server_writer(
+    served, monkeypatch, tmp_path, capsys, agent, expected
+):
+    """After the readiness wait, the written window is the served memory fit."""
+    from rapid_mlx import cli
+    from rapid_mlx.agents import setup
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for name in (
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "GOOSE_PATH_ROOT",
+        "CRUSH_GLOBAL_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    waited = []
+    monkeypatch.setattr(
+        setup,
+        "wait_for_server",
+        lambda base_url, model, **_k: waited.append(model) or "local-model",
+    )
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name=agent,
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model="local-model",
+            agent_version="1.2.0" if agent == "opencode" else None,
+            dry_run=False,
+            yes=True,
+            no_check=False,
+        )
+    )
+    output = capsys.readouterr().out + "\n".join(
+        path.read_text() for path in tmp_path.rglob("*") if path.is_file()
+    )
+    assert waited == ["local-model"]
+    assert str(expected) in output
+    assert "262144" not in output
+
+
 @pytest.mark.parametrize(
     "agent, expected", [("opencode", 54000), ("codex", 60000), ("pi", 54000)]
 )
