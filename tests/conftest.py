@@ -1586,7 +1586,12 @@ def agent_discovery_defaults(request, monkeypatch):
     """
     if request.node.path.name == "test_agent_setup_discovery_e2e.py":
         return
-    from rapid_mlx.agents import server_discovery
+    try:
+        from rapid_mlx.agents import server_discovery
+    except ImportError:
+        # Minimal-dependency CI lanes (no PyYAML) cannot import the agents
+        # package at all, so nothing there can reach discovery either.
+        return
 
     scan_servers = server_discovery.scan_servers
     monkeypatch.setattr(server_discovery, "scan_servers", lambda: [])
