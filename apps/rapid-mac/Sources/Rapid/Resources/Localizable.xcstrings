@@ -2,6 +2,356 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Downloading or loading the audio model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载或加载音频模型…"
+          }
+        }
+      }
+    },
+    "Audio mode" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频模式"
+          }
+        }
+      }
+    },
+    "Audio unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音频功能不可用"
+          }
+        }
+      }
+    },
+    "The bundled engine could not be found. The rest of Rapid-MLX remains available." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到内置引擎。Rapid-MLX 的其他功能仍可使用。"
+          }
+        }
+      }
+    },
+    "No model in this build supports %@. Audio models can be managed in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此版本中没有支持%@的模型。可在设置中管理音频模型。"
+          }
+        }
+      }
+    },
+    "Create spoken audio with a model and one of its built-in voices." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用模型及其内置音色生成语音。"
+          }
+        }
+      }
+    },
+    "Voices and generated audio come from this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "音色和生成的音频均来自此模型。"
+          }
+        }
+      }
+    },
+    "Each model ships its own set — preview before choosing." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每个模型都有自己的音色，请先试听再选择。"
+          }
+        }
+      }
+    },
+    "Load voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载音色"
+          }
+        }
+      }
+    },
+    "Reload the voice list from the running model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从运行中的模型重新加载音色列表。"
+          }
+        }
+      }
+    },
+    "Applied when the audio is generated." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成音频时应用。"
+          }
+        }
+      }
+    },
+    "Stop playback" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止播放"
+          }
+        }
+      }
+    },
+    "Play speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放语音"
+          }
+        }
+      }
+    },
+    "Save speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存语音"
+          }
+        }
+      }
+    },
+    "Couldn't play the audio: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法播放音频：%@"
+          }
+        }
+      }
+    },
+    "Loading voices…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在加载音色…"
+          }
+        }
+      }
+    },
+    "Start the model to list voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "启动模型以查看音色列表"
+          }
+        }
+      }
+    },
+    "Choose a voice" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择音色"
+          }
+        }
+      }
+    },
+    "The download finished, but Rapid couldn't find the model on disk. Try downloading it again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载已完成，但 Rapid 在磁盘上找不到模型。请重新下载。"
+          }
+        }
+      }
+    },
+    "Couldn't save the audio: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存音频：%@"
+          }
+        }
+      }
+    },
+    "Couldn't play the voice preview: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法播放音色试听：%@"
+          }
+        }
+      }
+    },
+    "Stop %@ preview" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止试听%@"
+          }
+        }
+      }
+    },
+    "Preview %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "试听%@"
+          }
+        }
+      }
+    },
+    "Close — Esc" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭 — Esc"
+          }
+        }
+      }
+    },
+    "Microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "麦克风"
+          }
+        }
+      }
+    },
+    "Accessibility" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "辅助功能"
+          }
+        }
+      }
+    },
+    "Completed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已完成"
+          }
+        }
+      }
+    },
+    "Not completed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未完成"
+          }
+        }
+      }
+    },
+    "recommended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推荐"
+          }
+        }
+      }
+    },
+    "Generate image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成图像"
+          }
+        }
+      }
+    },
+    "Add connector" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加连接器"
+          }
+        }
+      }
+    },
+    "Edit “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑“%@”"
+          }
+        }
+      }
+    },
+    "Debug builds only. These actions erase real state on this Mac — they are not sandboxed and there is no undo." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅限调试版本。这些操作会清除此 Mac 上的实际数据，不受沙盒保护，且无法撤销。"
+          }
+        }
+      }
+    },
+    "dictation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音转文字"
+          }
+        }
+      }
+    },
+    "speech" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文字转语音"
+          }
+        }
+      }
+    },
     "One measured 1024 × 1024 render at %lld steps, after a warm-up render." : {
       "localizations" : {
         "zh-Hans" : {
@@ -7867,6 +8217,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "快速提问"
+          }
+        }
+      }
+    },
+    "Powered by MTPLX" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由 MTPLX 驱动"
           }
         }
       }

@@ -56,6 +56,7 @@ struct WhatsNewBanner: View {
                     .foregroundStyle(RapidTheme.brand)
                     .font(.system(size: 14, weight: .semibold))
                     .padding(.top, 1)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     // Headline + detail combine into ONE VoiceOver element so
                     // the update is announced as a sentence; the buttons stay

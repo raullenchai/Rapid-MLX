@@ -20,7 +20,7 @@ struct ComputerUseView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 HStack(alignment: .top) {
                     SectionHeader(
-                        "Computer Use",
+                        String(localized: "Computer Use"),
                         subtitle: String(localized: "Actions run on this Mac using the local or cloud model you choose."),
                         emphasis: .page
                     )

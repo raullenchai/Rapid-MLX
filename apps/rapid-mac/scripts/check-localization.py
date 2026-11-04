@@ -18,6 +18,7 @@ ALLOW = {
     "GitHub",
     "Hugging Face",
     "QuickSilver",
+    "Claude Desktop",
     "MCP",
     "LLM",
     "macOS",
@@ -132,6 +133,97 @@ def unlocalized(expression):
     return [(a, b, s) for a, b, s in literals(expression) if prose(s)]
 
 
+# These components intentionally accept resolved Strings (including user/model
+# names). Unlike SwiftUI controls, their literal arguments do NOT localize.
+STRING_UI_HELPERS = {
+    "SectionHeader": {"", "subtitle"},
+    "QuietIconButton": {"label", "help"},
+    "RapidSegmentedControl": {"accessibilityLabel"},
+    "speechRow": {"label", "caption"},
+    "setupRow": {"label"},
+    "modelPickerControl": {"title"},
+    "popupControlLabel": {""},
+    "pickerBadge": {""},
+}
+
+
+def arguments(source, start, end):
+    """Top-level arguments only: never mistake a nested control's label for ours."""
+    i, arg_start, depth = start, start, 0
+    while i < end:
+        if source[i] == '"':
+            i = literal_end(source, i)
+            continue
+        if source[i] in "([{":
+            depth += 1
+        elif source[i] in ")]}":
+            depth -= 1
+        elif source[i] == "," and depth == 0:
+            yield arg_start, source[arg_start:i].strip()
+            arg_start = i + 1
+        i += 1
+    yield arg_start, source[arg_start:end].strip()
+
+
+def string_helper_hits(source, code, bindings):
+    hits = []
+    pattern = r"\b(" + "|".join(STRING_UI_HELPERS) + r")\s*\("
+    for match in re.finditer(pattern, code):
+        end = balanced(source, match.end())
+        for start, argument in arguments(source, match.end(), end - 1):
+            named = re.match(r"^(\w+)\s*:\s*([\s\S]*)", argument)
+            name, expression = (named[1], named[2]) if named else ("", argument)
+            if name in STRING_UI_HELPERS[match[1]] and (
+                unlocalized(expression) or bindings.get(expression.strip())
+            ):
+                hits.append((source.count("\n", 0, start) + 1, match[1], argument))
+    return hits
+
+
+# Scoped to audited media, About and update views: a global rule needs a broader AX
+# audit. Require handling on the Image itself, so a sibling's label cannot
+# accidentally satisfy the check. Icon buttons also need a label on the button.
+SYMBOL_AUDIT_FILES = {
+    "AudioView.swift",
+    "DictationView.swift",
+    "ImagesView.swift",
+    "VideoView.swift",
+    "AboutPanel.swift",
+    "WhatsNewBanner.swift",
+}
+
+
+def symbol_hits(source, code):
+    hits = []
+    for match in re.finditer(r"\bImage\s*\(\s*systemName\s*:", code):
+        end = balanced(source, code.index("(", match.start()) + 1)
+        handled = False
+        i = end
+        while i < len(code):
+            modifier = re.match(r"\s*\.(\w+)\s*\(", code[i:])
+            if not modifier:
+                break
+            argument_start = i + modifier.end()
+            i = balanced(source, argument_start)
+            argument = source[argument_start : i - 1].strip()
+            if modifier[1] == "accessibilityHidden" and argument == "true":
+                handled = True
+            if modifier[1] == "accessibilityLabel" and argument not in {
+                '""',
+                'Text("")',
+            }:
+                handled = True
+        if not handled:
+            hits.append(
+                (
+                    source.count("\n", 0, match.start()) + 1,
+                    "Image accessibility",
+                    source[match.start() : end],
+                )
+            )
+    return hits
+
+
 def scan(path):
     source = path.read_text()
     # Mask comments and literals for call discovery, retaining exact offsets.
@@ -157,7 +249,9 @@ def scan(path):
         expr = source[start:end]
         if unlocalized(expr):
             bindings.setdefault(m[1], []).append((m.end(), expr))
-    hits = []
+    hits = string_helper_hits(source, code, bindings)
+    if path.name in SYMBOL_AUDIT_FILES:
+        hits += symbol_hits(source, code)
     pattern = r"\b(Text|Button|Label|Toggle|accessibilityLabel|accessibilityValue|accessibilityHint|help)\s*\("
     for m in re.finditer(pattern, code):
         end = balanced(source, m.end())
@@ -194,7 +288,9 @@ def scan(path):
     # Trace local String-producing accessibility helpers as well as bindings.
     helper_names = set()
     for match in re.finditer(
-        r"(?:\.(?:help|accessibilityLabel|accessibilityValue|accessibilityHint)|\bText)\s*\(",
+        r"(?:\.(?:help|accessibilityLabel|accessibilityValue|accessibilityHint)|\bText|\b(?:"
+        + "|".join(STRING_UI_HELPERS)
+        + r"))\s*\(",
         code,
     ):
         expression = source[match.end() : balanced(source, match.end()) - 1]
