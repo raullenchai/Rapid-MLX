@@ -511,18 +511,40 @@ def launch_command(args: argparse.Namespace) -> None:
                 import time
 
                 try:
-                    for second in range(600):
+                    from rapid_mlx.agents.server_discovery import (
+                        Progress,
+                        pid_alive,
+                        startup_loading,
+                    )
+
+                    progress = Progress()
+                    url = f"http://localhost:{port}/v1"
+                    # Binding and loading wait as long as the server lives;
+                    # any other server error keeps the old 600 s budget.
+                    error_since = None
+                    while True:
+                        if not pid_alive(server_pid):
+                            print(
+                                f"  Local server on :{port} exited during startup; "
+                                f"check the serve output. Retry: {start_hint}"
+                            )
+                            raise SystemExit(1)
                         status = connection_status(port, key, model)
                         if status not in {"stopped", "server-error"}:
                             break
-                        if second and second % 10 == 0:
-                            print(f"  Preparing local model… {second}s", flush=True)
+                        now = time.monotonic()
+                        if status == "stopped" or startup_loading(url):
+                            error_since = None
+                        elif error_since is None:
+                            error_since = now
+                        elif now - error_since >= 600:
+                            print(
+                                f"  Local server on :{port} kept returning errors; "
+                                f"check the serve output. Retry: {start_hint}"
+                            )
+                            raise SystemExit(1)
+                        progress.show(url, now)
                         time.sleep(1)
-                    if status in {"stopped", "server-error"}:
-                        print(
-                            f"  Local server did not become ready. Retry: {start_hint}"
-                        )
-                        raise SystemExit(1)
                     if status != "ready":
                         print(
                             "  Local server key or model does not match this profile. "

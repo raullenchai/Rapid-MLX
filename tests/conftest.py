@@ -1574,3 +1574,28 @@ def _disable_update_refresh_threads(request, monkeypatch):
         from rapid_mlx import update_refresh
 
         monkeypatch.setattr(update_refresh, "start", lambda **_kwargs: False)
+
+
+@pytest.fixture(autouse=True)
+def agent_discovery_defaults(request, monkeypatch):
+    """Unit tests never discover host servers or probe the host's default port.
+
+    Discovery tests opt into synthetic processes/readiness explicitly. Return
+    the original scanner for tests of its parsing, with psutil patched there.
+    The subprocess regression intentionally exercises the real host boundary.
+    """
+    if request.node.path.name == "test_agent_setup_discovery_e2e.py":
+        return
+    try:
+        from rapid_mlx.agents import server_discovery
+    except ImportError:
+        # Minimal-dependency CI lanes (no PyYAML) cannot import the agents
+        # package at all, so nothing there can reach discovery either.
+        return
+
+    scan_servers = server_discovery.scan_servers
+    monkeypatch.setattr(server_discovery, "scan_servers", lambda: [])
+    monkeypatch.setattr(
+        server_discovery, "_default_endpoint_ready", lambda: (False, False)
+    )
+    return scan_servers

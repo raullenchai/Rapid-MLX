@@ -1,0 +1,355 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Local serve process discovery and startup progress, without engine imports."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from functools import lru_cache
+
+
+@dataclass
+class Server:
+    pid: int
+    port: int | None
+    model: str
+    alias: str | None = None
+    # True once ``port`` came from the process's own LISTEN socket rather
+    # than its argv, i.e. it is no longer a guess.
+    listening: bool = field(default=False, compare=False)
+    # False when the process's sockets could not be read (AccessDenied):
+    # a missing port is then unknown, not "still unbound".
+    inspected: bool = field(default=True, compare=False)
+
+
+def _loopback_reachable(host: str | None) -> bool:
+    """True when a listener bound to *host* accepts ``localhost`` connections.
+
+    Setup only ever configures a ``localhost`` URL, so a server bound to a
+    specific LAN address is not one it can verify or wait on.
+    """
+    # ``localhost`` resolves to 127.0.0.1 / ::1; other 127.x addresses are
+    # distinct listeners that a localhost URL never reaches.
+    return host in (None, "", "localhost", "0.0.0.0", "::", "127.0.0.1", "::1")
+
+
+@lru_cache(maxsize=1)
+def _serve_actions():
+    from rapid_mlx.cli_parser import build_parser
+
+    parser = build_parser()
+    return parser._subparsers._group_actions[0].choices["serve"]._option_string_actions
+
+
+def scan_servers() -> list[Server]:
+    """Prefer the actual listener over argv: serve may auto-select its port."""
+    import psutil
+
+    from rapid_mlx.cli_parser import _port_arg
+
+    servers = []
+    try:
+        processes = list(psutil.process_iter(["pid", "cmdline"]))
+    except (psutil.AccessDenied, PermissionError):
+        return []
+    for proc in processes:
+        try:
+            cmd = proc.info["cmdline"] or []
+            if not cmd or os.path.basename(cmd[0]) == "caffeinate":
+                continue
+            if "serve" not in cmd or not any(
+                "rapid-mlx" in c or "rapid_mlx" in c for c in cmd
+            ):
+                continue
+            tokens = cmd[cmd.index("serve") + 1 :]
+            port = None
+            alias = None
+            host = None
+            model = "(unknown)"
+            # Reuse the parser's option arities rather than treating option
+            # values (host, parsers, etc.) as a positional model.
+            actions = _serve_actions()
+            i = 0
+            while i < len(tokens):
+                token = tokens[i]
+                key, sep, value = token.partition("=")
+                action = actions.get(key)
+                if action is not None and action.nargs != 0:
+                    if not sep and i + 1 < len(tokens):
+                        i += 1
+                        value = tokens[i]
+                    if key == "--port":
+                        # ``--port 0`` (OS-assigned) or a malformed value is
+                        # not a usable argv port; the listener lookup below
+                        # still finds the real one, so never drop the server.
+                        try:
+                            port = _port_arg(value)
+                        except (argparse.ArgumentTypeError, ValueError):
+                            port = None
+                    elif key == "--served-model-name":
+                        alias = value
+                    elif key == "--host":
+                        host = value
+                elif not token.startswith("-") and model == "(unknown)":
+                    model = token
+                i += 1
+            if not _loopback_reachable(host):
+                continue
+            listening = False
+            inspected = True
+            try:
+                bound = [
+                    c.laddr
+                    for c in proc.net_connections(kind="inet")
+                    if c.status == psutil.CONN_LISTEN and c.laddr
+                ]
+                listeners = {a.port for a in bound if _loopback_reachable(a.ip)}
+                if bound and not listeners:
+                    # Listening, but only where localhost cannot reach it: not
+                    # an unbound server that may still start on 8000-8009.
+                    continue
+                if port in listeners:
+                    listening = True
+                elif len(listeners) == 1:
+                    port = listeners.pop()
+                    listening = True
+            except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
+                inspected = False
+            servers.append(Server(proc.pid, port, model, alias, listening, inspected))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+            continue
+    return servers
+
+
+def startup_loading(base_url: str) -> bool:
+    """True when ``/health`` answers 503: the serve startup probe is loading."""
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        with urllib.request.urlopen(f"{root}/health", timeout=2):
+            return False
+    except urllib.error.HTTPError as exc:
+        return exc.code == 503
+    except (OSError, ValueError):
+        return False
+
+
+def pid_alive(pid: int) -> bool:
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        return bool(proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, PermissionError):
+        return True
+
+
+@dataclass
+class Endpoint:
+    base_url: str
+    server: Server | None = None
+    follow: bool = False
+    model: str | None = None
+    _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
+
+    def refresh(self) -> None:
+        # Explicit URLs/ports are authoritative, even if an unbound serve
+        # process eventually chooses another port.
+        if self.server is None and self.follow:
+            resolved = resolve_endpoint(self.model, report_ignored=False)
+            self.base_url, self.server = resolved.base_url, resolved.server
+        # An argv port is only a guess until the process listens: keep
+        # re-reading the selected pid's real listener (throttled) so a server
+        # that binds somewhere else is followed instead of waited on forever.
+        now = time.monotonic()
+        if (
+            self.server is None
+            or self.server.listening
+            or (self.server.port is not None and now - self._last_scan < 2.0)
+        ):
+            return
+        self._last_scan = now
+        for server in scan_servers():
+            if server.pid != self.server.pid:
+                continue
+            if server.port is None:
+                break
+            changed = server.port != self.server.port
+            self.server = server
+            if not changed:
+                break
+            if self.follow:
+                self.base_url = f"http://localhost:{server.port}/v1"
+                announce(server)
+            else:
+                from rapid_mlx.connect import _parse_base_url
+
+                if _parse_base_url(self.base_url)[1] != server.port:
+                    # An explicit endpoint must never follow a process
+                    # that has now chosen a different listener.
+                    self.server = None
+            break
+
+
+def announce(server: Server) -> None:
+    port = f":{server.port}" if server.port else "an unbound port (8000-8009)"
+    print(f"  Using the Rapid-MLX server on {port} (pid {server.pid}).")
+
+
+def _same_model(left: str, right: str) -> bool:
+    from rapid_mlx.model_aliases import resolve_model
+
+    def resolved(value: str) -> str:
+        try:
+            return resolve_model(value)
+        except Exception:
+            # Alias resolution failures must not prevent matching raw names.
+            return value
+
+    def same_identity(a: str, b: str) -> bool:
+        if a == b:
+            return True
+        a_local = a.startswith(("/", "./", "../", "~")) or os.path.exists(a)
+        b_local = b.startswith(("/", "./", "../", "~")) or os.path.exists(b)
+        if a_local and b_local:
+            return os.path.realpath(os.path.expanduser(a)) == os.path.realpath(
+                os.path.expanduser(b)
+            )
+        if a_local or b_local:
+            return os.path.basename(a.rstrip("/")) == os.path.basename(b.rstrip("/"))
+        return False
+
+    return same_identity(left, right) or same_identity(resolved(left), resolved(right))
+
+
+def _default_endpoint_ready() -> tuple[bool, bool]:
+    """Return (healthy, answered) separately from process discovery."""
+    try:
+        with urllib.request.urlopen(
+            "http://localhost:8000/health", timeout=0.25
+        ) as response:
+            return response.status == 200, True
+    except urllib.error.HTTPError:
+        # Only an owning serve process makes an unhealthy listener a loading
+        # server. A foreign process must not hide a server on another port.
+        return False, True
+    except (OSError, ValueError):
+        return False, False
+
+
+def resolve_endpoint(
+    model: str | None = None, *, report_ignored: bool = True
+) -> Endpoint:
+    default = "http://localhost:8000/v1"
+    healthy, answered = _default_endpoint_ready()
+    if healthy:
+        return Endpoint(default)
+    # A process whose sockets cannot be read and whose argv names no port
+    # cannot be shown to own any endpoint; waiting on it could never end.
+    servers = [s for s in scan_servers() if s.port is not None or s.inspected]
+    candidates = (
+        [
+            s
+            for s in servers
+            if any(_same_model(model, name) for name in (s.model, s.alias) if name)
+        ]
+        if model
+        else servers
+    )
+    default_server = next((s for s in candidates if s.port == 8000), None)
+    if answered and default_server is not None:
+        return Endpoint(default, default_server, follow=True, model=model)
+    if model and not candidates and report_ignored:
+        for server in servers[:5]:
+            port = str(server.port) if server.port else "unknown"
+            print(
+                f"  Note: rapid-mlx serve on :{port} (pid {server.pid}) serves "
+                f"{server.alias or server.model}, not {model}; "
+                f"pass --port {port} to use it."
+            )
+        if len(servers) > 5:
+            print(f"  Note: and {len(servers) - 5} more unrelated servers.")
+    if len(candidates) > 1:
+        rows = "\n".join(
+            f"  pid {s.pid}, port {s.port or 'unknown (8000-8009)'}, model {s.alias or s.model}"
+            for s in candidates
+        )
+        raise RuntimeError(
+            f"No ready server at {default}; multiple local servers:\n{rows}\n"
+            "  Pass --port to select the server."
+        )
+    if candidates:
+        server = candidates[0]
+        announce(server)
+        return Endpoint(
+            f"http://localhost:{server.port}/v1" if server.port else default,
+            server,
+            follow=True,
+            model=model,
+        )
+    return Endpoint(default, follow=True, model=model)
+
+
+def server_for_url(base_url: str) -> Server | None:
+    from rapid_mlx.connect import _parse_base_url
+
+    from .server_hint import is_local_base_url
+
+    if not is_local_base_url(base_url):
+        return None
+    _, port = _parse_base_url(base_url)
+    return next(
+        (
+            s
+            for s in scan_servers()
+            if s.port == port
+            or (s.port is None and s.inspected and 8000 <= port <= 8009)
+        ),
+        None,
+    )
+
+
+class Progress:
+    def __init__(self) -> None:
+        self.phase = None
+        self.last = float("-inf")
+
+    def show(self, base_url: str, now: float) -> None:
+        root = base_url.rstrip("/").removesuffix("/v1")
+        payload = {}
+        try:
+            try:
+                response = urllib.request.urlopen(f"{root}/health/ready", timeout=0.25)
+            except urllib.error.HTTPError as exc:
+                response = exc
+            with response:
+                payload = json.loads(response.read())
+        except (OSError, ValueError):
+            pass
+        if not isinstance(payload, dict):
+            payload = {}
+        phase = payload.get("phase", "downloading or preparing")
+        if phase == self.phase and now - self.last < 10:
+            return
+        self.phase, self.last = phase, now
+        detail = phase
+        progress = payload.get("progress", {})
+        if isinstance(progress, dict):
+            done, total = progress.get("done"), progress.get("total")
+            if (
+                isinstance(done, (int, float))
+                and isinstance(total, (int, float))
+                and total > 0
+            ):
+                detail = f"{phase} {min(100, int(100 * done / total))}%"
+        print(
+            f"  Waiting for the Rapid-MLX server at {root} to finish "
+            f"downloading/loading the model ({detail})…",
+            flush=True,
+        )

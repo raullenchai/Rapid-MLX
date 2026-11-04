@@ -1923,3 +1923,26 @@ def test_select_failed_ram_probe_uses_conservative_tier(monkeypatch):
         )
         == "qwen3.5-4b-4bit"
     )
+
+
+def test_start_default_wait_has_no_model_loading_deadline(monkeypatch):
+    import requests
+
+    from rapid_mlx import cli
+
+    now = [0.0]
+    monkeypatch.setattr("time.monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        "time.sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+    )
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *_a, **_k: types.SimpleNamespace(
+            status_code=200 if now[0] > 601 else 503,
+            json=lambda: {"phase": "loading_weights"},
+        ),
+    )
+    proc = types.SimpleNamespace(poll=lambda: None)
+    cli._wait_for_chat_server("http://localhost:8462", proc, timeout_s=None)
+    assert now[0] > 600

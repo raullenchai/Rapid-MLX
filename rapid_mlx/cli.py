@@ -13379,7 +13379,7 @@ def _chat_startup_frame(status: dict, *, elapsed: int, tick: int, width: int) ->
     return str(set_cell_size(frame, min(width, cell_len(frame))))
 
 
-def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
+def _wait_for_chat_server(base_url: str, proc, timeout_s: int | None = 600) -> None:
     """Wait for readiness, displaying measured load progress only on a TTY.
 
     Startup phases without a measured total use a spinner. The line is erased
@@ -13392,7 +13392,7 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
 
     is_tty = sys.stderr.isatty()
     start = time.monotonic()
-    deadline = start + timeout_s
+    deadline = start + timeout_s if timeout_s is not None else float("inf")
     tick = 0
     status = {"phase": "starting"}
 
@@ -15309,7 +15309,9 @@ def _agent_setup_retry_command(args, agent_name: str, base_url: str) -> str:
     model = getattr(args, "_original_alias", None) or args.model
     if model:
         parts += ["--model", shlex.quote(model)]
-    if base_url != "http://localhost:8000/v1":
+    if getattr(args, "port", None) is not None:
+        parts += ["--port", str(args.port)]
+    elif base_url != "http://localhost:8000/v1":
         parts += ["--base-url", shlex.quote(base_url)]
     if args.agent_version:
         parts += ["--agent-version", shlex.quote(args.agent_version)]
@@ -15323,7 +15325,9 @@ def agents_command(args):
 
     agent_name = args.agent_name
     base_url = (
-        args.base_url if args.base_url is not None else "http://localhost:8000/v1"
+        args.base_url
+        if args.base_url is not None
+        else f"http://localhost:{getattr(args, 'port', None) or 8000}/v1"
     )
     # The CLI's shared alias resolver replaces --model with its HF repository
     # before dispatch. Agent configs and commands must use the server's public
@@ -15458,38 +15462,103 @@ def agents_command(args):
         if profile.name == "claude-code":
             needs_ctx = True
 
-        if model_id == "default":
-            detected_model, detected_ctx = _detect_running_model(base_url)
-            if detected_model:
-                model_id = detected_model
-            if needs_ctx:
-                context_length = detected_ctx
-        elif needs_ctx and (args.dry_run or args.no_check):
-            # Offline preview still uses the best available metadata.
-            context_length = fetch_context_window(base_url, model_id)
-
+        offline = False
+        advertised = None
         from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
 
-        if (
+        # Env-var-only profiles print instructions and never needed a server;
+        # only profiles that write a file resolve and wait for one.
+        wait_for_live_server = (
             (cfg.type != "env" or profile.name in FIRST_CLASS_SETUP_AGENTS)
             and not args.dry_run
             and not args.no_check
-        ):
+        )
+        if not wait_for_live_server:
+            # Previews, --no-check and env-only profiles still use the best
+            # metadata a running server offers, without waiting for one.
+            if model_id == "default":
+                detected_model, detected_ctx = _detect_running_model(base_url)
+                if detected_model:
+                    model_id = detected_model
+                if needs_ctx:
+                    context_length = detected_ctx
+            elif needs_ctx:
+                context_length = fetch_context_window(base_url, model_id)
+
+        if wait_for_live_server:
+            from rapid_mlx.agents.server_discovery import Endpoint, resolve_endpoint
+            from rapid_mlx.agents.server_hint import (
+                ServerNotRunningError,
+                start_server_command,
+            )
             from rapid_mlx.agents.setup import wait_for_server
 
-            print("  Waiting for server health and the selected model (up to 60s)...")
+            endpoint = None
             try:
-                advertised = wait_for_server(base_url, model_id, agent=profile.name)
+                endpoint = (
+                    resolve_endpoint(requested_model)
+                    if args.base_url is None and getattr(args, "port", None) is None
+                    else Endpoint(base_url)
+                )
+                base_url = profile.normalize_base_url(endpoint.base_url)
+                if model_id == "default":
+                    # A server that is already up names its model (and context
+                    # window) up front, as before; a starting one is resolved
+                    # by the readiness wait below.
+                    detected_model, detected_ctx = _detect_running_model(base_url)
+                    if detected_model:
+                        model_id = detected_model
+                        if needs_ctx:
+                            context_length = detected_ctx
+                advertised = wait_for_server(
+                    base_url, model_id, agent=profile.name, endpoint=endpoint
+                )
+                base_url = profile.normalize_base_url(endpoint.base_url)
+            except KeyboardInterrupt:
+                print("\n  Setup cancelled; nothing was written.")
+                sys.exit(130)
+            except ServerNotRunningError:
+                if requested_model:
+                    offline = True
+                    if needs_ctx:
+                        from rapid_mlx.run.cli import _cached_context_window
+
+                        context_length = _cached_context_window(requested_model)
+                else:
+                    from rapid_mlx.agents.isolated import SUPPORTED
+                    from rapid_mlx.agents.telemetry import track_agent_configure_failed
+
+                    track_agent_configure_failed("server_not_running", profile.name)
+                    print(
+                        f"\n  No Rapid-MLX server on {base_url} (and no rapid-mlx serve is starting)."
+                    )
+                    print(
+                        f"  Start one:  {start_server_command(profile, base_url, 'default')}   (in another terminal)"
+                    )
+                    print(
+                        f"  Or write the config now:  rapid-mlx agents {profile.name} --setup --model <model>"
+                    )
+                    if profile.name in SUPPORTED:
+                        print(
+                            f"  Or let Rapid start everything:  rapid-mlx launch {profile.name}"
+                        )
+                    print(
+                        f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}"
+                    )
+                    sys.exit(1)
             except RuntimeError as exc:
+                if endpoint is not None:
+                    base_url = profile.normalize_base_url(endpoint.base_url)
                 print(f"\n  {profile.display_name} setup failed: {exc}")
                 print(
                     f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
                 )
                 sys.exit(1)
-            if model_id == "default":
-                model_id = advertised
-            if needs_ctx:
-                context_length = fetch_context_window(base_url, model_id)
+            if not offline:
+                if model_id == "default":
+                    model_id = advertised
+                if needs_ctx and context_length is None:
+                    context_length = fetch_context_window(base_url, model_id)
 
         # Cline, Claude Code, Continue, DSH, pi and Qwen Code have first-class setup
         # flows. They verify server readiness, preview an exact diff, require
@@ -15509,7 +15578,7 @@ def agents_command(args):
             # Scoped to the one profile that consumes it — the other
             # first-class flows don't, and this is a second HTTP round trip.
             supports_reasoning = None
-            if profile.name == "deepseek-harness":
+            if profile.name == "deepseek-harness" and not offline:
                 from rapid_mlx.agents.adapter import (
                     fetch_reasoning_support,  # pragma: no cover
                 )
@@ -15555,7 +15624,11 @@ def agents_command(args):
                     )
                     sys.exit(1)
                 print(f"\n  Configured {profile.display_name} at {plan.path}.")
-            if not args.no_check:
+            if offline:
+                from rapid_mlx.agents.server_hint import not_running_lines
+
+                print("\n".join(not_running_lines(profile, base_url, model_id)))
+            elif not args.no_check:
                 print(f"  Connection check passed (model: {advertised}).")
             if plan.changed:
                 # A configured event means a config mutation completed and
@@ -15626,8 +15699,12 @@ def agents_command(args):
                 print(
                     "  Connection check skipped (--no-check); no live model was verified."
                 )
-            else:
+            elif not offline:
                 print(f"  Connection check passed (advertised model: {advertised}).")
+        if offline:
+            from rapid_mlx.agents.server_hint import not_running_lines
+
+            print("\n".join(not_running_lines(profile, base_url, model_id)))
         print()
         return
 

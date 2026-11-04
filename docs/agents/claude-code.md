@@ -47,11 +47,11 @@ rapid-mlx agents claude-code --setup
 
 Setup shows the exact JSON diff before asking, preserves unrelated settings,
 waits for the server to advertise the selected model, backs up an existing
-file, and writes atomically. If the server is still starting, setup waits up
-to 60 seconds. A failed check leaves the config untouched and prints a retry
+file, and writes atomically. If a local server is still downloading or loading, setup waits while its
+process is alive. Use `--port` to select a specific local server. A failed check leaves the config untouched and prints a retry
 command.
-For automation use `--yes`; use `--no-check` only when intentionally preparing
-the config before starting the server.
+For automation use `--yes`. To prepare the config before starting the server,
+pass `--model <model>`; setup prints a start command pinned to the same port.
 
 To make it permanent, export the two env vars in your shell profile:
 

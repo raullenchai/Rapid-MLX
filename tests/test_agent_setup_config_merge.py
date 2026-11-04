@@ -1011,7 +1011,7 @@ class TestIdempotentSetupSummary:
         monkeypatch.setattr(
             setup,
             "wait_for_server",
-            lambda base_url, model_id, *, agent: (
+            lambda base_url, model_id, *, agent, endpoint=None: (
                 verified.append((base_url, model_id, agent)) or "served-model"
             ),
         )
@@ -1079,13 +1079,16 @@ class TestIdempotentSetupSummary:
     def test_cli_env_instructions_do_not_require_a_live_server(self, monkeypatch):
         from rapid_mlx import cli
         from rapid_mlx.agents import adapter, setup
+        from rapid_mlx.agents.server_hint import ServerNotRunningError
 
         profile = AgentProfile(name="langchain", display_name="LangChain")
         monkeypatch.setattr("rapid_mlx.agents.get_profile", lambda _name: profile)
         monkeypatch.setattr(
             setup,
-            "verify_server",
-            lambda *_args, **_kwargs: pytest.fail("env instructions do not mutate"),
+            "wait_for_server",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ServerNotRunningError("no server at http://localhost:8000")
+            ),
         )
         calls = []
         monkeypatch.setattr(

@@ -121,8 +121,8 @@ def register(subparsers) -> None:
     parser.add_argument(
         "--ready-timeout",
         type=int,
-        default=600,
-        help="Seconds to wait for the spawned server to become ready (default: 600)",
+        default=None,
+        help="Optional startup deadline in seconds (default: wait while the server lives)",
     )
     _add_disable_disk_caches_arg(parser)
     _add_disable_model_downloads_arg(parser)
@@ -541,8 +541,8 @@ def _reap_forwarded_child(proc, *, grace_s: float = 5.0) -> None:
         _terminate_child(proc, grace_s=grace_s)
 
 
-def _wait_ready(base_url: str, proc, timeout_s: int) -> str:
-    """Block until /health/ready returns 200, the child exits, or timeout.
+def _wait_ready(base_url: str, proc, timeout_s: int | None) -> str:
+    """Block until ready or child exit; honor an explicitly requested deadline.
 
     Returns an outcome so the caller can tell ``exited`` (the serve child
     died before becoming ready — reap it) from ``timeout`` (the child is

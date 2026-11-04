@@ -2852,7 +2852,7 @@ def _add_agents_parser(
     agents_parser.add_argument(
         "--setup",
         action="store_true",
-        help="Auto-configure the agent to point at this server",
+        help="Configure the agent; wait for a starting server or write offline with --model",
     )
     agents_parser.add_argument(
         "--dry-run",
@@ -2881,7 +2881,14 @@ def _add_agents_parser(
         default=None,
         help="Model to use (default: auto-detect from running server)",
     ).completer = alias_completer
-    agents_parser.add_argument(
+    endpoint = agents_parser.add_mutually_exclusive_group()
+    endpoint.add_argument(
+        "--port",
+        type=_port_arg,
+        default=None,
+        help="Local server port (otherwise discover a running Rapid-MLX server)",
+    )
+    endpoint.add_argument(
         "--base-url",
         type=str,
         default=None,
