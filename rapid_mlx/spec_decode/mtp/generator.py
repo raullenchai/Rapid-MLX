@@ -429,6 +429,7 @@ def mtp_generate_step(
     prompt_lookup_history: list[int] | mx.array | None = None,
     prompt_lookup_policy: PromptLookupPolicy | None = None,
     may_run_ahead: Callable[[], bool] | None = None,
+    _cost_controller: DepthController | None = None,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -1189,10 +1190,16 @@ def mtp_generate_step(
         # ``max_k`` is provisional so the first run that really selects
         # depth remains authoritative.
         max_k_effective = max(0, max_k)
-        _controller = get_or_create_controller(
-            model_id or "__default__",
-            max_k=max_k_effective,
-            authoritative=False,
+        # Startup calibration supplies a private observer: never train the
+        # serving registry with scratch tokens or calibration timings.
+        _controller = (
+            _cost_controller
+            if _cost_controller is not None
+            else get_or_create_controller(
+                model_id or "__default__",
+                max_k=max_k_effective,
+                authoritative=False,
+            )
         )
 
     if _schedule is not None:
@@ -1623,6 +1630,9 @@ def mtp_generate_step(
             # target-verified, delivered positions may advance processor
             # state. So the caller is handed the state its own token
             # committed even though drafting now runs first.
+            if timing_stats is not None:
+                timing_stats["round_tokens"] = 1.0
+                timing_stats["round_depth"] = 0.0
             if suppress_bootstrap:
                 suppress_bootstrap = False
             else:
@@ -2096,6 +2106,9 @@ def mtp_generate_step(
                 # call to prepend these rows to. Flush now, before yielding.
                 _flush_head()
 
+            if timing_stats is not None:
+                timing_stats["round_tokens"] = float(len(emissions))
+                timing_stats["round_depth"] = float(k_len)
             for (
                 _emit_tok_id,
                 _emit_lp,

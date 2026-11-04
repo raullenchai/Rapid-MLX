@@ -149,6 +149,8 @@ def _install_clock(monkeypatch, clock: _VirtualClock) -> None:
     import rapid_mlx.spec_decode.mtp.generator as generator_mod
     import rapid_mlx.spec_decode.mtp.reproducible_depth as depth_mod
 
+    # Virtual forwards can each cost seconds; this test is not a budget test.
+    monkeypatch.setattr(depth_mod, "TIMING_BUDGET_SECONDS", 100_000.0)
     for module in (generator_mod, depth_mod):
         monkeypatch.setattr(
             module, "time", SimpleNamespace(perf_counter=clock.perf_counter)
@@ -381,11 +383,17 @@ class _WrongDrafter(_WidthSensitiveTarget):
 
 
 @pytest.mark.parametrize("drafter", [_WidthSensitiveTarget, _WrongDrafter])
-def test_steep_host_drafts_only_where_this_request_drafts_well(monkeypatch, drafter):
+@pytest.mark.parametrize("row_cost", [0.46, 1.0])
+def test_steep_host_drafts_only_where_this_request_drafts_well(
+    monkeypatch, drafter, row_cost
+):
     """Where every verified row costs most of a step, the depth follows this
     request's own acceptance on a fixed cost curve -- the same every run."""
-    # Each verified row costs a whole step: steep.
-    clock = _VirtualClock(lambda rows: float(rows), draft_cost=0.15)
+    # Both slopes are steep. At 0.46 steps per extra row, good drafting
+    # pays (K=1: 1.61 steps; K=2: 2.22). A whole step per extra row
+    # cannot pay even at perfect acceptance (2.15 / 3.30 steps). Real
+    # round measurement must preserve that distinction before bounding.
+    clock = _VirtualClock(lambda rows: 1.0 + (rows - 1) * row_cost, draft_cost=0.15)
     _install_clock(monkeypatch, clock)
     runs = []
     for _ in range(2):
@@ -396,37 +404,38 @@ def test_steep_host_drafts_only_where_this_request_drafts_well(monkeypatch, draf
         )
         runs.append((tokens, model.widths))
     assert schedule.steep_verify is True
+    assert schedule.depth == (2 if row_cost < 1.0 else 0)
     assert runs[0] == runs[1], "the per-round depth must not vary between runs"
     # Once its own acceptance is trusted (the controller's ramp-up).
     settled = runs[0][1][len(runs[0][1]) // 2 :]
-    if drafter is _WidthSensitiveTarget:
+    if drafter is _WidthSensitiveTarget and row_cost < 1.0:
         # Every draft lands: drafting rounds dominate.
         assert sum(w > 1 for w in settled) > len(settled) * 3 // 4, runs[0][1]
     else:
-        # Nothing lands: one-row steps dominate.
+        # Poor acceptance or unprofitable verification: one-row steps dominate.
         assert settled.count(1) > len(settled) * 3 // 4, runs[0][1]
 
 
-def test_requests_decide_on_the_class_curve_not_the_timings():
+def test_requests_decide_on_the_frozen_measured_curve():
     from rapid_mlx.spec_decode.mtp.reproducible_depth import (
-        GreedySchedule,
+        bounded_round_costs,
         class_round_costs,
         reproducible_schedule,
         request_round_cost,
         round_costs,
     )
 
-    # Two boots of an M4 Pro-like host whose timings differ by a few percent
-    # read the same class, so they decide on the same curve.
+    # Different process profiles may differ; each retains its measured curve.
     boots = [(21.8, (26.0, 30.4), 3.0), (23.1, (27.9, 31.0), 3.3)]
     schedules = [
         reproducible_schedule(f"boot-{i}", 2, lambda k, t=t: t)
         for i, t in enumerate(boots)
     ]
-    assert schedules[0] == schedules[1]
-    assert schedules[0] == GreedySchedule(
-        depth=2, steep_verify=False, round_costs=class_round_costs(False, 2)
-    )
+    assert schedules[0] != schedules[1]
+    for schedule, timings in zip(schedules, boots):
+        assert schedule.round_costs == bounded_round_costs(
+            round_costs(*timings), False, 2
+        )
     # The class curves: dearer per depth on a steep host.
     cheap, steep = class_round_costs(False, 2), class_round_costs(True, 2)
     assert cheap[0] == steep[0] == 1.0
@@ -517,8 +526,10 @@ def test_reproducible_schedule_is_decided_once_and_survives_a_failed_measurement
     def broken(max_k: int):
         raise RuntimeError("no scratch cache for this model")
 
-    # A model the timing cannot run on keeps the configured depth.
-    assert reproducible_schedule("host-b", 3, broken) == GreedySchedule(depth=3)
+    # Failed measurement retains configured depth with the old class costs.
+    assert reproducible_schedule("host-b", 3, broken) == GreedySchedule(
+        depth=3, round_costs=class_round_costs(False, 3)
+    )
 
 
 @pytest.mark.parametrize(
@@ -587,12 +598,12 @@ def test_scheduler_hands_greedy_requests_the_host_depth(
 def test_host_timing_uses_the_draft_a_greedy_round_runs(monkeypatch, fused_declines):
     """The fused greedy head is what greedy rounds draft with when a family
     has one; it may decline a call, and then the full head is timed."""
+    import rapid_mlx.spec_decode.mtp.reproducible_depth as depth_mod
     from rapid_mlx.spec_decode.mtp.reproducible_depth import (
-        TIMING_ROUNDS,
-        TIMING_WARMUP_ROUNDS,
         time_target_forwards,
     )
 
+    monkeypatch.setattr(depth_mod, "TIMING_BUDGET_SECONDS", 100_000.0)
     clock = _VirtualClock(lambda rows: 1.0, draft_cost=0.5)
     _install_clock(monkeypatch, clock)
     fused_calls: list[int] = []
@@ -606,13 +617,16 @@ def test_host_timing_uses_the_draft_a_greedy_round_runs(monkeypatch, fused_decli
             return next_token_ids + 1, hidden
 
     model = _FusedHead(lambda rows: WIDE_WINNER, clock)
-    step_ms, verify_ms, draft_ms = time_target_forwards(model, 2)
-    # Each width is timed the way the generator verifies it.
-    assert set(model.confirmed) == {(1, 0), (2, 1), (3, 2)}
+    timings = time_target_forwards(model, 2)
+    step_ms, verify_ms, draft_ms = timings[:3]
+    # Real decode bootstraps with one row, verifies K+1, and prefills
+    # privately. Fused-head selection is made by the generator itself.
+    assert {(1, 0), (2, 1), (3, 2)} <= set(model.confirmed)
     assert (step_ms, verify_ms) == (1000.0, (1000.0, 1000.0))
-    assert len(fused_calls) == TIMING_WARMUP_ROUNDS + TIMING_ROUNDS
-    # Timed head: the full one (0.5 s) when the fused one declines.
+    assert fused_calls
     assert draft_ms == (500.0 if fused_declines else 250.0)
+    assert len(timings.round_ms) == 3
+    assert all(v > 0 for v in timings.round_ms)
 
 
 def test_steep_host_prices_copy_drafts_on_the_steep_curve(monkeypatch):
@@ -744,3 +758,28 @@ def test_request_curve_follows_whether_parked_rounds_pipeline():
     assert request_round_costs(steep, parks_pipelined=False) == (1.0, 1.496, 1.992)
     assert request_round_costs(cheap, parks_pipelined=False) == cheap.round_costs
     assert request_round_costs(GreedySchedule(depth=2), parks_pipelined=False) == ()
+
+
+def test_calibration_does_not_train_serving_observers(monkeypatch):
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.reproducible_depth import (
+        advance_greedy_round,
+        calibration_generator,
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("calibration accessed a serving observer")
+
+    monkeypatch.setattr(generator_mod, "get_global_counter", forbidden)
+    monkeypatch.setattr(generator_mod, "get_or_create_controller", forbidden)
+    stats = {}
+    gen = calibration_generator(
+        _WidthSensitiveTarget(lambda rows: WIDE_WINNER), mx.array(PROMPT), 2, stats
+    )
+    try:
+        for _ in range(4):
+            advance_greedy_round(gen, stats)
+        assert stats["round_depth"] == 2
+    finally:
+        mx.synchronize()
+        gen.close()
