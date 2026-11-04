@@ -2,6 +2,86 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "One measured 1024 × 1024 render at %lld steps, after a warm-up render." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预热渲染后，以 %lld 步完成一次 1024 × 1024 实测渲染。"
+          }
+        }
+      }
+    },
+    "One measured 1024 × 1024 render, after a warm-up render." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预热渲染后，完成一次 1024 × 1024 实测渲染。"
+          }
+        }
+      }
+    },
+    "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and %lld steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次预热 + 1 次 1024×1024 实测渲染 · 固定提示词、种子和 %lld 步"
+          }
+        }
+      }
+    },
+    "1 warm-up + 1 measured 1024×1024 render · fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 次预热 + 1 次 1024×1024 实测渲染 · 固定提示词和种子"
+          }
+        }
+      }
+    },
+    "1024 × 1024 at %lld steps, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1024 × 1024，%lld 步，固定提示词和种子"
+          }
+        }
+      }
+    },
+    "1024 × 1024, fixed prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1024 × 1024，固定提示词和种子"
+          }
+        }
+      }
+    },
+    "Not available on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在这台 Mac 上不可用"
+          }
+        }
+      }
+    },
+    "Unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "不可用"
+          }
+        }
+      }
+    },
     "Stop Generating" : {
       "localizations" : {
         "zh-Hans" : {

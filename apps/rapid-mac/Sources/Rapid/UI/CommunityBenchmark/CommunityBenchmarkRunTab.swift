@@ -26,7 +26,7 @@ struct CommunityBenchmarkReadyView: View {
         CommunityBenchmarkCopy.readyInvitation(branch: branch, scope: scope)
     }
 
-    private var doesNotFit: Bool { model.memoryFit == "does_not_fit" }
+    private var availabilityIsWarning: Bool { model.availabilityIsWarning }
 
     var body: some View {
         if isNarrow {
@@ -115,7 +115,7 @@ struct CommunityBenchmarkReadyView: View {
                 .padding(.top, RapidTheme.Space.lg)
             }
 
-            if model.runtimeStatus == "unavailable", let message = model.runtimeMessage {
+            if let message = model.runtimeUnavailableDetail {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(RapidFont.secondary)
                     .foregroundStyle(RapidTheme.statusError)
@@ -173,14 +173,12 @@ struct CommunityBenchmarkReadyView: View {
     @ViewBuilder
     private var supportingLanes: some View {
         CommunityFactLane(
-            systemImage: doesNotFit ? "exclamationmark.circle" : "checkmark.circle",
-            label: doesNotFit
-                ? String(localized: "May not fit this Mac")
-                : String(localized: "Fits this Mac"),
-            detail: model.estimatedMemoryGib.map {
+            systemImage: availabilityIsWarning ? "exclamationmark.circle" : "checkmark.circle",
+            label: model.availabilityLabel(forPicker: false),
+            detail: !model.runtimeCanRun ? String(localized: "Not available on this Mac") : model.estimatedMemoryGib.map {
                 String(localized: "\(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double($0) * Double(1 << 30)))) of \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(scope.macProfile.memoryGiB) * Double(1 << 30))))")
             },
-            tone: doesNotFit ? RapidTheme.statusError : RapidTheme.textSecondary
+            tone: availabilityIsWarning ? RapidTheme.statusError : RapidTheme.textSecondary
         )
         CommunityFactLane(
             systemImage: "arrow.down.circle",

@@ -181,9 +181,7 @@ enum CommunityBenchmarkMetrics {
         return MetricSet(
             workload: .image,
             headline: headline,
-            headlineCaption: String(
-                localized: "One measured 1024 × 1024 render at 20 steps, after a warm-up render."
-            ),
+            headlineCaption: imageHeadlineCaption(protocolID: result.workload.protocolID),
             supporting: supporting,
             incompleteStatus: headline == nil ? result.outcome.status.capitalized : nil
         )
@@ -266,12 +264,13 @@ enum CommunityBenchmarkMetrics {
     /// The fixed workload sentence shown on Ready and in Test Method. These
     /// are the parameters the shipped CLI actually runs; they are not
     /// configurable, which is what makes results comparable.
-    static func protocolDescription(for workload: CommunityWorkload) -> String {
+    static func protocolDescription(for workload: CommunityWorkload, protocolID: String? = nil) -> String {
         switch workload {
         case .image:
-            return String(
-                localized: "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps"
-            )
+            guard let schedule = protocolID.flatMap(CommunityImageSchedule.init(protocolID:)) else {
+                return String(localized: "1 warm-up + 1 measured 1024×1024 render · fixed prompt and seed")
+            }
+            return String(localized: "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and \(schedule.steps) steps")
         case .video:
             return String(
                 localized: "1 measured 832×480, 81-frame render · fixed prompt and seed"
@@ -281,6 +280,20 @@ enum CommunityBenchmarkMetrics {
                 localized: "Two fixed token workloads · 1 warm-up + 5 measured rounds each · concurrency 1"
             )
         }
+    }
+
+    static func imageHeadlineCaption(protocolID: String?) -> String {
+        guard let schedule = protocolID.flatMap(CommunityImageSchedule.init(protocolID:)) else {
+            return String(localized: "One measured 1024 × 1024 render, after a warm-up render.")
+        }
+        return String(localized: "One measured 1024 × 1024 render at \(schedule.steps) steps, after a warm-up render.")
+    }
+
+    static func imageMethodDetail(protocolID: String?) -> String {
+        guard let schedule = protocolID.flatMap(CommunityImageSchedule.init(protocolID:)) else {
+            return String(localized: "1024 × 1024, fixed prompt and seed")
+        }
+        return String(localized: "1024 × 1024 at \(schedule.steps) steps, fixed prompt and seed")
     }
 
     /// What "What this measures" lists, per workload. Image and video never

@@ -5,6 +5,22 @@ import Testing
 @Suite("Community read API seam and pulse")
 @MainActor
 struct CommunityBenchmarkDirectoryTests {
+    @Test("Result and directory scopes use the same protocol labels as the catalog", arguments: [
+        ("rapid-image-speed-4step-nocfg", "Rapid Image Speed · 4 steps, no CFG v1"),
+        ("rapid-image-speed-28step-cfg3p5", "Rapid Image Speed · 28 steps, CFG 3.5 v1"),
+        ("rapid-image-speed", "Rapid Image Speed v1"),
+        ("rapid-video-speed", "Rapid Video Speed v1"),
+        ("custom-speed", "custom-speed v1")
+    ])
+    func scopeProtocolLabel(protocolID: String, expected: String) {
+        let scope = CommunityBenchmarkScope(
+            modelAlias: "bonsai-image-4b-2bit", workload: .image,
+            protocolID: protocolID, protocolVersion: 1, macProfile: Self.profile
+        )
+        #expect(scope.protocolName == expected)
+        #expect(scope.protocolName == CommunityBenchmarkModel.protocolDisplayName(protocolID: protocolID, version: 1))
+    }
+
     private static let profile = CommunityMacProfile(chip: "Apple M3 Pro", memoryGiB: 18)
     private static let scope = CommunityBenchmarkScope(
         modelAlias: "qwen3.5-9b-4bit",
