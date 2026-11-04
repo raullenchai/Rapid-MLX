@@ -259,12 +259,17 @@ def test_startup_times_real_rounds_round_robin_without_inner_sync(
             closed.append(depth)
 
     monkeypatch.setattr(depth_module, "calibration_generator", real_rounds)
-    if budget < 5:
-        with pytest.raises(TimeoutError, match="insufficient startup round samples"):
+    if budget < 5 or noisy:
+        with pytest.raises(depth_module.RoundCalibrationError) as failed:
             time_target_forwards(Model(), 3)
-    elif noisy:
-        with pytest.raises(ValueError, match="unstable startup round timings"):
-            time_target_forwards(Model(), 3)
+        # The widths (+1 ms per row on 50 ms) classify a cheap host.
+        assert failed.value.steep is False
+        if budget < 5:
+            assert isinstance(failed.value.__cause__, TimeoutError)
+            assert "insufficient startup round samples" in str(failed.value.__cause__)
+        else:
+            assert isinstance(failed.value.__cause__, ValueError)
+            assert "unstable startup round timings" in str(failed.value.__cause__)
     else:
         timings = time_target_forwards(Model(), 3)
         assert timings.step_ms == pytest.approx(50)
