@@ -38,7 +38,6 @@ from tests.pull_integrity_helpers import (  # noqa: F401
     snapshot_tree,
 )
 
-
 pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
 
 
