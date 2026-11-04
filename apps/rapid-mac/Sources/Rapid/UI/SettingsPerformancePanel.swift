@@ -186,8 +186,13 @@ struct SettingsPerformancePanel: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
                 ForEach(runtime.fields) { item in
                     HStack(alignment: .firstTextBaseline) {
-                        Text(item.displayName)
-                            .font(RapidFont.body)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.displayName)
+                                .font(RapidFont.body)
+                            Text(item.helpText)
+                                .font(RapidFont.caption)
+                                .foregroundStyle(RapidTheme.textSecondary)
+                        }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {
                             Text(item.value.displayText)

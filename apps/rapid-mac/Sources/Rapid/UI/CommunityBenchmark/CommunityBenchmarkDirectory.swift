@@ -122,6 +122,15 @@ enum CommunityWorkload: String, Hashable, Sendable, CaseIterable {
         }
     }
 
+    /// Sentence form is localized independently; headings retain title case.
+    var sentenceName: String {
+        switch self {
+        case .llm: return String(localized: "LLM")
+        case .image: return String(localized: "image")
+        case .video: return String(localized: "video")
+        }
+    }
+
     var displayName: String {
         switch self {
         case .llm: return String(localized: "LLM")

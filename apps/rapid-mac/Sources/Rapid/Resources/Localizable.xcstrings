@@ -2,6 +2,146 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Prompt processing batch size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词处理批次大小"
+          }
+        }
+      }
+    },
+    "Maximum concurrent requests" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大并发请求数"
+          }
+        }
+      }
+    },
+    "GPU memory budget" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GPU 内存预算"
+          }
+        }
+      }
+    },
+    "Reuse prompt prefixes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复用提示词前缀"
+          }
+        }
+      }
+    },
+    "Attention cache precision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "注意力缓存精度"
+          }
+        }
+      }
+    },
+    "Additional engine setting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他引擎设置"
+          }
+        }
+      }
+    },
+    "Tokens processed together while reading a prompt. Larger batches can use more memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取提示词时每批处理的词元数。批次越大，可能使用越多内存。"
+          }
+        }
+      }
+    },
+    "The most requests the model can process at once." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型可同时处理的最大请求数。"
+          }
+        }
+      }
+    },
+    "The share of GPU memory available to the engine." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎可使用的 GPU 内存比例。"
+          }
+        }
+      }
+    },
+    "Reuses earlier work when requests begin with the same text." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当请求以相同文本开头时，复用之前的计算结果。"
+          }
+        }
+      }
+    },
+    "The precision used to store attention history. Lower precision saves memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储注意力历史记录所用的精度。较低精度可节省内存。"
+          }
+        }
+      }
+    },
+    "An engine setting reported by this model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型报告的一项引擎设置。"
+          }
+        }
+      }
+    },
+    "image" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "图像"
+          }
+        }
+      }
+    },
+    "video" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视频"
+          }
+        }
+      }
+    },
     "Downloading or loading the audio model…" : {
       "localizations" : {
         "zh-Hans" : {
