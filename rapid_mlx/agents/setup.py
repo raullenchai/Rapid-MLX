@@ -796,7 +796,9 @@ def verify_server(
         if track_failure:
             track_agent_configure_failed("model_not_advertised", agent)
         raise NonChatModelError(base_url, selected, agent=agent)
-    return selected["id"]
+    selected_id = selected["id"]
+    assert isinstance(selected_id, str)  # Model entries were validated above.
+    return selected_id
 
 
 def wait_for_server(

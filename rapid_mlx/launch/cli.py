@@ -480,11 +480,12 @@ def launch_command(args: argparse.Namespace) -> None:
         except (OSError, ValueError) as exc:
             from rapid_mlx.agents.chat_models import NonChatModelError
 
+            error: OSError | ValueError = exc
             if isinstance(exc, NonChatModelError):
-                exc = NonChatModelError(
+                error = NonChatModelError(
                     f"http://localhost:{exc.port}/v1", exc.model, agent=args.client
                 )
-            print(f"launch: {exc}", file=sys.stderr)
+            print(f"launch: {error}", file=sys.stderr)
             sys.exit(1)
         day_two = f"{_display_cli_invocation()} launch {shlex.quote(args.client)}"
         print(f"  Saved an isolated {args.client} profile. Next time: {day_two}")
