@@ -649,6 +649,7 @@ jobs:
             tests/test_cohere2_moe_reference_parity.py \
             tests/test_mtp_spec_decode.py \
             tests/test_metal_cap_enforcement.py \
+            tests/test_projected_memory_max_context.py \
             tests/test_ddtree_integration.py \
             tests/test_mtp_gemma4_assistant_inject.py \
             tests/test_mtp_draft_overlap.py \
