@@ -208,6 +208,15 @@ def test_opencode_compacts_instead_of_looping(server, tmp_path):
     )
     assert "503" not in statuses, statuses
     assert statuses.count("400") <= 3, statuses
-    assert run.returncode == 0, run.stderr[-2000:]
     _assert_compaction_recovered(run.stdout)
+    # `opencode run` sets exit code 1 whenever the session emitted any
+    # session.error, including a ContextOverflowError it then compacted past
+    # (OpenCode v1.19 cli/cmd/run.ts: `if (error) process.exitCode = 1`).
+    # The event stream above already proved every error was an overflow and
+    # the session ended with reason "stop"; only then is exit 1 acceptable.
+    recovered_overflow = '"ContextOverflowError"' in run.stdout
+    assert run.returncode == 0 or (recovered_overflow and run.returncode == 1), (
+        run.returncode,
+        run.stderr[-2000:],
+    )
     assert "200" in statuses[last_error + 1 :], statuses
