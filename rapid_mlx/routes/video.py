@@ -1182,7 +1182,12 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
             checked_streams.append((audios[0], "audio"))
         for checked_stream, stream_kind in checked_streams:
             codec = checked_stream.get("codec_name")
-            if codec and codec not in _ffmpeg_decodable_codecs():
+            if not codec:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field}: unknown {stream_kind} codec is not supported by this runtime",
+                )
+            if codec not in _ffmpeg_decodable_codecs():
                 raise HTTPException(
                     status_code=400,
                     detail=f"{field}: {codec} {stream_kind} is not supported by this runtime",

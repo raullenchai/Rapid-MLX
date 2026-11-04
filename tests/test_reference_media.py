@@ -43,8 +43,10 @@ def tools(tmp_path, monkeypatch):
         hardware_failure=None,
     ):
         probe = tmp_path / "ffprobe"
+        probe_calls = tmp_path / "probe-calls.jsonl"
         probe.write_text(
-            f"#!{sys.executable}\nimport sys\n"
+            f"#!{sys.executable}\nimport json, sys\n"
+            f"with open({str(probe_calls)!r}, 'a') as log: log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             f"print({json.dumps({'streams': [{'avg_frame_rate': avg, 'r_frame_rate': rate, 'codec_name': codec}]})!r})\n"
             f"sys.exit({probe_exit})\n"
         )
@@ -74,6 +76,16 @@ def tools(tmp_path, monkeypatch):
         return calls
 
     return create
+
+
+def test_video_commands_exclude_attached_pictures(tools):
+    calls = tools()
+    media.decode_video_with_ffmpeg("clip.mp4")
+    probe = json.loads((calls.parent / "probe-calls.jsonl").read_text())
+    assert probe[probe.index("-select_streams") + 1] == "V:0"
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    decode = next(command for command in commands if "-map" in command)
+    assert decode[decode.index("-map") + 1] == "0:V:0"
 
 
 @pytest.mark.parametrize("videotoolbox", [False, True])

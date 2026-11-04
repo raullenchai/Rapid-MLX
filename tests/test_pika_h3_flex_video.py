@@ -1104,10 +1104,11 @@ def test_reference_http_probe_rejection(
 
     client, _, calls = reference_app
     details = dict(
-        streams=[dict(codec_type=kind, duration=duration)],
+        streams=[dict(codec_type=kind, codec_name="aac", duration=duration)],
         format=dict(format_name=formats, duration=duration),
     )
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     monkeypatch.setattr(
         video.subprocess,
         "run",
@@ -1147,8 +1148,16 @@ def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats, extension):
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type=kind, width=1920, height=1080)],
+        streams=[
+            dict(
+                codec_type=kind,
+                codec_name="h264" if kind == "video" else "aac",
+                width=1920,
+                height=1080,
+            )
+        ],
         format=dict(format_name=formats, duration="2"),
     )
 
@@ -1205,8 +1214,16 @@ def test_reference_ffprobe_duration_fallback(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type=kind, width=1920, height=1080)],
+        streams=[
+            dict(
+                codec_type=kind,
+                codec_name="h264" if kind == "video" else "aac",
+                width=1920,
+                height=1080,
+            )
+        ],
         format=dict(format_name=formats),
     )
     if stream_duration is not None:
@@ -1253,8 +1270,11 @@ def test_reference_ffprobe_video_resolution(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type="video", width=width, height=height)],
+        streams=[
+            dict(codec_type="video", codec_name="h264", width=width, height=height)
+        ],
         format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
     )
     monkeypatch.setattr(
@@ -1286,8 +1306,11 @@ def test_reference_ffprobe_video_aspect_ratio(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type="video", width=width, height=height)],
+        streams=[
+            dict(codec_type="video", codec_name="h264", width=width, height=height)
+        ],
         format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
     )
     monkeypatch.setattr(
@@ -2288,8 +2311,12 @@ def test_reference_http_accepts_images_without_timed_decoders(
         (None, "ac3", {"ac3"}, None),
         ("h264", "aac", {"h264", "aac"}, None),
         (None, "aac", {"aac"}, None),
-        ("missing", "missing", set(), None),
-        (None, "missing", set(), None),
+        ("missing", "missing", set(), "unknown video codec"),
+        ("", None, {"h264"}, "unknown video codec"),
+        ("h264", "missing", {"h264"}, "unknown audio codec"),
+        ("h264", "", {"h264"}, "unknown audio codec"),
+        (None, "", {"aac"}, "unknown audio codec"),
+        (None, "missing", set(), "unknown audio codec"),
     ],
 )
 def test_reference_probe_checks_runtime_codecs(
@@ -2300,16 +2327,16 @@ def test_reference_probe_checks_runtime_codecs(
     from rapid_mlx.routes import video
 
     streams = []
-    if video_codec:
+    if video_codec is not None:
         streams.append(dict(codec_type="video", width=64, height=48))
         if video_codec != "missing":
             streams[-1]["codec_name"] = video_codec
-    if audio_codec:
+    if audio_codec is not None:
         streams.append(dict(codec_type="audio"))
         if audio_codec != "missing":
             streams[-1]["codec_name"] = audio_codec
     # Audio-only references require an audio-compatible container.
-    if not video_codec:
+    if video_codec is None:
         container = "mov,mp4,m4a,3gp,3g2,mj2"
     payload = dict(
         streams=streams,
@@ -2333,5 +2360,5 @@ def test_reference_probe_checks_runtime_codecs(
         kind, _, duration = video._probe_packed_reference(
             tmp_path / "clip", "references[0]"
         )
-        assert kind == ("video" if video_codec else "audio")
+        assert kind == ("video" if video_codec is not None else "audio")
         assert duration == 2.0
