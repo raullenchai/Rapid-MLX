@@ -235,7 +235,7 @@ private struct PickerRow: View {
 
     private var workload: CommunityWorkload { CommunityWorkload(task: row.model.task) }
 
-    private var doesNotFit: Bool { row.model.memoryFit == "does_not_fit" }
+    private var availabilityIsWarning: Bool { row.model.availabilityIsWarning }
 
     var body: some View {
         Button(action: onSelect) {
@@ -283,19 +283,21 @@ private struct PickerRow: View {
         .background(isSelected ? RapidTheme.selectionFill : .clear)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .help(row.model.runtimeUnavailableDetail ?? "")
+        .accessibilityHint(row.model.runtimeUnavailableDetail ?? "")
         .accessibilityIdentifier("CommunityBenchmark.Picker.Row.\(row.model.entry.alias)")
     }
 
     private var fitColumn: some View {
         HStack(spacing: 5) {
-            Image(systemName: doesNotFit ? "exclamationmark.circle" : "checkmark.circle")
+            Image(systemName: availabilityIsWarning ? "exclamationmark.circle" : "checkmark.circle")
                 .font(.system(size: 11))
                 .accessibilityHidden(true)
-            Text(doesNotFit ? String(localized: "May not fit") : String(localized: "Fits"))
+            Text(row.model.availabilityLabel(forPicker: true))
                 .font(RapidFont.secondary)
                 .lineLimit(1)
         }
-        .foregroundStyle(doesNotFit ? RapidTheme.statusError : RapidTheme.statusReady)
+        .foregroundStyle(availabilityIsWarning ? RapidTheme.statusError : RapidTheme.statusReady)
     }
 
     private var statusColumn: some View {
@@ -303,7 +305,12 @@ private struct PickerRow: View {
             row.model, downloadSizeGB: row.downloadSizeGB
         )
         return VStack(alignment: .trailing, spacing: 1) {
-            if doesNotFit, let needed = row.model.estimatedMemoryGib {
+            if !row.model.runtimeCanRun {
+                Text(String(localized: "Not available on this Mac"))
+                    .font(RapidFont.secondary)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .lineLimit(2)
+            } else if availabilityIsWarning, let needed = row.model.estimatedMemoryGib {
                 Text(
                     String(localized: "Needs about \(DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: Double(needed) * Double(1 << 30))))")
                 )

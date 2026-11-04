@@ -37,8 +37,8 @@ struct SettingsDeveloperPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 SectionHeader(
-                    "Developer",
-                    subtitle: "Debug builds only. These actions erase real state on this Mac — they are not sandboxed and there is no undo.",
+                    String(localized: "Developer"),
+                    subtitle: String(localized: "Debug builds only. These actions erase real state on this Mac — they are not sandboxed and there is no undo."),
                     emphasis: .page
                 )
                 reonboardingSection

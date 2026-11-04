@@ -116,6 +116,25 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
     var id: String { entry.alias }
     var runtimeCanRun: Bool { runtimeStatus != "unavailable" }
 
+    /// Runtime readiness takes precedence over a weight-memory estimate.
+    var availabilityIsWarning: Bool { !runtimeCanRun || memoryFit == "does_not_fit" }
+
+    func availabilityLabel(forPicker: Bool) -> String {
+        if !runtimeCanRun { return String(localized: "Unavailable") }
+        if memoryFit == "does_not_fit" {
+            return forPicker ? String(localized: "May not fit") : String(localized: "May not fit this Mac")
+        }
+        return forPicker ? String(localized: "Fits") : String(localized: "Fits this Mac")
+    }
+
+    var runtimeUnavailableDetail: String? {
+        guard !runtimeCanRun else { return nil }
+        guard let message = runtimeMessage, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return String(localized: "Not available on this Mac")
+        }
+        return message
+    }
+
     static let focusAliases: Set<String> = [
         "qwen3.8-27b-4bit", "qwen3.5-9b-4bit", "gemma-4-e4b-4bit",
         "flux2-klein-4b", "z-image-turbo", "qwen-image-2.1",
@@ -136,18 +155,10 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         case "rapid-video-speed": return "Rapid Video Speed v\(version)"
         case "rapid-community-speed": return "Rapid Community Speed v\(version)"
         default:
-            guard let match = protocolID.wholeMatch(
-                of: #/rapid-image-speed-([0-9]+)step-(?:nocfg|cfg([0-9]+)p([0-9]+))/#
-            ), let steps = Int(match.1) else {
+            guard let imageSchedule = CommunityImageSchedule(protocolID: protocolID) else {
                 return "\(protocolID) v\(version)"
             }
-            let schedule: String
-            if let whole = match.2, let fraction = match.3 {
-                let cfg = "\(whole).\(fraction)"
-                schedule = String(localized: "\(steps) steps, CFG \(cfg)")
-            } else {
-                schedule = String(localized: "\(steps) steps, no CFG")
-            }
+            let schedule = imageSchedule.displayName
             return "Rapid Image Speed · \(schedule) v\(version)"
         }
     }
@@ -2156,6 +2167,7 @@ struct CommunityBenchmarkView: View {
             CommunityBenchmarkTestMethodSheet(
                 modelAlias: scope.modelAlias,
                 workload: scope.workload,
+                protocolID: scope.protocolID,
                 onDone: { showsTestMethod = false }
             )
         }

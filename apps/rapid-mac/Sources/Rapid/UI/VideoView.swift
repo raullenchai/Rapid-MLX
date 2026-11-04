@@ -224,6 +224,7 @@ struct VideoView: View {
     private var emptyStage: some View {
         VStack(spacing: RapidTheme.Space.md) {
             Image(systemName: "film.stack")
+                .accessibilityHidden(true)
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(RapidTheme.textTertiary)
             Text(emptyStageTitle)
@@ -268,14 +269,14 @@ struct VideoView: View {
                 settingsRouter.route(to: .modelManagement) { openWindow(id: "settings") }
             }
             .buttonStyle(.rapidSecondary)
-            .accessibilityIdentifier("Video.ManageModels")
+            .accessibilityIdentifier("Video.Composer.ManageModels")
         } else if let model = viewModel.selectedModel {
             if downloads.isDownloading(model.alias) {
                 HStack(spacing: RapidTheme.Space.sm) {
                     ProgressView().controlSize(.small)
                     Button("Cancel Download") { downloads.cancelDownload(alias: model.alias) }
                         .buttonStyle(.rapidSecondary)
-                        .accessibilityIdentifier("Video.CancelDownload")
+                        .accessibilityIdentifier("Video.Composer.CancelDownload")
                 }
             } else if !model.cached {
                 Button(String(localized: "Download \(ModelDisplayName.name(for: model.alias))")) {
@@ -283,7 +284,7 @@ struct VideoView: View {
                 }
                 .buttonStyle(.rapidPrimary)
                 .disabled(!viewModel.isSelectedModelEligible)
-                .accessibilityIdentifier("Video.DownloadModel")
+                .accessibilityIdentifier("Video.Composer.DownloadModel")
             } else if !viewModel.isServerReady {
                 Button {
                     Task { await viewModel.prepareSelectedModel() }
@@ -299,7 +300,7 @@ struct VideoView: View {
                 }
                 .buttonStyle(.rapidPrimary)
                 .disabled(viewModel.isPreparing || !viewModel.isSelectedModelEligible)
-                .accessibilityIdentifier("Video.StartModel")
+                .accessibilityIdentifier("Video.Composer.StartModel")
             }
         }
     }
@@ -312,6 +313,7 @@ struct VideoView: View {
                     .frame(maxWidth: 300)
             } else {
                 Image(systemName: job.isCancelled ? "stop.circle" : (job.status == .failed ? "exclamationmark.triangle" : "film"))
+                    .accessibilityHidden(true)
                     .font(.system(size: 34, weight: .light))
                     .foregroundStyle(job.status == .failed && !job.isCancelled ? RapidTheme.statusError : RapidTheme.textTertiary)
             }
@@ -385,7 +387,7 @@ struct VideoView: View {
 
     private var resultActions: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Button { savePreview() } label: { Image(systemName: "square.and.arrow.down") }
+            Button { savePreview() } label: { Image(systemName: "square.and.arrow.down").accessibilityHidden(true) }
                 .buttonStyle(.rapidTertiary)
                 .disabled(isSavingPreview)
                 .help("Save video")
@@ -394,6 +396,7 @@ struct VideoView: View {
             if let job = viewModel.selectedJob {
                 Button(role: .destructive) { pendingDeletion = job } label: {
                     Image(systemName: "trash")
+                        .accessibilityHidden(true)
                 }
                 .buttonStyle(.rapidTertiary)
                 .help("Delete video")
@@ -418,6 +421,7 @@ struct VideoView: View {
                             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                                 HStack {
                                     Image(systemName: statusSymbol(job))
+                                        .accessibilityHidden(true)
                                     Text(jobStatusLabel(job))
                                     Spacer()
                                     Text("\(job.seconds)s")
@@ -460,7 +464,7 @@ struct VideoView: View {
                         Button("Retry") { Task { await viewModel.refreshServerData() } }
                             .buttonStyle(.rapidSecondary)
                             .disabled(viewModel.isRefreshing)
-                            .accessibilityIdentifier("Video.RetryServerData")
+                            .accessibilityIdentifier("Video.Composer.RetryServerData")
                     }
                 }
             }
@@ -470,7 +474,7 @@ struct VideoView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 440)
-                .accessibilityIdentifier("Video.ModePicker")
+                .accessibilityIdentifier("Video.Composer.ModePicker")
             }
             if viewModel.mode == .image { referenceControls }
             if viewModel.supportsLastFrame && viewModel.mode != .references { lastFrameControls }
@@ -490,7 +494,7 @@ struct VideoView: View {
                     .frame(minHeight: 54, idealHeight: 64, maxHeight: 72)
                     .padding(RapidTheme.Space.sm)
                     .accessibilityLabel("Video prompt")
-                    .accessibilityIdentifier("Video.Prompt")
+                    .accessibilityIdentifier("Video.Composer.Prompt")
             }
             .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: RapidTheme.Radius.input))
             .overlay {
@@ -518,7 +522,6 @@ struct VideoView: View {
         .padding(RapidTheme.Space.lg)
         .background(RapidTheme.surfaceCanvas)
         .overlay(alignment: .top) { Divider() }
-        .accessibilityIdentifier("Video.Composer")
     }
 
     @ViewBuilder
@@ -531,7 +534,7 @@ struct VideoView: View {
             }
             .labelsHidden()
             .accessibilityLabel("Video size")
-            .accessibilityIdentifier("Video.Size")
+            .accessibilityIdentifier("Video.Composer.Size")
         }
         if !viewModel.durationPresets.isEmpty {
             Picker("Duration", selection: $viewModel.seconds) {
@@ -541,7 +544,7 @@ struct VideoView: View {
             }
             .labelsHidden()
             .accessibilityLabel("Video duration")
-            .accessibilityIdentifier("Video.Duration")
+            .accessibilityIdentifier("Video.Composer.Duration")
         }
     }
 
@@ -561,7 +564,7 @@ struct VideoView: View {
             .disabled(!viewModel.canSubmit)
             .keyboardShortcut(.return, modifiers: [.command])
             .fixedSize(horizontal: true, vertical: false)
-            .accessibilityIdentifier("Video.Generate")
+            .accessibilityIdentifier("Video.Composer.Generate")
         } else {
             readinessAction
                 .fixedSize(horizontal: true, vertical: false)
@@ -573,6 +576,7 @@ struct VideoView: View {
             if viewModel.videoModels.isEmpty { Text("No video models").tag("") }
             ForEach(viewModel.videoModels) { model in
                 Text(modelPickerLabel(model))
+                    .help(model.alias)
                     .tag(model.alias)
                     .disabled(!viewModel.isModelEligible(model))
             }
@@ -581,7 +585,7 @@ struct VideoView: View {
         .frame(maxWidth: 220)
         .disabled(!viewModel.canSwitchModels)
         .accessibilityLabel("Video model")
-        .accessibilityIdentifier("Video.ModelMenu")
+        .accessibilityIdentifier("Video.Composer.ModelMenu")
     }
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
@@ -598,13 +602,13 @@ struct VideoView: View {
                 Button("Remove") { viewModel.setReference(nil) }
                     .buttonStyle(.plain)
                     .foregroundStyle(RapidTheme.statusError)
-                    .accessibilityIdentifier("Video.Reference.Remove")
+                    .accessibilityIdentifier("Video.Composer.Reference.Remove")
             } else {
                 Button { importTarget = .first; showingReferenceImporter = true } label: {
                     Label("Add reference image", systemImage: "photo.badge.plus")
                 }
                 .buttonStyle(.rapidSecondary)
-                .accessibilityIdentifier("Video.Reference.Add")
+                .accessibilityIdentifier("Video.Composer.Reference.Add")
                 Text(String(localized: "JPEG, PNG, or WebP · up to \(referenceLimitText)"))
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textTertiary)
@@ -654,7 +658,7 @@ struct VideoView: View {
                 Text(frame.fileName).lineLimit(1)
                 Button("Remove") { viewModel.setLastFrame(nil) }
                     .accessibilityLabel("Remove last frame")
-                    .accessibilityIdentifier("Video.LastFrame.Remove")
+                    .accessibilityIdentifier("Video.Composer.LastFrame.Remove")
             } else {
                 Button {
                     importTarget = .last
@@ -664,10 +668,9 @@ struct VideoView: View {
                 }
                 .buttonStyle(.rapidSecondary)
                 .accessibilityLabel("Add last frame")
-                .accessibilityIdentifier("Video.LastFrame.Add")
+                .accessibilityIdentifier("Video.Composer.LastFrame.Add")
             }
         }
-        .accessibilityIdentifier("Video.LastFrame")
     }
 
     private var multipleReferenceControls: some View {
@@ -677,7 +680,7 @@ struct VideoView: View {
                     Label(reference.fileName, systemImage: "photo.fill").lineLimit(1)
                     Button("Remove") { viewModel.references.remove(at: index) }
                         .accessibilityLabel("Remove reference file")
-                        .accessibilityIdentifier("Video.References.Remove.\(index)")
+                        .accessibilityIdentifier("Video.Composer.References.Remove.\(index)")
                 }
                 .font(RapidFont.caption)
             }
@@ -689,7 +692,7 @@ struct VideoView: View {
             }
             .buttonStyle(.rapidSecondary)
             .accessibilityLabel("Add reference files")
-            .accessibilityIdentifier("Video.References.Add")
+            .accessibilityIdentifier("Video.Composer.References.Add")
             ForEach(viewModel.capabilities?.referenceDurationHints ?? [], id: \.self) { hint in
                 Text(hint)
                     .font(RapidFont.caption)
@@ -702,7 +705,6 @@ struct VideoView: View {
                     .accessibilityIdentifier("Video.References.Validation")
             }
         }
-        .accessibilityIdentifier("Video.References")
     }
 
     private func importReference(_ result: Result<[URL], Error>) {

@@ -101,6 +101,32 @@ def test_pull_cold_alias_plans_combined_bytes_and_pulls_pinned_sidecar(
     assert "495 B uncached" in capsys.readouterr().out
 
 
+def test_pull_disk_gate_combines_primary_runtime_assets_and_sidecar(
+    provision, monkeypatch, capsys
+):
+    _, state = provision
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.image_runtime_assets_for",
+        lambda _: (("test/runtime-asset", PIN, ("asset.bin",)),),
+    )
+
+    def reject(size, **kwargs):
+        state.disks.append(size)
+        raise SystemExit(1)
+
+    monkeypatch.setattr(cli, "_check_download_disk_space", reject)
+    with pytest.raises(SystemExit):
+        cli.pull_command(SimpleNamespace(model=ALIAS))
+
+    assert state.disks == [4495]
+    assert state.calls == []
+    assert (
+        "test/runtime-asset",
+        {"revision_override": PIN, "allow_patterns": ["asset.bin"]},
+    ) in state.sizes
+    assert "Nothing was downloaded." in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("failure", [OSError("network down"), SystemExit(1)])
 def test_sidecar_failure_preserves_successful_target_pull(
     provision, monkeypatch, capsys, failure
@@ -268,7 +294,16 @@ def test_missing_sidecar_declaration_still_pulls_target(provision, monkeypatch):
 
     assert state.target and not state.head
     assert [call[0] for call in state.calls] == [profile.hf_path]
-    assert state.sizes == []
+    assert state.sizes == [
+        (
+            profile.hf_path,
+            {
+                "revision_override": model_aliases.resolve_revision(profile.hf_path),
+                "allow_patterns": None,
+            },
+        )
+    ]
+    assert state.disks == [2000]
     eligibility.assert_not_called()
 
 

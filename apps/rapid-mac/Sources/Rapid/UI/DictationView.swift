@@ -209,7 +209,7 @@ struct DictationView: View {
             enableRow
             Divider().overlay(RapidTheme.hairline)
             setupRow(
-                label: "Model",
+                label: String(localized: "Model"),
                 done: controller.readinessSnapshot.modelSelected
                     && controller.readinessSnapshot.modelOnDisk
             ) {
@@ -217,7 +217,7 @@ struct DictationView: View {
                     showModelPicker.toggle()
                 } label: {
                     PopupControlChrome(
-                        title: selectedModelDetails?.displayName ?? "Choose…",
+                        title: selectedModelDetails?.displayName ?? String(localized: "Choose…"),
                         width: 260
                     )
                 }
@@ -250,7 +250,7 @@ struct DictationView: View {
             Divider().overlay(RapidTheme.hairline)
 
             setupRow(
-                label: "Microphone",
+                label: String(localized: "Microphone"),
                 done: controller.readinessSnapshot.microphone
             ) {
                 if !controller.readinessSnapshot.microphone {
@@ -267,7 +267,7 @@ struct DictationView: View {
             Divider().overlay(RapidTheme.hairline)
 
             setupRow(
-                label: "Accessibility",
+                label: String(localized: "Accessibility"),
                 done: controller.readinessSnapshot.accessibility
             ) {
                 if !controller.readinessSnapshot.accessibility {
@@ -286,7 +286,7 @@ struct DictationView: View {
             Divider().overlay(RapidTheme.hairline)
 
             setupRow(
-                label: "Hotkey",
+                label: String(localized: "Hotkey"),
                 done: !controller.isEnabled || controller.isHotkeyArmed
             ) {
                 Menu {
@@ -503,6 +503,7 @@ struct DictationView: View {
     ) -> some View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             Image(systemName: done ? "checkmark.circle.fill" : "circle.dashed")
+                .accessibilityLabel(done ? String(localized: "Completed") : String(localized: "Not completed"))
                 .foregroundStyle(done ? RapidTheme.green : Color.secondary)
                 .font(.system(size: 14))
                 .padding(.top, 2)
@@ -526,6 +527,7 @@ struct DictationView: View {
                                                   modelDownloadRowVisible: modelReadiness != nil) {
             HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
+                    .accessibilityHidden(true)
                     .foregroundStyle(.orange)
                     .font(.system(size: 12))
                 Text(error)
@@ -674,6 +676,7 @@ struct DictationView: View {
                 controller.vocabulary.remove(term.text)
             } label: {
                 Image(systemName: "xmark")
+                    .accessibilityHidden(true)
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.secondary)
             }
@@ -820,6 +823,7 @@ private struct TranscriptionModelOptionRow: View {
             Button(action: select) {
                 HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                     Image(systemName: "checkmark")
+                        .accessibilityHidden(true)
                         .font(.system(size: 10, weight: .semibold))
                         .opacity(isSelected ? 1 : 0)
                         .frame(width: 14, height: 18)
@@ -830,7 +834,7 @@ private struct TranscriptionModelOptionRow: View {
                                 Text(details.displayName).font(RapidFont.body)
                                 pickerBadge(details.badge)
                                 if details.isRecommended {
-                                    pickerBadge("recommended", emphasized: true)
+                                    pickerBadge(String(localized: "recommended"), emphasized: true)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -880,7 +884,7 @@ private struct TranscriptionModelOptionRow: View {
         case .none:
             EmptyView()
         case .download:
-            Button(action: onDownload) { Image(systemName: "arrow.down.circle") }
+            Button(action: onDownload) { Image(systemName: "arrow.down.circle").accessibilityHidden(true) }
                 .buttonStyle(.plain)
                 .accessibilityLabel(String(localized: "Download \(details.displayName)"))
                 .help(String(localized: "Download"))
@@ -905,7 +909,7 @@ private struct TranscriptionModelOptionRow: View {
                 } else {
                     ProgressView().controlSize(.small)
                 }
-                Button(action: onCancel) { Image(systemName: "xmark") }
+                Button(action: onCancel) { Image(systemName: "xmark").accessibilityHidden(true) }
                     .buttonStyle(.plain)
                     .accessibilityLabel(String(localized: "Cancel"))
                     .accessibilityIdentifier("Dictation.Model.Cancel.\(entry.alias)")

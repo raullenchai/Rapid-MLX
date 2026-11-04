@@ -29,6 +29,8 @@ struct SectionHeader: View {
         case group
     }
 
+    // Resolved Strings also support dynamic/user headings. Callers must use
+    // String(localized:) for app copy; check-localization.py guards this boundary.
     let title: String
     var subtitle: String? = nil
     var emphasis: Emphasis = .group

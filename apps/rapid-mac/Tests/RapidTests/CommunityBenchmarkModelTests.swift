@@ -6,6 +6,55 @@ import Testing
 @MainActor
 @Suite("Community Benchmark model-first projection")
 struct CommunityBenchmarkModelTests {
+    @Test("Image schedules agree with all shipped schemas")
+    func imageSchedulesMatchSchemas() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        let schemas = root.appendingPathComponent("rapid_mlx/catalog/schemas")
+        let files = try FileManager.default.contentsOfDirectory(at: schemas, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("rapid-image-speed") && $0.pathExtension == "json" }
+        #expect(files.count >= 5)
+        for file in files {
+            let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            let workload = try #require(json["workload"] as? [String: Any])
+            let id = try #require(workload["protocol_id"] as? String)
+            let schedule = try #require(CommunityImageSchedule(protocolID: id))
+            let testCase = try #require((workload["cases"] as? [[String: Any]])?.first)
+            #expect(schedule.steps == testCase["steps"] as? Int)
+            let guidance = try #require(testCase["guidance_millionths"] as? Int)
+            #expect((schedule.cfg.flatMap(Double.init) ?? 1) * 1_000_000 == Double(guidance))
+        }
+        for id in ["custom-speed", "rapid-image-speed-0step-nocfg", "rapid-image-speed-8step-cfg3", "rapid-image-speed-8step-nocfg-extra"] {
+            #expect(CommunityImageSchedule(protocolID: id) == nil)
+        }
+    }
+
+    @Test("Runtime unavailability wins over both memory fit estimates", arguments: ["fits", "does_not_fit"])
+    func unavailableRuntimePresentation(memoryFit: String) throws {
+        let data = Data("""
+        {"alias":"bonsai2-27b-tensorfold","focus":false,"estimated_memory_gib":11,
+         "memory_fit":"\(memoryFit)","protocol_version":2,
+         "runtime":{"status":"unavailable","message":"This runtime requires a 96 GB Mac"}}
+        """.utf8)
+        let metadata = try JSONDecoder().decode(CommunityBenchmarkCatalogModel.self, from: data)
+        let entry = ModelEntry(alias: metadata.alias, hfRepo: nil, sizeOnDisk: nil, cached: true)
+        var model = try #require(CommunityBenchmarkModel.models(from: [entry], metadata: [entry.alias: metadata]).first)
+        #expect(!model.runtimeCanRun)
+        #expect(model.availabilityIsWarning)
+        #expect(model.availabilityLabel(forPicker: true) == "Unavailable")
+        #expect(model.availabilityLabel(forPicker: false) == "Unavailable")
+        #expect(model.runtimeUnavailableDetail == "This runtime requires a 96 GB Mac")
+        model.runtimeMessage = nil
+        #expect(model.runtimeUnavailableDetail == "Not available on this Mac")
+        model.runtimeMessage = "  "
+        #expect(model.runtimeUnavailableDetail == "Not available on this Mac")
+        model.runtimeStatus = nil
+        #expect(model.runtimeCanRun)
+        #expect(model.runtimeUnavailableDetail == nil)
+        #expect(model.availabilityLabel(forPicker: true) == (memoryFit == "fits" ? "Fits" : "May not fit"))
+        #expect(model.availabilityLabel(forPicker: false) == (memoryFit == "fits" ? "Fits this Mac" : "May not fit this Mac"))
+    }
+
     @Test("Protocol display names preserve versions and parse fixed schedules", arguments: [
         ("rapid-image-speed", 1, "Rapid Image Speed v1"),
         ("rapid-video-speed", 3, "Rapid Video Speed v3"),

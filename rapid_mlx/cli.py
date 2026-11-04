@@ -12784,6 +12784,12 @@ def pull_command(args):
     if getattr(args, "with_ref2va", False) and primary_repo != "Pika-Labs/Pika-H3-Flex":
         raise ValueError("--with-ref2va is only supported for Pika H3 Flex")
 
+    from rapid_mlx.byom.preflight import _check_catalog_memory_fit
+
+    memory_args = copy.copy(primary_args)
+    memory_args.command = "pull"
+    _check_catalog_memory_fit(memory_args)
+
     # Run the same video runtime preflight as ``serve`` BEFORE downloading
     # multi-gigabyte weights. A host that cannot run the alias must fail here,
     # not after a long pull and a second failed launch.
@@ -12840,10 +12846,55 @@ def pull_command(args):
             f"  Optional automatic MTP file plan: {sidecar} "
             f"({_format_bytes(sidecar_bytes)} uncached)"
         )
-        _check_download_disk_space(
-            _missing_download_bytes(primary_repo) + sidecar_bytes,
-            force=getattr(args, "force_disk_check", False),
+
+    # These lanes have no existing pre-download disk gate. Price all runtime
+    # payloads together; unavailable metadata contributes zero, as in serve.
+    if (
+        primary_repo != TARGET_REPO and not getattr(args, "with_ref2va", False)
+    ) or mtp_plan is not None:
+        from rapid_mlx.video.minimax_h3 import video_payloads
+
+        payloads = video_payloads(primary_repo)
+        if not payloads:
+            bits = getattr(primary_args, "bits", None)
+            fmt = getattr(primary_args, "format", None)
+            variant = f"{bits}bit" if bits else fmt
+            patterns = (
+                list(IMAGE_MODEL_DATA_FILES[primary_repo])
+                if primary_repo in IMAGE_MODEL_DATA_FILES
+                else [_escape_glob_literal(variant) + "/*"]
+                if variant
+                else None
+            )
+            payloads = (
+                (primary_repo, _pinned_checkpoint_revision(primary_repo), patterns),
+            )
+        payloads = (
+            *payloads,
+            *image_runtime_assets_for(primary_repo),
+            *(
+                (a.repo_id, a.revision, a.allow_patterns)
+                for a in runtime_assets_for(primary_repo)
+                if a.repo_id != primary_repo
+            ),
         )
+        if mtp_plan is not None:
+            payloads = (*payloads, mtp_plan)
+        try:
+            _check_download_disk_space(
+                sum(
+                    _missing_download_bytes(
+                        repo,
+                        revision_override=rev,
+                        allow_patterns=list(files) if files is not None else None,
+                    )
+                    for repo, rev, files in payloads
+                ),
+                force=getattr(args, "force_disk_check", False),
+            )
+        except SystemExit:
+            print("  Nothing was downloaded.", file=sys.stderr)
+            raise
 
     if primary_repo == TARGET_REPO:
         _check_disk_space(

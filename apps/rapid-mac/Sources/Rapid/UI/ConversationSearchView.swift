@@ -70,7 +70,7 @@ struct ConversationSearchView: View {
             if !query.isEmpty {
                 QuietIconButton(
                     symbol: "xmark.circle.fill",
-                    label: "Clear search",
+                    label: String(localized: "Clear search"),
                     size: RapidTheme.ControlHeight.small,
                     symbolSize: 12
                 ) {

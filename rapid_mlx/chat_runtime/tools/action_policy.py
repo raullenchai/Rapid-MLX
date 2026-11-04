@@ -216,9 +216,44 @@ def shell_words(text):
     return words
 
 
+def strip_workspace_cd(text, workspace):
+    """Ignore one leading, literal no-op cd for policy inspection only."""
+    # Match raw text, before normalization or quote removal can hide expansion.
+    # Deliberately accept only unquoted ASCII path characters, no options,
+    # redirections, expansions, escapes, or additional cd operands.
+    prefix = re.match(
+        r"\A[ \t]*cd[ \t]+([A-Za-z0-9_./:@%+=,-]+)[ \t]*(?:&&|;(?![;&]))",
+        text,
+    )
+    if not prefix:
+        return text
+    target = prefix[1]
+    # The runner uses /bin/sh with cwd=workspace. Dot-relative paths bypass
+    # CDPATH (which owners can opt into the terminal environment); bare relative
+    # names do not.
+    if not target.startswith(("/", "./", "../")) and target not in {".", ".."}:
+        return text
+    if not text[prefix.end() :].strip():
+        return text
+    try:
+        root, candidate, _ = resolve_candidate(workspace, target)
+        if candidate.resolve(strict=True) != root:
+            return text
+        # /bin/sh's logical cd removes .. before following symlinks; require
+        # that interpretation to reach the root too.
+        if Path(os.path.normpath(candidate)).resolve(strict=True) != root:
+            return text
+    except (OSError, RuntimeError, ValueError):
+        return text
+    # Do not recurse: another cd in the remainder retains the existing gate.
+    return text[prefix.end() :]
+
+
 def scan_code(text, workspace, *, python=False):
     if len(text.encode()) > 65536:
         return "Code exceeds the inspection limit"
+    if not python:
+        text = strip_workspace_cd(text, workspace)
     normalized = unicodedata.normalize("NFKC", text).replace("\\\n", "")
     if not python:
         # Discarding stdout/stderr is not an outside-workspace file mutation.
@@ -387,7 +422,7 @@ def scan_code(text, workspace, *, python=False):
         try:
             if secret_path(resolve_path(workspace, token)):
                 return "Secrets-like path or credential access"
-        except (OSError, ValueError):
+        except (OSError, RuntimeError, ValueError):
             return "Command path could not be inspected"
     # Scan normalized shell words as well (r'm' / escaped spellings).
     words = " ".join(tokens).replace("\\", "")

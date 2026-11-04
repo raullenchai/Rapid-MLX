@@ -71,7 +71,7 @@ struct AudioView: View {
            selectedEntry?.cached == false {
             download = .init(
                 alias: selectedAlias,
-                status: .running(detail: "Starting the download…", fraction: nil)
+                status: .running(detail: String(localized: "Starting the download…"), fraction: nil)
             )
         }
 
@@ -83,7 +83,7 @@ struct AudioView: View {
             download: download,
             loading: isLoading ? .init(
                 alias: selectedAlias,
-                detail: "Downloading or loading the audio model…"
+                detail: String(localized: "Downloading or loading the audio model…")
             ) : nil,
             readyAlias: readyAlias,
             activity: viewModel.activeOperation(for: selectedAlias)
@@ -163,7 +163,7 @@ struct AudioView: View {
                         identifier: "Audio.Mode.\($0.axName)"
                     )
                 },
-                accessibilityLabel: "Audio mode"
+                accessibilityLabel: String(localized: "Audio mode")
             )
             .accessibilityIdentifier("Audio.Mode")
         }
@@ -180,7 +180,7 @@ struct AudioView: View {
             switch viewModel.mode {
             case .dictation:
                 if viewModel.transcriptionModels.isEmpty {
-                    unavailableState(operation: "dictation")
+                    unavailableState(operation: String(localized: "dictation"))
                 } else {
                     DictationView(
                         controller: dictation,
@@ -190,7 +190,7 @@ struct AudioView: View {
                 }
             case .speech:
                 if viewModel.speechModels.isEmpty {
-                    unavailableState(operation: "speech")
+                    unavailableState(operation: String(localized: "speech"))
                 } else {
                     speechSurface
                 }
@@ -201,10 +201,10 @@ struct AudioView: View {
     private func unavailableState(operation: String) -> some View {
         EmptyState(
             symbol: "waveform",
-            title: "Audio unavailable",
+            title: String(localized: "Audio unavailable"),
             message: server.binaryPath == nil
-                ? "The bundled engine could not be found. The rest of Rapid-MLX remains available."
-                : "No model in this build supports \(operation). Audio models can be managed in Settings."
+                ? String(localized: "The bundled engine could not be found. The rest of Rapid-MLX remains available.")
+                : String(localized: "No model in this build supports \(operation). Audio models can be managed in Settings.")
         ) {
             Button("Open Model Management", systemImage: "square.stack.3d.up") {
                 openModelManagement()
@@ -219,12 +219,12 @@ struct AudioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 SectionHeader(
-                    "Text to Speech",
-                    subtitle: "Create spoken audio with a model and one of its built-in voices."
+                    String(localized: "Text to Speech"),
+                    subtitle: String(localized: "Create spoken audio with a model and one of its built-in voices.")
                 )
 
                 VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-                    SectionHeader("Text")
+                    SectionHeader(String(localized: "Text"))
                     TextEditor(text: $viewModel.speechText)
                         .font(RapidFont.body)
                         .scrollContentBackground(.hidden)
@@ -299,11 +299,11 @@ struct AudioView: View {
     private var speechSetupCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             speechRow(
-                label: "Model",
-                caption: "Voices and generated audio come from this model."
+                label: String(localized: "Model"),
+                caption: String(localized: "Voices and generated audio come from this model.")
             ) {
                 modelPickerControl(
-                    title: "Model",
+                    title: String(localized: "Model"),
                     selection: speechModelSelection,
                     entries: viewModel.speechModels,
                     identifier: "Audio.Speech.ModelPicker"
@@ -322,8 +322,8 @@ struct AudioView: View {
             Divider().overlay(RapidTheme.hairline)
 
             speechRow(
-                label: "Voice",
-                caption: "Each model ships its own set — preview before choosing."
+                label: String(localized: "Voice"),
+                caption: String(localized: "Each model ships its own set — preview before choosing.")
             ) {
                 HStack(spacing: RapidTheme.Space.sm) {
                     if viewModel.isLoadingVoices {
@@ -331,8 +331,8 @@ struct AudioView: View {
                     }
                     QuietIconButton(
                         symbol: "arrow.clockwise",
-                        label: "Load voices",
-                        help: "Reload the voice list from the running model."
+                        label: String(localized: "Load voices"),
+                        help: String(localized: "Reload the voice list from the running model.")
                     ) {
                         playback.stop()
                         Task { _ = await viewModel.loadVoices() }
@@ -350,8 +350,8 @@ struct AudioView: View {
             Divider().overlay(RapidTheme.hairline)
 
             speechRow(
-                label: "Speed",
-                caption: "Applied when the audio is generated."
+                label: String(localized: "Speed"),
+                caption: String(localized: "Applied when the audio is generated.")
             ) {
                 HStack(spacing: RapidTheme.Space.md) {
                     Slider(value: $viewModel.speed, in: 0.5...2, step: 0.05)
@@ -411,18 +411,18 @@ struct AudioView: View {
             Spacer(minLength: RapidTheme.Space.md)
             QuietIconButton(
                 symbol: playback.isPlaying ? "stop.fill" : "play.fill",
-                label: playback.isPlaying ? "Stop playback" : "Play speech"
+                label: playback.isPlaying ? String(localized: "Stop playback") : String(localized: "Play speech")
             ) {
                 do {
                     try playback.toggle(audio.data)
                 } catch {
-                    viewModel.errorMessage = "Couldn't play the audio: \(error.localizedDescription)"
+                    viewModel.errorMessage = String(localized: "Couldn't play the audio: \(error.localizedDescription)")
                 }
             }
             .accessibilityIdentifier("Audio.Speech.Play")
             QuietIconButton(
                 symbol: "square.and.arrow.down",
-                label: "Save speech"
+                label: String(localized: "Save speech")
             ) { saveSpeech(audio) }
             .accessibilityIdentifier("Audio.Speech.Save")
         }
@@ -464,7 +464,7 @@ struct AudioView: View {
         } label: {
             popupControlLabel(
                 entries.first(where: { $0.alias == selection.wrappedValue })
-                    .map { ModelDisplayName.name(for: $0.alias) } ?? "Choose a model"
+                    .map { ModelDisplayName.name(for: $0.alias) } ?? String(localized: "Choose a model")
             )
         }
         .menuStyle(.button)
@@ -521,9 +521,9 @@ struct AudioView: View {
     /// State description for an empty voice popup — what the control is
     /// waiting on, not internal mechanics.
     private var voicePlaceholder: String {
-        if viewModel.isLoadingVoices { return "Loading voices…" }
-        guard readiness.sendAllowed else { return "Start the model to list voices" }
-        return "Choose a voice"
+        if viewModel.isLoadingVoices { return String(localized: "Loading voices…") }
+        guard readiness.sendAllowed else { return String(localized: "Start the model to list voices") }
+        return String(localized: "Choose a voice")
     }
 
     private var voicePopoverHeight: CGFloat {
@@ -614,7 +614,7 @@ struct AudioView: View {
             // a false Ready state when that proof is absent.
             guard viewModel.audioModels.first(where: { $0.alias == alias })?.cached == true else {
                 downloads.dismissJob(alias: alias)
-                viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+                viewModel.errorMessage = String(localized: "The download finished, but Rapid couldn't find the model on disk. Try downloading it again.")
                 return
             }
         }
@@ -651,7 +651,7 @@ struct AudioView: View {
         }
         downloads.dismissJob(alias: alias)
         if selectedAlias == alias {
-            viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+            viewModel.errorMessage = String(localized: "The download finished, but Rapid couldn't find the model on disk. Try downloading it again.")
         }
     }
 
@@ -670,7 +670,7 @@ struct AudioView: View {
             do {
                 try audio.data.write(to: URL(fileURLWithPath: simulated), options: .atomic)
             } catch {
-                viewModel.errorMessage = "Couldn't save the audio: \(error.localizedDescription)"
+                viewModel.errorMessage = String(localized: "Couldn't save the audio: \(error.localizedDescription)")
             }
             return
         }
@@ -684,7 +684,7 @@ struct AudioView: View {
         do {
             try audio.data.write(to: url, options: .atomic)
         } catch {
-            viewModel.errorMessage = "Couldn't save the audio: \(error.localizedDescription)"
+            viewModel.errorMessage = String(localized: "Couldn't save the audio: \(error.localizedDescription)")
         }
     }
 
@@ -719,7 +719,7 @@ struct AudioView: View {
                 try playback.play(audio.data)
                 playingPreviewVoice = voice
             } catch {
-                viewModel.errorMessage = "Couldn't play the voice preview: \(error.localizedDescription)"
+                viewModel.errorMessage = String(localized: "Couldn't play the voice preview: \(error.localizedDescription)")
             }
         }
     }
@@ -750,6 +750,7 @@ private struct VoiceOptionRow: View {
             Button(action: select) {
                 HStack(spacing: RapidTheme.Space.sm) {
                     Image(systemName: "checkmark")
+                        .accessibilityHidden(true)
                         .font(.system(size: 10, weight: .semibold))
                         .opacity(isSelected ? 1 : 0)
                         .frame(width: 14)
@@ -767,6 +768,7 @@ private struct VoiceOptionRow: View {
             .buttonStyle(.plain)
             .disabled(!isEnabled)
             .accessibilityLabel(String(localized: "Select \(voice), \(details)"))
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityIdentifier("Audio.Speech.VoiceOption.\(voice)")
 
             if isPreviewing {
@@ -780,7 +782,7 @@ private struct VoiceOptionRow: View {
             } else {
                 QuietIconButton(
                     symbol: isPlaying ? "stop.circle.fill" : "play.circle.fill",
-                    label: isPlaying ? "Stop \(voice) preview" : "Preview \(voice)",
+                    label: isPlaying ? String(localized: "Stop \(voice) preview") : String(localized: "Preview \(voice)"),
                     symbolSize: 16,
                     action: preview
                 )

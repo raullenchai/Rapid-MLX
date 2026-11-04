@@ -49,6 +49,9 @@ CATALOG_REPO = "LiquidAI/LFM2.5-2.6B-MLX"
 CATALOG_ALIAS = "lfm2.5-2.6b-4bit"
 
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
+
 def _multi_variant_tree():
     """A multi-variant repo layout: several quant folders + root README only."""
     return [

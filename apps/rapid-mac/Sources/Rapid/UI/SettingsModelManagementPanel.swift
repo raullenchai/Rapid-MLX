@@ -1287,6 +1287,7 @@ struct SettingsModelManagementPanel: View {
             BrandIcon(alias: entry.alias)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(ModelDisplayName.name(for: entry.alias))
+                    .help(entry.alias)
                     .font(RapidFont.bodyEmphasis)
                     .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)

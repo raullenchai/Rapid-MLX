@@ -37,6 +37,25 @@ import Testing
 @MainActor
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
+    @Test("Section priority is Quickstart, Recommended, then remaining models")
+    func deduplicatesEverySection() {
+        let entries = ["starter", "fast", "other", "STARTER", "other"].map {
+            ModelEntry(alias: $0, hfRepo: nil, sizeOnDisk: nil, cached: false)
+        }
+        let quickstart = ModelPickerBar.uniqueSectionEntries([entries[0]], excluding: [])
+        let recommended = ModelPickerBar.uniqueSectionEntries(
+            Array(entries.prefix(2)), excluding: quickstart.map(\.alias)
+        )
+        let remaining = ModelPickerBar.dedupedAllEntries(
+            filtered: entries, quickstartAlias: quickstart.first?.alias,
+            recommendedAliases: recommended.map(\.alias)
+        )
+        #expect(quickstart.map(\.alias) == ["starter"])
+        #expect(recommended.map(\.alias) == ["fast"])
+        #expect(remaining.map(\.alias) == ["other"])
+        #expect(ModelPickerBar.dedupedAllEntries(filtered: entries, quickstartAlias: nil).count == 3)
+    }
+
 
     @Test("Unavailable and empty model states share recovery actions")
     func emptyMenuStatesIncludeRecoveryActions() throws {
