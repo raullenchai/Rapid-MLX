@@ -18,6 +18,69 @@ from rapid_mlx.video import minimax_h3 as h3
 from rapid_mlx.video import pika_h3_flex as flex
 
 
+class FakeVAEEncoder:
+    def __init__(self):
+        self.weight = np.array([2.0], dtype=np.float32)
+
+    def parameters(self):
+        return {"weight": self.weight}
+
+    def __call__(self, values, *, offset=0):
+        return values * self.weight + offset
+
+
+def test_eager_vae_encoder_preserves_values_and_parameters(monkeypatch, array_core):
+    evaluated = []
+    monkeypatch.setattr(array_core, "eval", evaluated.append, raising=False)
+    encoder = FakeVAEEncoder()
+    vae = SimpleNamespace(encoder=encoder)
+    values = np.array([1.0, 3.0], dtype=np.float32)
+    expected = encoder(values, offset=1)
+    parameters = encoder.parameters()
+    attributes = dict(vars(encoder))
+
+    flex._install_eager_vae_encoder(vae)
+    eager_class = type(encoder)
+    assert eager_class is not FakeVAEEncoder
+    assert issubclass(eager_class, FakeVAEEncoder)
+    assert vae.encoder is encoder
+    assert vars(encoder).keys() == attributes.keys()
+    assert encoder.parameters().keys() == parameters.keys()
+    assert encoder.parameters()["weight"] is parameters["weight"]
+    assert encoder.weight is attributes["weight"]
+    assert evaluated == []
+    flex._install_eager_vae_encoder(vae)
+    assert type(encoder) is eager_class
+    for count in (1, 2):
+        result = encoder(values, offset=1)
+        np.testing.assert_array_equal(result, expected)
+        assert len(evaluated) == count
+        assert evaluated[-1] is result
+
+    second = SimpleNamespace(encoder=FakeVAEEncoder())
+    flex._install_eager_vae_encoder(second)
+    assert type(second.encoder) is eager_class
+    second.encoder(values)
+    assert len(evaluated) == 3
+
+
+@pytest.mark.parametrize(
+    "vae", [None, SimpleNamespace(), SimpleNamespace(encoder=None)]
+)
+def test_eager_vae_encoder_requires_encoder(vae):
+    with pytest.raises(h3.MiniMaxH3BackendError, match="Video VAE encoder"):
+        flex._install_eager_vae_encoder(vae)
+
+
+def test_prepare_model_requires_video_vae():
+    engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    try:
+        with pytest.raises(h3.MiniMaxH3BackendError, match="Video VAE encoder"):
+            engine._prepare_model(SimpleNamespace(pipeline=SimpleNamespace()))
+    finally:
+        engine.stop()
+
+
 @pytest.fixture(scope="module")
 def mx():
     # Native MLX initialization can abort when Metal is unavailable in a sandbox.
@@ -360,7 +423,9 @@ def test_engine_and_load_recipe(monkeypatch, tmp_path, array_core):
         lambda frames, output, *a, **k: output.write_bytes(b"mp4"),
     )
     pipeline = SimpleNamespace(
-        transformer=object(), _normalize_video_latents=lambda x: x
+        transformer=object(),
+        _normalize_video_latents=lambda x: x,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
     )
     module = ModuleType("mlx_vlm.generate")
     module.load_video_generation_model = lambda *a, **k: SimpleNamespace(
@@ -404,6 +469,8 @@ def test_engine_and_load_recipe(monkeypatch, tmp_path, array_core):
             dict(scale=1.0, allowed_suffixes=flex.TARGET_MODULES, expected_rank=128)
         ]
         assert pipeline.scheduler.noise is pipeline.audio_scheduler.noise
+        assert type(pipeline.video_vae.encoder) is not FakeVAEEncoder
+        assert isinstance(pipeline.video_vae.encoder, FakeVAEEncoder)
         assert [r[0] for r in requests] == ["t2va", "fl2va", "fl2va", "fl2va"]
         assert all(
             r[1].steps == 7 and r[1].extra == {"drop_adaln_weights": False}
@@ -679,6 +746,12 @@ def test_ref_adapter_verification(monkeypatch, tmp_path):
 def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_core):
     import weakref
 
+    from rapid_mlx.video import reference_media
+
+    installs = []
+    monkeypatch.setattr(
+        reference_media, "install_reference_decoders", lambda: installs.append(True)
+    )
     monkeypatch.setattr(flex, "ensure_ref2va_assets", lambda: None)
 
     from rapid_mlx import _mirror
@@ -688,7 +761,11 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
         pass
 
     original = lambda x: x
-    pipeline = SimpleNamespace(transformer=Trunk(), _normalize_video_latents=original)
+    pipeline = SimpleNamespace(
+        transformer=Trunk(),
+        _normalize_video_latents=original,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
+    )
     old = weakref.ref(pipeline.transformer)
     loads, verifications, merges, requests, events = [], [], [], [], []
     monkeypatch.setattr(
@@ -762,6 +839,7 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
         pipeline._adaln_cache_key, pipeline._adaln_caches = "old", object()
         pipeline._adaln_weights_freed_bytes = 123
         engine._generate(**args, references=refs)
+        assert installs == [True]
         assert pipeline._normalize_video_latents is original
         assert pipeline.partition == "ref2va"
         assert pipeline._adaln_cache_key is None and pipeline._adaln_caches is None
@@ -795,7 +873,9 @@ def test_failed_partition_switch_self_heals(
         pass
 
     pipeline = SimpleNamespace(
-        transformer=Trunk(), _normalize_video_latents=lambda x: x
+        transformer=Trunk(),
+        _normalize_video_latents=lambda x: x,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
     )
     loads, merges, events = [], [], []
     monkeypatch.setattr(array_core, "clear_cache", lambda: events.append("clear"))
@@ -1097,10 +1177,11 @@ def test_reference_http_probe_rejection(
 
     client, _, calls = reference_app
     details = dict(
-        streams=[dict(codec_type=kind, duration=duration)],
+        streams=[dict(codec_type=kind, codec_name="aac", duration=duration)],
         format=dict(format_name=formats, duration=duration),
     )
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     monkeypatch.setattr(
         video.subprocess,
         "run",
@@ -1140,8 +1221,16 @@ def test_reference_ffprobe(monkeypatch, tmp_path, kind, formats, extension):
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type=kind, width=1920, height=1080)],
+        streams=[
+            dict(
+                codec_type=kind,
+                codec_name="h264" if kind == "video" else "aac",
+                width=1920,
+                height=1080,
+            )
+        ],
         format=dict(format_name=formats, duration="2"),
     )
 
@@ -1198,8 +1287,16 @@ def test_reference_ffprobe_duration_fallback(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type=kind, width=1920, height=1080)],
+        streams=[
+            dict(
+                codec_type=kind,
+                codec_name="h264" if kind == "video" else "aac",
+                width=1920,
+                height=1080,
+            )
+        ],
         format=dict(format_name=formats),
     )
     if stream_duration is not None:
@@ -1246,8 +1343,11 @@ def test_reference_ffprobe_video_resolution(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type="video", width=width, height=height)],
+        streams=[
+            dict(codec_type="video", codec_name="h264", width=width, height=height)
+        ],
         format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
     )
     monkeypatch.setattr(
@@ -1279,8 +1379,11 @@ def test_reference_ffprobe_video_aspect_ratio(
     from rapid_mlx.routes import video
 
     monkeypatch.setattr(video.shutil, "which", lambda name: "/ffprobe")
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: {"h264", "aac"})
     details = dict(
-        streams=[dict(codec_type="video", width=width, height=height)],
+        streams=[
+            dict(codec_type="video", codec_name="h264", width=width, height=height)
+        ],
         format=dict(format_name="mov,mp4,m4a,3gp,3g2,mj2", duration="2"),
     )
     monkeypatch.setattr(
@@ -1307,6 +1410,10 @@ def test_reference_ffprobe_video_aspect_ratio(
 @pytest.mark.parametrize("initial_mode", ["ref2va", "fl2va"])
 def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
     import huggingface_hub
+
+    from rapid_mlx.video import reference_media
+
+    monkeypatch.setattr(reference_media, "install_reference_decoders", lambda: None)
 
     from rapid_mlx import _mirror, model_downloads
     from rapid_mlx.video import encoding
@@ -2211,17 +2318,28 @@ def test_ref2va_progress_counts_only_missing_assets(monkeypatch, ref2va_cache):
 
 
 @pytest.mark.parametrize("kind", ["video", "audio"])
-def test_reference_http_rejects_missing_decoder(reference_app, monkeypatch, kind):
+@pytest.mark.parametrize("advertised", [False, True])
+def test_reference_http_rejects_missing_decoder(
+    reference_app, monkeypatch, kind, advertised
+):
     from rapid_mlx.routes import video
 
     client, _, calls = reference_app
-    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: frozenset())
+    monkeypatch.setattr(
+        video,
+        "_reference_decoder_kinds",
+        lambda: frozenset({kind} if advertised else set()),
+    )
     monkeypatch.setattr(
         video,
         "_probe_packed_reference",
         lambda path, field: (kind, "mp4" if kind == "video" else "wav", 2.0),
     )
     response = post_references(client, ["image", kind])
+    if advertised:
+        assert response.status_code == 200, response.text
+        assert [k for k, _ in calls[-1]["references"]] == ["image", kind]
+        return
     assert response.status_code == 503
     assert response.json()["detail"] == f"{kind} references require media decoders"
     assert not calls
@@ -2251,3 +2369,69 @@ def test_reference_http_accepts_images_without_timed_decoders(
     response = post_references(client, ["image"])
     assert response.status_code == 200, response.text
     assert [kind for kind, _ in calls[-1]["references"]] == ["image"]
+
+
+@pytest.mark.parametrize("container", ["matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"])
+@pytest.mark.parametrize(
+    "video_codec,audio_codec,decodable,rejected",
+    [
+        ("av1", None, {"h264", "aac"}, "av1 video"),
+        ("prores", None, {"h264", "aac"}, "prores video"),
+        ("h264", "ac3", {"h264", "aac"}, "ac3 audio"),
+        (None, "ac3", {"h264", "aac"}, "ac3 audio"),
+        ("av1", None, {"av1"}, None),
+        ("prores", "ac3", {"prores", "ac3"}, None),
+        (None, "ac3", {"ac3"}, None),
+        ("h264", "aac", {"h264", "aac"}, None),
+        (None, "aac", {"aac"}, None),
+        ("missing", "missing", set(), "unknown video codec"),
+        ("", None, {"h264"}, "unknown video codec"),
+        ("h264", "missing", {"h264"}, "unknown audio codec"),
+        ("h264", "", {"h264"}, "unknown audio codec"),
+        (None, "", {"aac"}, "unknown audio codec"),
+        (None, "missing", set(), "unknown audio codec"),
+    ],
+)
+def test_reference_probe_checks_runtime_codecs(
+    monkeypatch, tmp_path, container, video_codec, audio_codec, decodable, rejected
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    streams = []
+    if video_codec is not None:
+        streams.append(dict(codec_type="video", width=64, height=48))
+        if video_codec != "missing":
+            streams[-1]["codec_name"] = video_codec
+    if audio_codec is not None:
+        streams.append(dict(codec_type="audio"))
+        if audio_codec != "missing":
+            streams[-1]["codec_name"] = audio_codec
+    # Audio-only references require an audio-compatible container.
+    if video_codec is None:
+        container = "mov,mp4,m4a,3gp,3g2,mj2"
+    payload = dict(
+        streams=streams,
+        format=dict(format_name=container, duration="2"),
+    )
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: frozenset(decodable))
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout=json.dumps(payload)),
+    )
+    if rejected:
+        with pytest.raises(HTTPException) as exc:
+            video._probe_packed_reference(tmp_path / "clip", "references[0]")
+        assert exc.value.status_code == 400
+        assert exc.value.detail == (
+            f"references[0]: {rejected} is not supported by this runtime"
+        )
+    else:
+        kind, _, duration = video._probe_packed_reference(
+            tmp_path / "clip", "references[0]"
+        )
+        assert kind == ("video" if video_codec is not None else "audio")
+        assert duration == 2.0

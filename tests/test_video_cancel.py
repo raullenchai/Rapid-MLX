@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -30,6 +31,7 @@ from rapid_mlx.video.engine import VideoGenerationEngine
 def cache_clears(monkeypatch):
     calls = []
     monkeypatch.setattr(minimax_h3, "_clear_mlx_cache", lambda: calls.append(True))
+    monkeypatch.setattr(minimax_h3, "bounded_cache_limit", lambda _: nullcontext())
     return calls
 
 
@@ -74,6 +76,10 @@ def test_h3_steps_cleanup_and_reuse(monkeypatch, tmp_path, cache_clears, family)
     references_module = ModuleType("mlx_vlm.generate.video_generation")
     references_module.VideoReference = lambda *a: a
     monkeypatch.setitem(sys.modules, references_module.__name__, references_module)
+    # The fake runtime has no pinned H3 processing module to patch.
+    from rapid_mlx.video import reference_media
+
+    monkeypatch.setattr(reference_media, "install_reference_decoders", lambda: None)
     cls = (
         pika_h3_flex.PikaH3FlexVideoEngine
         if family.startswith("pika")

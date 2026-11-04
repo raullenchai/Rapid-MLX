@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .._mlx_cache_limit import bounded_cache_limit
 from .cancel import VideoGenerationCancelled
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,10 @@ class MiniMaxH3VideoEngine:
             if references:
                 from mlx_vlm.generate.video_generation import VideoReference
 
+                from .reference_media import install_reference_decoders
+
+                install_reference_decoders()
+
                 reference_kwargs["references"] = tuple(
                     VideoReference(kind, path) for kind, path in references
                 )
@@ -355,7 +360,8 @@ class MiniMaxH3VideoEngine:
             )
             output_path.unlink(missing_ok=True)
             progress()
-            result = generate_video(self._model, request)
+            with bounded_cache_limit(1024**3):
+                result = generate_video(self._model, request)
             progress()
             import numpy as np
 

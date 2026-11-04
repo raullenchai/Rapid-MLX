@@ -134,7 +134,7 @@ def test_signing_loop_strictly_verifies_every_inventory_entry():
     assert "codesign --force --options runtime --timestamp" in signing_loop
     assert 'verify-sidecar-signature.sh" "$f"' in signing_loop
     assert "--official" in signing_loop
-    assert 'MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-229}"' in script
+    assert 'MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-230}"' in script
 
 
 def _fake_codesign(tmp_path: Path) -> Path:

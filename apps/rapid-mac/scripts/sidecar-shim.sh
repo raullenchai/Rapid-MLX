@@ -78,6 +78,10 @@ export PYTHONUNBUFFERED=1
 if [ -x "$ROOT/bin/ffmpeg" ]; then
     export FFMPEG_BINARY="$ROOT/bin/ffmpeg"
 fi
+if [ -x "$ROOT/media-bin/ffmpeg" ] && [ -x "$ROOT/media-bin/ffprobe" ]; then
+    export PATH="$ROOT/media-bin:$PATH"
+    export FFPROBE_BINARY="$ROOT/bin/ffprobe"
+fi
 unset PYTHONSTARTUP
 
 exec "$ROOT/python/bin/python3.12" -P -u -s -m rapid_mlx.cli "$@"

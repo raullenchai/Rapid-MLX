@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -226,6 +227,15 @@ def test_ref2va_only_advertises_available_decoders(monkeypatch, available):
     "missing", ["ffprobe", "ffmpeg", "cv2", "miniaudio", "mlx_audio.audio_io", None]
 )
 def test_reference_decoder_dependencies(monkeypatch, missing):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout=" D.V.L. h264 H.264\n DEA.L. aac AAC (decoders: aac_at)\n"
+        ),
+    )
     monkeypatch.setenv("FFMPEG_BINARY", "/output-only/ffmpeg")
     monkeypatch.setattr(
         video.shutil, "which", lambda name: None if name == missing else "/bin/" + name
@@ -236,16 +246,77 @@ def test_reference_decoder_dependencies(monkeypatch, missing):
             raise ImportError(name)
 
     monkeypatch.setattr(video.importlib, "import_module", import_module)
+    video._ffmpeg_decodable_codecs.cache_clear()
     video._reference_decoder_kinds.cache_clear()
     try:
         actual = video._reference_decoder_kinds()
         expected = {"video", "audio"}
         if missing in {"ffprobe", "ffmpeg"}:
             expected.clear()
-        elif missing == "cv2":
-            expected.remove("video")
         elif missing in {"miniaudio", "mlx_audio.audio_io"}:
             expected.remove("audio")
         assert actual == expected
     finally:
+        video._ffmpeg_decodable_codecs.cache_clear()
         video._reference_decoder_kinds.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "codecs,expected",
+    [
+        (" D.V.L. h264 H264\n", {"video"}),
+        (" DEAIL. aac AAC\n", {"audio"}),
+        (
+            " DEA.L. aac  AAC (Advanced Audio Coding) (decoders: aac_at)\n",
+            {"audio"},
+        ),
+        (" .EV.L. h264 H264\n .EA.L. aac AAC\n", set()),
+        (" D.V.L. vp9 VP9\n D.A.L. mp3 MP3 (decoders: mp3float)\n", set()),
+        (" D..... = Decoding supported\n", set()),
+        (None, set()),
+    ],
+)
+def test_reference_decoder_codec_inventory(monkeypatch, codecs, expected):
+    import subprocess
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(video.importlib, "import_module", lambda name: None)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command == ["/bin/ffmpeg", "-hide_banner", "-codecs"]
+        assert kwargs == dict(capture_output=True, text=True, timeout=5, check=True)
+        if codecs is None:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout=codecs)
+
+    monkeypatch.setattr(video.subprocess, "run", run)
+    video._ffmpeg_decodable_codecs.cache_clear()
+    video._reference_decoder_kinds.cache_clear()
+    try:
+        assert video._reference_decoder_kinds() == expected
+        assert video._reference_decoder_kinds() == expected
+        assert "=" not in video._ffmpeg_decodable_codecs()
+        assert len(calls) == 1
+    finally:
+        video._ffmpeg_decodable_codecs.cache_clear()
+        video._reference_decoder_kinds.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("missing"), subprocess.TimeoutExpired("ffmpeg", 5)]
+)
+def test_codec_inventory_fails_closed(monkeypatch, failure):
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/bin/" + name)
+
+    def run(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(video.subprocess, "run", run)
+    video._ffmpeg_decodable_codecs.cache_clear()
+    try:
+        assert video._ffmpeg_decodable_codecs() == frozenset()
+    finally:
+        video._ffmpeg_decodable_codecs.cache_clear()

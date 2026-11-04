@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Pika H3 Flex Ref2VA reference-video memory (2026-11-03)](2026-11-03-pika-ref2va-reference-video-memory.md)
 - [First-token prefill contention benchmark and findings (2026-10-12)](2026-10-12-first-token-prefill.md)
 
 - [GLM-5.3 Flash load-window memory (2026-10-10)](2026-10-10-glm53-shardwise-load.md)

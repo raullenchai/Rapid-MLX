@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -57,6 +58,64 @@ def fake_pipeline():
     return SimpleNamespace(
         transformer=object(), scheduler=SimpleNamespace(set_shift=lambda _: None)
     )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_generation_bounds_cache_and_always_exits(monkeypatch, tmp_path, fails):
+    from rapid_mlx.video import minimax_h3
+
+    events = []
+    active = False
+
+    @contextmanager
+    def bounded_cache_limit(bound):
+        nonlocal active
+        assert bound == 1024**3
+        active = True
+        events.append("enter")
+        try:
+            yield
+        finally:
+            active = False
+            events.append("exit")
+
+    def generate(model, request):
+        assert active
+        events.append("generate")
+        if fails:
+            raise ValueError("generation failed")
+        return fake_result()
+
+    monkeypatch.setattr(minimax_h3, "bounded_cache_limit", bounded_cache_limit)
+    monkeypatch.setattr(minimax_h3, "_clear_mlx_cache", lambda: events.append("clear"))
+    module = ModuleType("mlx_vlm.generate")
+    module.VideoGenerationRequest = lambda **kwargs: SimpleNamespace(**kwargs)
+    module.generate_video = generate
+    module.load_video_generation_model = lambda *a, **k: pytest.fail("already loaded")
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+    engine = MiniMaxH3VideoEngine(str(tmp_path))
+    engine._model = SimpleNamespace(pipeline=fake_pipeline())
+    args = dict(
+        prompt="test",
+        output_path=tmp_path / "out.mp4",
+        width=768,
+        height=512,
+        num_frames=124,
+        fps=24,
+        seed=7,
+        image=None,
+    )
+    try:
+        if fails:
+            with pytest.raises(MiniMaxH3BackendError, match="ValueError"):
+                engine._generate(**args)
+        else:
+            engine._generate(**args)
+        assert not active
+        assert events == ["enter", "generate", "exit", "clear"]
+        assert args["output_path"].exists() is not fails
+    finally:
+        engine.stop()
 
 
 def test_alias_and_download_selection():

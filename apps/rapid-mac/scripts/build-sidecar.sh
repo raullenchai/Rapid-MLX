@@ -131,7 +131,8 @@ FFMPEG_BUILD_JOBS="${FFMPEG_BUILD_JOBS:-4}"
 # Mach-O executables under torch/bin. Content-based inventory now includes them.
 # Re-locked at 229 on 2026-10-17: removed two build-only protoc executables.
 # These are Mach-Os we used to sign; no new signing surface is introduced.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-229}"
+# Re-locked at 230: bundled ffprobe adds one executable.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-230}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
@@ -297,7 +298,7 @@ test -x "$STAGE/python/bin/python3.12" \
 # ----- step 1.5: minimal LGPL ffmpeg ----------------------------------
 
 # Video generation needs raw-RGB encoding plus MP4 crop/remux. Build only
-# those codecs and Apple VideoToolbox; the ordinary prebuilt distributions
+# those codecs, reference decoders and Apple media frameworks; prebuilt distributions
 # include GPL codecs and tens of megabytes of unrelated network/protocol
 # surface. The exact corresponding source archive travels in the app.
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
@@ -333,6 +334,8 @@ echo "==> building minimal LGPL FFmpeg with VideoToolbox"
     trap 'rm -rf "$FFMPEG_BUILD_DIR"' EXIT INT TERM
     tar -xJf "$FFMPEG_TAR" -C "$FFMPEG_BUILD_DIR"
     cd "$FFMPEG_BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
+    # HEVC VideoToolbox needs the native HEVC decoder for bitstream parsing.
+    # Configure calls the s16le/f32le pipe muxers pcm_s16le/pcm_f32le.
     MACOSX_DEPLOYMENT_TARGET=14.0 ./configure \
         --disable-everything \
         --disable-doc \
@@ -340,44 +343,54 @@ echo "==> building minimal LGPL FFmpeg with VideoToolbox"
         --disable-network \
         --disable-autodetect \
         --disable-shared \
-        --disable-swresample \
         --enable-ffmpeg \
+        --enable-ffprobe \
         --enable-avcodec \
         --enable-avformat \
         --enable-avfilter \
         --enable-swscale \
         --enable-protocol=file,pipe \
-        --enable-demuxer=mov,rawvideo \
-        --enable-muxer=mov,mp4 \
-        --enable-decoder=h264,rawvideo \
-        --enable-parser=h264 \
-        --enable-encoder=h264_videotoolbox \
-        --enable-filter=crop,format,scale \
+        --enable-demuxer=mov,rawvideo,matroska,wav,mp3,aac,flac,ogg \
+        --enable-muxer=mov,mp4,rawvideo,pcm_s16le,pcm_f32le,image2pipe \
+        --enable-decoder=h264,hevc,vp8,vp9,rawvideo,aac_at,mp3float,flac,vorbis,opus,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8 \
+        --enable-parser=h264,hevc,vp8,vp9,aac,mpegaudio,flac,opus,vorbis \
+        --enable-encoder=h264_videotoolbox,rawvideo,pcm_s16le,pcm_f32le,ppm \
+        --enable-filter=crop,format,scale,aresample,aformat,anull,null,transpose,hflip,vflip \
+        --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
+        --enable-audiotoolbox \
         --enable-videotoolbox > /dev/null
-    if ! MACOSX_DEPLOYMENT_TARGET=14.0 make -j "$FFMPEG_BUILD_JOBS" ffmpeg \
+    if ! MACOSX_DEPLOYMENT_TARGET=14.0 make -j "$FFMPEG_BUILD_JOBS" ffmpeg ffprobe \
         > ffmpeg-build.log 2>&1; then
         echo "ERR: minimal FFmpeg build failed; compiler tail:" >&2
         tail -n 200 ffmpeg-build.log >&2
         exit 1
     fi
-    strip -x ffmpeg
-    cp ffmpeg "$STAGE/bin/ffmpeg"
+    strip -x ffmpeg ffprobe
+    cp ffmpeg ffprobe "$STAGE/bin/"
     mkdir -p "$STAGE/licenses/sources"
     cp COPYING.LGPLv2.1 "$STAGE/licenses/FFmpeg-LGPL-2.1.txt"
     cp "$FFMPEG_TAR" "$STAGE/licenses/sources/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 )
-chmod +x "$STAGE/bin/ffmpeg"
-otool -l "$STAGE/bin/ffmpeg" | grep -q 'minos 14.0' || {
-    echo "ERR: bundled FFmpeg does not target Desktop's macOS 14 minimum" >&2
-    exit 1
-}
-FFMPEG_CONFIG="$("$STAGE/bin/ffmpeg" -version | sed -n '2p')"
-case "$FFMPEG_CONFIG" in
-    *--enable-gpl*|*--enable-nonfree*)
-        echo "ERR: bundled FFmpeg unexpectedly enables GPL/nonfree components" >&2
+for MEDIA_TOOL in ffmpeg ffprobe; do
+    chmod +x "$STAGE/bin/$MEDIA_TOOL"
+    otool -l "$STAGE/bin/$MEDIA_TOOL" | grep -q 'minos 14.0' || {
+        echo "ERR: bundled $MEDIA_TOOL does not target macOS 14" >&2
         exit 1
-        ;;
-esac
+    }
+    FFMPEG_CONFIG="$("$STAGE/bin/$MEDIA_TOOL" -version | sed -n 's/^configuration: //p')"
+    if [ -z "$FFMPEG_CONFIG" ]; then
+        echo "ERR: bundled $MEDIA_TOOL did not report its build configuration" >&2
+        exit 1
+    fi
+    case "$FFMPEG_CONFIG" in
+        *--enable-gpl*|*--enable-nonfree*|*--enable-version3*)
+            echo "ERR: bundled $MEDIA_TOOL enables GPL/nonfree/version3" >&2
+            exit 1 ;;
+    esac
+done
+mkdir -p "$STAGE/media-bin"
+ln -s ../bin/ffmpeg "$STAGE/media-bin/ffmpeg"
+ln -s ../bin/ffprobe "$STAGE/media-bin/ffprobe"
 
 # ----- step 2: install rapid-mlx + runtime deps ------------------------
 
@@ -1228,7 +1241,14 @@ print("mlx_vlm", mlx_vlm.__version__, "torch", torch.__version__, "mflux", impor
     }
     echo "    audio import: $AUDIO_OUT"
 
-    VIDEO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+    for MEDIA_TOOL in ffmpeg ffprobe; do
+        if [ ! -x "$STAGE/bin/$MEDIA_TOOL" ] || [ ! -L "$STAGE/media-bin/$MEDIA_TOOL" ] \
+            || [ ! -x "$STAGE/media-bin/$MEDIA_TOOL" ]; then
+            echo "ERR: missing bundled $MEDIA_TOOL or media-bin symlink" >&2
+            exit 3
+        fi
+    done
+    VIDEO_OUT="$(env -i "${TELEMETRY_OFF_ENV[@]}" HOME="$SMOKE_HOME" PATH="$STAGE/media-bin:/usr/bin:/bin" \
         PYTHONHOME="$STAGE/python" \
         PYTHONPATH="$STAGE/site-packages" \
         PYTHONNOUSERSITE=1 \
@@ -1302,6 +1322,48 @@ with tempfile.TemporaryDirectory() as directory:
         audio=np.zeros((2, 32000), dtype=np.float32), sampling_rate=32000,
     )
     assert audio_output.stat().st_size > 0
+    # Reference I/O must work with only the bundled tools on PATH.
+    import json
+    import shutil
+    import subprocess
+    import wave
+    from rapid_mlx.video.reference_media import decode_video_with_ffmpeg, install_reference_decoders
+    from rapid_mlx.routes.video import _reference_decoder_kinds
+    assert Path(shutil.which("ffmpeg")).parent.name == "media-bin"
+    assert Path(shutil.which("ffprobe")).parent.name == "media-bin"
+    reference_video = Path(directory) / "reference.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-nostdin", "-f", "rawvideo",
+        "-pix_fmt", "rgb24", "-s", "64x48", "-r", "8", "-i", "pipe:0",
+        "-c:v", "h264_videotoolbox", str(reference_video),
+    ], input=np.zeros((16, 48, 64, 3), dtype=np.uint8).tobytes(), check=True, timeout=60)
+    def streams(path):
+        result = subprocess.run([
+            "ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path),
+        ], capture_output=True, text=True, check=True, timeout=30)
+        return json.loads(result.stdout)["streams"]
+    assert streams(reference_video)[0]["codec_type"] == "video"
+    install_reference_decoders()
+    decoded, fps = decode_video_with_ffmpeg(reference_video)
+    assert decoded.shape == (16, 48, 64, 3), decoded.shape
+    assert fps == 8, fps
+    wav = Path(directory) / "reference.wav"
+    with wave.open(str(wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(32000)
+        handle.writeframes(np.zeros(32000, dtype="<i2").tobytes())
+    m4a = Path(directory) / "reference.m4a"
+    subprocess.run(["/usr/bin/afconvert", "-f", "m4af", "-d", "aac", str(wav), str(m4a)],
+                   check=True, timeout=60)
+    for reference in (wav, m4a):
+        assert streams(reference)[0]["codec_type"] == "audio"
+        audio, rate = h3_processing.decode_audio(reference)
+        assert audio.size > 0 and rate == 32000, (reference, audio.shape, rate)
+    assert any(s["codec_type"] == "audio" for s in streams(audio_output))
+    soundtrack, rate = h3_processing.decode_video_soundtrack(audio_output)
+    assert soundtrack.size > 0 and rate == 32000
+    assert _reference_decoder_kinds() == {"video", "audio"}
     # A nonempty file is not proof of audio: walk the MP4 boxes and require
     # both a video and a sound track. ``-shortest`` trims audio to the last
     # frame timestamp (0.5 s for this 2-frame, 2 fps clip) plus AAC framing.
