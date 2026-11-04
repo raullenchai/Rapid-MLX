@@ -37,6 +37,7 @@ from .request import (
     classify_engine_abort,
     inference_aborted_error_payload,
 )
+from .runtime.perf_workgroup import step_workgroup
 from .scheduler import Scheduler, SchedulerConfig
 
 logger = logging.getLogger(__name__)
@@ -660,6 +661,12 @@ class EngineCore:
         )
         return min(depth, to_boundary)
 
+    def _step_once(self):
+        """Run one scheduler step on the mlx-step thread inside a workgroup
+        interval; the engine loop dispatches it only when requests exist."""
+        with step_workgroup.interval():
+            return self.scheduler.step()
+
     def _step_coalesced(self, max_steps: int) -> tuple[list, Exception | None]:
         """Run up to ``max_steps`` scheduler steps on the mlx-step thread.
 
@@ -690,7 +697,8 @@ class EngineCore:
             # the rest of a coalesced batch (codex r3 on #1878).
             waiting_before = self.scheduler.get_num_waiting()
             try:
-                out = self.scheduler.step()
+                with step_workgroup.interval():
+                    out = self.scheduler.step()
             except Exception as exc:  # deliver partial outputs first;
                 # process-control exceptions (SystemExit/KI) propagate
                 # immediately (codex r4 NIT).
@@ -853,7 +861,7 @@ class EngineCore:
                         )
                     else:
                         step_outputs = [
-                            await loop.run_in_executor(_executor, self.scheduler.step)
+                            await loop.run_in_executor(_executor, self._step_once)
                         ]
                     self._steps_executed += len(step_outputs)
                     if step_outputs:
@@ -1750,7 +1758,7 @@ class EngineCore:
         # Process until all done - direct scheduler access, no async overhead
         results: dict[str, RequestOutput] = {}
         while self.scheduler.has_requests():
-            output = self.scheduler.step()
+            output = self._step_once()
             for req_output in output.outputs:
                 if req_output.finished:
                     results[req_output.request_id] = req_output

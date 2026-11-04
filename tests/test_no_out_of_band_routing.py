@@ -119,6 +119,7 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
 # (debug verbosity, version-check disable, etc.).
 ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
+        "RAPID_MLX_STEP_WORKGROUP",  # opt out of macOS step scheduling hint; no routing
         # Read-only diagnostic override for doctor: selects which existing
         # interpreter is inspected; it does not route a request or mutate server
         # behavior. Invalid values are ignored by doctor.
