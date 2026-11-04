@@ -121,7 +121,8 @@ def _capture_stderr_at_download(monkeypatch, capsys):
     download step begins, then abort. Returns the list the test asserts on."""
     order: list = []
 
-    def _fake_download(model):
+    def _fake_download(model, *, auto_mtp=True):
+        assert auto_mtp is False  # Serve provisions MTP with its decoding options.
         order.append(capsys.readouterr().err)
         raise _StopServeError()
 

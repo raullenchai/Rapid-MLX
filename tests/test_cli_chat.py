@@ -1964,7 +1964,9 @@ def test_chat_model_switch_refuses_draft_before_download(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda model: downloaded.append(model)
+        cli,
+        "_ensure_model_downloaded",
+        lambda model, *, auto_mtp=True: downloaded.append(model),
     )
     monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: True)
 
@@ -3819,7 +3821,9 @@ def test_harness_reuses_one_command_server_start_and_cleanup(
         assert model == args.model
 
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda model: calls.append("model")
+        cli,
+        "_ensure_model_downloaded",
+        lambda model, *, auto_mtp=True: calls.append("model"),
     )
     monkeypatch.setattr(cli, "_spawn_chat_server", spawn)
     monkeypatch.setattr(
@@ -3857,7 +3861,9 @@ def test_harness_preflight_fails_before_model_download_or_spawn(
 
     monkeypatch.setattr(importlib, "import_module", import_module)
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda *_: pytest.fail("must not download")
+        cli,
+        "_ensure_model_downloaded",
+        lambda *_, auto_mtp=True: pytest.fail("must not download"),
     )
     monkeypatch.setattr(
         cli, "_spawn_chat_server", lambda *_, **__: pytest.fail("must not spawn")

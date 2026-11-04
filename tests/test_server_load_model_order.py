@@ -881,7 +881,7 @@ def test_ensure_routing_config_raises_when_prefetch_does_not_materialize(monkeyp
 
     original_err = OSError("network unreachable")
 
-    def _failing_prefetch(name):
+    def _failing_prefetch(name, *, auto_mtp=True):
         called["prefetch"] = True  # ran, but errored + put no config on disk
         raise original_err
 
@@ -922,7 +922,7 @@ def test_ensure_routing_config_warns_when_prefetch_errors_but_config_lands(
         lambda name: object() if state["materialized"] else None,
     )
 
-    def _partial_prefetch(name):
+    def _partial_prefetch(name, *, auto_mtp=True):
         # config.json lands, but the download errors out (weights incomplete).
         state["materialized"] = True
         raise OSError("connection reset mid-download")
@@ -952,7 +952,7 @@ def test_ensure_routing_config_succeeds_when_prefetch_materializes(monkeypatch):
         lambda name: object() if state["materialized"] else None,
     )
 
-    def _fake_prefetch(name):
+    def _fake_prefetch(name, *, auto_mtp=True):
         state["materialized"] = True
 
     monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _fake_prefetch)
@@ -974,7 +974,7 @@ def test_ensure_routing_config_completes_remote_snapshot_with_readable_config(
 
     downloaded = []
 
-    def _complete_snapshot(name):
+    def _complete_snapshot(name, *, auto_mtp=True):
         downloaded.append(name)
 
     monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _complete_snapshot)
@@ -992,7 +992,7 @@ def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
 
     monkeypatch.setattr(mm, "read_model_metadata", lambda name: None)
 
-    def _disk_gate(name):
+    def _disk_gate(name, *, auto_mtp=True):
         raise SystemExit(1)
 
     monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _disk_gate)
