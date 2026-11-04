@@ -839,7 +839,9 @@ def test_connection_status_shares_local_refusal_classification(private_home):
         assert isolated.connection_status(7659, "a" * 64, "model") == "server-error"
 
 
-def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home):
+@pytest.mark.parametrize("loading", [True, False])
+def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home, loading):
+    """Loading (503) waits without a cap; any other server error keeps 600 s."""
     now = [0.0]
     from rapid_mlx.launch.cli import launch_command, register
 
@@ -872,13 +874,22 @@ def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home):
             side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds),
         ),
         patch("time.monotonic", side_effect=lambda: now[0]),
+        patch(
+            "rapid_mlx.agents.server_discovery.startup_loading",
+            return_value=loading,
+        ),
+        patch("rapid_mlx.launch.cli._stop_failed_start"),
         pytest.raises(SystemExit) as exit_info,
     ):
         launch_command(args)
-    assert exit_info.value.code == 0
-    assert now[0] > 600
     start.assert_called_once()
-    agent.assert_called_once()
+    if loading:
+        assert exit_info.value.code == 0
+        assert now[0] > 600
+        agent.assert_called_once()
+    else:
+        assert exit_info.value.code == 1
+        agent.assert_not_called()
 
 
 def test_private_storage_rejects_links_and_unsafe_files(private_home):

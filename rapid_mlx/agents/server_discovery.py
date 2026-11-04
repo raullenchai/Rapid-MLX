@@ -22,6 +22,9 @@ class Server:
     # True once ``port`` came from the process's own LISTEN socket rather
     # than its argv, i.e. it is no longer a guess.
     listening: bool = field(default=False, compare=False)
+    # False when the process's sockets could not be read (AccessDenied):
+    # a missing port is then unknown, not "still unbound".
+    inspected: bool = field(default=True, compare=False)
 
 
 @lru_cache(maxsize=1)
@@ -82,6 +85,7 @@ def scan_servers() -> list[Server]:
                     model = token
                 i += 1
             listening = False
+            inspected = True
             try:
                 listeners = {
                     c.laddr.port
@@ -94,11 +98,23 @@ def scan_servers() -> list[Server]:
                     port = listeners.pop()
                     listening = True
             except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
-                pass
-            servers.append(Server(proc.pid, port, model, alias, listening))
+                inspected = False
+            servers.append(Server(proc.pid, port, model, alias, listening, inspected))
         except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
             continue
     return servers
+
+
+def startup_loading(base_url: str) -> bool:
+    """True when ``/health`` answers 503: the serve startup probe is loading."""
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        with urllib.request.urlopen(f"{root}/health", timeout=2):
+            return False
+    except urllib.error.HTTPError as exc:
+        return exc.code == 503
+    except (OSError, ValueError):
+        return False
 
 
 def pid_alive(pid: int) -> bool:
@@ -213,7 +229,9 @@ def resolve_endpoint(
     healthy, answered = _default_endpoint_ready()
     if healthy:
         return Endpoint(default)
-    servers = scan_servers()
+    # A process whose sockets cannot be read and whose argv names no port
+    # cannot be shown to own any endpoint; waiting on it could never end.
+    servers = [s for s in scan_servers() if s.port is not None or s.inspected]
     candidates = (
         [
             s
@@ -269,7 +287,8 @@ def server_for_url(base_url: str) -> Server | None:
         (
             s
             for s in scan_servers()
-            if s.port == port or (s.port is None and 8000 <= port <= 8009)
+            if s.port == port
+            or (s.port is None and s.inspected and 8000 <= port <= 8009)
         ),
         None,
     )

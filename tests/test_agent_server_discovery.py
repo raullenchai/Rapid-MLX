@@ -756,3 +756,13 @@ def test_env_only_profile_still_detects_running_model(monkeypatch, capsys):
     cli.agents_command(args)
     assert seen["detect"] == "http://localhost:8000/v1"
     assert seen["model"] == "served-model"
+
+
+def test_uninspectable_unknown_port_server_owns_no_endpoint(monkeypatch):
+    """AccessDenied + no argv port must not make setup wait on any port."""
+    hidden = discovery.Server(9, None, "other", inspected=False)
+    unbound = discovery.Server(10, None, "mine")
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [hidden])
+    assert discovery.server_for_url("http://localhost:8003/v1") is None
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [hidden, unbound])
+    assert discovery.server_for_url("http://localhost:8003/v1") == unbound
