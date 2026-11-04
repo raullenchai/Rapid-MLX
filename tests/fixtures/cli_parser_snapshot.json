@@ -3970,7 +3970,7 @@
        "const": true,
        "default": false,
        "dest": "no_preflight",
-       "help": "Skip the pre-download check for models outside the Rapid-MLX catalog (format and architecture).",
+       "help": "Skip catalog memory admission and the pre-download format and architecture check for models outside the Rapid-MLX catalog.",
        "metavar": null,
        "nargs": 0,
        "option_strings": [
