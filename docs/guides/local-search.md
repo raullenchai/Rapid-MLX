@@ -11,6 +11,8 @@ rapid-mlx serve <chat-model> --enable-local-search
 rapid-mlx serve <chat-model> --enable-local-search --local-search-dir /absolute/index-dir
 ```
 
+For a step-by-step customer-support knowledge base built on this API, see [Build a private knowledge base on your Mac](local-knowledge-base.md).
+
 Without `--enable-local-search`, all local-search routes return 404 and are
 absent from the API schema. The default index is
 `~/.rapid-mlx/local-search/index.sqlite3`; `RAPID_MLX_STATE_DIR` changes the
