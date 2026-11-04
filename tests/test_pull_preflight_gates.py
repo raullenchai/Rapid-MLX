@@ -107,10 +107,36 @@ def test_pull_memory_floor_and_bypass(host, monkeypatch, capsys, alias):
         in error
     )
     assert "Nothing was downloaded." in error
-    assert "--no-preflight" in error
-    assert "bigger Mac" in error
+    assert error.count("--no-preflight") == 1
+    assert (
+        "(To download anyway, for example to move the files to a bigger Mac, "
+        "re-run with --no-preflight.)" in error
+    )
     pull(alias, no_preflight=True)
     assert len(calls) == len(priced) > 1
+
+
+@pytest.mark.parametrize("command", ["pull", "serve"])
+def test_memory_refusal_suggestion_matches_command(host, monkeypatch, capsys, command):
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: 48 * GIB)
+    pick = "qwen3.5-4b-4bit"
+    monkeypatch.setattr(
+        preflight, "_same_task_fitting_pick", lambda *a, **k: (pick, "text")
+    )
+    monkeypatch.setattr(preflight, "_candidate_disk_fit", lambda *a: (True, True, None))
+    with pytest.raises(SystemExit) as exc:
+        preflight._check_catalog_memory_fit(
+            Namespace(command=command, model="pika-h3-flex")
+        )
+    assert exc.value.code == 1
+    error = capsys.readouterr().err
+    assert f"A model that fits this Mac: rapid-mlx {command} {pick}" in error
+    assert error.count("--no-preflight") == 1
+    if command == "serve":
+        assert (
+            "(Think this is wrong? Re-run with --no-preflight to skip this check.)"
+            in error
+        )
 
 
 def test_metadata_failure_keeps_pull_available(host, monkeypatch):

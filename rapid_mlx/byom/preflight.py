@@ -1263,13 +1263,11 @@ def _check_catalog_memory_fit(args: Any) -> None:
             file=sys.stderr,
         )
     print("  Nothing was downloaded.", file=sys.stderr)
-    if args.command == "pull":
+    if pick:
         print(
-            "  Use --no-preflight to download anyway, for example to move the files to a bigger Mac.",
+            f"  A model that fits this Mac: rapid-mlx {args.command} {pick}",
             file=sys.stderr,
         )
-    if pick:
-        print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
         try:
             import rapid_mlx.cli as cli_mod
 
@@ -1302,7 +1300,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
             file=sys.stderr,
         )
     print(
-        "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
+        "    (To download anyway, for example to move the files to a bigger Mac, "
+        "re-run with --no-preflight.)\n"
+        if args.command == "pull"
+        else "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
         file=sys.stderr,
     )
     _emit_rejection(args, PreflightRejectedError(INSUFFICIENT_MEMORY))
