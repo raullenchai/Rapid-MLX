@@ -15816,12 +15816,12 @@ def _connect_target(args, eps):
         print()
         print(f"  Python (OpenAI SDK)  →  {eps.openai_url}")
         print()
-        from rapid_mlx.connect import allows_api_key, package_install_command
+        from rapid_mlx.connect import allows_api_key, client_sdk_install_hint
 
         key_allowed = allows_api_key(
             eps.host, eps.scheme, getattr(args, "allow_insecure_api_key", False)
         )
-        print("     ", package_install_command("openai"))
+        print("     ", client_sdk_install_hint("openai"))
         print()
         if key_allowed:
             print(

@@ -20,6 +20,7 @@ import json
 import shlex
 import sys
 from contextlib import redirect_stdout
+from dataclasses import replace
 
 import pytest
 
@@ -89,16 +90,91 @@ def test_render_banner_matches_spec():
     assert "rapid-mlx connect openai-python --base-url http://localhost:8000/v1" in out
 
 
-def test_serve_next_uses_installed_python_for_sdk(monkeypatch):
+@pytest.mark.parametrize("uv", [None, "/usr/bin/uv"])
+def test_client_sdk_hints_use_project_environment(monkeypatch, uv):
+    managed_python = "/home/test/.rapid-mlx/bin/python3"
+    monkeypatch.setattr(sys, "executable", managed_python)
+    monkeypatch.setattr(connect.shutil, "which", lambda _name: uv)
     monkeypatch.setattr("rapid_mlx.onboarding.detected_launch_agents", lambda: [])
-    out = connect.render_serve_next(_endpoints())
-    assert connect.package_install_command("openai") in out
+    for out in (
+        connect.render_serve_next(_endpoints()),
+        *(
+            _run_connect(target=target)
+            for target in ("openai-python", "openai", "python")
+        ),
+    ):
+        assert (
+            "python3 -m pip install openai  # in your project's Python environment"
+            in out
+        )
+        assert managed_python not in out
+        assert "--python" not in out
+
+
+@pytest.mark.parametrize(
+    "package",
+    ["openai", "anthropic", "llama-index[openai]", "sdk; echo unsafe", "sdk$(id)"],
+)
+def test_client_sdk_install_hint_is_shell_safe(package):
+    hint = connect.client_sdk_install_hint(package)
+    assert shlex.split(hint, comments=True) == [
+        "python3",
+        "-m",
+        "pip",
+        "install",
+        package,
+    ]
+    assert "# in your project's Python environment" in hint
+
+
+@pytest.mark.parametrize(
+    "name, package",
+    [
+        ("langchain", "langchain-openai"),
+        ("pydanticai", "pydantic-ai"),
+        ("smolagents", "smolagents"),
+    ],
+)
+def test_framework_setup_install_hint_uses_project_environment(name, package):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.adapter import get_setup_instructions
+
+    out = get_setup_instructions(
+        get_profile(name), model_id="local-model", context_length=8192
+    )
+    assert (
+        f"python3 -m pip install {package}  # in your project's Python environment"
+        in out
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["pip install", "pip3 install", "python -m pip install", "python3 -m pip install"],
+)
+def test_framework_setup_rewrites_pip_install_forms(prefix):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.adapter import get_setup_instructions
+
+    profile = get_profile("langchain")
+    profile = replace(
+        profile,
+        testing=replace(
+            profile.testing,
+            install_cmd=f"{prefix} langchain-openai 'llama-index[openai]'",
+        ),
+    )
+    out = get_setup_instructions(profile, model_id="local-model", context_length=8192)
+    assert (
+        "python3 -m pip install langchain-openai 'llama-index[openai]'"
+        "  # in your project's Python environment"
+    ) in out
 
 
 def test_package_install_command_supports_uv_and_pip_less_tools(monkeypatch):
     monkeypatch.setattr(connect.shutil, "which", lambda _name: "/usr/bin/uv")
-    assert connect.package_install_command("openai") == (
-        f"uv pip install --python {shlex.quote(sys.executable)} openai"
+    assert connect.package_install_command("mcp") == (
+        f"uv pip install --python {shlex.quote(sys.executable)} mcp"
     )
     monkeypatch.setattr(connect.shutil, "which", lambda _name: None)
     assert connect.package_install_command("mlx-vlm==0.7.2", no_deps=True) == (
@@ -254,7 +330,7 @@ def test_connect_openai_python_snippet(monkeypatch):
         lambda **kw: connect.ServerEndpoints("localhost", 8000, model="m1"),
     )
     out = _run_connect(target="openai-python")
-    assert connect.package_install_command("openai") in out
+    assert connect.client_sdk_install_hint("openai") in out
     assert "http://localhost:8000/v1" in out
     assert "OpenAI(" in out
     assert "m1" in out

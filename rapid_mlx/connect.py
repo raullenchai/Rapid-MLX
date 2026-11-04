@@ -38,7 +38,7 @@ from typing import Any
 
 
 def package_install_command(package: str, *, no_deps: bool = False) -> str:
-    """Install into this CLI's Python with uv when it is available."""
+    """Install Rapid-MLX dependencies into this CLI's Python, preferring uv."""
     python = shlex.quote(sys.executable)
     prefix = (
         f"uv pip install --python {python}"
@@ -47,6 +47,16 @@ def package_install_command(package: str, *, no_deps: bool = False) -> str:
     )
     option = " --no-deps" if no_deps else ""
     return f"{prefix}{option} {shlex.quote(package)}"
+
+
+def client_sdk_install_hint(package: str, *packages: str) -> str:
+    """Suggest installing libraries imported by the user's own project.
+
+    Never bind client SDKs to the CLI's Python: packaged installs run in a
+    private environment. A shell comment keeps the environment note copyable.
+    """
+    quoted = " ".join(shlex.quote(p) for p in (package, *packages))
+    return f"python3 -m pip install {quoted}  # in your project's Python environment"
 
 
 def _authority(host: str) -> str:
@@ -256,7 +266,7 @@ def render_serve_next(ep: ServerEndpoints, *, api_key: str | None = None) -> str
         "    from openai import OpenAI; "
         f"client = OpenAI(base_url={ep.openai_url!r}, api_key={python_key}); "
         f"print(client.chat.completions.create(model={ep.model!r}, messages=[{{'role': 'user', 'content': 'Hello!'}}]).choices[0].message.content)\n"
-        f"    SDK: {package_install_command('openai')}. This tip appears only once; you can ignore it.\n"
+        f"    SDK: {client_sdk_install_hint('openai')}. This tip appears only once; you can ignore it.\n"
     )
 
 
