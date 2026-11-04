@@ -238,6 +238,16 @@ def test_agents_setup_cli_writer(
     from rapid_mlx.launch import claude_code
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Config-location overrides (e.g. GitHub runners export XDG_CONFIG_HOME)
+    # would send writers outside tmp_path; keep every write hermetic.
+    for name in (
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "GOOSE_PATH_ROOT",
+        "CRUSH_GLOBAL_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setattr(
         claude_code, "current_config_path", lambda: tmp_path / "claude.json"
