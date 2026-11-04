@@ -10,6 +10,26 @@ import Testing
 /// language is forced to Simplified Chinese.
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
+    @Test("Image benchmark schedule copy has exact Int compiler keys and Chinese translations")
+    func imageBenchmarkScheduleKeys() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        for key in [
+            "One measured 1024 × 1024 render at %lld steps, after a warm-up render.",
+            "One measured 1024 × 1024 render, after a warm-up render.",
+            "1 warm-up + 1 measured 1024×1024 render · fixed prompt, seed and %lld steps",
+            "1 warm-up + 1 measured 1024×1024 render · fixed prompt and seed",
+            "1024 × 1024 at %lld steps, fixed prompt and seed",
+            "1024 × 1024, fixed prompt and seed",
+            "%lld steps, CFG %@", "%lld steps, no CFG",
+            "Unavailable", "Not available on this Mac"
+        ] {
+            let entry = try #require(strings[key] as? [String: Any], "Missing compiler key: \(key)")
+            let localizations = try #require(entry["localizations"] as? [String: Any])
+            let unit = try #require((localizations["zh-Hans"] as? [String: Any])?["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(!(unit["value"] as? String ?? "").isEmpty)
+        }
+    }
 
     @Test("Custom String helper and scoped symbol localization guards")
     func customHelperLocalizationGuards() async throws {

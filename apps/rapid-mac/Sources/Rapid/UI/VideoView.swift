@@ -577,6 +577,7 @@ struct VideoView: View {
             if viewModel.videoModels.isEmpty { Text("No video models").tag("") }
             ForEach(viewModel.videoModels) { model in
                 Text(modelPickerLabel(model))
+                    .help(model.alias)
                     .tag(model.alias)
                     .disabled(!viewModel.isModelEligible(model))
             }
