@@ -1751,12 +1751,15 @@ class MLLMScheduler:
                 request.num_output_tokens if request is not None else 0,
             )
         for row in getattr(self.batch_generator, "unprocessed_requests", ()):
-            rid = self.uid_to_request_id.get(row.uid)
-            if rid in token_counts:
+            row_request_id = self.uid_to_request_id.get(row.uid)
+            if row_request_id is not None and row_request_id in token_counts:
                 prompt = row.num_prompt_tokens
                 if not prompt and row.input_ids is not None:
                     prompt = int(row.input_ids.size)
-                token_counts[rid] = (prompt, token_counts[rid][1])
+                token_counts[row_request_id] = (
+                    prompt,
+                    token_counts[row_request_id][1],
+                )
 
         output = MLLMSchedulerOutput(
             finished_request_ids=request_ids,

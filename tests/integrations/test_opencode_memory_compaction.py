@@ -41,6 +41,35 @@ PORT = int(os.environ.get("RAPID_MLX_E2E_PORT", "8463"))
 UTILIZATION = os.environ.get("RAPID_MLX_E2E_GPU_UTIL", "0.025")
 
 
+def _assert_compaction_recovered(stdout: str) -> None:
+    """Validate recovery and normal completion from OpenCode's JSONL events."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    overflow_at = []
+    successful_steps = []
+    compacted = False
+    for index, event in enumerate(events):
+        if event.get("type") == "error":
+            name = event.get("error", {}).get("name")
+            assert name == "ContextOverflowError", event
+            overflow_at.append(index)
+        part = event.get("part", {})
+        if part.get("type") == "compaction":
+            compacted = True
+        if event.get("type") == "step_finish":
+            if part.get("reason") in {"stop", "tool-calls"}:
+                successful_steps.append(index)
+    assert compacted or any(
+        step > overflow for overflow in overflow_at for step in successful_steps
+    ), stdout[-2000:]
+    finishes = [event for event in events if event.get("type") == "step_finish"]
+    assert finishes and finishes[-1].get("part", {}).get("reason") == "stop", stdout[
+        -2000:
+    ]
+    assert not overflow_at or successful_steps[-1] > overflow_at[-1], stdout[-2000:]
+    # Recovering all ten SECRET values measures the 9B model's task skill,
+    # rather than the server's overflow classification and client recovery.
+
+
 def _models() -> dict | None:
     try:
         with urllib.request.urlopen(
@@ -179,5 +208,6 @@ def test_opencode_compacts_instead_of_looping(server, tmp_path):
     )
     assert "503" not in statuses, statuses
     assert statuses.count("400") <= 3, statuses
-    assert "compaction" in run.stdout, run.stdout[-2000:]
+    assert run.returncode == 0, run.stderr[-2000:]
+    _assert_compaction_recovered(run.stdout)
     assert "200" in statuses[last_error + 1 :], statuses

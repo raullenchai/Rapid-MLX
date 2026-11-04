@@ -2734,3 +2734,21 @@ def test_idle_floor_is_observed_only_after_pressure_reclamation(cache_kind):
     ):
         sched._enforce_metal_cap_at_admission(_make_request())
     assert sched._steady_resident_bytes == 200
+
+
+def test_constructor_floor_excludes_other_engines_allocations():
+    with (
+        patch("rapid_mlx.memory_budget.model_weights_bytes", return_value=100),
+        patch.object(Scheduler, "_current_metal_active_bytes", return_value=900),
+    ):
+        scheduler = Scheduler(
+            model=MagicMock(),
+            tokenizer=MagicMock(),
+            config=SchedulerConfig(
+                enable_prefix_cache=False,
+                use_memory_aware_cache=False,
+                use_paged_cache=False,
+            ),
+        )
+    assert scheduler._model_weights_bytes == 100
+    assert scheduler._steady_resident_bytes == 100

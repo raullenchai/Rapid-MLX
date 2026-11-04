@@ -2629,10 +2629,11 @@ async def _stream_context_overflow(
         responses_request=responses_request,
     )
     sequence = [0]
-    for event in (
+    events: tuple[dict, ...] = (
         {"type": "response.created", "response": initial},
         _responses_context_failure_event(initial, error),
-    ):
+    )
+    for event in events:
         yield _responses_resequence_event(_sse(event["type"], event), sequence)
 
 
@@ -2788,7 +2789,9 @@ async def _resequence_admitted_stream(
             heartbeat_state["sequence_number"] = sequence
             yield _responses_resequence_event(event, sequence)
     finally:
-        await stream.aclose()
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await close()
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:

@@ -4348,7 +4348,9 @@ async def _admission_aware_stream(stream: AsyncIterator[Any]) -> AsyncIterator[A
                 state.event.set()
             yield output
     finally:
-        await stream.aclose()
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await close()
 
 
 async def _preflight_stream(
@@ -4376,7 +4378,7 @@ async def _preflight_stream(
     state = _StreamAdmission()
     buffered = []
     pending = None
-    deferred_error = None
+    deferred_error: Exception | None = None
     admitted = asyncio.create_task(state.event.wait())
 
     async def cleanup(*, abort=False):
@@ -4414,7 +4416,9 @@ async def _preflight_stream(
             prime(), raw_request, timeout=timeout or get_config().default_timeout
         )
         if completed is None:
-            raise HTTPException(status_code=499)
+            # 499 has no HTTPStatus phrase; an explicit detail keeps Starlette
+            # from raising ValueError while constructing the exception.
+            raise HTTPException(status_code=499, detail="Client disconnected")
     except BaseException as exc:
         await cleanup(abort=True)
         context_error = context_overflow_from_memory_error(
@@ -4441,7 +4445,7 @@ async def _preflight_stream(
     admitted.cancel()
     await asyncio.gather(admitted, return_exceptions=True)
 
-    async def replay():
+    async def replay() -> AsyncIterator[str]:
         nonlocal pending
         try:
             for chunk in buffered:
@@ -5674,7 +5678,7 @@ def enforce_context_length(
     max_context = get_model_max_context(engine)
     memory_limit = memory_context_ceiling(engine)
     memory_bound = memory_limit is not None and memory_limit < max_context
-    if memory_bound:
+    if memory_limit is not None and memory_bound:
         max_context = memory_limit
     completion = int(max_tokens) if max_tokens else 0
     operational_cap = get_config().max_prompt_tokens

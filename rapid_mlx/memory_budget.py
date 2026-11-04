@@ -257,7 +257,10 @@ def model_weights_bytes(model: object) -> int | None:
         return nbytes
 
     try:
-        total = size(model.parameters())
+        parameters = getattr(model, "parameters", None)
+        if not callable(parameters):
+            return None
+        total = size(parameters())
         return total if total > 0 else None
     except (AttributeError, TypeError, ValueError, RuntimeError):
         return None

@@ -51,6 +51,8 @@ def _make_scheduler(
     sched = Scheduler.__new__(Scheduler)
     sched.model = model
     sched._model_weights_bytes = 0
+    sched.waiting = []
+    sched.running = {}
     sched.config = SimpleNamespace(
         gpu_memory_utilization=util,
         metal_cap_kv_bytes_per_token=0,
@@ -255,7 +257,9 @@ def test_offline_and_runtime_share_nested_text_config_terms(holder):
     assert sched._kv_sliding_window == expected.sliding_window
 
 
-def test_idle_floor_ratchets_and_invalidates_cached_ceiling(monkeypatch):
+def test_idle_floor_ratchets_and_invalidates_cached_ceiling(
+    monkeypatch, single_model_process
+):
     sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS), util=0.5)
     sched.requests = {}
     sched.memory_aware_cache = sched.prefix_cache = None
@@ -278,7 +282,7 @@ def test_idle_floor_ratchets_and_invalidates_cached_ceiling(monkeypatch):
     "cache",
     ["memory_aware_cache", "prefix_cache", "paged_cache_manager", "block_aware_cache"],
 )
-def test_cached_kv_never_raises_floor(cache):
+def test_cached_kv_never_raises_floor(cache, single_model_process):
     sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS))
     sched.requests = {}
     sched.memory_aware_cache = sched.prefix_cache = None
@@ -320,3 +324,91 @@ def test_observed_floor_is_usable_when_parameter_size_is_unknown(monkeypatch):
     sched._steady_resident_bytes = 10**9
     _stub_mx(monkeypatch, base_bytes=10**10, resident_bytes=10**9)
     assert sched.projected_memory_max_context(1_000_000) == (4 * 10**9 - 1) // PER_TOKEN
+
+
+@pytest.fixture
+def single_model_process(monkeypatch):
+    from rapid_mlx import model_registry
+    from rapid_mlx.config import get_config
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg, "model_registry", None)
+    monkeypatch.setattr(cfg, "residency_manager", None)
+    monkeypatch.setattr(cfg, "embedding_engine", None)
+    monkeypatch.setattr(cfg, "rerank_engine", None)
+    registry = object.__new__(model_registry.ModelRegistry)
+    registry._init()
+    monkeypatch.setattr(model_registry, "_registry", registry)
+    return cfg, registry
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_multi_engine_never_learns_process_residency(single_model_process, busy):
+    from unittest.mock import Mock, patch
+
+    from rapid_mlx.engine.batched import BatchedEngine
+
+    cfg, registry = single_model_process
+    sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS))
+    sched.requests = {}
+    sched._model_weights_bytes = sched._steady_resident_bytes = 100
+    sched.memory_aware_cache = sched.prefix_cache = None
+    sched.block_aware_cache = sched.paged_cache_manager = None
+    other = SimpleNamespace(
+        scheduler=SimpleNamespace(requests={"live": 1} if busy else {})
+    )
+    # Use weak-referenceable owners like the real ownership registry.
+    owner = Mock()
+    owner.scheduler = sched
+    other_owner = Mock()
+    other_owner.scheduler = other.scheduler
+    registry.acquire(sched.model, owner, "first")
+    registry.acquire(object(), other_owner, "second")
+    sched.observe_idle_resident_floor(900)
+    assert sched._steady_resident_bytes == 100
+    # The same guard runs after a warmup forward on this engine's worker.
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._loaded = True
+    engine._is_mllm = False
+    engine._model = Mock()
+    engine._tokenizer = SimpleNamespace(encode=lambda _: [1])
+    engine._engine = SimpleNamespace(
+        engine=SimpleNamespace(scheduler=sched, _mlx_executor=None)
+    )
+    with patch.object(sched, "_current_metal_active_bytes", return_value=900):
+        engine.generate_warmup()
+    assert sched._steady_resident_bytes == 100
+
+
+@pytest.mark.parametrize(
+    "mode", ["model_registry", "residency_manager", "embedding_engine", "rerank_engine"]
+)
+def test_managed_loading_never_learns_floor(single_model_process, mode):
+    cfg, _ = single_model_process
+    setattr(cfg, mode, object())
+    sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS))
+    sched._steady_resident_bytes = 100
+    sched.observe_idle_resident_floor(900)
+    assert sched._steady_resident_bytes == 100
+
+
+def test_other_sole_owner_prevents_learning(single_model_process):
+    from unittest.mock import Mock
+
+    _, registry = single_model_process
+    owner = Mock()
+    registry.acquire(object(), owner, "other")
+    sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS))
+    sched._steady_resident_bytes = 100
+    sched.observe_idle_resident_floor(900)
+    assert sched._steady_resident_bytes == 100
+
+
+@pytest.mark.parametrize("queue", ["waiting", "running"])
+def test_queued_work_prevents_floor_learning(single_model_process, queue):
+    sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS))
+    sched.requests = {}
+    setattr(sched, queue, [object()])
+    sched._steady_resident_bytes = 100
+    sched.observe_idle_resident_floor(900)
+    assert sched._steady_resident_bytes == 100

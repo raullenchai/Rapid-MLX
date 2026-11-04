@@ -4923,9 +4923,10 @@ class Scheduler:
         from .memory_budget import model_weights_bytes
 
         self._model_weights_bytes = model_weights_bytes(self.model)
-        self._steady_resident_bytes = max(
-            self._model_weights_bytes or 0, self._current_metal_active_bytes()
-        )
+        self._steady_resident_bytes = self._model_weights_bytes or 0
+        self._memory_context_cache: (
+            tuple[tuple[int | None, float, int | None], int | None] | None
+        ) = None
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -7482,7 +7483,9 @@ class Scheduler:
             if observed is not None:
                 resident = max(resident or 0, observed)
             key = (native_context, util, resident)
-            cached = getattr(self, "_memory_context_cache", None)
+            cached: tuple[tuple[int | None, float, int | None], int | None] | None = (
+                getattr(self, "_memory_context_cache", None)
+            )
             if cached is not None and cached[0] == key:
                 return cached[1]
             self._memory_context_cache = (key, None)
@@ -8008,8 +8011,29 @@ class Scheduler:
         )
 
     def observe_idle_resident_floor(self, active: int | None = None) -> None:
-        """Raise the residency floor only with no requests and no cached KV."""
-        if self.requests or self._has_reclaimable_kv():
+        """Learn only in single-model mode with no queued work or cached KV.
+
+        The routing registry/residency manager cannot atomically certify idle
+        queues and evicted caches across workers (including models loading).
+        Disable learning in those modes, even during warmup. Their permanent
+        floor stays at this model's weights, never another model's live KV.
+        """
+        from .config import get_config
+        from .model_registry import get_registry
+
+        cfg = get_config()
+        if (
+            cfg.model_registry is not None
+            or cfg.residency_manager is not None
+            or cfg.embedding_engine is not None
+            or cfg.rerank_engine is not None
+        ):
+            return
+        registry = get_registry()
+        owners = registry.get_stats()["active_owners"]
+        if owners > 1 or (owners == 1 and not registry.is_owned(self.model)[0]):
+            return
+        if self.requests or self.waiting or self.running or self._has_reclaimable_kv():
             return
         if active is None:
             active = self._current_metal_active_bytes()

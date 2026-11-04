@@ -215,9 +215,11 @@ def hermes_context_length(
             f"Hermes needs a context limit from the ready local server for {model}; "
             "check /v1/models and retry."
         )
-    return context_budget_for_ceiling(
+    budget = context_budget_for_ceiling(
         "hermes", context, model=model, fallback=context_fallback("hermes-isolated")
     )
+    assert budget is not None  # The explicit fallback guarantees a budget.
+    return budget
 
 
 def running_model(port: int, key: str) -> str | None:
