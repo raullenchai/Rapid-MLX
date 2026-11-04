@@ -215,7 +215,9 @@ struct CommunityBenchmarkScope: Hashable, Sendable {
     }
 
     /// Human-readable protocol label for technical details.
-    var protocolName: String { "\(protocolID) v\(protocolVersion)" }
+    var protocolName: String {
+        CommunityBenchmarkModel.protocolDisplayName(protocolID: protocolID, version: protocolVersion)
+    }
 
     /// A user-facing description of the scope, used verbatim in first-result
     /// copy so the claim is never broader than the data behind it.
