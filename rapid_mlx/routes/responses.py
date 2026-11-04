@@ -112,6 +112,8 @@ from ..service.helpers import (
     _finalize_content_and_reasoning,
     _is_preheader_admission_error,
     _is_structured_output_requested,
+    _OwnedStream,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
     _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
@@ -1482,7 +1484,7 @@ async def create_response(request: Request):
                 request_id_holder=_resp_rid_holder,
             )
             _admission_committed = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
                     _resequence_admitted_stream(
                         _admitted_stream, _resp_heartbeat_state
@@ -2774,7 +2776,7 @@ async def _stream_buffered_responses_response(
         yield event
 
 
-async def _resequence_admitted_stream(
+def _resequence_admitted_stream(
     stream: AsyncIterator[str], heartbeat_state: dict[str, object]
 ) -> AsyncIterator[str]:
     """Number replayed events and heartbeats in delivery order.
@@ -2783,15 +2785,19 @@ async def _resequence_admitted_stream(
     inserts its post-first-event heartbeat. Keep the public counter separate
     from the generator's counter so that heartbeat cannot jump ahead of replay.
     """
-    sequence = [0]
-    try:
+
+    async def replay() -> AsyncIterator[str]:
+        sequence = [0]
         async for event in stream:
             heartbeat_state["sequence_number"] = sequence
             yield _responses_resequence_event(event, sequence)
-    finally:
+
+    async def cleanup() -> None:
         close = getattr(stream, "aclose", None)
         if callable(close):
             await close()
+
+    return _OwnedStream(replay(), cleanup)
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:

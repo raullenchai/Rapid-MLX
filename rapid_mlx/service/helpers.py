@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -24,7 +24,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+import anyio
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from starlette.requests import Request
 
 from ..api.models import (
@@ -4353,6 +4355,55 @@ async def _admission_aware_stream(stream: AsyncIterator[Any]) -> AsyncIterator[A
             await close()
 
 
+class _OwnedStream(AsyncIterator[str]):
+    """Own cleanup eagerly, including when the iterator has never been started."""
+
+    def __init__(
+        self, iterator: AsyncIterator[str], cleanup: Callable[[], Awaitable[None]]
+    ) -> None:
+        self.iterator = iterator
+        self.cleanup = cleanup
+        self.started = False
+        self.closed = False
+
+    async def __anext__(self) -> str:
+        if self.closed:
+            raise StopAsyncIteration
+        self.started = True
+        try:
+            return await anext(self.iterator)
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        with anyio.CancelScope(shield=True):
+            try:
+                close = getattr(self.iterator, "aclose", None)
+                if callable(close):
+                    await close()
+            finally:
+                await self.cleanup()
+
+
+class _OwnedStreamingResponse(StreamingResponse):
+    """Close admitted inference even if sending HTTP headers fails first."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Starlette does not close its body on header/send failure or on
+            # a disconnect that wins before the first body iteration.
+            with anyio.CancelScope(shield=True):
+                close = getattr(self.body_iterator, "aclose", None)
+                if callable(close):
+                    await close()
+
+
 async def _preflight_stream(
     stream: AsyncIterator[str],
     raw_request: Request,
@@ -4382,14 +4433,17 @@ async def _preflight_stream(
     admitted = asyncio.create_task(state.event.wait())
 
     async def cleanup(*, abort=False):
-        if pending is not None:
-            pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
-        admitted.cancel()
-        await asyncio.gather(admitted, return_exceptions=True)
-        await stream.aclose()
-        if abort and request_id_holder[0] is not None:
-            _force_abort_request(engine, request_id_holder)
+        with anyio.CancelScope(shield=True):
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            admitted.cancel()
+            await asyncio.gather(admitted, return_exceptions=True)
+            try:
+                await stream.aclose()
+            finally:
+                if abort and request_id_holder[0] is not None:
+                    _force_abort_request(engine, request_id_holder)
 
     async def prime():
         nonlocal pending
@@ -4419,6 +4473,8 @@ async def _preflight_stream(
             # 499 has no HTTPStatus phrase; an explicit detail keeps Starlette
             # from raising ValueError while constructing the exception.
             raise HTTPException(status_code=499, detail="Client disconnected")
+        admitted.cancel()
+        await asyncio.gather(admitted, return_exceptions=True)
     except BaseException as exc:
         await cleanup(abort=True)
         context_error = context_overflow_from_memory_error(
@@ -4442,32 +4498,82 @@ async def _preflight_stream(
         else:
             raise
     state.preheaders = False
-    admitted.cancel()
-    await asyncio.gather(admitted, return_exceptions=True)
+
+    finished = False
 
     async def replay() -> AsyncIterator[str]:
-        nonlocal pending
-        try:
-            for chunk in buffered:
-                yield chunk
-            if deferred_error is not None:
-                raise deferred_error
-            if pending is not None:
-                try:
-                    yield await pending
-                except StopAsyncIteration:
-                    return
-                finally:
-                    pending = None
-            async for chunk in stream:
-                yield chunk
-        finally:
-            await cleanup()
+        nonlocal pending, finished
+        for chunk in buffered:
+            yield chunk
+        if deferred_error is not None:
+            raise deferred_error
+        if pending is not None:
+            try:
+                yield await pending
+            except StopAsyncIteration:
+                finished = True
+                return
+            finally:
+                pending = None
+        async for chunk in stream:
+            yield chunk
+        finished = True
 
-    return replay()
+    async def close_replay() -> None:
+        await cleanup(abort=not finished)
+
+    return _OwnedStream(replay(), close_replay)
 
 
-async def _disconnect_guard(
+def _disconnect_guard(
+    generator: AsyncIterator[str],
+    raw_request: Request,
+    poll_interval: float = 0.5,
+    engine=None,
+    keepalive_seconds: float | None = None,
+    request_id_holder: list | None = None,
+    keepalive_factory=None,
+    disconnect_state: list[bool] | None = None,
+    response_state: dict | None = None,
+) -> AsyncIterator[str]:
+    """Keep the preflight owner reachable before the response starts iterating."""
+
+    async def close_unstarted() -> None:
+        if not owned.started:
+            if disconnect_state is not None:
+                disconnect_state[0] = True
+            try:
+                close = getattr(generator, "aclose", None)
+                if callable(close):
+                    await close()
+            finally:
+                _force_abort_request(engine, request_id_holder)
+                if engine is not None:
+                    try:
+                        release = getattr(engine, "release_admission_reservation", None)
+                        if release is not None:
+                            release()
+                    finally:
+                        _release_primary_request(engine)
+
+    owned = _OwnedStream(
+        _run_disconnect_guard(
+            generator,
+            raw_request,
+            poll_interval,
+            engine,
+            keepalive_seconds,
+            request_id_holder,
+            keepalive_factory,
+            disconnect_state,
+            response_state,
+        ),
+        close_unstarted,
+    )
+    return owned
+
+
+async def _run_disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,

@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from functools import wraps
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from ..api.anthropic_adapter import (
     AnthropicContentError,
@@ -70,6 +70,7 @@ from ..service.helpers import (
     _disconnect_guard,
     _effective_enable_thinking,
     _finalize_content_and_reasoning,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
     _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
@@ -973,7 +974,7 @@ async def create_anthropic_message(
                 engine=engine,
                 request_id_holder=_anth_rid_holder,
             )
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 stream,
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +

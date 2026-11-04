@@ -2752,3 +2752,47 @@ def test_constructor_floor_excludes_other_engines_allocations():
         )
     assert scheduler._model_weights_bytes == 100
     assert scheduler._steady_resident_bytes == 100
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_unknown_weights_never_create_zero_resident_floor(busy):
+    with patch("rapid_mlx.memory_budget.model_weights_bytes", return_value=None):
+        sched = _make_scheduler()
+    assert sched._model_weights_bytes is None
+    assert sched._steady_resident_bytes is None
+    if busy:
+        sched.requests = {"live": _make_request("live")}
+    with (
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=1000),
+        patch.object(sched, "_current_metal_active_bytes", return_value=0),
+        patch.object(sched, "_estimate_request_kv_bytes", return_value=1500),
+        patch.object(sched, "_reclaim_unreachable_metal", return_value=False),
+        pytest.raises(MetalMemoryBackpressureError),
+    ):
+        sched._enforce_metal_cap_at_admission(_make_request())
+    assert sched._steady_resident_bytes is None
+
+
+@pytest.mark.parametrize("weights", [None, 200])
+def test_late_weight_measurement_survives_unavailable_idle_observation(weights):
+    from rapid_mlx.errors import MemoryContextExceededError
+
+    with patch("rapid_mlx.memory_budget.model_weights_bytes", return_value=None):
+        sched = _make_scheduler()
+    # BatchedEngine can supply a valid weight measurement after construction;
+    # managed/multi-model mode still cannot learn process-wide idle residency.
+    sched._model_weights_bytes = weights
+    with (
+        patch.object(sched, "observe_idle_resident_floor"),
+        patch.object(sched, "_resolve_metal_cap_bytes", return_value=1000),
+        patch.object(sched, "_current_metal_active_bytes", return_value=100),
+        patch.object(sched, "_estimate_request_kv_bytes", return_value=900),
+        patch.object(sched, "_reclaim_unreachable_metal", return_value=False),
+        pytest.raises(
+            MetalMemoryBackpressureError
+            if weights is None
+            else MemoryContextExceededError
+        ),
+    ):
+        sched._enforce_metal_cap_at_admission(_make_request())
+    assert sched._steady_resident_bytes is None

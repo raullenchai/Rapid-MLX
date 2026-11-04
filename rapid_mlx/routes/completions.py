@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from ..api.models import (
     CompletionChoice,
@@ -32,6 +32,7 @@ from ..service.helpers import (
     _disconnect_guard,
     _extract_streaming_token_logprobs,
     _merge_response_metrics,
+    _OwnedStreamingResponse,
     _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
@@ -481,7 +482,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 timeout=request.timeout,
             )
             _admission_committed = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
                     _admitted_stream,
                     raw_request,

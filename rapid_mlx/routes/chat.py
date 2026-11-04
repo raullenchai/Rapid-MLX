@@ -114,6 +114,7 @@ from ..service.helpers import (
     _is_preheader_admission_error,
     _is_structured_output_requested,
     _maybe_pin_system_prompt,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
     _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
@@ -5933,7 +5934,7 @@ async def _create_chat_completion_impl(
                 client_errors_as_http=engine.is_mllm,
             )
             _commit_state[0] = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
                     _admitted_stream,
                     raw_request,
@@ -5981,7 +5982,7 @@ async def _create_chat_completion_impl(
                 client_errors_as_http=engine.is_mllm,
             )
             _commit_state[0] = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
                     _admitted_stream,
                     raw_request,
@@ -6016,7 +6017,7 @@ async def _create_chat_completion_impl(
             client_errors_as_http=engine.is_mllm,
         )
         _commit_state[0] = True
-        return StreamingResponse(
+        return _OwnedStreamingResponse(
             _disconnect_guard(
                 _admitted_stream,
                 raw_request,

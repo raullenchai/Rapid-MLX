@@ -412,3 +412,33 @@ def test_queued_work_prevents_floor_learning(single_model_process, queue):
     sched._steady_resident_bytes = 100
     sched.observe_idle_resident_floor(900)
     assert sched._steady_resident_bytes == 100
+
+
+@pytest.mark.parametrize("reading", [None, 0, -1, 10**9])
+def test_unknown_floor_requires_valid_idle_measurement(
+    reading, monkeypatch, single_model_process
+):
+    sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS), util=0.5)
+    sched._model_weights_bytes = sched._steady_resident_bytes = None
+    sched.requests = {}
+    sched.memory_aware_cache = sched.prefix_cache = None
+    sched.block_aware_cache = sched.paged_cache_manager = None
+    _stub_mx(monkeypatch, base_bytes=10**10, resident_bytes=reading)
+    if reading is None:
+
+        def unavailable():
+            raise RuntimeError("measurement failed")
+
+        monkeypatch.setattr("rapid_mlx.scheduler.mx.get_active_memory", unavailable)
+    assert sched.projected_memory_max_context(1_000_000) is None
+    assert sched._memory_context_cache[0][-1] is None
+    sched.observe_idle_resident_floor()
+    if reading is not None and reading > 0:
+        assert sched._steady_resident_bytes == reading
+        assert (
+            sched.projected_memory_max_context(1_000_000)
+            == (4 * 10**9 - 1) // PER_TOKEN
+        )
+    else:
+        assert sched._steady_resident_bytes is None
+        assert sched.projected_memory_max_context(1_000_000) is None

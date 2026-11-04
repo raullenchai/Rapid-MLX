@@ -4923,7 +4923,7 @@ class Scheduler:
         from .memory_budget import model_weights_bytes
 
         self._model_weights_bytes = model_weights_bytes(self.model)
-        self._steady_resident_bytes = self._model_weights_bytes or 0
+        self._steady_resident_bytes: int | None = self._model_weights_bytes
         self._memory_context_cache: (
             tuple[tuple[int | None, float, int | None], int | None] | None
         ) = None
@@ -7481,7 +7481,7 @@ class Scheduler:
             resident = getattr(self, "_model_weights_bytes", None)
             observed = getattr(self, "_steady_resident_bytes", None)
             if observed is not None:
-                resident = max(resident or 0, observed)
+                resident = observed if resident is None else max(resident, observed)
             key = (native_context, util, resident)
             cached: tuple[tuple[int | None, float, int | None], int | None] | None = (
                 getattr(self, "_memory_context_cache", None)
@@ -7975,16 +7975,14 @@ class Scheduler:
                 "Retrying will not help: the memory is held by the server, "
                 "not by other requests." + restart_advice
             )
+        if not self.requests and not self._has_reclaimable_kv():
+            # Reclamation removed cached KV. A valid idle reading may now
+            # establish residency, but a failed probe must leave it unknown.
+            self.observe_idle_resident_floor(active)
         baseline = getattr(self, "_model_weights_bytes", None)
         observed = getattr(self, "_steady_resident_bytes", None)
         if observed is not None:
-            baseline = max(baseline or 0, observed)
-        if not self.requests and not self._has_reclaimable_kv():
-            # add_request has not registered the candidate yet. Reclamation
-            # above has removed reclaimable KV; nothing can drain to make
-            # this serial request fit. Persist only a cache-free idle reading.
-            self.observe_idle_resident_floor(active)
-            baseline = self._steady_resident_bytes
+            baseline = observed if baseline is None else max(baseline, observed)
         if isinstance(baseline, int) and baseline + projected_kv >= cap:
             # Invert against the same known cap even if the reporting probe
             # is unavailable; no positive fit means a zero-token memory window.
@@ -8036,11 +8034,22 @@ class Scheduler:
         if self.requests or self.waiting or self.running or self._has_reclaimable_kv():
             return
         if active is None:
-            active = self._current_metal_active_bytes()
+            # The admission probe falls back to zero on failure. That fallback
+            # must never become a measured permanent residency floor.
+            try:
+                active = int(mx.get_active_memory())
+            except Exception:
+                return
+        if active <= 0:
+            return
         self._steady_resident_bytes = max(
-            getattr(self, "_steady_resident_bytes", 0),
-            self._model_weights_bytes or 0,
-            active,
+            value
+            for value in (
+                getattr(self, "_steady_resident_bytes", None),
+                self._model_weights_bytes,
+                active,
+            )
+            if value is not None
         )
 
     def _has_reclaimable_kv(self) -> bool:

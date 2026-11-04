@@ -514,7 +514,9 @@ def test_stream_preflight_owns_pending_work(terminal, monkeypatch):
                 assert frames == ([] if terminal == "empty" else ["data: output\n\n"])
         assert closed.is_set()
         assert aborted == (
-            ["admitted-id"] if terminal in {"cancel", "disconnect"} else []
+            ["admitted-id"]
+            if terminal in {"cancel", "disconnect", "admitted", "admitted_wait"}
+            else []
         )
 
     asyncio.run(run())
@@ -641,3 +643,144 @@ def test_streaming_invalid_media_retains_client_error():
     )
     assert response.status_code == 400
     assert "invalid image data" in response.text
+
+
+@pytest.mark.parametrize(
+    "close_at",
+    [
+        "replay",
+        "guard",
+        "response",
+        "responses",
+        "header_failure",
+        "cancel",
+        "disconnect",
+    ],
+)
+def test_unstarted_preflight_close_joins_inference(close_at, monkeypatch):
+    from fastapi.responses import StreamingResponse
+
+    async def run():
+        pending = []
+        closed = []
+        aborted = []
+        disconnected = [False]
+        engine = SimpleNamespace(release_admission_reservation=Mock())
+        monkeypatch.setattr(helpers, "_release_primary_request", Mock())
+        monkeypatch.setattr(
+            helpers, "_force_abort_request", lambda engine, ids: aborted.append(ids[0])
+        )
+
+        async def connected():
+            return False
+
+        request = SimpleNamespace(is_disconnected=connected)
+
+        async def source():
+            pending.append(asyncio.current_task())
+            try:
+                helpers._stream_admission_event().set()
+                await asyncio.Event().wait()
+                yield "unreachable"
+            finally:
+                closed.append(True)
+
+        replay = await helpers._preflight_stream(
+            source(), request, engine=engine, request_id_holder=["owned"]
+        )
+        assert len(pending) == 1 and not pending[0].done()
+        body = replay
+        if close_at == "responses":
+            from rapid_mlx.routes.responses import _resequence_admitted_stream
+
+            body = _resequence_admitted_stream(body, {})
+        if close_at != "replay":
+            body = helpers._disconnect_guard(
+                body,
+                request,
+                engine=engine,
+                request_id_holder=["owned"],
+                disconnect_state=disconnected,
+            )
+        if close_at == "response":
+            body = StreamingResponse(body).body_iterator
+        if close_at in {"header_failure", "cancel", "disconnect"}:
+            from starlette.requests import ClientDisconnect
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                assert message["type"] == "http.response.start"
+                if close_at == "header_failure":
+                    raise OSError("closed socket")
+                if close_at == "cancel":
+                    raise asyncio.CancelledError
+                await asyncio.Event().wait()
+
+            scope = {
+                "type": "http",
+                "asgi": {"spec_version": "2.0" if close_at == "disconnect" else "2.4"},
+            }
+            response = helpers._OwnedStreamingResponse(body)
+            if close_at == "disconnect":
+                await response(scope, receive, send)
+            else:
+                with pytest.raises(
+                    ClientDisconnect
+                    if close_at == "header_failure"
+                    else asyncio.CancelledError
+                ):
+                    await response(scope, receive, send)
+        await body.aclose()
+        await body.aclose()
+        assert closed == [True]
+        assert pending[0].done() and pending[0].cancelled()
+        assert aborted and set(aborted) == {"owned"}
+        assert [chunk async for chunk in body] == []
+        if close_at != "replay":
+            assert disconnected == [True]
+            engine.release_admission_reservation.assert_called_once_with()
+            helpers._release_primary_request.assert_called_once_with(engine)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("notify", [False, True])
+def test_full_preflight_replay_preserves_frames_and_sequence(notify, monkeypatch):
+    async def run():
+        frames = [
+            'event: response.created\ndata: {"sequence_number": 0}\n\n',
+            'event: response.output_text.delta\ndata: {"sequence_number": 1, "delta": "é"}\n\n',
+            'event: response.completed\ndata: {"sequence_number": 2}\n\n',
+        ]
+        aborted = Mock()
+        monkeypatch.setattr(helpers, "_force_abort_request", aborted)
+        closed = []
+
+        async def connected():
+            return False
+
+        async def source():
+            try:
+                for frame in frames:
+                    if notify:
+                        helpers._stream_admission_event().set()
+                    yield frame
+            finally:
+                closed.append(True)
+
+        replay = await helpers._preflight_stream(
+            source(),
+            SimpleNamespace(is_disconnected=connected),
+            engine=object(),
+            request_id_holder=["complete"],
+        )
+        assert [frame.encode() async for frame in replay] == [
+            f.encode() for f in frames
+        ]
+        await replay.aclose()
+        assert closed == [True]
+        aborted.assert_not_called()
+
+    asyncio.run(run())
