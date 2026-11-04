@@ -179,7 +179,13 @@ def connection_status(port: int, key: str, model: str) -> str:
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
         return "server-error"
-    advertised = {item.get("id") for item in models if isinstance(item, dict)}
+    from .chat_models import non_chat_kind
+
+    advertised = {
+        item.get("id")
+        for item in models
+        if isinstance(item, dict) and not non_chat_kind(item)
+    }
     return "ready" if model in advertised else "model-mismatch"
 
 
@@ -244,6 +250,8 @@ def running_model(port: int, key: str) -> str | None:
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
         raise ValueError("local server returned an invalid model list")
+    from .chat_models import NonChatModelError, non_chat_kind
+
     names: list[str] = []
     for entry in models:
         if not isinstance(entry, dict):
@@ -253,13 +261,20 @@ def running_model(port: int, key: str) -> str | None:
             isinstance(name, str)
             and name
             and not entry.get("anthropic_family_tier")
-            and (
-                not isinstance(entry.get("capabilities"), list)
-                or "text" in entry["capabilities"]
-            )
+            and not non_chat_kind(entry)
         ):
             names.append(name)
     if not names:
+        rejected = next(
+            (
+                m
+                for m in models
+                if isinstance(m, dict) and m.get("id") and non_chat_kind(m)
+            ),
+            None,
+        )
+        if rejected:
+            raise NonChatModelError(f"http://localhost:{port}/v1", rejected)
         raise ValueError("local server did not advertise a text model")
     try:
         checkpoints = {resolve_model(name) for name in names}

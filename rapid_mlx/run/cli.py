@@ -618,6 +618,18 @@ def _reuse_or_refuse(
         return 1
 
     hf_id = _hf_id(resolved_model)
+    if profile is not None:
+        from rapid_mlx.agents.chat_models import NonChatModelError, non_chat_kind
+
+        matching = [
+            m for m in models if m.get("id") in {resolved_model, served_model, hf_id}
+        ]
+        entries = matching or models
+        if entries and all(non_chat_kind(m) for m in entries):
+            print(
+                f"  {NonChatModelError(api_base_url, entries[0], agent=profile.name)}"
+            )
+            return 1
     if served.intersection({resolved_model, served_model, hf_id}):
         if args.dry_run:
             print(

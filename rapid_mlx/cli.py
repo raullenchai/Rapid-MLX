@@ -15507,13 +15507,6 @@ def agents_command(args):
                     else Endpoint(base_url)
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
-                if model_id == "default":
-                    # A server that is already up names its model up front, as
-                    # before; a starting one is resolved by the readiness wait
-                    # below. The context budget is read once the server is ready.
-                    detected_model, _detected_ctx = _detect_running_model(base_url)
-                    if detected_model:
-                        model_id = detected_model
                 advertised = wait_for_server(
                     base_url, model_id, agent=profile.name, endpoint=endpoint
                 )

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+from .chat_models import NonChatModelError, non_chat_kind
+
 
 @dataclass
 class Server:
@@ -158,6 +160,7 @@ class Endpoint:
     follow: bool = False
     model: str | None = None
     skipped_auth: list[Server] = field(default_factory=list)
+    skipped_non_chat: dict[int, NonChatModelError] = field(default_factory=dict)
     _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
 
     def refresh(self) -> None:
@@ -165,10 +168,14 @@ class Endpoint:
         # process eventually chooses another port.
         if self.server is None and self.follow:
             resolved = resolve_endpoint(
-                self.model, report_ignored=False, skipped_auth=self.skipped_auth
+                self.model,
+                report_ignored=False,
+                skipped_auth=self.skipped_auth,
+                skipped_non_chat=self.skipped_non_chat,
             )
             self.base_url, self.server = resolved.base_url, resolved.server
             self.skipped_auth = resolved.skipped_auth
+            self.skipped_non_chat = resolved.skipped_non_chat
         # An argv port is only a guess until the process listens: keep
         # re-reading the selected pid's real listener (throttled) so a server
         # that binds somewhere else is followed instead of waited on forever.
@@ -301,11 +308,44 @@ def skipped_auth_hint(server: Server, agent: str) -> str:
     )
 
 
+def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | None:
+    """Exclude only observed non-chat metadata; loading servers stay eligible."""
+    from rapid_mlx.http_auth import rapid_mlx_auth_headers
+
+    url = f"http://localhost:{port}/v1"
+    # Keep the plain request shape for unauthenticated discovery probes.
+    headers = rapid_mlx_auth_headers()
+    request = (
+        urllib.request.Request(f"{url}/models", headers=headers)
+        if headers
+        else f"{url}/models"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=0.25) as response:
+            payload = json.loads(response.read())
+    except (OSError, ValueError):
+        return None
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+    entries = [
+        m
+        for m in models
+        if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]
+    ]
+    matching = [m for m in entries if model and _same_model(model, m["id"])]
+    entries = matching or entries
+    if entries and all(non_chat_kind(m) for m in entries):
+        return NonChatModelError(url, entries[0])
+    return None
+
+
 def resolve_endpoint(
     model: str | None = None,
     *,
     report_ignored: bool = True,
     skipped_auth: list[Server] | None = None,
+    skipped_non_chat: dict[int, NonChatModelError] | None = None,
 ) -> Endpoint:
     default = "http://localhost:8000/v1"
     healthy, answered = _default_endpoint_ready()
@@ -319,8 +359,26 @@ def resolve_endpoint(
             rejected[port] = requires_missing_key(port)
         return rejected[port]
 
-    if healthy and not missing_key(8000):
-        return Endpoint(default)
+    non_chat = dict(skipped_non_chat or {})
+    checked = set(non_chat)
+
+    def incompatible(port: int) -> bool:
+        if port not in checked:
+            checked.add(port)
+            error = non_chat_server(port, model)
+            if error is not None:
+                non_chat[port] = error
+                print(f"  {error.skip_hint}")
+        return port in non_chat
+
+    if healthy and not missing_key(8000) and not incompatible(8000):
+        return Endpoint(
+            default,
+            follow=True,
+            model=model,
+            skipped_auth=skipped,
+            skipped_non_chat=non_chat,
+        )
     # A process whose sockets cannot be read and whose argv names no port
     # cannot be shown to own any endpoint; waiting on it could never end.
     servers = [s for s in scan_servers() if s.port is not None or s.inspected]
@@ -335,7 +393,11 @@ def resolve_endpoint(
         and not any(s.port == 8000 for s in skipped)
     ):
         skipped.append(Server(0, 8000, "(unknown)"))
-    servers = [s for s in servers if s.port is None or not missing_key(s.port)]
+    servers = [
+        s
+        for s in servers
+        if s.port is None or (not missing_key(s.port) and not incompatible(s.port))
+    ]
     candidates = (
         [
             s
@@ -348,7 +410,12 @@ def resolve_endpoint(
     default_server = next((s for s in candidates if s.port == 8000), None)
     if answered and default_server is not None:
         return Endpoint(
-            default, default_server, follow=True, model=model, skipped_auth=skipped
+            default,
+            default_server,
+            follow=True,
+            model=model,
+            skipped_auth=skipped,
+            skipped_non_chat=non_chat,
         )
     if model and not candidates and report_ignored:
         for server in servers[:5]:
@@ -378,8 +445,15 @@ def resolve_endpoint(
             follow=True,
             model=model,
             skipped_auth=skipped,
+            skipped_non_chat=non_chat,
         )
-    return Endpoint(default, follow=True, model=model, skipped_auth=skipped)
+    return Endpoint(
+        default,
+        follow=True,
+        model=model,
+        skipped_auth=skipped,
+        skipped_non_chat=non_chat,
+    )
 
 
 def server_for_url(base_url: str) -> Server | None:

@@ -218,14 +218,13 @@ def test_default_ready_endpoint_takes_priority(monkeypatch):
         discovery, "scan_servers", lambda: pytest.fail("default endpoint already ready")
     )
     endpoint = discovery.resolve_endpoint("tiny-model")
-    assert endpoint == discovery.Endpoint("http://localhost:8000/v1")
-    monkeypatch.setattr(
-        discovery,
-        "resolve_endpoint",
-        lambda *_a, **_k: pytest.fail("healthy endpoint is fixed"),
+    assert endpoint == discovery.Endpoint(
+        "http://localhost:8000/v1", follow=True, model="tiny-model"
     )
     endpoint.refresh()
-    assert endpoint == discovery.Endpoint("http://localhost:8000/v1")
+    assert endpoint == discovery.Endpoint(
+        "http://localhost:8000/v1", follow=True, model="tiny-model"
+    )
 
 
 @pytest.mark.parametrize("requested", [None, "model-a", "public-a", "model-b"])
@@ -279,6 +278,14 @@ def test_live_serve_does_not_unbound_verification_errors(
         return Response(b"{}")
 
     monkeypatch.setattr(setup.urllib.request, "urlopen", response)
+    if failure == "bad-shape":
+        with pytest.raises(setup.ServerNoModelsError, match="reported no models"):
+            setup.wait_for_server(
+                "http://localhost:8462/v1", "tiny-model", agent="codex"
+            )
+        assert clock[0] == 0
+        assert events == [("failed", "server_no_models", "codex")]
+        return
     with pytest.raises(RuntimeError, match="http://localhost:8462/v1") as raised:
         setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
     assert clock[0] == 60
@@ -1144,3 +1151,241 @@ def test_public_default_health_does_not_bypass_auth_filter(monkeypatch):
         setup.wait_for_server(
             endpoint.base_url, "default", agent="codex", endpoint=endpoint
         )
+
+
+NON_CHAT_MODELS = [
+    {"id": "cogvideox-fun-5b-q4", "modality": "video-gen"},
+    {"id": "picture", "modality": "image-gen"},
+    {"id": "speech", "modality": "tts"},
+    {"id": "transcribe", "modality": "stt"},
+    {"id": "vectors", "modality": "embedding"},
+    {"id": "kokoro", "modality": "audio", "capabilities": ["audio.speech"]},
+    {"id": "embed", "modality": "text", "capabilities": ["embedding"]},
+    {"id": "rank", "modality": "text", "capabilities": ["rerank"]},
+]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, [], None, "invalid", {"data": None}, {"data": 42}, {"data": {"id": "chat"}}],
+)
+def test_verify_server_malformed_model_body_has_no_models(monkeypatch, events, payload):
+    class Response(BytesIO):
+        status = 200
+
+    monkeypatch.setattr(
+        setup.urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: Response(json.dumps(payload).encode()),
+    )
+    with pytest.raises(setup.ServerNoModelsError, match="reported no models"):
+        setup.verify_server("http://localhost:18403/v1", "default", agent="codex")
+    assert events == [("failed", "server_no_models", "codex")]
+
+
+def fake_model_server(monkeypatch, listings):
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        from urllib.parse import urlsplit
+
+        url = request if isinstance(request, str) else request.full_url
+        models = listings.get(urlsplit(url).port)
+        if models is None:
+            raise ConnectionRefusedError()
+        return Response(json.dumps({"data": models}).encode())
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+
+
+@pytest.mark.parametrize("model", NON_CHAT_MODELS)
+@pytest.mark.parametrize("port", [8000, 18403])
+def test_auto_setup_skips_non_chat_server(
+    clock, events, configs, monkeypatch, capsys, model, port
+):
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, port, model["id"], listening=True)],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    fake_model_server(monkeypatch, {port: [model]})
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args("codex", port=None))
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "No Rapid-MLX server" in output
+    hints = [line for line in output.splitlines() if "Skipping" in line]
+    assert len(hints) == 1
+    assert f":{port}" in hints[0] and model["id"] in hints[0]
+    assert "it serves a " in hints[0]
+    assert hints[0].endswith(", not a chat model.")
+    assert "rapid-mlx serve" not in hints[0]
+    assert "configured!" not in output
+    assert not list(configs.rglob("config.toml"))
+
+
+@pytest.mark.parametrize("explicit", ["port", "url"])
+@pytest.mark.parametrize("model", NON_CHAT_MODELS)
+@pytest.mark.parametrize("requested", [None, "wanted-chat"])
+def test_explicit_non_chat_server_fails_before_writing(
+    clock, events, configs, monkeypatch, capsys, explicit, model, requested
+):
+    fake_model_server(monkeypatch, {18403: [model]})
+    options = args("codex", model=requested, port=18403)
+    if explicit == "url":
+        options.port = None
+        options.base_url = "http://localhost:18403/v1"
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(options)
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "server on :18403 is serving" in output
+    assert model["id"] in output
+    assert "coding agents need a chat model" in output
+    assert "rapid-mlx serve " in output
+    assert not list(configs.rglob("config.toml"))
+
+
+@pytest.mark.parametrize(
+    "chat",
+    [
+        {"id": "chat", "modality": "text"},
+        {"id": "chat", "modality": "image", "capabilities": ["text", "vision"]},
+        {"id": "chat", "modality": "mllm"},
+        {"id": "chat"},
+    ],
+)
+def test_discovery_continues_from_video_to_chat(monkeypatch, capsys, chat):
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [
+            discovery.Server(123, 18403, "video"),
+            discovery.Server(124, 8462, "chat"),
+        ],
+    )
+    fake_model_server(monkeypatch, {18403: [NON_CHAT_MODELS[0]], 8462: [chat]})
+    assert discovery.resolve_endpoint().base_url == "http://localhost:8462/v1"
+    assert capsys.readouterr().out.splitlines() == [
+        "  Skipping the server on :18403: it serves a video model "
+        "(cogvideox-fun-5b-q4), not a chat model.",
+        "  Using the Rapid-MLX server on :8462 (pid 124).",
+    ]
+    assert (
+        setup.verify_server("http://localhost:8462/v1", "chat", agent="codex") == "chat"
+    )
+
+
+@pytest.mark.parametrize("model", NON_CHAT_MODELS)
+def test_sibling_launch_start_discovery_and_connection_reject_non_chat(
+    monkeypatch, model
+):
+    from rapid_mlx.agents import isolated
+
+    fake_model_server(monkeypatch, {18403: [model]})
+    with pytest.raises(ValueError, match="chat model"):
+        isolated.running_model(18403, "key")
+    assert isolated.connection_status(18403, "key", model["id"]) != "ready"
+
+
+@pytest.mark.parametrize("port", [8000, 18403])
+def test_setup_reselects_when_modality_appears_after_discovery(
+    clock, events, configs, monkeypatch, capsys, port
+):
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, port, "cogvideox-fun-5b-q4", listening=True)],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    fake_model_server(monkeypatch, {port: [{"id": "cogvideox-fun-5b-q4"}]})
+    original_verify = setup.verify_server
+
+    def verify(*a, **kw):
+        fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[0]]})
+        return original_verify(*a, **kw)
+
+    monkeypatch.setattr(setup, "verify_server", verify)
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args("codex", port=None))
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "No Rapid-MLX server" in output
+    assert output.count("Skipping") == 1
+    hints = [line.strip() for line in output.splitlines() if "Skipping" in line]
+    assert hints == [
+        f"Skipping the server on :{port}: it serves a video model "
+        "(cogvideox-fun-5b-q4), not a chat model."
+    ]
+    assert not list(configs.rglob("config.toml"))
+
+
+@pytest.mark.parametrize("model", NON_CHAT_MODELS)
+def test_start_refuses_non_chat_server_before_attach(monkeypatch, capsys, model):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.run import cli as start
+
+    fake_model_server(monkeypatch, {18403: [model]})
+    monkeypatch.setattr(
+        start, "_attach_and_configure", lambda *_a: pytest.fail("must not attach")
+    )
+    assert (
+        start._reuse_or_refuse(
+            "http://localhost:18403",
+            model["id"],
+            model["id"],
+            get_profile("codex"),
+            SimpleNamespace(port=18403, dry_run=False),
+        )
+        == 1
+    )
+    assert "coding agents need a chat model" in capsys.readouterr().out
+
+
+def test_mixed_model_listing_selects_chat_and_rejects_explicit_video(monkeypatch):
+    from rapid_mlx.agents import isolated
+
+    fake_model_server(
+        monkeypatch, {18403: [NON_CHAT_MODELS[0], {"id": "chat", "modality": "text"}]}
+    )
+    assert adapter._detect_running_model("http://localhost:18403/v1")[0] == "chat"
+    assert (
+        setup.verify_server("http://localhost:18403/v1", "default", agent="codex")
+        == "chat"
+    )
+    assert isolated.running_model(18403, "key") == "chat"
+    with pytest.raises(RuntimeError, match="video model"):
+        setup.verify_server(
+            "http://localhost:18403/v1", NON_CHAT_MODELS[0]["id"], agent="codex"
+        )
+
+
+def test_late_modality_reselection_adopts_second_servers_model(
+    clock, events, configs, monkeypatch, capsys
+):
+    monkeypatch.setattr(discovery, "_default_endpoint_ready", lambda: (True, True))
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [
+            discovery.Server(123, 8000, "video", listening=True),
+            discovery.Server(124, 8462, "chat", listening=True),
+        ],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    listings = {8000: [{"id": "video"}], 8462: [{"id": "chat", "modality": "text"}]}
+    fake_model_server(monkeypatch, listings)
+    original_verify = setup.verify_server
+
+    def verify(*a, **kw):
+        listings[8000] = [NON_CHAT_MODELS[0]]
+        return original_verify(*a, **kw)
+
+    monkeypatch.setattr(setup, "verify_server", verify)
+    cli.agents_command(args("codex", port=None))
+    config = (configs / "codex/config.toml").read_text()
+    assert 'model = "chat"' in config
+    assert "localhost:8462" in config
+    assert capsys.readouterr().out.count("Skipping") == 1
