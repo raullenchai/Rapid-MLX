@@ -3536,8 +3536,11 @@ final class ServerManager {
         }
     }
 
-    /// The running child frees its own chat models when idle.
-    private var nativeIdleUnloadActive: Bool { (idleUnloadSecondsAtSpawn ?? 0) > 0 }
+    /// The running child supports native unload. Chat-only children are then
+    /// never stopped by the poll, even when a busy child deferred the restart
+    /// that would apply a newly enabled setting: stopping it would take the
+    /// API offline, which is exactly what native unload exists to avoid.
+    private var nativeIdleUnloadSupported: Bool { idleUnloadSecondsAtSpawn != nil }
 
     private func checkIdleModelRelease(setting: Int) async {
         guard !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
@@ -3551,7 +3554,7 @@ final class ServerManager {
         }
         let now = Date()
         let audio = residency.audioLanes.filter { $0.state == "resident" }
-        let native = nativeIdleUnloadActive
+        let native = nativeIdleUnloadSupported
         guard IdleModelReleasePreference.requiresProcessStop(
             nativeUnloadActive: native,
             residentAudioLanes: audio.count
@@ -3587,7 +3590,7 @@ final class ServerManager {
         if let idleSetting {
             // The refresh suspended; the setting may have changed or an app
             // operation may have started since.
-            let native = nativeIdleUnloadActive
+            let native = nativeIdleUnloadSupported
             guard !Task.isCancelled,
                   IdleModelReleasePreference.value() == idleSetting,
                   !isOperating, residentLoadsInFlight.isEmpty, runtimeProbeOperation == nil,
