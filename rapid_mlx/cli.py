@@ -15502,7 +15502,7 @@ def agents_command(args):
             endpoint = None
             try:
                 endpoint = (
-                    resolve_endpoint(requested_model)
+                    resolve_endpoint(requested_model, agent=profile.name)
                     if args.base_url is None and getattr(args, "port", None) is None
                     else Endpoint(base_url)
                 )
@@ -15515,11 +15515,6 @@ def agents_command(args):
                 print("\n  Setup cancelled; nothing was written.")
                 sys.exit(130)
             except ServerNotRunningError:
-                from rapid_mlx.agents.server_discovery import skipped_auth_hint
-
-                if endpoint is not None:
-                    for server in endpoint.skipped_auth:
-                        print(skipped_auth_hint(server, profile.name))
                 if requested_model:
                     offline = True
                     if needs_ctx:

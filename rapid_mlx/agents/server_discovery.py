@@ -161,6 +161,7 @@ class Endpoint:
     model: str | None = None
     skipped_auth: list[Server] = field(default_factory=list)
     skipped_non_chat: dict[int, NonChatModelError] = field(default_factory=dict)
+    agent: str = "codex"
     _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
 
     def refresh(self) -> None:
@@ -169,6 +170,7 @@ class Endpoint:
         if self.server is None and self.follow:
             resolved = resolve_endpoint(
                 self.model,
+                agent=self.agent,
                 report_ignored=False,
                 skipped_auth=self.skipped_auth,
                 skipped_non_chat=self.skipped_non_chat,
@@ -346,6 +348,7 @@ def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | 
 def resolve_endpoint(
     model: str | None = None,
     *,
+    agent: str = "codex",
     report_ignored: bool = True,
     skipped_auth: list[Server] | None = None,
     skipped_non_chat: dict[int, NonChatModelError] | None = None,
@@ -379,23 +382,30 @@ def resolve_endpoint(
             default,
             follow=True,
             model=model,
+            agent=agent,
             skipped_auth=skipped,
             skipped_non_chat=non_chat,
         )
     # A process whose sockets cannot be read and whose argv names no port
     # cannot be shown to own any endpoint; waiting on it could never end.
     servers = [s for s in scan_servers() if s.port is not None or s.inspected]
-    skipped.extend(
-        s
-        for s in servers
-        if s.port is not None and missing_key(s.port) and s not in skipped
-    )
+
+    # Carry skipped ports through follow-mode refreshes so each hint prints once,
+    # even when a later scan reports a different pid/model for the same port.
+    def skip_auth(server: Server) -> None:
+        if not any(s.port == server.port for s in skipped):
+            skipped.append(server)
+            print(skipped_auth_hint(server, agent))
+
+    for server in servers:
+        if server.port is not None and missing_key(server.port):
+            skip_auth(server)
     if (
         (healthy or answered)
         and missing_key(8000)
         and not any(s.port == 8000 for s in skipped)
     ):
-        skipped.append(Server(0, 8000, "(unknown)"))
+        skip_auth(Server(0, 8000, "(unknown)"))
     servers = [
         s
         for s in servers
@@ -417,6 +427,7 @@ def resolve_endpoint(
             default_server,
             follow=True,
             model=model,
+            agent=agent,
             skipped_auth=skipped,
             skipped_non_chat=non_chat,
         )
@@ -447,6 +458,7 @@ def resolve_endpoint(
             server,
             follow=True,
             model=model,
+            agent=agent,
             skipped_auth=skipped,
             skipped_non_chat=non_chat,
         )
@@ -454,6 +466,7 @@ def resolve_endpoint(
         default,
         follow=True,
         model=model,
+        agent=agent,
         skipped_auth=skipped,
         skipped_non_chat=non_chat,
     )

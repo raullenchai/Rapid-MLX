@@ -532,7 +532,8 @@ def test_real_health_checks_through_download_and_loading(
 
 @pytest.mark.parametrize("agent", ["claude-code", "codex"])
 def test_ambiguous_cli_does_not_write(configs, events, monkeypatch, capsys, agent):
-    def ambiguous(_model):
+    def ambiguous(_model, *, agent):
+        assert agent in {"claude-code", "codex"}
         raise RuntimeError(
             "Multiple local servers: pid 1 port 8462 model a; pid 2 port 8463 model b. Pass --port."
         )
@@ -1071,6 +1072,73 @@ def test_auto_discovery_continues_after_auth_rejection(monkeypatch):
 
     monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
     assert discovery.resolve_endpoint().base_url == "http://localhost:8462/v1"
+
+
+@pytest.mark.parametrize("late_auth, ready_scan", [(False, 1), (False, 4), (True, 4)])
+@pytest.mark.parametrize("agent", ["codex", "claude-code"])
+def test_success_reports_skips_once_before_selection(
+    clock, events, configs, monkeypatch, capsys, late_auth, ready_scan, agent
+):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    protected = discovery.Server(123, 62801, "tiny-model", listening=True)
+    video = discovery.Server(124, 18403, "video", listening=True)
+    chat = discovery.Server(125, 8462, "tiny-model", listening=True)
+    scans = []
+
+    def scan():
+        scans.append(clock[0])
+        # Revisit skipped ports with different process metadata on each scan.
+        return [
+            discovery.Server(
+                123 + len(scans), protected.port, "tiny-model", listening=True
+            ),
+            video,
+        ] + ([chat] if len(scans) >= ready_scan else [])
+
+    monkeypatch.setattr(discovery, "scan_servers", scan)
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    record = configs / "Library/Application Support/Rapid/owned-server.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"pid": 124, "port": protected.port}))
+    fake_model_server(
+        monkeypatch,
+        {
+            62801: [{"id": "tiny-model"}],
+            18403: [NON_CHAT_MODELS[0]],
+            8462: [{"id": "tiny-model"}],
+        },
+    )
+    original_response = discovery.urllib.request.urlopen
+    original_verify = setup.verify_server
+    enforcing_auth = not late_auth
+
+    def response(request, **kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        if enforcing_auth and ":62801/" in url:
+            raise urllib.error.HTTPError(url, 401, "auth", {}, BytesIO())
+        return original_response(request, **kwargs)
+
+    def verify(*a, **kw):
+        nonlocal enforcing_auth
+        enforcing_auth = True
+        return original_verify(*a, **kw)
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    monkeypatch.setattr(setup, "verify_server", verify)
+    monkeypatch.setattr(adapter, "fetch_context_window", lambda *_a: 8192)
+    cli.agents_command(args(agent, port=None))
+    output = capsys.readouterr().out
+    auth_hints = [line for line in output.splitlines() if "Server on :62801" in line]
+    assert len(auth_hints) == 1
+    assert "belongs to Rapid-MLX Desktop" in auth_hints[0]
+    assert f"rapid-mlx agents {agent} --setup --port 62801" in auth_hints[0]
+    non_chat_hints = [line for line in output.splitlines() if "Skipping" in line]
+    assert len(non_chat_hints) == 1
+    selected = output.index("Using the Rapid-MLX server on :8462")
+    assert output.index(auth_hints[0]) < selected
+    assert output.index(non_chat_hints[0]) < selected
+    assert len(scans) >= ready_scan
+    assert events == [("configured", agent)]
 
 
 @pytest.mark.parametrize(

@@ -815,6 +815,8 @@ def wait_for_server(
     deadline = time.monotonic() + timeout
     grace = time.monotonic() + min(2.0, timeout)
     server = endpoint.server if endpoint is not None else None
+    if endpoint is not None:
+        endpoint.agent = agent
     progress = Progress()
     while True:
         if endpoint is not None:
@@ -846,8 +848,9 @@ def wait_for_server(
         except RuntimeError as exc:
             if isinstance(exc, NonChatModelError):
                 if endpoint is not None and endpoint.follow:
+                    if exc.port not in endpoint.skipped_non_chat:
+                        print(f"  {exc.skip_hint}")
                     endpoint.skipped_non_chat[exc.port] = exc
-                    print(f"  {exc.skip_hint}")
                     endpoint.server = None
                     continue
                 track_agent_configure_failed("model_not_advertised", agent)
@@ -862,11 +865,12 @@ def wait_for_server(
                 # first discovery probe. Re-run selection rather than pinning it.
                 from rapid_mlx.connect import _parse_base_url
 
-                from .server_discovery import Server
+                from .server_discovery import Server, skipped_auth_hint
 
-                endpoint.skipped_auth.append(
-                    server or Server(0, _parse_base_url(base_url)[1], "(unknown)")
-                )
+                skipped = server or Server(0, _parse_base_url(base_url)[1], "(unknown)")
+                if not any(s.port == skipped.port for s in endpoint.skipped_auth):
+                    endpoint.skipped_auth.append(skipped)
+                    print(skipped_auth_hint(skipped, agent))
                 endpoint.server = None
                 continue
             # Healthy servers advertising the wrong/no model are real failures,
