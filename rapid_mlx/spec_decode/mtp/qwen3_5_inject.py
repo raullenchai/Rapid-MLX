@@ -1043,6 +1043,7 @@ def inject_mtp_support(
             max_tokens=MAX_COPY_DRAFT_TOKENS,
         )
         batched_mtp_capability = BATCHED_MTP_CAPABILITY
+        mtp_head_prefill_capture = True
         mtp_recursive_draft_depth = 2
         mtp_batch_forward = _mtp_batch_forward
 

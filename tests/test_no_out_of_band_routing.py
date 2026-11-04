@@ -611,6 +611,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # a model, parser, or routing tier; identical semantic shape
         # to ``RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` above.
         "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC",
+        # Emergency rollback for MTP draft-head history (server prompt
+        # capture and committed-row rebuild). Read by the scheduler MTP
+        # install and ``mtp_generate_step``; ``1`` restores the previous
+        # head bookkeeping. Never selects a model, parser, or route.
+        "RAPID_MLX_MTP_LEGACY_HEAD_HISTORY",
         # #558 grammar-constrained tool-calling toggle. A per-feature ON/OFF
         # switch, NOT a routing decision. DEFAULT-ON as of PR-5 (opt-OUT with
         # ``0``/``off``/``false``); when active the chat route builds the

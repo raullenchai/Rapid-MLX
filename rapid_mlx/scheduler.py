@@ -1711,6 +1711,8 @@ def _install_mtp_vendored(
     _derived_controller_key = derive_controller_key(mtp_model)
 
     _orig_step = gb._step
+    _head_captures: dict[Any, Any] = {}
+    _close_head_capture = None
 
     # Per-uid MTP state. Each entry:
     #   {
@@ -1852,6 +1854,7 @@ def _install_mtp_vendored(
         #
         # State (the per-uid MTP generator + queue) is cleaned here as
         # usual — that's per-generator lifecycle, not per-request.
+        _head_captures.pop(uid, None)
         state = _state.pop(uid, None)
         if state is None:
             return
@@ -2085,6 +2088,7 @@ def _install_mtp_vendored(
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
+            _head_captures.pop(u, None)
 
         def _sync_next_tokens_after_emit(
             gb_ref: Any,
@@ -2142,6 +2146,7 @@ def _install_mtp_vendored(
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
+            _head_captures.clear()
             if _state:
                 terminal_uids = list(_state)
                 _stats["invariant_violations"] += 1
@@ -2225,6 +2230,7 @@ def _install_mtp_vendored(
             else:
                 _stats["fallthrough_steps"] += 1
                 _stats["ft_disabled"] += 1
+                _head_captures.pop(uid, None)
                 return _orig_step()
 
         sampling_options, sampling_skip_reason = _sampling_options_for_uid(uid)
@@ -2302,6 +2308,7 @@ def _install_mtp_vendored(
             if _others_waiting():
                 _stats["fallthrough_steps"] += 1
                 _stats["ft_others_waiting"] += 1
+                _head_captures.pop(uid, None)
                 return _orig_step()
             # --- FIRST call for this uid ---
             # mlx-lm's fresh ``GenerationBatch.__init__`` ran its
@@ -2313,16 +2320,16 @@ def _install_mtp_vendored(
             # byte-equality with plain-decode baseline: the argmax at
             # the prompt-end hidden state is deterministic.
             #
-            # Then set up the vendored generator seeded with that same
-            # token as the "prompt" — the generator's first backbone
-            # step feeds it, advances the cache to +1, and samples the
-            # SECOND generated token.
+            # Resume from the captured prompt-end hidden when available.
+            # Otherwise the original handoff evaluates this first generated
+            # token as the generator's bootstrap and samples the second.
             first_tok_arr = gb._next_tokens
             first_lp_list = gb._next_logprobs
             if first_tok_arr is None or not first_lp_list:
                 # Shouldn't happen — the fresh __init__ always calls _step.
                 # But fall back defensively rather than crashing.
                 _stats["fallthrough_steps"] += 1
+                _head_captures.pop(uid, None)
                 return _orig_step()
             first_tok = int(first_tok_arr[0].item())
             first_lp = first_lp_list[0]
@@ -2384,11 +2391,40 @@ def _install_mtp_vendored(
                     mtp_model,
                     requested=prompt_lookup_policy.enabled_by_default,
                 )
+                head_capture = _head_captures.pop(uid, None)
+                # Plain steps, uid reuse, or a later batched admission can make
+                # a provisional capture stale. Never attach it across a seam.
+                if head_capture is not None and (
+                    head_capture.first_token != first_tok
+                    or head_capture.prompt_length != len(gb.tokens[0])
+                ):
+                    head_capture = None
+                head_kwargs = (
+                    {
+                        "server_bootstrap": (head_capture.hidden, first_lp),
+                    }
+                    if head_capture is not None
+                    else {}
+                )
+                lookup_history = (
+                    _prompt_lookup_history_for(uid, first_tok)
+                    if prompt_lookup_enabled
+                    else None
+                )
+                if head_capture is not None and lookup_history is not None:
+                    # Bootstrap records first_tok as generated, exactly as the
+                    # direct path does; keep it out of the immutable index.
+                    lookup_history = lookup_history[:-1]
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
                     model=mtp_model,
                     max_tokens=gen_max,
-                    prompt_cache=gb.prompt_cache,
+                    prompt_cache=(
+                        gb.prompt_cache + head_capture.cache
+                        if head_capture is not None
+                        else gb.prompt_cache
+                    ),
+                    **head_kwargs,
                     temp=sampling_options["temp"],
                     top_p=sampling_options["top_p"],
                     top_k=sampling_options["top_k"],
@@ -2447,11 +2483,7 @@ def _install_mtp_vendored(
                     # route decision and immutable prompt history before the
                     # generator mutates GenerationBatch bookkeeping.
                     prompt_lookup_enabled=prompt_lookup_enabled,
-                    prompt_lookup_history=(
-                        _prompt_lookup_history_for(uid, first_tok)
-                        if prompt_lookup_enabled
-                        else None
-                    ),
+                    prompt_lookup_history=lookup_history,
                     prompt_lookup_policy=prompt_lookup_policy,
                     # A step started ahead of delivery puts the cache past the
                     # token boundary ``_requeue_owner_at_boundary`` needs, so
@@ -2681,6 +2713,49 @@ def _install_mtp_vendored(
             _reap_uid(uid)
         return result
 
+    if (
+        os.environ.get("RAPID_MLX_MTP_LEGACY_HEAD_HISTORY") != "1"
+        # The text lane may hold a thin wrapper whose ``language_model`` is
+        # the injected MTP model; its text forward is equivalent.
+        and (model is mtp_model or getattr(model, "language_model", None) is mtp_model)
+        and getattr(mtp_model, "mtp_head_prefill_capture", False)
+        and hasattr(batch_gen, "_prompt_batch")
+    ):
+        from mlx_lm.generate import maybe_quantize_kv_cache
+
+        from .spec_decode.mtp.server_head_prefill import install_prompt_capture
+
+        def _head_capture_eligible(uid):
+            # Text-only singleton candidate. Capture is discarded if another
+            # arrival wins admission before the MTP handoff. VLM wrappers and
+            # embeddings paths deliberately retain the default handoff.
+            options, reason = _sampling_options_for_uid(uid)
+            return (
+                not gb.uids
+                and not getattr(batch_gen, "_unprocessed_sequences", None)
+                and all(u == uid for u in batch_gen._prompt_batch.uids)
+                and uid not in _disabled_uids
+                # Before GenerationBatch exists, safe processors have no
+                # gb.tokens row yet. All sampler/identity checks precede this
+                # miss; the complete history is resolved again at handoff.
+                and (
+                    options is not None
+                    or reason == "processor token history is unavailable"
+                )
+            )
+
+        _head_captures, _close_head_capture = install_prompt_capture(
+            batch_gen,
+            mtp_model,
+            mx,
+            _head_capture_eligible,
+            # Match mtp_generate_step's active-cache defaults. Retained prefix
+            # cache quantization is independent of active head KV quantization.
+            lambda cache: maybe_quantize_kv_cache(
+                cache, quantized_kv_start=0, kv_group_size=64, kv_bits=None
+            ),
+        )
+
     # Patch onto the persistent _generation_batch. New GenerationBatch
     # instances created inside PromptProcessingBatch.generate() use the
     # CLASS _step for their priming call (which is exactly what we want:
@@ -2884,6 +2959,8 @@ def _install_mtp_vendored(
         nonlocal batch_gen, gb, _base_next, _orig_remove, _orig_step, _orig_next
         for uid in list(_state):
             _reap_uid(uid)
+        if _close_head_capture is not None:
+            _close_head_capture()
         _disabled_uids.clear()
         _terminal_uids.clear()
         _initial_skip_logged.clear()

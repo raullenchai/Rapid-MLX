@@ -389,6 +389,7 @@ def mtp_generate_step(
     quantized_kv_start: int = 0,
     input_embeddings: mx.array | None = None,
     initial_tokens: list[int] | mx.array | None = None,
+    server_bootstrap: tuple[Any, Any] | None = None,
     temp: float = 0.0,
     top_p: float = 0.0,
     top_k: int = 0,
@@ -460,6 +461,9 @@ def mtp_generate_step(
         accepted MTP draft, ``False`` when it came from the backbone.
 
     Args:
+        server_bootstrap: Internal server handoff of (prompt-end hidden,
+            first-token logprobs). ``prompt`` is the already emitted first
+            token; skip its delivery and the redundant target bootstrap.
         accept_counter: Optional override for the process-global
             :class:`MTPAcceptCounter`. Tests pass a fresh counter to
             isolate measurements; production callers pass ``None``
@@ -625,6 +629,31 @@ def mtp_generate_step(
         n_main = len(model.layers)
         model_cache = prompt_cache[:n_main]
         mtp_cache = prompt_cache[n_main:] or model.make_mtp_cache()
+
+    # Emergency rollback: =1 restores both the original server handoff and
+    # speculative head history. Target rollback is unchanged.
+    rebuild_head_history = (
+        getattr(model, "mtp_head_prefill_capture", False)
+        and os.environ.get("RAPID_MLX_MTP_LEGACY_HEAD_HISTORY") != "1"
+    )
+    head_pending = None
+    head_seed = None
+
+    def _trim_head(n):
+        for mc in mtp_cache:
+            if mc.is_trimmable():
+                mc.trim(n)
+
+    def _flush_head():
+        """Eagerly settle deferred rows when no MTP chain will consume them."""
+        nonlocal head_pending
+        if head_pending is not None:
+            h, ids = head_pending
+            with mx.stream(generation_stream):
+                logits = model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                quantize_cache_fn(mtp_cache)
+                mx.eval(logits, [c.state for c in mtp_cache if hasattr(c, "state")])
+            head_pending = None
 
     # Sliding-window targets need a few hidden rows beyond the visible
     # attention window so a rejected speculative block remains reversible.
@@ -819,9 +848,8 @@ def mtp_generate_step(
             return
 
         _rollback_draft(n_to_drop, verify_size=verify_size)
-        for mc in mtp_cache:
-            if mc.is_trimmable():
-                mc.trim(n_to_drop)
+        if not rebuild_head_history:
+            _trim_head(n_to_drop)
 
     def _step_backbone(
         yy,
@@ -901,7 +929,7 @@ def mtp_generate_step(
             align_h, align_tok = cache_commit
             hidden_last = mx.concatenate([align_h, hidden_last], axis=1)
             next_ids = mx.concatenate(
-                [align_tok.reshape(1, 1), main_tok.reshape(1, 1)], axis=1
+                [align_tok.reshape(1, -1), main_tok.reshape(1, 1)], axis=1
             )
         else:
             next_ids = main_tok.reshape(1, 1)
@@ -990,6 +1018,12 @@ def mtp_generate_step(
             Tuple of four Python lists, each of length ``K``:
             ``(draft_toks, draft_lps, draft_accept_lps, xtc_draws)``.
         """
+        nonlocal head_pending, head_seed
+        if rebuild_head_history:
+            head_seed = hidden_last
+            if head_pending is not None:
+                cache_commit = head_pending
+                head_pending = None
         draft_toks: list = []
         draft_lps: list = []
         draft_accept_lps: list = []
@@ -1079,7 +1113,8 @@ def mtp_generate_step(
         source token; it never feeds the token being predicted.
         """
 
-        if accepted_count <= 0:
+        # Rebuild mode settles shifted target-hidden pairs via head_pending.
+        if rebuild_head_history or accepted_count <= 0:
             return
         started = time.perf_counter()
         source_tokens = mx.concatenate(
@@ -1223,11 +1258,22 @@ def mtp_generate_step(
 
     def _draft_chain_timed(*args, **kwargs):
         """``_step_mtp_chain`` with its wall time held for the next round."""
-        nonlocal pending_draft_ms
+        nonlocal pending_draft_ms, head_pending
         _t0 = time.perf_counter()
         boundary = _snapshot_processor_state()
+        if rebuild_head_history:
+            head_start = mtp_cache[0].offset if mtp_cache else 0
+            saved_pending = head_pending
         try:
             result = _step_mtp_chain(*args, **kwargs)
+        except BaseException:
+            if rebuild_head_history:
+                # A partial chain may already have consumed the align rows.
+                # Restore the pre-chain prefix, then settle those true rows.
+                _trim_head((mtp_cache[0].offset if mtp_cache else 0) - head_start)
+                head_pending = saved_pending
+                _flush_head()
+            raise
         finally:
             # Draft-side interventions shape q(d), but only target-verified,
             # user-delivered positions may advance processor state.
@@ -1414,6 +1460,10 @@ def mtp_generate_step(
     # prev_tokens, uncharged_ms)``, or ``None``. ``uncharged_ms`` is the
     # time spent building it that no round's timer has seen.
     prefetched_step: tuple | None = None
+    # Server already evaluated the last prompt token and emitted its sample.
+    # Resume at that exact boundary instead of evaluating the sample again.
+    bootstrap = server_bootstrap
+    suppress_bootstrap = bootstrap is not None
 
     def _park_step(yy):
         """Build a one-row step and start it: ``(token, logprobs, hidden,
@@ -1425,6 +1475,11 @@ def mtp_generate_step(
         reading it would wait for the whole forward the launch was meant to
         overlap.
         """
+        nonlocal bootstrap
+        if bootstrap is not None:
+            p_hidden, p_lp = bootstrap
+            bootstrap = None
+            return yy.reshape(-1)[0], p_lp, p_hidden, prev_tokens
         p_toks, p_lps, _p_alps, p_hidden, p_prev, _ = _step_backbone(
             yy, prev_tokens, n_predict=1
         )
@@ -1523,6 +1578,9 @@ def mtp_generate_step(
             # sample at request end and can never double-charge a round
             # (codex #1441 guarded the same invariant when drafting was the
             # last thing a round did).
+            if rebuild_head_history and (round_done or parks_next):
+                head_pending = (hidden[:, -1:, :], main_tok)
+                _flush_head()
             if not round_done:
                 pending_drafts = None
                 pending_is_prompt_lookup = False
@@ -1532,7 +1590,12 @@ def mtp_generate_step(
                     prefetched_step = launched
                 else:
                     plan, plan_arg = _plan_next(next_k)
+                    if rebuild_head_history and plan == "park":
+                        head_pending = (hidden[:, -1:, :], main_tok)
+                        _flush_head()
                     if plan == "lookup":
+                        if rebuild_head_history:
+                            head_seed = hidden[:, -1:, :]
                         pending_drafts = _lookup_drafts(plan_arg)
                         pending_is_prompt_lookup = True
                     elif plan == "mtp":
@@ -1560,7 +1623,10 @@ def mtp_generate_step(
             # target-verified, delivered positions may advance processor
             # state. So the caller is handed the state its own token
             # committed even though drafting now runs first.
-            yield main_tok_id, main_lp, False
+            if suppress_bootstrap:
+                suppress_bootstrap = False
+            else:
+                yield main_tok_id, main_lp, False
             if round_done:
                 return
         else:
@@ -1620,6 +1686,11 @@ def mtp_generate_step(
                     capture_processor_states=True,
                 )
             except BaseException:
+                if rebuild_head_history:
+                    if not pending_is_prompt_lookup:
+                        _trim_head(k_len)
+                    head_pending = (head_seed, y)
+                    _flush_head()
                 _restore_processor_state(processor_boundary)
                 raise
             # Verification computes every target row eagerly, but none is
@@ -1715,6 +1786,11 @@ def mtp_generate_step(
                     _rollback_verify_round(
                         k_len - accepted_count, verify_size=k_len + 1
                     )
+                if rebuild_head_history:
+                    if not pending_is_prompt_lookup:
+                        _trim_head(k_len)
+                    head_pending = (head_seed, y)
+                    _flush_head()
                 _restore_processor_state(processor_boundary)
                 raise
 
@@ -1842,6 +1918,18 @@ def mtp_generate_step(
                     round_done = True
                     break
 
+            if rebuild_head_history:
+                # Remove every speculative row, even on all-accept/terminal
+                # rounds. Lookup created none. H[i] predicted d[i+1];
+                # head_seed predicted y.
+                kept = len(emissions)
+                if not pending_is_prompt_lookup:
+                    _trim_head(k_len)
+                head_pending = (
+                    mx.concatenate([head_seed, hidden[:, :kept, :]], axis=1),
+                    mx.concatenate([y, drafts_arr[:kept]]),
+                )
+
             if eos_cut:
                 # Emitted EOS via an accepted draft. Caller will detect
                 # the stop token and terminate; skip bonus / residual /
@@ -1940,6 +2028,8 @@ def mtp_generate_step(
                 # next chain (a park decision skips drafter cost).
                 plan, plan_arg = _plan_next(_next_depth())
                 if plan == "lookup":
+                    if rebuild_head_history:
+                        head_seed = last_committed_hidden
                     pending_drafts = _lookup_drafts(plan_arg)
                     pending_is_prompt_lookup = True
                 elif plan == "mtp":
@@ -1947,7 +2037,7 @@ def mtp_generate_step(
                     # advance by one extra position for the just-accepted
                     # LAST draft so the head's attention sees it before
                     # predicting the next round's first draft.
-                    if accepted_count == k_len:
+                    if accepted_count == k_len and not rebuild_head_history:
                         align_h = hidden[:, accepted_count - 1 : accepted_count, :]
                         align_tok = draft_toks_arr[accepted_count - 1]
                         cache_commit = (align_h, align_tok)
@@ -1964,6 +2054,15 @@ def mtp_generate_step(
                     pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
                     pending_is_prompt_lookup = False
                 else:
+                    if rebuild_head_history and head_pending is not None:
+                        # No chain will append the usual new row for y on
+                        # this handoff either. Settle it along with the rebuild
+                        # before parks begin advancing the target alone.
+                        align_h, align_tok = head_pending
+                        head_pending = (
+                            mx.concatenate([align_h, last_committed_hidden], axis=1),
+                            mx.concatenate([align_tok, y]),
+                        )
                     pending_drafts = None
                     pending_is_prompt_lookup = False
                     if _pipeline_parks and _may_run_ahead():
@@ -1972,6 +2071,30 @@ def mtp_generate_step(
                         prefetched_step = _launch_park_step(
                             y, timed_by_this_round=False
                         )
+
+            if (
+                rebuild_head_history
+                and head_pending is not None
+                and round_done
+                and not eos_cut
+                and len(emissions) == accepted_count + 1
+            ):
+                # A final bonus/residual has no next chain to append its
+                # usual new row. Accepted-prefix caps are already included.
+                align_h, align_tok = head_pending
+                head_pending = (
+                    mx.concatenate(
+                        [align_h, hidden[:, accepted_count : accepted_count + 1, :]],
+                        axis=1,
+                    ),
+                    mx.concatenate(
+                        [align_tok, mx.array([emissions[-1][0]], mx.uint32)]
+                    ),
+                )
+            if rebuild_head_history:
+                # A park/lookup handoff or terminal round has no next head
+                # call to prepend these rows to. Flush now, before yielding.
+                _flush_head()
 
             for (
                 _emit_tok_id,
