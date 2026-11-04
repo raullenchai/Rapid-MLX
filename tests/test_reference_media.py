@@ -24,6 +24,7 @@ def fake_arrays(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", core)
     monkeypatch.setattr(media, "_original_decode_video", None)
+    media._supports_videotoolbox.cache_clear()
 
 
 @pytest.fixture
@@ -38,6 +39,8 @@ def tools(tmp_path, monkeypatch):
         codec="h264",
         partial=False,
         stall=False,
+        videotoolbox=False,
+        hardware_failure=None,
     ):
         probe = tmp_path / "ffprobe"
         probe.write_text(
@@ -46,11 +49,18 @@ def tools(tmp_path, monkeypatch):
             f"sys.exit({probe_exit})\n"
         )
         ffmpeg = tmp_path / "ffmpeg"
+        calls = tmp_path / "calls.jsonl"
         ffmpeg.write_text(
-            f"#!{sys.executable}\nimport sys, time\n"
+            f"#!{sys.executable}\nimport json, sys, time\n"
+            f"with open({str(calls)!r}, 'a') as log: log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if '-hwaccels' in sys.argv:\n"
+            f"    print('Hardware acceleration methods:\\n' + ('videotoolbox' if {videotoolbox} else 'cuda'))\n"
+            "    sys.exit(0)\n"
             "assert sys.argv[sys.argv.index('-i') + 1] == 'clip.mp4'\n"
             "assert '-fps_mode' in sys.argv\n"
             "assert sys.argv[sys.argv.index('-pix_fmt') + 1] == 'rgb24'\n"
+            f"if '-hwaccel' in sys.argv and {hardware_failure!r} is not None:\n"
+            f"    sys.exit({hardware_failure!r})\n"
             f"sys.stdout.buffer.write((b'P6\\n2 1\\n255\\n' + bytes([255, 0, 0, 0, 255, 0])) * {frames})\n"
             f"sys.stdout.buffer.write(b'P6\\n2 1\\n255\\nx' if {partial} else b'')\n"
             "sys.stdout.flush()\n"
@@ -61,8 +71,52 @@ def tools(tmp_path, monkeypatch):
         probe.chmod(0o755)
         ffmpeg.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path))
+        return calls
 
     return create
+
+
+@pytest.mark.parametrize("videotoolbox", [False, True])
+def test_hwaccel_only_when_available(tools, videotoolbox):
+    calls = tools(videotoolbox=videotoolbox)
+    media.decode_video_with_ffmpeg("clip.mp4")
+    media.decode_video_with_ffmpeg("clip.mp4")
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert commands[0] == ["-hide_banner", "-hwaccels"]
+    assert len(commands) == 3  # Capability probe is cached by executable path.
+    for command in commands[1:]:
+        assert ("-hwaccel" in command) == videotoolbox
+        if videotoolbox:
+            assert command[command.index("-hwaccel") + 1] == "videotoolbox"
+
+
+@pytest.mark.parametrize("hardware_failure", [0, 1])
+def test_hwaccel_failure_retries_software(tools, hardware_failure):
+    calls = tools(videotoolbox=True, hardware_failure=hardware_failure)
+    frames, _ = media.decode_video_with_ffmpeg("clip.mp4")
+    assert frames.shape == (2, 1, 2, 3)
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(commands) == 3
+    assert "-hwaccel" in commands[1]
+    assert "-hwaccel" not in commands[2]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("missing"),
+        subprocess.CalledProcessError(1, "ffmpeg"),
+        subprocess.TimeoutExpired("ffmpeg", 5),
+    ],
+)
+def test_hwaccel_probe_failure(monkeypatch, failure):
+    def run(command, **kwargs):
+        assert command == ["/ffmpeg", "-hide_banner", "-hwaccels"]
+        assert kwargs["timeout"] == 5
+        raise failure
+
+    monkeypatch.setattr(media.subprocess, "run", run)
+    assert media._supports_videotoolbox("/ffmpeg") is False
 
 
 @pytest.mark.parametrize("codec", ["h264", "av1", "prores"])
@@ -105,10 +159,12 @@ def test_failed_decode(tools, options, message):
 
 
 def test_timeout_kills_decoder(tools, monkeypatch):
-    tools(stall=True)
+    calls = tools(stall=True, videotoolbox=True)
     monkeypatch.setattr(media, "_DECODE_TIMEOUT", 0.2)
     with pytest.raises(ValueError, match="timed out"):
         media.decode_video_with_ffmpeg("clip.mp4")
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(commands) == 2  # A decode timeout must not trigger a retry.
 
 
 def test_install_and_array_delegation(monkeypatch):

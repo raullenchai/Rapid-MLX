@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 from fractions import Fraction
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,23 @@ if TYPE_CHECKING:
 
 _original_decode_video = None
 _DECODE_TIMEOUT = 300
+
+
+@lru_cache(maxsize=16)
+def _supports_videotoolbox(ffmpeg: str) -> bool:
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-hwaccels"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return any(
+            line.strip() == "videotoolbox" for line in result.stdout.splitlines()
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return False
 
 
 def _fps(stream):
@@ -114,8 +132,6 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
         "-v",
         "error",
         "-nostdin",
-        "-hwaccel",
-        "videotoolbox",
         "-protocol_whitelist",
         "file",
         "-i",
@@ -132,47 +148,56 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
         "rgb24",
         "-",
     ]
-    timed_out = threading.Event()
-    try:
-        # A file prevents a full stderr pipe from blocking stdout frame reads.
-        with (
-            tempfile.TemporaryFile() as errors,
-            subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors) as proc,
-        ):
+    hardware = _supports_videotoolbox(str(Path(ffmpeg).resolve()))
+    for use_hwaccel in (True, False) if hardware else (False,):
+        attempt = command.copy()
+        if use_hwaccel:
+            attempt[1:1] = ["-hwaccel", "videotoolbox"]
+        timed_out = threading.Event()
+        try:
+            # A file prevents a full stderr pipe from blocking stdout frame reads.
+            with (
+                tempfile.TemporaryFile() as errors,
+                subprocess.Popen(
+                    attempt, stdout=subprocess.PIPE, stderr=errors
+                ) as proc,
+            ):
 
-            def expire():
-                timed_out.set()
+                def expire(proc=proc, timed_out=timed_out):
+                    timed_out.set()
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+
+                timer = threading.Timer(_DECODE_TIMEOUT, expire)
+                timer.start()
+                frame_error = None
                 try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-
-            timer = threading.Timer(_DECODE_TIMEOUT, expire)
-            timer.start()
-            frame_error = None
-            try:
-                frames = list(_read_ppm_frames(proc.stdout))
-                status = proc.wait()
-            except ValueError as exc:
-                frame_error = exc
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait()
-                timer.cancel()
-            errors.seek(max(0, errors.tell() - 2000))
-            detail = errors.read().decode(errors="replace").strip()
-            if timed_out.is_set():
-                raise ValueError("reference video decode timed out")
-            if frame_error is not None:
-                raise ValueError(f"{frame_error}: {detail}") from frame_error
-            if status:
-                raise ValueError(detail or f"ffmpeg exited with status {status}")
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"cannot decode video: {video}: {exc}") from exc
-    if not frames:
-        raise ValueError(f"video contains no decodable frames: {video}")
-    return mx.stack(frames), _fps(stream)
+                    frames = list(_read_ppm_frames(proc.stdout))
+                    proc.wait()
+                except ValueError as exc:
+                    frame_error = exc
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
+                    status = proc.wait()
+                    timer.cancel()
+                errors.seek(max(0, errors.tell() - 2000))
+                detail = errors.read().decode(errors="replace").strip()
+                if timed_out.is_set():
+                    raise ValueError("reference video decode timed out")
+                if use_hwaccel and (status or (frame_error is None and not frames)):
+                    continue
+                if frame_error is not None:
+                    raise ValueError(f"{frame_error}: {detail}") from frame_error
+                if status:
+                    raise ValueError(detail or f"ffmpeg exited with status {status}")
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot decode video: {video}: {exc}") from exc
+        if not frames:
+            raise ValueError(f"video contains no decodable frames: {video}")
+        return mx.stack(frames), _fps(stream)
 
 
 def install_reference_decoders():
