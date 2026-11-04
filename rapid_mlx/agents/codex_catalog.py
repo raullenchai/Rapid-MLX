@@ -11,7 +11,9 @@ def build_codex_model_info(model_id: str, context_window: int | None) -> dict:
     by ``rapid-mlx agents codex --setup``.  Keeping one builder prevents the
     static first-turn catalog from drifting from later remote refreshes.
     """
-    window = context_window or 262_144
+    from .context_budget import context_fallback
+
+    window = context_window or context_fallback("codex-catalog")
     return {
         "slug": model_id,
         "display_name": model_id,

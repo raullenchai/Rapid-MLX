@@ -673,3 +673,135 @@ def estimate_kv_footprint(
         sliding_slot_bytes=int(sliding_slot_bytes),
         sliding_window=int(effective_sliding_window),
     )
+
+
+def kv_dtype_bytes(config: Any) -> int:
+    """Resolve cached-config KV dtype conservatively without importing MLX."""
+    mapping = {
+        "float64": 8,
+        "fp64": 8,
+        "double": 8,
+        "float32": 4,
+        "fp32": 4,
+        "float16": 2,
+        "fp16": 2,
+        "half": 2,
+        "bfloat16": 2,
+        "bf16": 2,
+        "int8": 1,
+        "uint8": 1,
+        "float8": 1,
+        "fp8": 1,
+    }
+    for holder in (config, _cfg_get(config, "text_config")):
+        for field in ("dtype", "torch_dtype"):
+            raw = _cfg_get(holder, field)
+            if raw is not None:
+                name = str(raw).lower()
+                for needle, size in mapping.items():
+                    if needle in name:
+                        return size
+    return 4
+
+
+def config_kv_dims(config: Any) -> tuple[int, int, int, Any] | None:
+    """Resolve valid KV geometry, preferring a verified structural tower."""
+    text = _cfg_get(config, "text_config")
+    candidates = []
+    for holder in (config, text):
+        layers = _cfg_get(holder, "num_hidden_layers")
+        if isinstance(layers, int) and _valid_layer_types(
+            _cfg_get(holder, "layer_types"), layers
+        ):
+            candidates.append(holder)
+    candidates.extend((text, config))
+    for holder in candidates:
+
+        def positive(field: str, source: Any = holder) -> int:
+            value = _cfg_get(source, field)
+            return (
+                value
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                else 0
+            )
+
+        layers = positive("num_hidden_layers")
+        heads = positive("num_key_value_heads") or positive("num_attention_heads")
+        dim = positive("head_dim")
+        attention_heads = positive("num_attention_heads")
+        if not dim and attention_heads:
+            dim = positive("hidden_size") // attention_heads
+        if layers and heads and dim:
+            return layers, heads, dim, holder
+    return None
+
+
+def footprint_from_config(
+    config: Any, dtype_bytes: int | None = None
+) -> KVFootprintEstimate | None:
+    """Derive exactly the scheduler's KV terms from cached config fields.
+
+    Hybrid structure selects its verified tower; otherwise nested text
+    dimensions precede outer fields that may describe the vision tower.
+    """
+    dims = config_kv_dims(config)
+    if dims is None:
+        return None
+    layers, heads, dim, holder = dims
+    size = dtype_bytes if dtype_bytes is not None else kv_dtype_bytes(config)
+    uniform = 2 * layers * heads * dim * size
+    try:
+        return estimate_kv_footprint(
+            holder,
+            dtype_bytes=size,
+            uniform_per_token_bytes=uniform,
+            base_num_layers=layers,
+            base_kv_heads=heads,
+            base_head_dim=dim,
+        )
+    except Exception:
+        # Unknown hybrid fields must never disable admission accounting.
+        return KVFootprintEstimate(uniform, 0, 0, 0)
+
+
+def memory_fit_context(
+    estimate: KVFootprintEstimate,
+    available_bytes: int,
+    native_context: int | None = None,
+) -> int | None:
+    """Invert the admission footprint without device access or model loading.
+
+    The monotonic search includes recurrent state and rounded rotating slots.
+    The budget is exclusive: admission refuses projected residency >= cap,
+    so advertising a fit at equality would promise an unusable final token.
+    """
+    if available_bytes <= 0 or not any(
+        (
+            estimate.per_token_growth_bytes,
+            estimate.fixed_baseline_bytes,
+            estimate.sliding_slot_bytes,
+        )
+    ):
+        return None
+
+    def footprint(tokens: int) -> int:
+        return (
+            estimate.fixed_baseline_bytes
+            + estimate.per_token_growth_bytes * tokens
+            + estimate.sliding_slot_bytes
+            * rotating_cache_slots(estimate.sliding_window, tokens)
+        )
+
+    upper = (
+        native_context
+        if isinstance(native_context, int) and native_context > 0
+        else 8_000_000
+    )
+    lo, hi = 0, upper
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if footprint(mid) < available_bytes:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo if lo > 0 else None

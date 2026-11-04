@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from ..api.models import (
     CompletionChoice,
@@ -26,11 +26,14 @@ from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _admission_aware_stream,
     _build_response_metrics,
     _check_admission_or_503,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
     _merge_response_metrics,
+    _OwnedStreamingResponse,
+    _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _release_route_ownership,
@@ -38,9 +41,11 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _stream_admission_event,
     _validate_model_name,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    context_overflow_from_memory_error,
     dry_sampling_kwargs,
     enforce_context_length_for_prompt,
     ensure_engine_ready,
@@ -450,7 +455,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             )
 
         if request.stream:
-            _admission_committed = True
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard
             # reads it and force-calls scheduler.abort_request on
@@ -458,21 +462,29 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             # generator-close cascade alone left ~6144 tokens of
             # runaway generation eating GPU after the client RST'd).
             _completion_rid_holder: list[str | None] = [None]
-            return StreamingResponse(
+            _admitted_stream = await _preflight_stream(
+                stream_completion(
+                    engine,
+                    prompts[0],
+                    request,
+                    request_id_holder=_completion_rid_holder,
+                    served_telemetry_id=_served_telemetry_id,
+                    caller_agent=raw_request.headers.get("user-agent")
+                    if raw_request is not None
+                    else None,
+                    caller_client=raw_request.headers.get("x-rapid-client")
+                    if raw_request is not None
+                    else None,
+                ),
+                raw_request,
+                engine=engine,
+                request_id_holder=_completion_rid_holder,
+                timeout=request.timeout,
+            )
+            _admission_committed = True
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
-                    stream_completion(
-                        engine,
-                        prompts[0],
-                        request,
-                        request_id_holder=_completion_rid_holder,
-                        served_telemetry_id=_served_telemetry_id,
-                        caller_agent=raw_request.headers.get("user-agent")
-                        if raw_request is not None
-                        else None,
-                        caller_client=raw_request.headers.get("x-rapid-client")
-                        if raw_request is not None
-                        else None,
-                    ),
+                    _admitted_stream,
                     raw_request,
                     engine=engine,
                     request_id_holder=_completion_rid_holder,
@@ -789,6 +801,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             inference_aborted_http_exception,
         )
 
+        _memory_error = context_overflow_from_memory_error(engine, exc)
+        if _memory_error is not None:
+            raise _memory_error from exc
         if isinstance(exc, InferenceAbortedError):
             raise inference_aborted_http_exception(exc) from exc
         raise
@@ -914,6 +929,7 @@ async def stream_completion(
 
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
+    extended_kwargs["request_admitted_event"] = _stream_admission_event()
     _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
         engine.stream_generate(
             prompt=prompt,
@@ -928,7 +944,7 @@ async def stream_completion(
         caller_agent=caller_agent,
         caller_client=caller_client,
     )
-    async for output in _generation_stream:
+    async for output in _admission_aware_stream(_generation_stream):
         if _json_mode:
             # Buffer the text and finish_reason; emit at stream end.
             _buffered_text += output.new_text or ""

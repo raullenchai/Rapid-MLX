@@ -257,7 +257,7 @@ PI_EXISTING = {
 }
 
 
-def _assert_pi_merge_kept_user_entries(written: dict) -> None:
+def _assert_pi_merge_kept_user_entries(written: dict, context_window=65536) -> None:
     providers = written["providers"]
     assert providers["glm-spark"] == PI_EXISTING["providers"]["glm-spark"]
     rapid = providers["rapid-mlx"]
@@ -271,7 +271,7 @@ def _assert_pi_merge_kept_user_entries(written: dict) -> None:
     }
     ours = rapid["models"][1]
     assert ours["name"] == f"{MODEL} (Rapid-MLX)"
-    assert ours["contextWindow"] == 65536
+    assert ours["contextWindow"] == context_window
     assert ours["cost"] == {"input": 0}
 
 
@@ -398,7 +398,15 @@ def test_cli_pi_setup_previews_and_needs_consent(pi_dir, monkeypatch, capsys):
 
     _run_pi_cli(monkeypatch, "--yes", "--no-check")
     assert "Configured Pi Coding Agent" in capsys.readouterr().out
-    _assert_pi_merge_kept_user_entries(json.loads(models_json.read_text()))
+    from rapid_mlx.agents.context_budget import agent_context_budget
+
+    # CLI setup applies pi's reserve to the stubbed server window; explicit
+    # context_length values in the plan/merge tests are already resolved.
+    expected_context = agent_context_budget("pi", BASE_URL, MODEL)
+    assert expected_context == 58982
+    _assert_pi_merge_kept_user_entries(
+        json.loads(models_json.read_text()), context_window=expected_context
+    )
     assert list(pi_dir.glob("models.json.bak.*"))
 
 

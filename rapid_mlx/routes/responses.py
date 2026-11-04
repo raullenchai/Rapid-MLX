@@ -84,6 +84,7 @@ from ..api.utils import (
 )
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
+from ..errors import BackpressureError
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..parsing.prompt_owner import (
     ContentDelta,
@@ -96,6 +97,8 @@ from ..parsing.prompt_owner import (
 from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    ContextLengthExceeded,
+    _admission_aware_stream,
     _aggregate_generation_attempts,
     _build_response_metrics,
     _build_usage,
@@ -107,8 +110,12 @@ from ..service.helpers import (
     _effective_enable_thinking,
     _extract_thinking_from_request,
     _finalize_content_and_reasoning,
+    _is_preheader_admission_error,
     _is_structured_output_requested,
+    _OwnedStream,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
+    _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _release_route_ownership,
@@ -116,6 +123,7 @@ from ..service.helpers import (
     _resolve_max_tokens,
     _resolve_temperature,
     _resolve_top_p,
+    _stream_admission_event,
     _uses_deepseek_v4_reasoning,
     _validate_model_name,
     _validate_tool_call_params,
@@ -123,6 +131,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
     context_overflow_from_guided_limit,
+    context_overflow_from_memory_error,
     context_window_exhausted,
     enforce_context_length,
     enforce_context_length_for_messages,
@@ -1451,26 +1460,34 @@ async def create_response(request: Request):
             and is_strict_json_schema(getattr(openai_request, "response_format", None))
         )
         if responses_request.stream and not _buffer_strict_stream:
-            _admission_committed = True
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard
             # reads it and force-calls scheduler.abort_request on
             # client disconnect.
             _resp_rid_holder: list[str | None] = [None]
             _resp_heartbeat_state: dict[str, object] = {}
-            return StreamingResponse(
+            _admitted_stream = await _preflight_stream(
+                _stream_responses_with_nonprogress_retry(
+                    engine,
+                    openai_request,
+                    responses_request,
+                    explicit_no_thinking=explicit_no_thinking,
+                    request_id_holder=_resp_rid_holder,
+                    heartbeat_state=_resp_heartbeat_state,
+                    namespace_by_tool=namespace_by_tool,
+                    caller_agent=request.headers.get("user-agent"),
+                    caller_client=request.headers.get("x-rapid-client"),
+                    served_telemetry_id=_served_telemetry_id,
+                ),
+                request,
+                engine=engine,
+                request_id_holder=_resp_rid_holder,
+            )
+            _admission_committed = True
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
-                    _stream_responses_with_nonprogress_retry(
-                        engine,
-                        openai_request,
-                        responses_request,
-                        explicit_no_thinking=explicit_no_thinking,
-                        request_id_holder=_resp_rid_holder,
-                        heartbeat_state=_resp_heartbeat_state,
-                        namespace_by_tool=namespace_by_tool,
-                        caller_agent=request.headers.get("user-agent"),
-                        caller_client=request.headers.get("x-rapid-client"),
-                        served_telemetry_id=_served_telemetry_id,
+                    _resequence_admitted_stream(
+                        _admitted_stream, _resp_heartbeat_state
                     ),
                     request,
                     engine=engine,
@@ -1503,6 +1520,16 @@ async def create_response(request: Request):
                 headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
         return _buffered_response
+    except ContextLengthExceeded as exc:
+        if not responses_request.stream:
+            raise
+        # codex-rs api_bridge.rs treats HTTP 400 as InvalidRequest; only
+        # sse/responses_error.rs maps response.failed to auto-compaction.
+        return StreamingResponse(
+            _stream_context_overflow(responses_request, exc),
+            media_type="text/event-stream",
+            headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
+        )
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
@@ -1920,7 +1947,9 @@ async def _non_stream(
         ):
             error_class = "other"
         _record_nonstream_failure(engine, request, error_class)
-        _context_error = context_overflow_from_client_error(e)
+        _context_error = context_overflow_from_memory_error(
+            engine, e
+        ) or context_overflow_from_client_error(e)
         if _context_error is not None:
             raise _context_error from e
         err_msg = str(e)
@@ -2071,7 +2100,10 @@ async def _non_stream(
                 except Exception as repair_err:
                     _repair_context_error = context_overflow_from_guided_limit(
                         engine, repair_err
-                    ) or context_overflow_from_client_error(repair_err)
+                    ) or (
+                        context_overflow_from_memory_error(engine, repair_err)
+                        or context_overflow_from_client_error(repair_err)
+                    )
                     if _repair_context_error is not None:
                         raise _repair_context_error from repair_err
                     # Codex r1 #4 parity with chat.py: a non-timeout,
@@ -2564,6 +2596,49 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _responses_context_failure_event(
+    initial_response: dict, error: ContextLengthExceeded
+) -> dict:
+    """Build the terminal context-overflow event for Responses streams."""
+    return {
+        "type": "response.failed",
+        "response": {
+            **initial_response,
+            "status": "failed",
+            "error": {
+                "code": error.error_payload["code"],
+                "message": error.error_payload["message"],
+            },
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        },
+    }
+
+
+async def _stream_context_overflow(
+    responses_request: ResponsesRequest, error: ContextLengthExceeded
+) -> AsyncIterator[str]:
+    """Send the usual created event before a preflight overflow failure."""
+    initial = _responses_initial_payload(
+        response_id=f"resp_{uuid.uuid4().hex[:24]}",
+        created_at=int(time.time()),
+        served_model=get_config().model_name or responses_request.model,
+        responses_request=responses_request,
+    )
+    sequence = [0]
+    events: tuple[dict, ...] = (
+        {"type": "response.created", "response": initial},
+        _responses_context_failure_event(initial, error),
+    )
+    for event in events:
+        yield _responses_resequence_event(_sse(event["type"], event), sequence)
+
+
 async def _stream_buffered_responses_response(
     body: bytes | memoryview,
 ) -> AsyncIterator[str]:
@@ -2699,6 +2774,30 @@ async def _stream_buffered_responses_response(
         emit_telemetry=False,
     ):
         yield event
+
+
+def _resequence_admitted_stream(
+    stream: AsyncIterator[str], heartbeat_state: dict[str, object]
+) -> AsyncIterator[str]:
+    """Number replayed events and heartbeats in delivery order.
+
+    Admission may have generated several buffered events before the guard
+    inserts its post-first-event heartbeat. Keep the public counter separate
+    from the generator's counter so that heartbeat cannot jump ahead of replay.
+    """
+
+    async def replay() -> AsyncIterator[str]:
+        sequence = [0]
+        async for event in stream:
+            heartbeat_state["sequence_number"] = sequence
+            yield _responses_resequence_event(event, sequence)
+
+    async def cleanup() -> None:
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await close()
+
+    return _OwnedStream(replay(), cleanup)
 
 
 def _responses_keepalive_sse(state: dict[str, object]) -> str:
@@ -3834,6 +3933,7 @@ async def _stream_responses(
 
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
+        chat_kwargs["request_admitted_event"] = _stream_admission_event()
         engine_stream = _telemetry_inference.emit_failed_on_stream_error(
             engine.stream_chat(messages=messages, **chat_kwargs),
             model=served_telemetry_id or "<custom>",
@@ -3870,7 +3970,7 @@ async def _stream_responses(
                 elif isinstance(event, ToolEnd):
                     accumulated_structured_tool_calls.append(prompt_owner.call(event))
 
-        async for output in engine_stream:
+        async for output in _admission_aware_stream(engine_stream):
             delta_text = output.new_text
             # Accumulate the RAW model output (pre-filter, pre-router) so the
             # post-loop tool_call parser can see `<tool_call>...</tool_call>`
@@ -5272,29 +5372,21 @@ async def _stream_responses(
         )
 
     except Exception as e:  # noqa: BLE001
+        if _is_preheader_admission_error(e):
+            raise
         # response.failed gives Codex a clean shutdown signal instead of
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
-        _context_error = context_overflow_from_client_error(e)
+        _context_error = context_overflow_from_memory_error(
+            engine, e
+        ) or context_overflow_from_client_error(e)
         if _context_error is not None:
             _record_failed("prompt_too_large")
             yield _emit(
                 "response.failed",
-                {
-                    "type": "response.failed",
-                    "response": {
-                        **_initial_response_payload,
-                        "status": "failed",
-                        "error": _context_error.error_payload,
-                        "usage": {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                            "input_tokens_details": {"cached_tokens": 0},
-                            "output_tokens_details": {"reasoning_tokens": 0},
-                        },
-                    },
-                },
+                _responses_context_failure_event(
+                    _initial_response_payload, _context_error
+                ),
             )
             return
         logger.exception("Responses stream failed: %s", e)
@@ -5306,7 +5398,9 @@ async def _stream_responses(
             inference_aborted_error_payload,
         )
 
-        if isinstance(e, InferenceAbortedError):
+        if isinstance(e, BackpressureError):
+            _error = {"code": "server_busy", "message": str(e)}
+        elif isinstance(e, InferenceAbortedError):
             _abort_payload = inference_aborted_error_payload(e)
             _error = {
                 "code": _abort_payload["code"],

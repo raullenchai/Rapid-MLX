@@ -737,3 +737,20 @@ def test_attributed_step_failure_clears_memory_cache(
     assert message not in output.outputs[0].error
     assert set(scheduler.running) == {"active"}
     assert [request.request_id for request in scheduler.waiting] == ["queued"]
+
+
+def test_prefill_failure_preserves_token_usage_before_recovery():
+    engine = make_engine()
+    seed(engine)
+    scheduler = engine.scheduler
+    request = scheduler.requests["bad"]
+    request.num_prompt_tokens = 70000
+    request.output_token_ids = [42, 43]
+    scheduler._step_request_id = "bad"
+
+    output = scheduler.fail_step(
+        RuntimeError("[metal::malloc] Resource limit exceeded")
+    )
+
+    assert output.outputs[0].prompt_tokens == 70000
+    assert output.outputs[0].completion_tokens == 2

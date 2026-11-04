@@ -168,6 +168,10 @@ def test_claude_cli_setup_fetches_live_context_for_local_model(
         "rapid_mlx.agents.adapter._detect_running_model",
         lambda _url: ("local-model", 131072),
     )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.context_budget.served_context_ceiling",
+        lambda *_a, **_k: 131072,
+    )
 
     cli.agents_command(
         SimpleNamespace(

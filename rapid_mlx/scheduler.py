@@ -53,6 +53,7 @@ from ._sampler_fast_path import (  # noqa: E402
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .errors import (  # noqa: E402
     BackpressureError,
+    MemoryContextExceededError,
     MetalMemoryBackpressureError,
     PagedCacheUnsupportedLayoutError,
 )
@@ -60,7 +61,10 @@ from .kv_estimation import (  # noqa: E402
     KVFootprintEstimate,
     _cfg_get,
     _valid_layer_types,
-    estimate_kv_footprint,
+    config_kv_dims,
+    footprint_from_config,
+    kv_dtype_bytes,
+    memory_fit_context,
     rotating_cache_slots,
 )
 from .memory_peak import (  # noqa: E402
@@ -138,46 +142,10 @@ def _read_kv_dims(model):
     from the SAME place.
     """
 
-    def _pos_int(value: object) -> int | None:
-        return value if isinstance(value, int) and value > 0 else None
-
-    def _dims_of(cfg):
-        if cfg is None:
-            return None
-        layers = _pos_int(_cfg_get(cfg, "num_hidden_layers"))
-        kv_heads = _pos_int(_cfg_get(cfg, "num_key_value_heads")) or _pos_int(
-            _cfg_get(cfg, "num_attention_heads")
-        )
-        head_dim = _pos_int(_cfg_get(cfg, "head_dim"))
-        if head_dim is None:
-            hidden = _pos_int(_cfg_get(cfg, "hidden_size"))
-            heads = _pos_int(_cfg_get(cfg, "num_attention_heads"))
-            if hidden and heads:
-                head_dim = hidden // heads
-        if layers and kv_heads and head_dim:
-            return layers, kv_heads, head_dim, cfg
-        return None
-
     for holder in (getattr(model, "config", None), getattr(model, "args", None)):
-        if holder is None:
-            continue
-        text_cfg = _cfg_get(holder, "text_config")
-        # 1) The structural tower: the config whose own layer_types validates
-        #    against its own num_hidden_layers (the text tower for a hybrid).
-        for cfg in (holder, text_cfg):
-            if cfg is None:
-                continue
-            n = _pos_int(_cfg_get(cfg, "num_hidden_layers"))
-            if n and _valid_layer_types(_cfg_get(cfg, "layer_types"), n):
-                dims = _dims_of(cfg)
-                if dims is not None:
-                    return dims
-        # 2) No validating layer_types (dense / non-hybrid multimodal): prefer
-        #    the nested text tower over the outer (possibly-decoy) config.
-        for cfg in (text_cfg, holder):
-            dims = _dims_of(cfg)
-            if dims is not None:
-                return dims
+        dims = config_kv_dims(holder)
+        if dims is not None:
+            return dims
     return None
 
 
@@ -4952,6 +4920,13 @@ class Scheduler:
         self._prefill_cost_samples: deque[float] = deque(maxlen=_PREFILL_COST_SAMPLES)
         self._decode_stall_chunk_size: int | None = None
         self._decode_stall_bounded_chunks = 0
+        from .memory_budget import model_weights_bytes
+
+        self._model_weights_bytes = model_weights_bytes(self.model)
+        self._steady_resident_bytes: int | None = self._model_weights_bytes
+        self._memory_context_cache: (
+            tuple[tuple[int | None, float, int | None], int | None] | None
+        ) = None
         # D-METAL-CAP: cached per-token KV-cache size for the
         # projection-based admission gate. Auto-derived from the
         # model config on first use (operator override via
@@ -7306,64 +7281,15 @@ class Scheduler:
         operator-tuned ``metal_cap_kv_bytes_per_token`` knob is the
         right escape hatch for those.
         """
-        mapping = {
-            "float64": 8,
-            "fp64": 8,
-            "double": 8,
-            "float32": 4,
-            "fp32": 4,
-            "float16": 2,
-            "fp16": 2,
-            "half": 2,
-            "bfloat16": 2,
-            "bf16": 2,
-            "int8": 1,
-            "uint8": 1,
-            "float8": 1,
-            "fp8": 1,
-        }
-
-        def _bytes_from(obj: Any) -> int:
-            # ``dtype`` (modern) and ``torch_dtype`` (legacy) may each be
-            # a string (``"bfloat16"``) or a ``torch.dtype`` whose
-            # ``str()`` is e.g. ``"torch.bfloat16"``. Note ``"float16"``
-            # is a substring of ``"bfloat16"`` — harmless here since both
-            # map to 2. Read through ``_cfg_get`` so a dict-backed config
-            # resolves its dtype identically to an attribute config (codex
-            # round 11 NIT: dict configs must behave the same end-to-end,
-            # else they silently over-estimate at the fp32 fallback).
-            for attr in ("dtype", "torch_dtype"):
-                raw = _cfg_get(obj, attr)
-                if raw is None:
-                    continue
-                dtype_str = str(raw).lower()
-                for needle, n in mapping.items():
-                    if needle in dtype_str:
-                        return n
-            return 0
-
         try:
-            n = _bytes_from(model_config)
-            if n > 0:
-                return n
-            # Multimodal configs nest the LM dtype under ``text_config``.
-            text_config = _cfg_get(model_config, "text_config")
-            if text_config is not None:
-                n = _bytes_from(text_config)
-                if n > 0:
-                    return n
+            return kv_dtype_bytes(model_config)
         except Exception:
             self._log_admission_fallback(
                 "kv_dtype",
                 "KV dtype inference from the model config failed; assuming "
                 "fp32 (4 bytes) for KV admission estimates",
             )
-        # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
-        # over-estimate KV usage and err toward rejection rather than
-        # admitting a request that exceeds the cap. Reached only when
-        # NEITHER ``dtype`` nor ``torch_dtype`` is present on the config
-        # or its ``text_config`` — rare on real HF/MLX configs.
-        return 4
+            return 4
 
     def _resolve_kv_bytes_per_token(self) -> int:
         """Compute the per-token KV-cache size (cached after first call).
@@ -7457,111 +7383,12 @@ class Scheduler:
         try:
             model_config = getattr(self.model, "config", None)
             if model_config is not None:
-                # Multimodal architectures nest the text-tower dims
-                # (num_hidden_layers, num_key_value_heads, head_dim, layer_types)
-                # under ``text_config``, and the OUTER config may still carry a
-                # DECOY ``num_hidden_layers`` describing the vision tower. Read
-                # the base dims from the config that actually carries the
-                # text-layer structure — the SAME rule ``_pick_structural_config``
-                # uses: pick the first of (outer, text_config) whose OWN
-                # ``layer_types`` is valid and length-matches its OWN
-                # ``num_hidden_layers`` (codex round 8 + round 9 BLOCKING #1).
-                # Reusing ``_valid_layer_types`` keeps the scheduler's selection
-                # from drifting away from the estimator's.
-                #
-                # BYTE-IDENTICAL guard: if NEITHER config exposes a valid
-                # ``layer_types`` (a dense / unknown model), fall back to the
-                # outer config exactly as before — dense/text admission
-                # accounting is unchanged.
-                #
-                # Read every field through the estimator's dict-aware
-                # ``_cfg_get`` (not bare ``getattr``): ``estimate_kv_footprint``
-                # explicitly supports dict-backed configs (the offline hybrid
-                # probe parses ``config.json`` into a dict), so the scheduler
-                # wiring must resolve dict and attribute configs identically —
-                # bare ``getattr`` on a dict returns ``None`` for every field
-                # and silently collapses the whole estimate to 0 (codex round 11
-                # NIT: dict-backed configs produced a zero estimate through the
-                # scheduler even though the estimator handles them).
-                struct_config = model_config
-                for _candidate in (
-                    model_config,
-                    _cfg_get(model_config, "text_config"),
-                ):
-                    if _candidate is None:
-                        continue
-                    _cand_layers = _cfg_get(_candidate, "num_hidden_layers")
-                    if isinstance(_cand_layers, int) and _valid_layer_types(
-                        _cfg_get(_candidate, "layer_types"), _cand_layers
-                    ):
-                        struct_config = _candidate
-                        break
-
-                def _read_int(name: str, fallback: int = 0) -> int:
-                    raw = _cfg_get(struct_config, name, fallback)
-                    return raw if isinstance(raw, int) else 0
-
-                num_layers = _read_int("num_hidden_layers")
-                num_kv_heads = _read_int("num_key_value_heads")
-                if num_kv_heads <= 0:
-                    num_kv_heads = _read_int("num_attention_heads")
-                head_dim = _read_int("head_dim")
-                if head_dim <= 0:
-                    hidden_size = _read_int("hidden_size")
-                    num_heads = _read_int("num_attention_heads")
-                    if num_heads > 0:
-                        head_dim = hidden_size // num_heads
-                # Codex round 5 BLOCKING #2: derive ``dtype_bytes``
-                # from the model dtype when available. The pre-fix
-                # constant ``2`` (fp16) underestimated fp32 KV
-                # caches by 2× and could admit requests that exceed
-                # the cap despite the projection guard. Fallback is
-                # ``4`` (the largest plausible dtype: fp32) — over-
-                # estimating in the safe direction. Operators on
-                # quantized-KV deployments can still pin a tighter
-                # value via ``metal_cap_kv_bytes_per_token``.
-                dtype_bytes = self._infer_kv_dtype_bytes(model_config)
-                if num_layers > 0 and num_kv_heads > 0 and head_dim > 0:
-                    per_tok = 2 * num_layers * num_kv_heads * head_dim * dtype_bytes
-                    # Architecture-aware refinement. For dense / unknown
-                    # configs the estimator returns this exact uniform
-                    # ``per_tok`` with a 0 baseline and no sliding term
-                    # (byte-identical); only a recognized hybrid (sliding-window
-                    # / KV-sharing / recurrent layers) reduces the per-token
-                    # growth, reserves recurrent state in the per-sequence fixed
-                    # baseline, and exposes the sliding layers as a
-                    # request-dependent slot term
-                    # (``sliding_slot_bytes`` × ``rotating_cache_slots(window,
-                    # T)`` — charged in ``_estimate_request_kv_bytes``). Wrapped
-                    # in its OWN try/except so a failure inspecting the newer
-                    # hybrid fields degrades to the SAFE uniform ``per_tok`` (no
-                    # baseline, no sliding term) instead of the outer handler
-                    # resetting to 0 — which would disable admission accounting
-                    # entirely (codex round 3 BLOCKING #3).
-                    try:
-                        estimate = estimate_kv_footprint(
-                            struct_config,
-                            dtype_bytes=dtype_bytes,
-                            uniform_per_token_bytes=per_tok,
-                            base_num_layers=num_layers,
-                            base_kv_heads=num_kv_heads,
-                            base_head_dim=head_dim,
-                        )
-                        per_tok = estimate.per_token_growth_bytes
-                        fixed_baseline = estimate.fixed_baseline_bytes
-                        sliding_slot_bytes = estimate.sliding_slot_bytes
-                        sliding_window = estimate.sliding_window
-                    except Exception as est_err:
-                        logger.debug(
-                            "[D-METAL-CAP] architecture-aware KV estimate "
-                            "failed (%s); keeping the uniform per-token "
-                            "estimate with no fixed baseline / sliding term",
-                            est_err,
-                        )
-                        # ``per_tok`` already holds the uniform value; keep it.
-                        fixed_baseline = 0
-                        sliding_slot_bytes = 0
-                        sliding_window = 0
+                estimate = footprint_from_config(model_config)
+                if estimate is not None:
+                    per_tok = estimate.per_token_growth_bytes
+                    fixed_baseline = estimate.fixed_baseline_bytes
+                    sliding_slot_bytes = estimate.sliding_slot_bytes
+                    sliding_window = estimate.sliding_window
             if per_tok == 0:
                 fallback = self._footprint_from_model_dims()
                 if fallback is not None:
@@ -7590,22 +7417,14 @@ class Scheduler:
 
     def _footprint_from_model_dims(self) -> KVFootprintEstimate | None:
         """Architecture-aware footprint from live config/args, text tower first."""
-        dims = _read_kv_dims(self.model)
-        if dims is None:
-            return None
-        num_layers, kv_heads, head_dim, struct_cfg = dims
-        dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
-        # ``_read_kv_dims`` only returns positive dims and dtype bytes are
-        # >= 1, so the uniform figure is always positive here.
-        uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
-        return estimate_kv_footprint(
-            struct_cfg,
-            dtype_bytes=dtype_bytes,
-            uniform_per_token_bytes=uniform_per_token,
-            base_num_layers=num_layers,
-            base_kv_heads=kv_heads,
-            base_head_dim=head_dim,
-        )
+        for holder in (
+            getattr(self.model, "config", None),
+            getattr(self.model, "args", None),
+        ):
+            estimate = footprint_from_config(holder)
+            if estimate is not None:
+                return estimate
+        return None
 
     def _resolve_kv_fixed_baseline_bytes(self) -> int:
         """Per-sequence FIXED KV baseline (bytes) for hybrid architectures.
@@ -7628,56 +7447,22 @@ class Scheduler:
     def projected_memory_max_context(
         self, native_context: int | None = None
     ) -> int | None:
-        """Largest context length whose projected KV footprint fits this
-        device's memory budget right now, or ``None`` when it can't be
-        estimated.
+        """Stable served ceiling based on idle residency, excluding live KV.
 
-        This is the number behind the ``max_model_len`` model-card field:
-        vLLM/SGLang expose ``max_model_len`` as the served ceiling but crash
-        if it won't fit KV memory; on unified-memory Apple silicon we can go
-        one better and REPORT the memory-fitted ceiling instead of aborting.
-
-        The footprint is the exact per-request projection the admission gate
-        uses (``_estimate_request_kv_bytes``), so the advertised number lines
-        up with what the scheduler would actually admit::
-
-            footprint(T) = fixed_baseline
-                           + per_token_growth * T
-                           + sliding_slot_bytes * rotating_cache_slots(window, T)
-
-        Budget = device working set × utilization − currently-resident bytes.
-        Utilization is the operator's ``gpu_memory_utilization`` when a Metal
-        cap is configured, else a conservative reporting default so the field
-        is populated on the default (cap-disabled) config too. Residency is a
-        point-in-time ``get_active_memory()`` reading — weights plus any live
-        KV/prefix cache — so the number reflects what could be added NOW; it
-        is advisory, re-derived per call, and capped at ``native_context``.
-
-        Returns ``None`` (not a guess) on any failure — a stub/unknown model
-        with no resolvable footprint, no Metal device, or a non-positive
-        budget — so the ``/v1/models`` builder falls through to leaving the
-        field absent rather than advertising a fabricated cap.
+        Cache by native window, utilization and monotonic idle residency.
+        Concurrent requests and prefix caches never change the resident floor.
         """
         try:
             # Prefer the scheduler's OWN resolved footprint terms so the
-            # advertised ceiling can never diverge from what admission would
-            # actually charge: these honor the operator
-            # ``metal_cap_kv_bytes_per_token`` override and use
-            # ``_pick_structural_config`` to select the right tower on
-            # multimodal/hybrid configs. They are populated whenever the model
-            # exposes a ``.config`` (the admission path's own source).
+            # advertised ceiling uses the same terms as admission, including
+            # the operator's metal_cap_kv_bytes_per_token override.
             per_tok = self._resolve_kv_bytes_per_token()
             fixed_baseline = self._resolve_kv_fixed_baseline_bytes()
             sliding_slot_bytes = self._kv_sliding_slot_bytes
             sliding_window = self._kv_sliding_window
             if per_tok <= 0 and fixed_baseline <= 0 and sliding_slot_bytes <= 0:
-                # The scheduler could not resolve terms — mlx-lm models expose
-                # dims on ``.args``, not ``.config``, so its config-only read
-                # yields 0 (and the admission cap is likewise a no-op there, so
-                # there is nothing to diverge from). Fall back to reading the
-                # dims off the model and running the SAME hybrid-aware
-                # estimator, preferring the text tower over any decoy outer
-                # config (``_read_kv_dims``).
+                # Legacy or synthetic schedulers may not have cached terms;
+                # resolve their config/args through the shared estimator.
                 estimate = self._footprint_from_model_dims()
                 if estimate is None:
                     return None
@@ -7688,7 +7473,23 @@ class Scheduler:
                 if per_tok <= 0 and fixed_baseline <= 0 and sliding_slot_bytes <= 0:
                     return None
 
-            if not mx.metal.is_available():
+            util = float(getattr(self.config, "gpu_memory_utilization", 0.0) or 0.0)
+            from .memory_budget import process_utilization_floor
+
+            floor, _ = process_utilization_floor()
+            util = max(util, floor) if util > 0 else 0.90
+            resident = getattr(self, "_model_weights_bytes", None)
+            observed = getattr(self, "_steady_resident_bytes", None)
+            if observed is not None:
+                resident = observed if resident is None else max(resident, observed)
+            key = (native_context, util, resident)
+            cached: tuple[tuple[int | None, float, int | None], int | None] | None = (
+                getattr(self, "_memory_context_cache", None)
+            )
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            self._memory_context_cache = (key, None)
+            if resident is None or not mx.metal.is_available():
                 return None
             info = mx.device_info()
             base = int(
@@ -7697,48 +7498,23 @@ class Scheduler:
             )
             if base <= 0:
                 return None
-
-            util = float(getattr(self.config, "gpu_memory_utilization", 0.0) or 0.0)
-            if util <= 0.0:
-                # The Metal admission cap is disabled by default, but the
-                # reporting field should still be populated. 0.90 mirrors the
-                # engine's allocation-side default working-set fraction.
-                util = 0.90
-            budget = int(base * util)
-            resident = int(mx.get_active_memory())
-            available = budget - resident
-            if available <= 0:
-                return None
-
-            def _footprint(tokens: int) -> int:
-                return (
-                    fixed_baseline
-                    + per_tok * tokens
-                    + sliding_slot_bytes * rotating_cache_slots(sliding_window, tokens)
-                )
-
-            # Search up to the native window when known (the field is capped
-            # there anyway), else a generous ceiling covering 1M-context models.
-            upper = (
-                native_context
-                if isinstance(native_context, int) and native_context > 0
-                else 8_000_000
+            estimate = KVFootprintEstimate(
+                per_tok, fixed_baseline, sliding_slot_bytes, sliding_window
             )
-            if _footprint(upper) <= available:
-                # Memory is not the binding constraint — the native window fits.
-                return upper
-            # Monotonic non-decreasing footprint → binary-search the largest T.
-            lo, hi = 0, upper
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if _footprint(mid) <= available:
-                    lo = mid
-                else:
-                    hi = mid - 1
-            return lo if lo > 0 else None
+            value = memory_fit_context(
+                estimate, int(base * util) - resident, native_context
+            )
+            self._memory_context_cache = (key, value)
+            return value
         except Exception:  # noqa: BLE001
             # Never let a memory-probe failure break the models endpoint.
             return None
+
+    def memory_context_ceiling(self, native_context: int | None = None) -> int | None:
+        """Return a steady-state window only when admission enforces the cap."""
+        if self._resolve_metal_cap_bytes() <= 0:
+            return None
+        return self.projected_memory_max_context(native_context)
 
     def _estimate_request_kv_bytes(
         self, request: Request, *, model_prompt: bool = False
@@ -8059,6 +7835,7 @@ class Scheduler:
         # Preserve rejection when already over cap or this request's own KV
         # cannot coexist with the current allocator state.
         if active < cap and (active + reserved_kv + projected_kv) < cap:
+            self.observe_idle_resident_floor(active)
             return
 
         # Over the cap: first return memory nothing references any more. A
@@ -8074,6 +7851,7 @@ class Scheduler:
         if (active >= cap or not self.requests) and self._reclaim_unreachable_metal():
             active = self._current_metal_active_bytes()
             if active < cap and (active + reserved_kv + projected_kv) < cap:
+                self.observe_idle_resident_floor(active)
                 return
 
         # The memory-aware prefix cache holds finished requests' KV in Metal
@@ -8095,6 +7873,7 @@ class Scheduler:
                         dropped,
                         "y" if dropped == 1 else "ies",
                     )
+                    self.observe_idle_resident_floor(active)
                     return
 
         # ── Hermes patch: force-evict paged KV before rejecting ──
@@ -8132,6 +7911,7 @@ class Scheduler:
                         "block(s); admitted request after pressure drop",
                         freed,
                     )
+                    self.observe_idle_resident_floor(active)
                     return
         self.num_metal_cap_violations += 1
         if not self._metal_cap_warning_logged:
@@ -8195,6 +7975,30 @@ class Scheduler:
                 "Retrying will not help: the memory is held by the server, "
                 "not by other requests." + restart_advice
             )
+        if not self.requests and not self._has_reclaimable_kv():
+            # Reclamation removed cached KV. A valid idle reading may now
+            # establish residency, but a failed probe must leave it unknown.
+            self.observe_idle_resident_floor(active)
+        baseline = getattr(self, "_model_weights_bytes", None)
+        observed = getattr(self, "_steady_resident_bytes", None)
+        if observed is not None:
+            baseline = observed if baseline is None else max(baseline, observed)
+        if isinstance(baseline, int) and baseline + projected_kv >= cap:
+            # Invert against the same known cap even if the reporting probe
+            # is unavailable; no positive fit means a zero-token memory window.
+            estimate = KVFootprintEstimate(
+                self._resolve_kv_bytes_per_token(),
+                self._resolve_kv_fixed_baseline_bytes(),
+                self._kv_sliding_slot_bytes,
+                self._kv_sliding_window,
+            )
+            ceiling = memory_fit_context(estimate, cap - baseline)
+            raise MemoryContextExceededError(
+                prompt_tokens=request.num_prompt_tokens,
+                memory_ceiling=ceiling or 0,
+                requested_tokens=request.num_prompt_tokens
+                + request.sampling_params.max_tokens,
+            )
         raise MetalMemoryBackpressureError(
             f"This request needs approximately "
             f"{(reserved_kv + projected_kv) / 1e9:.1f} GB of Metal memory "
@@ -8202,6 +8006,63 @@ class Scheduler:
             f"(reserved KV {reserved_kv / 1e9:.1f} GB + projected KV "
             f"{projected_kv / 1e9:.1f} GB), but the current limit is "
             f"{cap / 1e9:.1f} GB (D-METAL-CAP)." + raise_advice
+        )
+
+    def observe_idle_resident_floor(self, active: int | None = None) -> None:
+        """Learn only in single-model mode with no queued work or cached KV.
+
+        The routing registry/residency manager cannot atomically certify idle
+        queues and evicted caches across workers (including models loading).
+        Disable learning in those modes, even during warmup. Their permanent
+        floor stays at this model's weights, never another model's live KV.
+        """
+        from .config import get_config
+        from .model_registry import get_registry
+
+        cfg = get_config()
+        if (
+            cfg.model_registry is not None
+            or cfg.residency_manager is not None
+            or cfg.embedding_engine is not None
+            or cfg.rerank_engine is not None
+        ):
+            return
+        registry = get_registry()
+        owners = registry.get_stats()["active_owners"]
+        if owners > 1 or (owners == 1 and not registry.is_owned(self.model)[0]):
+            return
+        if self.requests or self.waiting or self.running or self._has_reclaimable_kv():
+            return
+        if active is None:
+            # The admission probe falls back to zero on failure. That fallback
+            # must never become a measured permanent residency floor.
+            try:
+                active = int(mx.get_active_memory())
+            except Exception:
+                return
+        if active <= 0:
+            return
+        self._steady_resident_bytes = max(
+            value
+            for value in (
+                getattr(self, "_steady_resident_bytes", None),
+                self._model_weights_bytes,
+                active,
+            )
+            if value is not None
+        )
+
+    def _has_reclaimable_kv(self) -> bool:
+        """Exclude cached tensor allocations even after a bounded eviction."""
+        if self.memory_aware_cache is not None and self.memory_aware_cache._entries:
+            return True
+        if self.prefix_cache is not None and self.prefix_cache._lru:
+            return True
+        paged = self.paged_cache_manager
+        if self.block_aware_cache is not None:
+            paged = self.block_aware_cache.paged_cache
+        return paged is not None and any(
+            block.cache_data is not None for block in paged.blocks
         )
 
     # #4108: minimum spacing between two over-cap garbage reclaims. The
@@ -11750,6 +11611,12 @@ class Scheduler:
     def fail_step(self, exc: Exception) -> SchedulerOutput:
         """Retire failed work on the step thread, preserving unscheduled work."""
         request_id = getattr(self, "_step_request_id", None)
+        # Recovery may retire request objects; preserve logical usage for the
+        # route's memory-window classification before any cleanup runs.
+        token_counts = {
+            rid: (request.num_prompt_tokens, request.num_output_tokens)
+            for rid, request in self.requests.items()
+        }
         self._step_request_id = None
         if request_id is not None:
             aborted_ids = {request_id}
@@ -11793,6 +11660,8 @@ class Scheduler:
                     finish_reason="abort",
                     error=message,
                     error_kind=kind,
+                    prompt_tokens=token_counts.get(rid, (0, 0))[0],
+                    completion_tokens=token_counts.get(rid, (0, 0))[1],
                 )
                 for rid in aborted_ids
             ],

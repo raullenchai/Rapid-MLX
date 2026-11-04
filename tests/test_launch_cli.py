@@ -363,12 +363,15 @@ class TestClaudeCode:
         assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-noop"
 
     def test_launch_writes_live_claude_context(self, fake_home, monkeypatch):
-        from rapid_mlx.agents import adapter
 
         (fake_home / ".claude").mkdir()
-        monkeypatch.setattr(adapter, "fetch_context_window", lambda *_args: 131072)
         monkeypatch.setattr(
-            "rapid_mlx.run.cli._cached_context_window", lambda _model: None
+            "rapid_mlx.agents.context_budget.served_context_ceiling",
+            lambda *_args, **_kwargs: 131072,
+        )
+        monkeypatch.setattr(
+            "rapid_mlx.agents.context_budget.offline_context_ceiling",
+            lambda _model: None,
         )
 
         launch_cli.launch_command(
@@ -1450,7 +1453,8 @@ class TestLaunchCommand:
             lambda *_args: pytest.fail("server has not started yet"),
         )
         monkeypatch.setattr(
-            "rapid_mlx.run.cli._cached_context_window", lambda _model: 131072
+            "rapid_mlx.agents.context_budget.offline_context_ceiling",
+            lambda _model: 131072,
         )
         fake_proc = MagicMock()
         fake_proc.pid = 99997

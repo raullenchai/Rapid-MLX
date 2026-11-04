@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from functools import wraps
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 
 from ..api.anthropic_adapter import (
     AnthropicContentError,
@@ -62,6 +62,7 @@ from ..request import (
 from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
+    _admission_aware_stream,
     _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
@@ -69,7 +70,9 @@ from ..service.helpers import (
     _disconnect_guard,
     _effective_enable_thinking,
     _finalize_content_and_reasoning,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
+    _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _release_route_ownership,
@@ -79,12 +82,14 @@ from ..service.helpers import (
     _resolve_reasoning_enabled,
     _resolve_temperature,
     _resolve_top_p,
+    _stream_admission_event,
     _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
+    context_overflow_from_memory_error,
     context_window_exhausted,
     count_prompt_tokens,
     enforce_context_length,
@@ -931,13 +936,12 @@ async def create_anthropic_message(
                 openai_request.max_tokens = _clamped_max_tokens
 
         if anthropic_request.stream:
-            _admission_committed = True
             # C-01 force-abort: holder list the engine populates with
             # the admitted scheduler request id; the disconnect_guard
             # reads it and force-calls scheduler.abort_request on
             # client disconnect.
             _anth_rid_holder: list[str | None] = [None]
-            stream = _disconnect_guard(
+            _admitted_stream = await _preflight_stream(
                 _stream_anthropic_messages(
                     engine,
                     openai_request,
@@ -963,7 +967,14 @@ async def create_anthropic_message(
                 engine=engine,
                 request_id_holder=_anth_rid_holder,
             )
-            return StreamingResponse(
+            _admission_committed = True
+            stream = _disconnect_guard(
+                _admitted_stream,
+                request,
+                engine=engine,
+                request_id_holder=_anth_rid_holder,
+            )
+            return _OwnedStreamingResponse(
                 stream,
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -1046,7 +1057,9 @@ async def create_anthropic_message(
                     e, abort_first=False
                 ),
             )
-            _context_error = context_overflow_from_client_error(e)
+            _context_error = context_overflow_from_memory_error(
+                engine, e
+            ) or context_overflow_from_client_error(e)
             if _context_error is not None:
                 raise _context_error from e
             err_msg = str(e)
@@ -2453,6 +2466,7 @@ async def _stream_anthropic_messages(
 
     from rapid_mlx.telemetry import inference as _telemetry_inference
 
+    chat_kwargs["request_admitted_event"] = _stream_admission_event()
     _generation_stream = _telemetry_inference.emit_failed_on_stream_error(
         engine.stream_chat(messages=messages, **chat_kwargs),
         model=served_telemetry_id or "<custom>",
@@ -2486,7 +2500,7 @@ async def _stream_anthropic_messages(
             if captured is not None:
                 yield captured
 
-    async for output in _generation_stream:
+    async for output in _admission_aware_stream(_generation_stream):
         delta_text = output.new_text
 
         if hasattr(output, "prompt_tokens") and output.prompt_tokens:

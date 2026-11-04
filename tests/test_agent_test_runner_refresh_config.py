@@ -676,3 +676,83 @@ def test_claude_e2e_sets_documented_config_directory():
 
     assert observed["CLAUDE_CONFIG_DIR"].startswith(observed["HOME"])
     assert observed["CLAUDE_CONFIG_DIR"].endswith("/.claude")
+
+
+@pytest.mark.parametrize("agent,expected", [("pi", 54000), ("codex", 60000)])
+def test_harness_refresh_and_render_share_served_budget(monkeypatch, agent, expected):
+    from rapid_mlx.agents import adapter, get_profile
+    from rapid_mlx.agents.testing import TestResult
+
+    profile = replace(
+        get_profile(agent),
+        needs_function_calling=False,
+        needs_streaming=False,
+        streaming=AgentStreamingSpec(),
+        testing=AgentTestingSpec(),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_fetch_models",
+        lambda *_a, **_k: [
+            {"id": "local-model", "context_window": 262144, "max_model_len": 60000}
+        ],
+    )
+    monkeypatch.setattr(AgentTestRunner, "_server_available", lambda _: True)
+    monkeypatch.setattr(AgentTestRunner, "_agent_binary_available", lambda _: False)
+    monkeypatch.setattr(
+        "rapid_mlx.agents.testing._test_plain_chat",
+        lambda *_: TestResult("plain_chat", TestStatus.PASS),
+    )
+    refreshed = []
+    monkeypatch.setattr(
+        adapter,
+        "setup_agent_config",
+        lambda *_a, **kw: refreshed.append(kw["context_length"]),
+    )
+    rendered = []
+    render = AgentProfile.render_config
+
+    def capture_render(self, *args, **kwargs):
+        rendered.append(kwargs["context_length"])
+        return render(self, *args, **kwargs)
+
+    monkeypatch.setattr(AgentProfile, "render_config", capture_render)
+    AgentTestRunner(profile, model_id="local-model").run()
+    assert refreshed == [expected]
+    assert rendered == [expected]
+
+
+def test_setup_writes_memory_budget_after_existing_server_check(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from rapid_mlx import cli
+    from rapid_mlx.agents import adapter
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(
+        adapter,
+        "_fetch_models",
+        lambda *_a, **_k: [
+            {"id": "local-model", "context_window": 262144, "max_model_len": 60000}
+        ],
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.setup.wait_for_server", lambda *_a, **_k: "local-model"
+    )
+    cli.agents_command(
+        SimpleNamespace(
+            agent_name="codex",
+            base_url="http://localhost/v1",
+            test=False,
+            setup=True,
+            model="local-model",
+            agent_version=None,
+            dry_run=False,
+            yes=True,
+            no_check=False,
+        )
+    )
+    text = "\n".join(p.read_text() for p in tmp_path.rglob("*") if p.is_file())
+    assert "60000" in text
+    assert "262144" not in text

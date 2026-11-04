@@ -1588,6 +1588,8 @@ class EngineCore:
                             raise InferenceAbortedError(
                                 output.error,
                                 error_kind=output.error_kind,
+                                prompt_tokens=output.prompt_tokens,
+                                completion_tokens=output.completion_tokens,
                             )
 
                     yield output
@@ -1705,6 +1707,8 @@ class EngineCore:
                 raise InferenceAbortedError(
                     final_output.error,
                     error_kind=final_output.error_kind,
+                    prompt_tokens=final_output.prompt_tokens,
+                    completion_tokens=final_output.completion_tokens,
                 )
 
             return final_output

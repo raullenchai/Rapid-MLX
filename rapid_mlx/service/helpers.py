@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -24,7 +24,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
+import anyio
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from starlette.requests import Request
 
 from ..api.models import (
@@ -43,7 +45,11 @@ from ..api.models import (
 from ..api.tool_calling import parse_tool_calls
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
-from ..errors import BackpressureError, MetalMemoryBackpressureError
+from ..errors import (
+    BackpressureError,
+    MemoryContextExceededError,
+    MetalMemoryBackpressureError,
+)
 from ..tool_call_authorization import call_name, declared_names, log_drop
 from ..tool_parsers import ToolParserManager
 from ..utils.chat_template import (
@@ -122,6 +128,10 @@ def _check_admission_or_503(engine) -> None:
         return
     try:
         check()
+    except MemoryContextExceededError as exc:
+        raise memory_context_overflow(
+            exc.requested_tokens, exc.memory_ceiling, engine=engine
+        ) from exc
     except BackpressureError as exc:
         _raise_backpressure_503(exc)
 
@@ -4301,7 +4311,269 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     return False
 
 
-async def _disconnect_guard(
+class _StreamAdmission:
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.preheaders = True
+
+
+_stream_admission: ContextVar[_StreamAdmission | None] = ContextVar(
+    "stream_admission", default=None
+)
+
+
+def _stream_admission_event() -> asyncio.Event:
+    state = _stream_admission.get()
+    return state.event if state is not None else asyncio.Event()
+
+
+def _is_preheader_admission_error(exc: BaseException) -> bool:
+    """Keep typed admission failures available to the HTTP route boundary."""
+    from ..request import InferenceAbortedError
+
+    state = _stream_admission.get()
+    return (
+        state is not None
+        and state.preheaders
+        and isinstance(
+            exc, (BackpressureError, MemoryContextExceededError, InferenceAbortedError)
+        )
+    )
+
+
+async def _admission_aware_stream(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    """First output is the admission fallback for engines without notification."""
+    try:
+        async for output in stream:
+            state = _stream_admission.get()
+            if state is not None:
+                state.event.set()
+            yield output
+    finally:
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await close()
+
+
+class _OwnedStream(AsyncIterator[str]):
+    """Own cleanup eagerly, including when the iterator has never been started."""
+
+    def __init__(
+        self, iterator: AsyncIterator[str], cleanup: Callable[[], Awaitable[None]]
+    ) -> None:
+        self.iterator = iterator
+        self.cleanup = cleanup
+        self.started = False
+        self.closed = False
+
+    async def __anext__(self) -> str:
+        if self.closed:
+            raise StopAsyncIteration
+        self.started = True
+        try:
+            return await anext(self.iterator)
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        with anyio.CancelScope(shield=True):
+            try:
+                close = getattr(self.iterator, "aclose", None)
+                if callable(close):
+                    await close()
+            finally:
+                await self.cleanup()
+
+
+class _OwnedStreamingResponse(StreamingResponse):
+    """Close admitted inference even if sending HTTP headers fails first."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Starlette does not close its body on header/send failure or on
+            # a disconnect that wins before the first body iteration.
+            with anyio.CancelScope(shield=True):
+                close = getattr(self.body_iterator, "aclose", None)
+                if callable(close):
+                    await close()
+
+
+async def _preflight_stream(
+    stream: AsyncIterator[str],
+    raw_request: Request,
+    *,
+    engine: BaseEngine,
+    request_id_holder: list[str | None],
+    timeout: float | None = None,
+    client_errors_as_http: bool = False,
+) -> AsyncIterator[str]:
+    """Drive lazy admission before headers, then replay buffered events once.
+
+    Stop at the engine's admission notification, before prefill finishes, so
+    the normal disconnect guard can emit keepalives while generation runs.
+    Engines without notification fall back to their first output. Every task
+    and iterator stays owned across the preflight/replay handoff.
+    """
+    from ..request import (
+        ClientRequestError,
+        InferenceAbortedError,
+        inference_aborted_http_exception,
+    )
+
+    state = _StreamAdmission()
+    buffered = []
+    pending = None
+    deferred_error: Exception | None = None
+    admitted = asyncio.create_task(state.event.wait())
+
+    async def cleanup(*, abort=False):
+        with anyio.CancelScope(shield=True):
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            admitted.cancel()
+            await asyncio.gather(admitted, return_exceptions=True)
+            try:
+                await stream.aclose()
+            finally:
+                if abort and request_id_holder[0] is not None:
+                    _force_abort_request(engine, request_id_holder)
+
+    async def prime():
+        nonlocal pending
+        token = _stream_admission.set(state)
+        try:
+            while not state.event.is_set():
+                pending = asyncio.create_task(anext(stream))
+                done, _ = await asyncio.wait(
+                    {pending, admitted}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if pending in done:
+                    try:
+                        buffered.append(pending.result())
+                    except StopAsyncIteration:
+                        pending = None
+                        break
+                    pending = None
+        finally:
+            _stream_admission.reset(token)
+        return True
+
+    try:
+        completed = await _wait_with_disconnect(
+            prime(), raw_request, timeout=timeout or get_config().default_timeout
+        )
+        if completed is None:
+            # 499 has no HTTPStatus phrase; an explicit detail keeps Starlette
+            # from raising ValueError while constructing the exception.
+            raise HTTPException(status_code=499, detail="Client disconnected")
+        admitted.cancel()
+        await asyncio.gather(admitted, return_exceptions=True)
+    except BaseException as exc:
+        await cleanup(abort=True)
+        context_error = context_overflow_from_memory_error(
+            engine, exc
+        ) or context_overflow_from_client_error(exc)
+        if context_error is not None:
+            raise context_error from exc
+        if isinstance(exc, ClientRequestError):
+            if client_errors_as_http:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Preserve existing SSE decoder-error contracts outside the MLLM
+            # chat lane. Memory/context rejections were handled above.
+            deferred_error = exc
+        elif isinstance(exc, InferenceAbortedError):
+            raise inference_aborted_http_exception(exc) from exc
+        elif isinstance(exc, Exception) and not isinstance(exc, HTTPException):
+            # Priming must only promote admission failures to HTTP errors.
+            # Other failures retain the normal stream/guard error contract,
+            # including duck-typed engines without a streaming method.
+            deferred_error = exc
+        else:
+            raise
+    state.preheaders = False
+
+    finished = False
+
+    async def replay() -> AsyncIterator[str]:
+        nonlocal pending, finished
+        for chunk in buffered:
+            yield chunk
+        if deferred_error is not None:
+            raise deferred_error
+        if pending is not None:
+            try:
+                yield await pending
+            except StopAsyncIteration:
+                finished = True
+                return
+            finally:
+                pending = None
+        async for chunk in stream:
+            yield chunk
+        finished = True
+
+    async def close_replay() -> None:
+        await cleanup(abort=not finished)
+
+    return _OwnedStream(replay(), close_replay)
+
+
+def _disconnect_guard(
+    generator: AsyncIterator[str],
+    raw_request: Request,
+    poll_interval: float = 0.5,
+    engine=None,
+    keepalive_seconds: float | None = None,
+    request_id_holder: list | None = None,
+    keepalive_factory=None,
+    disconnect_state: list[bool] | None = None,
+    response_state: dict | None = None,
+) -> AsyncIterator[str]:
+    """Keep the preflight owner reachable before the response starts iterating."""
+
+    async def close_unstarted() -> None:
+        if not owned.started:
+            if disconnect_state is not None:
+                disconnect_state[0] = True
+            try:
+                close = getattr(generator, "aclose", None)
+                if callable(close):
+                    await close()
+            finally:
+                _force_abort_request(engine, request_id_holder)
+                if engine is not None:
+                    try:
+                        release = getattr(engine, "release_admission_reservation", None)
+                        if release is not None:
+                            release()
+                    finally:
+                        _release_primary_request(engine)
+
+    owned = _OwnedStream(
+        _run_disconnect_guard(
+            generator,
+            raw_request,
+            poll_interval,
+            engine,
+            keepalive_seconds,
+            request_id_holder,
+            keepalive_factory,
+            disconnect_state,
+            response_state,
+        ),
+        close_unstarted,
+    )
+    return owned
+
+
+async def _run_disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
@@ -4575,7 +4847,9 @@ async def _disconnect_guard(
                     inference_aborted_error_payload,
                 )
 
-                context_error = context_overflow_from_client_error(exc)
+                context_error = context_overflow_from_memory_error(
+                    engine, exc
+                ) or context_overflow_from_client_error(exc)
                 if context_error is not None:
                     path = raw_request.url.path
                     if path == "/v1/messages":
@@ -4659,6 +4933,10 @@ async def _disconnect_guard(
                     _sse_type = _payload["type"]
                     _sse_message = _payload["message"]
                     _sse_code = _payload["code"]
+                elif isinstance(exc, BackpressureError):
+                    _sse_type = "server_error"
+                    _sse_message = str(exc)
+                    _sse_code = "server_busy"
                 elif isinstance(exc, ClientRequestError):
                     _sse_type = "invalid_request_error"
                     _sse_message = str(exc)
@@ -4667,7 +4945,7 @@ async def _disconnect_guard(
                     _sse_type = "internal_error"
                     _sse_message = "Internal error during streaming"
                     _sse_code = None
-                if isinstance(exc, InferenceAbortedError):
+                if isinstance(exc, (InferenceAbortedError, BackpressureError)):
                     abort_path = getattr(
                         getattr(raw_request, "url", None), "path", None
                     )
@@ -4677,7 +4955,8 @@ async def _disconnect_guard(
                             "error": {
                                 "type": (
                                     "overloaded_error"
-                                    if _sse_code == "insufficient_memory"
+                                    if _sse_code
+                                    in {"insufficient_memory", "server_busy"}
                                     else "api_error"
                                 ),
                                 "message": _sse_message,
@@ -4990,6 +5269,10 @@ async def _wait_with_disconnect(
                     detail={"error": lifecycle_cancel_error_payload()},
                 )
             raise
+        except MemoryContextExceededError as exc:
+            raise memory_context_overflow(
+                exc.requested_tokens, exc.memory_ceiling, engine=engine
+            ) from exc
         except BackpressureError as exc:
             _raise_backpressure_503(exc)
 
@@ -4998,6 +5281,27 @@ async def _wait_with_disconnect(
             disconnect_task.cancel()
         if not task.done():
             task.cancel()
+
+
+def context_overflow_from_memory_error(engine, exc):
+    """Keep permanent request-size failures separate from retryable pressure."""
+    from ..request import InferenceAbortedError, inference_aborted_error_code
+
+    if isinstance(exc, ContextLengthExceeded):
+        return exc
+    if isinstance(exc, MemoryContextExceededError):
+        return memory_context_overflow(
+            exc.requested_tokens, exc.memory_ceiling, engine=engine
+        )
+    if not isinstance(exc, InferenceAbortedError):
+        return None
+    if inference_aborted_error_code(exc) != "insufficient_memory":
+        return None
+    ceiling = memory_context_ceiling(engine, enforce_cap=False)
+    total_tokens = exc.prompt_tokens + exc.completion_tokens
+    if ceiling is not None and total_tokens > ceiling:
+        return memory_context_overflow(total_tokens, ceiling, engine=engine)
+    return None
 
 
 # ─── Context-length pre-check (DoS defense, rapid-desktop#273 / #463) ──
@@ -5405,6 +5709,62 @@ def context_overflow_from_guided_limit(engine, exc) -> ContextLengthExceeded | N
     )
 
 
+def memory_context_ceiling(engine, *, enforce_cap: bool = True) -> int | None:
+    """Read cached idle-resident capacity; frontend validation requires a cap.
+
+    An actual allocator OOM can use the estimate even when an operator has
+    disabled admission enforcement to attempt an oversized context.
+    """
+    from ..routes.models import _scheduler_of
+
+    scheduler = _scheduler_of(engine)
+    probe = getattr(
+        scheduler,
+        "memory_context_ceiling" if enforce_cap else "projected_memory_max_context",
+        None,
+    )
+    if not callable(probe):
+        return None
+    value = probe(get_model_max_context(engine))
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        else None
+    )
+
+
+def memory_context_overflow(
+    prompt_tokens: int,
+    limit: int,
+    *,
+    engine=None,
+    telemetry_model: str | None = None,
+    caller_agent: str | None = None,
+    caller_client: str | None = None,
+) -> ContextLengthExceeded:
+    """Use one non-retryable protocol error for every permanent memory overflow."""
+    from rapid_mlx.telemetry.inference import emit_capability_rejected, model_type_token
+
+    emit_capability_rejected(
+        "context_length_exceeded",
+        reject_reason="memory_window",
+        model_type=model_type_token(engine),
+        model=telemetry_model,
+        caller_agent=caller_agent,
+        caller_client=caller_client,
+    )
+    return ContextLengthExceeded(
+        prompt_tokens=prompt_tokens,
+        limit=limit,
+        message=(
+            f"This model's maximum context length is {limit} tokens. "
+            f"However, you requested {prompt_tokens} tokens. "
+            "This limit comes from available memory. Start a new session "
+            "or compact the conversation, or reduce the requested output."
+        ),
+    )
+
+
 def enforce_context_length(
     engine,
     prompt_tokens: int,
@@ -5422,6 +5782,10 @@ def enforce_context_length(
     gets ``max_tokens`` reduced to ``window - prompt_tokens`` when necessary.
     """
     max_context = get_model_max_context(engine)
+    memory_limit = memory_context_ceiling(engine)
+    memory_bound = memory_limit is not None and memory_limit < max_context
+    if memory_limit is not None and memory_bound:
+        max_context = memory_limit
     completion = int(max_tokens) if max_tokens else 0
     operational_cap = get_config().max_prompt_tokens
     prompt_over_operational_cap = (
@@ -5432,6 +5796,16 @@ def enforce_context_length(
         if max_tokens is None:
             return None
         return min(max(0, completion), max_context - int(prompt_tokens))
+
+    if prompt_over_window and memory_bound and not prompt_over_operational_cap:
+        raise memory_context_overflow(
+            int(prompt_tokens),
+            max_context,
+            engine=engine,
+            telemetry_model=telemetry_model,
+            caller_agent=caller_agent,
+            caller_client=caller_client,
+        )
 
     # Format the message in the OpenAI shape so SDKs can branch on the
     # ``code`` field. The exception handler in ``rapid_mlx/server.py``

@@ -77,6 +77,7 @@ from ..api.utils import (
 )
 from ..config import get_config
 from ..engine import GenerationOutput
+from ..errors import BackpressureError
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..parsing.prompt_owner import served_model_identity, split_buffered
 from ..request import (
@@ -110,9 +111,12 @@ from ..service.helpers import (
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
     _inject_json_instruction,
+    _is_preheader_admission_error,
     _is_structured_output_requested,
     _maybe_pin_system_prompt,
+    _OwnedStreamingResponse,
     _parse_tool_calls_with_parser,
+    _preflight_stream,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _release_primary_request_unless_committed,
@@ -124,6 +128,7 @@ from ..service.helpers import (
     _resolve_top_p,
     _scan_messages_for_lone_surrogates,
     _should_start_in_thinking,
+    _stream_admission_event,
     _tool_use_required_named_suffix,
     _uses_deepseek_v4_reasoning,
     _validate_model_name,
@@ -134,6 +139,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     context_overflow_from_client_error,
     context_overflow_from_guided_limit,
+    context_overflow_from_memory_error,
     context_window_exhausted,
     dry_sampling_kwargs,
     enable_thinking_warning_header,
@@ -4128,55 +4134,6 @@ def _inference_aborted_http_exception(exc: BaseException) -> HTTPException:
     return inference_aborted_http_exception(exc)
 
 
-async def _preflight_mllm_chat_stream(
-    stream: AsyncIterator[str],
-    raw_request: Request,
-    *,
-    timeout: float,
-) -> AsyncIterator[str] | None:
-    """Prime an MLLM stream through its first engine-backed event.
-
-    ``stream_chat_completion`` yields the assistant role before asking the
-    engine for output.  Reading two items therefore crosses the lazy MLLM
-    preprocessing boundary without putting either item on the wire.  A typed
-    ``ClientRequestError`` can then become an HTTP 400 at the route boundary.
-    The returned iterator replays the buffered items exactly once and delegates
-    the remainder to the original iterator.
-    """
-
-    buffered: list[str] = []
-
-    async def _prime() -> bool:
-        try:
-            buffered.append(await anext(stream))
-            buffered.append(await anext(stream))
-        except StopAsyncIteration:
-            # A valid zero-content completion can terminate after its role
-            # chunk.  Preserve it rather than treating exhaustion as failure.
-            pass
-        return True
-
-    try:
-        completed = await _wait_with_disconnect(_prime(), raw_request, timeout=timeout)
-    except BaseException:
-        await stream.aclose()
-        raise
-    if completed is None:
-        await stream.aclose()
-        return None
-
-    async def _replay() -> AsyncIterator[str]:
-        try:
-            for chunk in buffered:
-                yield chunk
-            async for chunk in stream:
-                yield chunk
-        finally:
-            await stream.aclose()
-
-    return _replay()
-
-
 def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str | None:
     """Return the TEMPLATE-added generation-prefix delta for ``messages``.
 
@@ -5957,21 +5914,29 @@ async def _create_chat_completion_impl(
             # synthesize an SSE stream from the buffered output. Falls
             # back to the unconstrained streaming helper on guided
             # failure (logged), matching the non-streaming fallback.
+            _admitted_stream = await _preflight_stream(
+                stream_chat_completion_guided(
+                    engine,
+                    messages,
+                    request,
+                    json_schema,
+                    response_id=response_id,
+                    strict_mode=strict_mode,
+                    caller_agent=_caller_ua,
+                    caller_client=_caller_client,
+                    served_telemetry_id=served_telemetry_id,
+                    **chat_kwargs,
+                ),
+                raw_request,
+                engine=engine,
+                request_id_holder=request_id_holder,
+                timeout=request.timeout,
+                client_errors_as_http=engine.is_mllm,
+            )
             _commit_state[0] = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
-                    stream_chat_completion_guided(
-                        engine,
-                        messages,
-                        request,
-                        json_schema,
-                        response_id=response_id,
-                        strict_mode=strict_mode,
-                        caller_agent=_caller_ua,
-                        caller_client=_caller_client,
-                        served_telemetry_id=served_telemetry_id,
-                        **chat_kwargs,
-                    ),
+                    _admitted_stream,
                     raw_request,
                     engine=engine,
                     request_id_holder=request_id_holder,
@@ -5997,21 +5962,29 @@ async def _create_chat_completion_impl(
             # retry tokens to the first stream). The strict-request
             # counter has already ticked above when ``strict_mode``
             # was detected — no double-count here.
+            _admitted_stream = await _preflight_stream(
+                stream_chat_completion_strict_postgen(
+                    engine,
+                    messages,
+                    request,
+                    json_schema,
+                    response_id=response_id,
+                    request_id=response_id,
+                    caller_agent=_caller_ua,
+                    caller_client=_caller_client,
+                    served_telemetry_id=served_telemetry_id,
+                    **chat_kwargs,
+                ),
+                raw_request,
+                engine=engine,
+                request_id_holder=request_id_holder,
+                timeout=request.timeout,
+                client_errors_as_http=engine.is_mllm,
+            )
             _commit_state[0] = True
-            return StreamingResponse(
+            return _OwnedStreamingResponse(
                 _disconnect_guard(
-                    stream_chat_completion_strict_postgen(
-                        engine,
-                        messages,
-                        request,
-                        json_schema,
-                        response_id=response_id,
-                        request_id=response_id,
-                        caller_agent=_caller_ua,
-                        caller_client=_caller_client,
-                        served_telemetry_id=served_telemetry_id,
-                        **chat_kwargs,
-                    ),
+                    _admitted_stream,
                     raw_request,
                     engine=engine,
                     request_id_holder=request_id_holder,
@@ -6035,41 +6008,18 @@ async def _create_chat_completion_impl(
             _client_disconnect_state=_client_disconnect_state,
             **chat_kwargs,
         )
-        if engine.is_mllm:
-            # #1849: an MLLM does its image/video decode and prompt-cap
-            # validation lazily, on the first engine iteration.  The chat
-            # generator emits a synthetic assistant-role chunk immediately
-            # before that iteration, so constructing StreamingResponse here
-            # used to commit HTTP 200 before a bad image could raise its
-            # typed, client-actionable error.  Prime through the role plus the
-            # first engine-backed chunk while the route can still select an
-            # HTTP status.  Text models retain their immediate role chunk and
-            # SSE keepalive behaviour; only MLLM TTFT waits for prefill, which
-            # is the unavoidable trade-off for a truthful HTTP status.
-            try:
-                _chat_stream = await _preflight_mllm_chat_stream(
-                    _chat_stream,
-                    raw_request,
-                    timeout=request.timeout or cfg.default_timeout,
-                )
-            except ClientRequestError as exc:
-                _context_error = context_overflow_from_client_error(exc)
-                if _context_error is not None:
-                    raise _context_error from exc
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except InferenceAbortedError as exc:
-                # #3564: the MLLM preflight runs BEFORE StreamingResponse
-                # commits, so an engine abort here used to escape uncaught to
-                # the generic 500 handler ("Internal server error"), losing the
-                # category. Map it to the same structured 503 the non-streaming
-                # lane emits so the GUI can render a faithful card.
-                raise _inference_aborted_http_exception(exc) from exc
-            if _chat_stream is None:
-                return Response(status_code=499)
+        _admitted_stream = await _preflight_stream(
+            _chat_stream,
+            raw_request,
+            engine=engine,
+            request_id_holder=request_id_holder,
+            timeout=request.timeout,
+            client_errors_as_http=engine.is_mllm,
+        )
         _commit_state[0] = True
-        return StreamingResponse(
+        return _OwnedStreamingResponse(
             _disconnect_guard(
-                _chat_stream,
+                _admitted_stream,
                 raw_request,
                 engine=engine,
                 request_id_holder=request_id_holder,
@@ -6308,7 +6258,9 @@ async def _create_chat_completion_impl(
             result="failed",
             error_class=_telemetry_inference.classify_inference_failure(e),
         )
-        _context_error = context_overflow_from_client_error(e)
+        _context_error = context_overflow_from_memory_error(
+            engine, e
+        ) or context_overflow_from_client_error(e)
         if _context_error is not None:
             raise _context_error from e
         err_msg = str(e)
@@ -6563,7 +6515,10 @@ async def _create_chat_completion_impl(
                 except Exception as repair_err:
                     _repair_context_error = context_overflow_from_guided_limit(
                         engine, repair_err
-                    ) or context_overflow_from_client_error(repair_err)
+                    ) or (
+                        context_overflow_from_memory_error(engine, repair_err)
+                        or context_overflow_from_client_error(repair_err)
+                    )
                     if _repair_context_error is not None:
                         raise _repair_context_error from repair_err
                     # Codex r1 #3: a non-timeout, non-disconnect engine
@@ -7624,7 +7579,7 @@ async def stream_chat_completion(
         # output would hide the cancellation identity throughout a slow
         # prefill. Engines that do not implement the notification retain the
         # legacy first-output fallback.
-        request_admitted_event = asyncio.Event()
+        request_admitted_event = _stream_admission_event()
         kwargs["request_admitted_event"] = request_admitted_event
         from rapid_mlx.telemetry import inference as _telemetry_inference
 
@@ -9053,7 +9008,7 @@ async def stream_chat_completion_guided(
             if k not in {"raise_on_failure", "request_id", "request_admitted_event"}
         }
         _guided_kwargs["retain_guided_request_on_failure"] = True
-        request_admitted_event = asyncio.Event()
+        request_admitted_event = _stream_admission_event()
         guided_task = asyncio.create_task(
             engine.generate_with_schema(
                 messages=messages,
@@ -9096,8 +9051,13 @@ async def stream_chat_completion_guided(
                 yield event
             return
         except Exception as guided_err:
-            _context_error = context_overflow_from_client_error(
-                guided_err
+            if _is_preheader_admission_error(guided_err) or isinstance(
+                guided_err, BackpressureError
+            ):
+                raise
+            _context_error = (
+                context_overflow_from_memory_error(engine, guided_err)
+                or context_overflow_from_client_error(guided_err)
             ) or context_overflow_from_guided_limit(engine, guided_err)
             if _context_error is not None:
                 yield (
@@ -9942,6 +9902,9 @@ async def stream_chat_completion_strict_postgen(
         cancelled = True
         raise
     except Exception as exc:  # noqa: BLE001
+        if _is_preheader_admission_error(exc) or isinstance(exc, BackpressureError):
+            cancelled = True
+            raise
         # Codex r7 #1 + r8 #1: ordinary upstream generation
         # exceptions (engine raises, runtime errors, etc.) — distinct
         # from cancellation. Without this catch, the exception would
@@ -9974,7 +9937,9 @@ async def stream_chat_completion_strict_postgen(
             # can branch, same envelope shape so handler code is
             # reusable.
             if upstream_raised is not None and not validation_emitted:
-                context_error = context_overflow_from_client_error(upstream_raised)
+                context_error = context_overflow_from_memory_error(
+                    engine, upstream_raised
+                ) or context_overflow_from_client_error(upstream_raised)
                 # Codex r12 #2: do NOT leak ``str(upstream_raised)``
                 # into the client-visible SSE payload. Exception
                 # messages from the inference stack can include

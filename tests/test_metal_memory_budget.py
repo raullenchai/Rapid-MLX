@@ -572,3 +572,29 @@ class TestBatchedEngineBudgetInstall:
                 engine._run_metal_admission_preflight()
         finally:
             engine._model_load_executor.shutdown(wait=True)
+
+    def test_dynamic_load_ceiling_records_parameters_not_other_requests(self):
+        from types import SimpleNamespace
+
+        engine = self._bare_engine()
+        engine._model = SimpleNamespace(
+            parameters=lambda: {"weight": SimpleNamespace(nbytes=4 * GB)}
+        )
+        # Another resident engine's KV inflates active residency at load time.
+        core_patch, metal_patch = self._patched_mx(active=80 * GB)
+        with core_patch, metal_patch:
+            engine._resolve_and_set_metal_limits()
+        assert engine._model_weights_bytes == 4 * GB
+
+    def test_preflight_installs_recorded_weight_baseline(self):
+        import concurrent.futures
+        from types import SimpleNamespace
+
+        engine = self._bare_engine()
+        engine._model_weights_bytes = 4 * GB
+        scheduler = SimpleNamespace(preflight_metal_admission=MagicMock())
+        engine._engine = SimpleNamespace(engine=SimpleNamespace(scheduler=scheduler))
+        with concurrent.futures.ThreadPoolExecutor(1) as executor:
+            engine._model_load_executor = executor
+            engine._run_metal_admission_preflight()
+        assert scheduler._model_weights_bytes == 4 * GB

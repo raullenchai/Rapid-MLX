@@ -1741,6 +1741,26 @@ class MLLMScheduler:
         if not isinstance(step_uids, (frozenset, set)):
             step_uids = None
 
+        # Prefill can fail before the first response transfers expanded-media
+        # counts to MLLMRequest. The generator still owns those prepared rows.
+        token_counts = {}
+        for rid in request_ids:
+            request = self.requests.get(rid) or self.running.get(rid)
+            token_counts[rid] = (
+                request.num_prompt_tokens if request is not None else 0,
+                request.num_output_tokens if request is not None else 0,
+            )
+        for row in getattr(self.batch_generator, "unprocessed_requests", ()):
+            row_request_id = self.uid_to_request_id.get(row.uid)
+            if row_request_id is not None and row_request_id in token_counts:
+                prompt = row.num_prompt_tokens
+                if not prompt and row.input_ids is not None:
+                    prompt = int(row.input_ids.size)
+                token_counts[row_request_id] = (
+                    prompt,
+                    token_counts[row_request_id][1],
+                )
+
         output = MLLMSchedulerOutput(
             finished_request_ids=request_ids,
             outputs=[
@@ -1754,6 +1774,8 @@ class MLLMScheduler:
                     # this compatibility literal for a successful truncation.
                     finish_reason="length",
                     error=err_text,
+                    prompt_tokens=token_counts[request_id][0],
+                    completion_tokens=token_counts[request_id][1],
                     error_kind=(
                         err_kind
                         if step_uids is None
@@ -2296,6 +2318,8 @@ class MLLMScheduler:
                         raise InferenceAbortedError(
                             output.error,
                             error_kind=output.error_kind,
+                            prompt_tokens=output.prompt_tokens,
+                            completion_tokens=output.completion_tokens,
                         )
                     elif output.error_kind == "invalid_request":
                         raise ClientRequestError(output.error)

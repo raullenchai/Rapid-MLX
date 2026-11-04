@@ -56,8 +56,6 @@ _GIT_PASSTHROUGH = frozenset(
 # Shells OpenCode accepts for its shell tool on every supported major version.
 _OPENCODE_SHELLS = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
 _XDG_DIRS = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME")
-_HERMES_MIN_CONTEXT = 64_000
-_HERMES_MAX_CONTEXT = 131_072
 
 
 def connection_dir() -> Path:
@@ -188,68 +186,40 @@ def connection_status(port: int, key: str, model: str) -> str:
 def served_context_length(
     port: int, key: str, model: str, *, require_served: bool = False
 ) -> int | None:
-    """Read the active KV limit, bounded by the model's native window."""
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/v1/models",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=2) as response:
-            payload = json.loads(response.read())
-        models = payload.get("data") if isinstance(payload, dict) else None
-        if isinstance(models, list):
-            entry = next(
-                (
-                    item
-                    for item in models
-                    if isinstance(item, dict) and item.get("id") == model
-                ),
-                None,
-            )
-            if entry is not None:
-                from rapid_mlx.agents.adapter import _valid_context_window
+    """Read the shared served ceiling with the isolated server credential."""
+    from .context_budget import served_context_ceiling
 
-                native = _valid_context_window(entry.get("context_window"))
-                served = _valid_context_window(entry.get("max_model_len"))
-                if served is not None or (native is not None and not require_served):
-                    return min(value for value in (served, native) if value is not None)
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError):
-        pass
-    return None
+    return served_context_ceiling(
+        f"http://127.0.0.1:{port}/v1",
+        model,
+        api_key=key,
+        require_served=require_served,
+    )
 
 
 def hermes_context_length(
     port: int, key: str, model: str, *, require_live: bool = False
 ) -> int:
-    """Use the served KV budget for Hermes, bounded by the native window.
+    """Resolve Hermes' supported context range through the common policy."""
+    from .context_budget import (
+        context_budget_for_ceiling,
+        context_fallback,
+        offline_context_ceiling,
+    )
 
-    A stopped server can be configured provisionally from cached model metadata.
-    The launch path calls this again after readiness, before starting Hermes.
-    """
     context = served_context_length(port, key, model, require_served=require_live)
-    if context is not None:
-        context = min(context, _HERMES_MAX_CONTEXT)
     if context is None and not require_live:
-        from rapid_mlx.run.cli import _cached_context_window
-
-        context = _cached_context_window(model)
-        if context is not None:
-            context = min(context, _HERMES_MAX_CONTEXT)
-    if context is None:
-        if require_live:
-            raise ValueError(
-                f"Hermes needs a context limit from the ready local server for {model}; "
-                "check /v1/models and retry."
-            )
-        # A server started by launch is probed again before the agent opens.
-        return _HERMES_MIN_CONTEXT
-    if context < _HERMES_MIN_CONTEXT:
+        context = offline_context_ceiling(model)
+    if context is None and require_live:
         raise ValueError(
-            f"Hermes needs at least {_HERMES_MIN_CONTEXT:,} context tokens, "
-            f"but {model} can serve only {context:,}. Choose a 64K-capable model "
-            "such as qwen3.5-9b-4bit or raise the server context limit."
+            f"Hermes needs a context limit from the ready local server for {model}; "
+            "check /v1/models and retry."
         )
-    return context
+    budget = context_budget_for_ceiling(
+        "hermes", context, model=model, fallback=context_fallback("hermes-isolated")
+    )
+    assert budget is not None  # The explicit fallback guarantees a budget.
+    return budget
 
 
 def running_model(port: int, key: str) -> str | None:
@@ -606,7 +576,13 @@ def configure(
     try:
         version = None
         executable = None
-        context_length = None
+        from .context_budget import agent_context_budget
+
+        context_length = (
+            agent_context_budget(name, base, model, api_key=key)
+            if name not in {"hermes", "codex"}
+            else None
+        )
         if name == "opencode":
             from rapid_mlx.agents.opencode_version import (
                 installed_version,
@@ -625,8 +601,13 @@ def configure(
                 port, key, model, require_live=require_live_context
             )
         if name == "codex":
-            context_length = served_context_length(
-                port, key, model, require_served=require_live_context
+            from .context_budget import context_budget_for_ceiling
+
+            context_length = context_budget_for_ceiling(
+                "codex",
+                served_context_length(
+                    port, key, model, require_served=require_live_context
+                ),
             )
             if context_length is None:
                 if require_live_context:
@@ -634,7 +615,15 @@ def configure(
                         f"Codex needs a context limit from the ready local server for {model}; "
                         "check /v1/models and retry."
                     )
-                context_length = 32_768
+                from .context_budget import context_fallback
+
+                context_length = agent_context_budget(
+                    "codex",
+                    base,
+                    model,
+                    offline=True,
+                    fallback=context_fallback("codex"),
+                )
         rendered = profile.render_config(
             base, model, version, context_length=context_length
         )

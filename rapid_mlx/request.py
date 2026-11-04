@@ -354,9 +354,19 @@ class InferenceAbortedError(RuntimeError):
     handle a retry against a smaller request.
     """
 
-    def __init__(self, message: str, *, error_kind: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
         super().__init__(message)
         self.error_kind = error_kind
+        # Preserve counts across the runtime boundary for memory-window errors.
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
 
 
 # Stable, client-safe error codes for engine-loop aborts. These are the

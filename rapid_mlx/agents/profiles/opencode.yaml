@@ -25,7 +25,7 @@ config:
             "apiKey": "{rapid_api_key}"
           },
           "models": {
-            "{model_id}": {}
+            "{model_id}": {"limit": {"context": {context_length}, "output": {context_output}}}
           }
         }
       },
@@ -40,7 +40,7 @@ config:
           "models": {
             "{model_id}": {
               "name": "{model_id}",
-              "limit": {"context": {context_length}, "output": 8192},
+              "limit": {"context": {context_length}, "output": {context_output}},
               "capabilities": {"tools": true, "input": ["text"], "output": ["text"]}
             }
           }
@@ -88,7 +88,7 @@ versions:
                 "apiKey": "{rapid_api_key}"
               },
               "models": {
-                "{model_id}": {}
+                "{model_id}": {"limit": {"context": {context_length}, "output": {context_output}}}
               }
             }
           },

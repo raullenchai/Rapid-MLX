@@ -730,16 +730,11 @@ def launch_command(args: argparse.Namespace) -> None:
     failures: list[str] = []
     claude_context_length = None
     if "claude-code" in targets:
-        from rapid_mlx.agents.adapter import fetch_context_window
-        from rapid_mlx.run.cli import _cached_context_window
+        from rapid_mlx.agents.context_budget import agent_context_budget
 
-        # --start-server patches the client before the detached server boots;
-        # probing it now only adds a guaranteed timeout to first run.
-        if not args.start_server:
-            claude_context_length = fetch_context_window(
-                f"{server_url.rstrip('/').removesuffix('/v1')}/v1", model
-            )
-        claude_context_length = claude_context_length or _cached_context_window(model)
+        claude_context_length = agent_context_budget(
+            "claude-code", server_url, model, offline=args.start_server
+        )
     for name in targets:
         adapter = ADAPTERS[name]
         if not adapter.detect():

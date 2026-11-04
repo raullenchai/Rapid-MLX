@@ -461,3 +461,27 @@ async def test_scheduler_internal_failure_streams_as_retryable_503_class() -> No
         _ = [output async for output in scheduler.stream_outputs("failed")]
 
     scheduler.abort_request.assert_not_called()
+
+
+@pytest.mark.parametrize("prepared_count,input_count", [(101, None), (0, 103)])
+def test_prefill_oom_retains_prepared_media_token_count(prepared_count, input_count):
+    scheduler = _repetition_scheduler()
+    request = MLLMRequest(request_id="media-oom", prompt="hello")
+    request.num_output_tokens = 2
+    scheduler.requests[request.request_id] = request
+    scheduler.running[request.request_id] = request
+    scheduler.request_id_to_uid[request.request_id] = 7
+    scheduler.uid_to_request_id[7] = request.request_id
+    scheduler.batch_generator.unprocessed_requests = [
+        SimpleNamespace(
+            uid=7,
+            num_prompt_tokens=prepared_count,
+            input_ids=None
+            if input_count is None
+            else SimpleNamespace(size=input_count),
+        ),
+        SimpleNamespace(uid=999),
+    ]
+    terminal = scheduler._fail_all_inflight(RuntimeError("out of memory")).outputs[0]
+    assert terminal.prompt_tokens == (prepared_count or input_count)
+    assert terminal.completion_tokens == 2
