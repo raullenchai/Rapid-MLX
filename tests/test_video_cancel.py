@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -30,6 +31,7 @@ from rapid_mlx.video.engine import VideoGenerationEngine
 def cache_clears(monkeypatch):
     calls = []
     monkeypatch.setattr(minimax_h3, "_clear_mlx_cache", lambda: calls.append(True))
+    monkeypatch.setattr(minimax_h3, "bounded_cache_limit", lambda _: nullcontext())
     return calls
 
 

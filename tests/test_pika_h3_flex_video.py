@@ -18,6 +18,69 @@ from rapid_mlx.video import minimax_h3 as h3
 from rapid_mlx.video import pika_h3_flex as flex
 
 
+class FakeVAEEncoder:
+    def __init__(self):
+        self.weight = np.array([2.0], dtype=np.float32)
+
+    def parameters(self):
+        return {"weight": self.weight}
+
+    def __call__(self, values, *, offset=0):
+        return values * self.weight + offset
+
+
+def test_eager_vae_encoder_preserves_values_and_parameters(monkeypatch, array_core):
+    evaluated = []
+    monkeypatch.setattr(array_core, "eval", evaluated.append, raising=False)
+    encoder = FakeVAEEncoder()
+    vae = SimpleNamespace(encoder=encoder)
+    values = np.array([1.0, 3.0], dtype=np.float32)
+    expected = encoder(values, offset=1)
+    parameters = encoder.parameters()
+    attributes = dict(vars(encoder))
+
+    flex._install_eager_vae_encoder(vae)
+    eager_class = type(encoder)
+    assert eager_class is not FakeVAEEncoder
+    assert issubclass(eager_class, FakeVAEEncoder)
+    assert vae.encoder is encoder
+    assert vars(encoder).keys() == attributes.keys()
+    assert encoder.parameters().keys() == parameters.keys()
+    assert encoder.parameters()["weight"] is parameters["weight"]
+    assert encoder.weight is attributes["weight"]
+    assert evaluated == []
+    flex._install_eager_vae_encoder(vae)
+    assert type(encoder) is eager_class
+    for count in (1, 2):
+        result = encoder(values, offset=1)
+        np.testing.assert_array_equal(result, expected)
+        assert len(evaluated) == count
+        assert evaluated[-1] is result
+
+    second = SimpleNamespace(encoder=FakeVAEEncoder())
+    flex._install_eager_vae_encoder(second)
+    assert type(second.encoder) is eager_class
+    second.encoder(values)
+    assert len(evaluated) == 3
+
+
+@pytest.mark.parametrize(
+    "vae", [None, SimpleNamespace(), SimpleNamespace(encoder=None)]
+)
+def test_eager_vae_encoder_requires_encoder(vae):
+    with pytest.raises(h3.MiniMaxH3BackendError, match="Video VAE encoder"):
+        flex._install_eager_vae_encoder(vae)
+
+
+def test_prepare_model_requires_video_vae():
+    engine = flex.PikaH3FlexVideoEngine("pika-h3-flex")
+    try:
+        with pytest.raises(h3.MiniMaxH3BackendError, match="Video VAE encoder"):
+            engine._prepare_model(SimpleNamespace(pipeline=SimpleNamespace()))
+    finally:
+        engine.stop()
+
+
 @pytest.fixture(scope="module")
 def mx():
     # Native MLX initialization can abort when Metal is unavailable in a sandbox.
@@ -360,7 +423,9 @@ def test_engine_and_load_recipe(monkeypatch, tmp_path, array_core):
         lambda frames, output, *a, **k: output.write_bytes(b"mp4"),
     )
     pipeline = SimpleNamespace(
-        transformer=object(), _normalize_video_latents=lambda x: x
+        transformer=object(),
+        _normalize_video_latents=lambda x: x,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
     )
     module = ModuleType("mlx_vlm.generate")
     module.load_video_generation_model = lambda *a, **k: SimpleNamespace(
@@ -404,6 +469,8 @@ def test_engine_and_load_recipe(monkeypatch, tmp_path, array_core):
             dict(scale=1.0, allowed_suffixes=flex.TARGET_MODULES, expected_rank=128)
         ]
         assert pipeline.scheduler.noise is pipeline.audio_scheduler.noise
+        assert type(pipeline.video_vae.encoder) is not FakeVAEEncoder
+        assert isinstance(pipeline.video_vae.encoder, FakeVAEEncoder)
         assert [r[0] for r in requests] == ["t2va", "fl2va", "fl2va", "fl2va"]
         assert all(
             r[1].steps == 7 and r[1].extra == {"drop_adaln_weights": False}
@@ -694,7 +761,11 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
         pass
 
     original = lambda x: x
-    pipeline = SimpleNamespace(transformer=Trunk(), _normalize_video_latents=original)
+    pipeline = SimpleNamespace(
+        transformer=Trunk(),
+        _normalize_video_latents=original,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
+    )
     old = weakref.ref(pipeline.transformer)
     loads, verifications, merges, requests, events = [], [], [], [], []
     monkeypatch.setattr(
@@ -802,7 +873,9 @@ def test_failed_partition_switch_self_heals(
         pass
 
     pipeline = SimpleNamespace(
-        transformer=Trunk(), _normalize_video_latents=lambda x: x
+        transformer=Trunk(),
+        _normalize_video_latents=lambda x: x,
+        video_vae=SimpleNamespace(encoder=FakeVAEEncoder()),
     )
     loads, merges, events = [], [], []
     monkeypatch.setattr(array_core, "clear_cache", lambda: events.append("clear"))

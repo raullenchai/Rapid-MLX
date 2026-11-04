@@ -12,7 +12,7 @@ import struct
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import minimax_h3
 from .minimax_h3 import MiniMaxH3BackendError, MiniMaxH3VideoEngine, merge_lora
@@ -78,6 +78,35 @@ REF2VA_FILE_SIZES = {
     "transformer_ref/diffusion_pytorch_model-00014-of-00014.safetensors": 4644161920,
 }
 REF2VA_EXTRA_BYTES = sum(REF2VA_FILE_SIZES.values())
+
+_EAGER_VAE_ENCODER_CLASSES: dict[type[Any], type[Any]] = {}
+
+
+def _install_eager_vae_encoder(video_vae: Any) -> None:
+    encoder = getattr(video_vae, "encoder", None)
+    if not callable(encoder):
+        raise MiniMaxH3BackendError("Video VAE encoder is unavailable")
+    original_class = type(encoder)
+    if original_class in _EAGER_VAE_ENCODER_CLASSES.values():
+        return
+    eager_class = _EAGER_VAE_ENCODER_CLASSES.get(original_class)
+    if eager_class is None:
+
+        def eager_call(self: Any, *args: Any, **kwargs: Any) -> Any:
+            import mlx.core as mx
+
+            result = super(cast(type[Any], eager_class), self).__call__(*args, **kwargs)
+            # Bound transient memory without changing numerics: only materialize.
+            mx.eval(result)
+            return result
+
+        eager_class = type(
+            f"Eager{original_class.__name__}",
+            (original_class,),
+            {"__call__": eager_call},
+        )
+        _EAGER_VAE_ENCODER_CLASSES[original_class] = eager_class
+    encoder.__class__ = eager_class
 
 
 def ensure_ref2va_assets(cancel_token=None, on_progress=None) -> None:
@@ -567,6 +596,7 @@ class PikaH3FlexVideoEngine(MiniMaxH3VideoEngine):
 
     def _prepare_model(self, model):
         pipeline = model.pipeline
+        _install_eager_vae_encoder(getattr(pipeline, "video_vae", None))
         mode = self._needed_partition
         self._merge_adapter(pipeline, mode)
         self._renoise = RenoiseNoise()
