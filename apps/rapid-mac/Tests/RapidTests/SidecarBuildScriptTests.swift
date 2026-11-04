@@ -186,8 +186,9 @@ struct SidecarBuildScriptTests {
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
         // 194 pre-full-runtime Mach-O files plus torch/torchvision/matplotlib
-        // from the base runtimes, plus torch_shm_manager (build-only protoc and OpenCV excluded).
-        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-229}""#),
+        // from the base runtimes, plus torch_shm_manager and the bundled ffprobe
+        // (build-only protoc and OpenCV excluded).
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-230}""#),
                 "The signing baseline must include the measured full-runtime closure.")
     }
 
@@ -242,10 +243,12 @@ struct SidecarBuildScriptTests {
         #expect(script.contains("FFMPEG_VERSION=\"7.1.5\""))
         #expect(script.contains("de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"))
         #expect(script.contains("--enable-encoder=h264_videotoolbox"))
-        #expect(script.contains("--disable-swresample"),
-                "The video-only encoder must not retain FFmpeg's audio resampler.")
-        #expect(script.contains("bundled FFmpeg does not target Desktop's macOS 14 minimum"))
-        #expect(script.contains("unexpectedly enables GPL/nonfree components"))
+        #expect(script.contains("--enable-ffprobe"),
+                "Reference probing needs the bundled ffprobe.")
+        #expect(script.contains("--enable-audiotoolbox"),
+                "AAC references decode through AudioToolbox, not the native AAC decoder.")
+        #expect(script.contains("does not target macOS 14"))
+        #expect(script.contains("enables GPL/nonfree/version3"))
         #expect(script.contains(#""$STAGE/python/bin/python3.12" "$ENGINE_ROOT/scripts/sidecar_macho_inventory.py" "$STAGE" "$MACHOS_LIST""#),
                 "The standalone encoder must enter the content-based Mach-O signing inventory.")
         #expect(script.contains(#"assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None"#),

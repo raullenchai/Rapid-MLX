@@ -90,7 +90,8 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
             original = importlib.import_module(
                 "mlx_vlm.models.minimax_h3.processing"
             ).decode_video
-        return original(video)
+        decoded: tuple[mx.array, float | None] = original(video)
+        return decoded
 
     import mlx.core as mx
 
@@ -198,6 +199,7 @@ def decode_video_with_ffmpeg(video) -> tuple[mx.array, float | None]:
         if not frames:
             raise ValueError(f"video contains no decodable frames: {video}")
         return mx.stack(frames), _fps(stream)
+    raise AssertionError("unreachable: the software attempt always returns or raises")
 
 
 def install_reference_decoders():
