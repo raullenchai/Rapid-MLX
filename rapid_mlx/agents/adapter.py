@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -926,11 +927,30 @@ def get_setup_instructions(
         lines.append("```")
 
     if testing and testing.install_cmd:
+        install_cmd = testing.install_cmd
+        if profile.kind == "framework":
+            from rapid_mlx.connect import client_sdk_install_hint
+
+            # Framework profiles describe libraries imported by the user's
+            # project; their harness installs are a separate environment.
+            parts = shlex.split(install_cmd)
+            for prefix in (
+                ["pip", "install"],
+                ["pip3", "install"],
+                ["python", "-m", "pip", "install"],
+                ["python3", "-m", "pip", "install"],
+            ):
+                if parts[: len(prefix)] == prefix and len(parts) > len(prefix):
+                    install_cmd = client_sdk_install_hint(*parts[len(prefix) :])
+                    break
         lines.append("")
         lines.append(f"## 3. Install {profile.display_name}")
         lines.append("")
+        if profile.kind == "framework":
+            lines.append("Install in your project's Python environment:")
+            lines.append("")
         lines.append("```bash")
-        lines.append(testing.install_cmd)
+        lines.append(install_cmd)
         lines.append("```")
 
     if profile.known_issues:
