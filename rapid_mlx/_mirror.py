@@ -2136,16 +2136,8 @@ def download_with_mirror_fallback(
             f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(mirror direct-layout, "
             f"fallback: HF){RESET}"
         )
-    else:
-        # Mirror is skipped wholesale (catalog says not mirrored, OR
-        # default-mirror catalog 5xx/network/parse failure, OR custom
-        # mirror catalog 5xx). Codex round-8 BLOCKING #1+#2: do NOT
-        # impersonate ``snapshot_download`` with per-file
-        # ``hf_hub_download`` calls — return False so the caller invokes
-        # the real ``snapshot_download`` and gets its allow/ignore
-        # patterns, retries, and repository-level error reporting.
-        return False
-
+    # Mirror is skipped wholesale when no R2 route is available. Still print
+    # the selected file plan before handing the download back to the Hub.
     # Issue #651 follow-up: surface the per-file work plan up front so
     # the user sees activity instead of staring at the banner for
     # minutes while multi-GB shards stream. Per-file completion lines
@@ -2159,6 +2151,9 @@ def download_with_mirror_fallback(
         )
     else:
         _print_dim(f"  {DIM}Found {total_files_planned} files{RESET}")
+
+    if not hf_only and not use_r2:
+        return False
 
     # Per-pull aggregate byte tracker so chunk writes inside
     # ``_do_r2_download`` and per-file completions in the ``as_completed``

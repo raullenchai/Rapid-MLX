@@ -2544,8 +2544,8 @@ def _add_pull_parser(
         action="store_true",
         default=False,
         help=(
-            "Skip the pre-download check for models outside the Rapid-MLX "
-            "catalog (format and architecture)."
+            "Skip catalog memory admission and the pre-download format and "
+            "architecture check for models outside the Rapid-MLX catalog."
         ),
     )
 
