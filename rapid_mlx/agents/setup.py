@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import difflib
+import email.message
 import json
 import os
 import sys
@@ -695,7 +696,11 @@ def verify_server(
         with urllib.request.urlopen(f"{root}/health", timeout=timeout) as response:
             if response.status != 200:
                 raise urllib.error.HTTPError(
-                    f"{root}/health", response.status, "health check failed", None, None
+                    f"{root}/health",
+                    response.status,
+                    "health check failed",
+                    email.message.Message(),
+                    None,
                 )
         checking_health = False
         from rapid_mlx.http_auth import rapid_mlx_auth_headers

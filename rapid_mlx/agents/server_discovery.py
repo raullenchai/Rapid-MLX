@@ -143,7 +143,7 @@ def pid_alive(pid: int) -> bool:
 
     try:
         proc = psutil.Process(pid)
-        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        return bool(proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
     except psutil.NoSuchProcess:
         return False
     except (psutil.AccessDenied, PermissionError):
