@@ -193,11 +193,24 @@ def test_native_overflow_policies_are_preserved(native_engine):
 
 
 @pytest.mark.parametrize("quantized", [False, True])
-def test_strict_native_loader_and_engine_dispatch(tmp_path, monkeypatch, quantized):
+def test_strict_native_loader_and_engine_dispatch(
+    tmp_path, monkeypatch, caplog, quantized
+):
+    import socket
+
+    from tokenizers import Tokenizer as RustTokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
     from rapid_mlx.models.embedding_gemma2 import loader
     from rapid_mlx.models.embedding_gemma2.config import ModelConfig
     from rapid_mlx.models.embedding_gemma2.embedding_gemma2 import Model
 
+    def no_network(*args, **kwargs):
+        pytest.fail("Native embedding loading must stay offline")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
     config = tiny_config()
     model = Model(ModelConfig.from_dict(config))
     if quantized:
@@ -210,11 +223,17 @@ def test_strict_native_loader_and_engine_dispatch(tmp_path, monkeypatch, quantiz
         }
     model.save_weights(str(tmp_path / "model.safetensors"))
     (tmp_path / "config.json").write_text(json.dumps(config))
-    monkeypatch.setattr(
-        loader.AutoTokenizer, "from_pretrained", lambda *a, **kw: Tokenizer()
+    backend = RustTokenizer(
+        WordLevel({"<pad>": 0, "<unk>": 1, "2": 2, "3": 3}, unk_token="<unk>")
     )
+    backend.pre_tokenizer = Whitespace()
+    PreTrainedTokenizerFast(
+        tokenizer_object=backend, pad_token="<pad>", unk_token="<unk>"
+    ).save_pretrained(tmp_path)
+    caplog.set_level("WARNING", logger="transformers")
     engine = EmbeddingEngine(str(tmp_path))
     engine.load()
+    assert not any("instantiate a model of type" in r.message for r in caplog.records)
     assert engine.is_loaded
     assert engine.effective_max_length == 8192
     assert len(engine.embed("2 3")[0]) == 768

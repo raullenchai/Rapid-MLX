@@ -8,7 +8,7 @@ from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PretrainedConfig
 
 from .config import ModelConfig
 from .embedding_gemma2 import Model
@@ -79,7 +79,13 @@ def load(model_name: str, *, vision: bool = False):
     model.load_weights(list(weights.items()), strict=True)
     mx.eval(model.parameters())
     model.eval()
+    # The native loader already validated the architecture. Give AutoTokenizer
+    # its metadata directly: its AutoConfig fallback otherwise loads this native
+    # model_type as the generic HF config and warns about an architecture mismatch.
     tokenizer = AutoTokenizer.from_pretrained(
-        str(path), local_files_only=True, trust_remote_code=False
+        str(path),
+        config=PretrainedConfig.from_dict(config),
+        local_files_only=True,
+        trust_remote_code=False,
     )
     return model, tokenizer

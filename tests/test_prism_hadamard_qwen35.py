@@ -253,6 +253,8 @@ def test_loader_uses_only_data_and_validates_schema(
 
 
 def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_path):
+    import json
+
     import mlx_vlm.models.qwen3_5 as qwen
     import mlx_vlm.tokenizer_utils
     import mlx_vlm.utils
@@ -264,6 +266,9 @@ def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_p
     from rapid_mlx.models.prism_hadamard_qwen35 import _build_processor
 
     (tmp_path / "chat_template.jinja").write_text("{{ messages }}")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "prism_hadamard_qwen35"})
+    )
     tokenizer = SimpleNamespace(eos_token_id=7)
     tokenizer_load = Mock(return_value=tokenizer)
     image_load = Mock(return_value=object())
@@ -280,7 +285,11 @@ def test_processor_uses_builtin_classes_without_snapshot_code(monkeypatch, tmp_p
     monkeypatch.setattr(mlx_vlm.utils, "StoppingCriteria", stopping)
 
     assert _build_processor(tmp_path) is processor
-    tokenizer_load.assert_called_once_with(str(tmp_path), trust_remote_code=False)
+    assert tokenizer_load.call_args.args == (str(tmp_path),)
+    assert tokenizer_load.call_args.kwargs["trust_remote_code"] is False
+    assert (
+        tokenizer_load.call_args.kwargs["config"].model_type == "prism_hadamard_qwen35"
+    )
     image_load.assert_called_once_with(str(tmp_path))
     processor_class.assert_called_once_with(
         image_processor=image_load.return_value,
