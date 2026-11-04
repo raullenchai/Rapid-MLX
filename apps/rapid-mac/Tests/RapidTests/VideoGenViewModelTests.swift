@@ -384,37 +384,142 @@ struct VideoGenViewModelTests {
         #expect(await client.listCallCount() >= 3)
     }
 
-    @Test("A persistently missing active job expires after bounded polling")
-    func missingActiveJobEventuallyExpires() async throws {
-        let model = ModelEntry(
+    private func lostJobModel(client: VideoFakeClient) async -> (ServerManager, VideoGenViewModel) {
+        let entry = ModelEntry(
             alias: "ltx-2.3-mlx-q4", hfRepo: "org/ltx", sizeOnDisk: "9 GB", cached: true,
             kind: .video, videoCapabilities: [.textToVideo], minimumMemoryGB: 24
         )
-        let client = VideoFakeClient()
         let server = ServerManager(
-            testingState: .ready(alias: model.alias),
-            binaryPath: URL(fileURLWithPath: "/usr/bin/true"),
-            activeBearer: "test-bearer"
+            testingState: .ready(alias: entry.alias),
+            binaryPath: URL(fileURLWithPath: "/usr/bin/true"), activeBearer: "test-bearer"
         )
-        let viewModel = VideoGenViewModel(
-            server: server,
-            client: client,
-            physicalRAMGB: 32,
-            pollingInterval: .milliseconds(5),
-            catalogLoader: { _ in [model] }
+        let model = VideoGenViewModel(
+            server: server, client: client, physicalRAMGB: 32,
+            pollingInterval: .seconds(3600), catalogLoader: { _ in [entry] }
         )
-        await viewModel.refreshCatalog()
-        await viewModel.refreshServerData()
-        viewModel.prompt = "A fox runs through snow"
-        await viewModel.submit()
+        await model.refreshCatalog()
+        await model.refreshServerData()
+        model.prompt = "A fox runs through snow"
+        await model.submit()
+        return (server, model)
+    }
 
-        for _ in 0..<100 where viewModel.hasActiveJobs {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+    private func expectLostJob(_ model: VideoGenViewModel, original: VideoJob) throws {
+        let failed = try #require(model.jobs.first)
+        #expect(failed.id == original.id)
+        #expect(failed.prompt == original.prompt)
+        #expect(failed.createdAt == original.createdAt)
+        #expect(failed.status == .failed)
+        #expect(failed.error?.code == "video_server_exited")
+        #expect(failed.error?.message == "The video server stopped unexpectedly during generation, possibly because the Mac ran out of memory. Try again with a smaller size, a shorter duration, or fewer or shorter references.")
+        #expect(!failed.isCancelled)
+        #expect(!failed.cancelRequested)
+        #expect(!model.hasActiveJobs)
+        #expect(!model.hasLiveActiveJobs)
+        #expect(model.canSwitchModels)
+        #expect(model.selectedJobID == original.id)
+        #expect(model.selectedJob == failed)
+    }
 
-        #expect(!viewModel.hasActiveJobs)
-        #expect(viewModel.jobs.isEmpty)
-        #expect(await client.listCallCount() >= 7)
+    @Test("A restarted server retains lost generation as failed and accepts a new job",
+          arguments: ["test-bearer", "replacement-bearer"])
+    func restartedServerRetainsFailedJob(bearer: String) async throws {
+        let client = VideoFakeClient(createdStatus: .inProgress)
+        let (server, model) = await lostJobModel(client: client)
+        let original = try #require(model.selectedJob)
+        server._testSetState(.crashed(alias: model.selectedAlias, message: "Process exited"))
+        await model.serverStateDidChange()
+        server._testReplaceActiveServerSession(bearer: bearer)
+        server._testSetState(.ready(alias: model.selectedAlias))
+        await model.serverStateDidChange()
+        try expectLostJob(model, original: original)
+        await model.pollJobs()
+        await model.refreshServerData()
+        try expectLostJob(model, original: original)
+        model.prompt = "A smaller scene"
+        #expect(model.canSubmit)
+        await model.submit()
+        #expect(await client.recordedRequests().count == 2)
+        #expect(model.jobs.count == 2)
+        #expect(model.selectedJob?.status == .inProgress)
+        #expect(model.errorMessage == nil)
+        await model.delete(original)
+        #expect(model.jobs.count == 1)
+        #expect(await client.deleteCallCount() == 0)
+        server._testSetState(.stopped)
+        await model.serverStateDidChange()
+    }
+
+    @Test("A persistently missing active job becomes a selectable local failure",
+          arguments: [VideoJobStatus.queued, .inProgress])
+    func missingActiveJobBecomesFailed(status: VideoJobStatus) async throws {
+        let client = VideoFakeClient(createdStatus: status)
+        let (server, model) = await lostJobModel(client: client)
+        let original = try #require(model.selectedJob)
+        for _ in 0..<5 { await model.pollJobs() }
+        #expect(model.selectedJob == original)
+        #expect(model.hasActiveJobs)
+        await model.pollJobs()
+        try expectLostJob(model, original: original)
+        await model.pollJobs()
+        try expectLostJob(model, original: original)
+        // Local failures can be deleted even while the server is stopped.
+        server._testSetState(.stopped)
+        await model.serverStateDidChange()
+        await model.delete(try #require(model.selectedJob))
+        #expect(model.jobs.isEmpty)
+        #expect(model.selectedJobID == nil)
+        #expect(model.errorMessage == nil)
+        #expect(await client.deleteCallCount() == 0)
+    }
+
+    @Test("Reported terminal results replace local state without alteration",
+          arguments: [VideoJobStatus.failed, .completed], [false, true])
+    func reportedTerminalJobsAreUnchanged(status: VideoJobStatus, cancelled: Bool) async throws {
+        let client = VideoFakeClient(createdStatus: .inProgress)
+        let (server, model) = await lostJobModel(client: client)
+        let original = try #require(model.selectedJob)
+        let reported = VideoJob(
+            id: original.id, model: original.model, prompt: original.prompt,
+            seconds: original.seconds, size: original.size, status: status,
+            progress: 100, createdAt: original.createdAt, completedAt: 456,
+            error: status == .failed ? .init(
+                code: cancelled ? "video_generation_cancelled" : "generation_error",
+                message: cancelled ? "Video generation was cancelled." : "Generation failed."
+            ) : nil
+        )
+        // The server's result also wins over an earlier synthesized failure.
+        for _ in 0..<6 { await model.pollJobs() }
+        await client.setListedJobs([reported])
+        server._testReplaceActiveServerSession(bearer: "replacement-bearer")
+        await model.serverStateDidChange()
+        #expect(model.jobs == [reported])
+        #expect(model.selectedJob == reported)
+        await model.pollJobs()
+        #expect(model.jobs == [reported])
+        #expect(!model.hasActiveJobs)
+        #expect(model.canSwitchModels)
+        await model.delete(reported)
+        #expect(await client.deleteCallCount() == 1)
+    }
+
+    @Test("A deliberate stop retains history until the missing job is confirmed lost")
+    func stoppedJobUsesNeutralFailure() async throws {
+        let client = VideoFakeClient(createdStatus: .inProgress)
+        let (server, model) = await lostJobModel(client: client)
+        let original = try #require(model.selectedJob)
+        server._testSetState(.stopped)
+        await model.serverStateDidChange()
+        #expect(model.selectedJob == original)
+        #expect(!model.hasLiveActiveJobs)
+        server._testReplaceActiveServerSession(bearer: "replacement-bearer")
+        server._testSetState(.ready(alias: model.selectedAlias))
+        await model.serverStateDidChange()
+        #expect(model.selectedJob?.status == .failed)
+        #expect(model.selectedJob?.error?.code == "video_server_exited")
+        #expect(model.selectedJob?.error?.message == "Generation stopped because the video model was stopped.")
+        #expect(!model.hasActiveJobs)
+        #expect(model.canSwitchModels)
     }
 
     @Test("A stale active job stops blocking global busy after a server switch")
@@ -498,9 +603,13 @@ private actor VideoFakeClient: VideoClientProtocol {
     private var requests: [VideoCreateRequest] = []
     private var listFailures: Int
     private var listCalls = 0
+    private var deleteCalls = 0
+    private var listedJobs: [VideoJob] = []
+    private let createdStatus: VideoJobStatus
 
-    init(listFailures: Int = 0) {
+    init(listFailures: Int = 0, createdStatus: VideoJobStatus = .queued) {
         self.listFailures = listFailures
+        self.createdStatus = createdStatus
     }
 
     func capabilities(port: Int, bearer: String?) async throws -> VideoCapabilities {
@@ -514,12 +623,12 @@ private actor VideoFakeClient: VideoClientProtocol {
     ) async throws -> VideoJob {
         requests.append(request)
         return VideoJob(
-            id: "video_0123456789abcdef0123456789abcdef",
+            id: "video_fake_\(requests.count)",
             model: request.model,
             prompt: request.prompt,
             seconds: String(request.seconds),
             size: request.size,
-            status: .queued,
+            status: createdStatus,
             progress: 0,
             createdAt: 123,
             completedAt: nil,
@@ -533,13 +642,16 @@ private actor VideoFakeClient: VideoClientProtocol {
             listFailures -= 1
             throw VideoClientError.transport("history unavailable")
         }
-        return []
+        return listedJobs
     }
     func cancel(id: String, port: Int, bearer: String?) async throws {}
-    func delete(id: String, port: Int, bearer: String?) async throws {}
+    func delete(id: String, port: Int, bearer: String?) async throws { deleteCalls += 1 }
     func content(id: String, port: Int, bearer: String?) async throws -> URL {
         URL(fileURLWithPath: "/tmp/\(id).mp4")
     }
+
+    func setListedJobs(_ jobs: [VideoJob]) { listedJobs = jobs }
+    func deleteCallCount() -> Int { deleteCalls }
 
     func recordedRequests() -> [VideoCreateRequest] { requests }
     func listCallCount() -> Int { listCalls }

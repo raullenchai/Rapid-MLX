@@ -8,6 +8,7 @@ final class VideoGenViewModel {
         let alias: String
         let port: Int
         let bearer: String
+        let sessionID: UUID?
     }
 
     enum Mode: String, CaseIterable, Identifiable {
@@ -78,6 +79,8 @@ final class VideoGenViewModel {
     @ObservationIgnored private let pollingInterval: Duration
     @ObservationIgnored private var missingActivePollCounts: [String: Int] = [:]
     private var pendingCacheCleanupJobIDs = Set<String>()
+    private var localFailedJobIDs = Set<String>()
+    @ObservationIgnored private var stoppedActiveJobIDs = Set<String>()
     private static let maximumMissingActivePolls = 5
 
     init(
@@ -321,6 +324,11 @@ final class VideoGenViewModel {
     }
 
     func serverStateDidChange() async {
+        if server.state == .stopped {
+            stoppedActiveJobIDs.formUnion(
+                jobs.filter { $0.status == .queued || $0.status == .inProgress }.map(\.id)
+            )
+        }
         guard let context = currentServerContext else {
             invalidateServerContext()
             capabilities = nil
@@ -549,6 +557,14 @@ final class VideoGenViewModel {
     }
 
     func delete(_ job: VideoJob) async {
+        if localFailedJobIDs.remove(job.id) != nil {
+            let wasSelected = selectedJobID == job.id
+            jobs.removeAll { $0.id == job.id }
+            reconcileSelection()
+            reconcileJobPolling()
+            if wasSelected { await loadSelectedPreview() }
+            return
+        }
         guard let context = currentServerContext,
               (jobsServerContext == context || pendingCacheCleanupJobIDs.contains(job.id)),
               job.status != .inProgress else { return }
@@ -588,6 +604,8 @@ final class VideoGenViewModel {
         jobsServerContext = nil
         missingActivePollCounts = [:]
         pendingCacheCleanupJobIDs = []
+        localFailedJobIDs = []
+        stoppedActiveJobIDs = []
         jobsAreReconciled = false
         reconcileJobPolling()
         selectedJobID = nil
@@ -636,26 +654,35 @@ final class VideoGenViewModel {
         let reportedIDs = Set(serverJobs.map(\.id))
         for id in reportedIDs {
             missingActivePollCounts.removeValue(forKey: id)
+            localFailedJobIDs.remove(id)
+            stoppedActiveJobIDs.remove(id)
         }
-        guard jobsServerContext == context else {
+        let contextChanged = jobsServerContext != context
+        if contextChanged {
             missingActivePollCounts = [:]
-            let pendingCleanup = jobs.filter {
-                pendingCacheCleanupJobIDs.contains($0.id)
-                    && !reportedIDs.contains($0.id)
-            }
-            return serverJobs + pendingCleanup
         }
         var retained: [VideoJob] = []
         for job in jobs where !reportedIDs.contains(job.id) {
-            if pendingCacheCleanupJobIDs.contains(job.id) {
+            if pendingCacheCleanupJobIDs.contains(job.id) || localFailedJobIDs.contains(job.id) {
                 retained.append(job)
             } else if job.status == .queued || job.status == .inProgress {
                 let misses = (missingActivePollCounts[job.id] ?? 0) + 1
-                if misses <= Self.maximumMissingActivePolls {
+                if !contextChanged && misses <= Self.maximumMissingActivePolls {
                     missingActivePollCounts[job.id] = misses
                     retained.append(job)
                 } else {
                     missingActivePollCounts.removeValue(forKey: job.id)
+                    localFailedJobIDs.insert(job.id)
+                    let message = stoppedActiveJobIDs.remove(job.id) != nil
+                        ? "Generation stopped because the video model was stopped."
+                        : "The video server stopped unexpectedly during generation, possibly because the Mac ran out of memory. Try again with a smaller size, a shorter duration, or fewer or shorter references."
+                    retained.append(VideoJob(
+                        id: job.id, model: job.model, prompt: job.prompt,
+                        seconds: job.seconds, size: job.size, status: .failed,
+                        progress: job.progress, createdAt: job.createdAt,
+                        completedAt: Int(Date().timeIntervalSince1970),
+                        error: VideoJobError(code: "video_server_exited", message: message)
+                    ))
                 }
             } else {
                 missingActivePollCounts.removeValue(forKey: job.id)
@@ -671,7 +698,8 @@ final class VideoGenViewModel {
         return ServerRequestContext(
             alias: selectedAlias,
             port: server.activePort,
-            bearer: bearer
+            bearer: bearer,
+            sessionID: server.activeServerSessionID
         )
     }
 
