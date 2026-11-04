@@ -219,9 +219,10 @@ def engine(native):
         n
         for n in cls.body
         if isinstance(n, ast.FunctionDef)
-        and n.name in {"_step_once", "_step_coalesced"}
+        and n.name in {"_step_once", "_step_coalesced", "generate_batch_sync"}
     ]
-    namespace = {"step_workgroup": perf.StepWorkgroup()}
+    # ``__package__`` resolves generate_batch_sync's ``from .request import``.
+    namespace = {"step_workgroup": perf.StepWorkgroup(), "__package__": "rapid_mlx"}
     exec(
         compile(ast.Module(body=[cls], type_ignores=[]), str(source), "exec"), namespace
     )
@@ -308,3 +309,31 @@ assert wg._wg and not wg._disabled
     if result.returncode == 77:
         pytest.skip("native workgroup library or symbol unavailable")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_generate_batch_sync_brackets_each_step(native, engine):
+    from rapid_mlx.request import SamplingParams
+
+    events = []
+    native.system.os_workgroup_join.side_effect = lambda *_: events.append("join") or 0
+    native.system.os_workgroup_leave.side_effect = lambda *_: events.append("leave")
+    pending = []
+
+    def add_request(request):
+        pending.append(request.request_id)
+
+    def step():
+        events.append("step")
+        rid = pending.pop(0)
+        done = SimpleNamespace(request_id=rid, finished=True)
+        return SimpleNamespace(outputs=[done])
+
+    engine.scheduler = SimpleNamespace(
+        add_request=add_request,
+        has_requests=lambda: bool(pending),
+        step=step,
+        remove_finished_request=lambda rid: None,
+    )
+    outputs = engine.generate_batch_sync([[1], [2]], SamplingParams(max_tokens=1))
+    assert [o.finished for o in outputs] == [True, True]
+    assert events == ["join", "step", "leave"] * 2
