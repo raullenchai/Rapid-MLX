@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Catalog default MTP companions are optional provisioning dependencies."""
 
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -255,16 +257,72 @@ def test_shared_prefetch_opt_out_keeps_target_download(provision, monkeypatch):
     assert state.calls == []
 
 
+def test_missing_sidecar_declaration_still_pulls_target(provision, monkeypatch):
+    profile, state = provision
+    monkeypatch.setattr(cli, "_alias_mtp_declaration", lambda _: (None, None))
+    eligibility = Mock(side_effect=AssertionError("no sidecar needs no config probe"))
+    monkeypatch.setattr(cli, "_automatic_mtp_target_eligibility", eligibility)
+
+    assert cli._automatic_mtp_sidecar_plan(SimpleNamespace(model=ALIAS)) is None
+    cli.pull_command(SimpleNamespace(model=ALIAS))
+
+    assert state.target and not state.head
+    assert [call[0] for call in state.calls] == [profile.hf_path]
+    assert state.sizes == []
+    eligibility.assert_not_called()
+
+
+def test_sidecar_planning_failure_preserves_target_download(
+    provision, monkeypatch, caplog, capsys
+):
+    _, state = provision
+    target = Mock(side_effect=lambda *a, **kw: setattr(state, "target", True))
+    monkeypatch.setattr(cli, "_ensure_target_model_downloaded", target)
+
+    def broken_plan(args):
+        assert state.target
+        raise ValueError("invalid optional sidecar metadata")
+
+    monkeypatch.setattr(cli, "_automatic_mtp_sidecar_plan", broken_plan)
+    with caplog.at_level(logging.DEBUG, logger=cli.__name__):
+        cli._ensure_model_downloaded(ALIAS)
+
+    target.assert_called_once_with(ALIAS, force_disk_check=False)
+    assert state.target and not state.head
+    assert state.calls == []
+    record = next(
+        r for r in caplog.records if r.message == "Automatic MTP planning failed"
+    )
+    assert isinstance(record.exc_info[1], ValueError)
+    assert "Automatic MTP skipped" not in capsys.readouterr().err
+
+
+def test_pull_reuses_cached_sidecar_without_dependency_fetch(provision, capsys):
+    profile, state = provision
+    state.head = True
+
+    cli.pull_command(SimpleNamespace(model=ALIAS))
+
+    assert state.target and state.head
+    assert [call[0] for call in state.calls] == [profile.hf_path]
+    assert "Automatic MTP runtime assets:" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     "choice", [{"no_spec_decode": True}, {"speculative_config": '{"method":"suffix"}'}]
 )
+@pytest.mark.parametrize("force_disk_check", [False, True])
 @pytest.mark.parametrize("serve_download", [ALIAS], indirect=True)
 def test_serve_explicit_choice_never_pulls_automatic_sidecar(
-    serve_download, monkeypatch, choice
+    serve_download, monkeypatch, choice, force_disk_check
 ):
     from tests.test_continuous_mtp_qualification import _StopServeError
 
     state, _ = serve_download
+    state.args.force_disk_check = force_disk_check
+    download = Mock(wraps=cli._ensure_model_downloaded)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", download)
+    monkeypatch.setattr(cli, "_resolve_serve_port", lambda *a, **kw: 8000)
     for name, value in choice.items():
         setattr(state.args, name, value)
     monkeypatch.setattr(cli, "_run_optional_runtime_guard", lambda *a, **kw: None)
@@ -278,6 +336,10 @@ def test_serve_explicit_choice_never_pulls_automatic_sidecar(
     with pytest.raises(_StopServeError):
         cli.serve_command(state.args)
     assert state.downloaded
+    expected_options = {"auto_mtp": False}
+    if force_disk_check:
+        expected_options["force_disk_check"] = True
+    download.assert_called_once_with(state.args.model, **expected_options)
     assert state.args.spec_decode == "none"
     if "speculative_config" in choice:
         assert state.args._speculative_config.method == "suffix"
