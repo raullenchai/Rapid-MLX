@@ -679,6 +679,12 @@ def test_ref_adapter_verification(monkeypatch, tmp_path):
 def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_core):
     import weakref
 
+    from rapid_mlx.video import reference_media
+
+    installs = []
+    monkeypatch.setattr(
+        reference_media, "install_reference_decoders", lambda: installs.append(True)
+    )
     monkeypatch.setattr(flex, "ensure_ref2va_assets", lambda: None)
 
     from rapid_mlx import _mirror
@@ -762,6 +768,7 @@ def test_partition_switch_and_reference_request(monkeypatch, tmp_path, array_cor
         pipeline._adaln_cache_key, pipeline._adaln_caches = "old", object()
         pipeline._adaln_weights_freed_bytes = 123
         engine._generate(**args, references=refs)
+        assert installs == [True]
         assert pipeline._normalize_video_latents is original
         assert pipeline.partition == "ref2va"
         assert pipeline._adaln_cache_key is None and pipeline._adaln_caches is None
@@ -1307,6 +1314,10 @@ def test_reference_ffprobe_video_aspect_ratio(
 @pytest.mark.parametrize("initial_mode", ["ref2va", "fl2va"])
 def test_first_load_partition(monkeypatch, tmp_path, array_core, initial_mode):
     import huggingface_hub
+
+    from rapid_mlx.video import reference_media
+
+    monkeypatch.setattr(reference_media, "install_reference_decoders", lambda: None)
 
     from rapid_mlx import _mirror, model_downloads
     from rapid_mlx.video import encoding
@@ -2211,17 +2222,28 @@ def test_ref2va_progress_counts_only_missing_assets(monkeypatch, ref2va_cache):
 
 
 @pytest.mark.parametrize("kind", ["video", "audio"])
-def test_reference_http_rejects_missing_decoder(reference_app, monkeypatch, kind):
+@pytest.mark.parametrize("advertised", [False, True])
+def test_reference_http_rejects_missing_decoder(
+    reference_app, monkeypatch, kind, advertised
+):
     from rapid_mlx.routes import video
 
     client, _, calls = reference_app
-    monkeypatch.setattr(video, "_reference_decoder_kinds", lambda: frozenset())
+    monkeypatch.setattr(
+        video,
+        "_reference_decoder_kinds",
+        lambda: frozenset({kind} if advertised else set()),
+    )
     monkeypatch.setattr(
         video,
         "_probe_packed_reference",
         lambda path, field: (kind, "mp4" if kind == "video" else "wav", 2.0),
     )
     response = post_references(client, ["image", kind])
+    if advertised:
+        assert response.status_code == 200, response.text
+        assert [k for k, _ in calls[-1]["references"]] == ["image", kind]
+        return
     assert response.status_code == 503
     assert response.json()["detail"] == f"{kind} references require media decoders"
     assert not calls
@@ -2251,3 +2273,65 @@ def test_reference_http_accepts_images_without_timed_decoders(
     response = post_references(client, ["image"])
     assert response.status_code == 200, response.text
     assert [kind for kind, _ in calls[-1]["references"]] == ["image"]
+
+
+@pytest.mark.parametrize("container", ["matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"])
+@pytest.mark.parametrize(
+    "video_codec,audio_codec,decodable,rejected",
+    [
+        ("av1", None, {"h264", "aac"}, "av1 video"),
+        ("prores", None, {"h264", "aac"}, "prores video"),
+        ("h264", "ac3", {"h264", "aac"}, "ac3 audio"),
+        (None, "ac3", {"h264", "aac"}, "ac3 audio"),
+        ("av1", None, {"av1"}, None),
+        ("prores", "ac3", {"prores", "ac3"}, None),
+        (None, "ac3", {"ac3"}, None),
+        ("h264", "aac", {"h264", "aac"}, None),
+        (None, "aac", {"aac"}, None),
+        ("missing", "missing", set(), None),
+        (None, "missing", set(), None),
+    ],
+)
+def test_reference_probe_checks_runtime_codecs(
+    monkeypatch, tmp_path, container, video_codec, audio_codec, decodable, rejected
+):
+    from fastapi import HTTPException
+
+    from rapid_mlx.routes import video
+
+    streams = []
+    if video_codec:
+        streams.append(dict(codec_type="video", width=64, height=48))
+        if video_codec != "missing":
+            streams[-1]["codec_name"] = video_codec
+    if audio_codec:
+        streams.append(dict(codec_type="audio"))
+        if audio_codec != "missing":
+            streams[-1]["codec_name"] = audio_codec
+    # Audio-only references require an audio-compatible container.
+    if not video_codec:
+        container = "mov,mp4,m4a,3gp,3g2,mj2"
+    payload = dict(
+        streams=streams,
+        format=dict(format_name=container, duration="2"),
+    )
+    monkeypatch.setattr(video.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(video, "_ffmpeg_decodable_codecs", lambda: frozenset(decodable))
+    monkeypatch.setattr(
+        video.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout=json.dumps(payload)),
+    )
+    if rejected:
+        with pytest.raises(HTTPException) as exc:
+            video._probe_packed_reference(tmp_path / "clip", "references[0]")
+        assert exc.value.status_code == 400
+        assert exc.value.detail == (
+            f"references[0]: {rejected} is not supported by this runtime"
+        )
+    else:
+        kind, _, duration = video._probe_packed_reference(
+            tmp_path / "clip", "references[0]"
+        )
+        assert kind == ("video" if video_codec else "audio")
+        assert duration == 2.0

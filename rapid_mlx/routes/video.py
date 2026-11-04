@@ -968,26 +968,46 @@ def _video_capabilities(engine) -> dict:
 
 
 @lru_cache(maxsize=1)
-def _reference_decoder_kinds() -> frozenset[str]:
-    """Pinned H3 input decoders use PATH, not the output FFMPEG_BINARY override.
-
-    Video soundtracks need ffmpeg as well as OpenCV frame decoding. Audio
-    delegates to mlx_audio.audio_io (miniaudio plus ffmpeg for AAC/M4A/OGG).
-    Check imports once so broken native decoder installations fail closed too.
-    """
-    if not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
+def _ffmpeg_decodable_codecs() -> frozenset[str]:
+    """Return codec names supported by the PATH FFmpeg, failing closed."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
         return frozenset()
-    available = set()
-    for kind, modules in (
-        ("video", ("cv2",)),
-        ("audio", ("miniaudio", "mlx_audio.audio_io")),
-    ):
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-codecs"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return frozenset(
+            parts[1]
+            for line in result.stdout.splitlines()
+            if len(parts := line.split()) >= 2
+            and len(parts[0]) == 6
+            and parts[0][0] == "D"
+            and parts[1] != "="
+        )
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+
+
+@lru_cache(maxsize=1)
+def _reference_decoder_kinds() -> frozenset[str]:
+    """Advertise H3 decoding with PATH tools and pinned audio dependencies."""
+    if not shutil.which("ffprobe"):
+        return frozenset()
+    codecs = _ffmpeg_decodable_codecs()
+    available = {"video"} if "h264" in codecs else set()
+    if "aac" in codecs:
         try:
-            for module in modules:
+            for module in ("miniaudio", "mlx_audio.audio_io"):
                 importlib.import_module(module)
         except (ImportError, OSError):
-            continue
-        available.add(kind)
+            pass
+        else:
+            available.add("audio")
     return frozenset(available)
 
 
@@ -1104,7 +1124,7 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
                 "-format_whitelist",
                 "mov,matroska,webm,wav,mp3,aac,flac,ogg",
                 "-show_entries",
-                "stream=codec_type,width,height,duration:stream_disposition=attached_pic"
+                "stream=codec_type,codec_name,width,height,duration:stream_disposition=attached_pic"
                 ":format=format_name,duration",
                 "-of",
                 "json",
@@ -1157,6 +1177,16 @@ def _probe_packed_reference(path: Path, field: str) -> tuple[str, str, float]:
             stream = audios[0]
         else:
             raise ValueError("unsupported streams")
+        checked_streams = [(stream, kind)]
+        if kind == "video" and audios:
+            checked_streams.append((audios[0], "audio"))
+        for checked_stream, stream_kind in checked_streams:
+            codec = checked_stream.get("codec_name")
+            if codec and codec not in _ffmpeg_decodable_codecs():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field}: {codec} {stream_kind} is not supported by this runtime",
+                )
         duration = _finite_float(stream.get("duration"))
         if duration is None:
             duration = _finite_float(details["format"].get("duration"))

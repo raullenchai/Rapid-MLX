@@ -331,6 +331,10 @@ class MiniMaxH3VideoEngine:
             if references:
                 from mlx_vlm.generate.video_generation import VideoReference
 
+                from .reference_media import install_reference_decoders
+
+                install_reference_decoders()
+
                 reference_kwargs["references"] = tuple(
                     VideoReference(kind, path) for kind, path in references
                 )

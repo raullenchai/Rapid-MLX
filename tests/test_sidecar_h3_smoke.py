@@ -55,3 +55,33 @@ def test_video_smoke_exercises_synchronized_audio_encoding():
         {keyword.arg for keyword in call.keywords} >= {"audio", "sampling_rate"}
         for call in calls
     )
+
+
+def test_reference_media_bundle_contract():
+    script = BUILD.read_text()
+    config = script.split("./configure", 1)[1].split("if ! MACOSX", 1)[0]
+    assert "--enable-ffprobe" in config
+    assert all(
+        flag not in config
+        for flag in (
+            "--enable-gpl",
+            "--enable-nonfree",
+            "--enable-version3",
+            "--disable-swresample",
+        )
+    )
+    decoders = config.split("--enable-decoder=", 1)[1].split()[0].split(",")
+    assert "aac_at" in decoders
+    assert "aac" not in decoders
+    assert "ffmpeg ffprobe" in script
+    assert "s/^configuration: //p" in script
+    assert 'ln -s ../bin/ffmpeg "$STAGE/media-bin/ffmpeg"' in script
+    assert 'ln -s ../bin/ffprobe "$STAGE/media-bin/ffprobe"' in script
+    block = script.split('    VIDEO_OUT="$(')[1]
+    assert 'PATH="$STAGE/media-bin:/usr/bin:/bin"' in block
+    assert "decode_video_with_ffmpeg(reference_video)" in block
+    assert "h3_processing.decode_audio(reference)" in block
+    assert "h3_processing.decode_video_soundtrack(audio_output)" in block
+    shim = (BUILD.parent / "sidecar-shim.sh").read_text()
+    assert 'export PATH="$ROOT/media-bin:$PATH"' in shim
+    assert 'export FFPROBE_BINARY="$ROOT/bin/ffprobe"' in shim
