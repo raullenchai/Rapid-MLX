@@ -136,12 +136,14 @@ struct ImagesView: View {
                         viewModel.beginEdit(image)
                     } label: {
                         Image(systemName: "pencil")
+                            .accessibilityHidden(true)
                             .font(.system(size: 12, weight: .semibold))
                             .frame(width: 28, height: 28)
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .help("Edit image")
+                    .accessibilityLabel("Edit image")
                     .accessibilityHint("Edit image")
                     .accessibilityIdentifier("Images.Result.Edit")
                 }
@@ -150,12 +152,14 @@ struct ImagesView: View {
                     save(image)
                 } label: {
                     Image(systemName: "square.and.arrow.down")
+                        .accessibilityHidden(true)
                         .font(.system(size: 12, weight: .semibold))
                         .frame(width: 28, height: 28)
                         .background(.ultraThinMaterial, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .help("Save image")
+                .accessibilityLabel("Save image")
                 .accessibilityHint("Save image")
                 .accessibilityIdentifier("Images.Result.Save")
 
@@ -163,6 +167,7 @@ struct ImagesView: View {
                     pendingDeletion = image
                 } label: {
                     Image(systemName: "trash")
+                        .accessibilityHidden(true)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.red)
                         .frame(width: 28, height: 28)
@@ -227,6 +232,7 @@ struct ImagesView: View {
     private var aspectPreview: some View {
         VStack(spacing: RapidTheme.Space.sm - 1) {
             Image(systemName: "photo")
+                .accessibilityHidden(true)
                 .font(.system(size: 26, weight: .light))
                 .foregroundStyle(RapidTheme.textTertiary)
             Text(viewModel.aspect.size(for: viewModel.resolution))
@@ -442,6 +448,7 @@ struct ImagesView: View {
                         }
                         Button { viewModel.cancel() } label: {
                             Image(systemName: "xmark")
+                                .accessibilityHidden(true)
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(RapidTheme.bandInk)
                                 .frame(width: 22, height: 22)
@@ -450,6 +457,7 @@ struct ImagesView: View {
                         .buttonStyle(.plain)
                         .disabled(viewModel.cancelling)
                         .help("Cancel")
+                        .accessibilityLabel("Cancel")
                         .accessibilityHint("Cancel")
                         .accessibilityIdentifier("Images.Cancel")
                     }
@@ -724,6 +732,7 @@ struct ImagesView: View {
             Spacer(minLength: 8)
             Button { viewModel.cancelEdit() } label: {
                 Image(systemName: "xmark")
+                    .accessibilityHidden(true)
                     .font(.system(size: 10, weight: .semibold))
                     .frame(width: 24, height: 24)
             }
@@ -741,6 +750,7 @@ struct ImagesView: View {
     private var importButton: some View {
         Button(action: chooseEditImage) {
             Image(systemName: "photo.badge.plus")
+                .accessibilityHidden(true)
                 .font(.system(size: 12, weight: .medium))
                 .frame(width: 28, height: RapidTheme.ControlHeight.small)
                 .contentShape(Rectangle())
@@ -938,6 +948,7 @@ struct ImagesView: View {
         if viewModel.isGenerating {
             Button { viewModel.cancel() } label: {
                 Image(systemName: "stop.fill")
+                    .accessibilityHidden(true)
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(RapidTheme.sendButtonIcon)
                     .frame(width: 28, height: 28)
@@ -946,11 +957,13 @@ struct ImagesView: View {
             .buttonStyle(.plain)
             .disabled(viewModel.cancelling)
             .help("Cancel")
+            .accessibilityLabel("Cancel")
             .accessibilityHint("Cancel")
             .accessibilityIdentifier("Images.Generate")
         } else {
             Button(action: runSubmit) {
                 Image(systemName: "arrow.up")
+                    .accessibilityHidden(true)
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(sendEnabled ? RapidTheme.onBrandPrimary : Color.secondary)
                     .frame(width: 28, height: 28)
@@ -965,11 +978,11 @@ struct ImagesView: View {
             .help(readiness.isReady
                   ? (viewModel.isEditing ? String(localized: "Edit image") : String(localized: "Generate"))
                   : String(localized: "Load the model first"))
-            // `.help(_)` does not reach AXHelp on macOS 26 for this button
-            // (it publishes an identifier but no accessibilityLabel), so mirror
+            // `.help(_)` does not reach AXHelp on macOS 26 for this button, so mirror
             // the readiness tooltip into a hint — the only signal that
             // distinguishes "ready" from "load the model first" while the
             // button is disabled for an empty prompt on both.
+            .accessibilityLabel(viewModel.isEditing ? String(localized: "Edit image") : String(localized: "Generate image"))
             .accessibilityHint(readiness.isReady
                                ? (viewModel.isEditing ? String(localized: "Edit image") : String(localized: "Generate"))
                                : String(localized: "Load the model first"))

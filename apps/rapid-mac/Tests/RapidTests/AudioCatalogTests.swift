@@ -211,7 +211,7 @@ struct AudioCatalogTests {
 
         #expect(source.contains("TranscriptionModelOptionRow("))
         #expect(source.contains("details.summary"))
-        #expect(source.contains("pickerBadge(\"recommended\""))
+        #expect(source.contains("pickerBadge(String(localized: \"recommended\")"))
         #expect(source.contains(".popover(isPresented: $showModelPicker"))
         #expect(!source.contains("Picker(\"\", selection: $controller.modelAlias)"))
     }
@@ -305,7 +305,7 @@ struct AudioCatalogTests {
         let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
 
         #expect(source.contains("ModelPickerBar.cacheGlyph(cached: entry.cached)"))
-        #expect(source.contains(".map { ModelDisplayName.name(for: $0.alias) } ?? \"Choose a model\""))
+        #expect(source.contains(".map { ModelDisplayName.name(for: $0.alias) } ?? String(localized: \"Choose a model\")"))
         #expect(!source.contains("private func modelTitle(_ entry: ModelEntry)"),
                 "Keep visible audio model labels friendly; the icon owns cache state.")
     }

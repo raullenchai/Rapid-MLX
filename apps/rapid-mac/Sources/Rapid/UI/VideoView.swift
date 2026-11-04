@@ -224,6 +224,7 @@ struct VideoView: View {
     private var emptyStage: some View {
         VStack(spacing: RapidTheme.Space.md) {
             Image(systemName: "film.stack")
+                .accessibilityHidden(true)
                 .font(.system(size: 40, weight: .light))
                 .foregroundStyle(RapidTheme.textTertiary)
             Text(emptyStageTitle)
@@ -312,6 +313,7 @@ struct VideoView: View {
                     .frame(maxWidth: 300)
             } else {
                 Image(systemName: job.isCancelled ? "stop.circle" : (job.status == .failed ? "exclamationmark.triangle" : "film"))
+                    .accessibilityHidden(true)
                     .font(.system(size: 34, weight: .light))
                     .foregroundStyle(job.status == .failed && !job.isCancelled ? RapidTheme.statusError : RapidTheme.textTertiary)
             }
@@ -385,7 +387,7 @@ struct VideoView: View {
 
     private var resultActions: some View {
         HStack(spacing: RapidTheme.Space.sm) {
-            Button { savePreview() } label: { Image(systemName: "square.and.arrow.down") }
+            Button { savePreview() } label: { Image(systemName: "square.and.arrow.down").accessibilityHidden(true) }
                 .buttonStyle(.rapidTertiary)
                 .disabled(isSavingPreview)
                 .help("Save video")
@@ -394,6 +396,7 @@ struct VideoView: View {
             if let job = viewModel.selectedJob {
                 Button(role: .destructive) { pendingDeletion = job } label: {
                     Image(systemName: "trash")
+                        .accessibilityHidden(true)
                 }
                 .buttonStyle(.rapidTertiary)
                 .help("Delete video")
@@ -418,6 +421,7 @@ struct VideoView: View {
                             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                                 HStack {
                                     Image(systemName: statusSymbol(job))
+                                        .accessibilityHidden(true)
                                     Text(jobStatusLabel(job))
                                     Spacer()
                                     Text("\(job.seconds)s")

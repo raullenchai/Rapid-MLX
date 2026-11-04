@@ -27,7 +27,7 @@ enum AboutPanel {
 
     private static let website = "https://rapidmlx.com"
     private static let repoURL = "https://github.com/raullenchai/Rapid-MLX"
-    static let mtplxAttribution = "Powered by MTPLX"
+    static let mtplxAttribution = String(localized: "Powered by MTPLX")
     static let mtplxURL = "https://github.com/youssofal/mtplx"
     /// The policy in the repository, not `rapidmlx.com/privacy` — that page
     /// has never been published and 404s, so the About window's "Privacy"
@@ -174,6 +174,7 @@ private struct AboutView: View {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 30, weight: .semibold))
                     .foregroundStyle(RapidTheme.brandAmber)
+                    .accessibilityHidden(true)
             }
             .padding(.top, 8)
 
@@ -190,6 +191,7 @@ private struct AboutView: View {
                     if engine.isOverride {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
+                            .accessibilityHidden(true)
                     }
                     Text(engine.summary)
                 }

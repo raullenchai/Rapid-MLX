@@ -11,6 +11,84 @@ import Testing
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
 
+    @Test("Custom String helper and scoped symbol localization guards")
+    func customHelperLocalizationGuards() async throws {
+        let root = rapidSource("").deletingLastPathComponent().deletingLastPathComponent()
+        for script in ["test-check-localization.py", "check-localization.py"] {
+            let result = try await TestSubprocess.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["python3", root.appendingPathComponent("scripts/\(script)").path]
+            )
+            #expect(result.terminationStatus == 0,
+                    "\(script): \(String(decoding: result.standardOutput + result.standardError, as: UTF8.self))")
+        }
+    }
+
+    @Test("Audio and action labels resolve through the compiled Chinese catalog")
+    func compiledAudioAndVoiceOverCopy() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-audio-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let result = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["xcstringstool", "compile", try catalogURL().path,
+                        "--output-directory", output.path, "--serialization-format", "binary"]
+        )
+        try #require(result.terminationStatus == 0)
+        let zh = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj")))
+        let en = try #require(Bundle(url: output.appendingPathComponent("en.lproj")))
+        let expected = [
+            "Audio mode": "音频模式", "Text to Speech": "文字转语音",
+            "Model": "模型", "Microphone": "麦克风", "Accessibility": "辅助功能",
+            "Hotkey": "快捷键", "Text": "文本", "Voice": "音色", "Speed": "速度",
+            "Create spoken audio with a model and one of its built-in voices.": "使用模型及其内置音色生成语音。",
+            "Voices and generated audio come from this model.": "音色和生成的音频均来自此模型。",
+            "Each model ships its own set — preview before choosing.": "每个模型都有自己的音色，请先试听再选择。",
+            "Load voices": "加载音色",
+            "Reload the voice list from the running model.": "从运行中的模型重新加载音色列表。",
+            "Applied when the audio is generated.": "生成音频时应用。",
+            "Generate image": "生成图像", "Automatic memory": "自动记忆",
+            "Completed": "已完成", "Not completed": "未完成",
+            "Powered by MTPLX": "由 MTPLX 驱动"
+        ]
+        for (key, value) in expected {
+            #expect(zh.localizedString(forKey: key, value: nil, table: nil) == value)
+            #expect(en.localizedString(forKey: key, value: nil, table: nil) == key)
+        }
+        let voice = "af_heart"
+        #expect(String(localized: "Preview \(voice)", bundle: zh) == "试听af_heart")
+    }
+
+    @MainActor
+    @Test("Image submit and memory switch expose real action labels")
+    func mediaAndMemoryActionLabels() async throws {
+        let server = ServerManager(testingState: .idle)
+        let model = ImageGenViewModel(server: server, catalogLoader: { _ in [] })
+        let stage = GoldenStage(
+            ImagesView(viewModel: model, server: server)
+                .environment(server)
+                .environment(SettingsRouter())
+                .environment(DownloadManager())
+        )
+        try await stage.waitForIdentifier("Images.Generate")
+        #expect(stage.label(of: "Images.Generate") == String(localized: "Generate image"))
+        model.isGenerating = true
+        try await stage.waitForText(String(localized: "Cancel"))
+        #expect(stage.label(of: "Images.Generate") == String(localized: "Cancel"))
+
+        let suite = "LocalizationMemory-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = MemoryStore(
+            fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(suite),
+            defaults: defaults
+        )
+        let memory = GoldenStage(SettingsMemoryPanel().environment(store))
+        try await memory.waitForIdentifier("Settings.Memory.EnableToggle")
+        #expect(memory.label(of: "Settings.Memory.EnableToggle") == String(localized: "Automatic memory"))
+    }
+
     private static let experimentalTemplateKeys = [
         "experimental.video.generating",
         "experimental.video.memory_requirement",

@@ -6,7 +6,7 @@ import Testing
 struct AboutPanelCandidateIdentityTests {
     @Test("required engine attribution is contextualized in About")
     func engineAttribution() {
-        #expect(AboutPanel.mtplxAttribution == "Powered by MTPLX")
+        #expect(AboutPanel.mtplxAttribution == String(localized: "Powered by MTPLX"))
         #expect(AboutPanel.mtplxURL == "https://github.com/youssofal/mtplx")
     }
 
@@ -26,6 +26,7 @@ struct AboutPanelCandidateIdentityTests {
             encoding: .utf8
         )
 
+        #expect(aboutSource.contains(#"String(localized: "Powered by MTPLX")"#))
         #expect(aboutSource.contains("Link(AboutPanel.mtplxAttribution"))
         #expect(aboutSource.contains("destination: URL(string: mtplxURL)!"))
         #expect(aboutSource.contains(".accessibilityIdentifier(\"About.Link.MTPLX\")"))
