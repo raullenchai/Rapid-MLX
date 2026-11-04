@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from .chat_models import NonChatModelError, non_chat_kind
+from .chat_models import NonChatModelError, non_chat_kind, preferred_model
 
 
 @dataclass
@@ -334,9 +334,11 @@ def non_chat_server(port: int, model: str | None = None) -> NonChatModelError | 
         if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]
     ]
     matching = [m for m in entries if model and _same_model(model, m["id"])]
-    entries = matching or entries
+    # Keep aliases visible when the entire server is non-chat.
+    if matching and any(not non_chat_kind(m) for m in entries):
+        entries = matching
     if entries and all(non_chat_kind(m) for m in entries):
-        return NonChatModelError(url, entries[0])
+        return NonChatModelError(url, preferred_model(entries))
     return None
 
 

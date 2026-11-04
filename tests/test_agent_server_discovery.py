@@ -1219,7 +1219,11 @@ def test_auto_setup_skips_non_chat_server(
     hints = [line for line in output.splitlines() if "Skipping" in line]
     assert len(hints) == 1
     assert f":{port}" in hints[0] and model["id"] in hints[0]
-    assert "it serves a " in hints[0]
+    from rapid_mlx.agents.chat_models import non_chat_kind
+
+    kind = non_chat_kind(model)
+    article = "an" if kind[0] in "aeiou" else "a"
+    assert f"it serves {article} {kind} model" in hints[0]
     assert hints[0].endswith(", not a chat model.")
     assert "rapid-mlx serve" not in hints[0]
     assert "configured!" not in output
@@ -1389,3 +1393,174 @@ def test_late_modality_reselection_adopts_second_servers_model(
     assert 'model = "chat"' in config
     assert "localhost:8462" in config
     assert capsys.readouterr().out.count("Skipping") == 1
+
+
+@pytest.mark.parametrize(
+    "port,busy,expected",
+    [(18403, set(), 8000), (8000, set(), 8001), (8000, {8001}, 8002)],
+)
+@pytest.mark.parametrize("explicit", ["port", "url"])
+def test_non_chat_recovery_changes_endpoint_and_model(
+    clock, events, configs, monkeypatch, capsys, port, busy, expected, explicit
+):
+    from rapid_mlx.run import cli as start
+
+    fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[5]]})
+    monkeypatch.setattr(cli, "_port_is_busy", lambda _host, p: p in busy)
+    monkeypatch.setattr(start, "_select_model", lambda **_kw: "fitting-chat")
+    options = args("codex", model="kokoro", port=port)
+    options._original_alias = "kokoro"
+    options.agent_version = "1.2"
+    if explicit == "url":
+        options.port = None
+        options.base_url = f"http://localhost:{port}/v1"
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(options)
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "serving an audio model" in output
+    assert "Retry:" not in output
+    assert (
+        f"Start a chat model: rapid-mlx serve fitting-chat --port {expected}" in output
+    )
+    retry = output.split("then run: ")[1].strip()
+    expected_retry = "rapid-mlx agents codex --setup --yes"
+    if expected != 8000:
+        expected_retry += f" --port {expected}"
+    assert retry == expected_retry + " --agent-version 1.2"
+    assert not list(configs.rglob("config.toml"))
+
+
+@pytest.mark.parametrize("ram,cached", [(16.0, False), (16.0, True), (64.0, True)])
+def test_non_chat_recommendation_uses_host_fit_and_cache(
+    monkeypatch, capsys, ram, cached
+):
+    from rapid_mlx.agents import get_profile
+    from rapid_mlx.agents.chat_models import NonChatModelError
+    from rapid_mlx.agents.server_hint import start_server_command
+    from rapid_mlx.run import cli as start
+
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: ram)
+    monkeypatch.setattr(
+        "rapid_mlx._download_gate.is_repo_cached", lambda repo: cached and "9B" in repo
+    )
+    monkeypatch.setattr(cli, "_port_is_busy", lambda *_a: False)
+    profile = get_profile("codex")
+    expected = start._select_model(explicit=None, profile=profile, no_download=False)
+    assert expected and expected != profile.recommended_models[0]
+    error = NonChatModelError("http://localhost:18403/v1", NON_CHAT_MODELS[5])
+    assert f"rapid-mlx serve {expected} --port 8000" in str(error)
+    assert (
+        start_server_command(profile, "http://localhost:8000/v1", "default")
+        == f"rapid-mlx serve {expected} --port 8000"
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_non_chat_recommendation_does_not_suggest_an_oversized_model(
+    monkeypatch, capsys
+):
+    from rapid_mlx.agents.chat_models import NonChatModelError
+
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 1.0)
+    monkeypatch.setattr(cli, "_port_is_busy", lambda *_a: False)
+    error = NonChatModelError("http://localhost:18403/v1", NON_CHAT_MODELS[5])
+    assert "rapid-mlx serve <chat-model> --port 8000" in str(error)
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "modality,phrase",
+    [
+        ("audio", "an audio"),
+        ("embedding", "an embedding"),
+        ("image-gen", "an image generation"),
+        ("video-gen", "a video"),
+        ("tts", "a speech synthesis"),
+    ],
+)
+def test_non_chat_articles_and_short_alias_across_entry_points(
+    monkeypatch, capsys, modality, phrase
+):
+    from rapid_mlx.agents import get_profile, isolated
+    from rapid_mlx.agents.chat_models import NonChatModelError
+    from rapid_mlx.run import cli as start
+
+    hf = {"id": "mlx-community/non-chat", "modality": modality}
+    alias = {"id": "short-alias", "modality": modality}
+    fake_model_server(monkeypatch, {18403: [hf, alias]})
+    monkeypatch.setattr(cli, "_port_is_busy", lambda *_a: False)
+    monkeypatch.setattr(start, "_select_model", lambda **_kw: "fitting-chat")
+    error = discovery.non_chat_server(18403, hf["id"])
+    assert f"it serves {phrase} model (short-alias)" in error.skip_hint
+    with pytest.raises(NonChatModelError) as exc:
+        setup.verify_server("http://localhost:18403/v1", "default", agent="codex")
+    assert f"is serving {phrase} model (short-alias)" in str(exc.value)
+    with pytest.raises(NonChatModelError) as exc:
+        isolated.running_model(18403, "key")
+    assert "(short-alias)" in str(exc.value)
+    assert "then run: rapid-mlx agents codex --setup --yes" in str(exc.value)
+    assert (
+        start._reuse_or_refuse(
+            "http://localhost:18403",
+            hf["id"],
+            hf["id"],
+            get_profile("codex"),
+            SimpleNamespace(port=18403, dry_run=False),
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert f"is serving {phrase} model (short-alias)" in output
+    assert (
+        "rapid-mlx serve fitting-chat --port 8000, then run: rapid-mlx agents codex --setup --yes"
+        in output
+    )
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude-code"])
+def test_launch_non_chat_failure_provides_recovery_for_same_agent(
+    monkeypatch, capsys, agent
+):
+    from rapid_mlx.agents import isolated
+    from rapid_mlx.launch import cli as launch
+    from rapid_mlx.run import cli as start
+
+    fake_model_server(monkeypatch, {8000: [NON_CHAT_MODELS[5]]})
+    monkeypatch.setattr(cli, "_port_is_busy", lambda *_a: False)
+    monkeypatch.setattr(start, "_select_model", lambda **_kw: "fitting-chat")
+    monkeypatch.setattr(isolated, "stable_key", lambda **_kw: "key")
+    monkeypatch.setattr(
+        "rapid_mlx.agents.cli_preflight.missing_agent_cli", lambda _p: None
+    )
+    with pytest.raises(SystemExit) as exc:
+        launch.launch_command(
+            SimpleNamespace(
+                client=agent,
+                isolated=True,
+                all=False,
+                remove=False,
+                dry_run=False,
+                check=False,
+                port=8000,
+                model=None,
+                run=True,
+            )
+        )
+    assert exc.value.code == 1
+    output = capsys.readouterr().err
+    assert "serving an audio model" in output
+    assert "rapid-mlx serve fitting-chat --port 8001" in output
+    assert f"then run: rapid-mlx agents {agent} --setup --yes --port 8001" in output
+    assert "Retry:" not in output
+
+
+def test_non_chat_recovery_when_no_suggested_port_is_free(monkeypatch):
+    from rapid_mlx.agents.chat_models import NonChatModelError
+    from rapid_mlx.run import cli as start
+
+    monkeypatch.setattr(cli, "_port_is_busy", lambda *_a: True)
+    monkeypatch.setattr(start, "_select_model", lambda **_kw: "fitting-chat")
+    error = NonChatModelError("http://localhost:8000/v1", NON_CHAT_MODELS[5])
+    assert "on a free port" in str(error)
+    assert "re-run setup with --port <port>" in str(error)

@@ -250,7 +250,7 @@ def running_model(port: int, key: str) -> str | None:
     models = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(models, list):
         raise ValueError("local server returned an invalid model list")
-    from .chat_models import NonChatModelError, non_chat_kind
+    from .chat_models import NonChatModelError, non_chat_kind, preferred_model
 
     names: list[str] = []
     for entry in models:
@@ -265,16 +265,18 @@ def running_model(port: int, key: str) -> str | None:
         ):
             names.append(name)
     if not names:
-        rejected = next(
-            (
-                m
-                for m in models
-                if isinstance(m, dict) and m.get("id") and non_chat_kind(m)
-            ),
-            None,
-        )
+        rejected = [
+            m
+            for m in models
+            if isinstance(m, dict)
+            and isinstance(m.get("id"), str)
+            and m["id"]
+            and non_chat_kind(m)
+        ]
         if rejected:
-            raise NonChatModelError(f"http://localhost:{port}/v1", rejected)
+            raise NonChatModelError(
+                f"http://localhost:{port}/v1", preferred_model(rejected)
+            )
         raise ValueError("local server did not advertise a text model")
     try:
         checkpoints = {resolve_model(name) for name in names}

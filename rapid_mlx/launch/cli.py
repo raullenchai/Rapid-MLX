@@ -478,6 +478,12 @@ def launch_command(args: argparse.Namespace) -> None:
                 )
             command = configure(args.client, model, port=port)
         except (OSError, ValueError) as exc:
+            from rapid_mlx.agents.chat_models import NonChatModelError
+
+            if isinstance(exc, NonChatModelError):
+                exc = NonChatModelError(
+                    f"http://localhost:{exc.port}/v1", exc.model, agent=args.client
+                )
             print(f"launch: {exc}", file=sys.stderr)
             sys.exit(1)
         day_two = f"{_display_cli_invocation()} launch {shlex.quote(args.client)}"

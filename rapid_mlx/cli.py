@@ -15549,7 +15549,13 @@ def agents_command(args):
                     )
                     sys.exit(1)
             except RuntimeError as exc:
+                from rapid_mlx.agents.chat_models import NonChatModelError
                 from rapid_mlx.agents.setup import ServerAuthenticationError
+
+                if isinstance(exc, NonChatModelError):
+                    print(f"\n  {profile.display_name} setup failed: {exc.message}")
+                    print(f"  {exc.recovery_hint(agent_version=args.agent_version)}\n")
+                    sys.exit(1)
 
                 if endpoint is not None:
                     base_url = profile.normalize_base_url(endpoint.base_url)

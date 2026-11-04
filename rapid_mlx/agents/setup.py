@@ -16,7 +16,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rapid_mlx.agents.chat_models import NonChatModelError, non_chat_kind
+from rapid_mlx.agents.chat_models import (
+    NonChatModelError,
+    non_chat_kind,
+    preferred_model,
+)
 from rapid_mlx.agents.config_merge import (
     deep_merge,
     is_id_list,
@@ -768,7 +772,7 @@ def verify_server(
     if not chat_models:
         if track_failure:
             track_agent_configure_failed("model_not_advertised", agent)
-        raise NonChatModelError(base_url, models[0], agent=agent)
+        raise NonChatModelError(base_url, preferred_model(models), agent=agent)
     ids = [item["id"] for item in models]
     if expected_model != "default" and expected_model not in ids:
         if track_failure:
