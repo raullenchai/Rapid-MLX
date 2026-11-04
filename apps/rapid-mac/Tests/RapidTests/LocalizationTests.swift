@@ -10,6 +10,32 @@ import Testing
 /// language is forced to Simplified Chinese.
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
+    @Test("Performance titles, explanations, and sentence workload names have Chinese translations")
+    func performanceAndWorkloadCopy() throws {
+        let strings = try #require(try loadCatalog()["strings"] as? [String: Any])
+        let keys = [
+            "Prompt processing batch size", "Maximum concurrent requests", "GPU memory budget",
+            "Reuse prompt prefixes", "Attention cache precision", "Additional engine setting",
+            "Tokens processed together while reading a prompt. Larger batches can use more memory.",
+            "The most requests the model can process at once.",
+            "The share of GPU memory available to the engine.",
+            "Reuses earlier work when requests begin with the same text.",
+            "The precision used to store attention history. Lower precision saves memory.",
+            "An engine setting reported by this model.", "image", "video"
+        ]
+        for key in keys {
+            let entry = try #require(strings[key] as? [String: Any])
+            let languages = try #require(entry["localizations"] as? [String: Any])
+            let unit = try #require((languages["zh-Hans"] as? [String: Any])?["stringUnit"] as? [String: Any])
+            #expect(unit["state"] as? String == "translated")
+            #expect(!(unit["value"] as? String ?? "").isEmpty)
+            #expect(unit["value"] as? String != key)
+        }
+        #expect(CommunityWorkload.image.sentenceName == "image")
+        #expect(CommunityWorkload.video.sentenceName == "video")
+        #expect(CommunityWorkload.llm.sentenceName == "LLM")
+    }
+
     @Test("Image benchmark schedule copy has exact Int compiler keys and Chinese translations")
     func imageBenchmarkScheduleKeys() throws {
         let strings = try #require(try loadCatalog()["strings"] as? [String: Any])

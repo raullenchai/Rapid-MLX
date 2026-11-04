@@ -260,8 +260,13 @@ struct ModelPickerBar: View {
             from: hardware.recommendedPicks,
             catalog: visibleEntries
         )
+        let entries = Self.uniqueSectionEntries(
+            visibleEntries, excluding: quickstartEntry().map { [$0.alias] } ?? []
+        )
+        var seen = Set<String>()
         return resolved.compactMap { item in
-            guard let entry = visibleEntries.first(where: { $0.alias == item.pick.alias }) else {
+            guard seen.insert(item.pick.alias.lowercased()).inserted,
+                  let entry = entries.first(where: { $0.alias.caseInsensitiveCompare(item.pick.alias) == .orderedSame }) else {
                 return nil
             }
             return (item.pick, entry, item.isPrimary)
@@ -704,7 +709,8 @@ struct ModelPickerBar: View {
         let filtered = visibleEntries
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartAlias: quickstartAlias
+            quickstartAlias: quickstartAlias,
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias }
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         return !partition.fits.isEmpty || !partition.notFit.isEmpty
@@ -813,18 +819,20 @@ struct ModelPickerBar: View {
         return String(localized: "Quickstart: \(ModelDisplayName.name(for: alias)), \(downloaded). \(quickstartSubtitle).")
     }
 
-    /// Pure helper for the "All models" dedup. When the Quickstart
-    /// row is being rendered above, strip the Quickstart alias from
-    /// the All-models list so the same alias never appears in two
-    /// sections. Lifted out of ``allAliasesSection`` so a
-    /// ``ModelPickerBarSectionOrderTests`` case can pin the
-    /// invariant directly without standing up a SwiftUI host.
+    /// Remove aliases already rendered by Quickstart or Recommended, then
+    /// keep one row per remaining alias before partitioning by hardware fit.
     static func dedupedAllEntries(
         filtered: [ModelEntry],
-        quickstartAlias: String?
+        quickstartAlias: String?,
+        recommendedAliases: [String] = []
     ) -> [ModelEntry] {
-        guard let quickstartAlias else { return filtered }
-        return filtered.filter { $0.alias != quickstartAlias }
+        uniqueSectionEntries(filtered, excluding: (quickstartAlias.map { [$0] } ?? []) + recommendedAliases)
+    }
+
+    /// Keep the first row for an alias, after higher-priority sections claim it.
+    static func uniqueSectionEntries(_ entries: [ModelEntry], excluding aliases: [String]) -> [ModelEntry] {
+        var seen = Set(aliases.map { $0.lowercased() })
+        return entries.filter { seen.insert($0.alias.lowercased()).inserted }
     }
 
     /// Order the "All models" list: downloaded (cached) aliases first,
@@ -892,7 +900,8 @@ struct ModelPickerBar: View {
         // "select this alias" semantics.
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
-            quickstartAlias: quickstartEntry()?.alias
+            quickstartAlias: quickstartEntry()?.alias,
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias }
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         let sorted = ModelPickerBar.orderedAllModels(partition.fits)

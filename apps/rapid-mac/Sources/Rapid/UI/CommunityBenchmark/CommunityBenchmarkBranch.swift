@@ -165,7 +165,7 @@ enum CommunityBenchmarkCopy {
                         localized:
                             "Run a fixed %1$@ workload for %2$@ and keep the result on this Mac. You can publish it to the Community Benchmark afterwards."
                     ),
-                    scope.workload.displayName,
+                    scope.workload.sentenceName,
                     ModelDisplayName.name(for: scope.modelAlias)
                 )
             )

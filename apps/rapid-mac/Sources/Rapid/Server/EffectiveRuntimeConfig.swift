@@ -69,9 +69,25 @@ struct EffectiveRuntimeField: Codable, Equatable, Sendable, Identifiable {
     }
 
     var displayName: String {
-        field.split(separator: "_").map { word in
-            word.prefix(1).uppercased() + word.dropFirst()
-        }.joined(separator: " ")
+        switch field {
+        case "prefill_step_size": String(localized: "Prompt processing batch size")
+        case "max_num_seqs": String(localized: "Maximum concurrent requests")
+        case "gpu_memory_utilization": String(localized: "GPU memory budget")
+        case "enable_prefix_cache": String(localized: "Reuse prompt prefixes")
+        case "kv_cache_dtype": String(localized: "Attention cache precision")
+        default: String(localized: "Additional engine setting")
+        }
+    }
+
+    var helpText: String {
+        switch field {
+        case "prefill_step_size": String(localized: "Tokens processed together while reading a prompt. Larger batches can use more memory.")
+        case "max_num_seqs": String(localized: "The most requests the model can process at once.")
+        case "gpu_memory_utilization": String(localized: "The share of GPU memory available to the engine.")
+        case "enable_prefix_cache": String(localized: "Reuses earlier work when requests begin with the same text.")
+        case "kv_cache_dtype": String(localized: "The precision used to store attention history. Lower precision saves memory.")
+        default: String(localized: "An engine setting reported by this model.")
+        }
     }
 
     var provenanceText: String {

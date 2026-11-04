@@ -11,12 +11,31 @@ import Testing
 @MainActor
 @Suite("DownloadProgress parser")
 struct DownloadProgressTests {
-    @Test("Per-file pull announces the active file before its first byte")
+    @Test("Concurrent start announcements use overall progress instead of a stale filename")
     func currentFileAnnouncement() {
         let progress = DownloadProgress()
         #expect(progress.ingest("Pulling owner/repo (Hugging Face)"))
         #expect(progress.ingest("  [current] model-00001.safetensors"))
-        #expect(progress.currentFile == "model-00001.safetensors")
+        #expect(progress.ingest("  [current] vae_config.json"))
+        #expect(progress.ingest("  [bytes] 10000000/5000000000"))
+        #expect(progress.currentFile == nil)
+        #expect(progress.bytesDownloaded == 10000000)
+        #expect(progress.ingest("  [bytes] 20000000/5000000000"))
+        #expect(progress.currentFile == nil)
+        #expect(progress.bytesDownloaded == 20000000)
+    }
+
+    @Test("Only incomplete per-file ticks name a transfer; aggregate ticks and reset clear it")
+    func currentFileFollowsTransfer() {
+        let progress = DownloadProgress()
+        progress.ingest("weights.safetensors:  41%|bar| 2.10G/5.13G [01:28<02:09, 23.4MB/s]")
+        #expect(progress.currentFile == "weights.safetensors")
+        progress.ingest("weights.safetensors: 100%|bar| 5.13G/5.13G [01:28<00:00, 23.4MB/s]")
+        #expect(progress.currentFile == nil)
+        progress.ingest("other.safetensors:  41%|bar| 2.10G/5.13G [01:28<02:09, 23.4MB/s]")
+        #expect(progress.currentFile == "other.safetensors")
+        progress.ingest("Fetching 16 files:  31%|bar| 5/16 [00:42<01:32, 0.12it/s]")
+        #expect(progress.currentFile == nil)
         progress.reset()
         #expect(progress.currentFile == nil)
     }
