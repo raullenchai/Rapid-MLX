@@ -140,6 +140,7 @@ struct DownloadStrip: View {
         if case .failed(let message) = job.status {
             HStack(spacing: 8) {
                 Text(ModelDisplayName.name(for: job.alias))
+                    .help(job.alias)
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -168,6 +169,7 @@ struct DownloadStrip: View {
                     .font(.system(size: 13))
                     .frame(width: 16)
                 Text(ModelDisplayName.name(for: job.alias))
+                    .help(job.alias)
                     .scaledSystemFont(12, relativeTo: .caption, weight: .medium)
                     .lineLimit(1)
                     .truncationMode(.middle)
