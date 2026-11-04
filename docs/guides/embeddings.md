@@ -72,6 +72,8 @@ recommended. The existing endpoint truncates and re-normalizes requested
 dimensions, supports float or base64 output, and accepts pre-tokenized
 inputs. Queries and documents must use the same dimension.
 
+For a step-by-step customer-support knowledge base using this model, see [Build a private knowledge base on your Mac](local-knowledge-base.md).
+
 ## Quick Start
 
 ### Start the server with an embedding model
