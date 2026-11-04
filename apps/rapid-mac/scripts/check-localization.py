@@ -184,8 +184,12 @@ def string_helper_hits(source, code, bindings):
 # audit. Require handling on the Image itself, so a sibling's label cannot
 # accidentally satisfy the check. Icon buttons also need a label on the button.
 SYMBOL_AUDIT_FILES = {
-    "AudioView.swift", "DictationView.swift", "ImagesView.swift", "VideoView.swift",
-    "AboutPanel.swift", "WhatsNewBanner.swift",
+    "AudioView.swift",
+    "DictationView.swift",
+    "ImagesView.swift",
+    "VideoView.swift",
+    "AboutPanel.swift",
+    "WhatsNewBanner.swift",
 }
 
 
@@ -201,13 +205,22 @@ def symbol_hits(source, code):
                 break
             argument_start = i + modifier.end()
             i = balanced(source, argument_start)
-            argument = source[argument_start:i - 1].strip()
+            argument = source[argument_start : i - 1].strip()
             if modifier[1] == "accessibilityHidden" and argument == "true":
                 handled = True
-            if modifier[1] == "accessibilityLabel" and argument not in {'""', 'Text("")'}:
+            if modifier[1] == "accessibilityLabel" and argument not in {
+                '""',
+                'Text("")',
+            }:
                 handled = True
         if not handled:
-            hits.append((source.count("\n", 0, match.start()) + 1, "Image accessibility", source[match.start():end]))
+            hits.append(
+                (
+                    source.count("\n", 0, match.start()) + 1,
+                    "Image accessibility",
+                    source[match.start() : end],
+                )
+            )
     return hits
 
 
@@ -276,7 +289,8 @@ def scan(path):
     helper_names = set()
     for match in re.finditer(
         r"(?:\.(?:help|accessibilityLabel|accessibilityValue|accessibilityHint)|\bText|\b(?:"
-        + "|".join(STRING_UI_HELPERS) + r"))\s*\(",
+        + "|".join(STRING_UI_HELPERS)
+        + r"))\s*\(",
         code,
     ):
         expression = source[match.end() : balanced(source, match.end()) - 1]
