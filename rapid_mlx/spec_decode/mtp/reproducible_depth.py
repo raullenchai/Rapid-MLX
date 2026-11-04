@@ -384,7 +384,7 @@ def time_target_forwards(model: Any, max_k: int) -> Timings:
     target = getattr(model, "mtp_target_forward", None) or model
     samples: list[list[float]] = [[] for _ in range(max_k + 1)]
     generators = []
-    stats = [{} for _ in samples]
+    stats: list[dict[str, float]] = [{} for _ in samples]
     prompt = mx.zeros((16,), dtype=mx.uint32)
 
     def check_budget():
@@ -400,7 +400,7 @@ def time_target_forwards(model: Any, max_k: int) -> Timings:
                 prompt[None], cache=cache, return_hidden=True, n_confirmed=0
             )
             mx.eval(hidden)
-            widths = [[] for _ in range(max_k + 1)]
+            widths: list[list[float]] = [[] for _ in range(max_k + 1)]
             for turn in range(3):
                 for rows in range(1, max_k + 2):
                     check_budget()
