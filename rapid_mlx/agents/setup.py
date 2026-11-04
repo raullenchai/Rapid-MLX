@@ -53,6 +53,10 @@ class ModelNotAdvertisedError(RuntimeError):
     """The server answered but not with the requested model."""
 
 
+class ServerLoadingError(RuntimeError):
+    """The startup health probe returned HTTP 503 while loading."""
+
+
 @dataclass(frozen=True)
 class SetupPlan:
     agent: str
@@ -686,12 +690,14 @@ def verify_server(
     a refused remote endpoint, is tracked.
     """
     root = base_url.rstrip("/").removesuffix("/v1")
+    checking_health = True
     try:
         with urllib.request.urlopen(f"{root}/health", timeout=timeout) as response:
             if response.status != 200:
-                if track_failure:
-                    track_agent_configure_failed("server_not_ready", agent)
-                raise RuntimeError(f"health returned HTTP {response.status} at {root}")
+                raise urllib.error.HTTPError(
+                    f"{root}/health", response.status, "health check failed", None, None
+                )
+        checking_health = False
         from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
         request = urllib.request.Request(
@@ -699,6 +705,19 @@ def verify_server(
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read())
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("invalid /v1/models response: expected a data list")
+    except urllib.error.HTTPError as exc:
+        if track_failure:
+            track_agent_configure_failed("server_not_ready", agent)
+        if checking_health and exc.code == 503:
+            raise ServerLoadingError(f"health returned HTTP 503 at {root}") from exc
+        if exc.code in (401, 403):
+            raise RuntimeError(
+                f"server authentication failed at {root}: HTTP {exc.code}; "
+                "check RAPID_MLX_API_KEY"
+            ) from exc
+        raise RuntimeError(f"server is not ready at {root}: HTTP {exc.code}") from exc
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -745,7 +764,7 @@ def wait_for_server(
     timeout: float = 60.0,
     endpoint: Endpoint | None = None,
 ) -> str:
-    """Wait while a local serve process lives; distinguish an absent server."""
+    """Allow live local startup to finish; bound other verification failures."""
     from .server_discovery import Progress, pid_alive, server_for_url
 
     deadline = time.monotonic() + timeout
@@ -767,7 +786,11 @@ def wait_for_server(
                 base_url,
                 expected_model,
                 agent=agent,
-                timeout=0.5,
+                timeout=(
+                    2.0
+                    if server is not None
+                    else min(2.0, max(0.1, deadline - time.monotonic()))
+                ),
                 track_failure=False,
             )
         except RuntimeError as exc:
@@ -783,10 +806,15 @@ def wait_for_server(
                 raise
             if server is None and (endpoint is None or not endpoint.follow):
                 server = server_for_url(base_url)
-            if server is not None:
+            if server is not None and isinstance(
+                exc, (ServerNotRunningError, ServerLoadingError)
+            ):
                 if endpoint is not None:
                     endpoint.server = server
                 progress.show(base_url, time.monotonic())
+                # The bounded budget for other errors starts once startup is
+                # over, so a long load cannot consume it before the first one.
+                deadline = time.monotonic() + timeout
             elif isinstance(exc, ServerNotRunningError) and time.monotonic() >= grace:
                 raise
             elif not is_local_base_url(base_url) or time.monotonic() >= deadline:

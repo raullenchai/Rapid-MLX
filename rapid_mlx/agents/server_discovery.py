@@ -191,9 +191,6 @@ def resolve_endpoint(
     if healthy:
         return Endpoint(default)
     servers = scan_servers()
-    default_server = next((s for s in servers if s.port == 8000), None)
-    if answered and default_server is not None:
-        return Endpoint(default, default_server, follow=True, model=model)
     candidates = (
         [
             s
@@ -203,6 +200,9 @@ def resolve_endpoint(
         if model
         else servers
     )
+    default_server = next((s for s in candidates if s.port == 8000), None)
+    if answered and default_server is not None:
+        return Endpoint(default, default_server, follow=True, model=model)
     if model and not candidates and report_ignored:
         for server in servers[:5]:
             port = str(server.port) if server.port else "unknown"

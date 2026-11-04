@@ -119,7 +119,7 @@ def test_startup_lifetime(clock, events, configs, monkeypatch, capsys, agent, ou
             return "tiny-model"
         if clock[0] < 2:
             refuse()
-        raise RuntimeError("http://localhost:8462/health returned HTTP 503")
+        raise setup.ServerLoadingError("http://localhost:8462/health returned HTTP 503")
 
     monkeypatch.setattr(setup, "verify_server", probe)
     monkeypatch.setattr(adapter, "fetch_context_window", lambda *_a: 8192)
@@ -210,6 +210,139 @@ def test_default_ready_endpoint_takes_priority(monkeypatch):
         discovery, "scan_servers", lambda: pytest.fail("default endpoint already ready")
     )
     assert discovery.resolve_endpoint().base_url == "http://localhost:8000/v1"
+
+
+@pytest.mark.parametrize("requested", [None, "model-a", "public-a", "model-b"])
+def test_loading_default_respects_requested_model(monkeypatch, requested):
+    default = discovery.Server(1, 8000, "model-a", "public-a")
+    other = discovery.Server(2, 8462, "model-b")
+    monkeypatch.setattr(discovery, "_default_endpoint_ready", lambda: (False, True))
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [default, other])
+
+    endpoint = discovery.resolve_endpoint(requested)
+
+    expected = other if requested == "model-b" else default
+    assert endpoint.server == expected
+    assert endpoint.base_url == f"http://localhost:{expected.port}/v1"
+
+
+@pytest.mark.parametrize(
+    "failure,path",
+    [
+        (401, "/health"),
+        (403, "/v1/models"),
+        (500, "/health"),
+        (503, "/v1/models"),
+        ("timeout", "/health"),
+        ("bad-json", "/v1/models"),
+        ("bad-shape", "/v1/models"),
+    ],
+)
+def test_live_serve_does_not_unbound_verification_errors(
+    clock, events, monkeypatch, failure, path
+):
+    server = discovery.Server(123, 8462, "tiny-model")
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, **_kwargs):
+        # Fail promptly if the bounded wait regresses into an endless loop.
+        assert clock[0] <= 60
+        url = request if isinstance(request, str) else request.full_url
+        if url.endswith(path):
+            if isinstance(failure, int):
+                raise urllib.error.HTTPError(url, failure, "failed", {}, BytesIO())
+            if failure == "timeout":
+                raise TimeoutError("request timed out")
+            return Response(
+                b"invalid JSON" if failure == "bad-json" else b'{"data": null}'
+            )
+        return Response(b"{}")
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", response)
+    with pytest.raises(RuntimeError, match="http://localhost:8462/v1") as raised:
+        setup.wait_for_server("http://localhost:8462/v1", "tiny-model", agent="codex")
+    assert clock[0] == 60
+    assert events == [("failed", "server_not_ready", "codex")]
+    if failure in (401, 403):
+        assert "authentication failed" in str(raised.value)
+        assert "RAPID_MLX_API_KEY" in str(raised.value)
+    elif isinstance(failure, int):
+        assert f"HTTP {failure}" in str(raised.value)
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_verification_allows_two_second_responses(clock, events, monkeypatch, local):
+    base_url = "http://localhost:8462/v1" if local else "https://example.com/v1"
+    if local:
+        monkeypatch.setattr(
+            discovery,
+            "scan_servers",
+            lambda: [discovery.Server(123, 8462, "tiny-model")],
+        )
+        monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    calls = []
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, *, timeout):
+        url = request if isinstance(request, str) else request.full_url
+        calls.append(url)
+        # Simulate a server that needs more than 0.5 s for each response.
+        if timeout < 1.0:
+            raise TimeoutError("response needs one second")
+        clock[0] += 1
+        return Response(
+            b'{"data": [{"id": "tiny-model"}]}' if url.endswith("/models") else b"{}"
+        )
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", response)
+    assert setup.wait_for_server(base_url, "tiny-model", agent="codex") == "tiny-model"
+    assert len(calls) == 2
+    assert clock[0] == 2
+    assert events == []
+
+
+@pytest.mark.parametrize("startup", ["refused", "503", "503-response"])
+def test_only_recognized_startup_can_outlast_deadline(
+    clock, events, monkeypatch, startup
+):
+    server = discovery.Server(123, 8462, "tiny-model")
+    endpoint = discovery.Endpoint("http://localhost:8462/v1", server)
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, *, timeout):
+        assert timeout == 2.0
+        url = request if isinstance(request, str) else request.full_url
+        if clock[0] < 75:
+            assert url.endswith("/health")
+            if startup == "refused":
+                raise urllib.error.URLError(ConnectionRefusedError())
+            if startup == "503":
+                raise urllib.error.HTTPError(url, 503, "loading", {}, BytesIO())
+            loading = Response(b"{}")
+            loading.status = 503
+            return loading
+        return Response(
+            b'{"data": [{"id": "tiny-model"}]}' if url.endswith("/models") else b"{}"
+        )
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", response)
+    assert (
+        setup.wait_for_server(
+            endpoint.base_url, "tiny-model", agent="codex", endpoint=endpoint
+        )
+        == "tiny-model"
+    )
+    assert clock[0] == 75
+    assert events == []
 
 
 def test_progress_reports_phase_and_measured_bytes(monkeypatch, capsys):
