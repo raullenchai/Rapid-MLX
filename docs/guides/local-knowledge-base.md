@@ -171,12 +171,18 @@ def retrieve(question, limit=3):
     r.raise_for_status()
     passages = []
     for hit in r.json()["results"]:
-        # The snippet is a ~500-character excerpt. Re-read the matched chunk
-        # (about 1,200 characters, starting at `line`) from the file itself.
-        lines = Path(hit["path"]).read_text(encoding="utf-8").splitlines()
-        start = (hit["line"] or 1) - 1
-        text = "\n".join(lines[start : start + 40])[:1500]
-        passages.append((f"{Path(hit['path']).name}:{start + 1}", text))
+        if not hit.get("content_indexed", True):
+            continue  # matched by file name only; no readable text
+        # The snippet is a ~500-character excerpt of the matched chunk.
+        # Find it in the file and add the text around it. PDFs and Office
+        # files are not plain text, so they fall back to the snippet alone.
+        try:
+            source = Path(hit["path"]).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            source = ""
+        pos = source.find(hit["snippet"]) if hit["snippet"] else -1
+        text = source[max(0, pos - 400) : pos + 1100] if pos >= 0 else hit["snippet"]
+        passages.append((f"{Path(hit['path']).name}:{hit['line'] or 1}", text))
     return passages
 
 
@@ -235,13 +241,13 @@ Sources: shipping.md:1
 ```
 
 ```
-I don't have information about gift wrapping services in the provided documents. You may want to contact the shop directly at (503) 555-0147 during store hours to ask about this option.
+I don't have information about gift wrapping services in the provided documents. You may want to contact the shop directly at (503) 555-0147 during store hours.
 Sources: gift-cards.md:1, store-hours.txt:1, shipping.md:1
 ```
 
 The script searches for the top three passages, then puts them in a system prompt that asks the model to answer only from those passages and cite them. `reasoning_effort="none"` turns off thinking for fast, short answers. `model="default"` uses whichever chat model the server loaded.
 
-Search returns a short snippet, so the script reads the matched files itself. This example reads UTF-8 text files such as TXT and Markdown; it does not extract PDF or Office content. See [the grounded-chat tracking issue](https://github.com/raullenchai/Rapid-MLX/issues/5575).
+Search returns only a short snippet of the matched passage, so the script finds that snippet in the file and adds the surrounding text. This works for UTF-8 text files such as TXT and Markdown; for PDF and Office files the model sees only the snippet. See [the grounded-chat tracking issue](https://github.com/raullenchai/Rapid-MLX/issues/5575).
 
 The plain chat endpoint does not look at your documents by itself. Asked directly in the sample check, the model gave a generic answer: “Most clothing and craft stores have a specific policy...”
 
@@ -259,7 +265,7 @@ This returns HTTP 202. Wait for the folder to return to `idle`.
 In the sample check, we appended “Holiday hours: we close at 3 pm on December 24 and December 31.” to `store-hours.txt`, then reindexed. Running `venv/bin/python ask.py "What time do you close on Christmas Eve?"` returned:
 
 ```
-On Christmas Eve (December 24), we close at 3 pm. [store-hours.txt:1]
+We close at 3 pm on December 24. [store-hours.txt:1]
 Sources: store-hours.txt:1
 ```
 
