@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 
@@ -18,6 +19,9 @@ class Server:
     port: int | None
     model: str
     alias: str | None = None
+    # True once ``port`` came from the process's own LISTEN socket rather
+    # than its argv, i.e. it is no longer a guess.
+    listening: bool = field(default=False, compare=False)
 
 
 @lru_cache(maxsize=1)
@@ -77,6 +81,7 @@ def scan_servers() -> list[Server]:
                 elif not token.startswith("-") and model == "(unknown)":
                     model = token
                 i += 1
+            listening = False
             try:
                 listeners = {
                     c.laddr.port
@@ -84,12 +89,13 @@ def scan_servers() -> list[Server]:
                     if c.status == psutil.CONN_LISTEN and c.laddr
                 }
                 if port in listeners:
-                    pass
+                    listening = True
                 elif len(listeners) == 1:
                     port = listeners.pop()
+                    listening = True
             except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
                 pass
-            servers.append(Server(proc.pid, port, model, alias))
+            servers.append(Server(proc.pid, port, model, alias, listening))
         except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
             continue
     return servers
@@ -113,6 +119,7 @@ class Endpoint:
     server: Server | None = None
     follow: bool = False
     model: str | None = None
+    _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
 
     def refresh(self) -> None:
         # Explicit URLs/ports are authoritative, even if an unbound serve
@@ -120,21 +127,37 @@ class Endpoint:
         if self.server is None and self.follow:
             resolved = resolve_endpoint(self.model, report_ignored=False)
             self.base_url, self.server = resolved.base_url, resolved.server
-        if self.server is not None and self.server.port is None:
-            for server in scan_servers():
-                if server.pid == self.server.pid and server.port is not None:
-                    self.server = server
-                    if self.follow:
-                        self.base_url = f"http://localhost:{server.port}/v1"
-                        announce(server)
-                    else:
-                        from rapid_mlx.connect import _parse_base_url
+        # An argv port is only a guess until the process listens: keep
+        # re-reading the selected pid's real listener (throttled) so a server
+        # that binds somewhere else is followed instead of waited on forever.
+        now = time.monotonic()
+        if (
+            self.server is None
+            or self.server.listening
+            or (self.server.port is not None and now - self._last_scan < 2.0)
+        ):
+            return
+        self._last_scan = now
+        for server in scan_servers():
+            if server.pid != self.server.pid:
+                continue
+            if server.port is None:
+                break
+            changed = server.port != self.server.port
+            self.server = server
+            if not changed:
+                break
+            if self.follow:
+                self.base_url = f"http://localhost:{server.port}/v1"
+                announce(server)
+            else:
+                from rapid_mlx.connect import _parse_base_url
 
-                        if _parse_base_url(self.base_url)[1] != server.port:
-                            # An explicit endpoint must never follow a process
-                            # that has now chosen a different listener.
-                            self.server = None
-                    break
+                if _parse_base_url(self.base_url)[1] != server.port:
+                    # An explicit endpoint must never follow a process
+                    # that has now chosen a different listener.
+                    self.server = None
+            break
 
 
 def announce(server: Server) -> None:

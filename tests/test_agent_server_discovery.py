@@ -690,3 +690,69 @@ def test_ready_default_wrong_model_remains_an_error(
     assert not list(configs.rglob("opencode.json"))
     assert not (configs / ".claude/settings.json").exists()
     assert "does not advertise" in capsys.readouterr().out
+
+
+def test_argv_port_is_rechecked_until_the_process_listens(monkeypatch):
+    """An argv ``--port`` guess must not pin setup once serve binds elsewhere."""
+    scans = [
+        [discovery.Server(123, 8000, "tiny")],
+        [discovery.Server(123, 8001, "tiny", listening=True)],
+    ]
+    calls = []
+
+    def scan():
+        calls.append(1)
+        return scans[min(len(calls), len(scans)) - 1]
+
+    now = [0.0]
+    monkeypatch.setattr(discovery.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(discovery, "scan_servers", scan)
+    endpoint = discovery.Endpoint(
+        "http://localhost:8000/v1", discovery.Server(123, 8000, "tiny"), follow=True
+    )
+    endpoint.refresh()
+    assert endpoint.base_url == "http://localhost:8000/v1"
+    endpoint.refresh()  # throttled: no rescan within 2 s
+    assert len(calls) == 1
+    now[0] = 2.5
+    endpoint.refresh()
+    assert endpoint.base_url == "http://localhost:8001/v1"
+    assert endpoint.server.listening
+    now[0] = 10.0
+    endpoint.refresh()  # a confirmed listener is never rescanned
+    assert len(calls) == 2
+
+
+def test_env_only_profile_still_detects_running_model(monkeypatch, capsys):
+    """Env-only profiles skip the readiness wait but keep model detection."""
+    seen = {}
+
+    def detect(base_url):
+        seen["detect"] = base_url
+        return "served-model", 32768
+
+    def fail_wait(*_a, **_k):
+        raise AssertionError("env-only setup must not wait for a server")
+
+    def fake_setup(profile, base_url, model_id, **_k):
+        seen["model"] = model_id
+        return "Set OPENAI_BASE_URL"
+
+    monkeypatch.setattr(adapter, "_detect_running_model", detect)
+    monkeypatch.setattr(setup, "wait_for_server", fail_wait)
+    monkeypatch.setattr(adapter, "setup_agent_config", fake_setup)
+    args = SimpleNamespace(
+        agent_name="openhands",
+        base_url=None,
+        port=None,
+        test=False,
+        setup=True,
+        model=None,
+        agent_version=None,
+        dry_run=False,
+        yes=True,
+        no_check=False,
+    )
+    cli.agents_command(args)
+    assert seen["detect"] == "http://localhost:8000/v1"
+    assert seen["model"] == "served-model"

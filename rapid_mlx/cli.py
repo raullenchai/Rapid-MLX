@@ -15464,7 +15464,18 @@ def agents_command(args):
 
         offline = False
         advertised = None
-        if args.dry_run or args.no_check:
+        from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
+
+        # Env-var-only profiles print instructions and never needed a server;
+        # only profiles that write a file resolve and wait for one.
+        wait_for_live_server = (
+            (cfg.type != "env" or profile.name in FIRST_CLASS_SETUP_AGENTS)
+            and not args.dry_run
+            and not args.no_check
+        )
+        if not wait_for_live_server:
+            # Previews, --no-check and env-only profiles still use the best
+            # metadata a running server offers, without waiting for one.
             if model_id == "default":
                 detected_model, detected_ctx = _detect_running_model(base_url)
                 if detected_model:
@@ -15474,15 +15485,7 @@ def agents_command(args):
             elif needs_ctx:
                 context_length = fetch_context_window(base_url, model_id)
 
-        from rapid_mlx.agents.setup import FIRST_CLASS_SETUP_AGENTS
-
-        # Env-var-only profiles print instructions and never needed a server;
-        # only profiles that write a file resolve and wait for one.
-        if (
-            (cfg.type != "env" or profile.name in FIRST_CLASS_SETUP_AGENTS)
-            and not args.dry_run
-            and not args.no_check
-        ):
+        if wait_for_live_server:
             from rapid_mlx.agents.server_discovery import Endpoint, resolve_endpoint
             from rapid_mlx.agents.server_hint import (
                 ServerNotRunningError,
