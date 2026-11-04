@@ -794,9 +794,12 @@ def test_scan_skips_servers_bound_only_to_a_lan_address(
     )
     lan_socket = proc(2, ["rapid-mlx", "serve", "b"], "192.168.1.10")
     local = proc(3, ["rapid-mlx", "serve", "c"], "127.0.0.1")
+    other_loopback = proc(4, ["rapid-mlx", "serve", "d"], "127.0.0.2")
     monkeypatch.setattr(
-        psutil, "process_iter", lambda *_a: [lan_argv, lan_socket, local]
+        psutil,
+        "process_iter",
+        lambda *_a: [lan_argv, lan_socket, local, other_loopback],
     )
-    servers = agent_discovery_defaults()
-    assert [s.pid for s in servers if s.port is not None] == [3]
-    assert all(s.pid != 1 for s in servers)
+    # Only the 127.0.0.1 listener is reachable at the localhost URL setup
+    # writes; the others must not linger as "unbound, still starting".
+    assert [s.pid for s in agent_discovery_defaults()] == [3]

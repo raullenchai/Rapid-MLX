@@ -33,9 +33,9 @@ def _loopback_reachable(host: str | None) -> bool:
     Setup only ever configures a ``localhost`` URL, so a server bound to a
     specific LAN address is not one it can verify or wait on.
     """
-    if host in (None, "", "localhost", "0.0.0.0", "::", "::1"):
-        return True
-    return host.startswith("127.")
+    # ``localhost`` resolves to 127.0.0.1 / ::1; other 127.x addresses are
+    # distinct listeners that a localhost URL never reaches.
+    return host in (None, "", "localhost", "0.0.0.0", "::", "127.0.0.1", "::1")
 
 
 @lru_cache(maxsize=1)
@@ -103,13 +103,16 @@ def scan_servers() -> list[Server]:
             listening = False
             inspected = True
             try:
-                listeners = {
-                    c.laddr.port
+                bound = [
+                    c.laddr
                     for c in proc.net_connections(kind="inet")
-                    if c.status == psutil.CONN_LISTEN
-                    and c.laddr
-                    and _loopback_reachable(c.laddr.ip)
-                }
+                    if c.status == psutil.CONN_LISTEN and c.laddr
+                ]
+                listeners = {a.port for a in bound if _loopback_reachable(a.ip)}
+                if bound and not listeners:
+                    # Listening, but only where localhost cannot reach it: not
+                    # an unbound server that may still start on 8000-8009.
+                    continue
                 if port in listeners:
                     listening = True
                 elif len(listeners) == 1:
