@@ -638,6 +638,7 @@ async def test_last_frame_validation(monkeypatch, tmp_path, oversized):
         video.start_video_jobs()
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_and_asset_owners(monkeypatch):
     import argparse
 

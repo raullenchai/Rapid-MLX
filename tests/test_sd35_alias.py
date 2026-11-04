@@ -196,6 +196,7 @@ def test_pinned_snapshot_fails_closed_for_unavailable_or_unsafe_cache(
     assert _download_gate.pinned_image_snapshot(REPO) is None
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("requested", [REPO, "sd35-large-4bit"])
 def test_pull_fetches_all_three_exact_allowlisted_snapshots(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], requested: str
@@ -290,6 +291,7 @@ def test_engine_runtime_asset_download_is_local_noop_and_fail_closed(
         engine._ensure_runtime_assets()  # noqa: SLF001
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize(
     "repo",
     [_download_gate.SD35_SHARED_REPO, _download_gate.SD35_T5_TOKENIZER_REPO],

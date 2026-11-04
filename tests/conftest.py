@@ -175,6 +175,19 @@ def _benchmark_host_memory(request, monkeypatch):
         )
 
 
+@pytest.fixture
+def ample_pull_disk_space(monkeypatch):
+    """Keep mocked pull journeys independent of the runner's free disk.
+
+    Offline pulls can still price large payloads from packaged manifests.
+    Keep the real disk gate active with explicit capacity; admission tests
+    supply their own capacity instead. RAM is isolated separately above.
+    """
+    monkeypatch.setattr(
+        "rapid_mlx._mirror._cache_disk_space", lambda: ("test cache", 1 << 50)
+    )
+
+
 _HUB_GUIDANCE_CLI_MODULES: set[object] = set()
 
 

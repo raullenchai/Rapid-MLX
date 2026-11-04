@@ -14,6 +14,9 @@ from tests.pull_integrity_helpers import (  # noqa: F401
 )
 
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
+
 def test_pull_disk_full_has_retry_command(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_a, **_kw: False)
     monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: tmp_path)

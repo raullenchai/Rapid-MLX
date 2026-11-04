@@ -55,6 +55,20 @@ def pull(alias, **kw):
 
 
 @pytest.mark.parametrize(
+    "alias,ram_gib",
+    [("qwen3.5-4b-4bit", 16), ("ltx-2.5-mlx-q8", 64)],
+)
+def test_fitting_pull_reaches_download(host, monkeypatch, alias, ram_gib):
+    """Ordinary pulls pass the real gates using explicit host resources."""
+    calls, priced = host
+    monkeypatch.setattr(preflight, "physical_ram_bytes", lambda: ram_gib * GIB)
+    pull(alias)
+    assert calls
+    assert len(calls) == len(priced)
+    assert calls[0][0] == resolve_profile(alias).hf_path
+
+
+@pytest.mark.parametrize(
     "alias,extra",
     [
         ("pika-h3-flex", {}),

@@ -250,6 +250,7 @@ def test_implicit_download_tolerates_profile_resolution_failure(monkeypatch):
         cli._ensure_model_downloaded("owner/model")
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
     calls = []
     disk_checks = []

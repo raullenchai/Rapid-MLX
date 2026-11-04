@@ -106,6 +106,7 @@ def test_shipped_pins_are_complete_and_immutable():
     assert max(item.size for item in a.FLASH_1017.target_files or ()) < 50e9
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("operation", ["resolve", "identity", "pull"])
 def test_unset_pins_fail_before_network(monkeypatch, operation):
     monkeypatch.delenv(a.LOCAL_MODEL_DIR_ENV, raising=False)
@@ -513,6 +514,7 @@ def test_resolution_is_taken_once(monkeypatch, tmp_path):
     assert a.take_resolved_product_paths(a.FLASH_1017) is None
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_uses_pinned_product_resolution(monkeypatch):
     from rapid_mlx import cli
 

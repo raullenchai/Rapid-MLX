@@ -753,6 +753,7 @@ def test_unclosed_think_does_not_leak_into_content():
     assert "</think>" not in (content or "")
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_narrows_to_the_checkpoint_and_says_so(
     hub_online_env, monkeypatch, capsys, tmp_path
 ):
@@ -790,6 +791,7 @@ def test_pull_narrows_to_the_checkpoint_and_says_so(
     )
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_pull_of_a_flat_repo_is_unfiltered(hub_online_env, monkeypatch, tmp_path):
     """The generic contract is untouched for every ordinary repo."""
     import argparse

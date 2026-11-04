@@ -38,6 +38,9 @@ from tests.pull_integrity_helpers import (  # noqa: F401
 )
 
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
+
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
     """Create a snapshot dir on disk with one file of ``total_bytes`` bytes."""
     root.mkdir(parents=True, exist_ok=True)
