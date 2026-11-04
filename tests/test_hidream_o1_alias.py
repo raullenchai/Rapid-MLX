@@ -691,6 +691,7 @@ def test_custom_heads_reject_missing_extra_and_shape_mismatch() -> None:
         )
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("requested", [REPO, "hidream-o1-dev"])
 def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch,
@@ -723,6 +724,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
     ]
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 def test_non_hidream_pull_keeps_the_generic_download_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

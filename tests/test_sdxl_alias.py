@@ -282,6 +282,7 @@ def test_cold_engine_download_uses_exact_revision_and_data_only_allowlist(
     assert verified == [True]
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("requested", [REPO, "sdxl-base"])
 def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch, requested: str

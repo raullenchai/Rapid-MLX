@@ -192,6 +192,7 @@ def test_cold_snapshot_is_pinned_allowlisted_and_verified(
     assert verified == [True]
 
 
+@pytest.mark.usefixtures("ample_pull_disk_space")
 @pytest.mark.parametrize("requested", [REPO, "bonsai-image-4b-2bit"])
 def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch, requested: str

@@ -1210,7 +1210,7 @@ def _same_task_fitting_pick(
 def _check_catalog_memory_fit(args: Any) -> None:
     try:
         if (
-            args.command != "serve"
+            args.command not in ("serve", "pull")
             or getattr(args, "no_preflight", False)
             or getattr(args, "disk_stream", False)
             or os.path.exists(args.model)
@@ -1224,6 +1224,8 @@ def _check_catalog_memory_fit(args: Any) -> None:
         if profile is None:
             return
         cached = _cache_runnability(profile.hf_path) is True
+        if args.command == "pull" and cached:
+            return
         ram = physical_ram_bytes()
         # The public wrapper delegates through the private name for compatibility.
         recommended = mlx_recommended_working_set_bytes()
@@ -1233,7 +1235,7 @@ def _check_catalog_memory_fit(args: Any) -> None:
             recommended_working_set_bytes=recommended,
             cached=cached,
         )
-        if result is None:
+        if result is None or (args.command == "pull" and result.kind != "memory_floor"):
             return
         budget = result.budget_bytes or _working_set_budget(ram, None)
         footprint = result.footprint_bytes
@@ -1262,7 +1264,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
         )
     print("  Nothing was downloaded.", file=sys.stderr)
     if pick:
-        print(f"  A model that fits this Mac: rapid-mlx serve {pick}", file=sys.stderr)
+        print(
+            f"  A model that fits this Mac: rapid-mlx {args.command} {pick}",
+            file=sys.stderr,
+        )
         try:
             import rapid_mlx.cli as cli_mod
 
@@ -1295,7 +1300,10 @@ def _check_catalog_memory_fit(args: Any) -> None:
             file=sys.stderr,
         )
     print(
-        "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
+        "    (To download anyway, for example to move the files to a bigger Mac, "
+        "re-run with --no-preflight.)\n"
+        if args.command == "pull"
+        else "    (Think this is wrong? Re-run with --no-preflight to skip this check.)\n",
         file=sys.stderr,
     )
     _emit_rejection(args, PreflightRejectedError(INSUFFICIENT_MEMORY))

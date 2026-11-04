@@ -25,6 +25,9 @@ LTX25_ALIAS = "ltx-2.5-mlx-q8"
 LTX25_HF_PATH = "MrMofer/ltx-2.5-mlx-q8"
 
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
+
 class _DownloadReachedError(Exception):
     """Sentinel proving ``pull`` passed the preflight into the download path."""
 

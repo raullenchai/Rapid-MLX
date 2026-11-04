@@ -37,6 +37,8 @@ from tests.pull_integrity_helpers import (  # noqa: F401
     snapshot_tree,
 )
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
 
 def _make_fake_snapshot(root: Path, total_bytes: int) -> Path:
     """Create a snapshot dir on disk with one file of ``total_bytes`` bytes."""
@@ -1418,3 +1420,75 @@ def test_flex_summary_sizes_only_requested_payloads(tmp_path, capsys, with_ref2v
         )
         output = capsys.readouterr().out
         assert f"{cli._format_bytes(6 * len(files))} verified" in output
+
+
+def test_file_plan_printed_once_for_mirror_and_hub(monkeypatch, tmp_path, capsys):
+    """The real mirror renderer must share its plan with the Hub early return.
+
+    Run both routes in one contract: old code prints zero plans when the
+    catalog declines R2, while a pull-level summary would duplicate R2 output.
+    """
+    import hashlib
+
+    from rapid_mlx import _mirror
+
+    repo = "org/summary-plan"
+    revision = "a" * 40
+    data = b"weights"
+    digest = hashlib.sha256(data).hexdigest()
+    info = SimpleNamespace(
+        sha=revision,
+        siblings=[
+            SimpleNamespace(
+                rfilename="model.safetensors",
+                size=len(data),
+                lfs=SimpleNamespace(sha256=digest),
+                blob_id=None,
+            )
+        ],
+    )
+    snapshot = tmp_path / "models--org--summary-plan" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "model.safetensors").write_bytes(data)
+    monkeypatch.setattr("huggingface_hub.model_info", lambda *a, **k: info)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", lambda *a, **k: str(snapshot)
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.model_integrity.verify_snapshot", lambda *a, **k: None
+    )
+    monkeypatch.setattr(_mirror, "_hf_cache_root", lambda: tmp_path)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(cli, "_missing_download_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
+
+    for route in ("mirror", "unmirrored", "catalog-unavailable", "hf-only"):
+        mirrored = route == "mirror"
+        monkeypatch.setenv(
+            "RAPID_MLX_MODEL_MIRROR",
+            "" if route == "hf-only" else "https://models.rapidmlx.com",
+        )
+        catalog = (
+            {
+                "models": [
+                    {
+                        "hf_path": repo,
+                        "status": "mirrored",
+                        "download_url_base": f"/{repo}/",
+                    }
+                ]
+            }
+            if mirrored
+            else {"models": []}
+        )
+        monkeypatch.setattr(
+            _mirror,
+            "fetch_catalog_with_status",
+            lambda *a, catalog=catalog, route=route: (
+                (None, 503) if route == "catalog-unavailable" else (catalog, 200)
+            ),
+        )
+        cli.pull_command(argparse.Namespace(model=repo))
+        output = capsys.readouterr().out
+        assert output.count("Found 1 files (~0.0 GB total)") == 1, output
+        assert ("R2 mirror, fallback: HF" in output) is mirrored

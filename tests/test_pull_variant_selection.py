@@ -38,6 +38,8 @@ from tests.pull_integrity_helpers import (  # noqa: F401
     snapshot_tree,
 )
 
+pytestmark = pytest.mark.usefixtures("ample_pull_disk_space")
+
 
 class _FakeResponse:
     """Minimal stand-in for ``httpx.Response`` when constructing HF errors."""
