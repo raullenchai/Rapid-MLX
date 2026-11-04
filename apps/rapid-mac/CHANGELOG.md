@@ -19,7 +19,7 @@ can actually understand.
 
 ### Changed
 
-- **Unload model when idle** now keeps the local API online: after the chosen idle time (new 5-minute option), model memory is freed and the next request reloads it automatically, like Ollama. The sidebar shows the model as Unloaded until then.
+- **Unload model when idle** now keeps the local API online: after the chosen idle time (new 5-minute option), model memory is freed and the next request reloads it automatically, like Ollama. The sidebar shows the model as Unloaded until then. An idle dictation or speech model, or a runtime too old for idle unload, still stops the server as before.
 
 ### Fixed
 

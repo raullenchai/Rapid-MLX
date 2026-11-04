@@ -389,7 +389,7 @@ struct SettingsModelManagementPanel: View {
 
                 SettingsRow(
                     title: String(localized: "Unload model when idle"),
-                    description: String(localized: "Frees the model's memory after this long without requests. The local API stays online, and the next request reloads the model in a few seconds.")
+                    description: String(localized: "Idle chat models are unloaded while the local API stays online; the next request reloads them. The server still stops if a dictation or speech model is idle, or if the runtime is too old for idle unload.")
                 ) {
                     Picker("Unload model when idle", selection: $idleReleaseSeconds) {
                         Text("Never").tag(0)
