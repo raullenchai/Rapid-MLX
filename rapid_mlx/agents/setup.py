@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rapid_mlx.agents.config_merge import (
     deep_merge,
@@ -32,6 +32,10 @@ from rapid_mlx.agents.telemetry import (
 from rapid_mlx.launch import _common as launch_common
 from rapid_mlx.launch import _ownership as launch_ownership
 from rapid_mlx.launch import claude_code, cline, continue_dev
+
+if TYPE_CHECKING:
+    from rapid_mlx.agents.server_discovery import Endpoint
+
 
 # Agents whose ``--setup`` goes through the plan/apply flow below: an exact
 # diff preview, consent (or --yes), a timestamped backup of the existing file
@@ -687,7 +691,7 @@ def verify_server(
             if response.status != 200:
                 if track_failure:
                     track_agent_configure_failed("server_not_ready", agent)
-                raise RuntimeError(f"health returned HTTP {response.status}")
+                raise RuntimeError(f"health returned HTTP {response.status} at {root}")
         from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
         request = urllib.request.Request(
@@ -734,30 +738,63 @@ def verify_server(
 
 
 def wait_for_server(
-    base_url: str, expected_model: str, *, agent: str, timeout: float = 60.0
+    base_url: str,
+    expected_model: str,
+    *,
+    agent: str,
+    timeout: float = 60.0,
+    endpoint: Endpoint | None = None,
 ) -> str:
-    """Wait for a local server to advertise the intended model before setup writes."""
+    """Wait while a local serve process lives; distinguish an absent server."""
+    from .server_discovery import Progress, pid_alive, server_for_url
+
     deadline = time.monotonic() + timeout
+    grace = time.monotonic() + min(2.0, timeout)
+    server = endpoint.server if endpoint is not None else None
+    progress = Progress()
     while True:
+        if endpoint is not None:
+            endpoint.refresh()
+            base_url = endpoint.base_url
+            server = endpoint.server
+        if server is not None and not pid_alive(server.pid):
+            track_agent_configure_failed("server_not_ready", agent)
+            raise RuntimeError(
+                f"server at {base_url} exited during startup; check the serve output"
+            )
         try:
             return verify_server(
                 base_url,
                 expected_model,
                 agent=agent,
-                timeout=min(2.0, max(0.1, deadline - time.monotonic())),
+                timeout=0.5,
                 track_failure=False,
             )
         except RuntimeError as exc:
-            if not is_local_base_url(base_url) or time.monotonic() >= deadline:
-                if isinstance(exc, ModelNotAdvertisedError):
-                    error_class = "model_not_advertised"
-                elif isinstance(exc, ServerNoModelsError):
-                    error_class = "server_no_models"
-                else:
-                    error_class = "server_not_ready"
+            # Healthy servers advertising the wrong/no model are real failures,
+            # independent of how long downloading/loading took.
+            if isinstance(exc, (ModelNotAdvertisedError, ServerNoModelsError)):
+                error_class = (
+                    "model_not_advertised"
+                    if isinstance(exc, ModelNotAdvertisedError)
+                    else "server_no_models"
+                )
                 track_agent_configure_failed(error_class, agent)
-                raise RuntimeError(f"server did not become ready: {exc}") from exc
-            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+                raise
+            if server is None and (endpoint is None or not endpoint.follow):
+                server = server_for_url(base_url)
+            if server is not None:
+                if endpoint is not None:
+                    endpoint.server = server
+                progress.show(base_url, time.monotonic())
+            elif isinstance(exc, ServerNotRunningError) and time.monotonic() >= grace:
+                raise
+            elif not is_local_base_url(base_url) or time.monotonic() >= deadline:
+                track_agent_configure_failed("server_not_ready", agent)
+                raise RuntimeError(
+                    f"server did not become ready at {base_url}: {exc}"
+                ) from exc
+            time.sleep(0.25)
 
 
 def confirm_plan(plan: SetupPlan) -> bool:

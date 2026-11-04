@@ -511,18 +511,21 @@ def launch_command(args: argparse.Namespace) -> None:
                 import time
 
                 try:
-                    for second in range(600):
+                    from rapid_mlx.agents.server_discovery import Progress, pid_alive
+
+                    progress = Progress()
+                    while True:
+                        if not pid_alive(server_pid):
+                            print(
+                                f"  Local server on :{port} exited during startup; "
+                                f"check the serve output. Retry: {start_hint}"
+                            )
+                            raise SystemExit(1)
                         status = connection_status(port, key, model)
                         if status not in {"stopped", "server-error"}:
                             break
-                        if second and second % 10 == 0:
-                            print(f"  Preparing local model… {second}s", flush=True)
+                        progress.show(f"http://localhost:{port}/v1", time.monotonic())
                         time.sleep(1)
-                    if status in {"stopped", "server-error"}:
-                        print(
-                            f"  Local server did not become ready. Retry: {start_hint}"
-                        )
-                        raise SystemExit(1)
                     if status != "ready":
                         print(
                             "  Local server key or model does not match this profile. "

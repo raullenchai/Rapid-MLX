@@ -364,13 +364,14 @@
         "config_invalid      -> setup.py:97 '<path> must contain a YAML mapping'",
         "config_changed      -> setup.py:242/246 '<path> changed after preview'",
         "config_write_failed -> an OSError out of the atomic-write / backup path",
+        "server_not_running  -> local setup without a server or a selected model",
         "server_not_ready    -> setup.py:276 'server is not ready at <root>'",
         "server_no_models    -> setup.py:280 'server at <root> reported no models'",
         "model_not_advertised-> setup.py:282 'server does not advertise model ...'"
       ],
       "values": [
         "no_safe_setup_flow", "config_invalid", "config_changed",
-        "config_write_failed", "server_not_ready", "server_no_models",
+        "config_write_failed", "server_not_running", "server_not_ready", "server_no_models",
         "model_not_advertised", "other"
       ]
     },

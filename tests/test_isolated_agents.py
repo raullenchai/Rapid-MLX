@@ -29,6 +29,17 @@ def _launch_child(returncode=0):
     return child
 
 
+@pytest.fixture(autouse=True)
+def spawned_server_alive(monkeypatch):
+    # Launch tests use synthetic PIDs and must never inspect host processes.
+    monkeypatch.setattr(
+        "rapid_mlx.agents.server_discovery.pid_alive", lambda _pid: True
+    )
+    monkeypatch.setattr(
+        "rapid_mlx.agents.server_discovery.Progress.show", lambda *_a: None
+    )
+
+
 @pytest.fixture
 def private_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -828,7 +839,8 @@ def test_connection_status_shares_local_refusal_classification(private_home):
         assert isolated.connection_status(7659, "a" * 64, "model") == "server-error"
 
 
-def test_launch_waits_through_startup_http_error(private_home):
+def test_launch_waits_beyond_600_seconds_while_pid_alive(private_home):
+    now = [0.0]
     from rapid_mlx.launch.cli import launch_command, register
 
     parser = ArgumentParser()
@@ -848,18 +860,23 @@ def test_launch_waits_through_startup_http_error(private_home):
     with (
         patch(
             "rapid_mlx.agents.isolated.connection_status",
-            side_effect=["stopped", "server-error", "ready"],
+            side_effect=["stopped", *["server-error"] * 601, "ready"],
         ),
         patch("rapid_mlx.recommendations.physical_ram_gb", return_value=0),
         patch("rapid_mlx.launch.cli._start_server_background") as start,
         patch("rapid_mlx.cli._ensure_model_downloaded"),
         patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
         patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as agent,
-        patch("time.sleep"),
+        patch(
+            "time.sleep",
+            side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        ),
+        patch("time.monotonic", side_effect=lambda: now[0]),
         pytest.raises(SystemExit) as exit_info,
     ):
         launch_command(args)
     assert exit_info.value.code == 0
+    assert now[0] > 600
     start.assert_called_once()
     agent.assert_called_once()
 
@@ -1407,6 +1424,38 @@ def test_small_running_model_without_user_choice_is_not_automatically_reused(
     assert "stop it before launching" in capsys.readouterr().err
 
 
+def test_short_launch_fresh_machine_starts_server(private_home):
+    from rapid_mlx.launch.cli import launch_command
+
+    assert isolated.saved_model("codex") is None
+    assert isolated.stable_key(create=False) is None
+    with (
+        patch(
+            "rapid_mlx.run.cli._select_model", return_value="qwen3.5-9b-4bit"
+        ) as select,
+        patch(
+            "rapid_mlx.agents.isolated.connection_status",
+            side_effect=["stopped", "ready"],
+        ),
+        patch("rapid_mlx.agents.isolated.served_context_length", return_value=98304),
+        patch(
+            "rapid_mlx.launch.cli._start_server_background", return_value=12345
+        ) as start,
+        patch("rapid_mlx.cli._ensure_model_downloaded") as download,
+        patch("rapid_mlx.run.cli._confirm_download", return_value=True),
+        patch("rapid_mlx.launch.cli.Popen", return_value=_launch_child()) as client,
+        pytest.raises(SystemExit, match="0"),
+    ):
+        launch_command(_launch_args("codex"))
+    select.assert_called_once()
+    start.assert_called_once_with(
+        "qwen3.5-9b-4bit", isolated.stable_port(), api_key=isolated.stable_key()
+    )
+    download.assert_called_once_with("mlx-community/Qwen3.5-9B-4bit")
+    client.assert_called_once()
+    assert isolated.saved_model("codex") == "qwen3.5-9b-4bit"
+
+
 def test_short_launch_reuses_saved_model_and_starts_stopped_server(
     private_home, capsys
 ):
@@ -1523,18 +1572,20 @@ def test_isolated_cli_reports_no_suitable_model(private_home, capsys):
     assert "no model fits this Mac" in capsys.readouterr().err
 
 
-def test_isolated_run_times_out_during_startup(private_home, capsys):
+def test_isolated_run_fails_when_spawned_pid_exits(private_home, capsys):
     from rapid_mlx.launch.cli import launch_command
 
     with (
         patch(
             "rapid_mlx.agents.isolated.connection_status",
-            side_effect=["stopped", *["server-error"] * 600],
+            side_effect=["stopped", "server-error"],
         ),
         patch("rapid_mlx.launch.cli._start_server_background"),
         patch("rapid_mlx.cli._ensure_model_downloaded"),
         patch("rapid_mlx.run.cli._fits_host", return_value=True),
         patch("time.sleep"),
+        patch("rapid_mlx.agents.server_discovery.pid_alive", side_effect=[True, False]),
+        patch("rapid_mlx.launch.cli._stop_failed_start") as stop,
         pytest.raises(SystemExit, match="1"),
     ):
         launch_command(
@@ -1547,7 +1598,8 @@ def test_isolated_run_times_out_during_startup(private_home, capsys):
                 "qwen3.5-9b-4bit",
             )
         )
-    assert "did not become ready" in capsys.readouterr().out
+    stop.assert_called_once()
+    assert "exited during startup" in capsys.readouterr().out
 
 
 def test_no_setup_server_reuses_saved_key_without_overriding_explicit_env(

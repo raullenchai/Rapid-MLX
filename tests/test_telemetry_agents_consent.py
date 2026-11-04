@@ -992,3 +992,41 @@ def test_onboarding_events_follow_real_consent(
         {"event": "onboarding_next_step_shown", "properties": {}},
         {"event": "first_integration", "properties": {"agent": "codex"}},
     ]
+
+
+def test_setup_without_server_or_model_tracks_not_running(
+    loopback_telemetry, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from rapid_mlx import cli
+    from rapid_mlx.agents import setup
+    from rapid_mlx.agents.server_hint import ServerNotRunningError
+    from rapid_mlx.telemetry import posthog_sender
+
+    def absent(*_a, **_k):
+        raise ServerNotRunningError("no server is running at http://localhost:8462")
+
+    monkeypatch.setattr(setup, "wait_for_server", absent)
+    args = SimpleNamespace(
+        agent_name="codex",
+        base_url=None,
+        port=8462,
+        test=False,
+        setup=True,
+        model=None,
+        agent_version=None,
+        dry_run=False,
+        yes=True,
+        no_check=False,
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.agents_command(args)
+    assert exc.value.code == 1
+    posthog_sender.get_sender().flush(2.0)
+    assert [_event_view(item) for item in _items(loopback_telemetry)] == [
+        {
+            "event": "agent_configure_failed",
+            "properties": {"agent": "codex", "error_class": "server_not_running"},
+        }
+    ]
