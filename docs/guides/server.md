@@ -574,6 +574,8 @@ POST /v1/messages
 
 Anthropic-compatible endpoint that allows tools like Claude Code and OpenCode to connect directly to rapid-mlx. Internally it translates Anthropic requests to OpenAI format, runs inference through the engine, and converts the response back to Anthropic format.
 
+For `thinking: {"type": "adaptive"}` without `output_config.effort`, the reasoning cap uses `--default-reasoning-effort`, falling back to `medium` (2048 tokens) when unset. Explicit `output_config.effort` takes precedence; `max` leaves reasoning uncapped whether explicit or configured as the server default, while enabled thinking with `budget_tokens` and disabled thinking retain their existing behavior.
+
 Capabilities:
 - Non-streaming and streaming responses (SSE)
 - System messages (plain string or list of content blocks)
