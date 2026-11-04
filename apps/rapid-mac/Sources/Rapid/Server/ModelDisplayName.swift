@@ -17,11 +17,27 @@ extension ModelDisplayName {
         "sd35-large-4bit": "Stable Diffusion 3.5 Large"
     ]
 
+    // Keep explicit video spellings here, alongside image names, so every
+    // surface shares family casing, workload, size, and precision labels.
+    nonisolated static let videoNames: [String: String] = [
+        "cogvideox-fun-5b-q4": "CogVideoX-Fun · 5B · 4-bit",
+        "ltx-2.3-mlx-q4": "LTX 2.3 · 4-bit",
+        "ltx-2.5-mlx-q8": "LTX 2.5 · 8-bit",
+        "minimax-h3": "MiniMax H3",
+        "pika-h3-flex": "Pika H3 Flex",
+        "wan2.1-t2v-1.3b-bf16": "Wan 2.1 · T2V 1.3B · BF16",
+        "wan2.2-i2v-a14b-q8": "Wan 2.2 · I2V A14B · 8-bit",
+        "wan2.2-t2v-a14b-bf16": "Wan 2.2 · T2V A14B · BF16",
+        "wan2.2-ti2v-5b-bf16": "Wan 2.2 · TI2V 5B · BF16",
+        "wan2.2-ti2v-5b-q8": "Wan 2.2 · TI2V 5B · 8-bit"
+    ]
+
     nonisolated static func name(for alias: String) -> String {
         if let choice = QuickstartCoordinator.onboardingChoices.first(where: { $0.alias == alias }) {
             return choice.displayName
         }
         if let name = imageNames[alias.lowercased()] { return name }
+        if let name = videoNames[alias.lowercased()] { return name }
         let speech = AudioViewModel.transcriptionDetails(alias: alias, family: nil).displayName
         if speech != alias { return speech }
         let family = ModelInfoCatalog.familyAndContext(for: alias).family
