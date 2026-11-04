@@ -74,6 +74,10 @@ def test_h3_steps_cleanup_and_reuse(monkeypatch, tmp_path, cache_clears, family)
     references_module = ModuleType("mlx_vlm.generate.video_generation")
     references_module.VideoReference = lambda *a: a
     monkeypatch.setitem(sys.modules, references_module.__name__, references_module)
+    # The fake runtime has no pinned H3 processing module to patch.
+    from rapid_mlx.video import reference_media
+
+    monkeypatch.setattr(reference_media, "install_reference_decoders", lambda: None)
     cls = (
         pika_h3_flex.PikaH3FlexVideoEngine
         if family.startswith("pika")
