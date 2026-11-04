@@ -360,7 +360,14 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8461/v1", api_key="not-needed")
 MODEL = "embeddinggemma-2-4bit"
 
-docs = {p.name: p.read_text(encoding="utf-8") for p in sorted(Path("docs").glob("*.*"))}
+# This example reads plain-text files only (PDF/Office need text extraction first).
+docs = {
+    p.name: p.read_text(encoding="utf-8")
+    for p in sorted(Path("docs").iterdir())
+    if p.is_file() and p.suffix.lower() in {".md", ".txt"}
+}
+if not docs:
+    raise SystemExit("No .md or .txt files in docs/")
 
 
 def embed(texts):
