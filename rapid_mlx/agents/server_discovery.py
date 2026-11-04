@@ -295,6 +295,7 @@ def desktop_owned(server: Server) -> bool:
 
 
 def skipped_auth_hint(server: Server, agent: str) -> str:
+    api_key_env = "RAPID_MLX_API_KEY"
     owner = (
         "belongs to Rapid-MLX Desktop"
         if desktop_owned(server)
@@ -303,7 +304,7 @@ def skipped_auth_hint(server: Server, agent: str) -> str:
     return (
         f"  Server on :{server.port} {owner}; copy the API key from Rapid-MLX "
         "Desktop's Agent > Connection details > API key, and rerun with "
-        f"RAPID_MLX_API_KEY=<key> rapid-mlx agents {agent} --setup --port {server.port}; "
+        f"{api_key_env}=<key> rapid-mlx agents {agent} --setup --port {server.port}; "
         "or start a CLI server with rapid-mlx serve."
     )
 

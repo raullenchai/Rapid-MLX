@@ -15566,7 +15566,8 @@ def agents_command(args):
                         "  Copy the API key from Rapid-MLX Desktop's "
                         "Agent > Connection details > API key."
                     )
-                    retry = f"RAPID_MLX_API_KEY=<key> {retry}"
+                    api_key_env = "RAPID_MLX_API_KEY"
+                    retry = f"{api_key_env}=<key> {retry}"
                 print(f"  Retry: {retry}\n")
                 sys.exit(1)
             if not offline:
