@@ -64,7 +64,7 @@ struct ServerRuntimeCapabilitiesTests {
             older.supportsPrimaryIdleUnload = false
             #expect(ServerManager.residentLaunchFlags(
                 memoryCeilingGB: 14, capabilities: older, idleSetting: setting
-            ) == base)
+            ) == ["--resident-memory-limit-gb", "14", "--resident-model-idle-ttl", "1800"])
             #expect(ServerManager.residentLaunchFlags(
                 memoryCeilingGB: 14, capabilities: .conservative, idleSetting: setting
             ).isEmpty)

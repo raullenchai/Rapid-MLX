@@ -5164,7 +5164,11 @@ final class ServerManager {
         if capabilities.supportsResidentModelIdleTTL {
             flags.append(contentsOf: [
                 "--resident-model-idle-ttl",
-                String(idleSetting > 0 ? min(1800, idleSetting) : 1800),
+                // Follow a shorter idle setting only where native unload is
+                // supported: that is where a changed setting restarts the
+                // child, so the TTL never outlives the setting that chose it.
+                String(capabilities.supportsPrimaryIdleUnload && idleSetting > 0
+                    ? min(1800, idleSetting) : 1800),
             ])
         }
         if capabilities.supportsPrimaryIdleUnload, idleSetting > 0 {
