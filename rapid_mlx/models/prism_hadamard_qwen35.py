@@ -152,15 +152,24 @@ def _install_packed(language_model, config, weights):
 
 
 def _build_processor(directory):
+    import json
+
     from mlx_vlm.models.qwen3_5 import Qwen3VLProcessor
     from mlx_vlm.tokenizer_utils import load_tokenizer
     from mlx_vlm.utils import StoppingCriteria
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer, PretrainedConfig
     from transformers.models.qwen2_vl.image_processing_pil_qwen2_vl import (
         Qwen2VLImageProcessorPil,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(str(directory), trust_remote_code=False)
+    # Tokenizer metadata is sufficient; HF does not implement the native packed
+    # architecture and its AutoConfig fallback emits a false mismatch warning.
+    config = json.loads((directory / "config.json").read_text())
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(directory),
+        config=PretrainedConfig.from_dict(config),
+        trust_remote_code=False,
+    )
     processor = Qwen3VLProcessor(
         image_processor=Qwen2VLImageProcessorPil.from_pretrained(str(directory)),
         tokenizer=tokenizer,

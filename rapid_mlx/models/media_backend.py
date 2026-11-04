@@ -62,6 +62,7 @@ def load_native_media(model_path, config):
     if config.get("model_type") != "lfm3_vl":
         raise ValueError("Unsupported native media model")
     from mlx_lm.utils import load_model, load_tokenizer
+    from transformers import PretrainedConfig
 
     from ..model_load_errors import typed_mlx_load_boundaries
     from .lfm3_vl import Model, ModelArgs
@@ -71,6 +72,12 @@ def load_native_media(model_path, config):
     with typed_mlx_load_boundaries():
         model, _ = load_model(path, get_model_classes=lambda config: (Model, ModelArgs))
     tokenizer = load_tokenizer(
-        path, tokenizer_config_extra={"trust_remote_code": False}
+        path,
+        # Preserve checkpoint tokenizer selection without asking HF to load a
+        # model config for the native-only lfm3_vl architecture.
+        tokenizer_config_extra={
+            "config": PretrainedConfig.from_dict(config),
+            "trust_remote_code": False,
+        },
     )
     return model, LFM3VLProcessor(tokenizer)
