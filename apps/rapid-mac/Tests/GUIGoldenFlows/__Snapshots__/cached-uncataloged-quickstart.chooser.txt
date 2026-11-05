@@ -10,6 +10,8 @@ AXApplication title="Rapid-MLX"
       AXStaticText id="Quickstart.Step2.Kicker" value=text enabled=true
       AXButton id="Quickstart.Choice.<model>" desc="LFM2.5 · 2.6B. recommended starter. Fast everyday chat and tools. Text only. download ~<size>. on-device, fits this Mac" enabled=true
       AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
       AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Smarter, and understands images. Twice the download. download ~<size>" enabled=true
       AXStaticText value=text enabled=true
       AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare. download ~<size>" enabled=true

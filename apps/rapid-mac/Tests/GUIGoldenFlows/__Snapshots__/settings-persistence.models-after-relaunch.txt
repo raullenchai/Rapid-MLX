@@ -136,6 +136,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText help="lfm2.5-2.6b-4bit" value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: 65, good" enabled=true
           AXUnknown desc="Speed: 65, below average" enabled=true
           AXStaticText help="Estimated download size." value=text enabled=true
