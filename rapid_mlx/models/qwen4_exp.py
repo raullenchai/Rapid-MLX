@@ -36,6 +36,7 @@ from mlx_lm.models.gated_delta import gated_delta_update  # noqa: E402
 from mlx_lm.models.rope_utils import initialize_rope  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
+from ..kernels import qsa_m5_nax  # noqa: E402
 from ..kernels.qsa_block_sparse import (  # noqa: E402
     block_sparse_attention,
     block_sparse_decline_reason,
@@ -1019,6 +1020,7 @@ class QSAIndexer(nn.Module):
         )
         self.q_layernorm = ZeroCenteredRMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_layernorm = ZeroCenteredRMSNorm(self.head_dim, eps=args.rms_norm_eps)
+        self.m5_nax_route_constructions = 0
         self.stage1_route_constructions = 0
         self.stage1_declines = 0
         self.stage1_decline_reasons: dict[str, int] = {}
@@ -1116,51 +1118,65 @@ class QSAIndexer(nn.Module):
             selected_blocks = None
             if available_blocks > self.block_topk:
                 keys = cache.keys_for_blocks(batch_index, available_blocks)
-                stage1_decline = qsa_stage1_decline_reason(
-                    length,
-                    physical_kv_length,
-                    batch_size=batch,
-                    training=bool(self.training),
-                )
-                if stage1_decline is None and not qsa_stage1_supported(
-                    query[batch_index : batch_index + 1],
-                    keys[None],
-                    logical_positions[None],
-                    block_topk=self.block_topk,
-                    compress_ratio=self.compress_ratio,
-                ):
-                    stage1_decline = "unsupported layout"
-                if stage1_decline is None:
-                    selected_blocks = qsa_stage1_select(
+                if batch == 1:
+                    selected_blocks = qsa_m5_nax.select(
+                        query,
+                        keys[None],
+                        logical_positions[None],
+                        block_topk=self.block_topk,
+                        compress_ratio=self.compress_ratio,
+                        training=bool(self.training),
+                    )
+                    if selected_blocks is not None:
+                        selected_blocks = selected_blocks[0]
+                        self.m5_nax_route_constructions += 1
+                if selected_blocks is None:
+                    stage1_decline = qsa_stage1_decline_reason(
+                        length,
+                        physical_kv_length,
+                        batch_size=batch,
+                        training=bool(self.training),
+                    )
+                    if stage1_decline is None and not qsa_stage1_supported(
                         query[batch_index : batch_index + 1],
                         keys[None],
                         logical_positions[None],
                         block_topk=self.block_topk,
                         compress_ratio=self.compress_ratio,
-                    )[0].astype(mx.int32)
-                    self.stage1_route_constructions += 1
-                else:
-                    # Preserve the reference's single batched matmul and FP32
-                    # reduction. Per-token matmuls choose a different Metal
-                    # accumulation kernel and can perturb the top-k boundary.
-                    scores = mx.matmul(
-                        query[batch_index].transpose(1, 0, 2),
-                        keys.T,
-                    )
-                    scores = mx.sum(
-                        mx.maximum(scores.astype(mx.float32), 0), axis=0
-                    ) / math.sqrt(self.head_dim)
-                    complete_counts = mx.maximum(
-                        (logical_positions + 1) // self.compress_ratio, 0
-                    )
-                    valid_blocks = (
-                        mx.arange(available_blocks)[None, :] < complete_counts[:, None]
-                    )
-                    scores = mx.where(valid_blocks, scores, -mx.inf)
-                    selected_blocks = mx.argpartition(
-                        scores, kth=-self.block_topk, axis=-1
-                    )[..., -self.block_topk :].astype(mx.int32)
-                    self._record_stage1_decline(stage1_decline)
+                    ):
+                        stage1_decline = "unsupported layout"
+                    if stage1_decline is None:
+                        selected_blocks = qsa_stage1_select(
+                            query[batch_index : batch_index + 1],
+                            keys[None],
+                            logical_positions[None],
+                            block_topk=self.block_topk,
+                            compress_ratio=self.compress_ratio,
+                        )[0].astype(mx.int32)
+                        self.stage1_route_constructions += 1
+                    else:
+                        # Preserve the reference's single batched matmul and FP32
+                        # reduction. Per-token matmuls choose a different Metal
+                        # accumulation kernel and can perturb the top-k boundary.
+                        scores = mx.matmul(
+                            query[batch_index].transpose(1, 0, 2),
+                            keys.T,
+                        )
+                        scores = mx.sum(
+                            mx.maximum(scores.astype(mx.float32), 0), axis=0
+                        ) / math.sqrt(self.head_dim)
+                        complete_counts = mx.maximum(
+                            (logical_positions + 1) // self.compress_ratio, 0
+                        )
+                        valid_blocks = (
+                            mx.arange(available_blocks)[None, :]
+                            < complete_counts[:, None]
+                        )
+                        scores = mx.where(valid_blocks, scores, -mx.inf)
+                        selected_blocks = mx.argpartition(
+                            scores, kth=-self.block_topk, axis=-1
+                        )[..., -self.block_topk :].astype(mx.int32)
+                        self._record_stage1_decline(stage1_decline)
             complete_counts = mx.maximum(
                 (logical_positions + 1) // self.compress_ratio, 0
             )
@@ -1259,6 +1275,7 @@ class QSAAttention(nn.Module):
             max_position_embeddings=args.max_position_embeddings,
         )
         self.indexer = QSAIndexer(args)
+        self.m5_nax_route_constructions = 0
         self.block_sparse_route_constructions = 0
         self.block_sparse_declines = 0
         self.block_sparse_decline_reasons: dict[str, int] = {}
@@ -1347,6 +1364,15 @@ class QSAAttention(nn.Module):
             keys, values = kv_cache.update_and_fetch(keys, values)
         output = None
         if isinstance(selected, _QSASelection):
+            m5_eligible = qsa_m5_nax.eligible(
+                length, batch_size=batch, training=bool(self.training)
+            ) and qsa_m5_nax.attention_supported(
+                queries,
+                keys,
+                values,
+                block_size=self.indexer.compress_ratio,
+                block_topk=self.indexer.block_topk,
+            )
             indexed_decline = indexed_splitk_decline_reason(
                 length,
                 physical_length,
@@ -1379,7 +1405,7 @@ class QSAAttention(nn.Module):
             # Keep the default dense path graph-identical: sorting and
             # compact-count construction happen only when a sparse consumer
             # is actually eligible.
-            if indexed_decline is None or decline_reason is None:
+            if m5_eligible or indexed_decline is None or decline_reason is None:
                 block_slots = slice(
                     0, self.indexer.token_budget, self.indexer.compress_ratio
                 )
@@ -1408,7 +1434,19 @@ class QSAAttention(nn.Module):
                 )
                 tail_counts = mx.sum(tail_valid, axis=-1).astype(mx.int32)
 
-                if indexed_decline is None:
+                if m5_eligible:
+                    output = qsa_m5_nax.attention(
+                        queries,
+                        keys,
+                        values,
+                        block_starts,
+                        block_counts,
+                        tail_indices,
+                        tail_counts,
+                        scale=self.scale,
+                    )
+                    self.m5_nax_route_constructions += 1
+                elif indexed_decline is None:
                     output = indexed_splitk_attention(
                         queries,
                         keys,

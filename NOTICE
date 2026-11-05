@@ -251,3 +251,17 @@ The path descriptions in `rapid_mlx/chat_runtime/tools/files.py` and
 is adapted from OpenCode tool/edit.txt at revision
 148842ef7cb1bc34192b3fff57d0f9721ab9c801. Both use the MIT License reproduced
 in `rapid_mlx/chat_runtime/LICENSE-PROMPTS`.
+
+QSA M5 tensor-unit kernels
+=========================
+
+rapid_mlx/kernels/qsa_m5_nax.py adapts Apache License 2.0 tensor-unit fragment
+loading and attention code supplied with public PR #5084 and its associated
+QSA attention implementation. The supplied source carries
+SPDX-License-Identifier: Apache-2.0 and no additional copyright notice.
+The Apache License 2.0 is reproduced in LICENSE. Rapid-MLX changes include
+physical cache metadata, input normalization, architecture gating, four-head
+compressed-key scoring, and integration with the existing radix selector.
+The adapted QSA attention source is identifiable by Git blob
+`a84a84bc81163b4110e3e67197a367d800cf3f2e`:
+https://api.github.com/repositories/1157171418/git/blobs/a84a84bc81163b4110e3e67197a367d800cf3f2e
