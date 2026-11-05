@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Hosted-runner guard for a test process that stops making progress.
+/// Hosted-runner guard for a stranded main queue or cooperative executor.
 ///
 /// This deliberately uses a Foundation thread rather than Swift concurrency:
 /// the failure under investigation strands the cooperative executor and the
@@ -9,14 +9,17 @@ import Foundation
 enum CIHangWatchdog {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var started = false
-    nonisolated(unsafe) private static var lastProgress = Date.timeIntervalSinceReferenceDate
+    nonisolated(unsafe) private static var lastMain = Date.timeIntervalSinceReferenceDate
+    nonisolated(unsafe) private static var lastCooperative = Date.timeIntervalSinceReferenceDate
     private static let quietLimit: TimeInterval =
         ProcessInfo.processInfo.environment["RAPID_DESKTOP_WATCHDOG_QUIET_SECONDS"] == "180"
             ? 180 : 90
 
     static func noteProgress() {
         lock.lock()
-        lastProgress = Date.timeIntervalSinceReferenceDate
+        let now = Date.timeIntervalSinceReferenceDate
+        lastMain = now
+        lastCooperative = now
         let shouldStart = !started
         started = true
         lock.unlock()
@@ -27,15 +30,46 @@ enum CIHangWatchdog {
         }
     }
 
+    static func stalledLane(
+        now: TimeInterval,
+        lastMain: TimeInterval,
+        lastCooperative: TimeInterval,
+        limit: TimeInterval
+    ) -> String? {
+        if now - lastMain >= limit { return "main" }
+        if now - lastCooperative >= limit { return "cooperative" }
+        return nil
+    }
+
+    private static func recordHeartbeat(main: Bool) {
+        lock.lock()
+        if main {
+            lastMain = Date.timeIntervalSinceReferenceDate
+        } else {
+            lastCooperative = Date.timeIntervalSinceReferenceDate
+        }
+        lock.unlock()
+    }
+
     private static func monitor() {
         while true {
             Thread.sleep(forTimeInterval: 5)
+            DispatchQueue.main.async {
+                recordHeartbeat(main: true)
+            }
+            Task.detached {
+                recordHeartbeat(main: false)
+            }
             lock.lock()
-            let quietFor = Date.timeIntervalSinceReferenceDate - lastProgress
+            let now = Date.timeIntervalSinceReferenceDate
+            let lane = stalledLane(
+                now: now, lastMain: lastMain, lastCooperative: lastCooperative, limit: quietLimit
+            )
+            let quietFor = now - (lane == "main" ? lastMain : lastCooperative)
             lock.unlock()
-            guard quietFor >= quietLimit else { continue }
+            guard let lane else { continue }
 
-            write("CI hang watchdog: no watchdog-checkpoint progress for \(Int(quietFor))s; sampling blocked test process\n")
+            write("CI hang watchdog: no \(lane) heartbeat for \(Int(quietFor))s; sampling blocked test process\n")
             let ownPID = getpid()
             sample(pid: ownPID)
             for childPID in childPIDs(of: ownPID) where isSwiftTestProcess(pid: childPID) {
