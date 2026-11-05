@@ -12,6 +12,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from rapid_mlx.serve_process import serve_subcommand_index
+
 
 @dataclass
 class Server:
@@ -60,13 +62,10 @@ def scan_servers() -> list[Server]:
     for proc in processes:
         try:
             cmd = proc.info["cmdline"] or []
-            if not cmd or os.path.basename(cmd[0]) == "caffeinate":
+            serve_index = serve_subcommand_index(cmd)
+            if serve_index is None:
                 continue
-            if "serve" not in cmd or not any(
-                "rapid-mlx" in c or "rapid_mlx" in c for c in cmd
-            ):
-                continue
-            tokens = cmd[cmd.index("serve") + 1 :]
+            tokens = cmd[serve_index + 1 :]
             port = None
             alias = None
             host = None

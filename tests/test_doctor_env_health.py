@@ -6467,3 +6467,28 @@ def test_import_probe_timeout_allows_deep_cold_import(
     assert eh._DOCTOR_BUDGET_S == 60.0
     if deep:
         assert eh._DOCTOR_DEEP_BUDGET_S == 150.0
+
+
+@pytest.mark.parametrize(
+    "argv,expected_server",
+    [
+        (["-m", "rapid_mlx.cli", "--no-banner", "--no-telemetry", "serve"], True),
+        (["-m", "rapid_mlx.cli", "agents", "serve"], False),
+        (["other.py", "-m", "rapid_mlx.cli", "serve"], False),
+        (["-c", "code", "-m", "rapid_mlx.cli", "serve"], False),
+    ],
+)
+def test_runtime_selection_uses_actual_serve_subcommand(
+    tmp_path, monkeypatch, allow_rapid_mlx_module_servers, argv, expected_server
+):
+    doctor_exe = tmp_path / "doctor" / "python"
+    runtime = tmp_path / "server" / "python"
+    for executable in (doctor_exe, runtime):
+        executable.parent.mkdir(parents=True)
+        executable.write_text("")
+    monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
+    _install_fake_process_runtime(
+        monkeypatch,
+        _server_process(tmp_path, [str(runtime), *argv], runtime, {}),
+    )
+    assert eh._runtime_python_path() == (runtime if expected_server else doctor_exe)
