@@ -147,8 +147,10 @@ TODO.md
 # CC operating charter — local-only per raullen 2026-07-05/06
 # These files evolve locally as CC drafts / raullen edits; cross-session
 # persistence lives in ~/.claude/projects/.../memory/, not in the repo.
+# The tracked CLAUDE.md only imports AGENTS.md; keep a local charter in
+# CLAUDE.local.md instead.
 workflow.md
-CLAUDE.md
+CLAUDE.local.md
 0.*-TODO.md
 
 # Telemetry v2 official-build gate — the release stamp is written by the
