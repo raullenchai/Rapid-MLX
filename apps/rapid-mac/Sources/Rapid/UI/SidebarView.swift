@@ -853,6 +853,8 @@ struct SidebarView: View {
                         .foregroundStyle(model.isHoldingMemory && model.pinned ? RapidTheme.brandAmber : .secondary)
                         .opacity(model.isHoldingMemory ? 1 : 0.5)
                         .frame(width: 12)
+                        // Decorative status dot; VoiceOver would read the symbol name.
+                        .accessibilityHidden(true)
                     Text(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
                         .help(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
                         .font(RapidFont.caption)
