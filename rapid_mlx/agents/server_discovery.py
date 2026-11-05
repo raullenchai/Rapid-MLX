@@ -163,6 +163,8 @@ class Endpoint:
     # Hint history only: a replacement server may reuse a rejected port.
     skipped_non_chat: dict[int, NonChatModelError] = field(default_factory=dict)
     agent: str = "codex"
+    # Verification can outlast discovery probes; remember its result per pid.
+    verified_non_chat: dict[int, int] = field(default_factory=dict)
     _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
 
     def refresh(self) -> None:
@@ -175,6 +177,7 @@ class Endpoint:
                 report_ignored=False,
                 skipped_auth=self.skipped_auth,
                 skipped_non_chat=self.skipped_non_chat,
+                verified_non_chat=self.verified_non_chat,
             )
             self.base_url, self.server = resolved.base_url, resolved.server
             self.skipped_auth = resolved.skipped_auth
@@ -353,6 +356,7 @@ def resolve_endpoint(
     report_ignored: bool = True,
     skipped_auth: list[Server] | None = None,
     skipped_non_chat: dict[int, NonChatModelError] | None = None,
+    verified_non_chat: dict[int, int] | None = None,
 ) -> Endpoint:
     default = "http://localhost:8000/v1"
     healthy, answered = _default_endpoint_ready()
@@ -368,11 +372,16 @@ def resolve_endpoint(
 
     non_chat = dict(skipped_non_chat or {})
     checked: dict[int, bool] = {}
+    verified = verified_non_chat or {}
+    scanned = scan_servers() if verified else None
+    owners = {s.port: s.pid for s in scanned or [] if s.listening}
 
     def incompatible(port: int) -> bool:
         if port not in checked:
             error = non_chat_server(port, model)
-            checked[port] = error is not None
+            checked[port] = error is not None or (
+                port in verified and owners.get(port) == verified[port]
+            )
             if error is not None:
                 if port not in non_chat:
                     print(f"  {error.skip_hint}")
@@ -390,7 +399,11 @@ def resolve_endpoint(
         )
     # A process whose sockets cannot be read and whose argv names no port
     # cannot be shown to own any endpoint; waiting on it could never end.
-    servers = [s for s in scan_servers() if s.port is not None or s.inspected]
+    servers = [
+        s
+        for s in (scanned if scanned is not None else scan_servers())
+        if s.port is not None or s.inspected
+    ]
 
     # Carry skipped ports through follow-mode refreshes so each hint prints once,
     # even when a later scan reports a different pid/model for the same port.

@@ -1716,3 +1716,141 @@ def test_non_chat_recovery_when_no_suggested_port_is_free(monkeypatch):
     error = NonChatModelError("http://localhost:8000/v1", NON_CHAT_MODELS[5])
     assert "on a free port" in str(error)
     assert "re-run setup with --port <port>" in str(error)
+
+
+@pytest.mark.parametrize("port", [8000, 18403])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_slow_non_chat_verification_is_remembered_per_process(
+    clock, events, monkeypatch, capsys, port, replacement
+):
+    server = discovery.Server(123, port, "model", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        discovery, "_default_endpoint_ready", lambda: (port == 8000, port == 8000)
+    )
+    verified = []
+
+    class Response(BytesIO):
+        status = 200
+
+    def response(request, *, timeout):
+        url = request if isinstance(request, str) else request.full_url
+        if f":{port}/" not in url:
+            raise ConnectionRefusedError()
+        if url.endswith("/models"):
+            if timeout <= 0.25:
+                raise TimeoutError("slow models listing")
+            verified.append((port, server.pid))
+            models = [NON_CHAT_MODELS[0]] if server.pid == 123 else [{"id": "chat"}]
+            return Response(json.dumps({"data": models}).encode())
+        return Response(b"{}")
+
+    monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
+    endpoint = discovery.resolve_endpoint()
+    original_sleep = setup.time.sleep
+
+    def sleep(seconds):
+        original_sleep(seconds)
+        if replacement:
+            server.pid = 124
+
+    monkeypatch.setattr(setup.time, "sleep", sleep)
+    if replacement:
+        assert (
+            setup.wait_for_server(
+                endpoint.base_url,
+                "default",
+                agent="codex",
+                timeout=1,
+                endpoint=endpoint,
+            )
+            == "chat"
+        )
+        assert verified == [(port, 123), (port, 124)]
+        assert events == []
+    else:
+        with pytest.raises(setup.NonChatModelError) as caught:
+            setup.wait_for_server(
+                endpoint.base_url,
+                "default",
+                agent="codex",
+                timeout=1,
+                endpoint=endpoint,
+            )
+        assert "coding agents need a chat model" in caught.value.message
+        assert verified == [(port, 123)]
+        assert events == [("failed", "model_not_advertised", "codex")]
+    assert 0 < clock[0] <= 1
+    assert capsys.readouterr().out.count("Skipping") == 1
+
+
+@pytest.mark.parametrize("failure", ["non_chat", "auth"])
+@pytest.mark.parametrize("probe_duration", [0, 1])
+@pytest.mark.parametrize("refresh_duration", [0, 0.75])
+def test_reselection_always_checks_readiness_deadline(
+    clock, events, monkeypatch, failure, probe_duration, refresh_duration
+):
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    endpoint = discovery.Endpoint("http://localhost:18403/v1", follow=True)
+
+    # Even if discovery keeps returning the rejected endpoint, selection is bounded.
+    def refresh(_self):
+        if clock[0] > 0:
+            clock[0] += refresh_duration
+
+    monkeypatch.setattr(discovery.Endpoint, "refresh", refresh)
+    error = (
+        setup.NonChatModelError(endpoint.base_url, NON_CHAT_MODELS[0])
+        if failure == "non_chat"
+        else setup.ServerAuthenticationError("check RAPID_MLX_API_KEY")
+    )
+
+    def reject(*_args, **_kwargs):
+        assert clock[0] < 1
+        clock[0] += probe_duration
+        raise error
+
+    monkeypatch.setattr(setup, "verify_server", reject)
+    with pytest.raises(type(error)) as caught:
+        setup.wait_for_server(
+            endpoint.base_url, "default", agent="codex", timeout=1, endpoint=endpoint
+        )
+    assert caught.value is error
+    assert clock[0] == 1
+    assert events == [
+        (
+            "failed",
+            "model_not_advertised" if failure == "non_chat" else "server_not_ready",
+            "codex",
+        )
+    ]
+
+
+@pytest.mark.parametrize("fallback", ["refused", "unready"])
+def test_slow_non_chat_error_survives_fallback_failure(
+    clock, events, monkeypatch, fallback
+):
+    server = discovery.Server(123, 18403, "video", listening=True)
+    monkeypatch.setattr(discovery, "scan_servers", lambda: [server])
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    error = setup.NonChatModelError("http://localhost:18403/v1", NON_CHAT_MODELS[0])
+
+    def verify(url, *_args, **_kwargs):
+        if ":18403/" in url:
+            raise error
+        if fallback == "refused":
+            raise setup.ServerNotRunningError("no server is running")
+        if clock[0] >= 2.75:
+            clock[0] = 3  # The final verification itself consumes the budget.
+        raise RuntimeError("server is not ready")
+
+    monkeypatch.setattr(setup, "verify_server", verify)
+    endpoint = discovery.resolve_endpoint()
+    with pytest.raises(setup.NonChatModelError) as caught:
+        setup.wait_for_server(
+            endpoint.base_url, "default", agent="codex", timeout=3, endpoint=endpoint
+        )
+    assert caught.value is error
+    assert clock[0] == (2 if fallback == "refused" else 3)
+    assert events == [("failed", "model_not_advertised", "codex")]

@@ -818,11 +818,30 @@ def wait_for_server(
     if endpoint is not None:
         endpoint.agent = agent
     progress = Progress()
+    reselection_error: RuntimeError | None = None
+
+    def retry_selection(exc: RuntimeError) -> None:
+        nonlocal reselection_error
+        reselection_error = exc
+        if time.monotonic() >= deadline:
+            track_agent_configure_failed(
+                "model_not_advertised"
+                if isinstance(exc, NonChatModelError)
+                else "server_not_ready",
+                agent,
+            )
+            raise exc
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
     while True:
+        if reselection_error is not None and time.monotonic() >= deadline:
+            retry_selection(reselection_error)
         if endpoint is not None:
             endpoint.refresh()
             base_url = endpoint.base_url
             server = endpoint.server
+            if reselection_error is not None and time.monotonic() >= deadline:
+                retry_selection(reselection_error)
             if server is None and (
                 any(s.port == 8000 for s in endpoint.skipped_auth)
                 or (
@@ -837,6 +856,16 @@ def wait_for_server(
                 f"server at {base_url} exited during startup; check the serve output"
             )
         try:
+            if endpoint is not None and endpoint.verified_non_chat:
+                from rapid_mlx.connect import _parse_base_url
+
+                port = _parse_base_url(base_url)[1]
+                owner = server or server_for_url(base_url)
+                if (
+                    owner is not None
+                    and endpoint.verified_non_chat.get(port) == owner.pid
+                ):
+                    raise endpoint.skipped_non_chat[port]
             return verify_server(
                 base_url,
                 expected_model,
@@ -854,7 +883,11 @@ def wait_for_server(
                     if exc.port not in endpoint.skipped_non_chat:
                         print(f"  {exc.skip_hint}")
                     endpoint.skipped_non_chat[exc.port] = exc
+                    owner = server or server_for_url(base_url)
+                    if owner is not None:
+                        endpoint.verified_non_chat[exc.port] = owner.pid
                     endpoint.server = None
+                    retry_selection(exc)
                     continue
                 track_agent_configure_failed("model_not_advertised", agent)
                 raise
@@ -875,6 +908,7 @@ def wait_for_server(
                     endpoint.skipped_auth.append(skipped)
                     print(skipped_auth_hint(skipped, agent))
                 endpoint.server = None
+                retry_selection(exc)
                 continue
             # Healthy servers advertising the wrong/no model are real failures,
             # independent of how long downloading/loading took.
@@ -898,8 +932,20 @@ def wait_for_server(
                 # over, so a long load cannot consume it before the first one.
                 deadline = time.monotonic() + timeout
             elif isinstance(exc, ServerNotRunningError) and time.monotonic() >= grace:
+                if (
+                    isinstance(reselection_error, NonChatModelError)
+                    and non_chat_server(reselection_error.port, expected_model) is None
+                ):
+                    track_agent_configure_failed("model_not_advertised", agent)
+                    raise reselection_error from exc
                 raise
             elif not is_local_base_url(base_url) or time.monotonic() >= deadline:
+                if (
+                    isinstance(reselection_error, NonChatModelError)
+                    and non_chat_server(reselection_error.port, expected_model) is None
+                ):
+                    track_agent_configure_failed("model_not_advertised", agent)
+                    raise reselection_error from exc
                 track_agent_configure_failed("server_not_ready", agent)
                 error_type = (
                     ServerAuthenticationError
