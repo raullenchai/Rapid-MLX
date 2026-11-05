@@ -23,6 +23,7 @@ rapid-mlx serve qwen3.5-4b-4bit --port 8000
 
 Short aliases (see `rapid-mlx models`) work everywhere a model name is
 accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
+You can also paste a model page URL: `rapid-mlx serve https://huggingface.co/mlx-community/Qwen3.5-9B-abliterated-4bit` (also works with `chat`/`run` and `pull`; URL revisions use the default branch or catalog pin).
 
 ### An external model cache cannot be read
 

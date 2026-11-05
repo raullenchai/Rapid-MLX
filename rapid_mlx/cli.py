@@ -16855,6 +16855,23 @@ def main():
             ):
                 _print_next_step()
         raise
+    # Normalize browser links before model telemetry, local-path validation,
+    # and shared alias resolution. Never retain the raw URL as an alias.
+    if getattr(args, "model", None) and args.command not in (
+        "doctor",
+        "service",
+        "system-one",
+    ):
+        from rapid_mlx.model_reference import normalize_model_reference
+
+        try:
+            args.model = normalize_model_reference(
+                args.model, notice=lambda line: print(f"  {line}", file=sys.stderr)
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+
     quiet_transport_loggers(
         _resolve_serve_log_level(getattr(args, "log_level", None))
         if hasattr(args, "log_level")
