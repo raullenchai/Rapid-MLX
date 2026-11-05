@@ -2782,9 +2782,17 @@ def _hub_not_found_hint(model_id: str) -> str:
     """Suggest catalog names near either an alias or a full Hub ID."""
     import difflib
 
-    from rapid_mlx.model_aliases import list_builtin_aliases, suggest_similar
+    from rapid_mlx.model_aliases import (
+        draft_only_conflict,
+        list_builtin_aliases,
+        suggest_similar,
+    )
 
-    aliases = list_builtin_aliases()
+    aliases = {
+        a: repo
+        for a, repo in list_builtin_aliases().items()
+        if draft_only_conflict(repo) is None
+    }
     suggestions = suggest_similar(model_id)
     if not suggestions and "/" in model_id:
         close_ids = difflib.get_close_matches(
@@ -10902,6 +10910,11 @@ def _print_cached_models() -> None:
         # interactive display because their registered alias is the canonical
         # launch identity; external rows have no independent alias channel.
         repo_disp = repo if is_external_row or len(repo) <= 50 else (repo[:47] + "...")
+        from rapid_mlx.model_aliases import draft_only_conflict
+
+        if guidance := draft_only_conflict(repo):
+            alias = "(draft sidecar)"
+            print(f"  {guidance}")
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
@@ -11164,6 +11177,7 @@ def _cached_models_json_payload() -> dict:
     from rapid_mlx.local_models import discover_runnable_chat_models
     from rapid_mlx.model_aliases import (
         cached_repository_collides,
+        draft_only_conflict,
         resolve_subfolder,
     )
 
@@ -11268,6 +11282,7 @@ def _cached_models_json_payload() -> dict:
             models.append(
                 {
                     "alias": alias,
+                    "standalone": draft_only_conflict(repo) is None,
                     "launch_path": collision_paths.get((repo, is_external)),
                     "repo": repo,
                     "subfolder": subfolder,
@@ -11302,7 +11317,11 @@ def _available_models_json_payload() -> dict:
     image) exactly as the text sections are. Sizes are download bytes from the
     checked-in manifest (``None`` when unknown); no per-invocation HF I/O.
     """
-    from rapid_mlx.model_aliases import list_builtin_aliases, list_profiles
+    from rapid_mlx.model_aliases import (
+        draft_only_conflict,
+        list_builtin_aliases,
+        list_profiles,
+    )
     from rapid_mlx.model_sizes import size_bytes
 
     all_profiles = list_profiles()
@@ -11325,6 +11344,7 @@ def _available_models_json_payload() -> dict:
             default_steps = default_steps_for_model(p.hf_path)
         return {
             "alias": alias,
+            "standalone": draft_only_conflict(p.hf_path) is None,
             "hf_path": p.hf_path,
             **({"revision": p.revision} if p.revision is not None else {}),
             "size_bytes": int(raw) if isinstance(raw, int) and raw > 0 else None,
@@ -11432,7 +11452,7 @@ def models_command(args):
     the top-level ``rapid-mlx ls`` alias.
     """
     from rapid_mlx._version_check import print_staleness_warning_if_any
-    from rapid_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
     from rapid_mlx.model_sizes import format_size
 
     search_display = (getattr(args, "search", None) or "").strip()
@@ -11475,7 +11495,11 @@ def models_command(args):
         _print_next_step()
         return
 
-    all_profiles = list_profiles()
+    all_profiles = {
+        a: p
+        for a, p in list_profiles().items()
+        if draft_only_conflict(p.hf_path) is None
+    }
     # Video-generation aliases are not chat models: they have no
     # tokenizer and no ``stream_chat``, so ``/v1/chat/completions`` on one
     # is an AttributeError, and ``serve`` exits 2 before binding a port
@@ -13038,6 +13062,10 @@ def pull_command(args):
         bool(getattr(primary_args, "_telemetry_pull_transferred", False)),
     )
     _emit_pull_activation()
+    from rapid_mlx.model_aliases import draft_only_conflict
+
+    if guidance := draft_only_conflict(primary_repo):
+        print(f"\n  Download complete. {guidance}")
 
 
 def rm_command(args):

@@ -406,3 +406,15 @@ def test_explicit_uncached_model_still_confirms(hub_online_env):
     # Control: an explicitly-typed, uncached model DOES hit the confirm gate.
     confirm, _dispatched = _run_main_gate_probe(["chat", "qwen3.5-9b-4bit"])
     assert confirm.called is True
+
+
+def test_cached_known_aliases_omits_draft_sidecars(monkeypatch):
+    from rapid_mlx import cli
+    from rapid_mlx.model_aliases import resolve_hub_model
+
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda repo: True)
+    rows = [
+        (resolve_hub_model(alias), 100, 1)
+        for alias in ("qwen3.5-4b-mtp-4bit", "qwen3.5-4b-4bit")
+    ]
+    assert fr.cached_known_aliases(rows) == [("qwen3.5-4b-4bit", 1)]

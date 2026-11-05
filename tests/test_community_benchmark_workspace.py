@@ -696,6 +696,8 @@ def test_catalog_excludes_draft_only_models() -> None:
     entries = benchmark_catalog(memory_gib=256)["models"]
     assert all(draft_only_conflict(entry["alias"]) is None for entry in entries)
     aliases = {entry["alias"] for entry in entries}
+    assert "qwen3.5-4b-mtp-4bit" not in aliases
+    assert "qwen3.5-9b-mtp-4bit" not in aliases
     assert "qwen3.6-35b-mtp-4bit" not in aliases
     assert "qwen3.6-27b-mtp-4bit" not in aliases
     assert "qwen3.6-35b-4bit" in aliases

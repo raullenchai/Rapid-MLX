@@ -68,6 +68,10 @@ def load_recommendation_tiers(
     for raw_tier in payload["tiers"]:
         picks_list: list[Recommendation] = []
         for raw in raw_tier["picks"]:
+            from .model_aliases import draft_only_conflict
+
+            if issue := draft_only_conflict(raw["alias"]):
+                raise ValueError(issue)
             if raw.get("execution_preset_id") is not None:
                 raise ValueError(
                     "recommendation execution presets are not supported by the "

@@ -1604,7 +1604,7 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
     letter family — at which point the caller should show a curated
     "popular models" fallback rather than leave the user empty-handed.
     """
-    aliases = list(_load().keys())
+    aliases = [a for a in _load() if draft_only_conflict(a) is None]
 
     # Pass 1: strict family prefix.
     fam = _family_prefix(name)
