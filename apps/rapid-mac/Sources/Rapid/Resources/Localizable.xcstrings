@@ -2,6 +2,16 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Kept in memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "常驻内存"
+          }
+        }
+      }
+    },
     "Code" : {
       "localizations" : {
         "zh-Hans" : {
