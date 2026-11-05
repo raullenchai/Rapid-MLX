@@ -605,7 +605,7 @@ struct OnboardingDirectionDTests {
     func doubleClickMirrorsThePrimary() {
         // Paper 05.2.G "One action, three inputs" / approved default D3. The
         // row's double-click is a shortcut for whatever the footer currently
-        // says — Review download on an uncached pick, Start existing model on
+        // says — Download & start on an uncached pick, Start existing model on
         // a cached one — never a separate route with its own rules.
         let rows = [
             OnboardingModelSelection.Row(alias: "uncached", isCached: false),

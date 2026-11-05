@@ -19,7 +19,7 @@ AXApplication title="Rapid-MLX"
         AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
         AXStaticText id="Quickstart.SizeLegend" value=text enabled=true
       AXButton id="Quickstart.Footer.Back" desc="Back" enabled=true
-      AXButton id="Quickstart.Footer.Primary" desc="Review download" enabled=true
+      AXButton id="Quickstart.Footer.Primary" desc="Download & start" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

@@ -2371,12 +2371,9 @@ flow_cached_quickstart() {
     assert_tree_text "$OUT/selected.json" "Start existing model"
     press "$OUT/selected.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
 
-    wait_fake_event_after_start \
+    wait_fake_event \
         ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
-        "cached Quickstart did not start the selected model" \
-        cached-quickstart \
-        Quickstart.Memory.Load \
-        Quickstart.Memory.LoadAnyway
+        "cached Quickstart did not start the selected model"
     jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-alias"
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
@@ -2422,10 +2419,9 @@ flow_cached_uncataloged_quickstart() {
     assert_tree_text "$OUT/chooser.json" "not catalog-tested"
     assert_tree_text "$OUT/chooser.json" "Start existing model"
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
-    wait_fake_event_after_start \
+    wait_fake_event \
         '.event == "server_started" and .alias == "fixture/Local-Chat"' \
-        "uncataloged cached default did not start" uncataloged \
-        Quickstart.Memory.Load Quickstart.Memory.LoadAnyway
+        "uncataloged cached default did not start"
     wait_fake_sidecar_health "fixture/Local-Chat" "uncataloged cached chat"
     wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json" 240
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting "$OUT/start-chatting.json"
@@ -2461,16 +2457,12 @@ flow_cached_curated_tradeup() {
     # Finish the exact 16 GB starter journey without a network pull and
     # show the ready model in the empty-state subtitle.
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
-    # The 16 GB fixture owns recommendation policy, not the host's live
-    # pressure. A busy hosted runner can therefore (correctly) ask for the
-    # existing explicit memory confirmation before it starts this zero-weight
-    # fake. Success still requires the exact independent sidecar event.
-    wait_fake_event_after_start \
+    # Onboarding starts directly without a memory confirmation, even when
+    # host pressure differs from the recommendation fixture. Still require
+    # the exact independent sidecar event.
+    wait_fake_event \
         '.event == "server_started" and .alias == "qwen3.5-4b-4bit"' \
-        "cached 16 GB starter did not start" \
-        starter \
-        Quickstart.Memory.Load \
-        Quickstart.Memory.LoadAnyway
+        "cached 16 GB starter did not start"
     wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"
     # ``server_started`` is emitted before the fake binds HTTP, and a
     # constrained hosted runner can spend more than the default 20-second AX
@@ -2528,16 +2520,14 @@ flow_download_progress() {
     wait_identifier Quickstart.Choice.lfm2.5-1b-4bit "$OUT/chooser.json"
     press "$OUT/chooser.json" Quickstart.Choice.lfm2.5-1b-4bit "$OUT/select-download.json"
     wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/selected-download.json"
-    press "$OUT/selected-download.json" Quickstart.Footer.Primary "$OUT/review-open.json"
-    wait_identifier Quickstart.Review.Alias "$OUT/review.json"
-    assert_tree_text "$OUT/review.json" "Download & start"
+    assert_tree_text "$OUT/selected-download.json" "Download & start"
     # AXPress is normally immediate, but AppKit can synchronously hold the
     # accessibility action until the pull task yields.  In the full suite the
     # fake pull can therefore finish before a synchronous `press` returns,
     # making the harness miss the exact in-flight state it exists to verify.
     # Drive the action concurrently with observation, then still require the
     # action itself to have succeeded.
-    press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
+    press "$OUT/selected-download.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
     local press_pid=$!
 
     local observed_size estimated_size
@@ -2575,8 +2565,8 @@ flow_download_progress() {
     # Onboarding covers the global DownloadStrip, so Step 3 must provide its
     # own reachable cancellation path. Exercise the live process rather than
     # accepting a source-level identifier: cancellation must become a notice,
-    # never fabricated network advice, and Back must return to the Review
-    # micro-stage that launched this transfer.
+    # never fabricated network advice, and Back must return to the recommended
+    # shortlist that launched this transfer with its selection preserved.
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Download.Cancel")
             | select(.enabled == true)' "$OUT/downloading.json" >/dev/null \
@@ -2592,10 +2582,12 @@ flow_download_progress() {
         "$OUT/download-cancelled.json" >/dev/null; then
         die "a user-cancelled download was misdiagnosed as a network failure"
     fi
+    assert_tree_text "$OUT/download-cancelled.json" "Back to recommended models"
     press "$OUT/download-cancelled.json" Quickstart.Failure.BackToModelSelection \
         "$OUT/download-back.json" \
         || die "cancelled download recovery has no working Back action"
-    wait_identifier Quickstart.Review.Alias "$OUT/download-review-restored.json"
+    wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/download-chooser-restored.json"
+    assert_tree_text "$OUT/download-chooser-restored.json" "Download & start"
     cleanup_persona
 }
 
