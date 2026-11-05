@@ -279,12 +279,12 @@ struct QuickstartStarterPolicyTests {
         browsing.applyDefaultChoice(hardware: hardware(16), catalog: newCache)
         #expect(browsing.selection.alias == browsingAlias)
 
-        let reviewing = QuickstartCoordinator()
-        reviewing.applyDefaultChoice(hardware: hardware(16), catalog: [])
-        let reviewingAlias = reviewing.selection.alias
-        reviewing.beginReviewDownload(origin: .shortlist)
-        reviewing.applyDefaultChoice(hardware: hardware(16), catalog: newCache)
-        #expect(reviewing.selection.alias == reviewingAlias)
+        let incompatibleMemory = QuickstartCoordinator()
+        incompatibleMemory.applyDefaultChoice(hardware: hardware(16), catalog: [])
+        let incompatibleMemoryAlias = incompatibleMemory.selection.alias
+        incompatibleMemory.beginIncompatibleModelReview(origin: .shortlist)
+        incompatibleMemory.applyDefaultChoice(hardware: hardware(16), catalog: newCache)
+        #expect(incompatibleMemory.selection.alias == incompatibleMemoryAlias)
     }
 
     @Test("The first authoritative catalog settles the shortlist selection")

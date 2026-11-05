@@ -886,14 +886,14 @@ def test_preflight_runs_before_any_persona_starts():
     )
 
 
-def test_cached_curated_tradeup_confirms_the_quickstart_memory_sheet():
-    """The onboarding sheet and main-window warning use different AX IDs."""
+def test_cached_curated_tradeup_starts_without_a_quickstart_memory_sheet():
+    """Onboarding loads bypass the memory confirmation (#5614)."""
     source = HARNESS.read_text()
     flow = source.split("flow_cached_curated_tradeup() {", 1)[1].split("\n}", 1)[0]
 
-    assert "wait_fake_event_after_start" in flow
-    assert "Quickstart.Memory.Load" in flow
-    assert "Quickstart.Memory.LoadAnyway" in flow
+    assert "wait_fake_event \\" in flow
+    assert "wait_fake_event_after_start" not in flow
+    assert "Quickstart.Memory.LoadAnyway" not in flow
 
 
 def test_cached_curated_tradeup_waits_for_health_and_bounded_ui_readiness():
@@ -1524,10 +1524,11 @@ def test_direct_model_starts_follow_enabled_memory_confirmation_branches():
     assert "confirmation_attempts" in wait
     assert wait.index("follow_memory_confirmation_edge") < wait.index('die "$what"')
 
+    # Onboarding starts bypass the memory confirmation (#5614), so the
+    # cached Quickstart flow waits for the start event directly.
     cached = source.split("flow_cached_quickstart() {", 1)[1].split("\n}", 1)[0]
-    assert "wait_fake_event_after_start" in cached
-    assert "Quickstart.Memory.Load" in cached
-    assert "Quickstart.Memory.LoadAnyway" in cached
+    assert "wait_fake_event_after_start" not in cached
+    assert "Quickstart.Memory.LoadAnyway" not in cached
 
     image = source.split("flow_image_generation() {", 1)[1].split("\n}", 1)[0]
     assert "wait_fake_event_after_start" in image

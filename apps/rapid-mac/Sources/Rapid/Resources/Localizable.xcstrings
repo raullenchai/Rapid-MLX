@@ -4890,22 +4890,12 @@
         }
       }
     },
-    "REVIEW DOWNLOAD" : {
+    "MODEL COMPATIBILITY" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看下载详情"
-          }
-        }
-      }
-    },
-    "Review download" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "查看下载详情"
+            "value" : "模型兼容性"
           }
         }
       }
@@ -23889,12 +23879,12 @@
         }
       }
     },
-    "← Back to review download" : {
+    "← Back to model details" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "← 返回下载详情"
+            "value" : "← 返回模型详情"
           }
         }
       }
