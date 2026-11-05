@@ -327,7 +327,10 @@ def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     changed-lines coverage gate requires."""
     import rapid_mlx._banner as banner_mod
 
-    def _boom(version, *, color):
+    reached = []
+
+    def _boom(version, *, color, truecolor=False):
+        reached.append(version)
         raise RuntimeError("agent-injected render failure")
 
     monkeypatch.setattr(banner_mod, "render_banner", _boom)
@@ -336,4 +339,5 @@ def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     # suppresses before the render), so the guard couldn't be exercised.
     _rc, out = _run_main(["models"], stdout_tty=True, stdin_tty=True)
     assert _rc == 0  # the command itself still completes
+    assert reached  # the failing renderer actually ran
     assert _TAGLINE not in out  # nothing partial was printed
