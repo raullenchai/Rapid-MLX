@@ -17,15 +17,29 @@ can actually understand.
 
 ## [Unreleased]
 
-### Changed
+## [1.0.2] — 2026-11-05
 
-- The anonymous first-run funnel records model choice, catalogue failure, download review and skipping setup, and resumes unfinished setup measurements after relaunch. First replies include only a coarse time bucket computed on device; no timestamp or duration is sent.
+Desktop adds video with audio and references, video cancellation, idle chat-model unloading, a faster first run and adding models from Hugging Face links, with clearer model choices and improved Chinese localization and accessibility.
 
-- **Unload model when idle** now keeps the local API online: after the chosen idle time (new 5-minute option), model memory is freed and the next request reloads it automatically, like Ollama. The sidebar shows the model as Unloaded until then. An idle dictation or speech model, or a runtime too old for idle unload, still stops the server as before.
+### New features and improvements
 
-### Fixed
+- **Faster first run**: new installs start with LFM2.5 2.6B (1.6 GB). Picking a model that fits goes straight to “Download & start”; models this Mac cannot run still open the compatibility details. On Macs with 32 GB or more, attaching an image to a text-only model offers “Switch to Qwen 3.5 4B”. ([#5614](https://github.com/raullenchai/Rapid-MLX/pull/5614), [#5615](https://github.com/raullenchai/Rapid-MLX/pull/5615), [#5626](https://github.com/raullenchai/Rapid-MLX/pull/5626))
+- **Add from Hugging Face**: paste a model link into model management search, or choose “Add from Hugging Face…” in the model menu. Rapid-MLX checks compatibility and memory fit before downloading and explains unsupported models. ([#5621](https://github.com/raullenchai/Rapid-MLX/pull/5621), [#5624](https://github.com/raullenchai/Rapid-MLX/pull/5624), [#5628](https://github.com/raullenchai/Rapid-MLX/pull/5628), [#5629](https://github.com/raullenchai/Rapid-MLX/pull/5629))
+- **Video with audio and references**: generate MiniMax H3 and Pika H3 Flex videos with first/last-frame and reference controls where supported. Bundled media tools decode supported video and audio references without a separate installation. ([#5570](https://github.com/raullenchai/Rapid-MLX/pull/5570), [#5581](https://github.com/raullenchai/Rapid-MLX/pull/5581))
+- **Stop video generation**: Stop Generating shows “Cancelling…” followed by “Cancelled”; if the job finishes first, its completed video remains available. Requires a server that supports cancellation. ([#5569](https://github.com/raullenchai/Rapid-MLX/pull/5569))
+- **Keep the local API online while idle**: Desktop can unload idle chat models without stopping the server, then reload them on the next request. A new 5-minute option is available, and the sidebar shows unloaded and reloading states. Idle speech models and older runtimes still stop the server. ([#5580](https://github.com/raullenchai/Rapid-MLX/pull/5580))
+- **Simplified Chinese and VoiceOver**: more controls and help are translated across Settings, Audio, Images, Video and About. Benchmark meter axis labels and announcements and the Vision badge are localized; sidebar tooltips use friendly model names, and VoiceOver reads the resident-model lock as “Kept in memory”. Decorative symbols are no longer read as symbol names, and long image warm-up names wrap. ([#5540](https://github.com/raullenchai/Rapid-MLX/pull/5540), [#5602](https://github.com/raullenchai/Rapid-MLX/pull/5602), [#5603](https://github.com/raullenchai/Rapid-MLX/pull/5603), [#5611](https://github.com/raullenchai/Rapid-MLX/pull/5611))
+- **Clearer model selection**: the chat picker lists downloaded models, the selected and serving models, and disabled downloads in progress; “Browse all models…” opens model management. Duplicate aliases are removed, draft-only MTP models are hidden from standalone selection, and video and other catalog models have recognizable names. ([#5566](https://github.com/raullenchai/Rapid-MLX/pull/5566), [#5603](https://github.com/raullenchai/Rapid-MLX/pull/5603), [#5609](https://github.com/raullenchai/Rapid-MLX/pull/5609), [#5601](https://github.com/raullenchai/Rapid-MLX/pull/5601), [#5610](https://github.com/raullenchai/Rapid-MLX/pull/5610))
+- **Community Benchmark**: image workload labels and results show the actual step count, guidance and protocol. Models with missing runtimes show an availability reason instead of a misleading memory warning. ([#5547](https://github.com/raullenchai/Rapid-MLX/pull/5547), [#5600](https://github.com/raullenchai/Rapid-MLX/pull/5600))
+- **Anonymous setup measurements**: unfinished setup measurements resume after relaunch and include model choice, catalog failure and skipping setup. First-reply timing sends only a coarse bucket computed on device. ([#5608](https://github.com/raullenchai/Rapid-MLX/pull/5608))
 
-- **Stop video generation** on servers that support cancellation. A pending stop shows “Cancelling…”, then “Cancelled” without an error; if generation finishes first, the completed video remains available. Older servers keep their existing behavior.
+### Bug fixes
+
+- **No false memory warning**: used memory now matches Activity Monitor, so file cache no longer triggers “may crash your Mac”; the first-run load after a download starts without the prompt. ([#5614](https://github.com/raullenchai/Rapid-MLX/pull/5614))
+- **Remember model choices**: automatic idle release preserves the saved chat model across relaunch, and cancelled catalog refreshes preserve speech and transcription selections. ([#5542](https://github.com/raullenchai/Rapid-MLX/pull/5542), [#5543](https://github.com/raullenchai/Rapid-MLX/pull/5543))
+- **Model management and downloads**: Settings search finds compatibility aliases, one invalid cached model row no longer hides the entire inventory, disk usage shows a loading state during its first refresh, and concurrent downloads retain overall progress and useful file captions. ([#5543](https://github.com/raullenchai/Rapid-MLX/pull/5543), [#5603](https://github.com/raullenchai/Rapid-MLX/pull/5603))
+- **Share Compute**: unreadable saved keys keep the Settings recovery action available, and receipts show the current friendly model title. ([#5543](https://github.com/raullenchai/Rapid-MLX/pull/5543))
+- **Video job recovery**: if the server exits during generation, the job remains in history with a failure reason instead of disappearing; you can delete it or start a new job after the server restarts. ([#5588](https://github.com/raullenchai/Rapid-MLX/pull/5588))
 
 ## [1.0.1] — 2026-11-01
 
@@ -4572,7 +4586,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.2...HEAD
+[1.0.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.1...rapid-mac-v1.0.2
 [1.0.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v1.0.0...rapid-mac-v1.0.1
 [1.0.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.10...rapid-mac-v1.0.0
 [0.16.9]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.16.8...rapid-mac-v0.16.9
