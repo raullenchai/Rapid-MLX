@@ -102,7 +102,9 @@ PR_VALIDATE_NO_CODEX=1 PR_VALIDATE_NO_STRESS=1 \
 ```
 
 This is the contributor fast path from CONTRIBUTING.md. It needs the `gh` CLI
-authenticated to GitHub and validates fetched PR commits; push changes first.
+authenticated to GitHub. It reads the PR's metadata and diff from GitHub but
+runs tests and lint against your current checkout, so push first and run it
+from a clean checkout of the exact PR head.
 It omits automated Codex review and live-model stress; disclose those omissions.
 Read the scorecard and fix failures; skipping a required check is not a pass.
 The canonical stage/gating reference is
