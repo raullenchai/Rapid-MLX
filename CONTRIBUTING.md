@@ -2,6 +2,12 @@
 
 Thanks for your interest! Here's how to get started.
 
+> **AI-written PRs are welcome and encouraged.** Use Claude Code, Codex,
+> Cursor, Copilot or any other coding agent. We review them like any other PR.
+> Tell us how AI helped in the PR template, show that it works (a test or the
+> command you ran), and keep each PR to one change. See
+> [Necessity & AI assistance](#necessity--ai-assistance--what-we-ask-why) below.
+
 ## Development Setup
 
 ```bash
