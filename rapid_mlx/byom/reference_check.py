@@ -110,7 +110,7 @@ def check_reference(reference: str) -> dict[str, Any]:
             ram_bytes=pf.physical_ram_bytes(),
             recommended_working_set_bytes=pf.mlx_recommended_working_set_bytes(),
         )
-        caps = ["chat"] if profile.modality == "text" else [profile.modality]
+        caps: list[str] = ["chat"] if profile.modality == "text" else [profile.modality]
         if profile.supports_image_input:
             caps.append("vision")
         if profile.tool_call_parser:
