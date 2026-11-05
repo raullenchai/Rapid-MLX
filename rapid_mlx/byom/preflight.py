@@ -132,6 +132,7 @@ class Inspection:
     # Anonymously readable (not gated, not private): only such repos may be
     # named in a support request.
     public: bool = False
+    download_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -445,14 +446,25 @@ def card_license(card: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def inspect_hub(repo_id: str) -> Inspection | None:
+def inspect_hub(repo_id: str, *, raise_errors: bool = False) -> Inspection | None:
     """Metadata for a Hub repo, or ``None`` when it cannot be read."""
     try:
         from huggingface_hub import model_info
 
         info = _call_with_deadline(model_info, repo_id, files_metadata=True)
     except Exception:
+        if raise_errors:
+            raise
         return None
+    from rapid_mlx.telemetry.model_id import _revoke_proof, note_hub_fetch
+
+    if (
+        getattr(info, "private", None) is False
+        and getattr(info, "gated", None) is False
+    ):
+        note_hub_fetch(repo_id)
+    elif getattr(info, "private", None) is True or getattr(info, "gated", None):
+        _revoke_proof(repo_id)
     siblings = getattr(info, "siblings", None) or []
     files = tuple(
         name
@@ -487,6 +499,7 @@ def inspect_hub(repo_id: str) -> Inspection | None:
         quantized_from=quantized_from(hub_tags(info)),
         license=card_license(getattr(info, "card_data", None)),
         tags=hub_tags(info),
+        download_bytes=sum(_sibling_size(s) for s in siblings) or None,
         public=getattr(info, "private", None) is False
         and getattr(info, "gated", None) is False,
     )
@@ -1314,6 +1327,36 @@ def _check_catalog_memory_fit(args: Any) -> None:
     raise exc
 
 
+def evaluate_inspection(
+    inspection: Inspection, *, refuse_oversize: bool
+) -> tuple[Inspection, Verdict | None]:
+    """Apply the shared verdict, confirming Hub architecture refusals from config."""
+    supported = supported_model_types()
+    verdict = evaluate(
+        inspection,
+        refuse_oversize=refuse_oversize,
+        supported=supported,
+        ram_bytes=physical_ram_bytes(),
+    )
+    if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
+        full = _fetch_hub_config(inspection.ref, inspection.revision)
+        if full is None:
+            return inspection, None
+        confirmed = architecture_supported(
+            full, supported, chat_template=inspection.has_chat_template
+        )
+        if confirmed is None:
+            return inspection, None
+        inspection = replace(inspection, config=full)
+        verdict = evaluate(
+            inspection,
+            refuse_oversize=refuse_oversize,
+            supported=supported,
+            ram_bytes=verdict.ram_bytes,
+        )
+    return inspection, verdict
+
+
 def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> None:
     """Run the preflight for ``serve``/``pull`` args; exit 1 on a rejection.
 
@@ -1322,7 +1365,10 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
     check prints a short summary before the download starts.
     """
     funnel = _funnel()
-    funnel.begin((getattr(args, "_original_alias", None), getattr(args, "model", None)))
+    funnel.begin(
+        (getattr(args, "_original_alias", None), getattr(args, "model", None)),
+        ref_form=getattr(args, "_ref_form", None),
+    )
     if args.command == "pull" and gguf_format_requested(getattr(args, "format", None)):
         print(f"\n  Error: {GGUF_FORMAT_MESSAGE}", file=sys.stderr)
         _emit_rejection(args, PreflightRejectedError(UNSUPPORTED_FORMAT))
@@ -1347,38 +1393,18 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
         return
     if is_local:
         _note_uncataloged_serve(args)
-    supported = supported_model_types()
-    # ``pull`` is storage-only and may target another Mac, and ``--disk-stream``
-    # serves MoE experts from disk; only a plain ``serve`` refuses a checkpoint
-    # whose weights alone exceed this machine's memory.
-    verdict = evaluate(
+    display_inspection, verdict = evaluate_inspection(
         inspection,
         refuse_oversize=args.command == "serve"
         and not getattr(args, "disk_stream", False),
-        supported=supported,
-        ram_bytes=physical_ram_bytes(),
     )
-    display_inspection, display_verdict = inspection, verdict
-    if verdict.failure == UNSUPPORTED_ARCHITECTURE and not inspection.is_local:
-        # The Hub's config summary omits fields that route a model to other
-        # loaders; confirm against the real config.json before refusing.
-        full = _fetch_hub_config(ref, inspection.revision)
-        confirmed = (
-            None
-            if full is None
-            else architecture_supported(
-                full, supported, chat_template=inspection.has_chat_template
-            )
-        )
-        if confirmed is not False:
-            if confirmed is True:
-                funnel.set_preflight("passed")
-            return
-        assert full is not None
-        display_inspection = replace(inspection, config=full)
-        full_type = full.get("model_type")
-        if isinstance(full_type, str) and full_type:
-            display_verdict = replace(verdict, model_type=full_type)
+    if verdict is None:
+        return
+    if display_inspection is not inspection and verdict.architecture_supported is True:
+        # Preserve the existing CLI's silent full-config confirmation path.
+        funnel.set_preflight("passed")
+        return
+    display_verdict = verdict
     if verdict.failure is not None:
         from rapid_mlx.byom.alternatives import suggest
 
@@ -1389,7 +1415,7 @@ def run_cli_preflight(args: Any, *, spinner_factory: Callable[[str], Any]) -> No
                     inspection,
                     verdict,
                     command=args.command,
-                    supported=supported,
+                    supported=supported_model_types(),
                     ram_bytes=verdict.ram_bytes or physical_ram_bytes(),
                     targets=suggested,
                 )

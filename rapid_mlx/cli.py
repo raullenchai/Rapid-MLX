@@ -12763,6 +12763,11 @@ _HF_CACHE_COMMANDS = frozenset({"pull", "rm"})
 
 def pull_command(args):
     """Download a model and prepare every catalog-declared requirement."""
+    if getattr(args, "check", False):
+        from rapid_mlx.byom.reference_check import check_command
+
+        check_command(args)
+        return
 
     import copy
 
@@ -16855,12 +16860,26 @@ def main():
             ):
                 _print_next_step()
         raise
+    if args.command == "pull":
+        if getattr(args, "json", False) and not getattr(args, "check", False):
+            parser.error("pull --json requires --check")
+        if getattr(args, "check", False) and any(
+            getattr(args, flag, False)
+            for flag in ("no_preflight", "request", "bits", "format", "with_ref2va")
+        ):
+            parser.error(
+                "pull --check cannot be combined with download selectors, --request or --no-preflight"
+            )
+    if getattr(args, "model", None):
+        from rapid_mlx.model_reference import reference_form
+
+        args._ref_form = reference_form(args.model)
     # Normalize browser links before model telemetry, local-path validation,
     # and shared alias resolution. Never retain the raw URL as an alias.
-    if getattr(args, "model", None) and args.command not in (
-        "doctor",
-        "service",
-        "system-one",
+    if (
+        getattr(args, "model", None)
+        and not (args.command == "pull" and getattr(args, "check", False))
+        and args.command not in ("doctor", "service", "system-one")
     ):
         from rapid_mlx.model_reference import normalize_model_reference
 
@@ -17034,6 +17053,12 @@ def main():
         _start_quiet_lifecycle(
             "bare", no_telemetry=bool(getattr(args, "no_telemetry", False))
         )
+
+    if args.command == "pull" and getattr(args, "check", False):
+        from rapid_mlx.byom.reference_check import check_command
+
+        check_command(args)
+        return
 
     # First-run auto-select: ``chat`` / ``run`` invoked with no model arg.
     # Select a complete, policy-ranked chat model before normal resolution.

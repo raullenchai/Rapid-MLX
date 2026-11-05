@@ -15,6 +15,30 @@ _NON_MODEL_ROUTES = {
 }
 
 
+class InvalidModelReferenceError(ValueError):
+    """A rejected browser link with a closed, machine-readable reason."""
+
+    def __init__(self, message: str, reason: str = "invalid_model_ref") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def reference_form(name: str) -> str | None:
+    """Classify the invoked spelling; local paths and malformed input are absent."""
+    if os.path.exists(name):
+        return None
+    try:
+        if normalize_model_reference(name) != name:
+            return "hf_url"
+    except InvalidModelReferenceError:
+        return "hf_url"
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
+        return "repo_id"
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name):
+        return "alias"
+    return None
+
+
 def normalize_model_reference(
     name: str, *, notice: Callable[[str], None] | None = None
 ) -> str:
@@ -49,14 +73,20 @@ def normalize_model_reference(
 
     parts = parsed.path.strip("/").split("/")
     if kind := _NON_MODEL_ROUTES.get(parts[0].lower()):
-        raise ValueError(
+        raise InvalidModelReferenceError(
             f"That's a Hugging Face {kind} link, not a model. "
-            "Paste a model page URL (https://huggingface.co/org/name)."
+            "Paste a model page URL (https://huggingface.co/org/name).",
+            reason={
+                "datasets": "dataset_link",
+                "spaces": "space_link",
+                "collections": "collection_link",
+                "models": "model_listing_link",
+            }[parts[0].lower()],
         )
     if len(parts) < 2 or not all(
         re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", part) for part in parts[:2]
     ):
-        raise ValueError(
+        raise InvalidModelReferenceError(
             "Paste a Hugging Face model page URL: https://huggingface.co/org/name."
         )
     repo = "/".join(parts[:2])
