@@ -39,12 +39,13 @@ def _format(inspection: pf.Inspection, verdict: pf.Verdict) -> str | None:
         return "gguf"
     if verdict.format_label == "PyTorch .bin":
         return "pytorch"
+    # Config-only (unfinished) repos have quantization metadata but no weights.
+    if not any(name.endswith(".safetensors") for name in inspection.files):
+        return None
     bits = pf._quant_bits(inspection.config)
     if bits is not None:
         return f"mlx-{bits}bit"
-    if any(name.endswith(".safetensors") for name in inspection.files):
-        return inspection.dtype or "safetensors"
-    return None
+    return inspection.dtype or "safetensors"
 
 
 def check_reference(reference: str) -> dict[str, Any]:

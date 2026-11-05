@@ -89,6 +89,7 @@ def invoke(monkeypatch, capsys, ref, *flags):
         ("invalid", "invalid_reference", "invalid_model_ref"),
         ("alias", "ok", None),
         ("cached", "ok", None),
+        ("weightless", "unknown", None),
     ],
 )
 def test_json_contract(metadata, monkeypatch, capsys, case, verdict, reason):
@@ -107,6 +108,17 @@ def test_json_contract(metadata, monkeypatch, capsys, case, verdict, reason):
             pf,
             "inspect_hub",
             lambda *a, **kw: replace(inspection, weight_bytes=32 * GIB),
+        )
+    elif case == "weightless":
+        monkeypatch.setattr(
+            pf,
+            "inspect_hub",
+            lambda *a, **kw: replace(
+                inspection,
+                files=("config.json", "tokenizer.json"),
+                weight_bytes=0,
+                download_bytes=0,
+            ),
         )
     elif case == "dataset":
         ref = "https://hf.co/datasets/org/data"
@@ -144,6 +156,8 @@ def test_json_contract(metadata, monkeypatch, capsys, case, verdict, reason):
         assert result["alias"] == ref and result["in_catalog"] is True
     if case == "cached":
         assert result["cached"] is True
+    if case == "weightless":
+        assert result["format"] is None
     assert invoke(monkeypatch, capsys, ref).out.strip() == result["message"]
     downloader.assert_not_called()
 
