@@ -732,3 +732,50 @@ def test_a_failed_begin_leaves_no_stale_context(monkeypatch):
     byom_funnel.begin(["o/r"])
     monkeypatch.undo()
     assert byom_funnel.props_for("o/r", failed=False) == {}
+
+
+@pytest.mark.parametrize("consent", [True, False])
+def test_model_ref_checked_obeys_consent(telemetry_on, monkeypatch, consent):
+    from rapid_mlx.byom.reference_check import check_reference
+
+    monkeypatch.setattr(consent_runtime, "upload_allowed", lambda: consent)
+    result = check_reference("https://hf.co/datasets/org/data")
+    model_events.emit_model_ref_checked(result, ref_form="hf_url")
+    if not consent:
+        assert telemetry_on == []
+        return
+    assert telemetry_on == [
+        (
+            "model_ref_checked",
+            {
+                "model": "<custom>",
+                "preflight": "no_verdict",
+                "verdict": "invalid_reference",
+                "reason": "dataset_link",
+                "in_catalog": False,
+                "ref_form": "hf_url",
+                "request_surface": "cli",
+            },
+        )
+    ]
+
+
+def test_invoked_ref_form_reaches_all_four_lifecycle_events(telemetry_on):
+    for emit in (
+        lambda: model_events.emit_model_pulled("q-4bit", "hf", GIB),
+        lambda: model_events.emit_model_pull_failed(TimeoutError(), model_ref="q-4bit"),
+        lambda: model_events.emit_model_served(None, "q-4bit", False),
+        lambda: model_events.emit_model_serve_failed(
+            RuntimeError("x"), alias_or_path="q-4bit"
+        ),
+    ):
+        model_events._reset_for_tests()
+        byom_funnel.begin(["q-4bit"], ref_form="hf_url")
+        telemetry_on.clear()
+        emit()
+        assert len(telemetry_on) == 1
+        assert telemetry_on[0][1]["ref_form"] == "hf_url"
+    byom_funnel.begin(["other/model"], ref_form="repo_id")
+    telemetry_on.clear()
+    model_events.emit_model_pulled("q-4bit", "hf", GIB)
+    assert "ref_form" not in telemetry_on[0][1]

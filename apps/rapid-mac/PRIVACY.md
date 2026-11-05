@@ -42,6 +42,8 @@ counted as two installs. The current engine reports:
 * `app_opened` and `active_day`;
 * `model_pulled`, `model_pull_failed`, `model_served`, and
   `model_serve_failed`;
+* `model_ref_checked` (metadata verdict, refusal reason, catalog membership,
+  reference form and CLI/Desktop surface; model identity follows the same privacy rules);
 * `model_imported` and `model_import_failed` (`rapid-mlx import`);
 * `capability_rejected` (closed `capability`, `model_type`, optional model and
   caller, plus a closed `reject_reason` only for structured-output/context
