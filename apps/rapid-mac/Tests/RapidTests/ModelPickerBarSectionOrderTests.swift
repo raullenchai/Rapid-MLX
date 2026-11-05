@@ -106,12 +106,14 @@ struct ModelPickerBarSectionOrderTests {
         #expect(rows.lowerBound < end)
         try #require(button.lowerBound >= end,
                      "Browse button must render outside and after the entire state switch")
-        // Add from HF is gated to normal rows, but Browse remains outside
-        // that gate so the existing recovery states still have a destination.
+        // Add from HF shows for rows and both downloaded-empty states; Browse
+        // remains outside that gate so every recovery state has a destination.
         let trailingPrefix = String(menu[end..<button.lowerBound])
         #expect(trailingPrefix.contains("if let settingsRouter {"))
         #expect(trailingPrefix.contains("ModelPickerBar.AddFromHF"))
-        #expect(trailingPrefix.contains("if state == .rows {"))
+        #expect(trailingPrefix.contains(
+            "if state == .rows || state == .noDownloadedModels || state == .noVisibleModels {"
+        ))
         var trailingDepth = 0
         for character in trailingPrefix {
             if character == "{" { trailingDepth += 1 }
