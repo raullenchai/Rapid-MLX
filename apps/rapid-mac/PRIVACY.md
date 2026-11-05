@@ -207,11 +207,16 @@ whether or not sending is allowed then; a later occurrence is never substituted.
 When allowed, it is attempted at most once per install, and a failed request is
 not retried. The milestones are:
 `onboarding_shown`, `model_download_started`, `model_download_completed`,
-`model_download_failed`, `engine_ready`, `engine_start_failed`, and
-`first_chat_reply`.
+`model_download_failed`, `engine_ready`, `engine_start_failed`,
+`first_chat_reply`, `setup_resumed`, `model_choice_shown`, `catalog_load_failed`,
+`download_review_shown`, and `onboarding_skipped`.
 These counters are sent only by installs whose first-run setup started on this
 version or later; existing installs never send them, including when setup is
-shown again. The engine result is counted only for the first engine start
+shown again. An already enrolled install can resume recording setup milestones
+on a later launch while Quickstart is unfinished; `setup_resumed` counts that
+resume at most once per install. Relaunching never enrolls an existing install
+without the local cohort marker, and resetting onboarding stays excluded.
+The engine result is counted only for the first engine start
 directly initiated by that setup flow; a later manual start, restart, or model
 switch is not counted as an onboarding result. The first chat reply is counted
 even if it happens on a later launch.
@@ -219,10 +224,16 @@ even if it happens on a later launch.
 The request body is `{"v":"<app version>","m":"<milestone>"}`. A failed milestone may add one cause from a fixed list as `k` —
 for `model_download_failed`: `network`, `disk_full`, `source_unavailable`, `not_found`, `integrity`, or `other`; for
 `engine_start_failed`: `out_of_memory`, `model_load_failed`, `engine_not_running`, or `other` — and, for a download, its source as `s`
-(`huggingface` or `mirror`, the Rapid-MLX mirror). Nothing else is sent. It contains no install ID, device,
-OS, chip, RAM, timestamp, model name, error text, file path, query parameter, prompt, or
-response. The service keeps aggregate per-version counters only (and, for failures, per cause and source). It never
-stores the IP address and does not derive or store a country for this endpoint.
+(`huggingface` or `mirror`, the Rapid-MLX mirror). `first_chat_reply` may instead
+add `k` as a coarse elapsed-time bucket since enrollment: `lt_3m` (under 3 minutes),
+`3_10m` (3 to under 10 minutes), `10_60m` (10 to under 60 minutes),
+`1_24h` (1 to under 24 hours), or `gt_24h` (24 hours or more). The bucket is
+computed on device from the local cohort marker's date and omitted if that date
+is unavailable. No timestamp or duration value is sent. Nothing else is sent.
+It contains no install ID, device, OS, chip, RAM, timestamp, model name, error
+text, file path, query parameter, prompt, or response. The service keeps aggregate
+per-version counters only (and, for failures, per cause and source; for first
+replies, per time bucket). It never stores the IP address and does not derive or store a country for this endpoint.
 This measures aggregate first-run step conversion, not retention or individual
 paths.
 
