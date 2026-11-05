@@ -68,7 +68,7 @@ def test_banner_color_applies_ansi_and_cleans_up():
     opens = [m for m in _esc.finditer(out) if m.group(1) not in ("", "0")]
     resets = out.count("\x1b[0m")
     assert resets == len(opens)
-    for row, code in zip(out.splitlines()[:6], (221, 215, 214, 208, 202, 130)):
+    for row, code in zip(out.splitlines()[:6], (215, 215, 215, 214, 172, 172)):
         # The last row consists entirely of shadow characters.
         for ch in "█╗╔╝╚═║":
             if ch in row:
@@ -81,6 +81,16 @@ def test_banner_color_applies_ansi_and_cleans_up():
     # Stripping ANSI yields the identical mono art.
     plain = _esc.sub("", out)
     assert plain == render_banner("0.13.2", color=False)
+
+
+def test_truecolor_banner_uses_exact_brand_amber() -> None:
+    import re
+
+    out = render_banner("1.0.2", color=True, truecolor=True)
+    # Brand amber (#EFA23A) on the middle row; no 256-color escapes leak in.
+    assert "\x1b[38;2;239;162;58m█\x1b[0m" in out.splitlines()[2]
+    assert "\x1b[38;5;" not in out
+    assert re.sub(r"\x1b\[[0-9;]*m", "", out) == render_banner("1.0.2", color=False)
 
 
 def test_banner_does_not_duplicate_when_printed_twice():

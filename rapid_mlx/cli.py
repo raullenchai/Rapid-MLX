@@ -16978,7 +16978,11 @@ def main():
             # free of ANSI redraw sequences so the next app cannot expose
             # partial color frames above the banner.
             color = "NO_COLOR" not in os.environ and args.command != "launch"
-            print(render_banner(_version, color=color))
+            truecolor = os.environ.get("COLORTERM", "").lower() in {
+                "truecolor",
+                "24bit",
+            }
+            print(render_banner(_version, color=color, truecolor=truecolor))
             print()
     except Exception:
         # The banner is decorative; never let a rendering hiccup block the

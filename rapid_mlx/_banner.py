@@ -1,6 +1,6 @@
 """Block-letter RAPID-MLX launch banner for the rapid-mlx CLI.
 
-The six-row wordmark uses an orange gradient with dim brown shadows,
+The six-row wordmark uses the brand amber gradient with dim brown shadows,
 followed by a plain tagline and version line.
 
 Rendering is deliberately pure: it returns a string and takes no I/O or
@@ -22,22 +22,38 @@ _ART = [
 _TAGLINE = "Local AI for Apple Silicon — serve models and wire them to agents"
 _VERSION_FMT = "Rapid-MLX {version}"
 
-# ANSI 256-color gradient for the block letters, with dim brown shadows.
-_ROW_COLORS = (221, 215, 214, 208, 202, 130)
-_DARK = "\x1b[38;5;94m"
+# Brand amber (#EFA23A, the README banner and Desktop dark-mode accent)
+# shaded from a lighter top (#F6BE63) to the light-mode accent (#C9821F).
+# Truecolor terminals get the exact brand values; others get the nearest
+# xterm-256 colors. Shadows are a dim brown so the letters stay the focus.
+_ROW_RGB = (
+    (246, 190, 99),
+    (243, 177, 79),
+    (239, 162, 58),
+    (224, 149, 48),
+    (212, 139, 39),
+    (201, 130, 31),
+)
+_ROW_256 = (215, 215, 215, 214, 172, 172)
+_SHADOW_RGB = (122, 82, 38)
+_SHADOW_256 = 94
 _RESET = "\x1b[0m"
 
 
-def render_banner(version: str, *, color: bool) -> str:
+def render_banner(version: str, *, color: bool, truecolor: bool = False) -> str:
     """Return the wordmark, plain tagline, and version without a trailing newline.
 
-    ``color`` applies an orange gradient to the block letters and dim brown
-    to their shadows. With color disabled, the art is emitted verbatim.
+    ``color`` applies the brand amber gradient to the block letters and dim
+    brown to their shadows; ``truecolor`` selects exact 24-bit brand values
+    instead of the nearest xterm-256 colors. With color disabled, the art is
+    emitted verbatim.
     """
     # Always copy: appending to the module-level artwork would duplicate the
     # footer on subsequent calls and violate the pure-function contract.
     lines = (
-        [_colorize(line, row) for row, line in enumerate(_ART)] if color else list(_ART)
+        [_colorize(line, row, truecolor) for row, line in enumerate(_ART)]
+        if color
+        else list(_ART)
     )
     lines.append("")
     lines.append(_TAGLINE)
@@ -45,15 +61,23 @@ def render_banner(version: str, *, color: bool) -> str:
     return "\n".join(lines)
 
 
-def _colorize(line: str, row: int) -> str:
-    """Paint one wordmark row with orange blocks and dim brown shadows."""
-    block_color = f"\x1b[38;5;{_ROW_COLORS[row]}m"
+def _sgr(rgb: tuple[int, int, int], xterm: int, truecolor: bool) -> str:
+    if truecolor:
+        red, green, blue = rgb
+        return f"\x1b[38;2;{red};{green};{blue}m"
+    return f"\x1b[38;5;{xterm}m"
+
+
+def _colorize(line: str, row: int, truecolor: bool) -> str:
+    """Paint one wordmark row: amber blocks, dim brown shadow strokes."""
+    block = _sgr(_ROW_RGB[row], _ROW_256[row], truecolor)
+    shadow = _sgr(_SHADOW_RGB, _SHADOW_256, truecolor)
     painted: list[str] = []
     for ch in line:
         if ch == "█":
-            painted.append(block_color + ch + _RESET)
+            painted.append(block + ch + _RESET)
         elif ch in "╗╔╝╚═║":
-            painted.append(_DARK + ch + _RESET)
+            painted.append(shadow + ch + _RESET)
         else:
             painted.append(ch)
     return "".join(painted)
