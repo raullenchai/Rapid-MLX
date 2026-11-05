@@ -1,59 +1,17 @@
 import Foundation
 
-/// The one selection + progression contract shared by every Step 2 list
-/// (Paper 05.2.G — "CTA derivation contract" and "Activation truth table").
-///
-/// ## Why this is a separate, pure enum
-///
-/// Step 2 now has three surfaces that can offer the same model — the
-/// recommended shortlist, in-window Browse all models, and Review download.
-/// Before this existed the chooser derived its footer inline:
-///
-/// ```swift
-/// primaryTitle: canStartWithoutDownload(...) ? "Start existing model" : "Download & start"
-/// ```
-///
-/// That is a two-way branch over one input, and it was correct only because
-/// there was exactly one list and every row in it was always visible. Neither
-/// holds any more: a catalogue row can be filtered out, searched away, absent
-/// while the catalogue loads, missing because the catalogue failed, or too big
-/// for this Mac. Duplicating the branch onto two more surfaces would give three
-/// sites deciding what the button says, and the interesting cases are precisely
-/// the ones a duplicated ternary gets wrong.
-///
-/// So the derivation lives here, once, as a pure function over the *visible*
-/// rows. Paper states the rule as `selection ∩ visible rows in the active
-/// list`: stored intent alone is never enough, because a selection the user
-/// cannot see is not something they can be said to be choosing.
-///
-/// ## What it deliberately does NOT do
-///
-/// It never clears the selection. A pick hidden by a filter or a search is
-/// "memory, not intent" — the alias is retained and becomes actionable again
-/// the moment it is visible, which is what makes clearing a search restore the
-/// previous pick without anything re-picking it. Only *actionability* changes.
-///
-/// Nothing here reads a label, a badge, a section heading or a card style.
-/// Cached-ness arrives as a `Bool` derived from the catalogue snapshot
-/// (``QuickstartView/canStartWithoutDownload(alias:cachedModels:)``), and
-/// availability from ``ModelSizing/classify(_:on:)`` — the same decision the
-/// model picker already disables on. Presentation is never evidence.
+/// Shared Step 2 selection contract. A visible, available selection starts
+/// directly; an incompatible selection opens an explanation with no commit.
+/// Hidden selections retain their alias but cannot trigger a download or load.
 enum OnboardingModelSelection {
 
     // MARK: - Inputs
 
-    /// Which Step 2 list the primary is being derived for.
-    ///
-    /// Only ``review`` changes the verb, and only for an uncached pick: the
-    /// commit lives on one screen (Paper 05.2.H · T5), so "Download & start"
-    /// exists there and nowhere else.
     enum ListContext: Equatable, Sendable {
-        /// The recommended shortlist (micro-stage 2c).
         case shortlist
-        /// In-window Browse all models (micro-stage 2d).
         case catalogue
-        /// Review download (micro-stage 2e).
-        case review
+        /// Blocking detail for a model this Mac cannot run.
+        case incompatibleMemory
     }
 
     /// Whether the catalogue behind the active list has anything to say yet.
@@ -99,38 +57,15 @@ enum OnboardingModelSelection {
 
     // MARK: - Output
 
-    /// What the footer primary does when activated.
-    ///
-    /// Two of these navigate and two commit. The split is load-bearing: only
-    /// ``startExisting`` and ``downloadAndStart`` may reach ``DownloadManager``,
-    /// the disk pre-flight or ``ServerManager/start(alias:hfPath:)``, so a
-    /// model that cannot run here is kept out of those two cases by
-    /// construction rather than by a check at each call site.
     enum Action: Equatable, Sendable {
-        /// Open the Review download micro-stage for an uncached pick.
-        case reviewDownload
-        /// Open the SAME micro-stage for a pick this Mac cannot run, where it
-        /// reads as an explanation rather than a decision (Paper 05.2.D ·
-        /// `V3/Onb-2e-ReviewDownload-IncompatibleMemory`).
-        ///
-        /// Deliberately not folded into ``reviewDownload``. The two arrive at
-        /// one screen but mean different things — this one promises no
-        /// download and must never acquire one — and naming the difference
-        /// here is what lets the derivation, rather than the view, be the
-        /// thing that knows an incompatible pick is informational.
         case reviewIncompatible
-        /// Start a model already on disk — straight to Step 4, no download
-        /// job, no fabricated progress.
         case startExisting
-        /// Commit the download. Review download only.
         case downloadAndStart
 
-        /// Whether activating this would spend something — bytes, disk, or a
-        /// model load. The one question the execution paths care about.
         var isCommit: Bool {
             switch self {
             case .startExisting, .downloadAndStart: return true
-            case .reviewDownload, .reviewIncompatible: return false
+            case .reviewIncompatible: return false
             }
         }
     }
@@ -146,10 +81,9 @@ enum OnboardingModelSelection {
         let isEnabled: Bool
     }
 
-    /// The three verbs, stated once. Copy lives here so a test can pin the
+    /// The two commit verbs, stated once. Copy lives here so a test can pin the
     /// derivation without matching a string literal typed into a view.
     enum Verb {
-        static let reviewDownload = String(localized: "Review download")
         static let startExisting = String(localized: "Start existing model")
         static let downloadAndStart = String(localized: "Download & start")
     }
@@ -158,8 +92,8 @@ enum OnboardingModelSelection {
     /// verb, never a blank or a third label, so the control's identity is
     /// stable while its availability changes."
     static let disabledPrimary = Primary(
-        title: Verb.reviewDownload,
-        action: .reviewDownload,
+        title: Verb.downloadAndStart,
+        action: .downloadAndStart,
         isEnabled: false
     )
 
@@ -202,56 +136,20 @@ enum OnboardingModelSelection {
         guard let selection,
               let row = visibleRows.first(where: { $0.alias == selection })
         else { return disabledPrimary }
-        // Truthfully won't run on this Mac.
-        //
-        // This is the one branch where the answer differs by context, and the
-        // difference is the whole of Paper 05.2.D's incompatible-memory
-        // decision: "Opening the detail of a WON'T FIT row is allowed and
-        // informational — the user asked what this model is, and refusing to
-        // answer would be worse than answering. The primary is disabled, not
-        // hidden, so the shape of the screen never changes between a model
-        // that can start and one that cannot."
-        //
-        // So the LIST offers a way in, and REVIEW is where the refusal lands.
-        // Note the order: this is decided before cached-ness, because a model
-        // already on disk that cannot run is still a model that cannot run —
-        // being downloaded already is not evidence about memory.
+        // Cached files do not make an incompatible model runnable.
         if !row.isAvailable {
-            switch context {
-            case .shortlist, .catalogue:
-                // Enabled, and still the neutral verb: the catalogue's primary
-                // reads "Review download" in every state, so selecting a row
-                // never relabels the control — only what the screen it opens
-                // has to say changes.
-                return Primary(
-                    title: Verb.reviewDownload,
-                    action: .reviewIncompatible,
-                    isEnabled: true
-                )
-            case .review:
-                // Paper draws this as "Download & start", greyed. The verb is
-                // the one the model WOULD have taken, not a third label and
-                // not the neutral one, because on this screen the control's
-                // job is to name the thing that is being withheld.
+            if context == .incompatibleMemory {
                 return Primary(
                     title: row.isCached ? Verb.startExisting : Verb.downloadAndStart,
                     action: row.isCached ? .startExisting : .downloadAndStart,
                     isEnabled: false
                 )
             }
+            return Primary(title: Verb.downloadAndStart, action: .reviewIncompatible, isEnabled: true)
         }
-
-        if row.isCached {
-            // No download exists to review. This is the same verb on every
-            // surface, including Review download itself.
-            return Primary(title: Verb.startExisting, action: .startExisting, isEnabled: true)
-        }
-        switch context {
-        case .review:
-            return Primary(title: Verb.downloadAndStart, action: .downloadAndStart, isEnabled: true)
-        case .shortlist, .catalogue:
-            return Primary(title: Verb.reviewDownload, action: .reviewDownload, isEnabled: true)
-        }
+        return row.isCached
+            ? Primary(title: Verb.startExisting, action: .startExisting, isEnabled: true)
+            : Primary(title: Verb.downloadAndStart, action: .downloadAndStart, isEnabled: true)
     }
 
     /// Whether the retained selection can be COMMITTED on right now — started,

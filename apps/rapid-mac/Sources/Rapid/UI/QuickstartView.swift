@@ -159,7 +159,7 @@ final class QuickstartCoordinator {
     /// Everything the user can be doing during setup collapses onto one of
     /// these four. Micro-states are NOT steps: hardware detection,
     /// recommendation loading, choosing a recommended / cached /
-    /// alternative model and reviewing a model all live inside
+    /// alternative model and viewing an incompatible model all live inside
     /// ``chooseModel``; preparing, offline, insufficient disk, an
     /// interrupted download, a download failure and its retry all live
     /// inside ``download``; starting, the pre-load memory confirmation and
@@ -477,24 +477,24 @@ final class QuickstartCoordinator {
         /// 2d — in-window Browse all models. The real catalogue, on the setup
         /// canvas: no Settings window, no second window, no sheet.
         case browsing
-        /// 2e — Review download: name the cost before spending it.
-        case reviewing
+        /// Blocking detail for an incompatible selection; fitting picks start directly.
+        case incompatibleMemory
     }
 
-    /// Which list a Review download was opened from, so Back can return to it
+    /// Which list an incompatible-model detail was opened from, so Back can return to it
     /// (Paper 05.2.J · S2 — the old "Secondary Back → Welcome" note is
     /// superseded; Review returns to its origin, never to the hero).
-    enum ReviewOrigin: Equatable, Sendable {
+    enum IncompatibleOrigin: Equatable, Sendable {
         case shortlist
         case catalogue
     }
 
     private(set) var step2Stage: Step2Stage = .choosing
 
-    /// The list a Review download was entered from. Only meaningful while
-    /// ``step2Stage`` is ``Step2Stage/reviewing``; retained afterwards so the
+    /// The list an incompatible-model detail was entered from. Only meaningful while
+    /// ``step2Stage`` is ``Step2Stage/incompatibleMemory``; retained afterwards so the
     /// value is stable for the duration of the Back that reads it.
-    private(set) var reviewOrigin: ReviewOrigin = .shortlist
+    private(set) var incompatibleOrigin: IncompatibleOrigin = .shortlist
 
     // MARK: - Browse all models state (Paper 05.2.H — what must survive Back)
     //
@@ -543,29 +543,29 @@ final class QuickstartCoordinator {
         step2Stage = .choosing
     }
 
-    /// Open Review download for the current selection (Paper 05.2.H · T3).
+    /// Open the blocking memory explanation for an incompatible selection.
     ///
     /// ``origin`` decides the Back label and destination. Review is never the
-    /// origin of another Review, so a call made while already reviewing keeps
+    /// origin of another detail screen, so a repeated call keeps
     /// the original origin rather than pinning Review to itself.
-    func beginReviewDownload(origin: ReviewOrigin) {
+    func beginIncompatibleModelReview(origin: IncompatibleOrigin) {
         guard case .idle = phase else { return }
-        guard step2Stage != .reviewing else { return }
+        guard step2Stage != .incompatibleMemory else { return }
         selectionUsesAutomaticPolicy = false
         stage = .chooseModel
-        reviewOrigin = origin
-        step2Stage = .reviewing
+        incompatibleOrigin = origin
+        step2Stage = .incompatibleMemory
     }
 
-    /// Back out of Review download to the list it was opened from.
+    /// Back out of incompatible model details to the list it was opened from.
     ///
     /// The caller re-derives the footer *after* this returns — the list is
     /// rebuilt first, the selection revalidated second, the primary derived
     /// third (Paper 05.2.G — "Return from Review restores origin").
-    func backFromReviewDownload() {
+    func backFromIncompatibleModelReview() {
         guard case .idle = phase else { return }
         stage = .chooseModel
-        switch reviewOrigin {
+        switch incompatibleOrigin {
         case .shortlist: step2Stage = .choosing
         case .catalogue: step2Stage = .browsing
         }
@@ -580,7 +580,7 @@ final class QuickstartCoordinator {
     /// sub-stage. Returns `true` when it handled the request.
     ///
     /// This is the backstop for Paper 05.2.G's invariant — *"while the user is
-    /// inside Browse all models or Review download, Escape can only move them
+    /// inside Browse all models or incompatible-model details, Escape can only move them
     /// one level closer to the shortlist; it can never leave setup from
     /// there"*.
     ///
@@ -595,8 +595,8 @@ final class QuickstartCoordinator {
     func retreatWithinStep2() -> Bool {
         guard case .idle = phase, stage == .chooseModel else { return false }
         switch step2Stage {
-        case .reviewing:
-            backFromReviewDownload()
+        case .incompatibleMemory:
+            backFromIncompatibleModelReview()
             return true
         case .browsing:
             backToRecommendedModels()
@@ -685,7 +685,7 @@ final class QuickstartCoordinator {
             // completes and bumps the cache generation). Report that honestly
             // rather than leaving a shortlist whose cached column is stale.
             if !catalogLoaded { step2Stage = .findingFit }
-        case .browsing, .reviewing:
+        case .browsing, .incompatibleMemory:
             break
         }
     }
@@ -713,7 +713,7 @@ final class QuickstartCoordinator {
     ///
     /// ``step2Stage`` is deliberately NOT reset: it still holds the micro-stage
     /// the user was on when they authorised the load, so declining returns them
-    /// to the shortlist, the catalogue or Review download — whichever they
+    /// to the shortlist, the catalogue or incompatible model details — whichever they
     /// actually left. Paper 05.2.J · S3 supersedes the old "Cancel lands on the
     /// model chooser" note, which was only ever true while the chooser was
     /// Step 2's single surface.
@@ -984,7 +984,7 @@ final class QuickstartCoordinator {
         phase = .idle
         stage = .welcome
         step2Stage = .choosing
-        reviewOrigin = .shortlist
+        incompatibleOrigin = .shortlist
         catalogQuery = ""
         catalogFilter = .all
         catalogSort = .familyThenSize
@@ -1074,7 +1074,7 @@ final class QuickstartCoordinator {
     /// User chose Cancel on the low-disk warning.
     ///
     /// Returns to the Step 2 micro-stage the pull was authorised from —
-    /// shortlist, catalogue or Review download — because ``stage`` and
+    /// shortlist, catalogue or incompatible model details — because ``stage`` and
     /// ``step2Stage`` were never touched on the way in and leaving ``phase``
     /// is the whole of the way out. Paper 05.2.D states the destination
     /// explicitly: "Cancel returns here, not to Welcome."
@@ -1733,9 +1733,9 @@ struct QuickstartView: View {
             // so paint nothing rather than a step that is no longer true.
             Color.clear
         case .starting:
-            // #1503: a serve handed off from Quickstart funnels through
-            // ServerManager's pre-load memory guard. On a Mac under heavy
-            // memory pressure the guard PARKS the load on
+            // The initial onboarding start bypasses memory confirmation.
+            // A later manual recovery/restart still uses ServerManager's guard
+            // and can park the load on
             // ``server.pendingMemoryWarning`` and returns WITHOUT changing
             // ``server.state``. The shared confirmation ``.alert`` is
             // anchored on ContentView — BEHIND this full-window onboarding
@@ -1929,11 +1929,8 @@ struct QuickstartView: View {
                 recommendedShortlistStep
             case .browsing:
                 browseAllStep
-            case .reviewing:
-                reviewDownloadStep
-                    .onAppear {
-                        enqueueVisibleFunnelMilestone(.downloadReviewShown)
-                    }
+            case .incompatibleMemory:
+                incompatibleModelStep
             }
         }
         // Settle the two pre-shortlist micro-stages against the real catalogue
@@ -1992,7 +1989,7 @@ struct QuickstartView: View {
     /// Paper's Step 2 body: a fixed heading column beside the live list.
     ///
     /// The asymmetry is load-bearing. The heading column is where the branch
-    /// names itself and — on Review download — where the cost is stated, while
+    /// names itself and — on incompatible model details — where the cost is stated, while
     /// the list stays in exactly the same place across all three micro-stages
     /// so switching between them never moves the rows under the pointer.
     private func step2Columns<Aside: View, Content: View>(
@@ -2599,7 +2596,7 @@ struct QuickstartView: View {
     }
 
     /// Search, sort and filter. All three write straight to the coordinator so
-    /// they survive Review download and a SwiftUI re-mount.
+    /// they survive incompatible model details and a SwiftUI re-mount.
     @ViewBuilder
     private func catalogToolbar(heading: ModelCacheActions.ListHeading) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2927,9 +2924,9 @@ struct QuickstartView: View {
         coordinator.backToRecommendedModels()
     }
 
-    // MARK: - 2e — Review download
+    // MARK: - Incompatible model details
 
-    /// Name the cost before spending it (Paper 05.2.D).
+    /// Explain why this model cannot run here (Paper 05.2.D).
     ///
     /// Shows only what the product can truthfully state: identity, the size
     /// estimate the rest of the app quotes, whether it is already on disk, the
@@ -2941,10 +2938,10 @@ struct QuickstartView: View {
     /// re-renders this detail in place, so the user can compare without
     /// leaving Step 2.
     @ViewBuilder
-    private var reviewDownloadStep: some View {
+    private var incompatibleModelStep: some View {
         let alias = coordinator.selection.alias
         let cached = Self.cachedModel(alias: alias, cachedModels: cachedModels)
-        let primary = primary(for: .review)
+        let primary = primary(for: .incompatibleMemory)
         // The same availability seam every other surface reads. Note it is
         // asked here, on arrival, rather than passed in by whatever opened the
         // screen: Review's companion list can change the selection in place,
@@ -2952,9 +2949,9 @@ struct QuickstartView: View {
         let runsHere = OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware)
         step2Scaffold {
             step2Columns(
-                kicker: String(localized: "REVIEW DOWNLOAD"),
+                kicker: String(localized: "MODEL COMPATIBILITY"),
                 title: coordinator.selection.displayName,
-                subtitle: Self.reviewSubtitle(cached: cached, runsHere: runsHere)
+                subtitle: String(localized: "This model cannot run on this Mac.")
             ) {
                 VStack(alignment: .leading, spacing: 0) {
                     if !runsHere {
@@ -2975,13 +2972,8 @@ struct QuickstartView: View {
                     ))
                     .padding(.top, 26)
 
-                    // A download footnote frames a cost about to be paid, so it
-                    // has nothing to say about a download that will not happen;
-                    // the memory note takes the slot instead. One line under
-                    // the table either way — the composition does not change.
-                    if let footnote = runsHere
-                        ? Self.reviewFootnote(alias: alias, cached: cached, catalog: cachedModels)
-                        : Self.memoryHeadroomFootnote(hardware: hardware) {
+                    // Keep the memory limit visible alongside the blocking reason.
+                    if let footnote = Self.memoryHeadroomFootnote(hardware: hardware) {
                         Text(footnote)
                             .scaledSystemFont(12)
                             .foregroundStyle(RapidTheme.textTertiary)
@@ -2997,22 +2989,27 @@ struct QuickstartView: View {
             OnboardingStepFooter(
                 primaryTitle: primary.title,
                 primaryEnabled: primary.isEnabled,
-                backTitle: coordinator.reviewOrigin == .catalogue
+                backTitle: coordinator.incompatibleOrigin == .catalogue
                     ? String(localized: "← Back to all models")
                     : String(localized: "← Back to recommended models"),
-                backAccessibilityLabel: coordinator.reviewOrigin == .catalogue
+                backAccessibilityLabel: coordinator.incompatibleOrigin == .catalogue
                     ? String(localized: "Back to all models")
                     : String(localized: "Back to recommended models"),
                 primaryAccessibilityHint: runsHere
                     ? nil
                     : Self.incompatiblePrimaryHint(alias: alias, hardware: hardware),
-                onBack: { coordinator.backFromReviewDownload() },
-                onPrimary: { activatePrimary(in: .review) }
+                onBack: { coordinator.backFromIncompatibleModelReview() },
+                onPrimary: { activatePrimary(in: .incompatibleMemory) }
             )
+        }
+        .onChange(of: coordinator.selection.alias) { _, alias in
+            if OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware) {
+                coordinator.backFromIncompatibleModelReview()
+            }
         }
     }
 
-    /// The shortlist, rendered beside Review download so a comparison never
+    /// The shortlist, rendered beside incompatible model details so a comparison never
     /// costs a navigation. Selecting here re-renders the fact table in place —
     /// the same ``coordinator.select`` every other list calls, so the
     /// micro-stage does not change and Back still returns to the origin.
@@ -3036,7 +3033,7 @@ struct QuickstartView: View {
                                 catalogEntry: cachedModels.first { $0.alias == choice.alias }
                         ),
                         isCached: cached != nil,
-                        onActivate: { activatePrimary(in: .review) }
+                        onActivate: { activatePrimary(in: .incompatibleMemory) }
                     ) { coordinator.select(choice) }
                 }
                 if !list.recommended.isEmpty {
@@ -3061,7 +3058,7 @@ struct QuickstartView: View {
                                     catalogEntry: cachedModels.first { $0.alias == choice.alias }
                             ),
                             isCached: cached != nil,
-                            onActivate: { activatePrimary(in: .review) }
+                            onActivate: { activatePrimary(in: .incompatibleMemory) }
                         ) { coordinator.select(choice) }
                     }
                 }
@@ -3083,7 +3080,7 @@ struct QuickstartView: View {
                                 catalogEntry: cachedModels.first { $0.alias == choice.alias }
                             ),
                             isCached: cached != nil,
-                            onActivate: { activatePrimary(in: .review) }
+                            onActivate: { activatePrimary(in: .incompatibleMemory) }
                         ) { coordinator.select(choice) }
                     }
                 }
@@ -3097,7 +3094,7 @@ struct QuickstartView: View {
                             selected: coordinator.selection.alias == choice.alias,
                             sizeText: cachedModels.first { $0.alias == choice.alias }?.displayedModelSize?.displayText ?? Self.sizeText(for: choice),
                             isCached: cached != nil,
-                            onActivate: { activatePrimary(in: .review) }
+                            onActivate: { activatePrimary(in: .incompatibleMemory) }
                         ) { coordinator.select(choice) }
                     }
                 }
@@ -3110,7 +3107,7 @@ struct QuickstartView: View {
                         selected: coordinator.selection.alias == pick.alias,
                         sizeText: Self.rowSizeText(for: pick),
                         isCached: pick.cached,
-                        onActivate: { activatePrimary(in: .review) }
+                        onActivate: { activatePrimary(in: .incompatibleMemory) }
                     ) { coordinator.select(choice) }
                     .accessibilityIdentifier("Quickstart.YourPick.\(pick.alias)")
                 }
@@ -3218,32 +3215,6 @@ struct QuickstartView: View {
             return sizeText(for: choice)
         }
         return reviewSizeText(alias: alias, cached: cached)
-    }
-
-    /// The line under the fact table. Only offered for a download that has not
-    /// happened yet — for a cached model there is no cost to frame.
-    static func reviewFootnote(alias: String, cached: ModelEntry?, catalog: [ModelEntry] = []) -> String? {
-        guard cached == nil else { return nil }
-        let size = reviewDownloadText(alias: alias, cached: nil, catalog: catalog)
-        guard size != String(localized: "Unknown") else {
-            return String(localized: "One download, once. After that this model starts in seconds and needs no network.")
-        }
-        return String(localized: "One \(size) pull, once. After that this model starts in seconds and needs no network.")
-    }
-
-    // MARK: - 2e — Review download · incompatible memory (Paper 05.2.D)
-
-    /// The sentence under the model's name on Review download.
-    ///
-    /// Three states, one slot. Paper writes the incompatible one as a flat
-    /// statement — "It cannot run on this Mac" — with no apology and no offer,
-    /// because the screen's whole job at that point is to answer a question
-    /// the user already asked.
-    static func reviewSubtitle(cached: ModelEntry?, runsHere: Bool) -> String {
-        guard runsHere else { return String(localized: "This model cannot run on this Mac.") }
-        return cached == nil
-            ? String(localized: "This downloads once and then runs entirely on your Mac.")
-            : String(localized: "Already on this Mac — nothing will be downloaded.")
     }
 
     /// Paper 05.2.D's callout: what it needs, what this Mac has, and how much
@@ -3558,7 +3529,7 @@ struct QuickstartView: View {
             }
         case .catalogue:
             return OnboardingModelSelection.rows(for: visibleCatalogEntries, hardware: hardware)
-        case .review:
+        case .incompatibleMemory:
             // Review shows exactly one model: the selection. Its cached-ness
             // comes from the catalogue snapshot, never from the copy above it.
             let alias = coordinator.selection.alias
@@ -3591,14 +3562,24 @@ struct QuickstartView: View {
     private func activatePrimary(in context: OnboardingModelSelection.ListContext) {
         let primary = primary(for: context)
         guard primary.isEnabled else { return }
+        Self.applyPrimary(primary, context: context, coordinator: coordinator) {
+            startQuickstart()
+        }
+    }
+
+    /// Execute the derived action through the existing download/load route.
+    /// The injected commit keeps navigation and disabled-state behavior testable
+    /// without opening a window or starting a real model download.
+    static func applyPrimary(
+        _ primary: OnboardingModelSelection.Primary,
+        context: OnboardingModelSelection.ListContext,
+        coordinator: QuickstartCoordinator,
+        onStart: () -> Void
+    ) {
+        guard primary.isEnabled else { return }
         switch primary.action {
-        case .reviewDownload, .reviewIncompatible:
-            // Both open the same micro-stage. What differs is what it says
-            // once it is there, and that is re-derived from the selection on
-            // arrival rather than carried across as a flag — so a user who
-            // switches to a runnable model on Review's live companion list
-            // gets a working primary without navigating anywhere.
-            coordinator.beginReviewDownload(
+        case .reviewIncompatible:
+            coordinator.beginIncompatibleModelReview(
                 origin: context == .catalogue ? .catalogue : .shortlist
             )
         case .startExisting, .downloadAndStart:
@@ -3607,7 +3588,7 @@ struct QuickstartView: View {
             // download machinery entirely and hands straight to
             // ``ServerManager.start`` (Step 4), an uncached one runs the disk
             // pre-flight and then the pull (Step 3).
-            startQuickstart()
+            onStart()
         }
     }
 
@@ -3827,7 +3808,7 @@ struct QuickstartView: View {
         return sizeText(for: entry.alias)
     }
 
-    // MARK: - Review download facts (pure)
+    // MARK: - Incompatible model details facts (pure)
 
     /// The Hugging Face repo to quote on Review, when the catalogue knows one.
     /// Prefers the cached entry (it came from `rapid-mlx ls`, which resolved
@@ -4498,7 +4479,7 @@ struct QuickstartView: View {
     static func failureBackTitle(for stage: QuickstartCoordinator.Step2Stage) -> String {
         switch stage {
         case .browsing:  return String(localized: "← Back to all models")
-        case .reviewing: return String(localized: "← Back to review download")
+        case .incompatibleMemory: return String(localized: "← Back to model details")
         case .checkingHardware, .findingFit, .choosing:
             return String(localized: "← Back to recommended models")
         }
@@ -4549,7 +4530,7 @@ struct QuickstartView: View {
     ///
     /// ``QuickstartCoordinator/returnToChooser()`` deliberately does not touch
     /// ``QuickstartCoordinator/step2Stage``, so the shortlist, the catalogue
-    /// (with its query, filter, sort and scroll anchor) or Review download all
+    /// (with its query, filter, sort and scroll anchor) or incompatible model details all
     /// come back exactly as they were, with the selection still made.
     ///
     /// The ``dismissTerminalState`` call is what keeps the move INSIDE
@@ -4737,7 +4718,7 @@ struct QuickstartView: View {
     }
 
     /// Cached models skip both the disk-space warning and DownloadManager.
-    /// `ServerManager.start` still owns cache validation, memory guarding and
+    /// `ServerManager.start` still owns cache validation and
     /// the normal ready/failure transitions, so this is a shorter route into
     /// the same serving lifecycle rather than a second implementation.
     ///
@@ -4770,6 +4751,8 @@ struct QuickstartView: View {
     /// on it directly instead of re-deriving "long enough to read".
     static let skippingDownloadBeat: Duration = .milliseconds(650)
 
+    /// The user already chose this model in setup. Load directly and let actual
+    /// failures use the existing recovery path instead of a live-memory estimate.
     /// The only engine lifecycle eligible for funnel reporting is the first
     /// start kicked off by onboarding itself. The causal token exists only for
     /// this awaited call and is consumed by its first matching terminal state;
@@ -4789,6 +4772,7 @@ struct QuickstartView: View {
         await server.start(
             alias: alias,
             hfPath: hfPath,
+            bypassMemoryGuard: true,
             catalogEntryHint: catalogEntryHint,
             onboardingEngineAttemptToken: token
         )

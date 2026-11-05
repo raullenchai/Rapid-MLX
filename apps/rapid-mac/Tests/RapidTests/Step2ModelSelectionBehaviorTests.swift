@@ -108,8 +108,8 @@ struct Step2ModelSelectionBehaviorTests {
                 coord.resolveRecommendationLoading(catalogLoaded: true)
             case .browsing:
                 coord.beginBrowsingCatalog()
-            case .reviewing:
-                coord.beginReviewDownload(origin: .shortlist)
+            case .incompatibleMemory:
+                coord.beginIncompatibleModelReview(origin: .shortlist)
             }
             #expect(coord.step2Stage == stage, "failed to reach \(stage)")
             #expect(
@@ -119,7 +119,7 @@ struct Step2ModelSelectionBehaviorTests {
             #expect(coord.step.displayNumber == 2)
             #expect(QuickstartCoordinator.Step.total == 4)
             // Review is a one-way door in; get back out for the next iteration.
-            if stage == .reviewing { coord.backFromReviewDownload() }
+            if stage == .incompatibleMemory { coord.backFromIncompatibleModelReview() }
         }
         coord._testingReset()
     }
@@ -157,21 +157,21 @@ struct Step2ModelSelectionBehaviorTests {
     func railReportsTheMacroStepOnly() {
         // The rail reads `coordinator.step`, which is derived from (phase,
         // stage) and deliberately does not consult `step2Stage`. Browsing and
-        // reviewing must therefore both still report Step 2.
+        // incompatibleMemory must therefore both still report Step 2.
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
         #expect(coord.step == .chooseModel)
         coord.beginBrowsingCatalog()
         #expect(coord.step == .chooseModel, "the catalogue is not a step of its own")
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         #expect(coord.step == .chooseModel, "review is not a step of its own")
         #expect(QuickstartCoordinator.Step.total == 4)
     }
 
     // MARK: - 2. CTA derivation (Paper 05.2.G — canonical)
 
-    @Test("A valid uncached selection derives Review download")
-    func uncachedDerivesReview() {
+    @Test("A fitting uncached selection downloads directly from either list")
+    func uncachedDownloadsDirectly() {
         for context in [OnboardingModelSelection.ListContext.shortlist, .catalogue] {
             let primary = OnboardingModelSelection.primary(
                 selection: "qwen3.5-9b-4bit",
@@ -179,16 +179,58 @@ struct Step2ModelSelectionBehaviorTests {
                 catalogState: .ready,
                 context: context
             )
-            #expect(primary.title == "Review download")
-            #expect(primary.action == .reviewDownload)
+            #expect(primary.title == "Download & start")
+            #expect(primary.action == .downloadAndStart)
             #expect(primary.isEnabled)
+        }
+    }
+
+    @Test("Step 2 downloads fitting picks directly and only opens details for incompatible picks")
+    func selectionPrimaryExecutesWithoutReview() {
+        for context in [OnboardingModelSelection.ListContext.shortlist, .catalogue] {
+            let coord = Self.coordinator()
+            coord.advanceToChooseModel()
+            coord.resolveRecommendationLoading(catalogLoaded: true)
+            if context == .catalogue { coord.beginBrowsingCatalog() }
+            let origin = coord.step2Stage
+            let fitting = OnboardingModelSelection.primary(
+                selection: "fits", visibleRows: [Self.row("fits")],
+                catalogState: .ready, context: context
+            )
+            var downloadStarts = 0
+            QuickstartView.applyPrimary(fitting, context: context, coordinator: coord) {
+                downloadStarts += 1
+                #expect(coord.step2Stage == origin)
+                coord.enterDownloading()
+            }
+            #expect(downloadStarts == 1)
+            #expect(coord.phase == .downloading)
+            #expect(coord.step == .download)
+            #expect(coord.step2Stage != .incompatibleMemory)
+            coord._testingReset()
+
+            coord.advanceToChooseModel()
+            let incompatible = OnboardingModelSelection.primary(
+                selection: "huge", visibleRows: [Self.row("huge", available: false)],
+                catalogState: .ready, context: context
+            )
+            QuickstartView.applyPrimary(incompatible, context: context, coordinator: coord) {
+                downloadStarts += 1
+            }
+            #expect(downloadStarts == 1)
+            #expect(coord.phase == .idle)
+            #expect(coord.step2Stage == .incompatibleMemory)
+            #expect(coord.incompatibleOrigin == (context == .catalogue ? .catalogue : .shortlist))
+            #expect(coord.retreatWithinStep2())
+            #expect(coord.step2Stage == origin)
+            coord._testingReset()
         }
     }
 
     @Test("A valid cached selection derives Start existing model")
     func cachedDerivesStartExisting() {
         for context in [
-            OnboardingModelSelection.ListContext.shortlist, .catalogue, .review,
+            OnboardingModelSelection.ListContext.shortlist, .catalogue, .incompatibleMemory,
         ] {
             let primary = OnboardingModelSelection.primary(
                 selection: "on-disk",
@@ -202,15 +244,13 @@ struct Step2ModelSelectionBehaviorTests {
         }
     }
 
-    /// The commit lives on one screen. If "Download & start" ever appears on a
-    /// list, the review step has been bypassed.
-    @Test("Download & start exists only on Review download")
-    func commitVerbIsReviewOnly() {
+    @Test("Download & start commits directly on both selection lists")
+    func selectionListsCommitDirectly() {
         let rows = [Self.row("uncached")]
         #expect(
             OnboardingModelSelection.primary(
                 selection: "uncached", visibleRows: rows,
-                catalogState: .ready, context: .review
+                catalogState: .ready, context: .incompatibleMemory
             ).action == .downloadAndStart
         )
         for context in [OnboardingModelSelection.ListContext.shortlist, .catalogue] {
@@ -218,8 +258,8 @@ struct Step2ModelSelectionBehaviorTests {
                 OnboardingModelSelection.primary(
                     selection: "uncached", visibleRows: rows,
                     catalogState: .ready, context: context
-                ).action != .downloadAndStart,
-                "\(context) must route through Review, not commit directly"
+                ).action == .downloadAndStart,
+                "\(context) must commit directly"
             )
         }
     }
@@ -246,7 +286,7 @@ struct Step2ModelSelectionBehaviorTests {
         for (name, primary) in cases {
             #expect(!primary.isEnabled, "\(name) must not allow progression")
             #expect(
-                primary.title == "Review download",
+                primary.title == "Download & start",
                 "\(name) must show the neutral verb, not a blank or a third label"
             )
         }
@@ -281,7 +321,7 @@ struct Step2ModelSelectionBehaviorTests {
             catalogState: .ready, context: .catalogue
         )
         #expect(!hidden.isEnabled, "a pick the user cannot see is not something they are choosing")
-        #expect(hidden.title == "Review download")
+        #expect(hidden.title == "Download & start")
     }
 
     @Test("Clearing the search restores the prior valid selection with no re-pick")
@@ -342,13 +382,13 @@ struct Step2ModelSelectionBehaviorTests {
             #expect(primary.action == .reviewIncompatible, "\(context)")
             #expect(!primary.action.isCommit, "\(context): must not be a commit")
             // The catalogue's control never relabels itself between rows.
-            #expect(primary.title == OnboardingModelSelection.Verb.reviewDownload)
+            #expect(primary.title == OnboardingModelSelection.Verb.downloadAndStart)
         }
         // Inside Review: the verb it WOULD have taken, greyed.
         let review = OnboardingModelSelection.primary(
             selection: "wont-fit",
             visibleRows: [Self.row("wont-fit", available: false)],
-            catalogState: .ready, context: .review
+            catalogState: .ready, context: .incompatibleMemory
         )
         #expect(!review.isEnabled)
         #expect(review.title == OnboardingModelSelection.Verb.downloadAndStart)
@@ -680,7 +720,7 @@ struct Step2ModelSelectionBehaviorTests {
     func activationTruthTable() {
         let table: [(name: String, row: OnboardingModelSelection.Row,
                      action: OnboardingModelSelection.Action?, enabled: Bool)] = [
-            ("uncached valid", Self.row("a"), .reviewDownload, true),
+            ("uncached valid", Self.row("a"), .downloadAndStart, true),
             ("cached valid", Self.row("a", cached: true), .startExisting, true),
             // Paper 05.2.D: from a LIST, an unrunnable pick opens its detail
             // and nothing else. The action is distinguishable from an ordinary
@@ -718,7 +758,7 @@ struct Step2ModelSelectionBehaviorTests {
             catalogState: .ready, context: .catalogue
         )
         #expect(primary.action == .startExisting)
-        #expect(primary.action != .reviewDownload)
+        #expect(primary.isEnabled)
     }
 
     @Test("Every activation input funnels through one shared path")
@@ -729,7 +769,7 @@ struct Step2ModelSelectionBehaviorTests {
                 "activation must re-derive and refuse a disabled primary before acting")
 
         // The footer primary, and the row double-click, on each list.
-        for context in ["shortlist", "catalogue", "review"] {
+        for context in ["shortlist", "catalogue", "incompatibleMemory"] {
             #expect(body.contains("onPrimary:{activatePrimary(in:.\(context))}"),
                     "the \(context) footer must activate through the shared path")
         }
@@ -778,11 +818,11 @@ struct Step2ModelSelectionBehaviorTests {
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
         coord.resolveRecommendationLoading(catalogLoaded: true)
-        coord.beginReviewDownload(origin: .shortlist)
-        #expect(coord.step2Stage == .reviewing)
-        #expect(coord.reviewOrigin == .shortlist)
+        coord.beginIncompatibleModelReview(origin: .shortlist)
+        #expect(coord.step2Stage == .incompatibleMemory)
+        #expect(coord.incompatibleOrigin == .shortlist)
 
-        coord.backFromReviewDownload()
+        coord.backFromIncompatibleModelReview()
         #expect(coord.step2Stage == .choosing)
         #expect(coord.stage == .chooseModel, "Back from Review must not land on Welcome (05.2.J · S2)")
         #expect(coord.step == .chooseModel)
@@ -794,9 +834,9 @@ struct Step2ModelSelectionBehaviorTests {
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
         coord.beginBrowsingCatalog()
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
 
-        coord.backFromReviewDownload()
+        coord.backFromIncompatibleModelReview()
         #expect(coord.step2Stage == .browsing)
         #expect(coord.step == .chooseModel)
         coord._testingReset()
@@ -818,8 +858,8 @@ struct Step2ModelSelectionBehaviorTests {
         coord.select(QuickstartView.choice(forCatalogEntry: catalog[0]))
         coord.rememberCatalogAnchor("qwen3.5-9b-4bit")
 
-        coord.beginReviewDownload(origin: .catalogue)
-        coord.backFromReviewDownload()
+        coord.beginIncompatibleModelReview(origin: .catalogue)
+        coord.backFromIncompatibleModelReview()
 
         #expect(coord.catalogQuery == "qwen", "the search must come back verbatim")
         #expect(coord.catalogFilter == .notCached)
@@ -877,11 +917,11 @@ struct Step2ModelSelectionBehaviorTests {
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
         coord.beginBrowsingCatalog()
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         // A second call, however it arrives, must not repoint Back at Review.
-        coord.beginReviewDownload(origin: .shortlist)
-        #expect(coord.reviewOrigin == .catalogue)
-        coord.backFromReviewDownload()
+        coord.beginIncompatibleModelReview(origin: .shortlist)
+        #expect(coord.incompatibleOrigin == .catalogue)
+        coord.backFromIncompatibleModelReview()
         #expect(coord.step2Stage == .browsing)
         coord._testingReset()
     }
@@ -907,7 +947,7 @@ struct Step2ModelSelectionBehaviorTests {
     @Test("Review quotes no ETA and no benchmark claim")
     func reviewFabricatesNothing() throws {
         let body = try Self.quickstartSource
-        guard let start = body.range(of: "private var reviewDownloadStep: some View"),
+        guard let start = body.range(of: "private var incompatibleModelStep: some View"),
               let end = body.range(of: "// MARK: - Step 2 derivation (pure seams)")
         else {
             Issue.record("could not isolate the Review download section")
@@ -976,7 +1016,11 @@ struct Step2ModelSelectionBehaviorTests {
         }
 
         expectSource(
-            "case.startExisting,.downloadAndStart:startQuickstart()",
+            "Self.applyPrimary(primary,context:context,coordinator:coordinator){startQuickstart()}",
+            "selection commits must invoke the production download/disk-preflight route"
+        )
+        expectSource(
+            "case.startExisting,.downloadAndStart:onStart()",
             "the cached and uncached commits must share startQuickstart()"
         )
         expectSource(
@@ -992,7 +1036,7 @@ struct Step2ModelSelectionBehaviorTests {
             "the onboarding engine wrapper must remain the single funnel-aware start seam"
         )
         expectSource(
-            "awaitserver.start(alias:alias,hfPath:hfPath,catalogEntryHint:catalogEntryHint,onboardingEngineAttemptToken:token)",
+            "awaitserver.start(alias:alias,hfPath:hfPath,bypassMemoryGuard:true,catalogEntryHint:catalogEntryHint,onboardingEngineAttemptToken:token)",
             "the onboarding engine wrapper must delegate to ServerManager.start"
         )
         expectSource(
@@ -1017,7 +1061,7 @@ struct Step2ModelSelectionBehaviorTests {
         // Priority 2: from Review, back to its origin — and Review wins over
         // the catalogue rule when both could match.
         coord.beginBrowsingCatalog()
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         #expect(coord.retreatWithinStep2())
         #expect(coord.step2Stage == .browsing, "Review must yield to its origin, not to the shortlist")
         #expect(coord.retreatWithinStep2())
@@ -1081,7 +1125,7 @@ struct Step2ModelSelectionBehaviorTests {
         let coord = Self.coordinator()
         coord.advanceToChooseModel()
         coord.beginBrowsingCatalog()
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         coord.enterDownloading()
         coord.enterStarting()
         coord.enterReady()
@@ -1104,11 +1148,11 @@ struct Step2ModelSelectionBehaviorTests {
         coord.advanceToChooseModel()
         for _ in 0..<3 {
             coord.beginBrowsingCatalog()
-            coord.beginReviewDownload(origin: .catalogue)
-            coord.backFromReviewDownload()
+            coord.beginIncompatibleModelReview(origin: .catalogue)
+            coord.backFromIncompatibleModelReview()
             coord.backToRecommendedModels()
-            coord.beginReviewDownload(origin: .shortlist)
-            coord.backFromReviewDownload()
+            coord.beginIncompatibleModelReview(origin: .shortlist)
+            coord.backFromIncompatibleModelReview()
         }
         #expect(!coord.done)
         #expect(coord.phase == .idle)

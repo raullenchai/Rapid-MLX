@@ -2711,8 +2711,9 @@ final class ServerManager {
         // 80% of TOTAL), this projects the footprint onto LIVE used memory,
         // catching the reported near-crash where a "fits the Mac" model
         // still exhausts the RAM other apps left free. ``bypassMemoryGuard``
-        // is set only by the explicit "Load anyway" path, after the user
-        // acknowledged the risk in the prompt.
+        // is set by explicit "Load anyway" confirmation and by onboarding,
+        // where the user has just chosen/downloaded the model. Actual first-run
+        // load failures use the ordinary startup failure/recovery path.
         //
         // Auto-respawn is exempt (``!isAutoRespawn``): the watchdog re-fires
         // ``start(isAutoRespawn: true)`` on a fixed schedule, so returning

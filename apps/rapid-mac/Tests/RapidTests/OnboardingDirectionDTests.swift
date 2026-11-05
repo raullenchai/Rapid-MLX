@@ -614,8 +614,8 @@ struct OnboardingDirectionDTests {
         let uncached = OnboardingModelSelection.primary(
             selection: "uncached", visibleRows: rows, catalogState: .ready, context: .shortlist
         )
-        #expect(uncached.action == .reviewDownload)
-        #expect(uncached.title == OnboardingModelSelection.Verb.reviewDownload)
+        #expect(uncached.action == .downloadAndStart)
+        #expect(uncached.title == OnboardingModelSelection.Verb.downloadAndStart)
 
         let cached = OnboardingModelSelection.primary(
             selection: "cached", visibleRows: rows, catalogState: .ready, context: .shortlist
@@ -638,10 +638,10 @@ struct OnboardingDirectionDTests {
         defer { coord._testingReset() }
         coord.advanceToChooseModel()
         coord.resolveRecommendationLoading(catalogLoaded: true)
-        coord.beginReviewDownload(origin: .shortlist)
-        #expect(coord.step2Stage == .reviewing)
+        coord.beginIncompatibleModelReview(origin: .shortlist)
+        #expect(coord.step2Stage == .incompatibleMemory)
         #expect(coord.step == .chooseModel, "review is still Step 2")
-        coord.backFromReviewDownload()
+        coord.backFromIncompatibleModelReview()
         #expect(coord.step2Stage == .choosing, "Back returns to the shortlist")
     }
 
@@ -692,9 +692,9 @@ struct OnboardingDirectionDTests {
         coord.beginBrowsingCatalog()
         coord.resolveRecommendationLoading(catalogLoaded: false)
         #expect(coord.step2Stage == .browsing, "a reload must not eject the user")
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         coord.resolveRecommendationLoading(catalogLoaded: false)
-        #expect(coord.step2Stage == .reviewing)
+        #expect(coord.step2Stage == .incompatibleMemory)
     }
 
     @Test("Both transient screens are wired, with no invented duration")
@@ -993,33 +993,6 @@ struct OnboardingDirectionDTests {
         #expect(rows.map(\.label).contains("Download size"))
         #expect(!rows.map(\.label).contains("Download"))
         #expect(rows.first { $0.label == "On this Mac" }?.value == "Already downloaded")
-    }
-
-    @Test("The Review footnote frames a cost only when there is one")
-    func reviewFootnoteOnlyForUncached() {
-        let uncached = QuickstartView.reviewFootnote(
-            alias: QuickstartCoordinator.defaultChoice.alias,
-            cached: nil
-        )
-        #expect(uncached != nil)
-        #expect(uncached!.contains("once"))
-        #expect(uncached!.lowercased().contains("no network"))
-
-        let cached = ModelEntry(alias: "a", hfRepo: "r", sizeOnDisk: "1 GB", cached: true)
-        #expect(QuickstartView.reviewFootnote(alias: "a", cached: cached) == nil,
-                "nothing is being spent, so there is no cost to frame")
-    }
-
-    @Test("Memory figures use the system memory style")
-    func memoryFiguresShareOneFormatter() {
-        // The catalogue row and the Review table both quote this Mac's memory.
-        // Both use the same system memory formatter.
-        #expect(QuickstartView.wholeGB(32.0) == DownloadProgress.formatMemory(Int64(32) * (1 << 30)))
-        #expect(QuickstartView.wholeGB(8.7) == DownloadProgress.formatMemory(Int64(8.7 * Double(1 << 30))))
-        // Model estimates use the same style.
-        #expect(QuickstartView.preciseGB(8.7) == DownloadProgress.formatMemory(Int64(8.7 * Double(1 << 30))))
-        #expect(QuickstartView.preciseGB(5.94) == ByteCountFormatter.string(fromByteCount: Int64(5.94 * Double(1 << 30)), countStyle: .memory))
-        #expect(QuickstartView.wholeGB(0.4) == DownloadProgress.formatMemory(Int64(0.4 * Double(1 << 30))))
     }
 
     // MARK: - Failure presentation
