@@ -5470,7 +5470,7 @@ flow_audio_readiness() {
                    | select(.identifier == "Sidebar.ResidentModel.fake-qwen3-tts")]
                   | (any(.[];
                          .role == "AXImage"
-                         and .description == "Lock"))
+                         and .description == "Kept in memory"))
                     and (any(.[];
                              .role == "AXStaticText"
                              and .value == "fake-qwen3-tts"))' \

@@ -1799,7 +1799,7 @@ def test_audio_baseline_waits_for_residency_poll_to_settle():
     resident_identifier = '.identifier == "Sidebar.ResidentModel.fake-qwen3-tts"'
     resident_alias = '.value == "fake-qwen3-tts"'
     resident_lock = '.role == "AXImage"'
-    pinned_state = '.description == "Lock"'
+    pinned_state = '.description == "Kept in memory"'
     settled_guard = '[[ "$speech_resident" == 1 ]]'
     launch_check = 'press "$OUT/speech-resident.json" Sidebar.Launch'
     return_to_audio = 'press "$OUT/launch-from-audio.json" Sidebar.Audio'
