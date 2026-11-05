@@ -28,14 +28,16 @@ def serve_subcommand_index(argv: Sequence[str]) -> int | None:
             return None
         while index < len(argv):
             token = argv[index]
-            if token.startswith("-m"):
-                if token == "-m":
+            # ``-m`` may close a cluster of no-argument flags (``-um``).
+            module_option = re.fullmatch(r"-[bBdEiIOPqRsSuvx]*m(.*)", token)
+            if module_option:
+                if not module_option.group(1):
                     index += 1
                     if index == len(argv):
                         return None
                     module = argv[index]
                 else:
-                    module = token[2:]
+                    module = module_option.group(1)
                 if not any(
                     module == package or module.startswith(package + ".")
                     for package in ("rapid_mlx", "vllm_mlx")

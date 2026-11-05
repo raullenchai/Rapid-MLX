@@ -36,6 +36,8 @@ LAUNCHERS = [
         "rapid_mlx.cli",
     ],
     ["python3.12", "-Pus", "-mrapid_mlx.cli"],
+    ["python3", "-um", "rapid_mlx.cli"],
+    ["python3", "-Pumrapid_mlx.cli"],
     [
         "python",
         "-W",
@@ -127,7 +129,7 @@ def test_legacy_service_rejects_lookalike_executable(executable):
         _parse_legacy_serve([executable, "serve", "tiny"])
 
 
-def test_legacy_service_uses_shared_subcommand_matching():
+def test_legacy_service_accepts_global_flags_and_rejects_non_serve():
     from rapid_mlx.headless_service.status import _parse_legacy_serve
 
     assert _parse_legacy_serve(
@@ -138,5 +140,7 @@ def test_legacy_service_uses_shared_subcommand_matching():
         "127.0.0.1",
         8000,
     )
-    with pytest.raises(ValueError, match="unrecognized legacy service executable"):
+    with pytest.raises(
+        ValueError, match="invalid legacy serve arguments|not a serve command"
+    ):
         _parse_legacy_serve(["/bin/rapid-mlx", "agents", "serve"])
