@@ -2,6 +2,76 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Kept in memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "常驻内存"
+          }
+        }
+      }
+    },
+    "Code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代码"
+          }
+        }
+      }
+    },
+    "Tool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工具"
+          }
+        }
+      }
+    },
+    "Instructions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指令遵循"
+          }
+        }
+      }
+    },
+    "Accuracy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确率"
+          }
+        }
+      }
+    },
+    "Vision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视觉"
+          }
+        }
+      }
+    },
+    "%@: %@, %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：%@，%@"
+          }
+        }
+      }
+    },
     "Prompt processing batch size" : {
       "localizations" : {
         "zh-Hans" : {
