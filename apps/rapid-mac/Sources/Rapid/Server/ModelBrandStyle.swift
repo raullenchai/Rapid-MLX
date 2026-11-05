@@ -108,14 +108,10 @@ enum ModelBrandStyle {
     /// contract, not merely a decorative glyph.
     ///
     /// Keep the explicit text-only exceptions aligned with server alias pins.
-    /// In particular, the 4-bit Qwen3.5 4B alias currently carries
-    /// ``is_text_only: true`` in ``aliases.json`` and the server intentionally
-    /// rejects ``--mllm`` for it. Its 6/8-bit siblings are not pinned and keep
-    /// their checkpoint's vision tower.
+    /// Qwen3.5 4B 4-bit retains its vision tower in the current catalog.
     static func modelType(forAlias alias: String) -> ModelType {
         let a = alias.lowercased()
-        if a == "qwen3.5-4b-4bit"
-            || a == "qwen3.5-122b-mxfp4"
+        if a == "qwen3.5-122b-mxfp4"
             || a == "qwen3.6-35b"
             || a == "qwen3.6-27b-mtp-4bit"
             || a == "qwen3.6-35b-mtp-4bit"

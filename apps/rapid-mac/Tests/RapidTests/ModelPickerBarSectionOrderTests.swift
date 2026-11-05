@@ -350,32 +350,21 @@ struct ModelPickerBarSectionOrderTests {
         }
     }
 
-    @Test("Dedup follows the hardware-specific Quickstart alias")
+    @Test("Dedup removes the fitting LFM starter and preserves the Qwen alternative")
     func dedupUsesRenderedHardwareStarter() {
-        let compact = QuickstartCoordinator.baselineChoice(
-            hardware: hardware(ramGB: 8)
-        ).alias
-        let standard = QuickstartCoordinator.baselineChoice(
-            hardware: hardware(ramGB: 16)
-        ).alias
-        let filtered = [
-            entry(compact, hfRepo: "mlx-community/LFM2.5-2.6B-MLX-4bit", cached: false),
-            entry(standard, hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit", cached: false),
-        ]
-
-        let compactAliases = Set(ModelPickerBar.dedupedAllEntries(
-            filtered: filtered,
-            quickstartAlias: compact
-        ).map(\.alias))
-        #expect(!compactAliases.contains(compact))
-        #expect(compactAliases.contains(standard))
-
-        let standardAliases = Set(ModelPickerBar.dedupedAllEntries(
-            filtered: filtered,
-            quickstartAlias: standard
-        ).map(\.alias))
-        #expect(!standardAliases.contains(standard))
-        #expect(standardAliases.contains(compact))
+        for ram in [4.0, 8, 16, 32, 64] {
+            let starter = QuickstartCoordinator.baselineChoice(hardware: hardware(ramGB: ram)).alias
+            let alternative = QuickstartCoordinator.visionChoice.alias
+            let filtered = [
+                entry(starter, hfRepo: "fixture/starter", cached: false),
+                entry(alternative, hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit", cached: false),
+            ]
+            let aliases = Set(ModelPickerBar.dedupedAllEntries(
+                filtered: filtered, quickstartAlias: starter
+            ).map(\.alias))
+            #expect(!aliases.contains(starter))
+            #expect(aliases.contains(alternative))
+        }
     }
 
     private func hardware(ramGB: Double) -> MacHardware {

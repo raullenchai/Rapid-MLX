@@ -183,6 +183,17 @@ struct PhotoCapabilityNotice: Equatable {
         let unavailableMessage: String?
     }
 
+    static let imageModelAlias = "qwen3.5-4b-4bit"
+    static let imageModelHint = String(localized: "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed).")
+
+    mutating func rejectImageInput(availability: Availability, alias: String) {
+        guard !availability.supportsImageInput else { return }
+        let hint = alias == Self.imageModelAlias
+            ? availability.unavailableMessage ?? Self.imageModelHint
+            : Self.imageModelHint
+        present(hint, availability: availability)
+    }
+
     private(set) var message: String?
     private var presentedAvailability: Availability?
 
@@ -847,7 +858,17 @@ struct ChatView: View {
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             } else if let message = photoCapabilityNotice.message {
-                InlineNotice(message: message, tone: .info)
+                InlineNotice(
+                    message: message, tone: .info,
+                    actionTitle: alias == PhotoCapabilityNotice.imageModelAlias
+                        ? nil : String(localized: "Switch to Qwen 3.5 4B"),
+                    actionIdentifier: "ChatView.Attachments.SwitchToVision",
+                    action: {
+                        photoCapabilityNotice.dismiss()
+                        alias = PhotoCapabilityNotice.imageModelAlias
+                        onUserModelSelection(PhotoCapabilityNotice.imageModelAlias)
+                    }
+                )
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             }
@@ -1710,14 +1731,14 @@ struct ChatView: View {
     }
 
     private func rejectImageInputForCurrentModel() {
-        let message = imageInputUnavailableMessage
-            ?? String(localized: "This model doesn't support photos. Choose a vision-capable model to add one.")
         // The newest attempt owns the single notice slot. Leaving an older
         // attachment error in place would make VoiceOver announce one fact
         // while sighted users keep seeing another.
         attachmentDraft.notice = nil
-        photoCapabilityNotice.present(message, availability: photoAvailability)
-        VoiceOverAnnouncer.announce(message)
+        photoCapabilityNotice.rejectImageInput(availability: photoAvailability, alias: alias)
+        if let message = photoCapabilityNotice.message {
+            VoiceOverAnnouncer.announce(message)
+        }
     }
 
     /// The shared lifecycle gate for every path that would start a turn:

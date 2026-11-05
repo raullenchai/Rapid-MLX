@@ -36,9 +36,9 @@ struct QuickstartViewTests {
 
     // MARK: - Pinned identifiers
 
-    @Test("The standard starter is the approved 16 GB choice")
-    func standardStarterIsFourB() {
-        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
+    @Test("The standard starter is LFM 2.6B")
+    func standardStarterIsLFM26B() {
+        #expect(QuickstartCoordinator.defaultChoice.alias == "lfm2.5-2.6b-4bit")
     }
 
     @Test("Persistent flag storage key is v1-versioned")
@@ -501,16 +501,16 @@ struct QuickstartViewTests {
 @Suite("Quickstart starter identity contracts")
 struct QuickstartViewSourceGrepTests {
 
-    @Test("Standard and compact starter aliases remain pinned")
+    @Test("Starter and vision alternative aliases remain pinned")
     func starterAliasesStayPinned() {
-        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
-        #expect(QuickstartCoordinator.compactDefaultChoice.alias == "lfm2.5-2.6b-4bit")
+        #expect(QuickstartCoordinator.defaultChoice.alias == "lfm2.5-2.6b-4bit")
+        #expect(QuickstartCoordinator.visionChoice.alias == "qwen3.5-4b-4bit")
     }
 
     @Test("Starter repositories match their catalog contracts")
     func starterRepositoriesStayPinned() {
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/Qwen3.5-4B-MLX-4bit")
-        #expect(QuickstartCoordinator.compactDefaultChoice.hfRepo == "LiquidAI/LFM2.5-2.6B-MLX")
+        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "LiquidAI/LFM2.5-2.6B-MLX")
+        #expect(QuickstartCoordinator.visionChoice.hfRepo == "mlx-community/Qwen3.5-4B-MLX-4bit")
     }
 
     @Test("Low-memory alternative keeps its curated repository size (#1550)")

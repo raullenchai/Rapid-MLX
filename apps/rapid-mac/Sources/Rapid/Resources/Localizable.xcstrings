@@ -24088,6 +24088,70 @@
           }
         }
       }
+    },
+    "Fast everyday chat and tools. Text only." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fast everyday chat and tools. Text only."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速处理日常聊天和工具任务。仅支持文本。"
+          }
+        }
+      }
+    },
+    "Smarter, and understands images. Twice the download." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smarter, and understands images. Twice the download."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更智能，也能理解图像。下载大小为两倍。"
+          }
+        }
+      }
+    },
+    "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型无法读取图像。切换到 Qwen 3.5 4B 以添加照片（如有需要，将下载模型）。"
+          }
+        }
+      }
+    },
+    "Switch to Qwen 3.5 4B" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch to Qwen 3.5 4B"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到 Qwen 3.5 4B"
+          }
+        }
+      }
     }
   }
 }
