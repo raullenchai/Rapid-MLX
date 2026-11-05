@@ -186,13 +186,36 @@ struct PhotoCapabilityNotice: Equatable {
     static let imageModelAlias = "qwen3.5-4b-4bit"
     static let imageModelHint = String(localized: "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed).")
 
-    mutating func rejectImageInput(availability: Availability, alias: String) {
+    /// Matches `vision_min_memory_gb` for this alias in the engine catalog;
+    /// below it the engine serves the model text-only.
+    static let imageModelMinimumRAMGB: Double = 32
+
+    static var imageModelFitsThisMac: Bool {
+        MacHardware.detect().physicalRAMGB >= imageModelMinimumRAMGB
+    }
+
+    /// Hints that only say "this model has no vision". Runtime-specific
+    /// remedies (speculative decoding, memory, runtime) are never replaced.
+    static let textOnlyModelHints: Set<String> = Set(
+        [ImageInputAvailability.PhotoHint.legacyModel, .textCheckpoint, .genericTextLane]
+            .map { $0.localized(in: .main) }
+    )
+
+    mutating func rejectImageInput(
+        availability: Availability,
+        alias: String,
+        imageModelFits: Bool = imageModelFitsThisMac
+    ) {
         guard !availability.supportsImageInput else { return }
-        let hint = alias == Self.imageModelAlias
-            ? availability.unavailableMessage ?? Self.imageModelHint
-            : Self.imageModelHint
+        let textOnlyModel = availability.unavailableMessage.map(Self.textOnlyModelHints.contains) ?? true
+        let hint = alias != Self.imageModelAlias && imageModelFits && textOnlyModel
+            ? Self.imageModelHint
+            : availability.unavailableMessage
+                ?? ImageInputAvailability.PhotoHint.legacyModel.localized(in: .main)
         present(hint, availability: availability)
     }
+
+    var offersImageModelSwitch: Bool { message == Self.imageModelHint }
 
     private(set) var message: String?
     private var presentedAvailability: Availability?
@@ -860,8 +883,8 @@ struct ChatView: View {
             } else if let message = photoCapabilityNotice.message {
                 InlineNotice(
                     message: message, tone: .info,
-                    actionTitle: alias == PhotoCapabilityNotice.imageModelAlias
-                        ? nil : String(localized: "Switch to Qwen 3.5 4B"),
+                    actionTitle: photoCapabilityNotice.offersImageModelSwitch
+                        ? String(localized: "Switch to Qwen 3.5 4B") : nil,
                     actionIdentifier: "ChatView.Attachments.SwitchToVision",
                     action: {
                         photoCapabilityNotice.dismiss()

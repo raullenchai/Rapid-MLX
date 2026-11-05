@@ -266,6 +266,17 @@ final class QuickstartCoordinator {
         tier: .tradeUp
     )
 
+    /// The same model on Macs below its vision memory floor, where the engine
+    /// serves it text-only; the copy must not promise image support.
+    nonisolated static let visionChoiceTextOnly = QuickstartModelChoice(
+        alias: visionChoice.alias,
+        displayName: visionChoice.displayName,
+        hfRepo: visionChoice.hfRepo,
+        downloadBytes: visionChoice.downloadBytes,
+        blurb: String(localized: "Smarter. Twice the download. Reads images on Macs with 32 GB or more."),
+        tier: .tradeUp
+    )
+
     /// Deliberately weaker than the starter. Onboarding surfaces this one explicitly as
     /// a memory-first fallback and names the trade-off instead of pretending
     /// it is an equivalent recommendation.
@@ -3360,7 +3371,9 @@ struct QuickstartView: View {
                 excludedAliases: excluded
             )
         }
-        let visionChoice = QuickstartCoordinator.visionChoice
+        let visionChoice = physicalRAMGB.map { $0 < PhotoCapabilityNotice.imageModelMinimumRAMGB } == true
+            ? QuickstartCoordinator.visionChoiceTextOnly
+            : QuickstartCoordinator.visionChoice
         recommended.removeAll { $0.alias == visionChoice.alias }
         if !existingAliases.contains(visionChoice.alias) {
             recommended.insert(visionChoice, at: 0)

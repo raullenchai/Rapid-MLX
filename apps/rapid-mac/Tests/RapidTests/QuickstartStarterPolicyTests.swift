@@ -171,6 +171,8 @@ struct QuickstartStarterPolicyTests {
             let list = QuickstartView.shortlist(catalog: catalog, selection: "lfm2.5-2.6b-4bit", physicalRAMGB: ram)
             #expect(list.starters.map(\.alias) == ["lfm2.5-2.6b-4bit"])
             #expect(list.recommended.first?.alias == "qwen3.5-4b-4bit")
+            // Below the 32 GB vision floor the copy must not promise images.
+            #expect(list.recommended.first?.blurb.contains("understands images") == (ram >= 32))
             #expect(!list.visibleAliases.contains("lfm2.5-1b-4bit"))
             #expect(list.lowMemory.isEmpty)
         }

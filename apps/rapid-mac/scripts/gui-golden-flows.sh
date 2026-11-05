@@ -4210,9 +4210,11 @@ flow_localized_photo_hint() {
     local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-28.png"
     "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
         > "$OUT/zh-photo-paste.json"
-    wait_tree_text "此模型无法读取图像。切换到 Qwen 3.5 4B 以添加照片（如有需要，将下载模型）。" \
-        "$OUT/zh-photo-notice.json" 40
-    wait_identifier ChatView.Attachments.SwitchToVision "$OUT/zh-photo-switch.json"
+    # A runtime-specific remedy (here: memory) is kept; no model switch is offered.
+    wait_tree_text "$expected" "$OUT/zh-photo-notice.json" 40
+    jq -e 'any(.data.ui_elements[]?; .identifier == "ChatView.Attachments.SwitchToVision") | not' \
+        "$OUT/zh-photo-notice.json" >/dev/null \
+        || die "a memory-specific photo remedy must not be replaced by a model switch"
     send_prompt "Text chat remains available" zh-text-after-photo
     wait_send_idle "$OUT/zh-text-after-photo-complete.json"
     assert_tree_text "$OUT/zh-text-after-photo-complete.json" "Text chat remains available"

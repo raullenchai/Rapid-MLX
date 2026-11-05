@@ -165,7 +165,8 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         XCTAssertTrue(starter.label.contains("Fast everyday chat and tools. Text only."))
         let vision = harness.element("Quickstart.Choice.qwen3.5-4b-4bit")
         XCTAssertTrue(vision.exists)
-        XCTAssertTrue(vision.label.contains("Smarter, and understands images. Twice the download."))
+        // 16 GB is below the image model's 32 GB vision floor.
+        XCTAssertTrue(vision.label.contains("Reads images on Macs with 32 GB or more."))
         XCTAssertFalse(harness.element("Quickstart.Choice.lfm2.5-1b-4bit").exists)
         harness.element("Quickstart.BrowseAll").click()
         XCTAssertTrue(harness.element("Quickstart.CatalogRow.lfm2.5-1b-4bit")
@@ -174,7 +175,12 @@ final class ChatAttachmentJourneyTests: XCTestCase {
 
     func testTextOnlyPhotoNoticeOffersVisionSwitch() throws {
         continueAfterFailure = false
-        let harness = try RapidUITestHarness(testName: name, fakeSettings: [:])
+        // The switch is offered only at or above the image model's 32 GB vision floor.
+        let harness = try RapidUITestHarness(testName: name, fakeSettings: [
+            "RAPID_GUI_HARDWARE_FIXTURE": "1",
+            "RAPID_HARDWARE_RAM_GB": "32",
+            "RAPID_HARDWARE_BRAND": "Apple M1",
+        ])
         defer { harness.shutDown() }
         harness.launch()
         harness.startModel()
