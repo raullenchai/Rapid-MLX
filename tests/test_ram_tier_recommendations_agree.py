@@ -98,13 +98,14 @@ def test_both_tables_parse():
 
 def test_fresh_installer_uses_quickstart_baseline_at_every_ram_size():
     """First chat optimizes time-to-value, not the browser's largest pick."""
-    # Desktop's sub-16 GB baseline is the safe 1.2B lowMemoryChoice (#2432);
-    # at 16 GB and up it is the standard 4B defaultChoice.
+    # The installer keeps its RAM split: the 1.2B lowMemoryChoice below 16 GB
+    # (#2432) and Qwen 3.5 4B from 16 GB. Desktop Quickstart now starts on
+    # LFM2.5 2.6B wherever ModelSizing says it fits, falling back to the same
+    # lowMemoryChoice; its 4B image-capable model is offered as visionChoice.
     sub16_alias, _ = _parse_quickstart_choice("lowMemoryChoice")
-    standard_alias, _ = _parse_quickstart_choice("defaultChoice")
-    assert (
-        "physicalRAMGB < 16 ? lowMemoryChoice : defaultChoice" in QUICKSTART.read_text()
-    )
+    standard_alias, _ = _parse_quickstart_choice("visionChoice")
+    source = QUICKSTART.read_text()
+    assert "== .tooBig\n            ? lowMemoryChoice : defaultChoice" in source
     for ram in (4, 8, 15):
         assert _select_installer_starter(ram) == sub16_alias
     for ram in (16, 18, 24, 32, 48, 64, 96, 256):
