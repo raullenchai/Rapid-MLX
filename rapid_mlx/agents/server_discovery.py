@@ -160,6 +160,7 @@ class Endpoint:
     follow: bool = False
     model: str | None = None
     skipped_auth: list[Server] = field(default_factory=list)
+    # Hint history only: a replacement server may reuse a rejected port.
     skipped_non_chat: dict[int, NonChatModelError] = field(default_factory=dict)
     agent: str = "codex"
     _last_scan: float = field(default=float("-inf"), repr=False, compare=False)
@@ -366,16 +367,17 @@ def resolve_endpoint(
         return rejected[port]
 
     non_chat = dict(skipped_non_chat or {})
-    checked = set(non_chat)
+    checked: dict[int, bool] = {}
 
     def incompatible(port: int) -> bool:
         if port not in checked:
-            checked.add(port)
             error = non_chat_server(port, model)
+            checked[port] = error is not None
             if error is not None:
+                if port not in non_chat:
+                    print(f"  {error.skip_hint}")
                 non_chat[port] = error
-                print(f"  {error.skip_hint}")
-        return port in non_chat
+        return checked[port]
 
     if healthy and not missing_key(8000) and not incompatible(8000):
         return Endpoint(

@@ -1269,6 +1269,72 @@ def fake_model_server(monkeypatch, listings):
     monkeypatch.setattr(discovery.urllib.request, "urlopen", response)
 
 
+@pytest.mark.parametrize("port", [8000, 18403])
+def test_refresh_selects_chat_replacing_non_chat_on_same_port(
+    clock, monkeypatch, capsys, port
+):
+    monkeypatch.setattr(
+        discovery, "_default_endpoint_ready", lambda: (port == 8000, port == 8000)
+    )
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, port, "model", listening=True)],
+    )
+    monkeypatch.setattr(discovery, "pid_alive", lambda _pid: True)
+    listings = {port: [NON_CHAT_MODELS[0]]}
+    fake_model_server(monkeypatch, listings)
+    endpoint = discovery.Endpoint("http://localhost:8000/v1", follow=True)
+
+    endpoint.refresh()
+    assert endpoint.server is None
+    assert port in endpoint.skipped_non_chat
+    assert capsys.readouterr().out.count("Skipping") == 1
+
+    # Keep the pid and argv unchanged: only fresh metadata proves compatibility.
+    listings[port] = [{"id": "chat", "modality": "text"}]
+    endpoint.refresh()
+    assert endpoint.base_url == f"http://localhost:{port}/v1"
+    if port != 8000:
+        assert endpoint.server is not None and endpoint.server.port == port
+    assert (
+        setup.wait_for_server(
+            endpoint.base_url, "default", agent="codex", endpoint=endpoint
+        )
+        == "chat"
+    )
+    assert "Skipping" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("port", [8000, 18403])
+def test_refresh_reprobes_non_chat_without_repeating_hint(monkeypatch, capsys, port):
+    monkeypatch.setattr(
+        discovery, "_default_endpoint_ready", lambda: (port == 8000, port == 8000)
+    )
+    monkeypatch.setattr(
+        discovery,
+        "scan_servers",
+        lambda: [discovery.Server(123, port, "video", listening=True)],
+    )
+    fake_model_server(monkeypatch, {port: [NON_CHAT_MODELS[0]]})
+    probes = []
+    original_probe = discovery.non_chat_server
+
+    def probe(port, model):
+        probes.append(port)
+        return original_probe(port, model)
+
+    monkeypatch.setattr(discovery, "non_chat_server", probe)
+    endpoint = discovery.Endpoint("http://localhost:8000/v1", follow=True)
+    for _ in range(3):
+        endpoint.refresh()
+        assert endpoint.server is None
+        assert port in endpoint.skipped_non_chat
+    # Default readiness and process discovery share one probe per refresh.
+    assert probes == [port] * 3
+    assert capsys.readouterr().out.count("Skipping") == 1
+
+
 @pytest.mark.parametrize("model", NON_CHAT_MODELS)
 @pytest.mark.parametrize("port", [8000, 18403])
 def test_auto_setup_skips_non_chat_server(
