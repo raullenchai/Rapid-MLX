@@ -146,6 +146,57 @@ final class ChatAttachmentJourneyTests: XCTestCase {
         }
     }
 
+    func testFirstRunShortlistUsesLFMStarterAndKeepsLowMemoryInBrowse() throws {
+        continueAfterFailure = false
+        let harness = try RapidUITestHarness(testName: name, fakeSettings: [
+            "FAKE_INCLUDE_STARTER": "1",
+            "RAPID_GUI_HARDWARE_FIXTURE": "1",
+            "RAPID_HARDWARE_RAM_GB": "16",
+            "RAPID_HARDWARE_BRAND": "Apple M1",
+        ])
+        defer { harness.shutDown() }
+        harness.app.launch()
+        let getStarted = harness.element("Quickstart.GetStarted")
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 20))
+        getStarted.click()
+        let starter = harness.element("Quickstart.Choice.lfm2.5-2.6b-4bit")
+        XCTAssertTrue(starter.waitForExistence(timeout: 10))
+        XCTAssertTrue(harness.waitUntil(timeout: 10) { starter.isSelected })
+        XCTAssertTrue(starter.label.contains("Fast everyday chat and tools. Text only."))
+        let vision = harness.element("Quickstart.Choice.qwen3.5-4b-4bit")
+        XCTAssertTrue(vision.exists)
+        XCTAssertTrue(vision.label.contains("Smarter, and understands images. Twice the download."))
+        XCTAssertFalse(harness.element("Quickstart.Choice.lfm2.5-1b-4bit").exists)
+        harness.element("Quickstart.BrowseAll").click()
+        XCTAssertTrue(harness.element("Quickstart.CatalogRow.lfm2.5-1b-4bit")
+            .waitForExistence(timeout: 10))
+    }
+
+    func testTextOnlyPhotoNoticeOffersVisionSwitch() throws {
+        continueAfterFailure = false
+        let harness = try RapidUITestHarness(testName: name, fakeSettings: [:])
+        defer { harness.shutDown() }
+        harness.launch()
+        harness.startModel()
+
+        let image = harness.rapidMacRoot
+            .appendingPathComponent("Tests/RapidTests/__Snapshots__/cheetah-logo-96.png")
+        try harness.pasteImage(image)
+        let action = harness.element("ChatView.Attachments.SwitchToVision")
+        XCTAssertTrue(action.waitForExistence(timeout: 10))
+        XCTAssertEqual(action.label, "Switch to Qwen 3.5 4B")
+        XCTAssertTrue(harness.staticText(valuePrefix: "This model cannot read images.")
+            .waitForExistence(timeout: 10))
+        action.click()
+        let picker = harness.element("ModelPickerBar.ModelMenu")
+        XCTAssertTrue(harness.waitUntil(timeout: 10) {
+            (picker.value as? String ?? "").contains("qwen3.5-4b-4bit")
+                || picker.label.contains("qwen3.5-4b-4bit")
+        })
+        XCTAssertFalse(action.exists)
+        XCTAssertFalse(harness.element("ChatView.Attachment.Remove.Pasted image.png").exists)
+    }
+
     func testPickerAttachmentsStayWithTheirConversationAndWirePayload() throws {
         continueAfterFailure = false
         let harness = try RapidUITestHarness(
