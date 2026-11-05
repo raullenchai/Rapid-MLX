@@ -68,7 +68,7 @@ def test_banner_color_applies_ansi_and_cleans_up():
     opens = [m for m in _esc.finditer(out) if m.group(1) not in ("", "0")]
     resets = out.count("\x1b[0m")
     assert resets == len(opens)
-    for row, code in zip(out.splitlines()[:6], (215, 215, 215, 214, 172, 172)):
+    for row, code in zip(out.splitlines()[:6], (214, 214, 214, 172, 172, 172)):
         # The last row consists entirely of shadow characters.
         for ch in "█╗╔╝╚═║":
             if ch in row:
