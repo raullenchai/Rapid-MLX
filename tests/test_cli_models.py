@@ -16,6 +16,7 @@ import pytest
 from rapid_mlx import cli, connect
 from rapid_mlx.model_aliases import (
     RetiredModelAliasError,
+    draft_only_conflict,
     list_profiles,
     resolve_model,
 )
@@ -35,7 +36,11 @@ def _capture_models_output() -> str:
 
 def _split_by_modality() -> tuple[dict, dict]:
     """``(text, video, image)`` profiles — the split the listing renders."""
-    profiles = list_profiles()
+    profiles = {
+        a: p
+        for a, p in list_profiles().items()
+        if draft_only_conflict(p.hf_path) is None
+    }
     video = {
         a: p
         for a, p in profiles.items()
@@ -113,26 +118,17 @@ def test_gemma4_load_fallback_prints_validated_runtime(monkeypatch, capsys):
     assert connect.package_install_command("mlx-vlm==0.7.2", no_deps=True) in out
 
 
-def test_models_command_lists_all_aliases():
-    """Every alias in aliases.json must appear somewhere in the output.
-
-    The listing is split by modality: chat-capable aliases in the main
-    table, video-generation aliases in their own tagged section (#1603).
-    Every alias is still listed — the split is about telling a GUI
-    catalog consumer which ones can answer a chat request, not about
-    hiding them from the CLI.
-    """
+def test_models_command_lists_standalone_aliases():
+    """Only checkpoints usable as a primary appear in the human catalog."""
     out = _capture_models_output()
     profiles = list_profiles()
-    assert len(profiles) >= 20, "expected 20+ aliases (per project goal)"
-    for alias in profiles:
-        assert alias in out, f"alias {alias!r} missing from `rapid-mlx models` output"
-
-    text_profiles, video_profiles, image_profiles = _split_by_modality()
-    assert f"({len(text_profiles)} aliases)" in out
-    assert len(text_profiles) + len(video_profiles) + len(image_profiles) == len(
-        profiles
-    )
+    for alias, profile in profiles.items():
+        if draft_only_conflict(profile.hf_path):
+            assert alias not in out
+        else:
+            assert alias in out
+    text, _, _ = _split_by_modality()
+    assert f"({len(text)} aliases)" in out
 
 
 def test_models_command_sections_video_aliases_out_of_the_text_table():
@@ -1794,3 +1790,34 @@ def test_runtime_asset_unreadable_cache_counts_as_interrupted(monkeypatch):
 
     monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: _Unreadable())
     assert cli._runtime_asset_is_interrupted("org/a") is True
+
+
+@pytest.mark.parametrize("flags", [{}, {"search": "mtp"}, {"modality": "text"}])
+def test_draft_aliases_hidden_with_listing_filters(flags, capsys):
+    with patch("rapid_mlx._version_check.print_staleness_warning_if_any"):
+        cli.models_command(SimpleNamespace(**flags))
+    out = capsys.readouterr().out
+    for alias, profile in list_profiles().items():
+        if draft_only_conflict(profile.hf_path):
+            assert alias not in out
+
+
+def test_cached_draft_is_labelled_with_base_serve_guidance(monkeypatch, capsys):
+    from rapid_mlx.model_aliases import resolve_hub_model
+
+    repo = resolve_hub_model("qwen3.5-4b-mtp-4bit")
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [(repo, 100, 1)])
+    monkeypatch.setattr(cli, "_scan_external_model_dirs", lambda: [])
+    monkeypatch.setattr(cli, "_cached_repository_is_runnable", lambda repo: True)
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    assert "(draft sidecar)" in out
+    assert "Serve 'qwen3.5-4b-4bit' instead" in out
+
+
+def test_hub_not_found_suggestions_exclude_draft_repositories(monkeypatch):
+    import rapid_mlx.model_aliases as aliases
+
+    monkeypatch.setattr(aliases, "suggest_similar", lambda model: [])
+    hint = cli._hub_not_found_hint("mlx-community/Qwen3.5-4B-MTP-4bit-typo")
+    assert "qwen3.5-4b-mtp-4bit" not in hint

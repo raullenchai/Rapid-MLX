@@ -949,7 +949,7 @@ enum ModelCatalog {
         var entries: [(String, String?)] = []
         var profiles: [String: CatalogProfileCapability] = [:]
         var speculative: [String: SpeculativeDecodingPreset] = [:]
-        for row in textRows {
+        for row in textRows where row["standalone"] as? Bool != false {
             guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
             entries.append((alias, sanitizedHuggingFaceRepo(row["hf_path"] as? String)))
             if let isBuiltin = row["is_builtin"] as? Bool,
@@ -1000,7 +1000,7 @@ enum ModelCatalog {
                 )
             }
         }
-        var excluded: Set<String> = []
+        var excluded = nonStandaloneAliases(root)
         for key in ["audio", "video", "image"] {
             for row in root[key] as? [[String: Any]] ?? [] {
                 if let alias = row["alias"] as? String, isSafeAlias(alias) {
@@ -1009,6 +1009,16 @@ enum ModelCatalog {
             }
         }
         return (entries, excluded, speculative, profiles)
+    }
+
+    /// The engine owns draft detection; preserve rows in JSON for inventory consumers.
+    private static func nonStandaloneAliases(_ root: [String: Any]) -> Set<String> {
+        Set(["text", "audio", "video", "image"].flatMap { key in
+            (root[key] as? [[String: Any]] ?? []).compactMap { row -> String? in
+                guard row["standalone"] as? Bool == false else { return nil }
+                return row["alias"] as? String
+            }
+        })
     }
 
     /// Prefer the atomic alias + registry-model graph when a new sidecar
@@ -1337,7 +1347,8 @@ enum ModelCatalog {
                 isTextOnly: isTextOnly
             ))
         }
-        return entries
+        let hidden = nonStandaloneAliases(root)
+        return entries.filter { !hidden.contains($0.alias) }
     }
 
     private static func isSHA256Address(_ value: String) -> Bool {
@@ -2289,6 +2300,7 @@ enum ModelCatalog {
                 invalidRows += 1
                 continue
             }
+            if row["standalone"] as? Bool == false { continue rowLoop }
             guard let state = row["state"] as? String,
                   let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
                   let bytes = row["size_bytes"] as? NSNumber,

@@ -83,11 +83,12 @@ def cached_known_aliases(
         # Lazy import: cli.py imports this module, so importing it back at
         # module-load time would cycle. By call time cli is fully loaded.
         from rapid_mlx.cli import _cache_entry_is_runnable, _scan_hf_cache_models
-        from rapid_mlx.model_aliases import list_profiles
+        from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
 
         hf_to_alias: dict[str, str] = {}
         for alias, profile in list_profiles().items():
-            hf_to_alias.setdefault(profile.hf_path, alias)
+            if draft_only_conflict(profile.hf_path) is None:
+                hf_to_alias.setdefault(profile.hf_path, alias)
 
         rows: list[tuple[str, float]] = []
         if cache_rows is None:

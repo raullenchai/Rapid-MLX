@@ -4,6 +4,25 @@ import Testing
 
 @Suite("Atomic product model catalog")
 struct AtomicModelCatalogTests {
+    @Test func draftRowsAreExcludedFromAtomicAndLegacyCatalogs() throws {
+        let draftPayload = Self.mutated { root in
+            root["text"] = [["alias": "chat", "standalone": false]]
+        }
+        let entries = try #require(ModelCatalog.parseAtomicModelEntriesJSON(draftPayload))
+        #expect(!entries.contains { $0.alias == "chat" })
+        let catalog = try #require(ModelCatalog.parseAvailableJSON(draftPayload))
+        #expect(catalog.excluded.contains("chat"))
+        let legacy = try #require(ModelCatalog.parseAvailableJSON(
+            #"{"text":[{"alias":"draft","standalone":false},{"alias":"base"}]}"#
+        ))
+        #expect(legacy.entries.map(\.0) == ["base"])
+        #expect(legacy.excluded.contains("draft"))
+        let cached = try #require(ModelCatalog.parseCachedJSON(
+            #"{"cached":[{"alias":"draft","repo":"org/draft","state":"ok","size_bytes":100,"external":false,"standalone":false}]}"#
+        ))
+        #expect(cached.isEmpty)
+    }
+
     private static let unsignedPayload = #"""
     {
       "text": [{"alias":"chat","supports_spec_decode":true}],
