@@ -83,6 +83,11 @@ def _capture_accepted_events(
 
 @pytest.fixture(autouse=True)
 def isolated_model_events(monkeypatch, tmp_path):
+    # The BYOM funnel context is process-global: an earlier pull/serve test in
+    # the same worker can leave ref_form/preflight attached to a model alias.
+    from rapid_mlx.telemetry import byom_funnel
+
+    byom_funnel._clear()
     for name in (state.ENV_VAR, state.DO_NOT_TRACK_ENV, *state.CI_ENV_VARS):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
