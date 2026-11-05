@@ -13,11 +13,13 @@ all contributions: a worthwhile change, a focused diff, and evidence it works.
 2. Check existing open PRs and issues before starting; avoid duplicate work.
 3. Start a task branch from `main`, preferably in your own worktree. Keep one
    task per PR and preserve any existing local changes.
-4. State the problem, scope, non-goals, acceptance criteria, and verification
-   plan before implementing. Discuss architectural or compatibility changes
-   with maintainers before expanding the task.
+4. Before editing any non-test code, write down a short plan: problem, scope
+   (files you expect to touch), non-goals, acceptance criteria, and the tests
+   you will run. If you are working with a human, show it to them first. If
+   the plan grows past the stated scope, or touches public APIs, defaults, or
+   architecture, stop and ask a maintainer in the issue instead of expanding it.
 5. Reproduce bugs first; implement the smallest coherent fix, verify it, and
-   open a PR against `main` using the repository template.
+   open a PR against `main` using the PR body skeleton at the end of this file.
 
 ## Repository map
 
@@ -51,13 +53,12 @@ contributor setup (`pyproject.toml` requires Python 3.12+). Desktop builds need
 a recent Swift toolchain and macOS 14+. Some no-MLX tests run on other hosts;
 that does not validate Metal inference.
 
-From the repository root, with `uv` installed as described in
-[Development Setup](CONTRIBUTING.md#development-setup):
+From the repository root, with `uv` on your `PATH`:
 
 ```bash
-~/.local/bin/uv venv --python 3.12 .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-~/.local/bin/uv pip install --python .venv/bin/python -e ".[test]" ruff
+uv pip install --python .venv/bin/python -e ".[test]" ruff
 ```
 
 Optional server smoke (downloads weights if unavailable; allow enough RAM/disk):
@@ -141,7 +142,7 @@ value over speculative cleanup. Useful recurring contributions include:
   and [model selection guidance](docs/development/contributing.md#choosing-a-model-for-a-test).
   For a SuffixDecoding tier, follow
   [eligibility qualification](docs/suffix_decoding_eligibility.md) and run
-  `python3.12 scripts/bench_suffix_decoding_integrated.py --model <id>`.
+  `python3 scripts/bench_suffix_decoding_integrated.py --model <id>`.
   Record the measured tier/speedup and evidence; do not invent capability or
   performance metadata, change defaults without evidence, or bump versions.
 - **Tool-call/reasoning parsers.** Start in `rapid_mlx/tool_parsers/` and
@@ -173,17 +174,19 @@ value over speculative cleanup. Useful recurring contributions include:
 - Search existing code and dependencies before inventing a mechanism. Reuse
   established patterns and inspect analogous implementations for edge cases.
 - For engine/server work, inspect both vLLM and SGLang first; then MLX-LM,
-  MLX-VLM, oMLX, and other MLX-native implementations for platform constraints.
+  MLX-VLM, and other MLX-native implementations for platform constraints.
   Document concrete reasons when an established approach cannot fit.
   Respect licenses, provenance, and required notices when adapting code.
-- Keep public descriptions about Rapid-MLX's requirement, behavior, evidence,
-  and user impact; leave competitive comparisons and inspiration trails out
-  of PRs. Preserve legally required attribution and dependency disclosures.
 - Keep one task per branch/PR. Add regression tests that prove the failure and
   important boundaries. For server changes, consider stream/non-stream parity,
   cancellation, truncation, cleanup, and compatibility across affected routes.
-- For import-time patches, test installation through the real production
-  import path in a subprocess; see CONTRIBUTING.md's install-time patch section.
+- For import-time (monkey)patches: install from a module on the real
+  `rapid-mlx serve` load path, and add a test that runs a subprocess which
+  imports that production module first, then asserts the patch's
+  `is_installed` state and its marker on the patched upstream object. Copy
+  `test_install_fires_on_real_serve_import_path` in
+  `tests/test_qwen3_5_norm_shift.py`. Importing the patch directly inside the
+  pytest worker can install it as a side effect and hide broken wiring.
 - Review against the stated PR intention and exact diff. Resolve or explicitly
   disposition findings before requesting another round. File unrelated work
   separately; agree on material scope changes with maintainers.
@@ -215,12 +218,38 @@ value over speculative cleanup. Useful recurring contributions include:
 
 ## Before opening or updating a PR
 
-- Fill [the PR template](.github/PULL_REQUEST_TEMPLATE.md): Why, Scope,
-  Non-goals, Acceptance, Verification, and Behaviour delta. Describe before →
-  after when changing defaults or policies; follow the template's instructions
-  when Behaviour delta is inapplicable.
-- Include the AI assistance disclosure: which files AI touched, what it did,
-  and how you verified its output. Prompt transcripts are not required.
+- Do not name other projects as the inspiration or source of a change in
+  commit messages, code comments, or PR titles/bodies. Describe Rapid-MLX's
+  requirement, behavior, evidence, and user impact instead. The only
+  exception is attribution that a license requires for adapted code; keep
+  those notices and dependency disclosures intact.
+- Use this PR body skeleton (it mirrors
+  [the PR template](.github/PULL_REQUEST_TEMPLATE.md)). Why, Non-goals, and AI
+  assistance disclosure are required; reviews wait until they are filled.
+
+  ```markdown
+  ## Why
+  Fixes #<issue> — <the user-visible problem or concrete maintenance value>.
+
+  ## Scope
+  <what changes: behavior, files, surfaces>
+
+  ## Non-goals
+  <what this PR deliberately does not do; "none" is fine for tiny changes>
+
+  ## Acceptance
+  <observable outcomes a reviewer can check>
+
+  ## Verification
+  - `<command>` → <result>
+  - Skipped: <check> (<reason, e.g. no Apple Silicon>)
+
+  ## Behaviour delta
+  <before → after for a changed default or policy; delete this section otherwise>
+
+  ## AI assistance disclosure
+  <which files AI touched, what it did, how you verified it; no transcripts>
+  ```
 - Paste commands and concise verification output/scorecards; identify failures,
   skipped checks, and environment limits instead of claiming unrun checks.
 - Review the final diff for regressions, secrets, generated churn, and unrelated
