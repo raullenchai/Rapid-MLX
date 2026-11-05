@@ -115,7 +115,7 @@ def test_bench_command_prefetches_via_mirror_before_hf_load(monkeypatch) -> None
 
     order: list[str] = []
 
-    def _fake_prefetch(name: str) -> None:
+    def _fake_prefetch(name: str, *, auto_mtp=True) -> None:
         order.append(f"prefetch:{name}")
 
     def _fake_load(name: str):
@@ -171,7 +171,7 @@ def test_bench_command_proceeds_when_mirror_prefetch_is_silent_noop(
 
     load_called: list[str] = []
 
-    def _silent_prefetch(name: str) -> None:
+    def _silent_prefetch(name: str, *, auto_mtp=True) -> None:
         # Simulates the real helper's happy path (cached repo / warm
         # mirror / silent mirror miss). Return None, no raise.
         return None
@@ -227,7 +227,9 @@ def test_bench_command_loads_weights_on_mlx_step_worker(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda name, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(
         "rapid_mlx.pflash.resolve_pflash_mode_default",
         lambda args, *, model_name, is_multimodal=False, **_kw: "off",
@@ -260,7 +262,9 @@ def test_bench_success_emits_model_served(monkeypatch) -> None:
     model = object()
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda _name, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(
         "rapid_mlx.pflash.resolve_pflash_mode_default",
         lambda args, *, model_name, is_multimodal=False, **_kw: "off",
@@ -340,7 +344,9 @@ def _capture_bench_lane_signals(monkeypatch, cli):
     monkeypatch.setattr("rapid_mlx.pflash.validate_model_support", _capture_validate)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda name, *, auto_mtp=True: None
+    )
 
     def _fake_load(name: str):
         # Stop before the (heavy) real engine boot; bench's own except
@@ -452,7 +458,7 @@ def test_run_submit_flow_prefetches_via_mirror_before_hf_load(
 
     order: list[str] = []
 
-    def _fake_prefetch(name: str) -> None:
+    def _fake_prefetch(name: str, *, auto_mtp=True) -> None:
         order.append(f"prefetch:{name}")
 
     def _fake_load(name: str):
@@ -541,7 +547,9 @@ def test_submit_retries_architecture_rejection_with_serving_runtime(
         alias="future-text-4bit",
         hf_path="vendor/Future-Text-4bit",
     )
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda _name, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: False)
     _patch_mlx_lm_load(
         monkeypatch,
@@ -592,7 +600,9 @@ def _install_successful_serving_submit_stubs(monkeypatch, cli):
         alias="glm5.3-flash-4bit",
         hf_path="vendor/GLM-5.3-Flash-4bit",
     )
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda _name, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: True)
     monkeypatch.setattr(
         "rapid_mlx.community_bench.workspace.benchmark_runtime_readiness",
@@ -725,7 +735,9 @@ def test_submit_native_loader_os_error_reaps_executor(monkeypatch) -> None:
         alias="qwen3.5-9b-4bit",
         hf_path="vendor/qwen",
     )
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_ensure_model_downloaded", lambda _name, *, auto_mtp=True: None
+    )
     monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: False)
     _patch_mlx_lm_load(
         monkeypatch,
@@ -746,7 +758,7 @@ def test_run_submit_flow_proceeds_when_mirror_prefetch_is_silent_noop(
 
     load_called: list[str] = []
 
-    def _silent_prefetch(name: str) -> None:
+    def _silent_prefetch(name: str, *, auto_mtp=True) -> None:
         return None
 
     def _fake_load(name: str):

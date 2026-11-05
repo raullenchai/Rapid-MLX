@@ -1,4 +1,4 @@
-"""Automatic MTP must stay local; explicit requests may provision a sidecar."""
+"""Automatic MTP resolves locally and defers optional sidecars to provisioning."""
 
 import json
 from dataclasses import replace
@@ -87,6 +87,11 @@ def test_missing_sidecar_starts_plain_decode_without_fetch(
     assert args.spec_decode == "none"
     assert args._speculative_config is None
     assert args.mtp_sidecar is None
+    assert args._auto_mtp_deferred is True
+    assert capsys.readouterr().err == ""
+    args = _args(ALIAS)
+    args._auto_mtp_retry = True
+    cli._normalize_speculative_config_or_exit(args)
     guidance = capsys.readouterr().err
     assert f"rapid-mlx pull {ALIAS}" not in guidance
     assert f"rapid-mlx pull {profile.mtp_draft_model}" in guidance

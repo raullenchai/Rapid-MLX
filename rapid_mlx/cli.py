@@ -2950,6 +2950,17 @@ def _fail_hub_resolution(exc: BaseException, model_id: str, rendered: str) -> No
 
 
 def _ensure_model_downloaded(
+    model_name: str, *, force_disk_check: bool = False, auto_mtp: bool = True
+) -> None:
+    """Provision the target and its eligible optional catalog MTP dependency."""
+    from types import SimpleNamespace
+
+    _ensure_target_model_downloaded(model_name, force_disk_check=force_disk_check)
+    if auto_mtp:
+        _provision_automatic_mtp_sidecar(SimpleNamespace(model=model_name))
+
+
+def _ensure_target_model_downloaded(
     model_name: str, *, force_disk_check: bool = False
 ) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
@@ -3766,6 +3777,144 @@ def _restore_speculative_changes(args, before, after):
                 delattr(args, key)
 
 
+def _automatic_mtp_prefetch_options(args):
+    """Preserve explicit decoding choices on foreground sibling prefetches."""
+    return (
+        {"auto_mtp": False}
+        if (
+            getattr(args, "no_spec_decode", False)
+            or getattr(args, "speculative_config", None) is not None
+            or getattr(args, "mllm", False)
+        )
+        else {}
+    )
+
+
+def _automatic_mtp_sidecar_plan(args, *, allow_deferred: bool = False):
+    """Resolve an optional external dependency through the serving eligibility checks."""
+    from .model_aliases import (
+        resolve_profile,
+        resolve_revision,
+        subfolder_allow_patterns,
+    )
+
+    if (
+        os.path.exists(args.model)
+        or getattr(args, "speculative_config", None) is not None
+        or not _automatic_continuous_mtp_requested(args)
+    ):
+        return None
+    sidecar, _ = _alias_mtp_declaration(_mtp_catalog_identity(args))
+    if not sidecar:
+        return None
+    eligible, deferred, _ = _automatic_mtp_target_eligibility(args)
+    if not eligible and not (allow_deferred and deferred):
+        return None
+    profile = resolve_profile(_mtp_catalog_identity(args))
+    if profile is None or sidecar == profile.hf_path:
+        return None
+    # An explicit file plan counts missing head bytes even in config-only caches.
+    return (
+        sidecar,
+        resolve_revision(sidecar),
+        subfolder_allow_patterns(sidecar) or ["*"],
+    )
+
+
+def _automatic_mtp_missing_message(sidecar):
+    print(
+        f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
+        f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
+        file=sys.stderr,
+    )
+
+
+def _provision_automatic_mtp_sidecar(
+    args, *, explicit_pull: bool = False, report_missing: bool = True
+):
+    """Best-effort dependency pull; target provisioning must remain usable."""
+    import copy
+
+    from . import model_downloads
+
+    try:
+        plan = _automatic_mtp_sidecar_plan(args)
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Automatic MTP planning failed", exc_info=True
+        )
+        return
+    if plan is None:
+        return
+    sidecar, revision, patterns = plan
+    if _cached_mtp_sidecar(sidecar) is not None:
+        return
+    try:
+        if not _offline_hub_mode_active() and (
+            explicit_pull or not model_downloads.disabled()
+        ):
+            dependency_args = copy.copy(args)
+            dependency_args.model = sidecar
+            dependency_args._original_alias = sidecar
+            dependency_args.bits = None
+            dependency_args.format = None
+            dependency_args._emit_pull_lifecycle_event = False
+            print(f"\n  Automatic MTP runtime assets: {sidecar}", flush=True)
+            _pull_repository(
+                dependency_args,
+                revision_override=revision,
+                allow_patterns_override=patterns,
+            )
+    except (Exception, SystemExit):
+        logging.getLogger(__name__).debug(
+            "Automatic MTP sidecar fetch failed", exc_info=True
+        )
+    if report_missing and _cached_mtp_sidecar(sidecar) is None:
+        _automatic_mtp_missing_message(sidecar)
+
+
+def _automatic_continuous_mtp_requested(args) -> bool:
+    """The catalog-owned continuous-MTP default, shared with provisioning."""
+    return (
+        not getattr(args, "no_spec_decode", False)
+        and not getattr(args, "mllm", False)
+        and _alias_continuous_mtp_tier(_mtp_catalog_identity(args)) == "verified"
+        and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
+    )
+
+
+def _automatic_mtp_target_eligibility(args):
+    """Return (eligible, defer_until_provisioned, skip_reason) for auto MTP."""
+    from .model_aliases import resolve_profile
+    from .spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from .spec_decode.mtp.detect import _detect_mtp_eligibility_verbose
+
+    deferred = False
+    reason = None
+    hf_cfg, _ = _gather_kv_cache_dtype_inputs(args.model)
+    if detect_mtp_eligibility(hf_cfg, has_external_sidecar=True) is MTPEligibility.NONE:
+        if hf_cfg is None:
+            profile = resolve_profile(_mtp_catalog_identity(args))
+            pin = (
+                profile.revision
+                or getattr(profile, "tensorfold_target_revision", None)
+                or getattr(profile, "dflash_target_revision", None)
+            )
+            _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
+            reason = reason or "cached target config could not be read"
+            if not getattr(
+                args, "_auto_mtp_retry", False
+            ) and _cached_hf_config_is_absent(profile.hf_path, reason):
+                deferred = True
+                reason = None
+        else:
+            reason = _detect_mtp_eligibility_verbose(
+                hf_cfg, has_external_sidecar=True
+            ).reason
+        return False, deferred, reason
+    return True, False, None
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -4086,49 +4235,18 @@ def _normalize_speculative_config_or_exit(args):
         ):
             raw_config = '{"method":"mtp","backend":"native"}'
             args.speculative_config = raw_config
-        elif (
-            not getattr(args, "no_spec_decode", False)
-            and not getattr(args, "mllm", False)
-            and _alias_continuous_mtp_tier(_mtp_catalog_identity(args)) == "verified"
-            and _alias_mtp_default_enabled(_mtp_catalog_identity(args))
-        ):
+        elif _automatic_continuous_mtp_requested(args):
             # Exact artifacts that passed the mixed-workload qualification
             # select their declared MTP preset by default, unless the catalog
             # ships them default-off (#3115: qwen3.5-4b-4bit measured -25%..-37%
             # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
             # the single source of truth, and --no-spec-decode stays the
             # explicit user escape hatch on every surface.
-            from .model_aliases import resolve_profile
-            from .spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
-            from .spec_decode.mtp.detect import _detect_mtp_eligibility_verbose
 
-            # The catalog qualifies a preset, but the local target config is
-            # authoritative for this particular checkpoint. A missing config
-            # must also fail closed: explicit MTP requests still reach the
-            # serve-time validator and retain its error.
-            hf_cfg, _ = _gather_kv_cache_dtype_inputs(args.model)
-            if (
-                detect_mtp_eligibility(hf_cfg, has_external_sidecar=True)
-                is MTPEligibility.NONE
-            ):
-                if hf_cfg is None:
-                    profile = resolve_profile(_mtp_catalog_identity(args))
-                    pin = (
-                        profile.revision
-                        or getattr(profile, "tensorfold_target_revision", None)
-                        or getattr(profile, "dflash_target_revision", None)
-                    )
-                    _, reason = _resolve_cached_hf_config(profile.hf_path, pin)
-                    reason = reason or "cached target config could not be read"
-                    if not getattr(
-                        args, "_auto_mtp_retry", False
-                    ) and _cached_hf_config_is_absent(profile.hf_path, reason):
-                        args._auto_mtp_deferred = True
-                        reason = None
-                else:
-                    reason = _detect_mtp_eligibility_verbose(
-                        hf_cfg, has_external_sidecar=True
-                    ).reason
+            eligible, deferred, reason = _automatic_mtp_target_eligibility(args)
+            if not eligible:
+                if deferred:
+                    args._auto_mtp_deferred = True
                 if reason is not None:
                     print(
                         f"Automatic MTP skipped: {reason}; using plain decode.",
@@ -4155,19 +4273,15 @@ def _normalize_speculative_config_or_exit(args):
                         file=sys.stderr,
                     )
                 elif sidecar and cached_sidecar is None:
-                    profile = resolve_profile(_mtp_catalog_identity(args))
-                    if (
-                        not getattr(args, "_auto_mtp_retry", False)
-                        and sidecar == profile.hf_path
+                    if not os.path.exists(args.model) and not getattr(
+                        args, "_auto_mtp_retry", False
                     ):
-                        # Retry after provisioning, including a missing same-repo head.
+                        # Retry after provisioning either an external sidecar or a same-repo head.
                         args._auto_mtp_deferred = True
                     else:
-                        print(
-                            f"Automatic MTP skipped: the MTP sidecar {sidecar} is not downloaded; "
-                            f"run `rapid-mlx pull {sidecar}` and restart to enable it. Using plain decode.",
-                            file=sys.stderr,
-                        )
+                        # Local folders bypass automatic provisioning, so
+                        # report the missing dependency on the first pass.
+                        _automatic_mtp_missing_message(sidecar)
                 else:
                     raw_config = json.dumps({"method": "mtp", "model": cached_sidecar})
                     args.speculative_config = raw_config
@@ -7690,12 +7804,13 @@ def serve_command(args):
         pass
     elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
-            _ensure_model_downloaded(args.model, force_disk_check=True)
+            _ensure_model_downloaded(args.model, force_disk_check=True, auto_mtp=False)
         else:
-            # Keep the historical one-argument call on the default path; a
-            # number of embedders/tests replace this hook with a one-argument
-            # prefetch function.
-            _ensure_model_downloaded(args.model)
+            # Serve provisions optional assets below with its actual decoding
+            # options, rather than the shared helper's catalog defaults.
+            _ensure_model_downloaded(args.model, auto_mtp=False)
+
+    _provision_automatic_mtp_sidecar(args, report_missing=False)
 
     if getattr(args, "_auto_mtp_deferred", False):
         from . import model_downloads
@@ -9806,7 +9921,10 @@ def bench_command(args):
     # fully-cached repos and swallows mirror errors gracefully (mlx_lm.load
     # falls through to HF), so this is safe on the warm path and when
     # the mirror is unreachable.
-    _ensure_model_downloaded(args.model)
+    _ensure_model_downloaded(
+        args.model,
+        **_automatic_mtp_prefetch_options(args),
+    )
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
@@ -12718,9 +12836,22 @@ def pull_command(args):
         resolve_product_paths(artifact, allow_local=False)
         return
 
+    mtp_plan = _automatic_mtp_sidecar_plan(primary_args, allow_deferred=True)
+    if mtp_plan is not None:
+        sidecar, revision, patterns = mtp_plan
+        sidecar_bytes = _missing_download_bytes(
+            sidecar, revision_override=revision, allow_patterns=patterns
+        )
+        print(
+            f"  Optional automatic MTP file plan: {sidecar} "
+            f"({_format_bytes(sidecar_bytes)} uncached)"
+        )
+
     # These lanes have no existing pre-download disk gate. Price all runtime
     # payloads together; unavailable metadata contributes zero, as in serve.
-    if primary_repo != TARGET_REPO and not getattr(args, "with_ref2va", False):
+    if (
+        primary_repo != TARGET_REPO and not getattr(args, "with_ref2va", False)
+    ) or mtp_plan is not None:
         from rapid_mlx.video.minimax_h3 import video_payloads
 
         payloads = video_payloads(primary_repo)
@@ -12747,6 +12878,8 @@ def pull_command(args):
                 if a.repo_id != primary_repo
             ),
         )
+        if mtp_plan is not None:
+            payloads = (*payloads, mtp_plan)
         try:
             _check_download_disk_space(
                 sum(
@@ -12813,6 +12946,7 @@ def pull_command(args):
         _pull_repository(primary_args, revision_override=pinned_revision)
     else:
         _pull_repository(primary_args)
+    _provision_automatic_mtp_sidecar(primary_args, explicit_pull=True)
     if primary_repo == TARGET_REPO:
         print(f"\n  Runtime assets: {MTP_REPO}")
         _check_disk_space(
@@ -14305,7 +14439,10 @@ def chat_command(args):
         # in the user's terminal. Otherwise the serve subprocess swallows
         # the bar into the log file and `rapid-mlx chat` looks frozen for
         # several minutes on first run with a fresh model.
-        _ensure_model_downloaded(args.model)
+        _ensure_model_downloaded(
+            args.model,
+            **_automatic_mtp_prefetch_options(args),
+        )
 
         # GH #719: ``NamedTemporaryFile(...).name`` leaked one zero-byte
         # log per invocation if ANYTHING raised between path creation
@@ -14686,7 +14823,10 @@ def chat_command(args):
         #    running while we do this so a download failure leaves the user
         #    where they were.
         try:
-            _ensure_model_downloaded(resolved)
+            _ensure_model_downloaded(
+                resolved,
+                **_automatic_mtp_prefetch_options(args),
+            )
         except SystemExit:
             # A fatal pre-download condition aborted via sys.exit(1) — disk
             # gate, offline+uncached, or resolve timeout. Each path printed

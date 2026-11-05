@@ -254,7 +254,7 @@ async def test_dynamic_resident_loads_singleton_no_refs_snapshot_offline(
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
 
-    def fail_on_network(_name):
+    def fail_on_network(_name, *, auto_mtp=True):
         raise AssertionError("singleton snapshot must never need the network")
 
     monkeypatch.setattr("rapid_mlx.cli._ensure_model_downloaded", fail_on_network)
