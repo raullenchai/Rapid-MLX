@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Chat model selection grouped into Quickstart, Recommended,
@@ -462,10 +463,20 @@ struct ModelPickerBar: View {
         case .rows:
             quickstartSection
             recommendedSection
+            huggingFaceSection
             allAliasesSection
         }
         if let settingsRouter {
             Divider()
+            if state == .rows {
+                Button("Add from Hugging Face…") {
+                    settingsRouter.addFromHuggingFace(clipboard: NSPasteboard.general.string(forType: .string)) {
+                        openWindow(id: "settings")
+                    }
+                }
+                .accessibilityLabel(String(localized: "Add from Hugging Face…"))
+                .accessibilityIdentifier("ModelPickerBar.AddFromHF")
+            }
             ModelPickerBrowseAllModelsButton(router: settingsRouter) {
                 openWindow(id: "settings")
             }
@@ -706,11 +717,12 @@ struct ModelPickerBar: View {
         let quickstartAlias = quickstartEntry()?.alias
         if quickstartAlias != nil { return true }
         if !recommendedPickRows().isEmpty { return true }
+        if !huggingFaceEntries.isEmpty { return true }
         let filtered = visibleEntries
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
             quickstartAlias: quickstartAlias,
-            recommendedAliases: recommendedPickRows().map { $0.entry.alias }
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias } + huggingFaceEntries.map(\.alias)
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         return !partition.fits.isEmpty || !partition.notFit.isEmpty
@@ -901,7 +913,7 @@ struct ModelPickerBar: View {
         let deduped = ModelPickerBar.dedupedAllEntries(
             filtered: filtered,
             quickstartAlias: quickstartEntry()?.alias,
-            recommendedAliases: recommendedPickRows().map { $0.entry.alias }
+            recommendedAliases: recommendedPickRows().map { $0.entry.alias } + huggingFaceEntries.map(\.alias)
         )
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         let sorted = ModelPickerBar.orderedAllModels(partition.fits)
@@ -917,6 +929,27 @@ struct ModelPickerBar: View {
             Section("Not fit for this Mac") {
                 ForEach(notFit) { entry in
                     aliasButton(entry, notFit: true)
+                }
+            }
+        }
+    }
+
+    static func huggingFaceSectionEntries(_ entries: [ModelEntry], excluding aliases: [String]) -> [ModelEntry] {
+        orderedAllModels(uniqueSectionEntries(entries.filter(\.isFromHuggingFace), excluding: aliases))
+    }
+
+    private var huggingFaceEntries: [ModelEntry] {
+        Self.huggingFaceSectionEntries(visibleEntries,
+            excluding: (quickstartEntry().map { [$0.alias] } ?? []) + recommendedPickRows().map { $0.entry.alias })
+    }
+
+    @ViewBuilder
+    private var huggingFaceSection: some View {
+        let entries = huggingFaceEntries
+        if !entries.isEmpty {
+            Section("From Hugging Face") {
+                ForEach(entries) { entry in
+                    aliasButton(entry)
                 }
             }
         }

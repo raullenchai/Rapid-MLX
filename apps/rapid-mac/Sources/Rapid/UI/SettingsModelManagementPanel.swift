@@ -51,6 +51,14 @@ struct SettingsModelManagementPanel: View {
     @State private var endpointFeedback: String?
 
     @State private var query: String = ""
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
+    @FocusState private var searchFocused: Bool
+    @State private var hfCheck: HuggingFaceModelCheck?
+    @State private var hfCheckError: String?
+    @State private var hfCheckedQuery = ""
+    @State private var hfCheckRevision = 0
+    @State private var hfCheckImmediately = false
+
     /// Which capability tab is showing (Chat vs Image vs Audio vs future Video). Model
     /// Management manages every kind, but never mixes them in one list.
     @State private var capability: ModelKind = .chat
@@ -146,6 +154,7 @@ struct SettingsModelManagementPanel: View {
                     recommendedSection
                 }
             }
+            huggingFaceSection
             if loading && catalog.isEmpty {
                 loadingState
             } else if catalog.isEmpty {
@@ -175,6 +184,11 @@ struct SettingsModelManagementPanel: View {
         // Loading, empty, and catalog branches are deliberately exclusive.
         // Animating this container retains both conditional trees during the
         // transition, which can overlay the spinner on stale model rows.
+        .task(id: "\(query)\n\(hfCheckRevision)") {
+            await checkHuggingFace()
+        }
+        .onAppear { consumeModelSearchRequest() }
+        .onChange(of: settingsRouter?.modelSearchRequest) { _, _ in consumeModelSearchRequest() }
         .task {
             await refreshCatalog()
             refreshStorageCapacity()
@@ -231,6 +245,147 @@ struct SettingsModelManagementPanel: View {
                 for: entry,
                 isServing: entry.alias == server.servingAlias
             ).message)
+        }
+    }
+
+    private var hfReference: HuggingFaceReference? {
+        guard HuggingFaceReference.catalogMatch(query, in: catalog) == nil else { return nil }
+        return HuggingFaceReference.detect(query)
+    }
+
+    private var currentHFCheck: HuggingFaceModelCheck? { hfCheckedQuery == query ? hfCheck : nil }
+
+    private func consumeModelSearchRequest() {
+        guard let request = settingsRouter?.modelSearchRequest else { return }
+        settingsRouter?.modelSearchRequest = nil
+        query = request.prefill ?? ""
+        filterMode = .all
+        capability = .chat
+        searchFocused = true
+    }
+
+    private func checkHuggingFace() async {
+        let input = query
+        let reference = HuggingFaceReference.detect(input)
+        hfCheck = nil
+        hfCheckError = nil
+        hfCheckedQuery = input
+        if let match = HuggingFaceReference.catalogMatch(input, in: catalog) {
+            filterMode = .all
+            capability = match.kind
+            // Browser links still receive the CLI check; a known bare repo
+            // remains an ordinary catalog search.
+            if case .model(_, true) = reference {} else { return }
+        }
+        guard reference != nil else { return }
+        do {
+            if !hfCheckImmediately { try await Task.sleep(for: .milliseconds(400)) }
+            try Task.checkCancellation()
+            guard let binary = server.binaryPath ?? ServerLocator.find() else {
+                hfCheckError = String(localized: "Couldn't find the model checker. Restart Rapid-MLX and try again.")
+                return
+            }
+            let result = try await ModelCatalog.checkHuggingFace(reference: input, binary: binary)
+            guard !Task.isCancelled, query == input else { return }
+            hfCheck = result
+            if result.inCatalog {
+                filterMode = .all
+                if let entry = catalog.first(where: { $0.alias == result.alias || $0.hfRepo == result.repo }) {
+                    capability = entry.kind
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, query == input else { return }
+            hfCheckError = String(localized: "Couldn't check this model. Try again.")
+        }
+    }
+
+    @ViewBuilder
+    private var huggingFaceSection: some View {
+        if let reference = hfReference, currentHFCheck?.inCatalog != true {
+            let result = currentHFCheck
+            let repo: String = if case .model(let repo, _) = reference { repo } else { query }
+            let entry = result?.entry ?? ModelEntry(alias: repo, hfRepo: repo, sizeOnDisk: nil, cached: false)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                ModelsTableHeading(heading: .init(title: String(localized: "From Hugging Face"), countText: "1"))
+                HStack(spacing: RapidTheme.Space.sm) {
+                    favoriteStar(entry.alias, identifier: "Settings.ModelManagement.HFRow.Favorite")
+                    BrandIcon(alias: entry.alias)
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                        HStack(spacing: RapidTheme.Space.xs) {
+                            Text(entry.alias.components(separatedBy: "/").last ?? entry.alias)
+                                .font(RapidFont.bodyEmphasis)
+                                .foregroundStyle(RapidTheme.textPrimary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Name")
+                            badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
+                        }
+                        hfMeta(result)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if showsMeters {
+                        metersView(alias: "")
+                            .frame(width: ModelTableLayout.metersColumnWidth)
+                    }
+                    hfAction(entry: entry, result: result)
+                        .frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
+                }
+                .padding(.vertical, RapidTheme.Space.md)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow")
+                .settingsGroupedCard()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hfMeta(_ result: HuggingFaceModelCheck?) -> some View {
+        if let result {
+            let warning = result.rowState == .warning || result.rowState == .downloadAnyway
+            Text(result.rowState == .downloadAnyway ? result.memoryWarning(physicalRAMGB: hardware.physicalRAMGB)
+                 : result.rowState == .warning ? result.message ?? String(localized: "Couldn't check this model. Try again.")
+                 : result.communityMeta)
+                .font(RapidFont.caption)
+                .foregroundStyle(warning ? RapidTheme.amber : RapidTheme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Meta")
+        } else if let error = hfCheckedQuery == query ? hfCheckError : nil {
+            Text(error)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.amber)
+                .accessibilityIdentifier("Settings.ModelManagement.HFRow.Meta")
+        } else {
+            HStack(spacing: RapidTheme.Space.xs) {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel(String(localized: "Checking format and size…"))
+                    .accessibilityIdentifier("Settings.ModelManagement.HFRow.Checking")
+                Text("Checking format and size…").font(RapidFont.caption)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func hfAction(entry: ModelEntry, result: HuggingFaceModelCheck?) -> some View {
+        if let result, result.rowState == .download || result.rowState == .downloadAnyway {
+            let badge = ModelCacheActions.statusBadge(for: entry, downloadJob: downloads.jobs[entry.alias], servingAlias: server.servingAlias)
+            if result.rowState == .downloadAnyway, badge == .notCached {
+                VStack(alignment: .trailing, spacing: RapidTheme.Space.xxs) {
+                    if let bytes = result.downloadBytes {
+                        Text(DownloadProgress.formatBytes(bytes)).font(RapidFont.caption)
+                    }
+                    Button("Download anyway") {
+                        _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: result.downloadBytes)
+                    }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .accessibilityLabel(String(localized: "Download anyway"))
+                    .accessibilityIdentifier("Settings.ModelManagement.HFRow.DownloadAnyway")
+                }
+            } else {
+                sizeAction(entry: entry, badge: badge, identifierPrefix: "Settings.ModelManagement.HFRow")
+            }
         }
     }
 
@@ -554,8 +709,15 @@ struct SettingsModelManagementPanel: View {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(RapidTheme.utilityActionLabel)
                         .accessibilityHidden(true)
-                    TextField("Search models", text: $query)
+                    TextField("Search or paste a Hugging Face link", text: $query)
                         .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .onChange(of: query) { _, _ in hfCheckImmediately = false }
+                        .onSubmit {
+                            hfCheckImmediately = true
+                            hfCheckRevision &+= 1
+                        }
+                        .accessibilityLabel(String(localized: "Search or paste a Hugging Face link"))
                         .font(RapidFont.body)
                         .accessibilityIdentifier("Settings.ModelManagement.Search")
                     if !query.isEmpty {
@@ -976,7 +1138,7 @@ struct SettingsModelManagementPanel: View {
     }
 
     @ViewBuilder
-    private func favoriteStar(_ alias: String) -> some View {
+    private func favoriteStar(_ alias: String, identifier: String? = nil) -> some View {
         let isFav = favorites.contains(alias)
         Button {
             toggleFavorite(alias)
@@ -988,7 +1150,7 @@ struct SettingsModelManagementPanel: View {
         .buttonStyle(.plain)
         .frame(width: 15)
         .accessibilityLabel(isFav ? String(localized: "Unpin \(ModelDisplayName.name(for: alias))") : String(localized: "Pin \(ModelDisplayName.name(for: alias))"))
-        .accessibilityIdentifier("Settings.ModelManagement.Favorite.\(alias)")
+        .accessibilityIdentifier(identifier ?? "Settings.ModelManagement.Favorite.\(alias)")
     }
 
     private func toggleFavorite(_ alias: String) {
@@ -1036,7 +1198,7 @@ struct SettingsModelManagementPanel: View {
     /// failed → retry. Preserves the accessibility identifiers the
     /// original text buttons carried so existing selectors still resolve.
     @ViewBuilder
-    private func sizeAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {
+    private func sizeAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge, identifierPrefix: String? = nil) -> some View {
         switch badge {
         case .cached:
             // The size is the point of this tab. A cached row used to show
@@ -1089,7 +1251,7 @@ struct SettingsModelManagementPanel: View {
                     ) {
                         pendingDeletion = entry
                     }
-                    .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
+                    .accessibilityIdentifier(identifierPrefix.map { "\($0).Delete" } ?? "Settings.ModelManagement.Delete.\(entry.alias)")
                 }
             }
         case .inUse:
@@ -1121,7 +1283,7 @@ struct SettingsModelManagementPanel: View {
                 ) {
                     pendingDeletion = entry
                 }
-                .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
+                .accessibilityIdentifier(identifierPrefix.map { "\($0).Delete" } ?? "Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .notCached:
             HStack(spacing: 8) {
@@ -1142,7 +1304,7 @@ struct SettingsModelManagementPanel: View {
                 ) {
                     _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo, totalBytes: Self.downloadTotalBytes(entry))
                 }
-                .accessibilityIdentifier("Settings.ModelManagement.Download.\(entry.alias)")
+                .accessibilityIdentifier(identifierPrefix.map { "\($0).Download" } ?? "Settings.ModelManagement.Download.\(entry.alias)")
             }
         case .downloading(let pct):
             Button {
@@ -1153,7 +1315,7 @@ struct SettingsModelManagementPanel: View {
             .buttonStyle(.rapidSecondaryCompact)
             .help("Cancel download")
             .accessibilityLabel(pct.map { String(localized: "Cancel download, \($0) percent") } ?? String(localized: "Cancel download"))
-            .accessibilityIdentifier("Settings.ModelManagement.Cancel.\(entry.alias)")
+            .accessibilityIdentifier(identifierPrefix.map { "\($0).Cancel" } ?? "Settings.ModelManagement.Cancel.\(entry.alias)")
         case .failed:
             Button {
                 downloads.dismissJob(alias: entry.alias)
@@ -1162,7 +1324,7 @@ struct SettingsModelManagementPanel: View {
                 Text("Retry")
             }
             .buttonStyle(.rapidSecondaryCompact)
-            .accessibilityIdentifier("Settings.ModelManagement.Retry.\(entry.alias)")
+            .accessibilityIdentifier(identifierPrefix.map { "\($0).Retry" } ?? "Settings.ModelManagement.Retry.\(entry.alias)")
         }
     }
 
@@ -1175,7 +1337,10 @@ struct SettingsModelManagementPanel: View {
 
     private var visibleEntries: [ModelEntry] {
         let byCapability = entriesForCapability
-        let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: query)
+        let match = HuggingFaceReference.catalogMatch(query, in: catalog)
+        let checked = hfCheckedQuery == query && hfCheck?.inCatalog == true ? hfCheck : nil
+        let search = match?.alias ?? checked?.alias ?? checked?.repo ?? query
+        let filtered = ModelCacheActions.filter(byCapability, by: filterMode, query: search)
         let sorted = ModelCacheActions.sorted(filtered, order: sortOrder)
         return ModelFavorites.favoritesFirst(sorted, favorites: favorites)
     }
@@ -1253,9 +1418,15 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    rowBadge(for: entry.alias)
+                    if entry.isFromHuggingFace {
+                        badgePill(String(localized: "HUGGING FACE"), color: RapidTheme.textSecondary)
+                    } else {
+                        rowBadge(for: entry.alias)
+                    }
                 }
-                Text(rowMeta(entry.alias))
+                Text(entry.isFromHuggingFace
+                     ? [entry.hfRepo?.components(separatedBy: "/").first, String(localized: "community upload, not tested")].compactMap { $0 }.joined(separator: " · ")
+                     : rowMeta(entry.alias))
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textTertiary)
                     .lineLimit(1)

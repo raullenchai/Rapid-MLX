@@ -2522,6 +2522,16 @@ enum ModelCatalog {
                 ambient: ProcessInfo.processInfo.environment,
                 hubCacheOverride: hubCacheOverride
             )
+            if args.first == "pull" {
+                // `pull --check` is a user-initiated Hugging Face check, not a
+                // background catalog probe: let the user's telemetry consent
+                // decide (the sidecar role already marks it as Desktop), so
+                // drop the #1415 probe opt-out and keep any ambient value.
+                task.environment?["DO_NOT_TRACK"] = ProcessInfo.processInfo.environment["DO_NOT_TRACK"]
+                var env = task.environment ?? [:]
+                ModelDownloadEndpointPreference.apply(ModelDownloadEndpointPreference.storedEndpoint(), env: &env)
+                task.environment = env
+            }
             let stdout = Pipe()
             let stderr = Pipe()
             task.standardOutput = stdout
@@ -2645,6 +2655,19 @@ enum ModelCatalog {
             }
         }
         return data
+    }
+
+    /// Uses the same bounded, cancellable subprocess runner as catalog probes.
+    static func checkHuggingFace(reference: String, binary: URL) async throws -> HuggingFaceModelCheck {
+        let result = await runRapidMlxResult(
+            binary: binary, args: ["pull", reference, "--check", "--json"],
+            hubCacheOverride: ModelsFolderPreference.validatedOverrideURL()
+        )
+        try Task.checkCancellation()
+        guard result.succeeded else { throw CocoaError(.executableRuntimeMismatch) }
+        let check = try JSONDecoder().decode(HuggingFaceModelCheck.self, from: Data(result.stdout.utf8))
+        guard check.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
+        return check
     }
 
     static func _testingRunRapidMlx(binary: URL, args: [String]) async -> String {
