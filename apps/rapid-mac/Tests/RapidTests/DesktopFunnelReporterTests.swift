@@ -28,7 +28,167 @@ struct DesktopFunnelReporterTests {
             "engine_ready",
             "engine_start_failed",
             "first_chat_reply",
+            "setup_resumed",
+            "model_choice_shown",
+            "catalog_load_failed",
+            "download_review_shown",
+            "onboarding_skipped",
         ])
+    }
+
+    @Test("An enrolled unfinished setup resumes after relaunch without repeating milestones")
+    @MainActor
+    func resumedSetupSendsLaterMilestones() async throws {
+        let directory = temporaryDirectory("resume")
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "desktop-funnel-resume")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            TestDefaultsScope.cleanup(suiteNames: [suite])
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let probe = FunnelSendProbe()
+        func reporter() -> DesktopFunnelReporter {
+            DesktopFunnelReporter(isEnabled: { true }, send: { await probe.send($0) },
+                                  markerDirectory: directory, version: "1.0.0")
+        }
+        let first = QuickstartCoordinator(defaults: defaults)
+        let original = try #require(first.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory))
+        let initialReporter = reporter()
+        await initialReporter.report(.onboardingShown, flowToken: original)
+        first.advanceToChooseModel()
+        await initialReporter.report(.modelDownloadStarted, flowToken: original)
+        let cohort = marker(DesktopFunnelReporter.cohortMarkerName, in: directory)
+        let date = DesktopFunnelReporter.enrollmentDate(at: cohort)
+
+        for _ in 0..<2 {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            let later = QuickstartCoordinator(defaults: defaults, hadPreviousLaunch: true)
+            #expect(later.hasPriorUse)
+            let resumed = try #require(later.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory))
+            #expect(resumed != original)
+            #expect(later.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) == resumed)
+            let laterReporter = reporter()
+            let countBeforeStaleToken = await probe.count
+            await laterReporter.report(.modelChoiceShown, flowToken: original)
+            #expect(await probe.count == countBeforeStaleToken)
+            for milestone in DesktopFunnelReporter.Milestone.allCases {
+                await laterReporter.report(milestone, flowToken: resumed)
+            }
+            #expect(DesktopFunnelReporter.enrollmentDate(at: cohort) == date)
+        }
+        #expect(await probe.count == DesktopFunnelReporter.Milestone.allCases.count)
+    }
+
+    @Test("Resume cannot enroll an upgrader, a completed setup, or a reset rehearsal")
+    @MainActor
+    func resumeEligibility() async throws {
+        let directory = temporaryDirectory("resume-eligibility")
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "desktop-funnel-resume-eligibility")
+        defer {
+            DesktopFunnelReporter.resetProcessStateForTesting()
+            TestDefaultsScope.cleanup(suiteNames: [suite])
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let upgrader = QuickstartCoordinator(defaults: defaults, hadPreviousLaunch: true)
+        #expect(upgrader.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) == nil)
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(DesktopFunnelReporter.resumeFirstRunFlow(
+            isSetupUnfinished: true, markerDirectory: directory
+        ) == nil)
+        try enroll(directory)
+        let unfinished = QuickstartCoordinator(defaults: defaults, hadPreviousLaunch: true)
+        #expect(unfinished.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) != nil)
+        unfinished.markDone()
+        #expect(unfinished.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) == nil)
+        unfinished.resetForReonboarding()
+        #expect(unfinished.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) == nil)
+        DesktopFunnelReporter.resetProcessStateForTesting()
+        let resetRelaunch = QuickstartCoordinator(defaults: defaults, hadPreviousLaunch: true)
+        #expect(!resetRelaunch.done)
+        #expect(resetRelaunch.enrollDesktopFunnelFlowIfNeeded(markerDirectory: directory) == nil)
+        #expect(DesktopFunnelReporter.resumeFirstRunFlow(
+            isSetupUnfinished: false, markerDirectory: directory
+        ) == nil)
+    }
+
+    @Test("Every new milestone has the same minimal bounded wire body")
+    func stepMilestoneWireBodies() throws {
+        for milestone in [DesktopFunnelReporter.Milestone.setupResumed, .modelChoiceShown,
+                          .catalogLoadFailed, .downloadReviewShown, .onboardingSkipped] {
+            let body = try #require(DesktopFunnelReporter.request(
+                version: "1.0.0", milestone: milestone,
+                detail: .download(.network, source: .mirror), firstReplyBucket: .gt24h
+            )?.httpBody)
+            #expect(String(data: body, encoding: .utf8) == "{\"m\":\"\(milestone.rawValue)\",\"v\":\"1.0.0\"}")
+            #expect(body.count <= DesktopFunnelReporter.maxBodyBytes)
+        }
+    }
+
+    @Test("First reply bucket boundaries include exact edges")
+    func firstReplyBucketBoundaries() {
+        #expect(DesktopFunnelReporter.FirstReplyBucket.allCases.map(\.rawValue) == [
+            "lt_3m", "3_10m", "10_60m", "1_24h", "gt_24h",
+        ])
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let cases: [(TimeInterval, DesktopFunnelReporter.FirstReplyBucket)] = [
+            (-1, .lt3m), (0, .lt3m), (179.999, .lt3m),
+            (180, .threeToTenMinutes), (599.999, .threeToTenMinutes),
+            (600, .tenToSixtyMinutes), (3599.999, .tenToSixtyMinutes),
+            (3600, .oneToTwentyFourHours), (86399.999, .oneToTwentyFourHours),
+            (86400, .gt24h), (86401, .gt24h),
+        ]
+        for (elapsed, bucket) in cases {
+            #expect(DesktopFunnelReporter.firstReplyBucket(
+                enrolledAt: date, now: date.addingTimeInterval(elapsed)
+            ) == bucket)
+        }
+        #expect(DesktopFunnelReporter.firstReplyBucket(enrolledAt: nil, now: date) == nil)
+    }
+
+    @Test("First reply sends only the bucket, without a flow token, and omits unavailable dates")
+    func firstReplyBucketTransport() async throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let cases: [(Date?, String?)] = [(date, "3_10m"), (nil, nil)]
+        for (enrolledAt, bucket) in cases {
+            let directory = temporaryDirectory("bucket")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try enroll(directory)
+            let probe = FunnelSendProbe()
+            let reporter = DesktopFunnelReporter(
+                isEnabled: { true }, send: { await probe.send($0) },
+                markerDirectory: directory, version: "1.0.0",
+                markerDate: { _ in enrolledAt }, now: { date.addingTimeInterval(180) }
+            )
+            await reporter.report(.firstChatReply)
+            let body = try #require(await probe.firstBody)
+            let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+            var expected = ["v": "1.0.0", "m": "first_chat_reply"]
+            expected["k"] = bucket
+            #expect(object == expected)
+            #expect(body.count <= DesktopFunnelReporter.maxBodyBytes)
+        }
+        for bucket in DesktopFunnelReporter.FirstReplyBucket.allCases {
+            let body = try #require(DesktopFunnelReporter.request(
+                version: "1.0.0", milestone: .firstChatReply, firstReplyBucket: bucket
+            )?.httpBody)
+            #expect(body.count <= DesktopFunnelReporter.maxBodyBytes)
+            let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+            #expect(object == ["v": "1.0.0", "m": "first_chat_reply", "k": bucket.rawValue])
+        }
+    }
+
+    @Test("Production date reader uses the existing cohort's filesystem date")
+    func enrollmentDateReader() throws {
+        let directory = temporaryDirectory("marker-date")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cohort = marker(DesktopFunnelReporter.cohortMarkerName, in: directory)
+        #expect(DesktopFunnelReporter.enrollmentDate(at: cohort) == nil)
+        try enroll(directory)
+        let attributes = try FileManager.default.attributesOfItem(atPath: cohort.path)
+        #expect(DesktopFunnelReporter.enrollmentDate(at: cohort) ==
+                ((attributes[.creationDate] as? Date) ?? (attributes[.modificationDate] as? Date)))
     }
 
     @Test("Payload contains exactly version and milestone")
@@ -188,7 +348,7 @@ struct DesktopFunnelReporterTests {
         ))
     }
 
-    @Test("Existing installs without a cohort send none of the six downstream milestones")
+    @Test("Existing installs without a cohort send none of the downstream milestones")
     func existingInstallIsNotBackfilled() async {
         let directory = temporaryDirectory("existing")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -209,7 +369,7 @@ struct DesktopFunnelReporterTests {
         #expect(!FileManager.default.fileExists(atPath: directory.path))
     }
 
-    @Test("A first-run cohort sends all six downstream milestones")
+    @Test("A first-run cohort sends all downstream milestones")
     func cohortSendsEveryDownstreamMilestone() async {
         let directory = temporaryDirectory("cohort")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -288,18 +448,12 @@ struct DesktopFunnelReporterTests {
         await reporter.report(.onboardingShown, flowToken: firstRunToken)
         #expect(await probe.count == 1)
 
-        // A new process can see the durable cohort but cannot reconstruct the
-        // active first-run flow capability from it.
+        // Enrollment alone cannot reconstruct a token. The separate resume
+        // path additionally requires the coordinator's unfinished-setup checks.
         DesktopFunnelReporter.resetProcessStateForTesting()
         let reonboardingToken = await reporter.beginFirstRunFlow(isFirstRun: false)
         #expect(reonboardingToken == nil)
-        for milestone in [
-            DesktopFunnelReporter.Milestone.modelDownloadStarted,
-            .modelDownloadCompleted,
-            .modelDownloadFailed,
-            .engineReady,
-            .engineStartFailed,
-        ] {
+        for milestone in DesktopFunnelReporter.Milestone.allCases where milestone != .firstChatReply {
             await reporter.report(milestone, flowToken: reonboardingToken)
         }
 

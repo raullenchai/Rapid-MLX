@@ -19,6 +19,8 @@ can actually understand.
 
 ### Changed
 
+- The anonymous first-run funnel records model choice, catalogue failure, download review and skipping setup, and resumes unfinished setup measurements after relaunch. First replies include only a coarse time bucket computed on device; no timestamp or duration is sent.
+
 - **Unload model when idle** now keeps the local API online: after the chosen idle time (new 5-minute option), model memory is freed and the next request reloads it automatically, like Ollama. The sidebar shows the model as Unloaded until then. An idle dictation or speech model, or a runtime too old for idle unload, still stops the server as before.
 
 ### Fixed

@@ -409,6 +409,9 @@ final class QuickstartCoordinator {
     /// model, or chat-history evidence at coordinator initialization.
     static let priorUseStorageKey: String = "rapid.quickstart.v1.priorUse"
 
+    /// Reset rehearsals must remain excluded even after a relaunch.
+    static let desktopFunnelExcludedKey = "rapid.quickstart.v1.desktopFunnelExcluded"
+
     /// Current phase of the state machine.
     private(set) var phase: Phase = .idle
 
@@ -937,15 +940,23 @@ final class QuickstartCoordinator {
         setupBegun = false
     }
 
-    func enrollDesktopFunnelFlowIfNeeded() -> DesktopFunnelReporter.FlowToken? {
-        guard !hasPriorUse else {
+    func enrollDesktopFunnelFlowIfNeeded(
+        markerDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
+    ) -> DesktopFunnelReporter.FlowToken? {
+        guard !done, !legacyDone, !defaults.bool(forKey: Self.desktopFunnelExcludedKey) else {
             desktopFunnelFlowToken = nil
             return nil
         }
         if desktopFunnelFlowToken == nil {
-            desktopFunnelFlowToken = DesktopFunnelReporter.beginFirstRunFlow(
-                isFirstRun: true
-            )
+            if hasPriorUse {
+                desktopFunnelFlowToken = DesktopFunnelReporter.resumeFirstRunFlow(
+                    isSetupUnfinished: true, markerDirectory: markerDirectory
+                )
+            } else {
+                desktopFunnelFlowToken = DesktopFunnelReporter.beginFirstRunFlow(
+                    isFirstRun: true, markerDirectory: markerDirectory
+                )
+            }
         }
         return desktopFunnelFlowToken
     }
@@ -967,6 +978,7 @@ final class QuickstartCoordinator {
         // would otherwise be inferred on the next launch.
         hasPriorUse = true
         desktopFunnelFlowToken = nil
+        defaults.set(true, forKey: Self.desktopFunnelExcludedKey)
         defaults.set(true, forKey: Self.priorUseStorageKey)
         done = false
         phase = .idle
@@ -1023,6 +1035,7 @@ final class QuickstartCoordinator {
     /// from the Ready screen has answered the question it was asking; coming
     /// back to it on the next launch would be re-asking.
     func skipForNow() {
+        DesktopFunnelReporter.enqueue(.onboardingSkipped, flowToken: desktopFunnelFlowToken)
         clearPendingReady()
         // Codex review (#2033 finding 1): ``startCachedModel(_:)``'s
         // ``Phase/skippingDownload`` beat is an unstructured `Task` that is
@@ -1387,11 +1400,10 @@ struct QuickstartView: View {
     /// handle exists solely to propagate SwiftUI teardown cancellation.
     @State private var foregroundMemoryRefreshTask: Task<Void, Never>?
 
-    /// Exists only for the genuinely new-install flow that created the local
-    /// cohort marker in this process. A later guided-setup run never receives
-    /// it, even when this install belongs to the historical cohort.
+    /// Capability for genuine first setup, including an enrolled install
+    /// resuming after relaunch. Reset rehearsals never receive a token.
     private var activeFunnelFlowToken: DesktopFunnelReporter.FlowToken? {
-        coordinator.hasPriorUse ? nil : coordinator.desktopFunnelFlowToken
+        coordinator.done ? nil : coordinator.desktopFunnelFlowToken
     }
 
     /// First-run setup should present a decision, not mirror every cached
@@ -1452,7 +1464,10 @@ struct QuickstartView: View {
             }
             .onAppear {
                 if let token = coordinator.enrollDesktopFunnelFlowIfNeeded() {
-                    DesktopFunnelReporter.enqueueOnboardingShown(flowToken: token)
+                    DesktopFunnelReporter.enqueue(
+                        coordinator.hasPriorUse ? .setupResumed : .onboardingShown,
+                        flowToken: token
+                    )
                 }
             }
             // Observe serve transitions so we can show Ready for confirmation
@@ -1888,6 +1903,12 @@ struct QuickstartView: View {
         onSkip()
     }
 
+    /// Child views can appear before the shell's onAppear enrolls the flow.
+    private func enqueueVisibleFunnelMilestone(_ milestone: DesktopFunnelReporter.Milestone) {
+        let token = coordinator.enrollDesktopFunnelFlowIfNeeded()
+        DesktopFunnelReporter.enqueue(milestone, flowToken: token)
+    }
+
     // MARK: - Step 2 · Choose a model
 
     /// Step 2's router over its five micro-stages (Paper 05.2.B).
@@ -1910,6 +1931,9 @@ struct QuickstartView: View {
                 browseAllStep
             case .reviewing:
                 reviewDownloadStep
+                    .onAppear {
+                        enqueueVisibleFunnelMilestone(.downloadReviewShown)
+                    }
             }
         }
         // Settle the two pre-shortlist micro-stages against the real catalogue
@@ -1917,6 +1941,24 @@ struct QuickstartView: View {
         .task(id: catalogLoaded) {
             coordinator.resolveRecommendationLoading(catalogLoaded: catalogLoaded)
         }
+        // Funnel visibility follows the catalogue outcome, not just the stage:
+        // the shortlist only counts as a model choice once rows are real, and
+        // a failed catalogue is recorded wherever Step 2 shows it.
+        .task(id: Step2FunnelKey(stage: coordinator.step2Stage, catalog: catalogState)) {
+            switch catalogState {
+            case .failed:
+                enqueueVisibleFunnelMilestone(.catalogLoadFailed)
+            case .ready where coordinator.step2Stage == .choosing:
+                enqueueVisibleFunnelMilestone(.modelChoiceShown)
+            default:
+                break
+            }
+        }
+    }
+
+    private struct Step2FunnelKey: Equatable {
+        let stage: QuickstartCoordinator.Step2Stage
+        let catalog: OnboardingModelSelection.CatalogState
     }
 
     private struct StarterSelectionKey: Equatable {
