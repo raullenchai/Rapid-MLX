@@ -44,7 +44,7 @@ def normalize_model_reference(
     if parsed.netloc.lower() not in _HOSTS or parsed.scheme.lower() not in {
         "http",
         "https",
-    }:
+    }:  # pragma: no cover - defence in depth; the regex above pins host/scheme
         return name
 
     parts = parsed.path.strip("/").split("/")
