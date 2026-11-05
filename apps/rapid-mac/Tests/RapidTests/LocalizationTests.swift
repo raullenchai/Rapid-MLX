@@ -10,6 +10,60 @@ import Testing
 /// language is forced to Simplified Chinese.
 @Suite("Localizable.xcstrings — catalog shape and zh-Hans resolution")
 struct LocalizationTests {
+    @MainActor
+    @Test("Benchmark meter prefixes and Vision resolve through the compiled Chinese catalog")
+    func compiledBenchmarkAndVisionCopy() async throws {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-localization-meters-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let compiler = try await TestSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/xcrun"),
+            arguments: ["xcstringstool", "compile", try catalogURL().path,
+                        "--output-directory", output.path, "--serialization-format", "binary"]
+        )
+        try #require(compiler.terminationStatus == 0)
+        let zh = try #require(Bundle(url: output.appendingPathComponent("zh-Hans.lproj")))
+        let en = try #require(Bundle(url: output.appendingPathComponent("en.lproj")))
+        for (bundle, accuracy, speed, untested, scored) in [
+            (zh, "准确率", "速度", "：尚未测试", "准确率：87，出色"),
+            (en, "Accuracy", "Speed", ": untested", "Accuracy: 87, great")
+        ] {
+            #expect(ModelMeter.shortLabel(for: .generalReasoning, bundle: bundle) == accuracy)
+            #expect(ModelMeter.shortLabel(for: .speed, bundle: bundle) == speed)
+            if bundle === zh {
+                #expect(ModelMeter.shortLabel(for: .code, bundle: bundle) == "代码")
+                #expect(ModelMeter.shortLabel(for: .tool, bundle: bundle) == "工具")
+                #expect(ModelMeter.shortLabel(for: .ifeval, bundle: bundle) == "指令遵循")
+            }
+            for axis in [BenchScores.Axis.generalReasoning, .speed] {
+                let label = ModelMeter.shortLabel(for: axis, bundle: bundle)
+                let meter = ResolvedMeter(axis: axis, label: label, filledSegments: 0,
+                                          level: nil, formattedValue: "Untested")
+                #expect(SegmentedBenchMeter.accessibilityLabel(for: meter, bundle: bundle) == label + untested)
+            }
+            let meter = ResolvedMeter(axis: .generalReasoning,
+                                      label: ModelMeter.shortLabel(for: .generalReasoning, bundle: bundle),
+                                      filledSegments: 4, level: .great, formattedValue: "87")
+            #expect(SegmentedBenchMeter.accessibilityLabel(for: meter, bundle: bundle) == scored)
+        }
+        #expect(String(localized: "Vision", bundle: zh).uppercased() == "视觉")
+        #expect(String(localized: "Vision", bundle: en).uppercased() == "VISION")
+    }
+
+    @Test("Vision badge and resident-model help use their presentation boundaries")
+    func benchmarkBadgeAndResidentHelpBoundaries() throws {
+        let panel = try String(contentsOf: rapidSource("UI/SettingsModelManagementPanel.swift"), encoding: .utf8)
+        let canonicalPanel = SourceGuardSupport.canonicalSource(panel, literals: .preserve)
+        #expect(canonicalPanel.contains(#"badgePill(String(localized:"Vision").uppercased(),color:"#))
+        #expect(!canonicalPanel.contains(#"badgePill("VISION",color:"#))
+
+        let sidebar = try String(contentsOf: rapidSource("UI/SidebarView.swift"), encoding: .utf8)
+        let canonicalSidebar = SourceGuardSupport.canonicalSource(sidebar, literals: .preserve)
+        #expect(canonicalSidebar.contains(#".help(ModelDisplayName.name(for:model.displayName(preferredAlias:preferredAlias)))"#))
+        #expect(!canonicalSidebar.contains(#".help(model.displayName(preferredAlias:preferredAlias))"#))
+    }
+
     @Test("Performance titles, explanations, and sentence workload names have Chinese translations")
     func performanceAndWorkloadCopy() throws {
         let strings = try #require(try loadCatalog()["strings"] as? [String: Any])

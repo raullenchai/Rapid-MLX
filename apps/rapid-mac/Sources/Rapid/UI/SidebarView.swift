@@ -854,7 +854,7 @@ struct SidebarView: View {
                         .opacity(model.isHoldingMemory ? 1 : 0.5)
                         .frame(width: 12)
                     Text(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
-                        .help(model.displayName(preferredAlias: preferredAlias))
+                        .help(ModelDisplayName.name(for: model.displayName(preferredAlias: preferredAlias)))
                         .font(RapidFont.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)

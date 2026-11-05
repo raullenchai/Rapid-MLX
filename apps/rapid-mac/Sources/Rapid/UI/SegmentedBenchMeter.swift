@@ -84,16 +84,16 @@ struct SegmentedBenchMeter: View {
 
     /// VoiceOver phrasing so a screen-reader user gets the same signal
     /// sighted users read off the blocks. Pure + static for testability.
-    static func accessibilityLabel(for meter: ResolvedMeter) -> String {
+    static func accessibilityLabel(for meter: ResolvedMeter, bundle: Bundle = .main) -> String {
         guard let level = meter.level else {
-            return String(localized: "\(meter.label): untested")
+            return String(localized: "\(meter.label): untested", bundle: bundle)
         }
         let rating: String
         switch level {
-        case .great: rating = String(localized: "great")
-        case .good:  rating = String(localized: "good")
-        case .low:   rating = String(localized: "below average")
+        case .great: rating = String(localized: "great", bundle: bundle)
+        case .good:  rating = String(localized: "good", bundle: bundle)
+        case .low:   rating = String(localized: "below average", bundle: bundle)
         }
-        return String(localized: "\(meter.label): \(meter.formattedValue), \(rating)")
+        return String(localized: "\(meter.label): \(meter.formattedValue), \(rating)", bundle: bundle)
     }
 }

@@ -1004,7 +1004,7 @@ struct SettingsModelManagementPanel: View {
         if let badge = recommendedBadgeByAlias[alias] {
             badgePill(badge, color: RapidTheme.brandPrimaryDeep)
         } else if ModelBrandStyle.modelType(forAlias: alias) == .vision {
-            badgePill("VISION", color: RapidTheme.textSecondary)
+            badgePill(String(localized: "Vision").uppercased(), color: RapidTheme.textSecondary)
         }
         ForEach(ModelCacheActions.retentionBadges(
             alias: alias,
