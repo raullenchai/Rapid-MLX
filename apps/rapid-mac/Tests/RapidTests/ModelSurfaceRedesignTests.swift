@@ -202,11 +202,11 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.displayFamily(forAlias: "ornith-1.5-9b-bf16") == "Ornith 1.5")
     }
 
-    @Test("displayFamily: an entirely unknown alias reads 'Model', never 'Unknown'")
+    @Test("displayFamily: an entirely unknown alias retains its readable identity")
     func displayFamilyUnknownIsHumane() {
         let family = ModelBrandStyle.displayFamily(forAlias: "some-unknown-xyz-model")
         #expect(family != "Unknown")
-        #expect(family == "Model")
+        #expect(family == "Some Unknown Xyz Model")
     }
 
     // MARK: - ModelMeter.segments

@@ -146,14 +146,13 @@ enum ModelBrandStyle {
 
     /// A human-readable family name for the row's meta line. Prefers
     /// ``ModelInfoCatalog.familyAndContext`` (rich version-aware names
-    /// like "Qwen 3.6") but overrides the two aliases it labels
-    /// "Unknown" — `gpt-oss` and `devstral` — with a correct family so
-    /// the caption never reads "Unknown · 8-bit" for a shipped model.
+    /// like "Qwen 3.6"), preserving established overrides. New families
+    /// derive their label from the alias instead of a generic placeholder.
     static func displayFamily(forAlias alias: String) -> String {
         let a = alias.lowercased()
         if a.contains("gpt-oss") || a.contains("gptoss") { return "GPT-OSS" }
         if a.contains("devstral") { return "Devstral" }
         let family = ModelInfoCatalog.familyAndContext(for: alias).family
-        return family == "Unknown" ? "Model" : family
+        return family == "Unknown" ? ModelDisplayName.aliasDisplayParts(alias).family : family
     }
 }
