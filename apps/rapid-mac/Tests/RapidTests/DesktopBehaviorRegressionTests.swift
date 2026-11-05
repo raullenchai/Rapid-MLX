@@ -93,7 +93,8 @@ struct DesktopBehaviorRegressionTests {
     @Test func sizelessAliasesHaveFriendlyNames() {
         #expect(ModelDisplayName.name(for: "deepseek-v4-flash-2bit") == "DeepSeek V4 · Flash · 2-bit")
         #expect(ModelDisplayName.name(for: "deepseek-v4-flash-4bit") == "DeepSeek V4 · Flash")
-        #expect(ModelDisplayName.name(for: "unknown-model-4bit") == "unknown-model-4bit")
+        // Machine aliases from new families get a readable name like catalog rows do.
+        #expect(ModelDisplayName.name(for: "unknown-model-4bit") == "Unknown Model")
         #expect(ModelDisplayName.name(for: "Bonsai Image Large Model for Detailed Landscape Generation") == "Bonsai Image Large Model for Detailed Landscape Generation")
         #expect(ModelDisplayName.name(for: "deepseek-v4-flash") == "deepseek-v4-flash")
         for alias in ["fake-qwen3-tts", "qwen3-tts", "qwen3-tts-4bit", "qwen3-tts-clone",

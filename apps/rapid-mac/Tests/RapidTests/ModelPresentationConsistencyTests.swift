@@ -20,7 +20,7 @@ struct ModelPresentationConsistencyTests {
     func videoAliasesHaveExactFriendlyNames(alias: String, name: String) {
         #expect(ModelDisplayName.name(for: alias) == name)
         #expect(ModelDisplayName.name(for: alias.uppercased()) == name)
-        #expect(ModelDisplayName.name(for: alias + "-unknown") == alias + "-unknown")
+        #expect(ModelDisplayName.name(for: alias + "-unknown") != name)
     }
 
     @Test func everyPackagedVideoAliasHasAFriendlyName() {
@@ -110,12 +110,12 @@ struct ModelPresentationConsistencyTests {
         #expect(SettingsModelManagementPanel.pickStatsLine(pick).contains("memory"))
     }
 
-    @Test nonisolated func numericFamilyLookalikesKeepRawAliases() {
+    @Test nonisolated func numericFamilyLookalikesKeepTheirIdentity() {
         let diffusion = "diffusion-gemma-26b-4bit"
         #expect(!ModelDisplayName.name(for: diffusion).contains("Gemma 2"))
-        #expect(ModelDisplayName.name(for: diffusion) == diffusion)
+        #expect(ModelDisplayName.name(for: diffusion) == "Diffusion Gemma · 26B")
         let embedding = "embeddinggemma-300m-6bit"
-        #expect(ModelDisplayName.name(for: embedding) == embedding)
+        #expect(ModelDisplayName.name(for: embedding) == "Embeddinggemma 300M · 6-bit")
     }
 
     @Test func namesAndCachedVariant() {
