@@ -837,6 +837,7 @@ Try it with a local inference server:
 ```bash
 python -m pip install rapid-mlx
 rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
+# Model page URLs work too: rapid-mlx serve https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit --port 18800
 # In another terminal:
 rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood
 rapid-mlx chat --harness --base-url http://127.0.0.1:18800 --profile dogfood --resume last

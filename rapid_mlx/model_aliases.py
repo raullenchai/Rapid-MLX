@@ -1162,6 +1162,9 @@ def resolve_model(name: str, *, include_external_roots: bool = True) -> str:
     downloader would reject a filesystem path as a repo id, and the cache
     would not contain it.
     """
+    from .model_reference import normalize_model_reference
+
+    name = normalize_model_reference(name)
     if os.path.exists(name) and not local_dir_shadows_alias(name):
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):

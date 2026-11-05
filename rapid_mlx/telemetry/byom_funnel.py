@@ -193,7 +193,7 @@ def _record_suggestions(refs: Iterable[object]) -> None:
     _mutate_ledger(change)
 
 
-def begin(refs: Iterable[object]) -> None:
+def begin(refs: Iterable[object], *, ref_form: str | None = None) -> None:
     """Start the funnel context for this invocation's model reference(s).
 
     Called once by the serve/pull preflight hook for every invocation,
@@ -221,6 +221,8 @@ def begin(refs: Iterable[object]) -> None:
             _match = normalized | plain
             _context.clear()
             _consumed[0] = False
+            if ref_form in {"alias", "repo_id", "hf_url"}:
+                _context["ref_form"] = ref_form
             if via:
                 _context["via_suggestion"] = True
     except Exception:
@@ -297,6 +299,8 @@ def props_for(model_ref: object, *, failed: bool) -> dict[str, object]:
                 return {}
             context = dict(_context)
         props: dict[str, object] = {}
+        if context.get("ref_form") in {"alias", "repo_id", "hf_url"}:
+            props["ref_form"] = context["ref_form"]
         preflight = context.get("preflight")
         if preflight in PREFLIGHT_OUTCOMES:
             props["preflight"] = preflight

@@ -29,6 +29,11 @@
   },
 
   "enums": {
+    "model_ref_form": {"values": ["alias", "repo_id", "hf_url"]},
+    "model_ref_verdict": {"values": ["ok", "unsupported", "too_big", "unknown", "invalid_reference"]},
+    "model_ref_reason": {"values": ["unsupported_format", "unsupported_architecture", "insufficient_memory", "not_found", "gated", "disk_full", "offline", "dataset_link", "space_link", "collection_link", "model_listing_link", "invalid_model_ref", "other"]},
+    "model_ref_surface": {"values": ["cli", "desktop"]},
+
     "surface": {
       "_about": "Design sec 1.2. Which Rapid component emitted the event.",
       "values": ["cli", "server", "desktop"]
@@ -591,6 +596,44 @@
   },
 
   "events": {
+    "model_ref_checked": {
+      "_about": "Metadata-only reference check; identity uses the same privacy classifier as model lifecycle events. No reference, message or suggestions are sent.",
+      "props": {
+        "model": {
+          "kind": "model_id",
+          "required": true
+        },
+        "preflight": {
+          "kind": "enum",
+          "enum": "byom_preflight",
+          "required": true
+        },
+        "verdict": {
+          "kind": "enum",
+          "enum": "model_ref_verdict",
+          "required": true
+        },
+        "reason": {
+          "kind": "enum",
+          "enum": "model_ref_reason",
+          "required": false
+        },
+        "in_catalog": {
+          "kind": "bool",
+          "required": true
+        },
+        "ref_form": {
+          "kind": "enum",
+          "enum": "model_ref_form",
+          "required": false
+        },
+        "request_surface": {
+          "kind": "enum",
+          "enum": "model_ref_surface",
+          "required": true
+        }
+      }
+    },
     "app_opened": {
       "_about": [
         "Launches. Common props carry everything that matters. CLI and server",
@@ -645,6 +688,7 @@
         "no suggested name is ever sent."
       ],
       "props": {
+        "ref_form": {"kind": "enum", "enum": "model_ref_form", "required": false},
         "model": {"kind": "model_id", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "source": {"kind": "enum", "enum": "pull_source", "required": true},
@@ -662,6 +706,7 @@
       ],
       "twin_of": "model_pulled",
       "props": {
+        "ref_form": {"kind": "enum", "enum": "model_ref_form", "required": false},
         "model": {"kind": "model_id", "required": false},
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "source": {"kind": "enum", "enum": "pull_source", "required": false},
@@ -689,6 +734,7 @@
         "model_pulled."
       ],
       "props": {
+        "ref_form": {"kind": "enum", "enum": "model_ref_form", "required": false},
         "model": {"kind": "model_id", "required": true},
         "model_type": {"kind": "enum", "enum": "model_type", "required": true},
         "auto_selected": {"kind": "bool", "required": true},
@@ -717,6 +763,7 @@
       ],
       "twin_of": "model_served",
       "props": {
+        "ref_form": {"kind": "enum", "enum": "model_ref_form", "required": false},
         "model": {"kind": "model_id", "required": false},
         "model_type": {"kind": "enum", "enum": "model_type", "required": false},
         "auto_selected": {"kind": "bool", "required": false},

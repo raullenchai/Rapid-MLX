@@ -1237,7 +1237,7 @@ def _emit_catalog(subcommand, alias):
             }]}))
             return True
         if "--json" in sys.argv:
-            aliases = []
+            aliases = sorted(repo for repo in _pulled_model_aliases() if "/" in repo)
             if _setting("FAKE_INCLUDE_STARTER") == "1":
                 aliases.extend(["lfm2.5-2.6b-4bit", "lfm2.5-1b-4bit"])
             if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
@@ -1255,11 +1255,11 @@ def _emit_catalog(subcommand, alias):
                 aliases.extend(f"test-model-{index:03d}" for index in range(200))
             text = []
             for item in aliases:
-                is_builtin = item != "fake-external-alias"
+                is_builtin = item != "fake-external-alias" and "/" not in item
                 text.append({
                     "alias": item,
                     "hf_path": (
-                        FAKE_VISION_REPO if item == FAKE_VISION_ALIAS
+                        item if "/" in item else FAKE_VISION_REPO if item == FAKE_VISION_ALIAS
                         else "fake-external-alias" if item == "fake-external-alias"
                         else FAKE_REPO
                     ),
@@ -1347,6 +1347,9 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
         pulled_models = _pulled_model_aliases()
+        for repo in sorted(pulled_models):
+            if "/" in repo:
+                print(f"{repo}  {repo}  2.0 GiB")
         if _setting("FAKE_SHARE_COMPUTE_POOL") == "1":
             # Membership in SHARE_COMPUTE_POOL_UNCACHED decides this, not a
             # slice index — a slice silently changed meaning every time the
@@ -1467,6 +1470,26 @@ def main():
             pid=os.getpid(),
             do_not_track=os.environ.get("DO_NOT_TRACK"),
         )
+        if args.subcommand == "pull" and "--check" in sys.argv and "--json" in sys.argv:
+            reference = args.alias
+            candidate = reference.strip().strip("<>\"'")
+            if "://" in candidate or candidate.startswith(("huggingface.co/", "www.huggingface.co/", "hf.co/", "hf-mirror.com/")):
+                parts = urlsplit(candidate if "://" in candidate else "https://" + candidate).path.strip("/").split("/")
+            else:
+                parts = candidate.split("/")
+            invalid = len(parts) < 2 or parts[0].lower() in {"datasets", "spaces", "collections", "models"}
+            repo = None if invalid else "/".join(parts[:2])
+            verdict = "invalid_reference" if invalid else _setting("FAKE_HF_VERDICT", "ok")
+            print(json.dumps({
+                "schema": 1, "reference": reference, "repo": repo,
+                "alias": _setting("FAKE_HF_ALIAS"), "in_catalog": _setting("FAKE_HF_IN_CATALOG") == "1",
+                "verdict": verdict, "reason": None,
+                "message": _setting("FAKE_HF_MESSAGE", "This model cannot be used by Rapid-MLX." if verdict not in {"ok", "too_big"} else None),
+                "download_bytes": 2147483648, "format": "mlx", "capabilities": ["text_generation"],
+                "required_memory_bytes": 274877906944 if verdict == "too_big" else 4294967296,
+                "fits": verdict != "too_big", "cached": repo in _pulled_model_aliases(),
+            }))
+            sys.exit(0)
         if args.subcommand == "pull" and _setting("FAKE_DOWNLOAD_OVERRUN") == "1":
             # #1550 fixture: the starter estimate said 1527 MiB after
             # 2048 MiB had already arrived. Keep the process alive long enough

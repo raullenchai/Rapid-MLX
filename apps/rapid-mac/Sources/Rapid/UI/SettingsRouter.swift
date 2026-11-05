@@ -48,6 +48,18 @@ final class SettingsRouter {
     /// land on the user's last selected tab."
     var requestedCategory: SettingsView.Category?
 
+    struct ModelSearchRequest: Equatable {
+        let id: UUID = UUID()
+        let prefill: String?
+    }
+    var modelSearchRequest: ModelSearchRequest?
+
+    func addFromHuggingFace(clipboard: String?, open: () -> Void) {
+        modelSearchRequest = ModelSearchRequest(prefill: HuggingFaceReference.clipboardPrefill(clipboard))
+        route(.openModelManagement, open: open)
+    }
+
+
     /// One-shot handoff used by Quickstart's Browse all round trip. The
     /// onboarding sheet must be lowered before opening a separate Settings
     /// window, otherwise AppKit's modal session traps that window.

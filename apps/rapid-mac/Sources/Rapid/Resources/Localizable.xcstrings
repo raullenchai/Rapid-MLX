@@ -2,6 +2,116 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Search or paste a Hugging Face link" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索模型或粘贴 Hugging Face 链接"
+          }
+        }
+      }
+    },
+    "From Hugging Face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自 Hugging Face"
+          }
+        }
+      }
+    },
+    "HUGGING FACE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HUGGING FACE"
+          }
+        }
+      }
+    },
+    "Add from Hugging Face…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 Hugging Face 添加…"
+          }
+        }
+      }
+    },
+    "Checking format and size…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查格式和大小…"
+          }
+        }
+      }
+    },
+    "community upload, not tested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区上传，未经测试"
+          }
+        }
+      }
+    },
+    "Download anyway" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然下载"
+          }
+        }
+      }
+    },
+    "Couldn't check this model. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查此模型。请重试。"
+          }
+        }
+      }
+    },
+    "Couldn't find the model checker. Restart Rapid-MLX and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到模型检查程序。请重启 Rapid-MLX 后重试。"
+          }
+        }
+      }
+    },
+    "This model may need more memory than this Mac has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型需要的内存可能超出此 Mac 的内存。"
+          }
+        }
+      }
+    },
+    "Needs about %lld GB memory; this Mac has %lld GB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %lld GB 内存；此 Mac 有 %lld GB。"
+          }
+        }
+      }
+    },
     "Kept in memory" : {
       "localizations" : {
         "zh-Hans" : {
