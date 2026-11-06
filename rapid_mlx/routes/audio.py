@@ -2203,7 +2203,8 @@ async def audio_lane_idle_loop(ttl: float) -> None:
     # Each lane advances independently. Shield the group so repeated parent
     # cancellation cannot abandon a child while it drains an owning worker.
     loops = [
-        asyncio.create_task(run_lane(lane)) for lane in ("stt", "alignment", "tts")
+        asyncio.create_task(run_lane(lane), name=f"audio-idle-{lane}")
+        for lane in ("stt", "alignment", "tts")
     ]
     completion = asyncio.gather(*loops, return_exceptions=True)
     try:

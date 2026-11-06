@@ -279,3 +279,56 @@ async def test_busy_stt_does_not_stop_later_tts_idle_cycles(lanes):
             timer.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await timer
+
+
+@pytest.mark.asyncio
+async def test_idle_backend_without_unload_keeps_truthful_residency(lanes):
+    audio, dispatcher = lanes
+    cached = SimpleNamespace(model_name="external-backend")
+    audio._stt_engine = cached
+    await dispatcher.execute("stt", cached.model_name, "load", lambda: None)
+    age(dispatcher, "stt")
+    await audio.release_idle_audio_lanes(30)
+    assert audio._stt_engine is cached
+    assert dispatcher.snapshot()[0]["state"] == "resident"
+    assert dispatcher.snapshot()[0]["model"] == cached.model_name
+
+
+@pytest.mark.asyncio
+async def test_repeated_lane_cancellation_drains_worker_and_bookkeeping(lanes):
+    audio, dispatcher = lanes
+    cached = Cached()
+    audio._stt_engine = cached
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SlowWorker(Worker):
+        async def execute_on_model_worker(self, func, *args, **kwargs):
+            entered.set()
+            await finish.wait()
+            return func(*args, **kwargs)
+
+    await dispatcher.execute("stt", cached.model_name, "load", lambda: None)
+    age(dispatcher, "stt")
+    dispatcher.bind(SlowWorker())
+    timer = asyncio.create_task(audio.audio_lane_idle_loop(0.01))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=3)
+        lane = next(t for t in asyncio.all_tasks() if t.get_name() == "audio-idle-stt")
+        lane.cancel()
+        await asyncio.sleep(0)
+        lane.cancel()
+        await asyncio.sleep(0)
+        assert not lane.done()
+        assert audio._stt_engine is cached
+        # Parent shutdown must also wait for this already-cancelling child.
+        timer.cancel()
+        await asyncio.sleep(0)
+        assert not timer.done()
+    finally:
+        finish.set()
+        timer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await timer
+    assert audio._stt_engine is None
+    assert dispatcher.snapshot()[0]["state"] == "registered"
