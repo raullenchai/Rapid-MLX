@@ -180,7 +180,8 @@ def test_serve_failure_subtype_tolerates_hostile_cause(monkeypatch):
 
 def test_serve_failure_subtype_schema_is_closed_and_conditional():
     values = registry.load_registry()["enums"]["serve_failure_subtype"]["values"]
-    assert len(values) == 11
+    assert len(values) == 13
+    assert {"weights_load", "draft_attach"} <= set(values)
     assert registry.validate(
         "model_serve_failed", {"error_class": "other", "failure_subtype": "unknown"}
     ) == {"error_class": "other", "failure_subtype": "unknown"}
@@ -2549,3 +2550,24 @@ def test_mlx_oom_uses_existing_closed_memory_class(monkeypatch, message, wrapped
     )
     model_events.emit_model_serve_failed(failure)
     assert calls == [("model_serve_failed", {"error_class": "insufficient_memory"})]
+
+
+@pytest.mark.parametrize("boundary", ["weights_load", "draft_attach"])
+@pytest.mark.parametrize("memory", [False, True])
+def test_startup_boundary_emission_is_closed_and_preserves_memory_class(
+    monkeypatch, boundary, memory
+):
+    from rapid_mlx.engine_startup_errors import startup_failure_boundary
+
+    failure = MemoryError() if memory else RuntimeError("private /model user text")
+    with pytest.raises(type(failure)), startup_failure_boundary(boundary):
+        raise failure
+    calls = []
+    _capture_accepted_events(monkeypatch, lambda _event, props: calls.append(props))
+    model_events.emit_model_serve_failed(failure, failure_stage="engine_start")
+    expected = {"failure_stage": "engine_start"}
+    if memory:
+        expected["error_class"] = "insufficient_memory"
+    else:
+        expected.update(error_class="other", failure_subtype=boundary)
+    assert calls == [expected]

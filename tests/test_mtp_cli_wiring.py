@@ -1281,8 +1281,10 @@ def test_start_llm_calls_apply_mtp_dispatch():
         #    fires, avoiding the Metal / AsyncEngineCore setup.
         try:
             asyncio.run(engine._start_llm())
-        except _ScopedTestSentinelError:
-            pass  # expected — the recorder tripped the sentinel
+        except _ScopedTestSentinelError as exc:
+            from rapid_mlx.telemetry.model_events import serve_failure_subtype
+
+            assert serve_failure_subtype(exc) == "draft_attach"
 
     finally:
         monkeypatch.undo()
