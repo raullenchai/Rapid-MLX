@@ -403,3 +403,42 @@ read back open after submission; no fresh inference or acceptance claimed.
 - ornith-ai: [model-card PR](https://huggingface.co/ornith-ai/Ornith-1.5-122B-MLX-4bit/discussions/1).
 
 Recovered existing AllenAI [Tmax report](https://huggingface.co/allenai/tmax-9b/discussions/2); no duplicate posted. Full owner table now records 24 contacted groups and 27 specific verification/route holds. No submission targeted mlx-community.
+
+## Remaining 27 publisher groups: documentation-scope proposals
+
+25 official HF model discussions and two GitHub documentation proposals were
+published and read back open. All explicitly disclose source-only verification;
+no new inference or test run was claimed. These are proposals, not 27 PRs.
+
+- CohereLabs: [scope proposal](https://huggingface.co/CohereLabs/North-Mini-Code-1.0/discussions/16).
+- NousResearch: [scope proposal](https://huggingface.co/NousResearch/Hermes-4-70B/discussions/7).
+- mistralai: [scope proposal](https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512/discussions/33).
+- XiaomiMiMo: [scope proposal](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL/discussions/16).
+- openai: [scope proposal](https://huggingface.co/openai/gpt-oss-20b/discussions/277).
+- MiniMaxAI: [scope proposal](https://huggingface.co/MiniMaxAI/MiniMax-M2.5/discussions/71).
+- Jackrong: [scope proposal](https://huggingface.co/Jackrong/MLX-Qwopus3.5-9B-v3-4bit/discussions/2).
+- tencent: [scope proposal](https://huggingface.co/tencent/Hy3-preview/discussions/12).
+- RecursiveSI: [scope proposal](https://huggingface.co/RecursiveSI/flint-int4/discussions/4).
+- ai9stars: [scope proposal](https://huggingface.co/ai9stars/G9v3-39A5B/discussions/5).
+- WeiboAI: [scope proposal](https://huggingface.co/WeiboAI/VibeThinker-1.5B/discussions/12).
+- alibaba-pai: [scope proposal](https://huggingface.co/alibaba-pai/CogVideoX-Fun-V1.5-5b-InP/discussions/3).
+- Wan-AI: [scope proposal](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers/discussions/16).
+- Lightricks: [scope proposal](https://huggingface.co/Lightricks/LTX-2.5/discussions/98).
+- Tongyi-MAI: [scope proposal](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/discussions/168).
+- ByteDance-Seed: [scope proposal](https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B/discussions/20).
+- moonshotai: [scope proposal](https://huggingface.co/moonshotai/Kimi-K2.6/discussions/61).
+- Hcompany: [scope proposal](https://huggingface.co/Hcompany/Holo-3.1-35B-A3B/discussions/4).
+- ResembleAI: [scope proposal](https://huggingface.co/ResembleAI/chatterbox-turbo/discussions/27).
+- OpenMOSS-Team: [scope proposal](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Nano-100M/discussions/8).
+- nari-labs: [scope proposal](https://huggingface.co/nari-labs/Dia-1.6B/discussions/76).
+- SWivid: [scope proposal](https://huggingface.co/SWivid/F5-TTS/discussions/30).
+- IndexTeam: [scope proposal](https://huggingface.co/IndexTeam/IndexTTS-1.5/discussions/5).
+- FunAudioLLM: [scope proposal](https://huggingface.co/FunAudioLLM/SenseVoiceSmall/discussions/19).
+- FireRedTeam: [scope proposal](https://huggingface.co/FireRedTeam/FireRedASR2-AED/discussions/3).
+- meta-llama: [documentation proposal](https://github.com/meta-llama/llama-cookbook/issues/1088).
+- hexgrad: [documentation proposal](https://github.com/hexgrad/kokoro/issues/393).
+
+Publisher-level outreach coverage is now 51/51 candidate groups. Checkpoint
+qualification remains separate and is retained in the owner report. GitHub
+issues used the authenticated CLI after the App connector lacked write scope.
+No access gate, CLA or disabled HF discussion setting was changed.
