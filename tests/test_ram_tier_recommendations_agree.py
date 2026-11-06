@@ -91,37 +91,37 @@ def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
 
 def test_both_tables_parse():
     """Both the first-chat selector and model-browser SSOT are reachable."""
-    assert _select_installer_starter(8) == "lfm2.5-1b-4bit"
-    assert _select_installer_starter(16) == "qwen3.5-4b-4bit"
+    assert _select_installer_starter(8) == "lfm2.5-2.6b-4bit"
+    assert _select_installer_starter(16) == "lfm2.5-2.6b-4bit"
     assert len(_parse_app_tiers()) >= 6
 
 
 def test_fresh_installer_uses_quickstart_baseline_at_every_ram_size():
     """First chat optimizes time-to-value, not the browser's largest pick."""
-    # The installer keeps its RAM split: the 1.2B lowMemoryChoice below 16 GB
-    # (#2432) and Qwen 3.5 4B from 16 GB. Desktop Quickstart now starts on
-    # LFM2.5 2.6B wherever ModelSizing says it fits, falling back to the same
-    # lowMemoryChoice; its 4B image-capable model is offered as visionChoice.
-    sub16_alias, _ = _parse_quickstart_choice("lowMemoryChoice")
-    standard_alias, _ = _parse_quickstart_choice("visionChoice")
+    # Matches Desktop Quickstart: LFM2.5 2.6B (defaultChoice) wherever it
+    # fits, falling back to the 1.2B lowMemoryChoice only below the 8 GB tier.
+    low_memory_alias, _ = _parse_quickstart_choice("lowMemoryChoice")
+    starter_alias, _ = _parse_quickstart_choice("defaultChoice")
     source = QUICKSTART.read_text()
     assert "== .tooBig\n            ? lowMemoryChoice : defaultChoice" in source
-    for ram in (4, 8, 15):
-        assert _select_installer_starter(ram) == sub16_alias
-    for ram in (16, 18, 24, 32, 48, 64, 96, 256):
-        assert _select_installer_starter(ram) == standard_alias
+    for ram in (0, 4, 7):
+        assert _select_installer_starter(ram) == low_memory_alias
+    for ram in (8, 15, 16, 18, 24, 32, 48, 64, 96, 256):
+        assert _select_installer_starter(ram) == starter_alias
 
 
 def test_cached_choice_is_preferred_only_when_it_fits_the_ram_tier():
     assert _select_installer_starter(32, ("qwen3.8-27b-4bit",)) == "qwen3.8-27b-4bit"
-    assert _select_installer_starter(16, ("qwen3.8-27b-4bit",)) == "qwen3.5-4b-4bit"
+    assert _select_installer_starter(16, ("qwen3.8-27b-4bit",)) == "lfm2.5-2.6b-4bit"
 
 
 @pytest.mark.parametrize(
     ("ram_gb", "cached", "expected"),
     [
         (8, ("lfm2.5-2.6b-4bit",), "lfm2.5-2.6b-4bit"),
-        (16, ("lfm2.5-1b-4bit",), "lfm2.5-1b-4bit"),
+        (16, ("qwen3.5-4b-4bit",), "qwen3.5-4b-4bit"),
+        # Like Desktop, a cached low-memory pick never replaces the starter.
+        (16, ("lfm2.5-1b-4bit",), "lfm2.5-2.6b-4bit"),
     ],
 )
 def test_cached_choice_considers_both_picks_from_fitting_tiers(
@@ -191,9 +191,9 @@ def test_every_recommended_alias_exists():
 @pytest.mark.parametrize(
     "ram,expected",
     [
-        (8, "lfm2.5-1b-4bit"),
-        (16, "qwen3.5-4b-4bit"),
-        (18, "qwen3.5-4b-4bit"),
+        (8, "lfm2.5-2.6b-4bit"),
+        (16, "lfm2.5-2.6b-4bit"),
+        (18, "lfm2.5-2.6b-4bit"),
     ],
 )
 def test_small_macs_get_something_that_fits(ram, expected):
