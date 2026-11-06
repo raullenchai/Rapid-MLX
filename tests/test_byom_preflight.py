@@ -174,6 +174,53 @@ def test_installed_types(monkeypatch, tmp_path):
     assert pf._installed_types("pkg", ("models",)) is None
 
 
+def _make_sourceless(root: Path) -> None:
+    """Hoist ``.pyc`` next to each module and drop its source (Desktop bundle)."""
+    import py_compile
+
+    for source in list(root.rglob("*.py")):
+        if source.name == "__init__.py":
+            continue
+        py_compile.compile(str(source), cfile=str(source.with_suffix(".pyc")))
+        source.unlink()
+
+
+@pytest.mark.parametrize(
+    "remap",
+    [
+        {"mistral": "llama"},
+        # Large literals compile to a different opcode than small ones.
+        {f"type{i}": "llama" for i in range(40)},
+    ],
+)
+def test_installed_types_sourceless_bundle(monkeypatch, tmp_path, remap):
+    root = _fake_package(tmp_path / "pkg", ["llama"], remap)
+    pkg = root / "models" / "gemma4"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "model.py").write_text("")
+    expected = {"llama", "gemma4", *remap}
+    monkeypatch.setattr(pf, "_package_dir", lambda name: root)
+    assert pf._installed_types("pkg", ("models",)) == expected
+    _make_sourceless(root)
+    assert not (root / "utils.py").exists()
+    assert pf._installed_types("pkg", ("models",)) == expected
+
+
+def test_pyc_dict_keys_rejects_unreadable_or_non_literal(tmp_path):
+    import py_compile
+
+    assert pf._pyc_dict_keys(tmp_path / "missing.pyc", "X") is None
+    (tmp_path / "junk.pyc").write_bytes(b"not bytecode")
+    assert pf._pyc_dict_keys(tmp_path / "junk.pyc", "X") is None
+    source = tmp_path / "mod.py"
+    source.write_text("X = dict(a=1)\nY = {'a': 1}\n")
+    py_compile.compile(str(source), cfile=str(tmp_path / "mod.pyc"))
+    assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "X") is None
+    assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "Y") == {"a"}
+    assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "Z") is None
+
+
 def test_supported_model_types(monkeypatch, tmp_path):
     lm = _fake_package(tmp_path / "lm", ["llama"], {"mistral": "llama"})
     vlm = _fake_package(tmp_path / "vlm", ["gemma4"], {})

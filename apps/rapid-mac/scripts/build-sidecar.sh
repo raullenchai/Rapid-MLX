@@ -1014,6 +1014,13 @@ PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1 "$STAGE/python/bin/python3.12" -s -c \
     'from rapid_mlx.speculative.tensorfold_qwen27 import require_runtime, require_environment; require_runtime(); require_environment(); from tensorfold.engine.lane_engine import LaneEngine; from tensorfold.engine.prefill_plan import PrefillPlan, message_markers; from tensorfold.server.app import ChatApp; from tensorfold.drafters.dflash_drafter import _vendor; _vendor(); print("==> bundled Qwen27 TensorFold runtime: OK")'
 
+# Pasted Hugging Face links are judged against the loader inventory, which
+# must still be readable once site-packages is sourceless. Without it every
+# non-catalog link reports "could not be verified" in Desktop.
+PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 \
+    PYTHONDONTWRITEBYTECODE=1 "$STAGE/python/bin/python3.12" -s -c \
+    'from rapid_mlx.byom.preflight import supported_model_types as s; t = s(); assert t and {"llama", "qwen3", "gemma4"} <= t, t; print("==> bundled model-architecture inventory: OK (%d types)" % len(t))'
+
 cp "${REPO_ROOT}/scripts/sidecar-shim.sh" "$STAGE/bin/rapid-mlx"
 chmod +x "$STAGE/bin/rapid-mlx"
 

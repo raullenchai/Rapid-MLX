@@ -230,6 +230,59 @@ def _dict_literal_keys(source_file: Path, name: str) -> set[str] | None:
     return None
 
 
+def _pyc_dict_keys(compiled_file: Path, name: str) -> set[str] | None:
+    """Keys of a module-level ``name = {...}`` str-keyed dict in a ``.pyc``.
+
+    The Desktop bundle ships site-packages sourceless, so the literal is read
+    from the module's bytecode (compiled by this same interpreter) instead.
+    """
+    import dis
+    import marshal
+
+    try:
+        code = marshal.loads(compiled_file.read_bytes()[16:])
+    except (OSError, EOFError, ValueError, TypeError):
+        return None
+    if not isinstance(code, type(_pyc_dict_keys.__code__)):
+        return None
+    # Tiny evaluator for the opcodes a constant dict literal compiles to.
+    stack: list[object] = []
+    for ins in dis.get_instructions(code):
+        op, arg = ins.opname, ins.arg if isinstance(ins.arg, int) else 0
+        if op == "LOAD_CONST":
+            stack.append(ins.argval)
+        elif op == "BUILD_MAP" and len(stack) >= 2 * arg:
+            items = stack[len(stack) - 2 * arg :] if arg else []
+            del stack[len(stack) - 2 * arg :]
+            stack.append(dict(zip(items[::2], items[1::2])))
+        elif op == "BUILD_CONST_KEY_MAP" and stack and len(stack) > arg:
+            keys = stack.pop()
+            values = stack[len(stack) - arg :]
+            del stack[len(stack) - arg :]
+            if not isinstance(keys, tuple):
+                return None
+            stack.append(dict(zip(keys, values)))
+        elif op == "MAP_ADD" and arg == 1 and len(stack) >= 3:
+            value, key = stack.pop(), stack.pop()
+            target = stack[-1]
+            if not isinstance(target, dict):
+                return None
+            target[key] = value
+        elif op == "DICT_UPDATE" and arg == 1 and len(stack) >= 2:
+            update, target = stack.pop(), stack[-1]
+            if not isinstance(update, dict) or not isinstance(target, dict):
+                return None
+            target.update(update)
+        elif op == "STORE_NAME" and ins.argval == name:
+            value = stack[-1] if stack else None
+            if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+                return set(value)
+            return None
+        else:
+            stack = []
+    return None
+
+
 def _module_names(directory: Path) -> set[str]:
     names: set[str] = set()
     try:
@@ -239,9 +292,10 @@ def _module_names(directory: Path) -> set[str]:
     for entry in entries:
         if entry.name.startswith(("_", ".")):
             continue
-        if entry.suffix == ".py":
+        # ``.pyc``: sourceless modules in the Desktop bundle.
+        if entry.suffix in (".py", ".pyc"):
             names.add(entry.stem)
-        elif (entry / "__init__.py").is_file():
+        elif (entry / "__init__.py").is_file() or (entry / "__init__.pyc").is_file():
             names.add(entry.name)
     return names
 
@@ -260,7 +314,10 @@ def _installed_types(package: str, model_dirs: tuple[str, ...]) -> set[str] | No
     root = _package_dir(package)
     if root is None:
         return None
-    remapped = _dict_literal_keys(root / "utils.py", "MODEL_REMAPPING")
+    if (root / "utils.py").is_file():
+        remapped = _dict_literal_keys(root / "utils.py", "MODEL_REMAPPING")
+    else:
+        remapped = _pyc_dict_keys(root / "utils.pyc", "MODEL_REMAPPING")
     if remapped is None:
         return None
     names: set[str] = set(remapped)
