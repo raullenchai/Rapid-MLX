@@ -16,6 +16,8 @@ from rapid_mlx.agents.setup import (
 )
 from rapid_mlx.launch import claude_code, cline, continue_dev
 
+pytestmark = pytest.mark.usefixtures("agent_setup_host")
+
 
 def test_cline_setup_plan_preserves_other_providers_and_hides_keys(
     tmp_path, monkeypatch
@@ -810,7 +812,7 @@ def test_verify_server_checks_health_and_models(monkeypatch):
     ]
 
 
-def test_keyed_model_probe_uses_exported_server_key(monkeypatch):
+def test_keyed_model_probe_uses_exported_server_key(monkeypatch, agent_setup_host):
     from rapid_mlx.agents.adapter import _detect_running_model
 
     key = "test-agent-key"
@@ -841,6 +843,14 @@ def test_keyed_model_probe_uses_exported_server_key(monkeypatch):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+
+    # Only this test-owned listener may receive a real request.
+    def open_test_server(request, **kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        assert url.startswith(f"http://127.0.0.1:{server.server_port}/")
+        return agent_setup_host(request, **kwargs)
+
+    monkeypatch.setattr("urllib.request.urlopen", open_test_server)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -855,7 +865,11 @@ def test_keyed_model_probe_uses_exported_server_key(monkeypatch):
 
 @pytest.mark.parametrize(
     "requested,expected",
-    [("local-alias", "local-alias"), ("default", "organization/full-model")],
+    [
+        ("local-alias", "local-alias"),
+        ("organization/full-model", "organization/full-model"),
+        ("default", "local-alias"),
+    ],
 )
 def test_verify_server_reports_the_requested_advertised_alias(
     monkeypatch, requested, expected

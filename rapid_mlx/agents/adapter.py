@@ -759,7 +759,9 @@ def _detect_running_model(base_url: str) -> tuple[str | None, int | None]:
     Returns ``(model_id, context_window)`` — either or both may be
     ``None`` when the server is unreachable or doesn't report the field.
     """
-    models = _fetch_models(base_url)
+    from .chat_models import non_chat_kind
+
+    models = [m for m in _fetch_models(base_url) if not non_chat_kind(m)]
     chosen = None
     # Prefer short alias over full HF path
     for m in models:
