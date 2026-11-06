@@ -16,6 +16,10 @@ from rapid_mlx.byom.preflight import (
     nested_checkpoint_ignore_patterns,
 )
 from rapid_mlx.cli import _missing_download_bytes, _nested_checkpoint_ignore
+from tests.pull_integrity_helpers import (  # noqa: F401
+    hub_integrity_metadata,
+    snapshot_tree,
+)
 
 GB = 1024**3
 
@@ -86,3 +90,48 @@ def test_pull_ignore_patterns_are_best_effort():
         assert _nested_checkpoint_ignore("someone/x", None) == ["4-bit/*", "8-bit/*"]
     with patch("huggingface_hub.list_repo_files", side_effect=OSError("offline")):
         assert _nested_checkpoint_ignore("someone/x", None) is None
+
+
+def test_estimate_keeps_catalog_subfolder_selection():
+    info = SimpleNamespace(
+        sha="sha",
+        siblings=[
+            SimpleNamespace(rfilename=name, size=size)
+            for name, size in ROOT_PLUS_VARIANTS.items()
+        ],
+    )
+    with (
+        patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+        patch("huggingface_hub.model_info", return_value=info),
+        patch("rapid_mlx.model_aliases.checkpoint_prefix", return_value="4-bit/"),
+        patch("rapid_mlx.model_aliases.subfolder_allow_patterns", return_value=None),
+    ):
+        missing = _missing_download_bytes("someone/Root-Plus-Variants-MLX")
+    assert missing == 15 * GB + 1_000
+
+
+def test_pull_skips_sibling_checkpoint_folders(
+    hub_online_env, ample_pull_disk_space, monkeypatch, tmp_path, capsys
+):
+    import argparse
+
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_a, **_kw: False)
+    monkeypatch.setattr(cli, "_hf_cache_root", lambda _repo: tmp_path)
+    monkeypatch.setattr(
+        cli, "_nested_checkpoint_ignore", lambda *_a: ["4-bit/*", "8-bit/*"]
+    )
+    calls = []
+
+    def download(repo, **kwargs):
+        calls.append(kwargs)
+        return str(snapshot_tree(tmp_path))
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", download)
+    cli._pull_repository(
+        argparse.Namespace(model="owner/repo", bits=None, format=None),
+        revision_override="a" * 40,
+    )
+    assert calls == [{"revision": "a" * 40, "ignore_patterns": ["4-bit/*", "8-bit/*"]}]
+    assert "fetching only the root checkpoint" in capsys.readouterr().out
