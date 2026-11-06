@@ -286,3 +286,58 @@ Echo handoff: prioritize original model authors, downstream agents/apps, and
 our own rapid-mlx model organization; vet independent quantizers for ownership
 and ecosystem relationships before further outreach. The LiquidAI-owned card
 and other model-author submissions are outside this exclusion.
+
+## Fifth pass: original model authors and downstream applications
+
+The owner requested further outreach after excluding mlx-community. Echo
+continued on the existing outreach branch, with no runtime code changes.
+
+| Venue | Submission | Verified status |
+| --- | --- | --- |
+| LlamaIndex | [Documentation issue #24043](https://github.com/run-llama/llama_index/issues/24043) | Open; proposes an existing OpenAILike example, no new package |
+| OpenBMB official MiniCPM5-2B MLX model | [Model-card PR #3](https://huggingface.co/openbmb/MiniCPM5-2B-MLX/discussions/3) | Open PR; main unchanged |
+| Flowise Ideas | [Prepared proposal](flowise-local-chatflow-proposal.md) | Not published: GitHub CreateDiscussion returned FORBIDDEN for raullenchai |
+
+LlamaIndex's current CONTRIBUTING accepts documentation but no new integration
+packages. The issue follows its documentation template and uses existing
+`OpenAILike` fields checked in source: `is_chat_model`, explicit context budget,
+function-calling disabled initially, and structured output disabled initially.
+It calls out independent embedding configuration for RAG. AI assistance and
+lack of a fresh end-to-end run are explicit; no human review is falsely claimed.
+
+OpenBMB's README links the official `openbmb/MiniCPM5-2B-MLX` model and an
+existing MLX deployment cookbook. The card has no prior Rapid-MLX section or
+submission. The new README-only PR preserves metadata and prior content,
+adding the pinned `minicpm5-2b-4bit` path, loopback server, model discovery and
+basic request. Evidence is the historical 2026-09-13 small-agent harness
+report at Rapid commit `4d5ac49d9a5f82574db78df48d6965f05b2d1c51`:
+exact checkpoint `8a9ad7539ac86281d0ac2b017ba04a5de53fe9a3`, Rapid 0.14.1,
+MLX 0.32.2 / mlx-lm 0.31.3 on M2 Pro 32 GB, enhanced arm 25/36 completions.
+It explicitly does not certify physical 8 GB Macs or universal agent success.
+This is an original model-author repository, not mlx-community.
+
+Flowise CONTRIBUTING directs integration ideas to Discussions/Ideas; Show and
+Tell expects an exported JSON flow plus screenshot. Inspected the existing
+OpenAI Custom Model node: free-text model name, Base Path, credentials,
+streaming and `checkDenyList` handling. The proposal is intentionally an idea,
+not a tested/exported flow. GitHub rejected CreateDiscussion for permissions;
+no discussion was created and no issue was opened to bypass that restriction.
+The exact draft is retained for a permitted future submission.
+
+Deduplication found smolagents issue #2918 and open PR #2175, and closed
+Continue PR #11692; did not submit duplicates or add nudges. Searches checked
+both Rapid-MLX and RapidMLX on the selected new targets. Mistral cookbook was
+inspected but not submitted: a runnable, version-pinned Mistral-specific
+example should precede that contribution.
+
+Validation: Python AST, shell syntax and JSON payload checks passed. Model
+alias and immutable evidence were read; no new model downloads or live-model
+application tests. Both completed submissions disclose affiliation, telemetry
+and opt-out, and AI assistance. Re-read LlamaIndex's open issue and HF's open
+PR/main revision after submission.
+
+Handoff to Echo: answer in the existing LlamaIndex/OpenBMB threads; wait for
+placement feedback before implementation. Flowise submission requires an
+account with permission to create discussions; do not repeat the rejected call
+or switch to its bug tracker. Atlas owns any compatibility work. No automated
+monitoring or acceptance commitment.
