@@ -42,7 +42,7 @@ enum ModelDeletion {
         hubCacheRoot: URL? = nil
     ) async -> Outcome {
         let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ModelCatalog.isSafeAlias(trimmedAlias),
+        guard ModelCatalog.isSafeModelReference(trimmedAlias),
               !trimmedAlias.contains("..") else {
             return .failed(message: "That model name isn't valid.")
         }

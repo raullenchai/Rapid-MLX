@@ -392,7 +392,7 @@ final class DownloadManager {
     ) -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        guard ModelCatalog.isSafeAlias(trimmed) else {
+        guard ModelCatalog.isSafeModelReference(trimmed) else {
             if trimmed.utf8.count <= ModelCatalog.maxAliasBytes {
                 let job = Job(alias: trimmed, hfPath: hfPath, totalBytes: totalBytes, source: source)
                 job.failureKind = .downloadFailed
