@@ -2126,11 +2126,13 @@ async def release_idle_audio_lanes(ttl: float) -> None:
         # finished since the timer woke. Handoff checks are also repeated by
         # the dispatcher immediately before it reserves worker ownership.
         state = next((s for s in audio_worker.snapshot() if s["lane"] == lane), None)
+        idle_seconds = state["idle_seconds"] if state is not None else None
         if (
             state is None
             or state["state"] == "registered"
             or state["active_requests"] != 0
-            or state["idle_seconds"] < ttl
+            or not isinstance(idle_seconds, (int, float))
+            or idle_seconds < ttl
         ):
             return False
         unload = getattr(cached, "unload", None)
