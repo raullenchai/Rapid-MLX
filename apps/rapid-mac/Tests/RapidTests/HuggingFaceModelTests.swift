@@ -131,6 +131,49 @@ struct HuggingFaceModelTests {
         downloads.cancelDownload(alias: "org/new-model")
     }
 
+    @MainActor @Test func panelSearchShowsResultsBeforeSettingsAndRestoresSettingsWhenCleared() async throws {
+        let file = URL(fileURLWithPath: #filePath)
+        let desktop = file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fake = desktop.appendingPathComponent("scripts/fake-rapid-mlx.sh")
+        let server = ServerManager(testingState: .stopped, binaryPath: fake)
+        let downloads = DownloadManager(binaryPath: fake, binaryLocator: { fake })
+        let router = SettingsRouter()
+        let link = "https://hf.co/org/new-model/tree/main"
+        router.addFromHuggingFace(clipboard: link) {}
+        let stage = GoldenStage(
+            ScrollView {
+                SettingsModelManagementPanel()
+                    .environment(server).environment(downloads).environment(router)
+            }, size: CGSize(width: 900, height: 720)
+        )
+        try await stage.waitForIdentifier("Settings.ModelManagement.HFRow.Name")
+        try await stage.waitForText("No matches for")
+        #expect(stage.value(of: "Settings.ModelManagement.Search") == link)
+        let identifiers = stage.identifiers()
+        for identifier in [
+            "Settings.ModelManagement.FolderPath",
+            "Settings.ModelManagement.StorageSummary",
+            "Settings.ModelManagement.DownloadEndpoint",
+            "Settings.Models.ShowAllModelsToggle",
+            "Settings.ModelManagement.RecommendedHeader",
+        ] {
+            #expect(!identifiers.contains(identifier), "Search should hide \(identifier)")
+        }
+        let row = try #require(stage.frame(of: "Settings.ModelManagement.HFRow.Name"))
+        #expect(row.height > 0)
+        #expect(row.maxY <= stage.windowFrame.maxY)
+        #expect(row.minY >= stage.windowFrame.maxY - 720)
+
+        try stage.press("Settings.ModelManagement.ClearSearch")
+        try await stage.waitForIdentifier("Settings.ModelManagement.FolderPath")
+        #expect(stage.value(of: "Settings.ModelManagement.Search") == "")
+        #expect(!stage.identifiers().contains("Settings.ModelManagement.HFRow.Name"))
+
+        // Whitespace alone restores the default layout too.
+        try stage.setValue(" \n ", for: "Settings.ModelManagement.Search")
+        #expect(stage.identifiers().contains("Settings.ModelManagement.FolderPath"))
+    }
+
     @Test func checkUsesRealCatalogRunnerAndFakeContract() async throws {
         let file = URL(fileURLWithPath: #filePath)
         let desktop = file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
