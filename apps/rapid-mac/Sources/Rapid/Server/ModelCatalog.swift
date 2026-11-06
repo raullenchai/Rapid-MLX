@@ -2432,6 +2432,12 @@ enum ModelCatalog {
         }
     }
 
+    /// A name `rapid-mlx pull` / delete may act on: a catalog alias, or an
+    /// uncataloged Hugging Face `owner/name` repo added from a pasted link.
+    static func isSafeModelReference(_ value: String) -> Bool {
+        isSafeAlias(value) || (value.contains("/") && sanitizedHuggingFaceRepo(value) == value)
+    }
+
     static func sanitizedHuggingFaceRepo(_ repo: String?) -> String? {
         guard let repo else { return nil }
         let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)

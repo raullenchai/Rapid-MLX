@@ -312,6 +312,42 @@ struct ModelDeletionBoundaryTests {
         #expect(!FileManager.default.fileExists(atPath: target.path))
     }
 
+    @Test("Model added from a pasted Hugging Face link deletes by its repo id")
+    func pastedRepoIdDeletes() async throws {
+        let tmp = try makeTmpDir()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let hub = tmp.appendingPathComponent("hub", isDirectory: true)
+        try FileManager.default.createDirectory(at: hub, withIntermediateDirectories: true)
+
+        let repo = "mlx-community/Josiefied-Qwen3-4B-abliterated-v1-4bit"
+        let dirName = try #require(ModelDeletion._testingCacheDirectoryName(forRepo: repo))
+        let target = hub.appendingPathComponent(dirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("weights".utf8).write(to: target.appendingPathComponent("model.safetensors"))
+
+        let outcome = await ModelDeletion.deleteCachedModel(
+            binaryPath: URL(fileURLWithPath: "/bin/echo"),
+            alias: repo,
+            knownRepo: repo,
+            hubCacheRoot: hub
+        )
+        guard case .freed = outcome else {
+            Issue.record("Expected repo-id delete, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+    }
+
+    @Test("Repo-id shaped names that escape or nest are still rejected")
+    func malformedRepoIdRejected() async {
+        for name in ["org/../escape", "a/b/c", "/abs", "org/", "org name/x"] {
+            let outcome = await ModelDeletion.deleteCachedModel(
+                binaryPath: URL(fileURLWithPath: "/bin/echo"), alias: name
+            )
+            #expect(outcome == .failed(message: "That model name isn't valid."), "\(name)")
+        }
+    }
+
     private func makeTmpDir() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-model-deletion-\(UUID().uuidString)", isDirectory: true)

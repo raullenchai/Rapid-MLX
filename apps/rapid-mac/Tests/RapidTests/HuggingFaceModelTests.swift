@@ -126,7 +126,7 @@ struct HuggingFaceModelTests {
         #expect(router.modelSearchRequest == nil)
         #expect(stage.treeText().contains("community upload, not tested"))
         try stage.press("Settings.ModelManagement.HFRow.Download")
-        #expect(downloads.jobs["org/new-model"] != nil)
+        #expect(downloads.isDownloading("org/new-model"))
         #expect(downloads.jobs["https://hf.co/org/new-model/tree/main"] == nil)
         downloads.cancelDownload(alias: "org/new-model")
     }
