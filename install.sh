@@ -596,14 +596,16 @@ dispatch_venv() {
 
 # First-chat policy shared with Desktop onboarding (#2385): start with a small,
 # reliable baseline, but reuse a known RAM-safe cached model when one is already
-# runnable. The baseline mirrors ``QuickstartCoordinator.baselineChoice``:
-# <16 GB uses the safe 1.2B starter (Desktop's ``lowMemoryChoice``), >=16 GB the
-# 4B starter. Cached candidates include both curated picks from the current
-# RAM tier and every lower tier, walked downward; aliases above the current
-# tier never enter the list. The baseline is used only when none are cached.
+# runnable. The baseline mirrors ``QuickstartCoordinator.baselineChoice``: the
+# LFM2.5 2.6B starter on every Mac where it fits (8 GB and up), and the 1.2B
+# ``lowMemoryChoice`` only when RAM is unknown or below that. Cached candidates
+# include both curated picks from the current RAM tier and every lower tier,
+# walked downward; aliases above the current tier never enter the list, and the
+# other starter is never promoted from cache (Desktop excludes it too). The
+# baseline is used only when none are cached.
 starter_baseline_for_ram() {
-    if [ "$1" -ge 16 ]; then
-        printf '%s\n' "qwen3.5-4b-4bit"
+    if [ "$1" -ge 8 ]; then
+        printf '%s\n' "lfm2.5-2.6b-4bit"
     else
         printf '%s\n' "lfm2.5-1b-4bit"
     fi
@@ -632,9 +634,12 @@ EOF
 }
 
 select_starter_model() {
-    local ram="$1" cached="${2:-}" order candidate
+    local ram="$1" cached="${2:-}" order candidate baseline other
     order="$(starter_cached_order_for_ram "$ram")"
+    baseline="$(starter_baseline_for_ram "$ram")"
+    if [ "$baseline" = lfm2.5-1b-4bit ]; then other=lfm2.5-2.6b-4bit; else other=lfm2.5-1b-4bit; fi
     while IFS= read -r candidate; do
+        [ "$candidate" = "$other" ] && continue
         if starter_alias_is_cached "$candidate" "$cached"; then
             printf '%s\n' "$candidate"
             return 0
@@ -642,7 +647,7 @@ select_starter_model() {
     done <<EOF
 $order
 EOF
-    starter_baseline_for_ram "$ram"
+    printf '%s\n' "$baseline"
 }
 
 installed_cached_aliases() {
