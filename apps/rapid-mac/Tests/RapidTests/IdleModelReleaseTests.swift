@@ -16,10 +16,11 @@ struct IdleModelReleaseTests {
         }
     }
 
-    @Test func nativeUnloadStillStopsForIdleAudioLanes() throws {
-        // Native unload frees chat models with the API online; only a
-        // resident audio lane (no engine idle release) keeps the stop path.
+    @Test func nativeUnloadUsesAudioCapability() throws {
+        // Legacy audio runtimes retain the stop fallback.
         #expect(!IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 0))
+        #expect(!IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 1, nativeAudioUnloadActive: true))
+        #expect(IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: false, residentAudioLanes: 1, nativeAudioUnloadActive: true))
         #expect(IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: true, residentAudioLanes: 1))
         #expect(IdleModelReleasePreference.requiresProcessStop(nativeUnloadActive: false, residentAudioLanes: 0))
 

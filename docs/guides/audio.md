@@ -13,6 +13,18 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 - **Zero-shot voice cloning**: IndexTTS, Qwen3-TTS Base, F5-TTS, Chatterbox
 - **Audio Processing**: SAM-Audio (voice separation)
 
+## Idle model release
+
+Pass `--audio-lane-idle-ttl 300` to `rapid-mlx serve` to release cached STT,
+forced alignment, and TTS models after five minutes without lane activity.
+The default is `0` (disabled). The timer starts again after each operation
+completes and never releases a lane while a request holds its lock. The API
+and audio routes stay online; the next request reloads the model. Released
+lanes appear as `registered` in `/v1/models/residency` `audio_lanes`.
+This flag is independent of primary-model and secondary-model idle settings.
+Music generation uses a subprocess per request and has no persistent lane
+weights covered by this timer.
+
 ## Supported Aliases (R10-C1)
 
 `rapid-mlx serve <alias>` recognizes the audio alias surface below and routes the request to the audio engines (skipping the text-LM loader). Both the short alias and the full HuggingFace id work — pasting a full HF id from `mlx-community/...` of an audio model takes the audio path automatically.

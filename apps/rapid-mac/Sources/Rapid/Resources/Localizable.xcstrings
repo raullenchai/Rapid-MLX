@@ -3962,12 +3962,12 @@
         }
       }
     },
-    "Idle chat models are unloaded while the local API stays online; the next request reloads them. The server still stops if a dictation or speech model is idle, or if the runtime is too old for idle unload." : {
+    "Idle models are unloaded while the local API stays online; the next request reloads them. Older runtimes may stop the server to release idle models." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "闲置的聊天模型会被卸载，本地 API 保持在线，下一次请求会重新载入。若听写或语音模型闲置，或运行时版本过旧不支持闲置卸载，服务器仍会停止。"
+            "value" : "闲置模型会被卸载，本地 API 保持在线，下一次请求会重新载入。旧版运行时可能需要停止服务器以释放闲置模型。"
           }
         }
       }

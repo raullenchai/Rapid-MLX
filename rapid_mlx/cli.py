@@ -936,6 +936,10 @@ def _validate_primary_lifecycle_args(args) -> None:
     if not math.isfinite(idle_unload_seconds) or idle_unload_seconds < 0:
         print("Error: --idle-unload-seconds must be finite and >= 0")
         raise SystemExit(1)
+    audio_ttl = getattr(args, "audio_lane_idle_ttl", 0.0)
+    if not math.isfinite(audio_ttl) or audio_ttl < 0:
+        print("Error: --audio-lane-idle-ttl must be finite and >= 0")
+        raise SystemExit(1)
 
 
 def _port_is_busy(host: str, port: int) -> bool:
@@ -6339,6 +6343,7 @@ def _cua_only_incompatible_options(args) -> list[str]:
         "mllm": getattr(args, "mllm", False),
         "no-mllm": getattr(args, "no_mllm", False),
         "lazy-load": getattr(args, "lazy_load", False),
+        "audio-lane-idle-ttl": getattr(args, "audio_lane_idle_ttl", 0),
         "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0),
         "disk-stream": getattr(args, "disk_stream", False),
         "enable-dflash": getattr(args, "enable_dflash", False),
@@ -6402,6 +6407,7 @@ def _retrieval_only_incompatible_options(args) -> list[str]:
         "mllm": getattr(args, "mllm", False),
         "no-mllm": getattr(args, "no_mllm", False),
         "lazy-load": getattr(args, "lazy_load", False),
+        "audio-lane-idle-ttl": getattr(args, "audio_lane_idle_ttl", 0),
         "idle-unload-seconds": getattr(args, "idle_unload_seconds", 0)
         or getattr(args, "_idle_unload_seconds_explicit", False),
         "disk-stream": getattr(args, "disk_stream", False),
@@ -7280,6 +7286,11 @@ def serve_command(args):
             raise SystemExit(2)
 
     _validate_primary_lifecycle_args(args)
+    from . import server as audio_lifecycle_server
+
+    audio_lifecycle_server._audio_lane_idle_ttl = getattr(
+        args, "audio_lane_idle_ttl", 0.0
+    )
 
     if bounds_error := _vision_pixel_bounds_error(
         getattr(args, "vision_min_pixels", 0),

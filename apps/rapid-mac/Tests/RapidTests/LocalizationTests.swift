@@ -500,6 +500,7 @@ struct LocalizationTests {
             "Settings",
             "Appearance",
             "Privacy",
+            "Idle models are unloaded while the local API stays online; the next request reloads them. Older runtimes may stop the server to release idle models.",
             "About Rapid-MLX",
             "Ready",
             "Downloading",
