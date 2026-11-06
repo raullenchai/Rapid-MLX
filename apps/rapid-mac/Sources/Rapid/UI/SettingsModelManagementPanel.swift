@@ -184,7 +184,8 @@ struct SettingsModelManagementPanel: View {
         // Loading, empty, and catalog branches are deliberately exclusive.
         // Animating this container retains both conditional trees during the
         // transition, which can overlay the spinner on stale model rows.
-        .task(id: "\(query)\n\(hfCheckRevision)") {
+        // Downloads and deletions change the check's `cached` result, so rerun on them too.
+        .task(id: "\(query)\n\(hfCheckRevision)\n\(hfCacheSignature)") {
             await checkHuggingFace()
         }
         .onAppear { consumeModelSearchRequest() }
@@ -254,6 +255,10 @@ struct SettingsModelManagementPanel: View {
     }
 
     private var currentHFCheck: HuggingFaceModelCheck? { hfCheckedQuery == query ? hfCheck : nil }
+
+    private var hfCacheSignature: String {
+        catalog.filter(\.cached).map(\.alias).sorted().joined(separator: ",")
+    }
 
     private func consumeModelSearchRequest() {
         guard let request = settingsRouter?.modelSearchRequest else { return }

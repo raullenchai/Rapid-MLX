@@ -468,7 +468,8 @@ struct ModelPickerBar: View {
         }
         if let settingsRouter {
             Divider()
-            if state == .rows {
+            // Empty states included: a first-time user adds their first model here.
+            if state == .rows || state == .noDownloadedModels || state == .noVisibleModels {
                 Button("Add from Hugging Face…") {
                     settingsRouter.addFromHuggingFace(clipboard: NSPasteboard.general.string(forType: .string)) {
                         openWindow(id: "settings")
