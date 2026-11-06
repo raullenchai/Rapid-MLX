@@ -12107,17 +12107,23 @@ def _emit_completed_model_pull(
 
 
 def _nested_checkpoint_ignore(repo_id: str, revision: str | None) -> list[str] | None:
-    """``ignore_patterns`` for sibling quantization folders; best-effort."""
-    try:
-        from huggingface_hub import list_repo_files
+    """``ignore_patterns`` for sibling quantization folders.
 
-        from rapid_mlx.byom.preflight import nested_checkpoint_ignore_patterns
-
-        return nested_checkpoint_ignore_patterns(
-            list_repo_files(repo_id, revision=revision)
-        )
-    except Exception:
+    Fails closed through the Hub retry path: silently fetching every variant
+    would break the disk budget the size check approved for the root only.
+    Offline pulls download nothing, so they skip the listing.
+    """
+    if _offline_hub_mode_active():
         return None
+    from huggingface_hub import list_repo_files
+
+    from rapid_mlx.byom.preflight import nested_checkpoint_ignore_patterns
+
+    return nested_checkpoint_ignore_patterns(
+        _retry_hub_download(
+            lambda: list_repo_files(repo_id, revision=revision), repo_id
+        )
+    )
 
 
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:

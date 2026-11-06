@@ -23,7 +23,6 @@ string leaves the machine through this module.
 from __future__ import annotations
 
 import ast
-import glob
 import importlib.util
 import os
 import re
@@ -170,27 +169,36 @@ def is_runtime_weight(name: str) -> bool:
     )
 
 
-# Top-level folders a root checkpoint may load from (the MTP head sidecar).
-_ROOT_SIDECAR_DIRS = frozenset({"mtp"})
+# Folder names that denote another quantization of the same model
+# (``4-bit``, ``8bit``, ``mxfp4``, ``q4_k``...). Other nested checkpoints may
+# be components the root model needs (the ``mtp/`` head sidecar, encoders),
+# so only these are ever skipped.
+_VARIANT_DIR = re.compile(
+    r"(?i)^(?:\d+(?:\.\d+)?[-_]?bits?|q\d+(?:[-_]\w+)?|mx?fp\d+|nvfp\d+"
+    r"|bf16|int\d+|w\d+a\d+|dwq|oq\d+\w*)$"
+)
 
 
 def nested_checkpoint_dirs(files: Iterable[str]) -> tuple[str, ...]:
-    """Sibling checkpoints shipped next to a root checkpoint.
+    """Sibling quantizations shipped next to a root checkpoint.
 
     Some repos publish a full checkpoint at the root plus one folder per
     alternative quantization (``4-bit/``, ``8-bit/``...). The loader only
     reads the root, so those folders must not be downloaded or priced.
     Empty unless the root itself is a checkpoint.
     """
-    names = tuple(files)
+    names = set(files)
     if "config.json" not in names or not any(is_runtime_weight(n) for n in names):
         return ()
     dirs: set[str] = set()
     for name in names:
         top, sep, rest = name.partition("/")
-        if not sep or top in _ROOT_SIDECAR_DIRS:
-            continue
-        if f"{top}/config.json" in names and rest.lower().endswith(".safetensors"):
+        if (
+            sep
+            and _VARIANT_DIR.match(top)
+            and f"{top}/config.json" in names
+            and rest.lower().endswith(".safetensors")
+        ):
             dirs.add(top)
     return tuple(sorted(dirs))
 
@@ -198,7 +206,7 @@ def nested_checkpoint_dirs(files: Iterable[str]) -> tuple[str, ...]:
 def nested_checkpoint_ignore_patterns(files: Iterable[str]) -> list[str] | None:
     """``ignore_patterns`` that skip :func:`nested_checkpoint_dirs`, or ``None``."""
     dirs = nested_checkpoint_dirs(files)
-    return [f"{glob.escape(d)}/*" for d in dirs] or None
+    return [f"{d}/*" for d in dirs] or None
 
 
 def in_nested_checkpoint(name: str, dirs: Iterable[str]) -> bool:

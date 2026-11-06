@@ -57,14 +57,20 @@ def test_folders_without_a_checkpoint_are_kept():
     assert nested_checkpoint_dirs(files) == ()
 
 
-def test_glob_metacharacters_in_folder_names_are_escaped():
+def test_only_quantization_named_folders_are_skipped():
+    # A nested checkpoint that is not named like a quantization may be a
+    # component the root model loads, so it stays.
     files = [
         "config.json",
         "model.safetensors",
-        "q[4]/config.json",
-        "q[4]/m.safetensors",
+        "vision_encoder/config.json",
+        "vision_encoder/model.safetensors",
+        "8bit/config.json",
+        "8bit/model.safetensors",
+        "mxfp4/config.json",
+        "mxfp4/model.safetensors",
     ]
-    assert nested_checkpoint_ignore_patterns(files) == ["q[[]4]/*"]
+    assert nested_checkpoint_dirs(files) == ("8bit", "mxfp4")
 
 
 def test_download_estimate_prices_only_the_root_checkpoint():
@@ -83,12 +89,25 @@ def test_download_estimate_prices_only_the_root_checkpoint():
     assert missing == 16 * GB + 3_000
 
 
-def test_pull_ignore_patterns_are_best_effort():
+def test_pull_ignore_listing_fails_closed_and_skips_offline(monkeypatch):
+    import pytest
+
+    from rapid_mlx import cli
+
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: False)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
     with patch(
         "huggingface_hub.list_repo_files", return_value=list(ROOT_PLUS_VARIANTS)
     ):
         assert _nested_checkpoint_ignore("someone/x", None) == ["4-bit/*", "8-bit/*"]
-    with patch("huggingface_hub.list_repo_files", side_effect=OSError("offline")):
+    # A failed listing must not silently widen the download to every variant.
+    with (
+        patch("huggingface_hub.list_repo_files", side_effect=OSError("offline")),
+        pytest.raises(OSError),
+    ):
+        _nested_checkpoint_ignore("someone/x", None)
+    monkeypatch.setattr(cli, "_offline_hub_mode_active", lambda: True)
+    with patch("huggingface_hub.list_repo_files", side_effect=AssertionError):
         assert _nested_checkpoint_ignore("someone/x", None) is None
 
 
