@@ -23,6 +23,7 @@ string leaves the machine through this module.
 from __future__ import annotations
 
 import ast
+import glob
 import importlib.util
 import os
 import re
@@ -167,6 +168,41 @@ def is_runtime_weight(name: str) -> bool:
     return (
         "/" not in name and lower.startswith("model") and lower.endswith(".safetensors")
     )
+
+
+# Top-level folders a root checkpoint may load from (the MTP head sidecar).
+_ROOT_SIDECAR_DIRS = frozenset({"mtp"})
+
+
+def nested_checkpoint_dirs(files: Iterable[str]) -> tuple[str, ...]:
+    """Sibling checkpoints shipped next to a root checkpoint.
+
+    Some repos publish a full checkpoint at the root plus one folder per
+    alternative quantization (``4-bit/``, ``8-bit/``...). The loader only
+    reads the root, so those folders must not be downloaded or priced.
+    Empty unless the root itself is a checkpoint.
+    """
+    names = tuple(files)
+    if "config.json" not in names or not any(is_runtime_weight(n) for n in names):
+        return ()
+    dirs: set[str] = set()
+    for name in names:
+        top, sep, rest = name.partition("/")
+        if not sep or top in _ROOT_SIDECAR_DIRS:
+            continue
+        if f"{top}/config.json" in names and rest.lower().endswith(".safetensors"):
+            dirs.add(top)
+    return tuple(sorted(dirs))
+
+
+def nested_checkpoint_ignore_patterns(files: Iterable[str]) -> list[str] | None:
+    """``ignore_patterns`` that skip :func:`nested_checkpoint_dirs`, or ``None``."""
+    dirs = nested_checkpoint_dirs(files)
+    return [f"{glob.escape(d)}/*" for d in dirs] or None
+
+
+def in_nested_checkpoint(name: str, dirs: Iterable[str]) -> bool:
+    return any(name.startswith(f"{d}/") for d in dirs)
 
 
 def _has_suffix(files: Iterable[str], suffix: str) -> bool:
@@ -473,6 +509,7 @@ def inspect_hub(repo_id: str, *, raise_errors: bool = False) -> Inspection | Non
     )
     from rapid_mlx._download_gate import _sibling_size
 
+    nested_dirs = nested_checkpoint_dirs(files)
     weight_bytes = sum(
         _sibling_size(s) for s in siblings if is_runtime_weight(s.rfilename)
     )
@@ -499,7 +536,12 @@ def inspect_hub(repo_id: str, *, raise_errors: bool = False) -> Inspection | Non
         quantized_from=quantized_from(hub_tags(info)),
         license=card_license(getattr(info, "card_data", None)),
         tags=hub_tags(info),
-        download_bytes=sum(_sibling_size(s) for s in siblings) or None,
+        download_bytes=sum(
+            _sibling_size(s)
+            for s in siblings
+            if not in_nested_checkpoint(s.rfilename, nested_dirs)
+        )
+        or None,
         public=getattr(info, "private", None) is False
         and getattr(info, "gated", None) is False,
     )
