@@ -502,3 +502,29 @@ def test_the_block_feeds_envelope_build_batch_item():
     assert properties["nth_model_served"] == 3
     assert properties["$geoip_disable"] is True
     assert properties["$process_person_profile"] is False
+
+
+@pytest.mark.parametrize("request_surface", ["cli", "desktop"])
+def test_model_ref_checked_survives_envelope_construction(request_surface):
+    """``model_ref_checked`` must not reuse a common-prop name, or the
+    envelope builder drops the whole event."""
+    block = _build()
+    assert block is not None
+    item = envelope.build_batch_item(
+        "model_ref_checked",
+        {
+            "model": "<custom>",
+            "preflight": "refused",
+            "verdict": "unsupported",
+            "reason": "unsupported_format",
+            "in_catalog": False,
+            "ref_form": "hf_url",
+            "request_surface": request_surface,
+        },
+        block,
+    )
+    assert item is not None
+    properties = item["properties"]
+    assert isinstance(properties, dict)
+    assert properties["request_surface"] == request_surface
+    assert properties["surface"] == "cli"

@@ -949,7 +949,7 @@ enum ModelCatalog {
         var entries: [(String, String?)] = []
         var profiles: [String: CatalogProfileCapability] = [:]
         var speculative: [String: SpeculativeDecodingPreset] = [:]
-        for row in textRows {
+        for row in textRows where row["standalone"] as? Bool != false {
             guard let alias = row["alias"] as? String, isSafeAlias(alias) else { continue }
             entries.append((alias, sanitizedHuggingFaceRepo(row["hf_path"] as? String)))
             if let isBuiltin = row["is_builtin"] as? Bool,
@@ -1000,7 +1000,7 @@ enum ModelCatalog {
                 )
             }
         }
-        var excluded: Set<String> = []
+        var excluded = nonStandaloneAliases(root)
         for key in ["audio", "video", "image"] {
             for row in root[key] as? [[String: Any]] ?? [] {
                 if let alias = row["alias"] as? String, isSafeAlias(alias) {
@@ -1009,6 +1009,16 @@ enum ModelCatalog {
             }
         }
         return (entries, excluded, speculative, profiles)
+    }
+
+    /// The engine owns draft detection; preserve rows in JSON for inventory consumers.
+    private static func nonStandaloneAliases(_ root: [String: Any]) -> Set<String> {
+        Set(["text", "audio", "video", "image"].flatMap { key in
+            (root[key] as? [[String: Any]] ?? []).compactMap { row -> String? in
+                guard row["standalone"] as? Bool == false else { return nil }
+                return row["alias"] as? String
+            }
+        })
     }
 
     /// Prefer the atomic alias + registry-model graph when a new sidecar
@@ -1337,7 +1347,8 @@ enum ModelCatalog {
                 isTextOnly: isTextOnly
             ))
         }
-        return entries
+        let hidden = nonStandaloneAliases(root)
+        return entries.filter { !hidden.contains($0.alias) }
     }
 
     private static func isSHA256Address(_ value: String) -> Bool {
@@ -2289,6 +2300,7 @@ enum ModelCatalog {
                 invalidRows += 1
                 continue
             }
+            if row["standalone"] as? Bool == false { continue rowLoop }
             guard let state = row["state"] as? String,
                   let repo = sanitizedHuggingFaceRepo(row["repo"] as? String),
                   let bytes = row["size_bytes"] as? NSNumber,
@@ -2420,6 +2432,12 @@ enum ModelCatalog {
         }
     }
 
+    /// A name `rapid-mlx pull` / delete may act on: a catalog alias, or an
+    /// uncataloged Hugging Face `owner/name` repo added from a pasted link.
+    static func isSafeModelReference(_ value: String) -> Bool {
+        isSafeAlias(value) || (value.contains("/") && sanitizedHuggingFaceRepo(value) == value)
+    }
+
     static func sanitizedHuggingFaceRepo(_ repo: String?) -> String? {
         guard let repo else { return nil }
         let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2510,6 +2528,16 @@ enum ModelCatalog {
                 ambient: ProcessInfo.processInfo.environment,
                 hubCacheOverride: hubCacheOverride
             )
+            if args.first == "pull" {
+                // `pull --check` is a user-initiated Hugging Face check, not a
+                // background catalog probe: let the user's telemetry consent
+                // decide (the sidecar role already marks it as Desktop), so
+                // drop the #1415 probe opt-out and keep any ambient value.
+                task.environment?["DO_NOT_TRACK"] = ProcessInfo.processInfo.environment["DO_NOT_TRACK"]
+                var env = task.environment ?? [:]
+                ModelDownloadEndpointPreference.apply(ModelDownloadEndpointPreference.storedEndpoint(), env: &env)
+                task.environment = env
+            }
             let stdout = Pipe()
             let stderr = Pipe()
             task.standardOutput = stdout
@@ -2633,6 +2661,19 @@ enum ModelCatalog {
             }
         }
         return data
+    }
+
+    /// Uses the same bounded, cancellable subprocess runner as catalog probes.
+    static func checkHuggingFace(reference: String, binary: URL) async throws -> HuggingFaceModelCheck {
+        let result = await runRapidMlxResult(
+            binary: binary, args: ["pull", reference, "--check", "--json"],
+            hubCacheOverride: ModelsFolderPreference.validatedOverrideURL()
+        )
+        try Task.checkCancellation()
+        guard result.succeeded else { throw CocoaError(.executableRuntimeMismatch) }
+        let check = try JSONDecoder().decode(HuggingFaceModelCheck.self, from: Data(result.stdout.utf8))
+        guard check.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
+        return check
     }
 
     static func _testingRunRapidMlx(binary: URL, args: [String]) async -> String {

@@ -108,14 +108,10 @@ enum ModelBrandStyle {
     /// contract, not merely a decorative glyph.
     ///
     /// Keep the explicit text-only exceptions aligned with server alias pins.
-    /// In particular, the 4-bit Qwen3.5 4B alias currently carries
-    /// ``is_text_only: true`` in ``aliases.json`` and the server intentionally
-    /// rejects ``--mllm`` for it. Its 6/8-bit siblings are not pinned and keep
-    /// their checkpoint's vision tower.
+    /// Qwen3.5 4B 4-bit retains its vision tower in the current catalog.
     static func modelType(forAlias alias: String) -> ModelType {
         let a = alias.lowercased()
-        if a == "qwen3.5-4b-4bit"
-            || a == "qwen3.5-122b-mxfp4"
+        if a == "qwen3.5-122b-mxfp4"
             || a == "qwen3.6-35b"
             || a == "qwen3.6-27b-mtp-4bit"
             || a == "qwen3.6-35b-mtp-4bit"
@@ -146,14 +142,13 @@ enum ModelBrandStyle {
 
     /// A human-readable family name for the row's meta line. Prefers
     /// ``ModelInfoCatalog.familyAndContext`` (rich version-aware names
-    /// like "Qwen 3.6") but overrides the two aliases it labels
-    /// "Unknown" — `gpt-oss` and `devstral` — with a correct family so
-    /// the caption never reads "Unknown · 8-bit" for a shipped model.
+    /// like "Qwen 3.6"), preserving established overrides. New families
+    /// derive their label from the alias instead of a generic placeholder.
     static func displayFamily(forAlias alias: String) -> String {
         let a = alias.lowercased()
         if a.contains("gpt-oss") || a.contains("gptoss") { return "GPT-OSS" }
         if a.contains("devstral") { return "Devstral" }
         let family = ModelInfoCatalog.familyAndContext(for: alias).family
-        return family == "Unknown" ? "Model" : family
+        return family == "Unknown" ? ModelDisplayName.aliasDisplayParts(alias).family : family
     }
 }

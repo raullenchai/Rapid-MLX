@@ -12,10 +12,10 @@ from tests.test_continuous_mtp_qualification import _parsed_serve_args, _StopSer
 
 
 @pytest.fixture
-def serve_download(monkeypatch, capsys):
+def serve_download(monkeypatch, capsys, request):
     """Run real serve preflight, observing selection before and after download."""
-    args = _parsed_serve_args("qwen3.8-27b-4bit")
-    state = SimpleNamespace(downloaded=False, before=None, stderr_before="")
+    args = _parsed_serve_args(getattr(request, "param", "qwen3.8-27b-4bit"))
+    state = SimpleNamespace(args=args, downloaded=False, before=None, stderr_before="")
 
     ensure_model_downloaded = cli._ensure_model_downloaded
 
@@ -130,7 +130,7 @@ def test_uninspectable_or_ambiguous_cache_skips_immediately(
 @pytest.mark.parametrize(
     "same_repo,available_after", [(True, True), (True, False), (False, True)]
 )
-def test_missing_sidecar_defers_only_for_target_repo(
+def test_missing_sidecar_defers_until_provisioning(
     monkeypatch, serve_download, same_repo, available_after
 ):
     state, run = serve_download
@@ -149,9 +149,9 @@ def test_missing_sidecar_defers_only_for_target_repo(
         lambda _: "/cached/mtp" if state.downloaded and available_after else None,
     )
 
-    enabled = same_repo and available_after
+    enabled = available_after
     run(
-        deferred=same_repo,
+        deferred=True,
         enabled=enabled,
         skip_message=None
         if enabled

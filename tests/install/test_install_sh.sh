@@ -698,12 +698,16 @@ check "exit during stash retains its exit status" "$status" 143
 check_old_install "$FIXTURE" "exit during stash invokes rollback trap"
 
 # ── 13. first-chat starter mirrors Desktop Quickstart (#2385) ────────────────
-check "15 GB fresh install uses the safe 1.2B starter" \
-    "$(select_starter_model 15 '')" "lfm2.5-1b-4bit"
-check "16 GB fresh install uses the standard starter" \
-    "$(select_starter_model 16 '')" "qwen3.5-4b-4bit"
+check "8 GB fresh install uses the LFM2.5 2.6B starter" \
+    "$(select_starter_model 8 '')" "lfm2.5-2.6b-4bit"
+check "16 GB fresh install uses the LFM2.5 2.6B starter" \
+    "$(select_starter_model 16 '')" "lfm2.5-2.6b-4bit"
 check "32 GB fresh install does not suggest an uncached 27B model" \
-    "$(select_starter_model 32 '')" "qwen3.5-4b-4bit"
+    "$(select_starter_model 32 '')" "lfm2.5-2.6b-4bit"
+check "unknown RAM fresh install uses the safe 1.2B starter" \
+    "$(select_starter_model 0 '')" "lfm2.5-1b-4bit"
+check "16 GB cached Qwen 3.5 4B is still reused" \
+    "$(select_starter_model 16 'qwen3.5-4b-4bit')" "qwen3.5-4b-4bit"
 check "eligible cached model is preferred" \
     "$(select_starter_model 32 $'qwen3.5-4b-4bit\nqwen3.8-27b-4bit')" \
     "qwen3.8-27b-4bit"
@@ -716,12 +720,12 @@ check "8 GB cached smart pick is preferred over an uncached baseline" \
 check "unknown RAM ignores a cached larger model" \
     "$(select_starter_model 0 'lfm2.5-2.6b-4bit')" \
     "lfm2.5-1b-4bit"
-check "16 GB cached lower-tier fast pick is preferred over an uncached baseline" \
+check "cached 1.2B is not promoted over the 2.6B starter" \
     "$(select_starter_model 16 'lfm2.5-1b-4bit')" \
-    "lfm2.5-1b-4bit"
+    "lfm2.5-2.6b-4bit"
 check "cache matching is exact, not a substring" \
     "$(select_starter_model 32 'prefix-qwen3.8-27b-4bit-suffix')" \
-    "qwen3.5-4b-4bit"
+    "lfm2.5-2.6b-4bit"
 
 CACHE_FIXTURE="$WORK/cache_fixture"; mkdir -p "$CACHE_FIXTURE/bin"
 cat > "$CACHE_FIXTURE/bin/rapid-mlx" <<'EOF'
@@ -775,7 +779,7 @@ EOF
 RECOMMENDED_MODEL="stale"
 refresh_starter_from_installed_cache
 check "failed cache scan with valid partial JSON falls back to RAM baseline" \
-    "$RECOMMENDED_MODEL" "qwen3.5-4b-4bit"
+    "$RECOMMENDED_MODEL" "lfm2.5-2.6b-4bit"
 INSTALL_DIR="$OLD_INSTALL_DIR"
 
 # Standalone downloads use separate temporary directories and clean up.

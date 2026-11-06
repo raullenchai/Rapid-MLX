@@ -236,7 +236,7 @@ cp "$FAKE_CLI" "$HOME/.rapid-mlx/bin/rapid-mlx"
             self.assertTrue((home / ".local/bin/rapid-mlx").is_symlink())
             self.assertIn("Rapid-MLX installed!", result.stdout)
             self.assertIn("Quick start:", result.stdout)
-            self.assertIn("rapid-mlx chat qwen3.5-4b-4bit", result.stdout)
+            self.assertIn("rapid-mlx chat lfm2.5-2.6b-4bit", result.stdout)
 
     def test_streamed_bootstrap(self):
         self.run_installer()

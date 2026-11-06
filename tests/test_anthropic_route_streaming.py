@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from rapid_mlx.config import reset_config
+from rapid_mlx.config import get_config, reset_config
 from rapid_mlx.routes.anthropic import router
 
 
@@ -287,6 +287,44 @@ def test_anthropic_stream_route_effort_preserves_thinking_intent(with_tools):
 
     assert response.status_code == 200, response.text
     assert engine.calls[0]["kwargs"]["enable_thinking"] is True
+
+
+@pytest.mark.parametrize(
+    "default_effort, output_effort, expected_chars",
+    [
+        (None, None, 8192),
+        ("low", None, 2048),
+        ("max", None, 9000),
+        ("low", "max", 9000),
+    ],
+)
+def test_anthropic_stream_adaptive_reasoning_cap(
+    default_effort, output_effort, expected_chars
+):
+    engine = _StreamingEngine(["<think>" + "x" * 9000, "</think>answer"])
+    client = _make_reasoning_client(engine)
+    get_config().default_reasoning_effort = default_effort
+    payload = {
+        "model": "test-model",
+        "max_tokens": 4096,
+        "stream": True,
+        "thinking": {"type": "adaptive"},
+        "messages": [{"role": "user", "content": "answer directly"}],
+    }
+    if output_effort is not None:
+        payload["output_config"] = {"effort": output_effort}
+
+    response = client.post("/v1/messages", json=payload)
+
+    assert response.status_code == 200, response.text
+    assert engine.calls[0]["kwargs"]["enable_thinking"] is True
+    thinking = "".join(
+        event["delta"]["thinking"]
+        for event in _parse_sse_data(response.text)
+        if event.get("delta", {}).get("type") == "thinking_delta"
+    )
+    # The streaming fallback approximates tokens using four characters each.
+    assert thinking == "x" * expected_chars
 
 
 def test_anthropic_stream_route_reasoning_parser_with_explicit_thinking_still_works():

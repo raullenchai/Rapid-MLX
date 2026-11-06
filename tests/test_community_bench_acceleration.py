@@ -926,7 +926,9 @@ def test_download_wrapper_delegates(monkeypatch):
     from rapid_mlx.community_bench import local_runner as lr
 
     monkeypatch.setattr(
-        cli, "_ensure_model_downloaded", lambda model: ("downloaded", model)
+        cli,
+        "_ensure_model_downloaded",
+        lambda model, *, auto_mtp=True: ("downloaded", model),
     )
     assert lr._ensure_model_downloaded("org/model") == ("downloaded", "org/model")
 

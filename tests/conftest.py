@@ -175,6 +175,16 @@ def _benchmark_host_memory(request, monkeypatch):
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_hub_sibling_listing(monkeypatch):
+    """Mocked pull journeys have no Hub: report no sibling quant folders.
+
+    ``pull`` lists the repo to skip per-quantization folders and fails closed
+    when it cannot; tests covering that listing call the helper directly.
+    """
+    monkeypatch.setattr("rapid_mlx.cli._nested_checkpoint_ignore", lambda *_a: None)
+
+
 @pytest.fixture
 def ample_pull_disk_space(monkeypatch):
     """Keep mocked pull journeys independent of the runner's free disk.
@@ -673,6 +683,7 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     try:
         from rapid_mlx.telemetry import (
             build_gate,
+            byom_funnel,
             consent_runtime,
             model_events,
             posthog_sender,
@@ -703,6 +714,8 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     model_events._reset_for_tests()
     server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
+    # The BYOM funnel context (ref_form, preflight) is a process singleton too.
+    byom_funnel._reset_for_tests()
     # Server lane latches are process singletons too: a pending/emitted model
     # event from one test must not suppress the next test's lifecycle event.
     _reset_server_telemetry_latches()
@@ -716,6 +729,7 @@ def _isolate_v2_telemetry_process_state(monkeypatch, tmp_path):
     model_events._reset_for_tests()
     server_start._reset_for_tests()
     consent_runtime._reset_runtime_state_for_tests()
+    byom_funnel._reset_for_tests()
 
 
 # One-time availability probe for the Apple-only ``mlx`` runtime. Nothing

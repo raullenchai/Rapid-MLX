@@ -21,19 +21,9 @@ FAKE_ALIAS="fake-alias"
 # baselines for the same reason as FAKE_ALIAS: renaming a fixture must not read
 # as a structural change to the UI.
 FAKE_IMAGE_ALIAS="fake-image-alias"
-# Phase B made the first-run wizard's "RECOMMENDED FOR YOUR N GB MAC" row
-# derive from the host's REAL physical RAM. A single committed golden
-# baseline therefore can't be host-independent: a 14 GB CI runner lands on
-# the 8 GB tier (lfm2.5-2.6B) while a 256 GB release Mac lands on 48+
-# (qwen3.8-27B + qwen3.6-35B). The golden gate runs in BOTH places (CI and
-# the operator's release Mac), so every persona that renders the chooser
-# pins the same tier to keep its AX baseline deterministic.
-# 8 = the 8 GB tier, which is exactly what the committed compact-chooser
-# baseline captures (safe fast pick lfm2.5-1B as the starter; smart
-# lfm2.5-2.6B as the optional memory-guarded capability upgrade). Pinning 8 also happens to
-# be the safe tier for cached-curated-tradeup: its assertion needs
-# qwen3.5-4b to stay a native curated trade-up, which 8 GB guarantees
-# (16/24/32 GB hosts fold qwen3.5-4b into the recommended row instead).
+# Pin chooser personas to 8 GB so RAM-aware trade-ups remain deterministic.
+# LFM2.5 2.6B is the starter wherever it fits; Qwen 3.5 4B follows it as
+# the image-capable alternative, then the remaining RAM-aware trade-ups.
 GOLDEN_RAM_GB=8
 GOLDEN_BRAND="Apple M1"
 # The telemetry v2 notice begins at 0.15.0. Pin the throwaway fresh-install
@@ -2226,7 +2216,12 @@ flow_fresh_install() {
     see_main "$OUT/compact.json"
     baseline onboarding-direction-d.compact "$OUT/compact.json"
     press "$OUT/compact.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/chooser-settled.json"
+    wait_selected Quickstart.Choice.lfm2.5-2.6b-4bit "$OUT/chooser-settled.json"
+    jq -e '.data.ui_elements as $rows
+            | any($rows[]?; .identifier == "Quickstart.Choice.qwen3.5-4b-4bit")
+              and (any($rows[]?; .identifier == "Quickstart.Choice.lfm2.5-1b-4bit") | not)' \
+        "$OUT/chooser-settled.json" >/dev/null \
+        || die "fitting starter shortlist must include Qwen 4B and keep 1.2B in Browse"
     baseline onboarding-direction-d.compact-chooser "$OUT/chooser-settled.json"
     press "$OUT/chooser-settled.json" Quickstart.Footer.Back "$OUT/chooser-back.json"
     wait_identifier Quickstart.Skip "$OUT/welcome-returned.json"
@@ -2242,7 +2237,7 @@ flow_fresh_install() {
         || die "launch policy did not persist marker-only default-on state"
     assert_one_telemetry_request launch-policy "$policy_not_before"
     selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
-    [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
+    [[ "$selected_model" == *"lfm2.5-2.6b-4bit"* ]] \
         || die "#2219: 8 GB onboarding selected '$selected_model' instead of the compact starter"
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
         jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
@@ -2371,12 +2366,9 @@ flow_cached_quickstart() {
     assert_tree_text "$OUT/selected.json" "Start existing model"
     press "$OUT/selected.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
 
-    wait_fake_event_after_start \
+    wait_fake_event \
         ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
-        "cached Quickstart did not start the selected model" \
-        cached-quickstart \
-        Quickstart.Memory.Load \
-        Quickstart.Memory.LoadAnyway
+        "cached Quickstart did not start the selected model"
     jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-alias"
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
@@ -2422,10 +2414,9 @@ flow_cached_uncataloged_quickstart() {
     assert_tree_text "$OUT/chooser.json" "not catalog-tested"
     assert_tree_text "$OUT/chooser.json" "Start existing model"
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
-    wait_fake_event_after_start \
+    wait_fake_event \
         '.event == "server_started" and .alias == "fixture/Local-Chat"' \
-        "uncataloged cached default did not start" uncataloged \
-        Quickstart.Memory.Load Quickstart.Memory.LoadAnyway
+        "uncataloged cached default did not start"
     wait_fake_sidecar_health "fixture/Local-Chat" "uncataloged cached chat"
     wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json" 240
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting "$OUT/start-chatting.json"
@@ -2451,27 +2442,23 @@ flow_cached_curated_tradeup() {
     # choice with a disabled footer.
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
-    wait_selected Quickstart.CachedModel.qwen3.5-4b-4bit "$OUT/chooser.json"
+    wait_selected Quickstart.CachedModel.lfm2.5-2.6b-4bit "$OUT/chooser.json"
     jq -e '.data.ui_elements[]?
-            | select(.identifier == "Quickstart.CachedModel.qwen3.5-4b-4bit")
-            | select((.description // "") | contains("on this Mac, size 2.9 GB"))
+            | select(.identifier == "Quickstart.CachedModel.lfm2.5-2.6b-4bit")
+            | select((.description // "") | contains("on this Mac, size 1.6 GB"))
             | select(((.description // "") | test("\\bdownload\\s+~?[0-9]"; "i")) | not)' \
         "$OUT/chooser.json" >/dev/null \
         || die "cached hardware-fit starter is hidden or advertises a download"
     # Finish the exact 16 GB starter journey without a network pull and
     # show the ready model in the empty-state subtitle.
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
-    # The 16 GB fixture owns recommendation policy, not the host's live
-    # pressure. A busy hosted runner can therefore (correctly) ask for the
-    # existing explicit memory confirmation before it starts this zero-weight
-    # fake. Success still requires the exact independent sidecar event.
-    wait_fake_event_after_start \
-        '.event == "server_started" and .alias == "qwen3.5-4b-4bit"' \
-        "cached 16 GB starter did not start" \
-        starter \
-        Quickstart.Memory.Load \
-        Quickstart.Memory.LoadAnyway
-    wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"
+    # Onboarding starts directly without a memory confirmation, even when
+    # host pressure differs from the recommendation fixture. Still require
+    # the exact independent sidecar event.
+    wait_fake_event \
+        '.event == "server_started" and .alias == "lfm2.5-2.6b-4bit"' \
+        "cached 16 GB starter did not start"
+    wait_fake_sidecar_health "lfm2.5-2.6b-4bit" "cached 16 GB starter"
     # ``server_started`` is emitted before the fake binds HTTP, and a
     # constrained hosted runner can spend more than the default 20-second AX
     # budget moving from healthy sidecar to the final SwiftUI readiness step.
@@ -2482,7 +2469,7 @@ flow_cached_curated_tradeup() {
     press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
         "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
-    assert_tree_text "$OUT/ready.json" "Chatting with Qwen 3.5 · 4B"
+    assert_tree_text "$OUT/ready.json" "Chatting with LFM2.5 · 2.6B"
     cleanup_persona
 }
 
@@ -2523,26 +2510,24 @@ flow_download_progress() {
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     # Cached preference is the normal first-run policy now. Select the explicit
-    # low-memory download so this journey still exercises the 633 MB overrun
+    # starter download so this journey still exercises the 2 GiB overrun
     # fixture rather than accidentally starting the cached fake model.
-    wait_identifier Quickstart.Choice.lfm2.5-1b-4bit "$OUT/chooser.json"
-    press "$OUT/chooser.json" Quickstart.Choice.lfm2.5-1b-4bit "$OUT/select-download.json"
-    wait_selected Quickstart.Choice.lfm2.5-1b-4bit "$OUT/selected-download.json"
-    press "$OUT/selected-download.json" Quickstart.Footer.Primary "$OUT/review-open.json"
-    wait_identifier Quickstart.Review.Alias "$OUT/review.json"
-    assert_tree_text "$OUT/review.json" "Download & start"
+    wait_identifier Quickstart.Choice.lfm2.5-2.6b-4bit "$OUT/chooser.json"
+    press "$OUT/chooser.json" Quickstart.Choice.lfm2.5-2.6b-4bit "$OUT/select-download.json"
+    wait_selected Quickstart.Choice.lfm2.5-2.6b-4bit "$OUT/selected-download.json"
+    assert_tree_text "$OUT/selected-download.json" "Download & start"
     # AXPress is normally immediate, but AppKit can synchronously hold the
     # accessibility action until the pull task yields.  In the full suite the
     # fake pull can therefore finish before a synchronous `press` returns,
     # making the harness miss the exact in-flight state it exists to verify.
     # Drive the action concurrently with observation, then still require the
     # action itself to have succeeded.
-    press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
+    press "$OUT/selected-download.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
     local press_pid=$!
 
     local observed_size estimated_size
-    observed_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 633 * 1024 * 1024, countStyle: .file))')
-    estimated_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 563 * 1024 * 1024, countStyle: .file))')
+    observed_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 2048 * 1024 * 1024, countStyle: .file))')
+    estimated_size=$(swift -e 'import Foundation; print(ByteCountFormatter.string(fromByteCount: 1527 * 1024 * 1024, countStyle: .file))')
     local observed=0
     for _ in {1..40}; do
         see_main "$OUT/downloading.json"
@@ -2575,8 +2560,8 @@ flow_download_progress() {
     # Onboarding covers the global DownloadStrip, so Step 3 must provide its
     # own reachable cancellation path. Exercise the live process rather than
     # accepting a source-level identifier: cancellation must become a notice,
-    # never fabricated network advice, and Back must return to the Review
-    # micro-stage that launched this transfer.
+    # never fabricated network advice, and Back must return to the recommended
+    # shortlist that launched this transfer with its selection preserved.
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Download.Cancel")
             | select(.enabled == true)' "$OUT/downloading.json" >/dev/null \
@@ -2592,10 +2577,12 @@ flow_download_progress() {
         "$OUT/download-cancelled.json" >/dev/null; then
         die "a user-cancelled download was misdiagnosed as a network failure"
     fi
+    assert_tree_text "$OUT/download-cancelled.json" "Back to recommended models"
     press "$OUT/download-cancelled.json" Quickstart.Failure.BackToModelSelection \
         "$OUT/download-back.json" \
         || die "cancelled download recovery has no working Back action"
-    wait_identifier Quickstart.Review.Alias "$OUT/download-review-restored.json"
+    wait_selected Quickstart.Choice.lfm2.5-2.6b-4bit "$OUT/download-chooser-restored.json"
+    assert_tree_text "$OUT/download-chooser-restored.json" "Download & start"
     cleanup_persona
 }
 
@@ -3061,9 +3048,10 @@ flow_model_crash_recovery() {
 flow_low_memory_choice() {
     log "6/6 low-memory onboarding escape"
     start_persona low-memory-choice \
-        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
+        RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=4 \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND"
 
+    # Only expose the fallback as a starter when 2.6B fails the fit gate.
     local tree="$OUT/onboarding.json"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
@@ -3071,6 +3059,8 @@ flow_low_memory_choice() {
 
     local fallback_label
     fallback_label="$(element_field "$OUT/model-choices.json" Quickstart.Choice.lfm2.5-1b-4bit description)"
+    [[ "$fallback_label" == *"recommended starter"* ]] \
+        || die "4 GB onboarding did not promote the low-memory fallback to starter"
     [[ "$fallback_label" == *"Lowest memory"* ]] \
         || die "low-memory choice is missing its spoken category label"
     [[ "$fallback_label" == *"less accurate"* ]] \
@@ -3085,7 +3075,7 @@ flow_low_memory_choice() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Footer.Primary")' \
         "$OUT/low-memory-selected.json" >/dev/null \
         || die "selecting the low-memory choice left no Download & start action"
-    jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled sub-1B low-memory fallback"}' \
+    jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled 1.2B low-memory starter"}' \
         > "$OUT/low-memory-assertion.json"
     cleanup_persona
 }
@@ -4220,7 +4210,11 @@ flow_localized_photo_hint() {
     local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-28.png"
     "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
         > "$OUT/zh-photo-paste.json"
+    # A runtime-specific remedy (here: memory) is kept; no model switch is offered.
     wait_tree_text "$expected" "$OUT/zh-photo-notice.json" 40
+    jq -e 'any(.data.ui_elements[]?; .identifier == "ChatView.Attachments.SwitchToVision") | not' \
+        "$OUT/zh-photo-notice.json" >/dev/null \
+        || die "a memory-specific photo remedy must not be replaced by a model switch"
     send_prompt "Text chat remains available" zh-text-after-photo
     wait_send_idle "$OUT/zh-text-after-photo-complete.json"
     assert_tree_text "$OUT/zh-text-after-photo-complete.json" "Text chat remains available"
@@ -5470,7 +5464,7 @@ flow_audio_readiness() {
                    | select(.identifier == "Sidebar.ResidentModel.fake-qwen3-tts")]
                   | (any(.[];
                          .role == "AXImage"
-                         and .description == "Lock"))
+                         and .description == "Kept in memory"))
                     and (any(.[];
                              .role == "AXStaticText"
                              and .value == "fake-qwen3-tts"))' \

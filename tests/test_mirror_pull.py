@@ -3213,9 +3213,22 @@ def _function_calls_global(func, name: str) -> bool:
                 "KW_NAMES",
                 "LOAD_METHOD",
                 "CACHE",
+                # 3.13+ fused / specialised argument loads.
+                "LOAD_FAST_LOAD_FAST",
+                "LOAD_FAST_BORROW",
+                "LOAD_FAST_BORROW_LOAD_FAST_BORROW",
+                "LOAD_SMALL_INT",
+            }
+            call_ops = {
+                "CALL",
+                "CALL_FUNCTION",
+                "CALL_METHOD",
+                # Keyword-argument calls (3.13+ CALL_KW; <=3.10 CALL_FUNCTION_KW).
+                "CALL_KW",
+                "CALL_FUNCTION_KW",
             }
             for follow in insts[idx + 1 : idx + 12]:
-                if follow.opname in ("CALL", "CALL_FUNCTION", "CALL_METHOD"):
+                if follow.opname in call_ops:
                     return True
                 if follow.opname in allowed_between:
                     continue

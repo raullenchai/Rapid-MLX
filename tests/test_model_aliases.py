@@ -581,3 +581,17 @@ def test_cli_serve_external_root_model_named_like_draft_uses_local_path(
     assert reached == [
         (os.path.realpath(model), "qwen3.6-35b-mtp-4bit"),
     ]
+
+
+def test_suggestions_never_offer_draft_checkpoints():
+    from rapid_mlx.model_aliases import (
+        draft_only_conflict,
+        list_profiles,
+        suggest_similar,
+    )
+
+    for alias, profile in list_profiles().items():
+        if draft_only_conflict(profile.hf_path):
+            suggestions = suggest_similar(alias, n=100, cutoff=0)
+            assert alias not in suggestions
+            assert all(draft_only_conflict(a) is None for a in suggestions)

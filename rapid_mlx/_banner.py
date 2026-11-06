@@ -1,11 +1,7 @@
-"""Cheetah launch banner for the rapid-mlx CLI.
+"""Block-letter RAPID-MLX launch banner for the rapid-mlx CLI.
 
-The rapid-mlx mascot is a cheetah — the fastest land animal, on the fastest
-local AI engine for Apple Silicon. This module renders a compact ASCII
-cheetah-face emblem (the dark "tear marks" running from the eyes to the
-muzzle and the rosette spots are a cheetah's two signatures, and the two
-elements survive a monochrome terminal) plus a small ``rapid-mlx`` wordmark
-and version line.
+The six-row wordmark uses the brand amber gradient with dim brown shadows,
+followed by a plain tagline and version line.
 
 Rendering is deliberately pure: it returns a string and takes no I/O or
 machine-state probes, so ``main()`` decides when to print it (interactive
@@ -15,58 +11,73 @@ TTY only, never for machine-readable output, honoring ``NO_COLOR``).
 from __future__ import annotations
 
 _ART = [
-    "              ▄▄████████▄▄",
-    "          ▄▄███▀▀    ▀▀███▄▄",
-    "        ▄████    ●    ●    ████▄",
-    "       ███     ●      ●     ███",
-    "      ▐██    ▄▄▄▄▄▄▄▄▄▄▄▄    ██▌",
-    "      ██   ▄████      ████▄   ██",
-    "      ██  ▐████      ████▌   ██",
-    "      ██  ▐████      ████▌   ██",
-    "      ██   ▀███▄▄▄▄▄▄███▀    ██",
-    "       ▀█    ▀██████████▀   ▐█",
-    "       ▐█▄     ▀▀▀▀▀▀▀▀    ▄█▌",
-    "        ▀██  ● ●  ●  ●   ██▀",
-    "          ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+    "██████╗  █████╗ ██████╗ ██╗██████╗       ███╗   ███╗██╗     ██╗  ██╗",
+    "██╔══██╗██╔══██╗██╔══██╗██║██╔══██╗      ████╗ ████║██║     ╚██╗██╔╝",
+    "██████╔╝███████║██████╔╝██║██║  ██║█████╗██╔████╔██║██║      ╚███╔╝",
+    "██╔══██╗██╔══██║██╔═══╝ ██║██║  ██║╚════╝██║╚██╔╝██║██║      ██╔██╗",
+    "██║  ██║██║  ██║██║     ██║██████╔╝      ██║ ╚═╝ ██║███████╗██╔╝ ██╗",
+    "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═════╝       ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝",
 ]
 
-_WORDMARK = "r a p i d - m l x"
+_TAGLINE = "Local AI for Apple Silicon — serve models and wire them to agents"
 _VERSION_FMT = "Rapid-MLX {version}"
 
-# ANSI 256-color face for the tawny cheetah coat (214) and the rust-brown
-# tear marks / rosette spots (130). The wordmark is intentionally left plain
-# so "rapid-mlx" stays legible and machine-greppable. When color is disabled
-# the plain art lines are emitted verbatim (already monochrome).
-_COAT = "\x1b[38;5;214m"  # warm tawny/orange — the cheetah's coat
-_DARK = "\x1b[38;5;130m"  # rust-brown — tear marks + rosette spots
+# Brand amber (#EFA23A, the README banner and Desktop dark-mode accent)
+# shaded from a lighter top (#F6BE63) to the light-mode accent (#C9821F).
+# Truecolor terminals get the exact brand values; others get the nearest
+# xterm-256 colors. Shadows are a dim brown so the letters stay the focus.
+_ROW_RGB = (
+    (246, 190, 99),
+    (243, 177, 79),
+    (239, 162, 58),
+    (224, 149, 48),
+    (212, 139, 39),
+    (201, 130, 31),
+)
+_ROW_256 = (214, 214, 214, 172, 172, 172)
+_SHADOW_RGB = (122, 82, 38)
+_SHADOW_256 = 94
 _RESET = "\x1b[0m"
 
 
-def render_banner(version: str, *, color: bool) -> str:
-    """Return the full launch banner (art + wordmark + version line).
+def render_banner(version: str, *, color: bool, truecolor: bool = False) -> str:
+    """Return the wordmark, plain tagline, and version without a trailing newline.
 
-    ``color`` toggles the tawny/dark ANSI pass on the art; the wordmark is
-    always left plain so the "rapid-mlx" text stays legible and machine-
-    greppable. No trailing newline.
+    ``color`` applies the brand amber gradient to the block letters and dim
+    brown to their shadows; ``truecolor`` selects exact 24-bit brand values
+    instead of the nearest xterm-256 colors. With color disabled, the art is
+    emitted verbatim.
     """
-    # Always copy: _ART is a module-level list, so aliasing it and appending
-    # would mutate the shared constant and duplicate the footer on the next
-    # call (a pure-function invariant the unit test locks down).
-    lines = list(_ART) if not color else [_colorize(line) for line in _ART]
+    # Always copy: appending to the module-level artwork would duplicate the
+    # footer on subsequent calls and violate the pure-function contract.
+    lines = (
+        [_colorize(line, row, truecolor) for row, line in enumerate(_ART)]
+        if color
+        else list(_ART)
+    )
     lines.append("")
-    lines.append(_WORDMARK)
+    lines.append(_TAGLINE)
     lines.append(_VERSION_FMT.format(version=version))
     return "\n".join(lines)
 
 
-def _colorize(line: str) -> str:
-    """Paint one art row: spots/tear-marks rust-brown, the rest tawny."""
+def _sgr(rgb: tuple[int, int, int], xterm: int, truecolor: bool) -> str:
+    if truecolor:
+        red, green, blue = rgb
+        return f"\x1b[38;2;{red};{green};{blue}m"
+    return f"\x1b[38;5;{xterm}m"
+
+
+def _colorize(line: str, row: int, truecolor: bool) -> str:
+    """Paint one wordmark row: amber blocks, dim brown shadow strokes."""
+    block = _sgr(_ROW_RGB[row], _ROW_256[row], truecolor)
+    shadow = _sgr(_SHADOW_RGB, _SHADOW_256, truecolor)
     painted: list[str] = []
     for ch in line:
-        if ch in "●":
-            painted.append(_DARK + ch + _RESET)
-        elif ch in "█▀▄▐▌":
-            painted.append(_COAT + ch + _RESET)
+        if ch == "█":
+            painted.append(block + ch + _RESET)
+        elif ch in "╗╔╝╚═║":
+            painted.append(shadow + ch + _RESET)
         else:
             painted.append(ch)
     return "".join(painted)
@@ -105,7 +116,7 @@ def should_show_banner(
         ``-h`` paths that exit before this gate runs.
       * bare ``rapid-mlx`` never shows it: the front door
         (``rapid_mlx/front_door.py``) is a one-screen menu with its own
-        one-line header, and a 13-row banner would push its actions off a
+        one-line header, and a launch banner would push its actions off a
         short terminal.
     """
     del stdin_isatty  # kept in the signature for callers; no rule needs it now

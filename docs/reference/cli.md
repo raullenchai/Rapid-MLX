@@ -23,6 +23,46 @@ rapid-mlx <command> --help
 - **Choose a model:** `rapid-mlx recipe` recommends models for this Mac; `rapid-mlx models` lists aliases; `rapid-mlx info <alias>` shows one model profile.
 - **Check installation:** `rapid-mlx doctor` reports environment and dependency checks.
 
+## `rapid-mlx pull --check`
+
+Check an alias, repository ID, or pasted Hugging Face model URL before downloading:
+
+```bash
+rapid-mlx pull https://huggingface.co/org/name --check --json
+```
+
+`--check` reads metadata and estimates memory fit without downloading weights or
+preparing runtimes. Without `--json`, it prints a short sentence. With `--json`,
+stdout contains exactly one object (`schema: 1`):
+
+| Field | Value |
+| --- | --- |
+| `reference` | Original input |
+| `repo`, `alias` | Resolved repository and catalog alias, or `null` |
+| `in_catalog`, `cached` | Booleans; cached means a complete runnable snapshot |
+| `verdict` | `ok`, `unsupported`, `too_big`, `unknown`, or `invalid_reference` |
+| `reason` | Closed reason code, or `null` |
+| `message` | The same user-facing sentence as the human check |
+| `download_bytes`, `required_memory_bytes` | Estimated bytes, or `null` when unknown |
+| `format` | Weight format such as `mlx-4bit` or `gguf`, or `null` |
+| `capabilities` | Metadata-backed capabilities, such as `chat`, `tools`, or `vision` |
+| `fits` | `true`, `false`, or `null` when unknown |
+
+The check uses the existing metadata deadline and Hub endpoint configuration.
+Catalog metadata and complete cached models can be checked offline. An unreadable
+or unverified model returns `unknown`; `ok` is a metadata verdict, not a test load.
+Memory estimates use the existing serving rules for this Mac. Every completed
+check exits 0, including refusals and invalid references. Usage errors exit
+nonzero. `--json` requires `--check`; checks cannot be combined with download
+selectors, `--request`, or `--no-preflight`. JSON contains no replacement suggestions.
+
+When telemetry is enabled, one `model_ref_checked` event records the closed
+preflight outcome, verdict, optional reason and reference form, catalog membership,
+and CLI/Desktop surface. Model identity uses the existing privacy classifier:
+catalog alias, anonymously proven public repository, or a placeholder. Raw URLs,
+messages, and query strings are never sent. Desktop subprocesses reuse
+`RAPID_MLX_PROCESS_ROLE=desktop-sidecar` and the shared consent record.
+
 ## `rapid-mlx serve`
 
 ```bash

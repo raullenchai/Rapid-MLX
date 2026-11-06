@@ -269,7 +269,7 @@ struct OnboardingWontFitReviewTests {
     func bothReviewActionsOpenReview() throws {
         let body = try Self.quickstart
         #expect(
-            body.contains("case.reviewDownload,.reviewIncompatible:coordinator.beginReviewDownload("),
+            body.contains("case.reviewIncompatible:coordinator.beginIncompatibleModelReview("),
             "an informational Review must be the same screen, not a second one"
         )
         // The commit cases stay a separate arm, and remain the only route into
@@ -285,7 +285,7 @@ struct OnboardingWontFitReviewTests {
             selection: Self.tooBigAlias,
             visibleRows: [Self.row(Self.tooBigAlias, available: false)],
             catalogState: .ready,
-            context: .review
+            context: .incompatibleMemory
         )
         #expect(!uncached.isEnabled)
         #expect(uncached.title == OnboardingModelSelection.Verb.downloadAndStart,
@@ -295,7 +295,7 @@ struct OnboardingWontFitReviewTests {
             selection: Self.tooBigAlias,
             visibleRows: [Self.row(Self.tooBigAlias, cached: true, available: false)],
             catalogState: .ready,
-            context: .review
+            context: .incompatibleMemory
         )
         #expect(!cached.isEnabled)
         #expect(cached.title == OnboardingModelSelection.Verb.startExisting,
@@ -308,7 +308,7 @@ struct OnboardingWontFitReviewTests {
     func noContextEverCommits() {
         for cached in [false, true] {
             for context in [
-                OnboardingModelSelection.ListContext.shortlist, .catalogue, .review,
+                OnboardingModelSelection.ListContext.shortlist, .catalogue, .incompatibleMemory,
             ] {
                 let primary = OnboardingModelSelection.primary(
                     selection: Self.tooBigAlias,
@@ -341,7 +341,7 @@ struct OnboardingWontFitReviewTests {
         #expect(activation.count == 2, "one activation function")
         let afterGuard = activation[1].prefix(600)
         #expect(!afterGuard.contains("startQuickstart()downloadAndStart"))
-        #expect(afterGuard.contains("case.reviewDownload,.reviewIncompatible:"))
+        #expect(afterGuard.contains("case.reviewIncompatible:"))
 
         // And the three things a commit reaches are named in one place, so a
         // future case cannot pick one up silently.
@@ -355,7 +355,7 @@ struct OnboardingWontFitReviewTests {
     @Test("Back from an informational Review returns to where it was opened")
     func backReturnsToOrigin() {
         for origin in [
-            QuickstartCoordinator.ReviewOrigin.catalogue,
+            QuickstartCoordinator.IncompatibleOrigin.catalogue,
             .shortlist,
         ] {
             let coord = Self.coordinator()
@@ -365,12 +365,12 @@ struct OnboardingWontFitReviewTests {
                 alias: Self.tooBigAlias, hfRepo: "r", sizeOnDisk: nil, cached: false
             )
             coord.select(QuickstartView.choice(forCatalogEntry: entry))
-            coord.beginReviewDownload(origin: origin)
-            #expect(coord.step2Stage == .reviewing)
-            #expect(coord.reviewOrigin == origin)
+            coord.beginIncompatibleModelReview(origin: origin)
+            #expect(coord.step2Stage == .incompatibleMemory)
+            #expect(coord.incompatibleOrigin == origin)
             #expect(coord.step == .chooseModel, "Review is not a step of its own")
 
-            coord.backFromReviewDownload()
+            coord.backFromIncompatibleModelReview()
             #expect(coord.step2Stage == (origin == .catalogue ? .browsing : .choosing),
                     "\(origin): Back must land on the list it was opened from")
             #expect(coord.selection.alias == Self.tooBigAlias,
@@ -395,8 +395,8 @@ struct OnboardingWontFitReviewTests {
         coord.select(QuickstartView.choice(forCatalogEntry: entry))
         coord.rememberCatalogAnchor(Self.tooBigAlias)
 
-        coord.beginReviewDownload(origin: .catalogue)
-        coord.backFromReviewDownload()
+        coord.beginIncompatibleModelReview(origin: .catalogue)
+        coord.backFromIncompatibleModelReview()
 
         #expect(coord.step2Stage == .browsing)
         #expect(coord.catalogQuery == "llama", "the query is restored verbatim")
@@ -459,21 +459,9 @@ struct OnboardingWontFitReviewTests {
         #expect(ModelSizing.classify(over, on: Self.hardware32) == .tooBig)
     }
 
-    @Test("The subtitle states the verdict flatly, with no offer")
-    func subtitleStatesTheVerdict() {
-        #expect(QuickstartView.reviewSubtitle(cached: nil, runsHere: false)
-            == "This model cannot run on this Mac.")
-        // Cached-ness does not soften it: incompatibility outranks it.
-        let cached = ModelEntry(
-            alias: Self.tooBigAlias, hfRepo: "r", sizeOnDisk: "40 GB", cached: true
-        )
-        #expect(QuickstartView.reviewSubtitle(cached: cached, runsHere: false)
-            == "This model cannot run on this Mac.")
-        // And a runnable model is untouched.
-        #expect(QuickstartView.reviewSubtitle(cached: nil, runsHere: true)
-            == "This downloads once and then runs entirely on your Mac.")
-        #expect(QuickstartView.reviewSubtitle(cached: cached, runsHere: true)
-            == "Already on this Mac — nothing will be downloaded.")
+    @Test("The incompatible screen states the blocking reason")
+    func incompatibleSubtitle() throws {
+        #expect(try Self.quickstart.contains(#"subtitle:String(localized:"ThismodelcannotrunonthisMac.")"#))
     }
 
     @Test("The fact table gains the usable-memory row and flags the reason")
@@ -532,7 +520,7 @@ struct OnboardingWontFitReviewTests {
         // third control was added for this state.
         let body = try Self.quickstart
         let reviewFooters = body.components(
-            separatedBy: "onPrimary:{activatePrimary(in:.review)}"
+            separatedBy: "onPrimary:{activatePrimary(in:.incompatibleMemory)}"
         ).count - 1
         #expect(reviewFooters >= 1)
     }
@@ -601,15 +589,15 @@ struct OnboardingWontFitReviewTests {
             catalogState: .ready, context: .catalogue
         )
         #expect(uncached == OnboardingModelSelection.Primary(
-            title: OnboardingModelSelection.Verb.reviewDownload,
-            action: .reviewDownload,
+            title: OnboardingModelSelection.Verb.downloadAndStart,
+            action: .downloadAndStart,
             isEnabled: true
         ))
 
         let inReview = OnboardingModelSelection.primary(
             selection: Self.fittingAlias,
             visibleRows: [Self.row(Self.fittingAlias)],
-            catalogState: .ready, context: .review
+            catalogState: .ready, context: .incompatibleMemory
         )
         #expect(inReview.action == .downloadAndStart)
         #expect(inReview.isEnabled)

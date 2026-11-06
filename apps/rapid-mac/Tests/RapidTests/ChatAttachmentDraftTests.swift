@@ -554,9 +554,11 @@ struct ChatAttachmentDraftTests {
             .stripCommentsAndWhitespace(source)
 
         #expect(stripped.contains("@StateprivatevarphotoCapabilityNotice=PhotoCapabilityNotice()"))
-        #expect(stripped.contains("InlineNotice(message:message,tone:.info)"))
+        #expect(stripped.contains("InlineNotice(message:message,tone:.info,actionTitle:"))
         #expect(stripped.contains("InlineNotice(message:attachmentNotice,tone:.error)"))
-        #expect(stripped.contains("attachmentDraft.notice=nilphotoCapabilityNotice.present(message,availability:photoAvailability)"))
+        #expect(stripped.contains("attachmentDraft.notice=nilphotoCapabilityNotice.rejectImageInput(availability:photoAvailability,alias:alias)"))
+        #expect(stripped.contains("alias=PhotoCapabilityNotice.imageModelAliasonUserModelSelection(PhotoCapabilityNotice.imageModelAlias)"))
+        #expect(stripped.contains("rejectImageInputForCurrentModel()"))
         #expect(!stripped.contains("attachmentDraft.notice=imageInputUnavailableMessage??"))
         #expect(stripped.contains(".onChange(of:alias){_,_inviewModel.startAndSendIntent=StartAndSendIntent()photoCapabilityNotice.dismiss()}"))
         #expect(stripped.contains(".onChange(of:photoAvailability){_,availabilityinphotoCapabilityNotice.reconcile(with:availability)}"))
@@ -593,6 +595,42 @@ struct ChatAttachmentDraftTests {
             unavailableMessage: "A new lane-specific remedy"
         ))
         #expect(notice.message == nil)
+    }
+
+    @Test("Text-only image attempts offer the existing Qwen model-switch path")
+    func textOnlyImageHint() {
+        var notice = PhotoCapabilityNotice()
+        let textOnly = ImageInputAvailability.PhotoHint.genericTextLane.localized(in: .main)
+        notice.rejectImageInput(availability: .init(supportsImageInput: false, unavailableMessage: textOnly), alias: QuickstartCoordinator.defaultChoice.alias, imageModelFits: true)
+        #expect(notice.message == PhotoCapabilityNotice.imageModelHint)
+        #expect(notice.offersImageModelSwitch)
+        #expect(notice.message?.contains("cannot read images") == true)
+        #expect(PhotoCapabilityNotice.imageModelAlias == QuickstartCoordinator.visionChoice.alias)
+        notice.dismiss()
+        notice.rejectImageInput(availability: .init(supportsImageInput: true, unavailableMessage: nil), alias: PhotoCapabilityNotice.imageModelAlias)
+        #expect(notice.message == nil)
+        notice.rejectImageInput(availability: .init(supportsImageInput: false, unavailableMessage: "Photo mode needs more memory."), alias: PhotoCapabilityNotice.imageModelAlias)
+        #expect(notice.message == "Photo mode needs more memory.")
+        #expect(!ModelBrandStyle.supportsImageInput(forAlias: QuickstartCoordinator.defaultChoice.alias))
+        #expect(ModelBrandStyle.supportsImageInput(forAlias: PhotoCapabilityNotice.imageModelAlias, isBuiltinProfile: true, isTextOnly: false))
+    }
+
+    @Test("Below the 32 GB vision floor the Qwen switch is not offered")
+    func imageHintRespectsVisionMemoryFloor() {
+        var notice = PhotoCapabilityNotice()
+        let textOnly = ImageInputAvailability.PhotoHint.textCheckpoint.localized(in: .main)
+        notice.rejectImageInput(availability: .init(supportsImageInput: false, unavailableMessage: textOnly), alias: QuickstartCoordinator.defaultChoice.alias, imageModelFits: false)
+        #expect(notice.message == textOnly)
+        #expect(!notice.offersImageModelSwitch)
+    }
+
+    @Test("Runtime-specific photo remedies are kept for every model")
+    func runtimeSpecificPhotoRemedyIsPreserved() {
+        var notice = PhotoCapabilityNotice()
+        let remedy = ImageInputAvailability.PhotoHint.speculativeDecode.localized(in: .main)
+        notice.rejectImageInput(availability: .init(supportsImageInput: false, unavailableMessage: remedy), alias: "some-vision-model", imageModelFits: true)
+        #expect(notice.message == remedy)
+        #expect(!notice.offersImageModelSwitch)
     }
 
     private func makeImage(name: String, bytes: Int = 4) throws -> ChatImageAttachment {

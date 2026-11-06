@@ -379,14 +379,14 @@ struct OnboardingRecoveryBehaviorTests {
     func cancelReturnsToTheRightOrigin() {
         let coord = makeCoordinator()
         coord.advanceToChooseModel()
-        coord.beginReviewDownload(origin: .catalogue)
+        coord.beginIncompatibleModelReview(origin: .catalogue)
         coord.enterDownloading()
         coord.enterFailed(message: cancelledMessage, origin: .download)
 
         #expect(QuickstartView.failureBackTitle(for: coord.step2Stage)
-                == "← Back to review download")
+                == "← Back to model details")
         coord.returnToChooser()
-        #expect(coord.step2Stage == .reviewing)
+        #expect(coord.step2Stage == .incompatibleMemory)
         #expect(coord.step == .chooseModel)
     }
 
@@ -396,7 +396,7 @@ struct OnboardingRecoveryBehaviorTests {
     func failureBackTitleNamesItsDestination() {
         #expect(QuickstartView.failureBackTitle(for: .choosing) == "← Back to recommended models")
         #expect(QuickstartView.failureBackTitle(for: .browsing) == "← Back to all models")
-        #expect(QuickstartView.failureBackTitle(for: .reviewing) == "← Back to review download")
+        #expect(QuickstartView.failureBackTitle(for: .incompatibleMemory) == "← Back to model details")
         // The two pre-shortlist stages resolve onto the shortlist, so they
         // name it rather than inventing a third destination.
         #expect(QuickstartView.failureBackTitle(for: .checkingHardware) == "← Back to recommended models")
@@ -408,13 +408,13 @@ struct OnboardingRecoveryBehaviorTests {
         for origin in [
             QuickstartCoordinator.Step2Stage.choosing,
             .browsing,
-            .reviewing,
+            .incompatibleMemory,
         ] {
             let coord = makeCoordinator()
             coord.advanceToChooseModel()
             switch origin {
             case .browsing: coord.beginBrowsingCatalog()
-            case .reviewing: coord.beginReviewDownload(origin: .catalogue)
+            case .incompatibleMemory: coord.beginIncompatibleModelReview(origin: .catalogue)
             default: coord.resolveRecommendationLoading(catalogLoaded: true)
             }
             #expect(coord.step2Stage == origin)
@@ -603,13 +603,13 @@ struct OnboardingRecoveryBehaviorTests {
         for origin in [
             QuickstartCoordinator.Step2Stage.choosing,
             .browsing,
-            .reviewing,
+            .incompatibleMemory,
         ] {
             let coord = makeCoordinator()
             coord.advanceToChooseModel()
             switch origin {
             case .browsing: coord.beginBrowsingCatalog()
-            case .reviewing: coord.beginReviewDownload(origin: .shortlist)
+            case .incompatibleMemory: coord.beginIncompatibleModelReview(origin: .shortlist)
             default: coord.resolveRecommendationLoading(catalogLoaded: true)
             }
             let pick = QuickstartCoordinator.lowMemoryChoice
@@ -662,7 +662,7 @@ struct OnboardingRecoveryBehaviorTests {
         for context in [
             OnboardingModelSelection.ListContext.shortlist,
             .catalogue,
-            .review,
+            .incompatibleMemory,
         ] {
             let primary = OnboardingModelSelection.primary(
                 selection: "huge-model",
@@ -682,7 +682,7 @@ struct OnboardingRecoveryBehaviorTests {
             #expect(!OnboardingModelSelection.isActionable(
                 selection: "huge-model", visibleRows: rows, catalogState: .ready
             ), "\(context)")
-            if context == .review {
+            if context == .incompatibleMemory {
                 // The refusal lands here, and names what is being withheld.
                 #expect(!primary.isEnabled)
                 #expect(primary.title == OnboardingModelSelection.Verb.downloadAndStart)
@@ -704,7 +704,7 @@ struct OnboardingRecoveryBehaviorTests {
         for context in [
             OnboardingModelSelection.ListContext.shortlist,
             .catalogue,
-            .review,
+            .incompatibleMemory,
         ] {
             let primary = OnboardingModelSelection.primary(
                 selection: "huge-but-here",
@@ -721,7 +721,7 @@ struct OnboardingRecoveryBehaviorTests {
         // does not offer to download something that is already here.
         let review = OnboardingModelSelection.primary(
             selection: "huge-but-here", visibleRows: rows,
-            catalogState: .ready, context: .review
+            catalogState: .ready, context: .incompatibleMemory
         )
         #expect(!review.isEnabled)
         #expect(review.title == OnboardingModelSelection.Verb.startExisting)
@@ -749,13 +749,13 @@ struct OnboardingRecoveryBehaviorTests {
         for origin in [
             QuickstartCoordinator.Step2Stage.choosing,
             .browsing,
-            .reviewing,
+            .incompatibleMemory,
         ] {
             let coord = makeCoordinator()
             coord.advanceToChooseModel()
             switch origin {
             case .browsing: coord.beginBrowsingCatalog()
-            case .reviewing: coord.beginReviewDownload(origin: .catalogue)
+            case .incompatibleMemory: coord.beginIncompatibleModelReview(origin: .catalogue)
             default: coord.resolveRecommendationLoading(catalogLoaded: true)
             }
             coord.enterStarting()

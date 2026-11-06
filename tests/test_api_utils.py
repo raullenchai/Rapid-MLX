@@ -968,7 +968,7 @@ class TestMllmBackboneIsHybrid:
         )
         from rapid_mlx import cli
 
-        def fail_on_network(_name):
+        def fail_on_network(_name, *, auto_mtp=True):
             raise AssertionError("complete singleton snapshot must stay offline")
 
         monkeypatch.setattr(

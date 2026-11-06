@@ -1,9 +1,9 @@
-"""Tests for the rapid-mlx cheetah launch banner.
+"""Tests for the rapid-mlx wordmark launch banner.
 
 Covers three surfaces, all demand-tested against the release contract that the
 banner must NEVER corrupt machine-facing output:
 
-  * ``rapid_mlx._banner.render_banner`` — the artwork + wordmark + version
+  * ``rapid_mlx._banner.render_banner`` — the wordmark + tagline + version
     render, and the ANSI pass on/off under ``color``.
   * ``rapid_mlx._banner.should_show_banner`` — the interactive-only gate that
     ``cli.py`` folds the env flag into and calls before printing. The helper
@@ -24,37 +24,43 @@ import pytest
 from rapid_mlx._banner import render_banner, should_show_banner
 
 # ---------------------------------------------------------------------------
-# Artwork + wordmark + version render
+# Wordmark + tagline + version render
 # ---------------------------------------------------------------------------
 
 
-def test_banner_renders_art_wordmark_and_version_in_mono():
+# Independent expected rows lock down the approved wordmark exactly.
+_WORDMARK_ROWS = [
+    "██████╗  █████╗ ██████╗ ██╗██████╗       ███╗   ███╗██╗     ██╗  ██╗",
+    "██╔══██╗██╔══██╗██╔══██╗██║██╔══██╗      ████╗ ████║██║     ╚██╗██╔╝",
+    "██████╔╝███████║██████╔╝██║██║  ██║█████╗██╔████╔██║██║      ╚███╔╝",
+    "██╔══██╗██╔══██║██╔═══╝ ██║██║  ██║╚════╝██║╚██╔╝██║██║      ██╔██╗",
+    "██║  ██║██║  ██║██║     ██║██████╔╝      ██║ ╚═╝ ██║███████╗██╔╝ ██╗",
+    "╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═════╝       ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝",
+]
+_TAGLINE = "Local AI for Apple Silicon — serve models and wire them to agents"
+
+
+def test_banner_renders_wordmark_tagline_and_version_in_mono():
     out = render_banner("0.13.2", color=False)
-    # The cheetah's two signatures are present as literal glyphs.
-    assert "●" in out  # rosette spots
-    assert "█" in out  # the tear-mark / coat blocks
-    assert "r a p i d - m l x" in out
-    assert "Rapid-MLX 0.13.2" in out
-    # Compact: wordmark + version are the last two lines, art above them.
     lines = out.splitlines()
-    assert lines[-1] == "Rapid-MLX 0.13.2"
-    assert lines[-2] == "r a p i d - m l x"
+    assert lines == [*_WORDMARK_ROWS, "", _TAGLINE, "Rapid-MLX 0.13.2"]
+    assert not out.endswith("\n")
+    assert all(line == line.rstrip() for line in lines)
     # No stray ANSI in the mono render.
     assert "\x1b[" not in out
 
 
 def test_banner_fits_an_80_column_terminal():
     art = render_banner("0.13.2", color=False).splitlines()
-    assert max(len(line) for line in art) <= 40
-    # ~20-24 columns of art max per the release contract; we stay well under.
-    assert len(art) <= 20
+    assert max(len(line) for line in art) <= 80
+    assert len(art) == 9
 
 
 def test_banner_color_applies_ansi_and_cleans_up():
     out = render_banner("0.13.2", color=True)
     assert "\x1b[" in out  # ANSI present
     # Every colored glyph is wrapped in <open>...<reset>, so the number of
-    # resets equals the total number of color-Opens (coat + dark); a single
+    # resets equals the total number of color-Opens (blocks + shadows); a single
     # orphaned escape would break that balance and leak terminal state.
     import re
 
@@ -62,9 +68,29 @@ def test_banner_color_applies_ansi_and_cleans_up():
     opens = [m for m in _esc.finditer(out) if m.group(1) not in ("", "0")]
     resets = out.count("\x1b[0m")
     assert resets == len(opens)
+    for row, code in zip(out.splitlines()[:6], (214, 214, 214, 172, 172, 172)):
+        # The last row consists entirely of shadow characters.
+        for ch in "█╗╔╝╚═║":
+            if ch in row:
+                expected_code = code if ch == "█" else 94
+                assert row.count(f"\x1b[38;5;{expected_code}m{ch}\x1b[0m") == row.count(
+                    ch
+                )
+    assert out.splitlines()[-2:] == [_TAGLINE, "Rapid-MLX 0.13.2"]
+    assert not out.endswith("\n")
     # Stripping ANSI yields the identical mono art.
     plain = _esc.sub("", out)
     assert plain == render_banner("0.13.2", color=False)
+
+
+def test_truecolor_banner_uses_exact_brand_amber() -> None:
+    import re
+
+    out = render_banner("1.0.2", color=True, truecolor=True)
+    # Brand amber (#EFA23A) on the middle row; no 256-color escapes leak in.
+    assert "\x1b[38;2;239;162;58m█\x1b[0m" in out.splitlines()[2]
+    assert "\x1b[38;5;" not in out
+    assert re.sub(r"\x1b\[[0-9;]*m", "", out) == render_banner("1.0.2", color=False)
 
 
 def test_banner_does_not_duplicate_when_printed_twice():
@@ -85,7 +111,7 @@ def test_banner_mixed_renders_preserve_artwork_and_plain_footer(first_color):
 
     assert strip_ansi("", first) == mono
     assert strip_ansi("", other).splitlines()[:-1] == mono.splitlines()[:-1]
-    assert other.splitlines()[-2:] == ["r a p i d - m l x", "Rapid-MLX 0.15.7"]
+    assert other.splitlines()[-2:] == [_TAGLINE, "Rapid-MLX 0.15.7"]
     assert render_banner("0.15.6", color=False) == mono
     assert render_banner("0.15.6", color=first_color) == first
 
@@ -115,7 +141,7 @@ def test_show_on_interactive_subcommand():
 
 def test_bare_front_door_never_shows_the_banner():
     # The bare command's front door is a one-screen menu with its own header;
-    # the 13-row banner would push its actions off a short terminal.
+    # the launch banner would push its actions off a short terminal.
     assert not should_show_banner(
         command=None,
         json_output=False,
@@ -246,20 +272,20 @@ def test_env_var_suppresses_banner_through_main_on_tty():
     _rc, out = _run_main(
         ["version"], stdout_tty=True, stdin_tty=True, env={"RAPID_MLX_NO_BANNER": "1"}
     )
-    assert "r a p i d - m l x" not in out
+    assert _TAGLINE not in out
     assert "\x1b[" not in out
 
 
 def test_flag_suppresses_banner_through_main_on_tty():
     _rc, out = _run_main(["--no-banner", "version"], stdout_tty=True, stdin_tty=True)
-    assert "r a p i d - m l x" not in out
+    assert _TAGLINE not in out
 
 
 def test_version_subcommand_stays_byte_clean_through_main():
     # The ``version`` subcommand must NOT get a banner even on a tty (codex
     # blocking fix): a wrapper scraping "rapid-mlx X.Y.Z" stays dependable.
     _rc, out = _run_main(["version"], stdout_tty=True, stdin_tty=True)
-    assert "r a p i d - m l x" not in out
+    assert _TAGLINE not in out
 
 
 def test_banner_shows_through_main_on_interactive_subcommand():
@@ -271,7 +297,7 @@ def test_banner_shows_through_main_on_interactive_subcommand():
     parses with no required args and does no network/model load, so the test
     is hermetic and fast."""
     _rc, out = _run_main(["models"], stdout_tty=True, stdin_tty=True)
-    assert "r a p i d - m l x" in out
+    assert _TAGLINE in out
     assert "Rapid-MLX" in out
 
 
@@ -283,13 +309,13 @@ def test_banner_color_varies_with_no_color_env_through_main():
     _rc, mono = _run_main(
         ["models"], stdout_tty=True, stdin_tty=True, env={"NO_COLOR": "1"}
     )
-    assert "r a p i d - m l x" in mono
+    assert _TAGLINE in mono
     assert "\x1b[" not in mono
 
 
 def test_launch_banner_has_no_terminal_escape_fragments():
     _rc, out = _run_main(["launch", "codex", "--isolated", "--dry-run"])
-    assert "r a p i d - m l x" in out
+    assert _TAGLINE in out
     assert "\x1b[" not in out
     assert not any(line.strip() in {"[", "]", "[]"} for line in out.splitlines())
 
@@ -301,7 +327,10 @@ def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     changed-lines coverage gate requires."""
     import rapid_mlx._banner as banner_mod
 
-    def _boom(version, *, color):
+    reached = []
+
+    def _boom(version, *, color, truecolor=False):
+        reached.append(version)
         raise RuntimeError("agent-injected render failure")
 
     monkeypatch.setattr(banner_mod, "render_banner", _boom)
@@ -310,4 +339,5 @@ def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     # suppresses before the render), so the guard couldn't be exercised.
     _rc, out = _run_main(["models"], stdout_tty=True, stdin_tty=True)
     assert _rc == 0  # the command itself still completes
-    assert "r a p i d - m l x" not in out  # nothing partial was printed
+    assert reached  # the failing renderer actually ran
+    assert _TAGLINE not in out  # nothing partial was printed

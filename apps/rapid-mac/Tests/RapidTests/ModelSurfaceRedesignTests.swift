@@ -122,7 +122,7 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-12b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma-4-26b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-9b-4bit") == .vision)
-        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-8bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-122b-mxfp4") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)
@@ -202,11 +202,11 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.displayFamily(forAlias: "ornith-1.5-9b-bf16") == "Ornith 1.5")
     }
 
-    @Test("displayFamily: an entirely unknown alias reads 'Model', never 'Unknown'")
+    @Test("displayFamily: an entirely unknown alias retains its readable identity")
     func displayFamilyUnknownIsHumane() {
         let family = ModelBrandStyle.displayFamily(forAlias: "some-unknown-xyz-model")
         #expect(family != "Unknown")
-        #expect(family == "Model")
+        #expect(family == "Some Unknown Xyz Model")
     }
 
     // MARK: - ModelMeter.segments

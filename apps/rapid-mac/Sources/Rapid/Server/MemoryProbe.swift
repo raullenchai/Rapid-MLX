@@ -56,28 +56,22 @@ enum MemoryProbe {
         executionObserver?(Thread.isMainThread)
         guard let total = sysctlUInt64("hw.memsize") else { return nil }
         guard let vm = readVMStats() else { return nil }
-        // Activity Monitor reports "Memory Used" as
-        //   app_memory + wired + compressed.
-        //
-        // VM stats give us active + wired + compressed directly,
-        // which is functionally the same thing for our purposes.
-        // We exclude inactive + speculative + free because those
-        // are reclaimable on demand — counting them as "used"
-        // would make every machine look memory-starved at idle.
-        //
-        // ``hw.pagesize`` (sysctl) gives the same value as the
-        // ``vm_kernel_page_size`` global but doesn't trip Swift 6
-        // strict-concurrency on the global C var.
+        // Read the page size via sysctl rather than the concurrency-unsafe C global.
         let pageSize = sysctlUInt64("hw.pagesize") ?? 16384
-        let active = UInt64(vm.active_count) * pageSize
-        let wired = UInt64(vm.wire_count) * pageSize
-        let compressed = UInt64(vm.compressor_page_count) * pageSize
-        let used = active &+ wired &+ compressed
-        // Defensive clamp: pathological systems where the sum
-        // overruns hw.memsize would otherwise produce a >100%
-        // ratio. Clip so the colour-dot threshold can't underflow
-        // into red on a healthy machine due to a brief race.
-        return Snapshot(totalBytes: total, usedBytes: min(used, total))
+        return snapshot(totalBytes: total, pageSize: pageSize, vm: vm)
+    }
+
+    /// Activity Monitor's Memory Used: app memory + wired + compressed.
+    /// Internal pages minus purgeable pages measure app memory. Active pages
+    /// also contain reclaimable file-backed cache and must not be added.
+    static func snapshot(totalBytes: UInt64, pageSize: UInt64, vm: vm_statistics64) -> Snapshot {
+        let internalPages = UInt64(vm.internal_page_count)
+        let purgeablePages = UInt64(vm.purgeable_count)
+        let appPages = internalPages - min(internalPages, purgeablePages)
+        let usedPages = appPages + UInt64(vm.wire_count) + UInt64(vm.compressor_page_count)
+        // Clamp transient over-counts to physical memory, keeping freeBytes safe.
+        let (usedBytes, overflow) = usedPages.multipliedReportingOverflow(by: pageSize)
+        return Snapshot(totalBytes: totalBytes, usedBytes: overflow ? totalBytes : min(usedBytes, totalBytes))
     }
 
     /// Format the pill body: "12.3 GB used · 256 GB total". Kept

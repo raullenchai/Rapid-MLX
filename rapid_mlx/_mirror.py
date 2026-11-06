@@ -2009,9 +2009,22 @@ def download_with_mirror_fallback(
     #   weight shards), checked over the bytes. Non-LFS files are checked
     #   by their git blob id (``git_oids``) instead.
     files: list[tuple[str, int | None, str | None]] = []
+    # Root checkpoint with per-quantization sibling folders: the loader
+    # reads only the root, so the other copies are never planned.
+    from .byom.preflight import in_nested_checkpoint, nested_checkpoint_dirs
+
+    nested = (
+        nested_checkpoint_dirs(
+            name
+            for name in (getattr(s, "rfilename", None) for s in siblings)
+            if isinstance(name, str)
+        )
+        if allow_patterns is None
+        else ()
+    )
     for s in siblings:
         rname = getattr(s, "rfilename", None)
-        if not rname:
+        if not rname or in_nested_checkpoint(rname, nested):
             continue
         if not _validate_relative_filename(rname):
             # Path traversal guard — if the HF listing itself is

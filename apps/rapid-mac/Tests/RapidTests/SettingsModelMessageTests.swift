@@ -15,7 +15,10 @@ struct SettingsModelMessageTests {
         // Check the UI actions use the tested helper, including both retry paths.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent("Sources/Rapid/UI/SettingsModelManagementPanel.swift"), encoding: .utf8)
+        // The Hugging Face check row is the one exception: its size comes from
+        // `rapid-mlx pull --check --json`, not from a catalog entry.
         let starts = source.components(separatedBy: "downloads.startDownload(").dropFirst()
+            .filter { !$0.prefix(180).contains("totalBytes: result.downloadBytes") }
         #expect(starts.count == 4)
         for start in starts {
             #expect(start.prefix(180).contains("totalBytes: Self.downloadTotalBytes(entry)"))

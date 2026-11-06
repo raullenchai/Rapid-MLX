@@ -3,7 +3,8 @@ import Foundation
 
 /// Sends identifier-free, aggregate milestones for the Desktop first-run
 /// funnel. The wire body is deliberately limited to app version + a closed
-/// milestone enum, with an optional closed failure cause and download source;
+/// milestone enum, with an optional closed failure cause, reply-time bucket,
+/// and download source;
 /// no telemetry identity is read or created.
 actor DesktopFunnelReporter {
     struct FlowToken: Hashable, Sendable {
@@ -18,6 +19,11 @@ actor DesktopFunnelReporter {
         case engineReady = "engine_ready"
         case engineStartFailed = "engine_start_failed"
         case firstChatReply = "first_chat_reply"
+        case setupResumed = "setup_resumed"
+        case modelChoiceShown = "model_choice_shown"
+        case catalogLoadFailed = "catalog_load_failed"
+        case downloadReviewShown = "download_review_shown"
+        case onboardingSkipped = "onboarding_skipped"
     }
 
     nonisolated enum DownloadFailureCause: String, CaseIterable, Sendable, Equatable {
@@ -46,6 +52,14 @@ actor DesktopFunnelReporter {
         case engine(EngineStartFailureCause)
     }
 
+    nonisolated enum FirstReplyBucket: String, CaseIterable, Sendable {
+        case lt3m = "lt_3m", threeToTenMinutes = "3_10m"
+        case tenToSixtyMinutes = "10_60m", oneToTwentyFourHours = "1_24h"
+        case gt24h = "gt_24h"
+    }
+
+    typealias MarkerDate = @Sendable (URL) -> Date?
+    typealias Now = @Sendable () -> Date
     typealias Enabled = @Sendable () -> Bool
     typealias Send = @Sendable (URLRequest) async -> Void
     typealias ClaimMarker = @Sendable (URL) -> Bool
@@ -75,6 +89,8 @@ actor DesktopFunnelReporter {
     private let send: Send
     private let markerDirectory: URL
     private let version: String
+    private let markerDate: MarkerDate
+    private let now: Now
     private let claimMarkerOverride: ClaimMarker?
     private nonisolated static let processState = DesktopFunnelProcessState()
     private nonisolated static let engineAttemptGate = DesktopFunnelEngineAttemptGate()
@@ -84,12 +100,16 @@ actor DesktopFunnelReporter {
         send: @escaping Send = DesktopFunnelReporter.sendRequest,
         markerDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory(),
         version: String = TelemetryClient.currentVersion(),
-        claimMarker: ClaimMarker? = nil
+        claimMarker: ClaimMarker? = nil,
+        markerDate: @escaping MarkerDate = DesktopFunnelReporter.enrollmentDate,
+        now: @escaping Now = { Date() }
     ) {
         self.isEnabled = isEnabled
         self.send = send
         self.markerDirectory = markerDirectory
         self.version = version
+        self.markerDate = markerDate
+        self.now = now
         self.claimMarkerOverride = claimMarker
     }
 
@@ -119,14 +139,29 @@ actor DesktopFunnelReporter {
     }
 
     /// Enrols one genuine first-run flow in this process. A remounted view can
-    /// recover the same token, but a later process or re-onboarding flow cannot
-    /// derive one from the durable cohort marker alone.
-    nonisolated static func beginFirstRunFlow(isFirstRun: Bool) -> FlowToken? {
+    /// recover the same token. Later processes must use the separate resume
+    /// path, whose caller also checks unfinished setup and reset exclusion.
+    nonisolated static func beginFirstRunFlow(
+        isFirstRun: Bool,
+        markerDirectory directory: URL = TelemetryIdentity.sharedTelemetryDirectory()
+    ) -> FlowToken? {
         guard isFirstRun else { return nil }
-        let directory = TelemetryIdentity.sharedTelemetryDirectory()
         let cohort = directory.appendingPathComponent(cohortMarkerName, isDirectory: false)
         return processState.enrollFlow(cohortPath: cohort.path) {
             claimMarker(at: cohort, in: directory)
+        }
+    }
+
+    /// Restores a process capability only for an already enrolled install.
+    /// This path never creates or rewrites the cohort marker.
+    nonisolated static func resumeFirstRunFlow(
+        isSetupUnfinished: Bool,
+        markerDirectory: URL = TelemetryIdentity.sharedTelemetryDirectory()
+    ) -> FlowToken? {
+        guard isSetupUnfinished else { return nil }
+        let cohort = markerDirectory.appendingPathComponent(cohortMarkerName, isDirectory: false)
+        return processState.enrollFlow(cohortPath: cohort.path) {
+            FileManager.default.fileExists(atPath: cohort.path)
         }
     }
 
@@ -201,7 +236,12 @@ actor DesktopFunnelReporter {
         // Claim before evaluating those gates so a later opt-in cannot turn a
         // later occurrence into a misleading "first" milestone.
         guard claimMarker(at: marker) else { return }
-        guard let request = Self.request(version: version, milestone: milestone, detail: detail) else { return }
+        let bucket = milestone == .firstChatReply
+            ? Self.firstReplyBucket(enrolledAt: markerDate(cohortMarkerURL), now: now())
+            : nil
+        guard let request = Self.request(
+            version: version, milestone: milestone, detail: detail, firstReplyBucket: bucket
+        ) else { return }
         // Read the synchronous latch last: evaluating the other gates may race
         // with (or itself observe) a Settings opt-out, which must still stop
         // transport after the milestone has been consumed.
@@ -209,7 +249,12 @@ actor DesktopFunnelReporter {
         await send(request)
     }
 
-    nonisolated static func request(version: String, milestone: Milestone, detail: FailureDetail? = nil) -> URLRequest? {
+    nonisolated static func request(
+        version: String,
+        milestone: Milestone,
+        detail: FailureDetail? = nil,
+        firstReplyBucket: FirstReplyBucket? = nil
+    ) -> URLRequest? {
         struct Payload: Encodable {
             let v: String
             let m: String
@@ -231,6 +276,9 @@ actor DesktopFunnelReporter {
         case .engineStartFailed:
             if case let .engine(value) = detail { cause = value.rawValue } else { cause = "other" }
             source = nil
+        case .firstChatReply:
+            cause = firstReplyBucket?.rawValue
+            source = nil
         default:
             cause = nil
             source = nil
@@ -248,6 +296,27 @@ actor DesktopFunnelReporter {
         request.setValue("Rapid-Desktop/\(version)", forHTTPHeaderField: "User-Agent")
         request.httpBody = body
         return request
+    }
+
+    /// Only this closed bucket leaves the device; the marker's date stays local.
+    nonisolated static func firstReplyBucket(enrolledAt: Date?, now: Date) -> FirstReplyBucket? {
+        guard let enrolledAt else { return nil }
+        let elapsed = now.timeIntervalSince(enrolledAt)
+        guard elapsed.isFinite else { return nil }
+        switch elapsed {
+        case ..<180: return .lt3m
+        case ..<600: return .threeToTenMinutes
+        case ..<3_600: return .tenToSixtyMinutes
+        case ..<86_400: return .oneToTwentyFourHours
+        default: return .gt24h
+        }
+    }
+
+    nonisolated static func enrollmentDate(at marker: URL) -> Date? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: marker.path) else {
+            return nil
+        }
+        return (attributes[.creationDate] as? Date) ?? (attributes[.modificationDate] as? Date)
     }
 
     /// Pure gate used by the production resolver and exhaustive unit tests.

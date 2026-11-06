@@ -2499,6 +2499,16 @@ def _add_pull_parser(
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
     pull_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check metadata and memory fit without downloading",
+    )
+    pull_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With --check, print one schema-v1 JSON verdict",
+    )
+    pull_parser.add_argument(
         "--with-ref2va",
         action="store_true",
         help="Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",

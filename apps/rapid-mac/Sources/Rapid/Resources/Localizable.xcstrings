@@ -2,6 +2,186 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Search or paste a Hugging Face link" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索模型或粘贴 Hugging Face 链接"
+          }
+        }
+      }
+    },
+    "From Hugging Face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "来自 Hugging Face"
+          }
+        }
+      }
+    },
+    "HUGGING FACE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HUGGING FACE"
+          }
+        }
+      }
+    },
+    "Add from Hugging Face…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 Hugging Face 添加…"
+          }
+        }
+      }
+    },
+    "Checking format and size…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查格式和大小…"
+          }
+        }
+      }
+    },
+    "community upload, not tested" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "社区上传，未经测试"
+          }
+        }
+      }
+    },
+    "Download anyway" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然下载"
+          }
+        }
+      }
+    },
+    "Couldn't check this model. Try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查此模型。请重试。"
+          }
+        }
+      }
+    },
+    "Couldn't find the model checker. Restart Rapid-MLX and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到模型检查程序。请重启 Rapid-MLX 后重试。"
+          }
+        }
+      }
+    },
+    "This model may need more memory than this Mac has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型需要的内存可能超出此 Mac 的内存。"
+          }
+        }
+      }
+    },
+    "Needs about %lld GB memory; this Mac has %lld GB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大约需要 %lld GB 内存；此 Mac 有 %lld GB。"
+          }
+        }
+      }
+    },
+    "Kept in memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "常驻内存"
+          }
+        }
+      }
+    },
+    "Code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "代码"
+          }
+        }
+      }
+    },
+    "Tool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工具"
+          }
+        }
+      }
+    },
+    "Instructions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指令遵循"
+          }
+        }
+      }
+    },
+    "Accuracy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准确率"
+          }
+        }
+      }
+    },
+    "Vision" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视觉"
+          }
+        }
+      }
+    },
+    "%@: %@, %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@：%@，%@"
+          }
+        }
+      }
+    },
     "Prompt processing batch size" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4820,22 +5000,12 @@
         }
       }
     },
-    "REVIEW DOWNLOAD" : {
+    "MODEL COMPATIBILITY" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "查看下载详情"
-          }
-        }
-      }
-    },
-    "Review download" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "查看下载详情"
+            "value" : "模型兼容性"
           }
         }
       }
@@ -23819,12 +23989,12 @@
         }
       }
     },
-    "← Back to review download" : {
+    "← Back to model details" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "← 返回下载详情"
+            "value" : "← 返回模型详情"
           }
         }
       }
@@ -24025,6 +24195,86 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "视频参考：%@–%@ 秒。"
+          }
+        }
+      }
+    },
+    "Fast everyday chat and tools. Text only." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fast everyday chat and tools. Text only."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "快速处理日常聊天和工具任务。仅支持文本。"
+          }
+        }
+      }
+    },
+    "Smarter, and understands images. Twice the download." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smarter, and understands images. Twice the download."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更智能，也能理解图像。下载大小为两倍。"
+          }
+        }
+      }
+    },
+    "Smarter. Twice the download. Reads images on Macs with 32 GB or more." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smarter. Twice the download. Reads images on Macs with 32 GB or more."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更智能，下载大小为两倍。在 32 GB 及以上内存的 Mac 上可读取图像。"
+          }
+        }
+      }
+    },
+    "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模型无法读取图像。切换到 Qwen 3.5 4B 以添加照片（如有需要，将下载模型）。"
+          }
+        }
+      }
+    },
+    "Switch to Qwen 3.5 4B" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Switch to Qwen 3.5 4B"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "切换到 Qwen 3.5 4B"
           }
         }
       }

@@ -7,12 +7,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
+from rapid_mlx.api.anthropic_adapter import (
+    _resolve_reasoning_max_tokens,
+    anthropic_to_openai,
+)
 from rapid_mlx.api.anthropic_models import (
+    ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS,
     AnthropicMessage,
     AnthropicRequest,
     AnthropicToolDef,
 )
+from rapid_mlx.config import get_config
 from rapid_mlx.routes.anthropic import _apply_anthropic_thinking_defaults
 from rapid_mlx.service.helpers import _extract_thinking_from_request
 
@@ -104,12 +109,14 @@ def test_legacy_budget_only_shape_preserves_reasoning_intent() -> None:
     assert converted.reasoning_max_tokens == 16
 
 
-def test_native_adaptive_thinking_is_accepted_and_enabled() -> None:
+def test_native_adaptive_thinking_is_accepted_and_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(get_config(), "default_reasoning_effort", None)
     converted = anthropic_to_openai(_request(thinking={"type": "adaptive"}))
 
     _apply_anthropic_thinking_defaults(converted)
 
     assert _extract_thinking_from_request(converted) is True
+    assert converted.reasoning_max_tokens == 2048
 
 
 def test_output_effort_wins_over_legacy_disabled_thinking() -> None:
@@ -126,10 +133,72 @@ def test_output_effort_wins_over_legacy_disabled_thinking() -> None:
     assert converted.reasoning_max_tokens == 512
 
 
-@pytest.mark.parametrize("thinking_type", ["disabled", "adaptive"])
-def test_non_fixed_thinking_modes_ignore_legacy_budget(thinking_type) -> None:
+@pytest.mark.parametrize(
+    "thinking_type, expected", [("disabled", None), ("adaptive", 2048)]
+)
+def test_non_fixed_thinking_modes_ignore_legacy_budget(
+    monkeypatch, thinking_type, expected
+) -> None:
+    monkeypatch.setattr(get_config(), "default_reasoning_effort", None)
     converted = anthropic_to_openai(
         _request(thinking={"type": thinking_type, "budget_tokens": 16})
     )
 
-    assert converted.reasoning_max_tokens is None
+    assert converted.reasoning_max_tokens == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "default_effort, expected",
+    [
+        (None, 2048),
+        ("none", 512),
+        ("minimal", 512),
+        *ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS.items(),
+    ],
+)
+def test_adaptive_uses_configured_default_effort(
+    monkeypatch, stream, default_effort, expected
+) -> None:
+    monkeypatch.setattr(get_config(), "default_reasoning_effort", default_effort)
+    request = _request(thinking={"type": "adaptive"}, stream=stream)
+
+    assert _resolve_reasoning_max_tokens(request) == expected
+    converted = anthropic_to_openai(request)
+    _apply_anthropic_thinking_defaults(converted)
+
+    assert converted.reasoning_max_tokens == expected
+    assert _extract_thinking_from_request(converted) is True
+
+
+@pytest.mark.parametrize(
+    "effort, expected", ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS.items()
+)
+def test_adaptive_output_effort_overrides_configured_default(
+    monkeypatch, effort, expected
+) -> None:
+    monkeypatch.setattr(get_config(), "default_reasoning_effort", "high")
+    request = _request(thinking={"type": "adaptive"}, output_config={"effort": effort})
+
+    assert _resolve_reasoning_max_tokens(request) == expected
+    assert anthropic_to_openai(request).reasoning_max_tokens == expected
+
+
+@pytest.mark.parametrize(
+    "thinking, expected",
+    [
+        ({"type": "enabled", "budget_tokens": 16}, 16),
+        ({"type": "enabled"}, None),
+        ({"type": "disabled", "budget_tokens": 16}, None),
+        ({"type": "disabled"}, None),
+        (None, None),
+    ],
+)
+def test_non_adaptive_caps_ignore_configured_default(
+    monkeypatch, thinking, expected
+) -> None:
+    monkeypatch.setattr(get_config(), "default_reasoning_effort", "low")
+    request = _request(thinking=thinking)
+
+    assert _resolve_reasoning_max_tokens(request) == expected
+    assert anthropic_to_openai(request).reasoning_max_tokens == expected

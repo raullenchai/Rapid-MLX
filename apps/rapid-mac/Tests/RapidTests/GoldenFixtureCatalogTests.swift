@@ -5,12 +5,13 @@ import Testing
 @Suite("Golden fixture cache identities")
 @MainActor
 struct GoldenFixtureCatalogTests {
-    private func output(_ arguments: [String], variants: Bool = false) async throws -> String {
+    private func output(_ arguments: [String], variants: Bool = false, curated: Bool = false) async throws -> String {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("scripts/fake-rapid-mlx.sh")
         var environment = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("FAKE_") }
         environment["FAKE_CACHED_VARIANTS"] = variants ? "1" : "0"
+        environment["FAKE_CACHED_CURATED_TRADEUP"] = curated ? "1" : "0"
         let process = try await TestSubprocess.run(
             executableURL: script, arguments: arguments, environment: environment
         )
@@ -26,6 +27,29 @@ struct GoldenFixtureCatalogTests {
         return ModelCatalog.mergeAvailableAndCached(
             available: catalog.entries, cached: cached, excluded: catalog.excluded
         )
+    }
+
+    @Test("Cached curated fixture retains the LFM starter past the six-row cap")
+    func cachedStarter() async throws {
+        let available = try #require(ModelCatalog.parseAvailableJSON(
+            try await output(["models", "--json"], curated: true)
+        ))
+        let cached = ModelCatalog.parseCached(try await output(["ls"], curated: true))
+        let models = ModelCatalog.mergeAvailableAndCached(
+            available: available.entries, cached: cached, excluded: available.excluded
+        )
+        let starter = QuickstartCoordinator.defaultChoice.alias
+        #expect(models.contains { $0.alias == starter && $0.cached })
+        let machine = MacHardware(
+            brandString: "Apple M1", family: .m1, tier: .base,
+            physicalRAMBytes: 16 * (1 << 30), memoryBandwidthGBs: 100
+        )
+        #expect(QuickstartCoordinator.defaultChoice(hardware: machine, catalog: models).alias == starter)
+        let list = QuickstartView.shortlist(catalog: models, selection: starter, physicalRAMGB: 16)
+        #expect(list.visibleAliases.contains(starter))
+        #expect(list.onThisMacCount > 6)
+        #expect(available.profiles[starter]?.isTextOnly == true)
+        #expect(available.profiles["qwen3.5-4b-4bit"]?.isTextOnly == false)
     }
 
     @Test("External golden model remains cached, selectable and read-only")

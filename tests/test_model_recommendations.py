@@ -481,3 +481,21 @@ def test_fitting_picks_preserves_tier_order_and_filters(ram, budget):
     assert recommendations.fitting_pick(ram, budget, exclude=exclude) == (
         expected[0] if expected else None
     )
+
+
+def test_recommendations_reject_draft_alias_even_without_catalog_validation(
+    monkeypatch,
+):
+    import copy
+
+    from rapid_mlx import recommendations
+
+    policy = copy.deepcopy(recommendations._read_recommendation_policy())
+    policy["tiers"][0]["picks"][0]["alias"] = "qwen3.5-4b-mtp-4bit"
+    monkeypatch.setattr(recommendations, "_read_recommendation_policy", lambda: policy)
+    recommendations.load_recommendation_tiers.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="draft checkpoint"):
+            recommendations.load_recommendation_tiers(validate_catalog=False)
+    finally:
+        recommendations.load_recommendation_tiers.cache_clear()

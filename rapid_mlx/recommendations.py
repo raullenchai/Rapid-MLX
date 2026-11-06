@@ -68,6 +68,10 @@ def load_recommendation_tiers(
     for raw_tier in payload["tiers"]:
         picks_list: list[Recommendation] = []
         for raw in raw_tier["picks"]:
+            from .model_aliases import draft_only_conflict
+
+            if issue := draft_only_conflict(raw["alias"]):
+                raise ValueError(issue)
             if raw.get("execution_preset_id") is not None:
                 raise ValueError(
                     "recommendation execution presets are not supported by the "
@@ -182,13 +186,13 @@ def starter_baseline_for_ram(ram_gb: float, *, validate_catalog: bool = True) ->
     """Return the installer/Desktop first-chat baseline for ``ram_gb``.
 
     The aliases come from the recommendation policy rather than a second
-    Python table: small Macs use the lowest tier's fast pick, while 16 GB and
-    larger Macs use the 16 GB tier's smart pick.
+    Python table: every Mac at or above the lowest tier uses that tier's smart
+    pick (Desktop's ``defaultChoice``), and only smaller or unknown-RAM Macs
+    fall back to its fast pick (Desktop's ``lowMemoryChoice``).
     """
     tiers = load_recommendation_tiers(validate_catalog=validate_catalog)
-    low_memory = tiers[0].picks[1].alias
-    standard = recommendation_tier(16, validate_catalog=validate_catalog).picks[0].alias
-    return standard if ram_gb >= 16 else low_memory
+    starter, low_memory = tiers[0].picks[0].alias, tiers[0].picks[1].alias
+    return starter if ram_gb >= tiers[0].floor_gb else low_memory
 
 
 def starter_model_candidates(
@@ -205,11 +209,14 @@ def starter_model_candidates(
         return (starter_baseline_for_ram(ram_gb, validate_catalog=validate_catalog),)
 
     current = recommendation_tier(ram_gb, validate_catalog=validate_catalog)
+    # Desktop never promotes the low-memory pick from cache over the starter.
+    low_memory = tiers[0].picks[1].alias
     ordered = [
         pick.alias
         for tier in reversed(tiers)
         if tier.floor_gb <= current.floor_gb
         for pick in tier.picks
+        if pick.alias != low_memory
     ]
     return tuple(dict.fromkeys(ordered))
 

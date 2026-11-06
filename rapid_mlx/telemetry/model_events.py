@@ -478,6 +478,37 @@ def model_type(alias_or_path: object) -> str:
 
 
 @_never_raise
+def emit_model_ref_checked(result: dict, *, ref_form: str | None) -> None:
+    """Report a completed metadata check using only registry-approved values."""
+    from rapid_mlx.telemetry.consent_runtime import is_desktop_sidecar
+    from rapid_mlx.telemetry.model_id import telemetry_model_id
+    from rapid_mlx.telemetry.track import track
+
+    verdict = result["verdict"]
+    preflight = (
+        "refused"
+        if verdict in {"unsupported", "too_big"}
+        else "cached"
+        if result["cached"]
+        else "passed"
+        if verdict == "ok"
+        else "no_verdict"
+    )
+    props = {
+        "model": telemetry_model_id(result["repo"]),
+        "preflight": preflight,
+        "verdict": verdict,
+        "in_catalog": result["in_catalog"],
+        "request_surface": "desktop" if is_desktop_sidecar() else "cli",
+    }
+    if result["reason"] is not None:
+        props["reason"] = result["reason"]
+    if ref_form in {"alias", "repo_id", "hf_url"}:
+        props["ref_form"] = ref_form
+    track("model_ref_checked", props)
+
+
+@_never_raise
 def emit_model_pulled(
     model_ref: object, source: object, size_bytes: int | None
 ) -> None:

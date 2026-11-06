@@ -183,6 +183,40 @@ struct PhotoCapabilityNotice: Equatable {
         let unavailableMessage: String?
     }
 
+    static let imageModelAlias = "qwen3.5-4b-4bit"
+    static let imageModelHint = String(localized: "This model cannot read images. Switch to Qwen 3.5 4B to add photos (download if needed).")
+
+    /// Matches `vision_min_memory_gb` for this alias in the engine catalog;
+    /// below it the engine serves the model text-only.
+    static let imageModelMinimumRAMGB: Double = 32
+
+    static var imageModelFitsThisMac: Bool {
+        MacHardware.detect().physicalRAMGB >= imageModelMinimumRAMGB
+    }
+
+    /// Hints that only say "this model has no vision". Runtime-specific
+    /// remedies (speculative decoding, memory, runtime) are never replaced.
+    static let textOnlyModelHints: Set<String> = Set(
+        [ImageInputAvailability.PhotoHint.legacyModel, .textCheckpoint, .genericTextLane]
+            .map { $0.localized(in: .main) }
+    )
+
+    mutating func rejectImageInput(
+        availability: Availability,
+        alias: String,
+        imageModelFits: Bool = imageModelFitsThisMac
+    ) {
+        guard !availability.supportsImageInput else { return }
+        let textOnlyModel = availability.unavailableMessage.map(Self.textOnlyModelHints.contains) ?? true
+        let hint = alias != Self.imageModelAlias && imageModelFits && textOnlyModel
+            ? Self.imageModelHint
+            : availability.unavailableMessage
+                ?? ImageInputAvailability.PhotoHint.legacyModel.localized(in: .main)
+        present(hint, availability: availability)
+    }
+
+    var offersImageModelSwitch: Bool { message == Self.imageModelHint }
+
     private(set) var message: String?
     private var presentedAvailability: Availability?
 
@@ -847,7 +881,17 @@ struct ChatView: View {
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             } else if let message = photoCapabilityNotice.message {
-                InlineNotice(message: message, tone: .info)
+                InlineNotice(
+                    message: message, tone: .info,
+                    actionTitle: photoCapabilityNotice.offersImageModelSwitch
+                        ? String(localized: "Switch to Qwen 3.5 4B") : nil,
+                    actionIdentifier: "ChatView.Attachments.SwitchToVision",
+                    action: {
+                        photoCapabilityNotice.dismiss()
+                        alias = PhotoCapabilityNotice.imageModelAlias
+                        onUserModelSelection(PhotoCapabilityNotice.imageModelAlias)
+                    }
+                )
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             }
@@ -1710,14 +1754,14 @@ struct ChatView: View {
     }
 
     private func rejectImageInputForCurrentModel() {
-        let message = imageInputUnavailableMessage
-            ?? String(localized: "This model doesn't support photos. Choose a vision-capable model to add one.")
         // The newest attempt owns the single notice slot. Leaving an older
         // attachment error in place would make VoiceOver announce one fact
         // while sighted users keep seeing another.
         attachmentDraft.notice = nil
-        photoCapabilityNotice.present(message, availability: photoAvailability)
-        VoiceOverAnnouncer.announce(message)
+        photoCapabilityNotice.rejectImageInput(availability: photoAvailability, alias: alias)
+        if let message = photoCapabilityNotice.message {
+            VoiceOverAnnouncer.announce(message)
+        }
     }
 
     /// The shared lifecycle gate for every path that would start a turn:
