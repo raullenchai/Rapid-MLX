@@ -3909,6 +3909,36 @@
        "completer": null,
        "const": true,
        "default": false,
+       "dest": "check",
+       "help": "Check metadata and memory fit without downloading",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--check"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
+       "dest": "json",
+       "help": "With --check, print one schema-v1 JSON verdict",
+       "metavar": null,
+       "nargs": 0,
+       "option_strings": [
+        "--json"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
+       "class": "argparse._StoreTrueAction",
+       "completer": null,
+       "const": true,
+       "default": false,
        "dest": "with_ref2va",
        "help": "Pika H3 Flex only: also download the Ref2VA second transformer and adapter, about 69 GB",
        "metavar": null,
@@ -3998,6 +4028,8 @@
        "description": null,
        "dests": [
         "help",
+        "check",
+        "json",
         "with_ref2va",
         "bits",
         "format",
