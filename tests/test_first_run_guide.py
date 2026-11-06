@@ -6,7 +6,7 @@ Covers the ``rapid_mlx/first_run.py`` helpers and their three wiring points in
 
   * P0-1 — ``chat`` / ``run`` with no model → starter auto-select in
     ``main()`` (the known-good starter alias chosen, notice printed only on a
-    TTY; the standard download gate is left untouched — the ~3.1 GB starter is
+    TTY; the standard download gate is left untouched — the ~1.6 GB starter is
     under its 10 GiB confirm threshold — and non-interactive sessions fall
     through to that gate exactly as before this feature).
   * P0-2 — bare ``rapid-mlx`` now lives in ``rapid_mlx/front_door.py`` and is
@@ -368,7 +368,7 @@ def test_autoselected_starter_uses_standard_download_gate(hub_online_env):
     # confirmation, so it flows through ``estimate_repo_size_bytes`` +
     # ``confirm_or_abort`` exactly like an explicit model. (The "small model →
     # no prompt" decision belongs to confirm_or_abort's own 10 GiB threshold,
-    # covered in test_download_gate — the ~3.1 GB starter is under it, so the
+    # covered in test_download_gate — the ~1.6 GB starter is under it, so the
     # gate stays silent for it on its own, but the size is still checked.)
     # The redundant round-trip's *latency* is what we hide — behind a
     # "Resolving…" spinner, NOT by skipping the check.
