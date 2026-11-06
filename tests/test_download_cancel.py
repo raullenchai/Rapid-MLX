@@ -66,6 +66,7 @@ def test_transfer_signal_exits_promptly(tmp_path, mode, signum, code, hint):
         cli._resolve_variant_allow_patterns = lambda *a, **kw: None
         cli._cache_runnability = lambda *a: False
         cli._check_disk_space = lambda *a, **kw: None
+        cli._nested_checkpoint_ignore = lambda *a: None
         cli._offline_hub_mode_active = lambda: False
         gate.reap_orphan_incomplete_blobs = lambda *a, **kw: (0, 0)
         if os.environ["MODE"] == "pull-blocking-hook":

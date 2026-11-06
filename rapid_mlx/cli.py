@@ -1774,9 +1774,27 @@ def _missing_download_bytes(
             def _selected(filename: str) -> bool:
                 return any(fnmatchcase(filename, pattern) for pattern in selection)
         else:
+            from rapid_mlx.byom.preflight import (
+                in_nested_checkpoint,
+                nested_checkpoint_dirs,
+            )
+
+            # Root checkpoint with per-quantization sibling folders: the
+            # loader reads only the root, so only the root is downloaded.
+            _nested = (
+                ()
+                if _prefix
+                else nested_checkpoint_dirs(
+                    s.rfilename
+                    for s in (getattr(info, "siblings", None) or [])
+                    if isinstance(getattr(s, "rfilename", None), str)
+                )
+            )
 
             def _selected(filename: str) -> bool:
-                return not _prefix or filename.startswith(_prefix)
+                if _prefix:
+                    return filename.startswith(_prefix)
+                return not in_nested_checkpoint(filename, _nested)
 
         siblings = [
             sibling
@@ -12088,6 +12106,26 @@ def _emit_completed_model_pull(
     emit_model_pulled(repo_id, source, size)
 
 
+def _nested_checkpoint_ignore(repo_id: str, revision: str | None) -> list[str] | None:
+    """``ignore_patterns`` for sibling quantization folders.
+
+    Fails closed through the Hub retry path: silently fetching every variant
+    would break the disk budget the size check approved for the root only.
+    Offline pulls download nothing, so they skip the listing.
+    """
+    if _offline_hub_mode_active():
+        return None
+    from huggingface_hub import list_repo_files
+
+    from rapid_mlx.byom.preflight import nested_checkpoint_ignore_patterns
+
+    return nested_checkpoint_ignore_patterns(
+        _retry_hub_download(
+            lambda: list_repo_files(repo_id, revision=revision), repo_id
+        )
+    )
+
+
 def _blob_identifier(repo_root) -> tuple[tuple[str, int, int], ...]:
     """Sorted ``(name, size, mtime_ns)`` for every real blob under ``blobs/``.
 
@@ -12652,8 +12690,20 @@ def _pull_repository(
         download_kwargs: dict[str, object] = (
             {"revision": revision_override} if revision_override else {}
         )
+        _ignore = (
+            None if _allow else _nested_checkpoint_ignore(repo_id, revision_override)
+        )
         if _allow:
             download_kwargs["allow_patterns"] = _allow
+        elif _ignore:
+            # A root checkpoint published alongside one folder per
+            # quantization: fetch the root the loader serves, not every copy.
+            print(
+                "  This repo also ships "
+                + ", ".join(p[:-2] for p in _ignore)
+                + " variant folders; fetching only the root checkpoint."
+            )
+            download_kwargs["ignore_patterns"] = _ignore
         path = run_cancellable_download(
             lambda: _retry_hub_download(
                 lambda: snapshot_download(repo_id, **download_kwargs), repo_id
@@ -12666,6 +12716,7 @@ def _pull_repository(
             path,
             revision=revision_override,
             allow_patterns=_allow,
+            ignore_patterns=_ignore,
             local_files_only=_offline_hub_mode_active(),
         )
         _after = _blob_identifier(_cache_root)

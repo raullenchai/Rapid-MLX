@@ -175,6 +175,16 @@ def _benchmark_host_memory(request, monkeypatch):
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_hub_sibling_listing(monkeypatch):
+    """Mocked pull journeys have no Hub: report no sibling quant folders.
+
+    ``pull`` lists the repo to skip per-quantization folders and fails closed
+    when it cannot; tests covering that listing call the helper directly.
+    """
+    monkeypatch.setattr("rapid_mlx.cli._nested_checkpoint_ignore", lambda *_a: None)
+
+
 @pytest.fixture
 def ample_pull_disk_space(monkeypatch):
     """Keep mocked pull journeys independent of the runner's free disk.
