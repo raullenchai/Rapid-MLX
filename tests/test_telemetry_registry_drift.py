@@ -614,6 +614,14 @@ def test_start_failure_enums_and_disclosure_match_code(registry):
             Exception,
         )
     } | {model_events.serve_failure_subtype(json.JSONDecodeError("private", "", 0))}
+    from rapid_mlx.engine_startup_errors import startup_failure_boundary
+
+    for boundary in ("weights_load", "draft_attach"):
+        try:
+            with startup_failure_boundary(boundary):
+                raise RuntimeError("private")
+        except RuntimeError as exc:
+            subtypes.add(model_events.serve_failure_subtype(exc))
     assert subtypes == set(registry["enums"]["serve_failure_subtype"]["values"])
     disclosure = (MAC_APP / "PRIVACY.md").read_text()
     reason_text = disclosure.split("(`exit_reason`):", 1)[1].split("; never", 1)[0]

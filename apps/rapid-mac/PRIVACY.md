@@ -112,10 +112,10 @@ service:
     `memory_refused`, or `exception`; never the exception message, command line,
     or path. Ctrl+C at download confirmation is `user_interrupt`; answering
     no is `declined_download`.
-  * A failed serve classified as `other` includes one closed exception type
+  * A failed serve classified as `other` includes one closed startup boundary or exception type
     (`failure_subtype`): `config_parse`, `import_error`, `io_error`, `type_error`,
     `memory_error`, `key_error`, `attribute_error`, `assertion_error`,
-    `value_error`, `runtime_error`, or `unknown`; never the message.
+    `value_error`, `runtime_error`, `unknown`, `weights_load`, or `draft_attach`; never the message.
   * A failed model serve uses one closed error class: `unsupported_architecture`,
     `unsupported_format`, `insufficient_memory`, `corrupt_weights`,
     `download_failed`, `local_path_missing`, `missing_extra`, `invalid_config`,

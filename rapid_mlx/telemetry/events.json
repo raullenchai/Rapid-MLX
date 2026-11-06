@@ -242,11 +242,11 @@
       "values": ["user_interrupt", "declined_download", "usage_error", "port_in_use", "memory_refused", "exception"]
     },
     "serve_failure_subtype": {
-      "_about": "Exception-type-only detail for model_serve_failed when error_class is other. No message, path, model name, or user text is inspected.",
+      "_about": "Closed startup-boundary or exception-type detail for model_serve_failed when error_class is other. No message, path, model name, or user text is inspected.",
       "values": [
         "config_parse", "import_error", "io_error", "type_error",
         "memory_error", "key_error", "attribute_error", "assertion_error",
-        "value_error", "runtime_error", "unknown"
+        "value_error", "runtime_error", "unknown", "weights_load", "draft_attach"
       ]
     },
     "byom_preflight": {

@@ -1893,6 +1893,7 @@ class BatchedEngine(BaseEngine):
         import concurrent.futures
 
         from ..engine_core import _init_mlx_step_thread
+        from ..engine_startup_errors import startup_failure_boundary
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM, TextOnlyCheckpointError
         from ..scheduler import SchedulerConfig
@@ -1953,7 +1954,10 @@ class BatchedEngine(BaseEngine):
         # block — see the memory-release note below.
         degrade_reason: str | None = None
         try:
-            self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
+            with startup_failure_boundary("weights_load"):
+                self._mllm_instance = self._model_load_executor.submit(
+                    _load_mllm
+                ).result()
         except Exception as e:
             # ANY load failure tears down the mllm-step worker FIRST so its
             # thread never leaks — this runs whether we degrade or re-raise
@@ -2270,6 +2274,7 @@ class BatchedEngine(BaseEngine):
         import concurrent.futures
 
         from ..engine_core import AsyncEngineCore, EngineConfig, _init_mlx_step_thread
+        from ..engine_startup_errors import startup_failure_boundary
         from ..scheduler import SchedulerConfig
         from ..utils.tokenizer import load_model_with_fallback
 
@@ -2321,15 +2326,16 @@ class BatchedEngine(BaseEngine):
             # combination and lazy loading bypasses
             # load_model_with_fallback's fallback branches entirely (see
             # its docstring).
-            self._model, self._tokenizer, checkpoint_source = (
-                self._model_load_executor.submit(
-                    _load_lazy_and_install_disk_stream,
-                    self._model_name,
-                    tokenizer_config,
-                    getattr(self, "_disk_stream_cache_gb", 1.0),
-                    getattr(self, "_chat_template_id", None),
-                ).result()
-            )
+            with startup_failure_boundary("weights_load"):
+                self._model, self._tokenizer, checkpoint_source = (
+                    self._model_load_executor.submit(
+                        _load_lazy_and_install_disk_stream,
+                        self._model_name,
+                        tokenizer_config,
+                        getattr(self, "_disk_stream_cache_gb", 1.0),
+                        getattr(self, "_chat_template_id", None),
+                    ).result()
+                )
         else:
             load_kwargs = {"tokenizer_config": tokenizer_config}
             if chat_template_id := getattr(self, "_chat_template_id", None):
@@ -2338,14 +2344,15 @@ class BatchedEngine(BaseEngine):
                 getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
             ):
                 load_kwargs["enable_dspark"] = True
-            self._model, self._tokenizer, checkpoint_source = (
-                self._model_load_executor.submit(
-                    load_model_with_fallback,
-                    self._model_name,
-                    return_source=True,
-                    **load_kwargs,
-                ).result()
-            )
+            with startup_failure_boundary("weights_load"):
+                self._model, self._tokenizer, checkpoint_source = (
+                    self._model_load_executor.submit(
+                        load_model_with_fallback,
+                        self._model_name,
+                        return_source=True,
+                        **load_kwargs,
+                    ).result()
+                )
 
             # Fuse MoE gate+up expert projections: one gather_qmm launch
             # instead of two per MoE layer per token, bit-exact (see
@@ -2459,13 +2466,14 @@ class BatchedEngine(BaseEngine):
             # timeout that converts a stuck HF/DNS load into a
             # clean startup ``RuntimeError`` instead of an
             # indefinite hang.
-            _apply_mtp_dispatch(
-                model=self._model,
-                model_name=self._model_name,
-                scheduler_config=sc,
-                executor=self._model_load_executor,
-                checkpoint_source=checkpoint_source,
-            )
+            with startup_failure_boundary("draft_attach"):
+                _apply_mtp_dispatch(
+                    model=self._model,
+                    model_name=self._model_name,
+                    scheduler_config=sc,
+                    executor=self._model_load_executor,
+                    checkpoint_source=checkpoint_source,
+                )
 
         # Resolve the per-model Metal budget on the model-owning worker
         # after the weights are materialized (#2858, #170). The logic lives

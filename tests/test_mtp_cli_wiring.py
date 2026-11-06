@@ -1281,8 +1281,10 @@ def test_start_llm_calls_apply_mtp_dispatch():
         #    fires, avoiding the Metal / AsyncEngineCore setup.
         try:
             asyncio.run(engine._start_llm())
-        except _ScopedTestSentinelError:
-            pass  # expected — the recorder tripped the sentinel
+        except _ScopedTestSentinelError as exc:
+            from rapid_mlx.telemetry.model_events import serve_failure_subtype
+
+            assert serve_failure_subtype(exc) == "draft_attach"
 
     finally:
         monkeypatch.undo()
@@ -5091,3 +5093,50 @@ def test_gather_kv_cache_dtype_inputs_reads_local_dir_config(tmp_path):
     assert hf_cfg["text_config"]["mtp_num_hidden_layers"] == 1
     # And the resolved config must clear the MTP eligibility gate.
     assert detect_mtp_eligibility(hf_cfg) is not MTPEligibility.NONE
+
+
+def test_start_llm_disk_stream_preserves_successful_loader_result(monkeypatch):
+    """A successful supported disk-stream load crosses the diagnostic seam intact."""
+    import asyncio
+
+    from rapid_mlx import engine_core
+    from rapid_mlx.engine import batched
+    from rapid_mlx.runtime import cache
+    from rapid_mlx.telemetry.model_events import serve_failure_subtype
+
+    class StartupSeamReachedError(RuntimeError):
+        pass
+
+    loaded_model, loaded_tokenizer = object(), object()
+    source = "/fake/immutable-snapshot"
+    calls = []
+
+    def load(*args):
+        calls.append(args)
+        return loaded_model, loaded_tokenizer, source
+
+    def pin(engine, **kwargs):
+        assert engine._model is loaded_model
+        assert engine._tokenizer is loaded_tokenizer
+        assert kwargs["checkpoint_source"] == source
+        raise StartupSeamReachedError("post-load persistence identity")
+
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(batched, "_load_lazy_and_install_disk_stream", load)
+    monkeypatch.setattr(cache, "pin_prefix_cache_identity", pin)
+    engine = object.__new__(batched.BatchedEngine)
+    engine._model_name = "test-model"
+    engine._trust_remote_code = False
+    engine._scheduler_config = SimpleNamespace(spec_decode="none")
+    engine._model_load_executor = None
+    engine._enable_disk_stream = True
+    engine._disk_stream_cache_gb = 1.0
+    try:
+        with pytest.raises(StartupSeamReachedError) as caught:
+            asyncio.run(engine._start_llm())
+        # A later startup operation must not inherit a successful load label.
+        assert serve_failure_subtype(caught.value) == "runtime_error"
+        assert calls == [("test-model", {"trust_remote_code": False}, 1.0, None)]
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)

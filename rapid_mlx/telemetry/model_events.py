@@ -413,10 +413,10 @@ def serve_error_class(exc: BaseException, *, model_ref: object = None) -> str:
 
 
 def serve_failure_subtype(exc: BaseException) -> str:
-    """Classify an unclassified serve failure using exception types only.
+    """Classify an unclassified serve failure by boundary, then exception type.
 
-    Prefer a specific cause over a generic outer RuntimeError. Never inspect
-    exception messages, filenames, model references, or traceback frames.
+    Prefer an explicitly recorded startup boundary over the exception type.
+    Never inspect messages, filenames, model references, or traceback frames.
     """
     chain: list[BaseException] = []
     current: BaseException | None = exc
@@ -430,6 +430,12 @@ def serve_failure_subtype(exc: BaseException) -> str:
             current = current.__cause__
         except BaseException:
             break
+
+    from rapid_mlx.engine_startup_errors import startup_boundary_for
+
+    for cause in chain:
+        if boundary := startup_boundary_for(cause):
+            return boundary
 
     for failure_type, subtype in (
         (json.JSONDecodeError, "config_parse"),
