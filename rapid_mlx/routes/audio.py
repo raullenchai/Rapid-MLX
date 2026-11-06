@@ -2113,7 +2113,9 @@ def _get_music_lock() -> _CrossLoopAsyncLock:
     return _music_lock
 
 
-async def release_idle_audio_lanes(ttl: float) -> None:
+async def release_idle_audio_lanes(
+    ttl: float, *, lanes: tuple[str, ...] = ("stt", "alignment", "tts")
+) -> None:
     """Recheck idle age under request locks before releasing cached weights."""
     if ttl <= 0:
         return
@@ -2176,25 +2178,46 @@ async def release_idle_audio_lanes(ttl: float) -> None:
 
     # An active STT request must not postpone release of an idle TTS lane.
     # STT and alignment still serialize on their existing shared request lock.
-    await asyncio.gather(*(release_lane(lane) for lane in ("stt", "alignment", "tts")))
+    await asyncio.gather(*(release_lane(lane) for lane in lanes))
 
 
 async def audio_lane_idle_loop(ttl: float) -> None:
     """Lifespan-owned timer; zero TTL creates no background work."""
-    while ttl > 0:
-        await asyncio.sleep(min(60.0, max(1.0, ttl / 4.0)))
-        # Finish cache bookkeeping even if shutdown cancels during unload.
-        task = asyncio.create_task(release_idle_audio_lanes(ttl))
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-            task.result()
-            raise
+
+    async def run_lane(lane: str) -> None:
+        while ttl > 0:
+            await asyncio.sleep(min(60.0, max(1.0, ttl / 4.0)))
+            # Finish cache bookkeeping even if shutdown cancels during unload.
+            task = asyncio.create_task(release_idle_audio_lanes(ttl, lanes=(lane,)))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                task.result()
+                raise
+
+    # Each lane advances independently. Shield the group so repeated parent
+    # cancellation cannot abandon a child while it drains an owning worker.
+    loops = [
+        asyncio.create_task(run_lane(lane)) for lane in ("stt", "alignment", "tts")
+    ]
+    completion = asyncio.gather(*loops, return_exceptions=True)
+    try:
+        await asyncio.shield(completion)
+    except asyncio.CancelledError:
+        for loop in loops:
+            loop.cancel()
+        while not completion.done():
+            try:
+                await asyncio.shield(completion)
+            except asyncio.CancelledError:
+                continue
+        completion.result()
+        raise
 
 
 async def shutdown_audio_lanes() -> None:

@@ -245,3 +245,37 @@ async def test_active_stt_does_not_delay_idle_tts_release(lanes):
     await timer
     assert audio._stt_engine is None
     assert audio._tts_engine is None
+
+
+@pytest.mark.asyncio
+async def test_busy_stt_does_not_stop_later_tts_idle_cycles(lanes):
+    audio, dispatcher = lanes
+
+    async def loaded_tts():
+        async with audio._get_tts_lane_lock():
+            cached = Cached("kokoro")
+            audio._tts_engine = cached
+            await dispatcher.execute("tts", "kokoro", "load", lambda: None)
+            age(dispatcher, "tts")
+            return cached
+
+    async def wait_unloaded(cached):
+        for _ in range(250):
+            if cached.unloaded:
+                return
+            await asyncio.sleep(0.01)
+        assert cached.unloaded, "busy STT stalled a later TTS idle cycle"
+
+    timer = None
+    try:
+        async with audio._get_stt_lane_lock():
+            first = await loaded_tts()
+            timer = asyncio.create_task(audio.audio_lane_idle_loop(0.01))
+            await wait_unloaded(first)
+            second = await loaded_tts()
+            await wait_unloaded(second)
+    finally:
+        if timer is not None:
+            timer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await timer
