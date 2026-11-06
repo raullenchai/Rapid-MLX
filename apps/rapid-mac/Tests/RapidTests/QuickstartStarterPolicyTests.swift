@@ -30,32 +30,19 @@ struct QuickstartStarterPolicyTests {
         )
     }
 
-    @Test("RAM threshold chooses 1.2B below 16 GB and Qwen 4B at 16 GB or above")
+    @Test("LFM 2.6B fits and is the default on 8, 16, 32 and 64 GB Macs")
     func ramMatrix() {
-        let catalog = [
-            entry("lfm2.5-1b-4bit"),
-            entry("lfm2.5-2.6b-4bit"),
-            entry("qwen3.5-4b-4bit"),
-        ]
-
-        #expect(QuickstartCoordinator.defaultChoice(
-            hardware: hardware(8), catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
-        #expect(QuickstartCoordinator.defaultChoice(
-            hardware: hardware(15.99), catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
-        #expect(QuickstartCoordinator.defaultChoice(
-            hardware: hardware(16), catalog: catalog
-        ).alias == "qwen3.5-4b-4bit")
-        #expect(QuickstartCoordinator.defaultChoice(
-            hardware: hardware(64), catalog: catalog
-        ).alias == "qwen3.5-4b-4bit")
-        #expect(QuickstartCoordinator.baselineChoice(
-            hardware: hardware(8)
-        ).alias == "lfm2.5-1b-4bit")
-        #expect(QuickstartCoordinator.baselineChoice(
-            hardware: hardware(16)
-        ).alias == "qwen3.5-4b-4bit")
+        let catalog = [entry("lfm2.5-1b-4bit"), entry("lfm2.5-2.6b-4bit"), entry("qwen3.5-4b-4bit")]
+        for ram in [8.0, 15.99, 16, 32, 64] {
+            let machine = hardware(ram)
+            #expect(ModelSizing.classify(ModelSizing.estimate(alias: "lfm2.5-2.6b-4bit"), on: machine) != .tooBig)
+            #expect(QuickstartCoordinator.defaultChoice(hardware: machine, catalog: catalog).alias == "lfm2.5-2.6b-4bit")
+            #expect(QuickstartCoordinator.baselineChoice(hardware: machine).alias == "lfm2.5-2.6b-4bit")
+            #expect(QuickstartCoordinator.baselineChoice(physicalRAMGB: ram).alias == "lfm2.5-2.6b-4bit")
+        }
+        #expect(ModelSizing.estimate(alias: "lfm2.5-2.6b-4bit").totalGB == 3.0)
+        #expect(ModelSizing.classify(ModelSizing.estimate(alias: "lfm2.5-2.6b-4bit"), on: hardware(4)) == .tooBig)
+        #expect(QuickstartCoordinator.defaultChoice(hardware: hardware(4), catalog: catalog).alias == "lfm2.5-1b-4bit")
     }
 
     @Test("The synchronous no-catalog baseline is safe before welcome Skip")
@@ -63,10 +50,10 @@ struct QuickstartStarterPolicyTests {
         let coordinator = QuickstartCoordinator()
         coordinator.applyDefaultChoice(hardware: hardware(8), catalog: [])
 
-        #expect(coordinator.selection.alias == "lfm2.5-1b-4bit")
+        #expect(coordinator.selection.alias == "lfm2.5-2.6b-4bit")
     }
 
-    @Test("The automatic 8 GB choice keeps its lowest-memory spoken category")
+    @Test("The low-memory fallback keeps its lowest-memory spoken category")
     func lowMemoryStarterAccessibilityCategory() {
         let lowMemoryLabel = QuickstartRecommendedCard.accessibilityText(
             for: QuickstartCoordinator.lowMemoryChoice,
@@ -119,11 +106,11 @@ struct QuickstartStarterPolicyTests {
             ]
         )
 
-        #expect(pick.alias == "qwen3.5-4b-4bit")
+        #expect(pick.alias == "lfm2.5-2.6b-4bit")
         #expect(QuickstartCoordinator.optionalOnlyAliases.contains("neohorse-9b-4bit"))
     }
 
-    @Test("A cached standard starter stays visible when it wins below 16 GB")
+    @Test("A cached Qwen alternative stays visible when it wins below 16 GB")
     func cachedStandardStarterRemainsVisible() {
         let catalog = [
             entry("lfm2.5-1b-4bit"),
@@ -161,10 +148,10 @@ struct QuickstartStarterPolicyTests {
         #expect(QuickstartCoordinator.defaultChoice(
             hardware: machine,
             catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
+        ).alias == "lfm2.5-2.6b-4bit")
     }
 
-    @Test("A cached 2.6B model cannot bypass the safe 8 GB automatic baseline")
+    @Test("A cached 2.6B model is the fitting 8 GB baseline")
     func cachedCompactUpgradeRemainsManual() {
         let catalog = [
             entry("lfm2.5-1b-4bit"),
@@ -174,34 +161,25 @@ struct QuickstartStarterPolicyTests {
 
         #expect(QuickstartCoordinator.defaultChoice(
             hardware: hardware(8), catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
+        ).alias == "lfm2.5-2.6b-4bit")
     }
 
-    @Test("The chooser presents one hardware-fit starter, not two competing recommendations")
+    @Test("The shortlist starts with LFM 2.6B then Qwen 4B, with no 1.2B when 2.6B fits")
     func shortlistHasOneStarter() {
-        let catalog = [
-            entry("lfm2.5-1b-4bit"),
-            entry("lfm2.5-2.6b-4bit"),
-            entry("qwen3.5-4b-4bit"),
-        ]
-
-        let compact = QuickstartView.shortlist(
-            catalog: catalog,
-            selection: "lfm2.5-1b-4bit",
-            physicalRAMGB: 8
-        )
-        #expect(compact.starters.map(\.alias) == ["lfm2.5-1b-4bit"])
-        #expect(compact.lowMemory.isEmpty)
-        #expect(compact.recommended.map(\.alias) == ["lfm2.5-2.6b-4bit"])
-        #expect(QuickstartView.recommendedGroupLabel(physicalRAMGB: 8)
-            == "OPTIONAL — MORE CAPABLE, USES MORE MEMORY")
-
-        let standard = QuickstartView.shortlist(
-            catalog: catalog,
-            selection: "qwen3.5-4b-4bit",
-            physicalRAMGB: 16
-        )
-        #expect(standard.starters.map(\.alias) == ["qwen3.5-4b-4bit"])
+        let catalog = [entry("lfm2.5-1b-4bit"), entry("lfm2.5-2.6b-4bit"), entry("qwen3.5-4b-4bit")]
+        for ram in [8.0, 16, 32, 64] {
+            let list = QuickstartView.shortlist(catalog: catalog, selection: "lfm2.5-2.6b-4bit", physicalRAMGB: ram)
+            #expect(list.starters.map(\.alias) == ["lfm2.5-2.6b-4bit"])
+            #expect(list.recommended.first?.alias == "qwen3.5-4b-4bit")
+            // Below the 32 GB vision floor the copy must not promise images.
+            #expect(list.recommended.first?.blurb.contains("understands images") == (ram >= 32))
+            #expect(!list.visibleAliases.contains("lfm2.5-1b-4bit"))
+            #expect(list.lowMemory.isEmpty)
+        }
+        let small = QuickstartView.shortlist(catalog: catalog, selection: "lfm2.5-1b-4bit", physicalRAMGB: 4)
+        #expect(small.starters.map(\.alias) == ["lfm2.5-1b-4bit"])
+        #expect(QuickstartCoordinator.defaultChoice.blurb == "Fast everyday chat and tools. Text only.")
+        #expect(QuickstartCoordinator.visionChoice.blurb == "Smarter, and understands images. Twice the download.")
     }
 
     @Test("An automatically selected sibling alternate is surfaced as Your Pick")
@@ -238,22 +216,22 @@ struct QuickstartStarterPolicyTests {
                 entry("flux-klein", cached: true, kind: .image),
             ]
         )
-        #expect(pick.alias == "qwen3.5-4b-4bit")
+        #expect(pick.alias == "lfm2.5-2.6b-4bit")
         #expect(QuickstartCoordinator.lowMemoryChoice.alias == "lfm2.5-1b-4bit")
     }
 
-    @Test("An older authoritative catalog falls back to its 1.2B ladder entry")
+    @Test("An older catalog cannot select 1.2B when the starter fits")
     func oldCatalogCompatibilityFallback() {
         let catalog = [entry("lfm2.5-1b-4bit")]
 
         #expect(QuickstartCoordinator.defaultChoice(
             hardware: hardware(8),
             catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
+        ).alias == "lfm2.5-2.6b-4bit")
         #expect(QuickstartCoordinator.defaultChoice(
             hardware: hardware(16),
             catalog: catalog
-        ).alias == "lfm2.5-1b-4bit")
+        ).alias == "lfm2.5-2.6b-4bit")
     }
 
     @Test("A later cache refresh never overrides an explicit user choice")
@@ -309,7 +287,7 @@ struct QuickstartStarterPolicyTests {
         let coordinator = QuickstartCoordinator()
         coordinator.applyDefaultChoice(hardware: hardware(15.99), catalog: [])
         coordinator.advanceToChooseModel()
-        #expect(coordinator.selection.alias == "lfm2.5-1b-4bit")
+        #expect(coordinator.selection.alias == "lfm2.5-2.6b-4bit")
 
         coordinator.settleDefaultChoice(
             hardware: hardware(15.99),

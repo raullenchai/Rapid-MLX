@@ -1242,7 +1242,7 @@ def _emit_catalog(subcommand, alias):
                 aliases.extend(["lfm2.5-2.6b-4bit", "lfm2.5-1b-4bit"])
             if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
                 aliases.extend([f"a-cached-{index}" for index in range(6)])
-                aliases.append("qwen3.5-4b-4bit")
+                aliases.extend(["lfm2.5-2.6b-4bit", "qwen3.5-4b-4bit"])
             if _setting("FAKE_CACHED_VARIANTS") == "1":
                 aliases.extend(["qwen3-0.6b-8bit", "qwen3-0.6b-4bit", "qwen3-4b-4bit"])
             if _setting("FAKE_SHARE_COMPUTE_POOL") == "1":
@@ -1273,7 +1273,7 @@ def _emit_catalog(subcommand, alias):
                         "verified" if item == "qwen3.8-27b-4bit" else "unknown"
                     ),
                     "is_builtin": is_builtin,
-                    "is_text_only": item == "qwen3.5-4b-4bit",
+                    "is_text_only": item.startswith("lfm2.5-"),
                 })
             print(json.dumps({
                 "text": text,
@@ -1286,8 +1286,8 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Parser           Reasoning        Preset")
         print("---------------------  ---------------  ---------------  --------")
         if _setting("FAKE_INCLUDE_STARTER") == "1":
-            # A production catalog contains both the RAM-aware compact starter
-            # and the explicit low-memory alternative.
+            # A production catalog contains both the first-run starter
+            # and the Browse-only low-memory alternative.
             # Most flows deliberately keep the compact single-chat-row
             # fixture, but fresh-install must exercise the real default
             # selection contract rather than falling back to fake-alias.
@@ -1296,6 +1296,7 @@ def _emit_catalog(subcommand, alias):
         if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
             for index in range(6):
                 print(f"a-cached-{index}             hermes           none")
+            print("lfm2.5-2.6b-4bit      hermes           none")
             print("qwen3.5-4b-4bit       hermes           qwen3")
         if _setting("FAKE_CACHED_VARIANTS") == "1":
             print("qwen3-0.6b-8bit       hermes           qwen3")
@@ -1378,6 +1379,7 @@ def _emit_catalog(subcommand, alias):
         if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
             for index in range(6):
                 print(f"a-cached-{index}             fake-org/a-cached-{index}        100 MB")
+            print("lfm2.5-2.6b-4bit      LiquidAI/LFM2.5-2.6B-MLX  1.6 GB")
             print("qwen3.5-4b-4bit       mlx-community/Qwen3.5-4B-MLX-4bit  2.9 GB")
         if _setting("FAKE_CACHED_VARIANTS") == "1":
             print("qwen3-0.6b-8bit       mlx-community/Qwen3-0.6B-MLX-8bit  720 MB")
@@ -1489,10 +1491,10 @@ def main():
             }))
             sys.exit(0)
         if args.subcommand == "pull" and _setting("FAKE_DOWNLOAD_OVERRUN") == "1":
-            # #1550 fixture: the alias-derived estimate said 563 MiB after
-            # 633 MiB had already arrived. Keep the process alive long enough
+            # #1550 fixture: the starter estimate said 1527 MiB after
+            # 2048 MiB had already arrived. Keep the process alive long enough
             # for the AX flow to inspect the in-flight progress card.
-            print("[bytes] 663748608/590348288", flush=True)
+            print("[bytes] 2147483648/1601175552", flush=True)
             time.sleep(5)
             state_path = _setting("FAKE_AUDIO_PULL_STATE")
             if state_path and args.alias in {"fake-qwen3-tts", "fake-whisper-small"}:

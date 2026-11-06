@@ -29,12 +29,9 @@ import SwiftUI
 ///
 /// ## Starter policy
 ///
-/// Below 16 GB, onboarding starts from LFM2.5 1.2B; at 16 GB and above,
-/// it starts from Qwen 3.5 4B. An eligible cached chat model takes priority
-/// so an existing installation does not force another download. LFM2.5 2.6B
-/// remains available as a more capable step-up for a lower-memory Mac, while
-/// 1.2B remains the explicit low-memory alternative on larger Macs. The policy
-/// is pure and covered by the starter matrix tests.
+/// Onboarding starts from LFM2.5 2.6B whenever ModelSizing classifies it as
+/// fitting, with LFM2.5 1.2B reserved for Macs where it does not fit. An eligible
+/// cached chat model takes priority to avoid another download.
 ///
 /// ### What this means for the empty state
 ///
@@ -248,28 +245,36 @@ final class QuickstartCoordinator {
         case failed(message: String, origin: FailureOrigin)
     }
 
-    /// Standard starter for Macs with at least 16 GB RAM. The first-run
-    /// decision itself is made by ``defaultChoice(hardware:catalog:)`` so a
-    /// lower-memory Mac and an eligible cached model can take the right path.
+    /// Text-only first-run starter. The fit gate and cached preference live in
+    /// ``defaultChoice(hardware:catalog:)``.
     nonisolated static let defaultChoice = QuickstartModelChoice(
-        alias: "qwen3.5-4b-4bit",
-        displayName: "Qwen 3.5 · 4B",
-        hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit",
-        downloadBytes: 3_061_121_321,
-        blurb: String(localized: "Strong everyday chat and tools, chosen for a reliable first conversation."),
-        tier: .starter
-    )
-
-    /// Smarter optional choice for Macs below 16 GB RAM. Clean 8 GB hardware
-    /// validation showed that loading it projects beyond the app's usable RAM
-    /// budget, so first run defaults to ``lowMemoryChoice`` instead.
-    nonisolated static let compactDefaultChoice = QuickstartModelChoice(
         alias: "lfm2.5-2.6b-4bit",
         displayName: "LFM2.5 · 2.6B",
         hfRepo: "LiquidAI/LFM2.5-2.6B-MLX",
         downloadBytes: 1_601_103_345,
-        blurb: String(localized: "A lighter everyday model chosen to fit lower-memory Macs."),
+        blurb: String(localized: "Fast everyday chat and tools. Text only."),
         tier: .starter
+    )
+
+    /// Optional image-capable alternative, using the same download/start path.
+    nonisolated static let visionChoice = QuickstartModelChoice(
+        alias: "qwen3.5-4b-4bit",
+        displayName: "Qwen 3.5 · 4B",
+        hfRepo: "mlx-community/Qwen3.5-4B-MLX-4bit",
+        downloadBytes: 3_061_121_321,
+        blurb: String(localized: "Smarter, and understands images. Twice the download."),
+        tier: .tradeUp
+    )
+
+    /// The same model on Macs below its vision memory floor, where the engine
+    /// serves it text-only; the copy must not promise image support.
+    nonisolated static let visionChoiceTextOnly = QuickstartModelChoice(
+        alias: visionChoice.alias,
+        displayName: visionChoice.displayName,
+        hfRepo: visionChoice.hfRepo,
+        downloadBytes: visionChoice.downloadBytes,
+        blurb: String(localized: "Smarter. Twice the download. Reads images on Macs with 32 GB or more."),
+        tier: .tradeUp
     )
 
     /// Deliberately weaker than the starter. Onboarding surfaces this one explicitly as
@@ -296,7 +301,7 @@ final class QuickstartCoordinator {
     /// ``BenchScoresCatalog`` at render.
     nonisolated static let onboardingChoices: [QuickstartModelChoice] = [
         defaultChoice,
-        compactDefaultChoice,
+        visionChoice,
         lowMemoryChoice,
         QuickstartModelChoice(
             alias: "qwen3.5-9b-4bit",
@@ -338,10 +343,8 @@ final class QuickstartCoordinator {
     /// informed user select and compare the model.
     static let optionalOnlyAliases: Set<String> = ["neohorse-9b-4bit"]
 
-    /// Hardware-aware first-run policy. The existing cache-aware policy is the
-    /// eligibility SSOT for cached choices; onboarding adds only its explicit
-    /// 16 GB baseline. The 1.2B choice is automatic only when it is already
-    /// the sub-16 GB baseline; larger Macs keep it as an explicit fallback.
+    /// Hardware-fit first-run policy, retaining the existing eligibility and
+    /// preference rules for cached choices.
     static func defaultChoice(
         hardware: MacHardware,
         catalog: [ModelEntry]
@@ -353,25 +356,19 @@ final class QuickstartCoordinator {
         if baseline.alias != lowMemoryChoice.alias {
             excluded.insert(lowMemoryChoice.alias)
         } else {
-            // Clean 8 GB validation puts the 2.6B option beyond the usable-RAM
-            // guard. A cached copy still avoids a download, but does not make
-            // that load safe enough to become the automatic first run.
-            excluded.insert(compactDefaultChoice.alias)
+            // A cached copy does not make a model that fails the fit gate safe.
+            excluded.insert(defaultChoice.alias)
         }
         guard let alias = CacheAwareDefault.pick(
             catalog: eligibleCatalog,
             hardware: hardware,
             bucketedDefault: baseline.alias,
             excludedAliases: excluded
-        ) else {
-            // An older sidecar may not know the new starter aliases yet. The
-            // authored 1.2B ladder entry remains a catalog-proven compatibility
-            // fallback; it is not considered while either current baseline or
-            // another eligible cached choice can be resolved.
-            if !eligibleCatalog.isEmpty,
-               eligibleCatalog.contains(where: { $0.alias == lowMemoryChoice.alias }) {
-                return lowMemoryChoice
-            }
+        ), alias == baseline.alias || eligibleCatalog.contains(where: {
+            $0.alias == alias && $0.cached
+        }) else {
+            // Preserve cached preference, but do not silently replace the
+            // starter with an uncached catalog fallback on version skew.
             return baseline
         }
         return choice(forAlias: alias)
@@ -380,11 +377,16 @@ final class QuickstartCoordinator {
     /// RAM-only baseline shared by onboarding and the persistent picker row.
     /// Cached preference is deliberately layered only by ``defaultChoice``.
     static func baselineChoice(hardware: MacHardware) -> QuickstartModelChoice {
-        baselineChoice(physicalRAMGB: hardware.physicalRAMGB)
+        ModelSizing.classify(ModelSizing.estimate(alias: defaultChoice.alias), on: hardware) == .tooBig
+            ? lowMemoryChoice : defaultChoice
     }
 
     static func baselineChoice(physicalRAMGB: Double) -> QuickstartModelChoice {
-        physicalRAMGB < 16 ? lowMemoryChoice : defaultChoice
+        baselineChoice(hardware: MacHardware(
+            brandString: "", family: .mUnknown, tier: .unknown,
+            physicalRAMBytes: UInt64(max(0, physicalRAMGB) * Double(1 << 30)),
+            memoryBandwidthGBs: 0
+        ))
     }
 
     /// UserDefaults key for the persistent "Quickstart already
@@ -3369,6 +3371,13 @@ struct QuickstartView: View {
                 excludedAliases: excluded
             )
         }
+        let visionChoice = physicalRAMGB.map { $0 < PhotoCapabilityNotice.imageModelMinimumRAMGB } == true
+            ? QuickstartCoordinator.visionChoiceTextOnly
+            : QuickstartCoordinator.visionChoice
+        recommended.removeAll { $0.alias == visionChoice.alias }
+        if !existingAliases.contains(visionChoice.alias) {
+            recommended.insert(visionChoice, at: 0)
+        }
         let recommendedAliases = Set(recommended.map(\.alias))
         var native = existingAliases
         native.formUnion(choices.map(\.alias))
@@ -3385,11 +3394,9 @@ struct QuickstartView: View {
         let starters = choices.filter {
             $0.alias == starterAlias && !existingAliases.contains($0.alias)
         }
-        let lowMemory = choices.filter {
-            $0.isLowMemory
-                && $0.alias != starterAlias
-                && !existingAliases.contains($0.alias)
-        }
+        // 1.2B is only a recommended first-run choice when the starter fails
+        // the fit gate; then it already renders in starters. Browse retains it.
+        let lowMemory: [QuickstartModelChoice] = []
         // A compacted cached row that an authored lane already renders (with
         // its ON THIS MAC badge) must not also sit in the disclosure: expanding
         // it would show the same model twice.
@@ -3417,14 +3424,8 @@ struct QuickstartView: View {
         )
     }
 
-    /// The smallest tier's smart pick remains an explicit capability upgrade,
-    /// not the automatic recommendation: clean 8 GB validation showed that it
-    /// crosses the usable-memory guard. The row itself still owns the exact
-    /// measured warning and Load Anyway decision.
     static func recommendedGroupLabel(physicalRAMGB: Double) -> String {
-        physicalRAMGB < 16
-            ? String(localized: "OPTIONAL — MORE CAPABLE, USES MORE MEMORY")
-            : String(localized: "RECOMMENDED FOR YOUR \(wholeGB(physicalRAMGB)) MAC")
+        String(localized: "RECOMMENDED FOR YOUR \(wholeGB(physicalRAMGB)) MAC")
     }
 
     /// Map the SSOT's RAM-tier picks into renderable wizard choices.

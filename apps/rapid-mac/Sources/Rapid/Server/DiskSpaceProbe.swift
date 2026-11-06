@@ -5,13 +5,9 @@ import Foundation
 ///
 /// ## Why this exists
 ///
-/// PR #338 swapped the Quickstart default alias from
-/// ``gemma3-1b-qat-4bit`` (~700 MB) to ``qwen3.5-4b-4bit`` (~2.3 GB).
-/// F-LWT-1 then swapped to ``qwen3-0.6b-4bit`` (~400 MB); 2026-07-10
-/// swapped to ``bonsai-1.7b-2bit`` (~0.5 GB ternary); 2026-08-05
-/// swapped to ``lfm2.5-1b-4bit`` (~0.6 GB 4-bit) after Bonsai was found
-/// to degenerate on plain chat — see
-/// ``QuickstartCoordinator.defaultChoice`` for the receipt.
+/// The current first-run starter is LFM2.5 2.6B (~1.6 GB download), with
+/// the 1.2B low-memory fallback (~0.7 GB). The selected model's curated
+/// download bytes drive ``requiredBytes(downloadBytes:)`` on both paths.
 /// A user with a near-full disk who clicks Get started watches the bar
 /// crawl, then either:
 ///
@@ -50,33 +46,10 @@ import Foundation
 /// logic without duplicating the threshold constant.
 enum DiskSpaceProbe {
 
-    /// Minimum free-space threshold for a small Quickstart download.
-    ///
-    /// Sized for the Quickstart default ``lfm2.5-1b-4bit``
-    /// (~0.6 GB on disk):
-    ///
-    /// Every operand below is binary (GiB), matching the constant itself
-    /// (``2 * 1024³``) — mixing a decimal download figure into a binary
-    /// budget is how a threshold silently stops covering what it claims.
-    ///
-    ///   * **0.622 GiB** final footprint — measured, ``du -sm`` reported
-    ///     637 MiB for the pulled snapshot, AND
-    ///   * ~1.5× transient peak during chunk fetch + dedupe (HF's
-    ///     downloader writes an incomplete `.bin` alongside the
-    ///     sharded snapshot dir before atomically moving), AND
-    ///   * 1 GiB headroom for the rest of the OS, swap, and Console
-    ///     log churn during a 1-2 minute pull on a slow link.
-    ///
-    /// ``0.622 × 1.5 + 1 = 1.933 GiB``, inside the ``2 GiB`` threshold,
-    /// which stays put so the surfaced "needs ~Y GB" copy remains a clean
-    /// round number. Earlier starters derived the same 2 GiB from smaller
-    /// footprints, so the slack has narrowed to **~0.067 GiB (~68 MiB)**.
-    ///
-    /// That is thin enough that the next bump probably breaks it: solving
-    /// ``x × 1.5 + 1 = 2`` puts the ceiling at **0.667 GiB (~683 MiB)** on
-    /// disk. If the Quickstart default (see
-    /// ``QuickstartCoordinator.defaultChoice``) moves again, re-derive this
-    /// constant — do not assume 2 GiB still covers it.
+    /// Floor for small downloads and unknown sizes. The first-run starter is
+    /// LFM2.5 2.6B (1,601,103,345 bytes); ``requiredBytes(downloadBytes:)``
+    /// budgets 1.5× that download plus 1 GiB, rounded up to 4 GiB.
+    /// The 1.2B low-memory fallback retains the historical 2 GiB floor.
     static let quickstartRequiredBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     /// Selected-model budget: 1.5× transient download peak plus 1 GiB for

@@ -122,7 +122,7 @@ struct ModelSurfaceRedesignTests {
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-12b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma-4-26b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-9b-4bit") == .vision)
-        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-8bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-122b-mxfp4") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)

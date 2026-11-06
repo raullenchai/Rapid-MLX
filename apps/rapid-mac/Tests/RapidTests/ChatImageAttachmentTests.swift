@@ -102,7 +102,7 @@ struct ChatImageAttachmentTests {
             data: Data([0x89, 0x50, 0x4e, 0x47])
         )
         let request = ChatStreamClient.Request(
-            alias: "qwen3.5-4b-4bit",
+            alias: "lfm2.5-2.6b-4bit",
             messages: [
                 ChatMessage(
                     role: .user,

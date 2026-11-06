@@ -515,7 +515,7 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(choice.blurb.localizedCaseInsensitiveContains("experimental"))
         #expect(!choice.isVisible(onRAMGB: 16))
         #expect(choice.isVisible(onRAMGB: 24))
-        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
+        #expect(QuickstartCoordinator.defaultChoice.alias == "lfm2.5-2.6b-4bit")
     }
 
     @Test("Search matches alias and Hugging Face repo through the shared primitive")
@@ -657,7 +657,7 @@ struct Step2ModelSelectionBehaviorTests {
             ],
             selection: "", physicalRAMGB: 256
         )
-        #expect(list.recommended.map(\.alias) == ["qwen3.8-27b-4bit", "qwen3.6-35b-4bit"],
+        #expect(list.recommended.map(\.alias) == ["qwen3.5-4b-4bit", "qwen3.8-27b-4bit", "qwen3.6-35b-4bit"],
                 "256 GB is the 48 GB+ tier: smart 27B then fast 35B")
     }
 
@@ -677,7 +677,7 @@ struct Step2ModelSelectionBehaviorTests {
         }
     }
 
-    @Test("A 32 GB Mac recommends only the 27B, not the 48 GB+ 35B")
+    @Test("A 32 GB Mac offers Qwen 4B then the 27B trade-up")
     func midRAMRecommendsOnly27B() {
         let list = QuickstartView.shortlist(
             catalog: [
@@ -686,14 +686,14 @@ struct Step2ModelSelectionBehaviorTests {
             ],
             selection: "", physicalRAMGB: 32
         )
-        #expect(list.recommended.map(\.alias) == ["qwen3.8-27b-4bit"],
-                "32 GB shows the smart 27B; the fast 4B is already the starter")
+        #expect(list.recommended.map(\.alias) == ["qwen3.5-4b-4bit", "qwen3.8-27b-4bit"],
+                "32 GB keeps Qwen 4B second and offers the smart 27B after it")
     }
 
-    @Test("The safe 8 GB starter is not duplicated by its optional capability upgrade")
+    @Test("The fitting 8 GB starter is not duplicated among alternatives")
     func starterEqualFastPickIsDroppedFromRecommended() {
-        // At 8 GB the fast pick is the automatic starter. The smart pick stays
-        // visible once as an explicit, memory-guarded capability upgrade.
+        // The 8 GB smart pick is now the automatic starter. Its 1.2B fast
+        // alternative stays in Browse; Qwen is the second shortlist choice.
         let list = QuickstartView.shortlist(
             catalog: [
                 Self.entry("lfm2.5-2.6b-4bit"),
@@ -701,16 +701,16 @@ struct Step2ModelSelectionBehaviorTests {
             ],
             selection: "", physicalRAMGB: 8
         )
-        #expect(list.starters.map(\.alias) == ["lfm2.5-1b-4bit"])
+        #expect(list.starters.map(\.alias) == ["lfm2.5-2.6b-4bit"])
         #expect(list.lowMemory.isEmpty)
-        #expect(list.recommended.map(\.alias) == ["lfm2.5-2.6b-4bit"])
+        #expect(list.recommended.map(\.alias) == ["qwen3.5-4b-4bit"])
     }
 
-    @Test("No RAM argument means no recommended row")
+    @Test("No RAM argument still offers the authored image alternative")
     func nilRAMYieldsEmptyRecommended() {
         let list = QuickstartView.shortlist(catalog: [], selection: "")
-        #expect(list.recommended.isEmpty,
-                "the 2-arg seam has no RAM to recommend against — behavior unchanged")
+        #expect(list.recommended.map(\.alias) == ["qwen3.5-4b-4bit"],
+                "the image alternative is offered before any RAM-aware trade-ups")
     }
 
     // MARK: - 5. Activation: one action, three inputs

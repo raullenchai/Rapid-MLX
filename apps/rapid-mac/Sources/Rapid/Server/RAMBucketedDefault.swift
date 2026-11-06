@@ -39,10 +39,9 @@ private final class RecommendationBundleFinder: NSObject {}
 /// | 64 GB  | qwen3.8-27b-4bit    | 20.0 | 92% | 40.7  | qwen3.6-35b-4bit · 87% · 60      |
 /// | 96 GB+ | qwen3.8-27b-4bit    | 20.0 | 92% | 40.7  | qwen3.6-35b-4bit · 87% · 60      |
 ///
-/// ¹ The clean 8 GB first-run gate projects the smarter 2.6B pick beyond the
-/// app's usable-memory budget. Quickstart therefore defaults to this tier's
-/// 1.2B fast pick; the recommendation table still offers 2.6B as an informed
-/// capability trade-up.
+/// ¹ LFM2.5 2.6B is also the first-run starter on every Mac where
+/// ModelSizing classifies it as fitting, including 8 GB. This table describes
+/// optional RAM-aware capability trade-ups, not the onboarding starter policy.
 ///
 /// Every tier from 32 GB up shares one smart pick (AA-Index policy,
 /// 2026-08-18): qwen3.8-27b-4bit is the highest-scoring open-weights model

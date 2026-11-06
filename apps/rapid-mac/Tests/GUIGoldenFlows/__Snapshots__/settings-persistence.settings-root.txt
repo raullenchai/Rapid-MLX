@@ -13,7 +13,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXGroup desc="LFM2.5 · 1.2B isn't downloaded yet, It downloads once (~<size>), then starts in seconds." enabled=true
+          AXGroup desc="LFM2.5 · 2.6B isn't downloaded yet, It downloads once (~<size>), then starts in seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Readiness.Action" desc="Download" enabled=true
@@ -24,7 +24,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.ConversationInstructions" desc="Conversation system prompt" help="Conversation system prompt" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Download LFM2.5 · 1.2B before sending." enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Download LFM2.5 · 2.6B before sending." enabled=false
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
@@ -134,6 +134,7 @@ AXApplication title="Rapid-MLX"
         AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin LFM2.5 · 2.6B" enabled=true
           AXStaticText help="lfm2.5-2.6b-4bit" value=text enabled=true
+          AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXUnknown desc="Accuracy: 65, good" enabled=true

@@ -901,7 +901,7 @@ def test_cached_curated_tradeup_waits_for_health_and_bounded_ui_readiness():
     source = HARNESS.read_text()
     flow = source.split("flow_cached_curated_tradeup() {", 1)[1].split("\n}", 1)[0]
 
-    assert 'wait_fake_sidecar_health "qwen3.5-4b-4bit" "cached 16 GB starter"' in flow
+    assert 'wait_fake_sidecar_health "lfm2.5-2.6b-4bit" "cached 16 GB starter"' in flow
     assert (
         'wait_identifier Quickstart.Ready.StartChatting \\\n        "$OUT/ready-confirmation.json" 240'
         in flow
@@ -1320,7 +1320,7 @@ def test_fresh_install_fixture_contains_the_real_starter():
     fake = FAKE_SIDECAR.read_text()
     assert "start_persona fresh-install FAKE_INCLUDE_STARTER=1" in flow
     assert 'if _setting("FAKE_INCLUDE_STARTER") == "1":' in fake
-    assert 'print("lfm2.5-1b-4bit' in fake
+    assert 'print("lfm2.5-2.6b-4bit' in fake
 
 
 def test_start_model_waits_for_an_interactive_readiness_action():
