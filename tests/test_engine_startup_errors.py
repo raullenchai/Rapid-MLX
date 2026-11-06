@@ -73,19 +73,30 @@ def test_cancellation_and_interrupt_are_unchanged(error):
     assert startup_boundary_for(error) is None
 
 
-def test_annotation_failure_never_masks_original():
+@pytest.mark.parametrize("frozen", [False, True])
+def test_annotation_failure_never_masks_original(frozen):
     class ReadOnlyError(RuntimeError):
         def __setattr__(self, name, value):
-            if name == "_rapid_mlx_startup_boundary":
+            if frozen or name == "_rapid_mlx_startup_boundary":
                 raise TypeError("read only")
             super().__setattr__(name, value)
 
     error = ReadOnlyError("private")
-    with (
-        pytest.raises(ReadOnlyError) as caught,
-        startup_failure_boundary("weights_load"),
-    ):
+
+    def fail():
         raise error
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        future = worker.submit(fail)
+        # Baseline: this frozen exception crosses the worker boundary intact.
+        with pytest.raises(ReadOnlyError) as baseline:
+            future.result()
+        assert baseline.value is error
+        with (
+            pytest.raises(ReadOnlyError) as caught,
+            startup_failure_boundary("weights_load"),
+        ):
+            future.result()
     assert caught.value is error
     assert serve_failure_subtype(error) == "runtime_error"
 
@@ -137,3 +148,29 @@ def test_engine_weight_loader_records_actual_boundary(monkeypatch, lane):
     finally:
         if engine._model_load_executor is not None:
             engine._model_load_executor.shutdown(wait=True)
+
+
+def test_hostile_annotation_getter_keeps_original_failure():
+    class HostileError(RuntimeError):
+        def __getattribute__(self, name):
+            if name == "_rapid_mlx_startup_boundary":
+                raise ValueError("private")
+            return super().__getattribute__(name)
+
+    error = HostileError("private")
+    with (
+        pytest.raises(HostileError) as caught,
+        startup_failure_boundary("weights_load"),
+    ):
+        raise error
+    assert caught.value is error
+    assert startup_boundary_for(error) is None
+    assert serve_failure_subtype(error) == "runtime_error"
+
+
+def test_invalid_boundary_is_rejected_before_operation():
+    with (
+        pytest.raises(ValueError, match="Unknown engine startup boundary"),
+        startup_failure_boundary("private/path"),
+    ):
+        pytest.fail("an invalid boundary must not run the operation")
