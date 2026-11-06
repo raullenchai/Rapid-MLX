@@ -48,9 +48,13 @@ def serve_subcommand_index(argv: Sequence[str]) -> int | None:
             if token in {"-W", "-X", "--check-hash-based-pycs"}:
                 index += 2
                 continue
-            if token.startswith(("-W", "-X")) or re.fullmatch(
-                r"-[bBdEiIOPqRsSuvx]+", token
-            ):
+            # Python accepts argument-taking options after no-argument
+            # flags, e.g. -uWignore / -uXdev (or -uW ignore).
+            value_option = re.fullmatch(r"-[bBdEiIOPqRsSuvx]*[WX](.*)", token)
+            if value_option:
+                index += 1 if value_option.group(1) else 2
+                continue
+            if re.fullmatch(r"-[bBdEiIOPqRsSuvx]+", token):
                 index += 1
                 continue
             if token == "--":

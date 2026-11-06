@@ -37,6 +37,10 @@ LAUNCHERS = [
     ],
     ["python3.12", "-Pus", "-mrapid_mlx.cli"],
     ["python3", "-um", "rapid_mlx.cli"],
+    ["python3", "-uWignore", "-m", "rapid_mlx.cli"],
+    ["python3", "-uXdev", "-m", "rapid_mlx.cli"],
+    ["python3", "-uW", "ignore", "-m", "rapid_mlx.cli"],
+    ["python3", "-uX", "dev", "-m", "rapid_mlx.cli"],
     ["python3", "-Pumrapid_mlx.cli"],
     [
         "python",
