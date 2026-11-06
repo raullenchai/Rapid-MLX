@@ -39,7 +39,7 @@ def serve_subcommand_index(argv: Sequence[str]) -> int | None:
                 else:
                     module = module_option.group(1)
                 if not any(
-                    module == package or module.startswith(package + ".")
+                    module in {package, package + ".cli"}
                     for package in ("rapid_mlx", "vllm_mlx")
                 ):
                     return None

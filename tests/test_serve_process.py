@@ -70,6 +70,8 @@ NOT_SERVERS = [
     ["python", "--"],
     ["python", "-m", "rapid_mlx_other", "serve"],
     ["python", "-m", "other.rapid_mlx", "serve"],
+    ["python", "-m", "rapid_mlx.tools", "serve"],
+    ["python", "-m", "vllm_mlx.other", "serve"],
     ["python", "/tmp/not-rapid-mlx", "serve"],
     ["not-rapid-mlx", "serve"],
     ["rapid-mlx", "agents", "serve"],
