@@ -222,3 +222,26 @@ async def test_timer_cancellation_drains_unload_and_bookkeeping(lanes):
         await timer
     assert audio._stt_engine is None
     assert dispatcher.snapshot()[0]["state"] == "registered"
+
+
+@pytest.mark.asyncio
+async def test_active_stt_does_not_delay_idle_tts_release(lanes):
+    audio, dispatcher = lanes
+    audio._stt_engine = Cached()
+    tts = Cached("kokoro")
+    audio._tts_engine = tts
+    for lane, name in (("stt", "whisper-small"), ("tts", "kokoro")):
+        await dispatcher.execute(lane, name, "load", lambda: None)
+        age(dispatcher, lane)
+    async with audio._get_stt_lane_lock():
+        timer = asyncio.create_task(audio.release_idle_audio_lanes(30))
+        for _ in range(100):
+            if tts.unloaded:
+                break
+            await asyncio.sleep(0.001)
+        assert tts.unloaded
+        assert not audio._stt_engine.unloaded
+        assert not timer.done()
+    await timer
+    assert audio._stt_engine is None
+    assert audio._tts_engine is None

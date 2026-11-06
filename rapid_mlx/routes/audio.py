@@ -2115,8 +2115,6 @@ def _get_music_lock() -> _CrossLoopAsyncLock:
 
 async def release_idle_audio_lanes(ttl: float) -> None:
     """Recheck idle age under request locks before releasing cached weights."""
-    global _stt_engine, _aligner_engine, _tts_engine
-
     if ttl <= 0:
         return
     from ..runtime.audio_worker import audio_worker, run_audio_mlx
@@ -2150,8 +2148,9 @@ async def release_idle_audio_lanes(ttl: float) -> None:
         )
         return True
 
-    # Match request lock order; STT and alignment share a single cache budget.
-    for lane in ("stt", "alignment", "tts"):
+    async def release_lane(lane: str) -> None:
+        global _stt_engine, _aligner_engine, _tts_engine
+
         try:
             lock = _get_tts_lane_lock() if lane == "tts" else _get_stt_lane_lock()
             async with lock:
@@ -2172,6 +2171,10 @@ async def release_idle_audio_lanes(ttl: float) -> None:
             # Preserve a failed cache for a later retry; don't strand the
             # other lanes when a backend fails or the primary is switching.
             logger.exception("Failed to release idle %s audio lane", lane)
+
+    # An active STT request must not postpone release of an idle TTS lane.
+    # STT and alignment still serialize on their existing shared request lock.
+    await asyncio.gather(*(release_lane(lane) for lane in ("stt", "alignment", "tts")))
 
 
 async def audio_lane_idle_loop(ttl: float) -> None:
