@@ -101,3 +101,94 @@ claimed. All four issue URLs were re-read through GitHub REST after submission.
 Receiving owner remains Echo. Next action: read the four issue threads for
 maintainer responses, obtain Agno triage readiness and CrewAI's label, then run
 real-model integration checks before describing any agent recipe as verified.
+
+## Ecosystem strategy: models to agents
+
+Rapid-MLX's position is the local inference-serving layer between model artifacts
+and agent/application clients. Outreach should make a specific path executable:
+
+```text
+Model author / model family
+  -> MLX conversion, quantization and model card
+  -> Rapid-MLX on Apple Silicon (runtime, cache, parsing, local API)
+  -> Agent framework / coding agent / application
+  -> User task and verified result
+```
+
+Apple Silicon/Metal/MLX enable the runtime underneath this path. Package managers
+and desktop distribution install it. Benchmarks and resource directories help
+people discover and select it. Those supporting layers are not interchangeable
+with a model-provider or agent-provider integration.
+
+| Layer | Reader's problem | Useful contribution | Evidence threshold |
+| --- | --- | --- | --- |
+| Model authors and family cookbooks | How do I run this model on my Mac? | Model-specific local serving guide or community recipe | Exact checkpoint/revision, package versions, host/RAM, observed capabilities and limitations |
+| Quantizers and model hubs | I downloaded these weights; what runs them? | Model-card installation, server and request example | Actual format/loader compatibility, provenance, original model terms, immutable model identity |
+| Rapid-MLX runtime | Can this artifact serve the requested workload? | Loader/parser/cache fixes and qualifications | Model-correctness and serving tests, not just an alias entry |
+| Agents and SDKs | How do I connect a local inference provider? | Existing custom-endpoint recipe or cookbook | Endpoint/auth/model-ID handling plus real streaming/tool-loop checks before claiming verification |
+| Applications and integrations | Can the user complete a task locally? | Provider settings, tested user walkthrough | End-to-end task result, model limits, local/remote tool boundary |
+| Distribution and discovery | How do I install or compare options? | Package metadata, release/install docs, curated entry, measured comparison | Working install links and scoped reproducible claims |
+
+Prioritize relevance, an accepted contribution route, verified model capability,
+and maintenance cost over the number of issues opened. A native provider class
+is unnecessary when a project's existing compatible-endpoint mechanism suffices.
+A model alias alone is not proof of tool-call reliability. Static cloud-provider
+registries are not automatically a fit for a server whose model inventory is local
+and user-selected. Framework/runtime repositories should receive concrete fixes
+or documented ecosystem entries, not unrelated promotion.
+
+## Third pass: model-side submissions
+
+| Layer / owner | Submission | Concrete contribution | State at verification |
+| --- | --- | --- | --- |
+| Liquid AI community ecosystem | [Liquid4All/cookbook PR #144](https://github.com/Liquid4All/cookbook/pull/144) | One row under Community Projects → Deployment for LFM3-1.7B serving | Open, not merged |
+| Liquid AI official MLX model card | [Hugging Face PR #2](https://huggingface.co/LiquidAI/LFM3-1.7B-MLX-8bit/discussions/2) | README-only local API serving instructions for the exact 8-bit checkpoint | Open PR; main unchanged |
+| Qwen model community | [Qwen3 discussion #1929](https://github.com/QwenLM/Qwen3/discussions/1929) | Model-to-local-server-to-agent walkthrough in Show and tell | Published discussion, not documentation acceptance |
+| NVIDIA model cookbook | [Nemotron issue #394](https://github.com/NVIDIA-NeMo/Nemotron/issues/394) | Narrow Bolt E4B text-serving recipe proposal with conversion and HTTP evidence | Open proposal |
+| Google model cookbook | [Gemma issue #446](https://github.com/google-gemma/cookbook/issues/446) | Gemma 4 local API guide proposal with unified-memory/context lessons | Open proposal |
+
+### Evidence and submission boundaries
+
+- LFM3: `LiquidAI/LFM3-1.7B-MLX-8bit` at
+  `ee7667f3cfccb2a41725f91820531823fcabc6b7`, alias `lfm3-1.7b-8bit`.
+  The 2026-10-28 native qualification records text, SSE, one structured tool
+  call and cache reuse. Claims do not extend to all LFM variants or quantizations.
+- Nemotron: the existing 2026-10-23 Bolt E4B qualification covers the published
+  Rapid-MLX 4/8-bit text conversions, HTTP tool calls and continuations. It does
+  not qualify vision, audio, streaming or DFlash. Community conversions are
+  explicitly distinguished from NVIDIA-published artifacts.
+- Gemma: the 32GB M2 Pro guide and 2026-08-21 matrix are historical evidence.
+  A future cookbook requires fresh pinned-version validation; old tuning flags
+  and defaults are not represented as universally current. The old
+  google-gemini/gemma-cookbook directs users to google-gemma/cookbook. The latter
+  requires discussing new guides before implementation, and a future code/notebook
+  contribution has a CLA step. No agreement was signed or CLA status asserted.
+- Qwen disables blank issues and directs discussion to Discussions. Used Show
+  and tell for a community project rather than filing a model bug. Searched
+  existing issues and discussions before posting.
+- The new model-side proposals cite existing checked-in qualification, not fresh
+  runtime tests performed during outreach. Most evidence links pin Rapid-MLX
+  source commit `4d5ac49d9a5f82574db78df48d6965f05b2d1c51`.
+- Hugging Face PR modifies only README.md, preserving all prior model-card content,
+  metadata and model files. It includes the alias's pinned checkpoint revision,
+  model discovery, a streaming curl example, model/runtime license distinction,
+  and telemetry disclosure. Verified the discussion is a PR and main is unchanged.
+
+### Review and handoff
+
+Liquid cookbook PR head `06640b4` passed `git diff --check` and independent
+read-only review (LGTM). The configured spark2 pr-review-loop runner failed with
+expired authentication before producing a verdict. A separate reviewer performed
+the fallback review, and that limitation was recorded in the PR comment; do not
+report the remote review loop as passed. No upstream merge or acceptance claimed.
+
+Receiving owner: Echo, with Atlas for runtime/compatibility changes and Harbor
+for published deployment documentation. Current outreach branch remains
+`echo/local-ai-submissions-20261106`; external Liquid PR branch is
+`raullenchai/cookbook:add-rapid-mlx-community`.
+
+Next concrete actions: respond in the existing five threads, address model-owner
+placement requests, and run fresh model-specific serving/tool-loop checks before
+turning Nemotron or Gemma proposals into full recipes. Extend model-card outreach
+only to individually verified checkpoints. Restore the remote reviewer's login
+before expecting its runner to work; no credential changes were made in this task.
