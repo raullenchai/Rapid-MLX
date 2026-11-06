@@ -191,6 +191,8 @@ def _make_sourceless(root: Path) -> None:
         {"mistral": "llama"},
         # Large literals compile to a different opcode than small ones.
         {f"type{i}": "llama" for i in range(40)},
+        # Past 256 constants the bytecode needs EXTENDED_ARG prefixes.
+        {f"type{i}": f"base{i}" for i in range(300)},
     ],
 )
 def test_installed_types_sourceless_bundle(monkeypatch, tmp_path, remap):
@@ -219,6 +221,10 @@ def test_pyc_dict_keys_rejects_unreadable_or_non_literal(tmp_path):
     assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "X") is None
     assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "Y") == {"a"}
     assert pf._pyc_dict_keys(tmp_path / "mod.pyc", "Z") is None
+    import marshal
+
+    (tmp_path / "int.pyc").write_bytes(b"\0" * 16 + marshal.dumps(7))
+    assert pf._pyc_dict_keys(tmp_path / "int.pyc", "X") is None
 
 
 def test_supported_model_types(monkeypatch, tmp_path):

@@ -239,47 +239,41 @@ def _pyc_dict_keys(compiled_file: Path, name: str) -> set[str] | None:
     import dis
     import marshal
 
+    # Tiny evaluator for the opcodes a constant dict literal compiles to;
+    # anything unexpected (not bytecode, not a literal) yields ``None``.
+    stack: list[Any] = []
     try:
         code = marshal.loads(compiled_file.read_bytes()[16:])
-    except (OSError, EOFError, ValueError, TypeError):
+        for ins in dis.get_instructions(code):
+            op, arg = ins.opname, ins.arg or 0
+            if op in ("EXTENDED_ARG", "NOP", "CACHE"):
+                continue
+            if op == "LOAD_CONST":
+                stack.append(ins.argval)
+            elif op == "BUILD_MAP":
+                items = stack[len(stack) - 2 * arg :] if arg else []
+                del stack[len(stack) - 2 * arg :]
+                stack.append(dict(zip(items[::2], items[1::2])))
+            elif op == "BUILD_CONST_KEY_MAP":
+                keys = stack.pop()
+                values = stack[len(stack) - arg :]
+                del stack[len(stack) - arg :]
+                stack.append(dict(zip(keys, values, strict=True)))
+            elif op == "MAP_ADD" and arg == 1:
+                value, key = stack.pop(), stack.pop()
+                stack[-1][key] = value
+            elif op == "DICT_UPDATE" and arg == 1:
+                update = stack.pop()
+                stack[-1].update(update)
+            elif op == "STORE_NAME" and ins.argval == name:
+                value = stack[-1] if stack else None
+                if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+                    return set(value)
+                return None
+            else:
+                stack = []
+    except (OSError, EOFError, ValueError, TypeError, AttributeError, IndexError):
         return None
-    if not isinstance(code, type(_pyc_dict_keys.__code__)):
-        return None
-    # Tiny evaluator for the opcodes a constant dict literal compiles to.
-    stack: list[object] = []
-    for ins in dis.get_instructions(code):
-        op, arg = ins.opname, ins.arg if isinstance(ins.arg, int) else 0
-        if op == "LOAD_CONST":
-            stack.append(ins.argval)
-        elif op == "BUILD_MAP" and len(stack) >= 2 * arg:
-            items = stack[len(stack) - 2 * arg :] if arg else []
-            del stack[len(stack) - 2 * arg :]
-            stack.append(dict(zip(items[::2], items[1::2])))
-        elif op == "BUILD_CONST_KEY_MAP" and stack and len(stack) > arg:
-            keys = stack.pop()
-            values = stack[len(stack) - arg :]
-            del stack[len(stack) - arg :]
-            if not isinstance(keys, tuple):
-                return None
-            stack.append(dict(zip(keys, values)))
-        elif op == "MAP_ADD" and arg == 1 and len(stack) >= 3:
-            value, key = stack.pop(), stack.pop()
-            target = stack[-1]
-            if not isinstance(target, dict):
-                return None
-            target[key] = value
-        elif op == "DICT_UPDATE" and arg == 1 and len(stack) >= 2:
-            update, target = stack.pop(), stack[-1]
-            if not isinstance(update, dict) or not isinstance(target, dict):
-                return None
-            target.update(update)
-        elif op == "STORE_NAME" and ins.argval == name:
-            value = stack[-1] if stack else None
-            if isinstance(value, dict) and all(isinstance(k, str) for k in value):
-                return set(value)
-            return None
-        else:
-            stack = []
     return None
 
 
