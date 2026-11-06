@@ -103,7 +103,7 @@ def test_empty_and_catalog_cache(cache):
     assert lm.discover_runnable_chat_models() == []
     assert cli._cached_models_json_payload()["cached"] == []
     assert lm.select_default_local_model() is None
-    repo = snapshot_starter(cache)
+    snapshot_starter(cache)
     found = lm.discover_runnable_chat_models()
     assert len(found) == 1
     assert found[0].model == first_run.FIRST_RUN_MODEL
