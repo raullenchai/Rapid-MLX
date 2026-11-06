@@ -52,3 +52,52 @@ For future outreach, search both `Rapid-MLX` and `RapidMLX`, inspect the live
 README/data file, and check both open and closed issues/PRs before posting.
 Describe the Apple Silicon platform limit and telemetry accurately; do not
 claim telemetry-free defaults or unconditional benchmark superiority.
+
+## Second pass: agent providers and additional directories
+
+The owner expanded outreach to agent projects that can use Rapid-MLX as their
+inference provider. Four additional issues were submitted:
+
+| Project | Submission | Scope |
+| --- | --- | --- |
+| Agno | [#11511](https://github.com/agno-agi/agno/issues/11511) | Cookbook using existing OpenAILike class |
+| CrewAI | [#9197](https://github.com/crewAIInc/crewAI/issues/9197) | Existing OpenAI-compatible LLM connection guide |
+| Mastra | [#29641](https://github.com/mastra-ai/mastra/issues/29641) | Custom local model id/url example |
+| Best of Open-Source AI | [#131](https://github.com/archestack/best-of-ai/issues/131) | model-serving directory submission |
+
+All disclose affiliation, AI assistance, platform limits, and default telemetry.
+Agent examples were checked against the projects' current source/docs, but were
+not run end to end. Each proposal says so explicitly and specifies basic response,
+streaming where applicable, and deterministic local tool-call checks for future
+validation. No new native provider implementation or tested compatibility is
+claimed. All four issue URLs were re-read through GitHub REST after submission.
+
+### Contribution rules and follow-up constraints
+
+- Agno requires a maintainer-applied `ready` label before implementation; wait
+  for triage on #11511 before opening a cookbook PR.
+- Mastra currently disables external PRs and requests detailed issues. Its model
+  docs are generated: a future example belongs in the appropriate source/generator.
+- CrewAI requires `llm-generated`. The creation request included it, but GitHub
+  omitted the label. A subsequent AddLabelsToLabelable request was denied for
+  insufficient permissions. The issue body prominently discloses AI authorship
+  and asks maintainers to apply the label. This remains an upstream triage action.
+- Goose's current CONTRIBUTING.md recommends provider-owned custom-provider JSON
+  and documentation, and only exceptionally accepts custom-provider issues. No
+  Goose issue or PR was submitted. Any future Goose work should first inspect
+  existing Rapid-MLX Goose documentation/configuration and publish a verified
+  provider-owned example if needed.
+- Pydantic AI already has historical Rapid-MLX PR #5008; vince-lam/awesome-local-llms
+  has historical issues/PRs #62, #33, and #27. No duplicate submission was created.
+- antranapp/awesome-mlx and tensorchord/Awesome-LLMOps already list Rapid-MLX.
+- Computer-Science-Resources/Awesome-Local-Llms is an inactive fork with issues
+  disabled; its canonical parent is vince-lam/awesome-local-llms.
+- 0xmsu/awesome-inference-engineering requires human checking of AI-assisted
+  contributions and rejects automated submissions; no automated submission made.
+- tdi/awesome-private-ai is a remaining candidate: accepts local deployment,
+  requires 100+ stars and recent maintenance, and expects a focused README PR.
+  No submission made in this pass.
+
+Receiving owner remains Echo. Next action: read the four issue threads for
+maintainer responses, obtain Agno triage readiness and CrewAI's label, then run
+real-model integration checks before describing any agent recipe as verified.
