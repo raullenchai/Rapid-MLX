@@ -192,3 +192,64 @@ placement requests, and run fresh model-specific serving/tool-loop checks before
 turning Nemotron or Gemma proposals into full recipes. Extend model-card outreach
 only to individually verified checkpoints. Restore the remote reviewer's login
 before expecting its runner to work; no credential changes were made in this task.
+
+## Fourth pass: application connectors and MLX model distribution
+
+The owner authorized the next batch: Open WebUI, AnythingLLM, LiteLLM and
+three to five individually evidenced MLX model cards. Repository inspection
+changed the application-side contribution route:
+
+- Open WebUI docs already has unmerged closed PRs
+  [#1149](https://github.com/open-webui/docs/pull/1149) and
+  [#1491](https://github.com/open-webui/docs/pull/1491). A maintainer explicitly
+  objected to broad repetitive promotion in #1149. No third submission or
+  follow-up was posted there.
+- AnythingLLM's current CONTRIBUTING.md rejects dedicated standard-compatible
+  provider adapters and promotional integration requests, directing those users
+  to Generic OpenAI. No promotional issue or adapter PR was opened.
+- LiteLLM's previous native-provider
+  [PR #24325](https://github.com/BerriAI/litellm/pull/24325) is closed, unmerged,
+  after a stale notice. Posted one substantive
+  [follow-up in that original thread](https://github.com/BerriAI/litellm/pull/24325#issuecomment-6696580771),
+  linking the concrete generic-connector guide and asking whether a scoped docs
+  example is useful. No new provider issue/PR, reopening, or CLA action.
+
+A [provider-maintained connection guide](../../integrations/local-openai-clients.md)
+now covers all three applications using existing connectors. It includes
+explicit ports, model discovery, placeholder-versus-real keys, Docker/remote
+reachability, independent embedding configuration for RAG, and LiteLLM SDK/proxy
+examples. Published on this task branch at commit `f1a2242ef`; not merged to
+main or deployed to the website. The previous plan to seek a dedicated
+AnythingLLM entry is superseded by its explicit contribution rules.
+
+### New model-card PRs
+
+| Checkpoint | PR | Evidence boundary |
+| --- | --- | --- |
+| mlx-community/Qwen3.5-4B-MLX-4bit | [#1](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit/discussions/1) | Historical M2 Pro text-decode record; that run does not pin a revision, while the current alias does |
+| mlx-community/gemma-4-26b-a4b-it-4bit | [#4](https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit/discussions/4) | Historical text decode of exact revision on 32 GB M2 Pro; not HTTP/tools/multimodal qualification |
+| mlx-community/Qwen3.6-35B-A3B-8bit | [#2](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-8bit/discussions/2) | Historical six-prompt HTTP coherence gate of exact revision on 256 GB M3 Ultra; not vision/MTP/tool qualification |
+
+All three are README-only append proposals. Original frontmatter, instructions,
+licenses and model files remain unchanged. Each specifies text-only launch,
+loopback binding/port, model discovery and a simple non-streaming chat request.
+Affiliation, AI assistance, telemetry opt-out and lack of a fresh runtime run
+are disclosed. Gemma has an existing broader model-card PR #3 from another
+contributor; #4 explicitly acknowledges it and offers incorporation if preferred.
+No existing Rapid-MLX card section or duplicate Rapid discussion was found.
+
+Verified all three HF discussions have `is_pull_request=True`, `status=open`,
+and unchanged main revision after creation. These are submissions, not accepted
+model-owner endorsements. Checked aliases against catalog commit
+`4d5ac49d9a5f82574db78df48d6965f05b2d1c51` and evidence against the 2026-08-21
+matrix. CLI flags were checked using installed `rapid-mlx serve --help`;
+Python, shell, YAML and request JSON syntax were checked for the connection
+guide. No models were downloaded and no model/application inference ran.
+
+Receiving roles: Echo for replies in the four existing threads; Harbor for
+reviewing/integrating the provider-owned connection guide; Atlas for runtime
+compatibility questions. Branch remains `echo/local-ai-submissions-20261106`.
+Next action: run pinned-version end-to-end app checks before calling the recipes
+verified integrations, and incorporate maintainer placement feedback. Respect
+Open WebUI/AnythingLLM's contribution boundaries; do not reopen promotional
+requests to increase submission counts. No monitoring has been scheduled.

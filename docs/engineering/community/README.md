@@ -8,3 +8,5 @@ here. Do not include credentials, private infrastructure data, or personal data.
 - [Stateful SwiftUI extraction inventory](stateful-swiftui-inventory.md):
   evidence-backed ROI order for moving non-rendering behavior into testable
   boundaries.
+
+- [Local AI ecosystem submissions](local-ai-submissions-2026-11-06.md): model-to-agent distribution strategy, submitted proposals, contribution boundaries and follow-up owners.
