@@ -12,7 +12,7 @@ AXApplication title="Rapid-MLX"
       AXStaticText value=text enabled=true
       AXStaticText value=text enabled=true
       AXStaticText value=text enabled=true
-      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Smarter. Twice the download. Reads images on Macs with 32 GB or more. download ~<size>" enabled=true
+      AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Smarter. Twice the download. Reads images on Macs with <size> or more. download ~<size>" enabled=true
       AXStaticText value=text enabled=true
       AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare. download ~<size>" enabled=true
       AXButton id="Quickstart.BrowseAll" desc="Browse all models" enabled=true
