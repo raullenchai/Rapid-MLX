@@ -341,3 +341,43 @@ placement feedback before implementation. Flowise submission requires an
 account with permission to create discussions; do not repeat the rejected call
 or switch to its bug tracker. Atlas owns any compatibility work. No automated
 monitoring or acceptance commitment.
+
+## Sixth pass: whole-catalog model-author coverage
+
+The owner expanded outreach to official publishers of the entire supported
+model catalog. Completed a [catalog-to-author inventory](model-author-outreach-2026-11-06.md)
+and [304-row provenance CSV](model-owner-inventory-2026-11-06.csv) at source
+commit `4d5ac49d9a5f82574db78df48d6965f05b2d1c51`. Main aliases: 251;
+audio aliases: 53; combined distinct weight repositories: 273. Metadata for
+all 273 resolved. Grouped into 51 publisher/model-family candidates with
+explicit attribution uncertainty. This does not certify 304 independent models.
+
+| Official destination | New submission | Verified status |
+| --- | --- | --- |
+| Prism ML Bonsai 2 2B model | [HF PR #1](https://huggingface.co/prism-ml/Ternary-Bonsai-2-2B-mlx-2bit/discussions/1) | Open PR; main unchanged |
+| IBM Granite 4.2 official MLX model | [HF discussion #1](https://huggingface.co/ibm-granite/granite-4.2-3b-q4-mlx/discussions/1) | Open discussion, not a PR |
+| Microsoft PhiCookBook | [Issue #606](https://github.com/microsoft/PhiCookBook/issues/606) | Open documentation proposal |
+| Hugging Face SmolLM | [Issue #155](https://github.com/huggingface/smollm/issues/155) | Open documentation proposal |
+
+Prism's exact checkpoint has an existing bounded text/tool/image serving
+qualification, so it received an executable README-only proposal. The other
+three received explicitly unqualified documentation scope proposals. IBM's
+GitHub repository permits only bugs/inconsistencies, so the proposal went to
+its official model discussion rather than a feature issue in that tracker.
+Phi's issue template was followed; no CLA was signed. SmolLM's model-deployment
+proposal is separate from prior smolagents framework submissions.
+
+All four disclose affiliation and AI assistance, default telemetry and opt-out.
+No fresh inference, benchmark, model download or broad support promise. Re-read
+all four statuses; verified Prism main remained at its previous revision.
+Shell and JSON examples checked; catalog mapping counted/validated separately.
+
+Receiving owner: Echo, with Atlas for model qualification and Harbor for docs.
+Nine publisher groups now have campaign submissions/discussions; 42 candidate
+groups remain pending owner-route/qualification review, and additional models
+within contacted groups are not automatically covered. The inventory is
+complete for the two catalog files, but all-publisher outreach is not complete.
+Do not bulk-post identical proposals to remaining namespaces. Next action:
+resolve each candidate's original author and accepted contribution route,
+check existing submissions, then attach checkpoint-specific evidence before
+sending a recipe. Retain the mlx-community exclusion.

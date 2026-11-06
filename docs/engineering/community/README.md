@@ -10,3 +10,4 @@ here. Do not include credentials, private infrastructure data, or personal data.
   boundaries.
 
 - [Local AI ecosystem submissions](local-ai-submissions-2026-11-06.md): model-to-agent distribution strategy, submitted proposals, contribution boundaries and follow-up owners.
+- [Model-author outreach coverage](model-author-outreach-2026-11-06.md): complete main/audio alias inventory, publisher attribution, submissions and outstanding coverage.
