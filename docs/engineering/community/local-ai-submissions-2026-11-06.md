@@ -2,6 +2,12 @@
 
 Owner: Echo (community outreach). Execution host: Studio.
 
+Current outreach exclusion (owner instruction, 2026-11-06): do not submit
+promotional listings or model-card recipes to `mlx-community`. The three
+fourth-pass model-card PRs were withdrawn and closed; historical submission
+records below are retained for deduplication. This does not prohibit using
+their model weights or change technical compatibility.
+
 The owner requested discovery and submission to relevant local-AI directories.
 All three new submissions disclose the maintainer affiliation and are open
 listing requests, not accepted listings. Their repositories explicitly accept
@@ -253,3 +259,30 @@ Next action: run pinned-version end-to-end app checks before calling the recipes
 verified integrations, and incorporate maintainer placement feedback. Respect
 Open WebUI/AnythingLLM's contribution boundaries; do not reopen promotional
 requests to increase submission counts. No monitoring has been scheduled.
+
+
+## Owner correction: exclude mlx-community from outreach
+
+The owner identified mlx-community as an unsuitable distribution venue because
+of its connection to the competing mlx-vlm ecosystem. Honor that channel
+preference without claiming exclusive ownership of the public organization.
+
+Evidence checked on 2026-11-06:
+
+- https://huggingface.co/mlx-community describes a community organization for
+  mlx-lm, mlx-swift-examples, mlx-vlm and mlx-audio compatible weights. It does
+  not establish exclusive mlx-vlm ownership.
+- https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit/blob/main/README.md
+  explicitly describes mlx-vlm conversion and points to Prince / Blaizzy.
+- https://github.com/Blaizzy/mlx-vlm now redirects to
+  https://github.com/Neywa-Labs/mlx-vlm.
+
+Actions: closed our Qwen3.5 #1, Gemma #4 and Qwen3.6 #2 model-card PRs linked
+above without merging or editing model files. Re-read each status as closed.
+The public PR history remains visible. Do not reopen or replace these
+submissions unless the owner explicitly changes this preference.
+
+Echo handoff: prioritize original model authors, downstream agents/apps, and
+our own rapid-mlx model organization; vet independent quantizers for ownership
+and ecosystem relationships before further outreach. The LiquidAI-owned card
+and other model-author submissions are outside this exclusion.
