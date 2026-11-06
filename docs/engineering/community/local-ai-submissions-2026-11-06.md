@@ -381,3 +381,25 @@ Do not bulk-post identical proposals to remaining namespaces. Next action:
 resolve each candidate's original author and accepted contribution route,
 check existing submissions, then attach checkpoint-specific evidence before
 sending a recipe. Retain the mlx-community exclusion.
+
+## Additional original-model communities
+
+Echo follow-up: 13 evidence discussions plus one README-only HF PR. All were
+read back open after submission; no fresh inference or acceptance claimed.
+
+- TokenRhythm: [discussion](https://huggingface.co/TokenRhythm/NeoHorse-1-9B/discussions/3).
+- IFM: [discussion](https://huggingface.co/IFM/K2-Horizon-7B/discussions/13).
+- meta-models: [discussion](https://huggingface.co/meta-models/Muse-Glimmer-30B/discussions/73).
+- Nanbeige: [discussion](https://huggingface.co/Nanbeige/Nanbeige4.3-33B/discussions/36).
+- XHToken: [discussion](https://huggingface.co/XHToken/Spark-X2.6-4B/discussions/31).
+- InternScience: [discussion](https://huggingface.co/InternScience/Sage-A1.5/discussions/10).
+- HiDream-ai: [discussion](https://huggingface.co/HiDream-ai/HiDream-O1-Image-Dev/discussions/2).
+- stabilityai: [discussion](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/discussions/261).
+- black-forest-labs: [discussion](https://huggingface.co/black-forest-labs/FLUX.1-schnell/discussions/234).
+- deepseek-ai: [discussion](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/discussions/78).
+- inclusionAI: [discussion](https://huggingface.co/inclusionAI/Ling-3.0-tiny/discussions/19).
+- zai-org: [discussion](https://huggingface.co/zai-org/GLM-5.3-Flash/discussions/70).
+- Pika-Labs: [discussion](https://huggingface.co/Pika-Labs/Pika-H3-Flex/discussions/4).
+- ornith-ai: [model-card PR](https://huggingface.co/ornith-ai/Ornith-1.5-122B-MLX-4bit/discussions/1).
+
+Recovered existing AllenAI [Tmax report](https://huggingface.co/allenai/tmax-9b/discussions/2); no duplicate posted. Full owner table now records 24 contacted groups and 27 specific verification/route holds. No submission targeted mlx-community.
