@@ -1,15 +1,31 @@
 import Foundation
 import Darwin
 
+/// Model aliases retain their existing forgiving spelling; filesystem identity
+/// is exact. In particular a trailing space can belong to a real directory.
+enum ModelReference {
+    static func normalized(_ value: String) -> String {
+        value.hasPrefix("/") ? value : value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    static func key(_ value: String) -> String { value.hasPrefix("/") ? value : value.lowercased() }
+    static func matches(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.hasPrefix("/") || rhs.hasPrefix("/") ? lhs == rhs : lhs.caseInsensitiveCompare(rhs) == .orderedSame
+    }
+}
+
 /// References to user-owned checkpoints. This preference never grants deletion
 /// authority and is deliberately separate from the managed download folder.
 enum OpenedCheckpoints {
     static let storageKey = "rapid.models.openedCheckpoints"
     static let limit = 32
 
+    static func isSafePath(_ path: String) -> Bool {
+        path.hasPrefix("/") && path.utf8.count <= 4096
+            && !path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 })
+    }
+
     static func canonicalPath(_ path: String) -> String? {
-        guard path.hasPrefix("/"), path.utf8.count <= 4096,
-              !path.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { return nil }
+        guard isSafePath(path) else { return nil }
         // Match the engine's os.path.realpath, including macOS /var aliases;
         // Foundation's URL normalization alone does not canonicalize all of them.
         if let resolved = realpath(path, nil) {
@@ -21,7 +37,9 @@ enum OpenedCheckpoints {
 
     static func paths(defaults: UserDefaults = .standard) -> [String] {
         var seen: Set<String> = []
-        return (defaults.stringArray(forKey: storageKey) ?? []).compactMap(canonicalPath)
+        // These were canonicalized at the explicit picker gesture. Re-resolving
+        // later would silently authorize a replacement symlink's new target.
+        return (defaults.stringArray(forKey: storageKey) ?? []).filter(isSafePath)
             .filter { seen.insert($0).inserted }.prefix(limit).map { $0 }
     }
 
@@ -41,7 +59,9 @@ enum OpenedCheckpoints {
     }
 
     static func merging(_ entries: [ModelEntry], checks: [LocalCheckpointCheck]) -> [ModelEntry] {
-        var result = entries
+        let requested = Set(checks.map(\.requestedPath))
+        let current = Set(checks.filter(\.certified).compactMap(\.path))
+        var result = entries.filter { !requested.contains($0.alias) || current.contains($0.alias) }
         var seen: Set<String> = []
         for check in checks where check.certified {
             guard let path = check.path, let bytes = check.sizeBytes, seen.insert(path).inserted,
@@ -81,10 +101,16 @@ struct LocalCheckpointCheck: Decodable, Sendable {
     let modifiedEpoch: Double?
 
     var certified: Bool {
-        ready && path != nil && path == OpenedCheckpoints.canonicalPath(requestedPath)
+        ready && reason == nil && OpenedCheckpoints.isSafePath(requestedPath) && path == requestedPath
             && path == launchPath && (sizeBytes ?? 0) > 0
             && ["yes", "tight"].contains(fit ?? "")
             && mlxNative != nil && (modifiedEpoch?.isFinite == true)
+    }
+
+    func rejecting(_ reason: String) -> LocalCheckpointCheck {
+        LocalCheckpointCheck(requestedPath: requestedPath, path: path, ready: false, reason: reason,
+            launchPath: launchPath, knownModel: knownModel, sizeBytes: sizeBytes, fit: fit,
+            mlxNative: mlxNative, modifiedEpoch: modifiedEpoch)
     }
 }
 
@@ -102,6 +128,8 @@ enum LocalCheckpointError: LocalizedError {
                 String(localized: "Choose an existing checkpoint directory.")
             case "unsafe_symlink":
                 String(localized: "This checkpoint contains links outside the selected directory.")
+            case "identity_changed":
+                String(localized: "This checkpoint directory changed. Open it again to confirm its location.")
             case "incomplete_checkpoint":
                 String(localized: "This directory is missing complete MLX checkpoint weights.")
             case "missing_chat_template", "missing_tokenizer":

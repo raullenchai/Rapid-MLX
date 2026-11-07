@@ -751,13 +751,18 @@ struct SettingsModelManagementPanel: View {
 
     private func chooseExistingCheckpoint() {
         guard let selected = checkpointDirectory() else { return }
+        guard let path = OpenedCheckpoints.canonicalPath(selected.path) else {
+            checkpointError = LocalCheckpointError.rejected("invalid_path").localizedDescription
+            return
+        }
         checkpointError = nil
         openingCheckpoint = true
         checkpointTask = Task {
             defer { openingCheckpoint = false }
             do {
                 guard let binary = server.binaryPath else { throw LocalCheckpointError.unavailable }
-                let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [selected.path], binary: binary)
+                let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [path], binary: binary,
+                    hubCacheOverride: ModelsFolderPreference.validatedOverrideURL(defaults: checkpointDefaults))
                 try Task.checkCancellation()
                 try OpenedCheckpoints.register(checks[0], defaults: checkpointDefaults)
                 openedCheckpointPaths = OpenedCheckpoints.paths(defaults: checkpointDefaults)

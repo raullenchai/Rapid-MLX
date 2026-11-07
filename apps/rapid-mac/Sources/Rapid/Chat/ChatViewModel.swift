@@ -2873,7 +2873,7 @@ final class ChatViewModel {
     func regenerateLast(usingAlias newAlias: String) async {
         guard !isOwnerBackedChat else { return }
         guard !isStreaming else { return }
-        let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ModelReference.normalized(newAlias)
         guard !trimmed.isEmpty else { return }
         // The user's regeneration intent supersedes optional work even when
         // bringing up the replacement model takes time or ultimately fails.

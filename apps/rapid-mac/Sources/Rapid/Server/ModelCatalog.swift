@@ -542,7 +542,7 @@ enum ModelCatalog {
             return enriched
         }
 
-        entries = await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary)
+        entries = await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary, hubCacheOverride: hubCacheOverride)
 
         // Sort: cached first, then alphabetic within each group. The
         // user is most likely to pick something they already have on
@@ -1472,7 +1472,7 @@ enum ModelCatalog {
             excluded: projection.excluded,
             speculative: projection.speculative
         )
-        return await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary)
+        return await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary, hubCacheOverride: hubCacheOverride)
     }
 
     /// Preserve the user-owned cache surface while atomic aliases drive
@@ -2681,26 +2681,32 @@ enum ModelCatalog {
         return check
     }
 
-    static func inspectLocalCheckpoints(paths: [String], binary: URL) async throws -> [LocalCheckpointCheck] {
+    static func inspectLocalCheckpoints(paths: [String], binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()) async throws -> [LocalCheckpointCheck] {
         guard !paths.isEmpty, paths.count <= OpenedCheckpoints.limit else { throw LocalCheckpointError.limit }
         let args = ["models", "--json"] + paths.flatMap { ["--inspect-local", $0] }
-        let result = await runRapidMlxResult(binary: binary, args: args)
+        let result = await runRapidMlxResult(binary: binary, args: args, hubCacheOverride: hubCacheOverride)
         try Task.checkCancellation()
         guard result.succeeded else { throw LocalCheckpointError.unavailable }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard let envelope = try? decoder.decode(LocalCheckpointEnvelope.self, from: Data(result.stdout.utf8)),
               envelope.schema == 1, envelope.localCheckpoints.count == paths.count,
-              zip(envelope.localCheckpoints, paths).allSatisfy({ $0.requestedPath == $1 }),
-              envelope.localCheckpoints.allSatisfy({ !$0.ready || $0.certified }) else {
+              zip(envelope.localCheckpoints, paths).allSatisfy({ $0.requestedPath == $1 }) else {
             throw LocalCheckpointError.unavailable
         }
-        return envelope.localCheckpoints
+        return envelope.localCheckpoints.map { check in
+            if check.ready && check.path != check.requestedPath { return check.rejecting("identity_changed") }
+            if check.ready && !check.certified { return check.rejecting("inspection_failed") }
+            return check
+        }
     }
 
-    private static func addingOpenedCheckpoints(_ entries: [ModelEntry], paths: [String], binary: URL) async -> [ModelEntry] {
-        guard !paths.isEmpty,
-              let checks = try? await inspectLocalCheckpoints(paths: paths, binary: binary) else { return entries }
+    private static func addingOpenedCheckpoints(_ entries: [ModelEntry], paths: [String], binary: URL, hubCacheOverride: URL?) async -> [ModelEntry] {
+        guard !paths.isEmpty else { return entries }
+        guard let checks = try? await inspectLocalCheckpoints(paths: paths, binary: binary, hubCacheOverride: hubCacheOverride) else {
+            return entries.filter { !paths.contains($0.alias) }
+        }
         return OpenedCheckpoints.merging(entries, checks: checks)
     }
 

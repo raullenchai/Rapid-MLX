@@ -5,9 +5,9 @@ import Testing
 
 @Suite("Existing checkpoint references", .serialized, TestTimeouts.hangProne) @MainActor
 struct OpenedCheckpointTests {
-    private func check(_ path: String, known: String? = nil, ready: Bool = true, reason: String? = nil) throws -> LocalCheckpointCheck {
+    func check(_ path: String, known: String? = nil, ready: Bool = true, reason: String? = nil) throws -> LocalCheckpointCheck {
         var value: [String: Any] = [
-            "requested_path": path, "path": OpenedCheckpoints.canonicalPath(path)!,
+            "requested_path": OpenedCheckpoints.canonicalPath(path)!, "path": OpenedCheckpoints.canonicalPath(path)!,
             "launch_path": OpenedCheckpoints.canonicalPath(path)!, "ready": ready,
             "size_bytes": 42, "fit": "yes", "mlx_native": true, "modified_epoch": 1,
         ]
@@ -17,13 +17,13 @@ struct OpenedCheckpointTests {
         return try decoder.decode(LocalCheckpointCheck.self, from: JSONSerialization.data(withJSONObject: value))
     }
 
-    private func directory() throws -> URL {
+    func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("opened-checkpoint-\(UUID())")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }
 
-    private func defaults() -> (UserDefaults, String) {
+    func defaults() -> (UserDefaults, String) {
         let name = "opened-checkpoint-\(UUID())"
         return (UserDefaults(suiteName: name)!, name)
     }
@@ -32,7 +32,7 @@ struct OpenedCheckpointTests {
         GoldenStage(ScrollView { content }, size: size)
     }
 
-    private func inspector(_ root: URL) throws -> URL {
+    func inspector(_ root: URL) throws -> URL {
         let desktop = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         try Data(desktop.appendingPathComponent("scripts/fake-rapid-mlx.sh").path.utf8)
             .write(to: root.appendingPathComponent("fallback-path.txt"))
@@ -40,14 +40,28 @@ struct OpenedCheckpointTests {
         try Data(#"""
         #!/usr/bin/python3
         import json, os, pathlib, sys, time
+        root=pathlib.Path(__file__).parent
+        if len(sys.argv)>2 and sys.argv[1]=='serve' and not sys.argv[2].startswith('-'):
+            (root/'served-model.json').write_text(json.dumps(sys.argv[2]))
+        if len(sys.argv)>1 and sys.argv[1]=='pull': (root/'pull-called').write_text('called')
+        custom=root/'expected-cache.txt'
+        if custom.exists() and '--cached' in sys.argv and '--json' in sys.argv:
+            print(json.dumps(dict(cached=[dict(alias='qwen3.5-4b-4bit',repo='mlx-community/Qwen3.5-4B-MLX-4bit',state='ok',external=False,size_bytes=42)])))
+            sys.exit(0)
         if '--inspect-local' not in sys.argv:
             fallback=pathlib.Path(__file__).with_name('fallback-path.txt').read_text()
             os.execv(fallback,[fallback,*sys.argv[1:]])
         pathlib.Path(__file__).with_name('inspect-called').write_text('called')
+        (root/'inspect-cache.txt').write_text(os.environ.get('HF_HUB_CACHE',''))
         mode=pathlib.Path(__file__).with_name('mode.txt')
         mode=mode.read_text() if mode.exists() else ''
         if mode=='unsupported': sys.exit(2)
         if mode=='malformed': print('{}');sys.exit(0)
+        if mode=='held-reject':
+            (root/'held-started').write_text('started')
+            deadline=time.monotonic()+8
+            while not (root/'release-inspection').exists() and time.monotonic()<deadline: time.sleep(0.01)
+            mode='reject-all'
         if mode=='slow':
             pathlib.Path(__file__).with_name('started').write_text('started')
             time.sleep(0.5)
@@ -56,10 +70,11 @@ struct OpenedCheckpointTests {
         for p in paths:
             canonical=os.path.realpath(p)
             exists=pathlib.Path(p).is_dir()
-            ready=exists and pathlib.Path(p).name!='reject'
+            ready=exists and pathlib.Path(p).name!='reject' and mode!='reject-all'
             rows.append(dict(requested_path=p,path=canonical,launch_path=canonical,
                 ready=ready,reason=None if ready else ('incomplete_checkpoint' if exists else 'missing_directory'),
                 size_bytes=42,fit='yes',mlx_native=True,modified_epoch=1))
+            if custom.exists() and os.environ.get('HF_HUB_CACHE')==custom.read_text(): rows[-1]['known_model']='qwen3.5-4b-4bit'
         if mode=='retarget': rows[0]['path']='/different';rows[0]['launch_path']='/different'
         print(json.dumps(dict(schema=1,local_checkpoints=rows)))
         """#.utf8).write(to: script)
@@ -126,18 +141,21 @@ struct OpenedCheckpointTests {
     @Test func actualRunnerRejectsOldMalformedAndRetargetedResponses() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let binary = try inspector(root)
-        let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [root.path], binary: binary)
+        let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [OpenedCheckpoints.canonicalPath(root.path)!], binary: binary)
         #expect(checks[0].certified)
         let rejected = root.appendingPathComponent("reject")
         try FileManager.default.createDirectory(at: rejected, withIntermediateDirectories: true)
-        let denied = try await ModelCatalog.inspectLocalCheckpoints(paths: [rejected.path], binary: binary)
+        let denied = try await ModelCatalog.inspectLocalCheckpoints(paths: [OpenedCheckpoints.canonicalPath(rejected.path)!], binary: binary)
         #expect(!denied[0].ready && denied[0].reason == "incomplete_checkpoint")
-        for mode in ["unsupported", "malformed", "retarget"] {
+        for mode in ["unsupported", "malformed"] {
             try Data(mode.utf8).write(to: root.appendingPathComponent("mode.txt"))
             await #expect(throws: LocalCheckpointError.self) {
-                try await ModelCatalog.inspectLocalCheckpoints(paths: [root.path], binary: binary)
+                try await ModelCatalog.inspectLocalCheckpoints(paths: [OpenedCheckpoints.canonicalPath(root.path)!], binary: binary)
             }
         }
+        try Data("retarget".utf8).write(to: root.appendingPathComponent("mode.txt"))
+        let retargeted = try await ModelCatalog.inspectLocalCheckpoints(paths: [OpenedCheckpoints.canonicalPath(root.path)!], binary: binary)
+        #expect(!retargeted[0].ready && retargeted[0].reason == "identity_changed")
         await #expect(throws: LocalCheckpointError.self) {
             try await ModelCatalog.inspectLocalCheckpoints(paths: [], binary: binary)
         }
@@ -149,14 +167,14 @@ struct OpenedCheckpointTests {
         let selected = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = OpenedCheckpoints.canonicalPath(selected.path)!
-        let entries = await ModelCatalog.load(binary: binary, openedPaths: [selected.path])
+        let entries = await ModelCatalog.load(binary: binary, openedPaths: [canonical])
         let opened = try #require(entries.first { $0.alias == canonical })
         #expect(opened.isExternal && opened.hfRepo == nil && opened.cached)
         try FileManager.default.removeItem(at: selected)
-        let missing = await ModelCatalog.load(binary: binary, openedPaths: [selected.path])
+        let missing = await ModelCatalog.load(binary: binary, openedPaths: [canonical])
         #expect(!missing.contains { $0.alias == canonical })
         try Data("unsupported".utf8).write(to: root.appendingPathComponent("mode.txt"))
-        let old = await ModelCatalog.load(binary: binary, openedPaths: [selected.path])
+        let old = await ModelCatalog.load(binary: binary, openedPaths: [canonical])
         #expect(!old.contains { $0.alias == canonical })
     }
 

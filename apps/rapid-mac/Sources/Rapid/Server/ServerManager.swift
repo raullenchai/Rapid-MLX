@@ -732,7 +732,7 @@ final class ServerManager {
 
     func isResidentLoadInFlight(_ alias: String) -> Bool {
         residentLoadsInFlight[
-            alias.trimmingCharacters(in: .whitespacesAndNewlines)
+            ModelReference.normalized(alias)
         ] != nil
     }
 
@@ -796,6 +796,7 @@ final class ServerManager {
     private struct RuntimeProbeOperation {
         let id: UUID
         let task: Task<ServerRuntimeCapabilities, Never>
+        var checkpointTask: Task<LocalCheckpointCheck, Error>? = nil
     }
 
     @ObservationIgnored
@@ -959,14 +960,14 @@ final class ServerManager {
 
     func applyActiveModelProfile(_ profile: ServerModelProfile, forAlias alias: String) {
         guard isModelResident(alias),
-              profile.id.caseInsensitiveCompare(alias) == .orderedSame
+              ModelReference.matches(profile.id, alias)
         else { return }
         activeModelProfile = profile
     }
 
     func hasAppliedSpeculativeDecoding(forAlias alias: String) -> Bool {
         guard child != nil,
-              launchedPerformanceAlias?.caseInsensitiveCompare(alias) == .orderedSame
+              launchedPerformanceAlias.map({ ModelReference.matches($0, alias) }) == true
         else { return false }
         return launchedPerformanceFlags.contains("--speculative-config")
     }
@@ -1534,7 +1535,7 @@ final class ServerManager {
     ) -> ModelEntry? {
         if let probed { return probed }
         guard let hint,
-              hint.alias.caseInsensitiveCompare(alias) == .orderedSame
+              ModelReference.matches(hint.alias, alias)
         else { return nil }
         return hint
     }
@@ -1574,7 +1575,7 @@ final class ServerManager {
             // reclassifies its lane (no longer chat): the chat fallback must
             // not survive it.
             guard let current = catalog.first(where: {
-                $0.alias.caseInsensitiveCompare(record.entry.alias) == .orderedSame
+                ModelReference.matches($0.alias, record.entry.alias)
             }), current.supports(.chat) else { return }
             // Refresh every field, not just lane membership. Capability
             // metadata participates in process-lane selection on a later
@@ -1594,7 +1595,7 @@ final class ServerManager {
     ) -> CatalogEntryHint? {
         guard let hint,
               hint.generation == generation,
-              hint.entry.alias.caseInsensitiveCompare(alias) == .orderedSame
+              ModelReference.matches(hint.entry.alias, alias)
         else { return nil }
         return hint
     }
@@ -1789,7 +1790,7 @@ final class ServerManager {
         guard let raw = defaults.string(forKey: lastServedAliasKey) else {
             return nil
         }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ModelReference.normalized(raw)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -1856,15 +1857,16 @@ final class ServerManager {
         videoOutputDirectory: String? = nil
     ) async -> Bool {
         guard !communityBenchmarkReserved else { return false }
-        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ModelReference.normalized(alias)
         guard !trimmed.isEmpty else { return false }
+        let requiresCheckpointInspection = isOpenedCheckpoint(trimmed)
         var catalogGeneration = downloads?.cacheGeneration ?? 0
         if let validatedHint = Self.validatedCatalogHint(
             alias: trimmed,
             hint: catalogEntryHint,
             generation: catalogGeneration
         ) {
-            catalogProvenStartEntries[trimmed.lowercased()] = validatedHint
+            catalogProvenStartEntries[ModelReference.key(trimmed)] = validatedHint
         }
         let requestedPerformanceFlags = perfLaunchFlagsProvider?(trimmed) ?? []
         var requestedCatalogSupportsImageInput = false
@@ -1885,7 +1887,7 @@ final class ServerManager {
                 generation: catalogGeneration
             )
             let entry = catalogSnapshot.first {
-                $0.alias.caseInsensitiveCompare(trimmed) == .orderedSame
+                ModelReference.matches($0.alias, trimmed)
             }
             probedCatalogEntry = entry
             requestedCatalogSupportsImageInput = ModelBrandStyle.supportsImageInput(
@@ -1897,7 +1899,7 @@ final class ServerManager {
         let provenCatalogEntry = Self.readyCatalogEntry(
             alias: trimmed,
             probed: probedCatalogEntry,
-            hint: catalogProvenStartEntries[trimmed.lowercased()]?.entry
+            hint: catalogProvenStartEntries[ModelReference.key(trimmed)]?.entry
         )
         let provenCatalogHint = provenCatalogEntry.map {
             CatalogEntryHint(entry: $0, generation: catalogGeneration)
@@ -2041,6 +2043,22 @@ final class ServerManager {
                 && !destructiveModelSwitchApproved,
             readyWithChild: readyWithChild
         ) {
+            if requiresCheckpointInspection {
+                guard let binary = binaryPath else { return false }
+                let loadingChild = child
+                do { _ = try await checkedOpenedCheckpoint(trimmed, binary: binary) }
+                catch is CancellationError { return false }
+                catch {
+                    if residentLoadAttemptTokens[trimmed] == attemptToken,
+                       !Task.isCancelled, !didSignalShutdown, child != nil, child === loadingChild {
+                        residentLoadFailures[trimmed] = ResidentLoadFailure(alias: trimmed, message: error.localizedDescription)
+                    }
+                    return false
+                }
+                guard residentLoadAttemptTokens[trimmed] == attemptToken,
+                      !Task.isCancelled, !didSignalShutdown, child != nil, child === loadingChild,
+                      case .ready = state else { return false }
+            }
             // Publish before crossing the network await so SwiftUI replaces
             // the still-pressable CTA with an honest working state in the
             // same run-loop turn. Count rather than coalescing here: callers
@@ -2188,6 +2206,7 @@ final class ServerManager {
             memoryRequestID: memoryRequestID,
             memoryAdmission: replacementMemoryAdmission,
             catalogEntryHint: provenCatalogHint,
+            requiresCheckpointInspection: requiresCheckpointInspection,
             videoOutputDirectory: videoOutputDirectory,
             estimatedMemoryGB: estimatedMemoryGB
         )
@@ -2299,9 +2318,18 @@ final class ServerManager {
         hfPath: String? = nil,
         estimatedMemoryGB: Double? = nil
     ) async -> ResidentModelLoadResult {
-        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ModelReference.normalized(alias)
         guard !trimmed.isEmpty, child != nil, isModelResident(trimmed) else {
             return .rejected("That model is not currently resident. Its settings will apply the next time it loads.")
+        }
+        if isOpenedCheckpoint(trimmed) {
+            guard let binary = binaryPath else { return .rejected(LocalCheckpointError.unavailable.localizedDescription) }
+            let loadingChild = child
+            do { _ = try await checkedOpenedCheckpoint(trimmed, binary: binary) }
+            catch { return .rejected(error.localizedDescription) }
+            guard !Task.isCancelled, !didSignalShutdown, child != nil, child === loadingChild else {
+                return .rejected("That model is not currently resident. Its settings will apply the next time it loads.")
+            }
         }
         let result = await residencyClient.load(
             alias: trimmed,
@@ -2643,6 +2671,7 @@ final class ServerManager {
         isLaunchAutoStart: Bool = false,
         memoryAdmission: MemoryAdmissionContext? = nil,
         catalogEntryHint: CatalogEntryHint? = nil,
+        requiresCheckpointInspection: Bool = false,
         videoOutputDirectory: String? = nil,
         estimatedMemoryGB: Double? = nil,
         onboardingEngineAttemptToken: UUID? = nil
@@ -2677,7 +2706,8 @@ final class ServerManager {
             enqueueOnboardingEngineStartFailed(alias: alias)
             return
         }
-        let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAlias = ModelReference.normalized(alias)
+        let localReference = requiresCheckpointInspection || isOpenedCheckpoint(trimmedAlias)
         guard !trimmedAlias.isEmpty else { return }
         // Reject anything that could be misread as an extra argv flag
         // or that would inject newlines / control bytes into the log
@@ -2685,7 +2715,7 @@ final class ServerManager {
         // ``[a-z0-9._-]`` and the longest registered entry is ~32
         // chars; cap conservatively at 128 so a typo doesn't generate
         // a giant child argv. [codex audit r1 ServerManager.swift:308]
-        guard Self.isValidAlias(trimmedAlias) else {
+        guard Self.isValidAlias(trimmedAlias) || (localReference && OpenedCheckpoints.isSafePath(trimmedAlias)) else {
             state = .crashed(
                 alias: trimmedAlias,
                 message: "That model name isn't valid. Pick a model from the bar at the top."
@@ -2699,7 +2729,7 @@ final class ServerManager {
             hint: catalogEntryHint,
             generation: startCatalogGeneration
         ) {
-            catalogProvenStartEntries[trimmedAlias.lowercased()] = validatedHint
+            catalogProvenStartEntries[ModelReference.key(trimmedAlias)] = validatedHint
         }
 
         // Pre-load memory guard (#324). Loading a model whose footprint,
@@ -2863,12 +2893,12 @@ final class ServerManager {
             generation: catalogGeneration
         )
         let probedCatalogEntry = catalogSnapshot.first {
-            $0.alias.caseInsensitiveCompare(trimmedAlias) == .orderedSame
+            ModelReference.matches($0.alias, trimmedAlias)
         }
         let catalogEntry = Self.readyCatalogEntry(
             alias: trimmedAlias,
             probed: probedCatalogEntry,
-            hint: catalogProvenStartEntries[trimmedAlias.lowercased()]?.entry
+            hint: catalogProvenStartEntries[ModelReference.key(trimmedAlias)]?.entry
         )
         if Task.isCancelled || didSignalShutdown || communityBenchmarkReserved { return }
         guard !isOperating, child == nil else { return }
@@ -2880,8 +2910,34 @@ final class ServerManager {
         guard let runtimeProbe = await claimRuntimeCapabilitiesForStart(binary: binary) else {
             return
         }
+        guard !Task.isCancelled, !didSignalShutdown, !communityBenchmarkReserved,
+              !isOperating, child == nil, runtimeProbeOperation?.id == runtimeProbe.id else {
+            releaseRuntimeProbe(runtimeProbe.id)
+            return
+        }
+        var localCheckpoint: LocalCheckpointCheck?
+        if localReference {
+            let inspection = Task { @MainActor in
+                try await self.checkedOpenedCheckpoint(trimmedAlias, binary: binary)
+            }
+            runtimeProbeOperation?.checkpointTask = inspection
+            do {
+                localCheckpoint = try await withTaskCancellationHandler {
+                    try await inspection.value
+                } onCancel: { inspection.cancel() }
+            } catch {
+                let ownsProbe = runtimeProbeOperation?.id == runtimeProbe.id
+                releaseRuntimeProbe(runtimeProbe.id)
+                guard ownsProbe, !Task.isCancelled, !didSignalShutdown,
+                      !communityBenchmarkReserved, !isOperating, child == nil else { return }
+                state = .crashed(alias: trimmedAlias, message: error.localizedDescription)
+                enqueueOnboardingEngineStartFailed(alias: trimmedAlias)
+                return
+            }
+        }
         guard !Task.isCancelled, !didSignalShutdown,
-              !communityBenchmarkReserved, !isOperating, child == nil else {
+              !communityBenchmarkReserved, !isOperating, child == nil,
+              runtimeProbeOperation?.id == runtimeProbe.id else {
             releaseRuntimeProbe(runtimeProbe.id)
             return
         }
@@ -3124,7 +3180,8 @@ final class ServerManager {
             mcpConfigPath: mcpConfigPathProvider?(),
             videoOutputDirectory: videoOutputDirectory,
             capabilities: runtimeCapabilities,
-            localSearchEnabled: LocalSearchFeatureConfig.isEnabled()
+            localSearchEnabled: LocalSearchFeatureConfig.isEnabled(),
+            localCheckpoint: localCheckpoint
         )
 
         audioIdleUnloadSupportedAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload
@@ -3973,6 +4030,7 @@ final class ServerManager {
 
     private func cancelRuntimeProbe() {
         runtimeProbeOperation?.task.cancel()
+        runtimeProbeOperation?.checkpointTask?.cancel()
         runtimeProbeOperation = nil
     }
 
@@ -4717,6 +4775,24 @@ final class ServerManager {
         return true
     }
 
+    func isOpenedCheckpoint(_ path: String) -> Bool {
+        OpenedCheckpoints.paths(defaults: sessionDefaults ?? .standard).contains(path)
+    }
+
+    /// A cached catalog row/hint is never permission to load a registered
+    /// directory. Reinspect its fixed canonical identity at the load boundary.
+    private func checkedOpenedCheckpoint(_ path: String, binary: URL) async throws -> LocalCheckpointCheck {
+        guard isOpenedCheckpoint(path) else { throw LocalCheckpointError.rejected("identity_changed") }
+        let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [path], binary: binary,
+            hubCacheOverride: ModelsFolderPreference.validatedOverrideURL(defaults: sessionDefaults ?? .standard))
+        try Task.checkCancellation()
+        guard isOpenedCheckpoint(path) else { throw LocalCheckpointError.rejected("identity_changed") }
+        guard let check = checks.first, check.certified, check.path == path else {
+            throw LocalCheckpointError.rejected(checks.first?.reason ?? "inspection_failed")
+        }
+        return check
+    }
+
     // MARK: - Per-model performance overrides (issue #1717)
 
     /// Flags that carry a value, and so must be dropped together with the
@@ -5028,7 +5104,7 @@ final class ServerManager {
             processLaunchFlags: launchedImageInputLane.map { $0 ? ["--mllm"] : [] }
         )
         let profile = activeModelProfile.flatMap {
-            $0.id.caseInsensitiveCompare(alias) == .orderedSame ? $0 : nil
+            ModelReference.matches($0.id, alias) ? $0 : nil
         }
         return ImageInputAvailability.resolve(
             fallbackSupportsImageInput: fallback,
@@ -5094,14 +5170,16 @@ final class ServerManager {
         videoOutputDirectory: String? = nil,
         capabilities: ServerRuntimeCapabilities = .conservative,
         localSearchEnabled: Bool = LocalSearchFeatureConfig.defaultEnabled,
-        localSearchDirectory: String = ApplicationSupportLocator.localSearchDirectory().path
+        localSearchDirectory: String = ApplicationSupportLocator.localSearchDirectory().path,
+        localCheckpoint: LocalCheckpointCheck? = nil
     ) -> [String] {
         // Defense in depth: ``start(alias:)`` already calls
         // ``isValidAlias`` before reaching here, but a future caller
         // bypassing that gate would re-introduce the leading-dash
         // injection risk (alias parsed as ``--port`` etc.). Catch
         // misuse in debug builds; production trusts the gate.
-        assert(isValidAlias(alias), "serveArguments requires an alias that already passed isValidAlias(_:)")
+        assert(isValidAlias(alias) || (localCheckpoint?.certified == true && localCheckpoint?.path == alias),
+            "serveArguments requires a valid alias or fresh exact local checkpoint certificate")
         var args = [
             "serve",
             alias,

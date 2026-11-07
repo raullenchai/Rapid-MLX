@@ -2,6 +2,26 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "This checkpoint directory changed. Open it again to confirm its location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点目录已更改。请重新打开以确认其位置。"
+          }
+        }
+      }
+    },
+    "Check and start this local checkpoint." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查并启动此本地检查点。"
+          }
+        }
+      }
+    },
     "Existing checkpoints" : {
       "localizations" : {
         "zh-Hans" : {
