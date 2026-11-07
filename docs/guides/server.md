@@ -140,6 +140,19 @@ Primary standby applies to Chat Completions, legacy Completions, Responses,
 and Anthropic Messages/counting. `/v1/embeddings` has an independent engine
 selected by `--embedding-model`; it neither wakes nor uses the primary model.
 
+### Health probe access logs
+
+At the default `INFO` log level, successful (2xx) `GET` and `HEAD`
+requests to `/healthz` and `/livez` are omitted from Uvicorn's access log,
+including requests with query strings. Non-2xx probe responses (including
+`503` during draining), other request paths and methods, and application
+logs remain visible. This does not change probe responses or readiness.
+
+Use `--log-level DEBUG` to include successful probe access records when
+diagnosing monitoring traffic. Raising the level to `WARNING` also hides
+ordinary request and application INFO logs, so it is not needed just to
+quiet successful probes.
+
 ## API Endpoints
 
 ### Endpoint Index
