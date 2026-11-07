@@ -161,10 +161,12 @@ struct SettingsModelManagementPanel: View {
                 openedCheckpointsSection
             }
             crossTabHints
-            modelsFolderSection
-            storageOverviewSection
-            preferencesSection
-            downloadEndpointSection
+            if !isSearching {
+                modelsFolderSection
+                storageOverviewSection
+                preferencesSection
+                downloadEndpointSection
+            }
             if capability == .chat {
                 if showRecommendedSection {
                     recommendedSection
@@ -942,13 +944,17 @@ struct SettingsModelManagementPanel: View {
         return map
     }
 
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Cards only make sense on the unfiltered default view. Hide them
     /// the moment the user searches or switches the cached filter so
     /// those controls act on the whole catalog without a fixed 4-card
     /// header in the way.
     private var showRecommendedSection: Bool {
         !catalog.isEmpty
-            && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isSearching
             && filterMode == .all
     }
 
