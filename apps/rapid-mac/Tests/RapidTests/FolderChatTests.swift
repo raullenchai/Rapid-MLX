@@ -162,9 +162,15 @@ struct FolderChatRealUserTests {
         let stage = GoldenStage(ChatView(viewModel: model, server: server, alias: .constant("default"), readiness: .ready(alias: "default"))
             .environment(DownloadManager()).environment(QuickstartCoordinator()), size: CGSize(width: 720, height: 680))
         try await stage.waitForIdentifier(AutosizingTextView.composeAccessibilityIdentifier)
-        try stage.setValue("Can hand-dyed yarn wound into a ball be returned?", for: AutosizingTextView.composeAccessibilityIdentifier)
-        try stage.submitComposer()
-        await model._testingWaitForCurrentTurn()
+        func submitQuestion(_ question: String) async throws {
+            try stage.setValue(question, for: AutosizingTextView.composeAccessibilityIdentifier)
+            try stage.submitComposer()
+            try await stage.wait(for: "folder question admission") {
+                model.messages.last(where: { $0.role == .user })?.content == question
+            }
+            await model._testingWaitForCurrentTurn()
+        }
+        try await submitQuestion("Can hand-dyed yarn wound into a ball be returned?")
         #expect(model.lastError == nil)
         let answer = model.messages.filter { $0.role == .assistant }.map(\.content).joined(separator: "\n")
         #expect(answer.lowercased().contains("cannot") || answer.lowercased().contains("no"))
@@ -191,9 +197,7 @@ struct FolderChatRealUserTests {
             ("Do office visits require an appointment?", "yes", "office-policy.docx")
         ] {
             let oldIDs = Set(model.messages.compactMap(\.ownerSource).map(\.sourceID))
-            try stage.setValue(question, for: AutosizingTextView.composeAccessibilityIdentifier)
-            try stage.submitComposer()
-            await model._testingWaitForCurrentTurn()
+            try await submitQuestion(question)
             let response = try #require(model.messages.last(where: { $0.role == .assistant })?.content)
             #expect(response.lowercased().contains(expected) || (expected == "two" && response.contains("2")))
             try await stage.waitForText(String(try AttributedString(markdown: response).characters))
@@ -210,9 +214,8 @@ struct FolderChatRealUserTests {
         }
         let emptyFolderID = try #require(env["RAPID_FOLDER_REAL_EMPTY_FOLDER_ID"])
         model.startFolderChat(folderID: emptyFolderID, title: "Owned empty folder")
-        try stage.setValue("zqxvjkplrnop", for: AutosizingTextView.composeAccessibilityIdentifier)
-        try stage.submitComposer()
-        await model._testingWaitForCurrentTurn()
+        try await stage.waitForText("Owned empty folder")
+        try await submitQuestion("zqxvjkplrnop")
         #expect(model.messages.last(where: { $0.role == .assistant })?.content.contains("couldn't find supporting information") == true)
         try JSONSerialization.data(withJSONObject: formats, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-format-receipts.json"))
         try Data((model.conversations.first?.ownerConversationID ?? "").utf8).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-nohit-conversation.txt"))
