@@ -108,6 +108,11 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
             )
         cohorts = []
         for (model, chip, method, config_key), observations in sorted(groups.items()):
+            # A repository may contain multiple quantized artifacts in separate
+            # subfolders. This export contract proves only the repository, not
+            # the selected subfolder, so those profiles cannot borrow its runs.
+            if profile.get("subfolder"):
+                continue
             if model != repo or (method == "mtp" and config_key != default_config_key):
                 continue
             values = sorted(v[0] for v in observations.values())

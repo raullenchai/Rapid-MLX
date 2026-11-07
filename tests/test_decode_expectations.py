@@ -330,3 +330,19 @@ def test_mtp_group_requires_exact_embedded_head_k_and_ordinary_backend(monkeypat
     result = build_snapshot(correct + wrong + [mtp("correct-3")], "2026-11-07")
     assert resolve("qwen3.8-27b-4bit", "M4", 32)["status"] == "measured"
     assert result["models"]["qwen3.8-27b-4bit"]["cohorts"][0]["n"] == 3
+
+
+def test_subfolder_profile_never_borrows_unknown_quantization_runs(monkeypatch):
+    rows = [run(str(index), repo="LiquidAI/LFM2.5-2.6B-MLX") for index in range(3)]
+    for row in rows:
+        row["model"].update(
+            identity_strength="unresolved",
+            quantization={"kind": "unknown", "base_dtype": "unknown"},
+        )
+    result = build_snapshot(rows + [run("ordinary")], "2026-11-07")
+    assert result["models"]["lfm2.5-2.6b-4bit"]["cohorts"] == []
+    # Repository matching remains sufficient for the existing single-artifact
+    # profiles; do not impose a new identity requirement on their exports.
+    assert result["models"]["qwen3.5-4b-4bit"]["cohorts"][0]["n"] == 1
+    monkeypatch.setattr(de, "snapshot", lambda: result)
+    assert resolve("lfm2.5-2.6b-4bit", "M4", 32)["status"] == "unavailable"
