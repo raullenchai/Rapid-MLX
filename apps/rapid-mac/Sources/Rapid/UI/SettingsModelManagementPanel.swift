@@ -35,6 +35,19 @@ import SwiftUI
 struct SettingsModelManagementPanel: View {
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
+    private let checkpointDefaults: UserDefaults
+    private let checkpointDirectory: @MainActor () -> URL?
+    @State private var openedCheckpointPaths: [String]
+    @State private var openingCheckpoint = false
+    @State private var checkpointError: String?
+    @State private var checkpointTask: Task<Void, Never>?
+
+    init(checkpointDefaults: UserDefaults = .standard,
+         checkpointDirectory: @escaping @MainActor () -> URL? = { SettingsModelManagementPanel.selectExistingCheckpointDirectory() }) {
+        self.checkpointDefaults = checkpointDefaults
+        self.checkpointDirectory = checkpointDirectory
+        _openedCheckpointPaths = State(initialValue: OpenedCheckpoints.paths(defaults: checkpointDefaults))
+    }
 
     // Seeded from the process-wide cache rather than starting empty: an
     // empty start re-rendered the spinner on every visit regardless of
@@ -144,6 +157,9 @@ struct SettingsModelManagementPanel: View {
             header
             capabilityTabs
             controlsRow
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                openedCheckpointsSection
+            }
             crossTabHints
             modelsFolderSection
             storageOverviewSection
@@ -189,6 +205,7 @@ struct SettingsModelManagementPanel: View {
             await checkHuggingFace()
         }
         .onAppear { consumeModelSearchRequest() }
+        .onDisappear { checkpointTask?.cancel() }
         .onChange(of: settingsRouter?.modelSearchRequest) { _, _ in consumeModelSearchRequest() }
         .task {
             await refreshCatalog()
@@ -679,6 +696,90 @@ struct SettingsModelManagementPanel: View {
         customFolderPath = ModelsFolderPreference.storedPath()
         refreshStorageCapacity()
         Task { await refreshCatalog() }
+    }
+
+    private var openedCheckpointsSection: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack {
+                Text("Existing checkpoints").font(RapidFont.body)
+                Spacer(minLength: 0)
+                if openingCheckpoint {
+                    ProgressView().controlSize(.small).accessibilityLabel("Checking checkpoint…")
+                        .accessibilityIdentifier("Settings.ModelManagement.CheckingCheckpoint")
+                }
+                Button("Open existing checkpoint…") { chooseExistingCheckpoint() }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .disabled(openingCheckpoint)
+                    .accessibilityIdentifier("Settings.ModelManagement.OpenCheckpoint")
+            }
+            Text("Use a supported chat checkpoint where it is. Downloads keep their current location.")
+                .font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let checkpointError {
+                InlineNotice(message: checkpointError, tone: .error,
+                    actionTitle: String(localized: "Dismiss"),
+                    actionIdentifier: "Settings.ModelManagement.DismissCheckpointError",
+                    action: { self.checkpointError = nil })
+            }
+            ForEach(openedCheckpointPaths, id: \.self) { path in
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(fileURLWithPath: path).lastPathComponent).font(RapidFont.body)
+                        Text(path).font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Remove reference") {
+                        OpenedCheckpoints.remove(path, defaults: checkpointDefaults)
+                        openedCheckpointPaths = OpenedCheckpoints.paths(defaults: checkpointDefaults)
+                        downloads.markCacheChanged()
+                        Task { await refreshCatalog() }
+                    }
+                    .buttonStyle(.rapidTertiary).disabled(openingCheckpoint)
+                    .accessibilityIdentifier("Settings.ModelManagement.RemoveCheckpoint.\(path)")
+                }
+            }
+            if !openedCheckpointPaths.isEmpty {
+                Text("Removing a reference leaves the checkpoint files unchanged. Only available, supported checkpoints appear in the model list.")
+                    .font(RapidFont.caption).foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Settings.ModelManagement.OpenedCheckpoints")
+    }
+
+    private func chooseExistingCheckpoint() {
+        guard let selected = checkpointDirectory() else { return }
+        checkpointError = nil
+        openingCheckpoint = true
+        checkpointTask = Task {
+            defer { openingCheckpoint = false }
+            do {
+                guard let binary = server.binaryPath else { throw LocalCheckpointError.unavailable }
+                let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [selected.path], binary: binary)
+                try Task.checkCancellation()
+                try OpenedCheckpoints.register(checks[0], defaults: checkpointDefaults)
+                openedCheckpointPaths = OpenedCheckpoints.paths(defaults: checkpointDefaults)
+                downloads.markCacheChanged()
+                await refreshCatalog()
+            } catch is CancellationError {
+                // Leaving the panel never registers a late inspection reply.
+            } catch {
+                checkpointError = error.localizedDescription
+            }
+        }
+    }
+
+    static func selectExistingCheckpointDirectory(panel: NSOpenPanel = NSOpenPanel()) -> URL? {
+        panel.title = String(localized: "Open existing checkpoint")
+        panel.message = String(localized: "Choose a complete chat checkpoint directory. Files stay in their current location.")
+        panel.prompt = String(localized: "Open checkpoint")
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     /// Clear the custom folder and fall back to the default location.
@@ -1747,7 +1848,7 @@ struct SettingsModelManagementPanel: View {
         // through to the established per-surface compatibility loaders.
         if let atomic = await Self.stableAtomicCatalogSnapshot(
             currentGeneration: { downloads.cacheGeneration },
-            loader: { await ModelCatalog.productEntries(binary: binary) }
+            loader: { await ModelCatalog.productEntries(binary: binary, openedPaths: openedCheckpointPaths) }
         ) {
             guard !Task.isCancelled else { return }
             catalog = atomic

@@ -484,7 +484,8 @@ enum ModelCatalog {
     /// explicit value to pin behaviour without touching UserDefaults.
     static func load(
         binary: URL,
-        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL(),
+        openedPaths: [String] = OpenedCheckpoints.paths()
     ) async -> [ModelEntry] {
         async let availableTask: (
             entries: [(String, String?)],
@@ -540,6 +541,8 @@ enum ModelCatalog {
                 availableResult.profiles[entry.alias]?.allowsLegacyRecommendationPolicy ?? false
             return enriched
         }
+
+        entries = await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary)
 
         // Sort: cached first, then alphabetic within each group. The
         // user is most likely to pick something they already have on
@@ -1446,7 +1449,8 @@ enum ModelCatalog {
     /// multiply subprocess work by the number of modalities.
     static func productEntries(
         binary: URL,
-        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL(),
+        openedPaths: [String] = OpenedCheckpoints.paths()
     ) async -> [ModelEntry]? {
         async let modelsJSON = runRapidMlxResult(
             binary: binary, args: ["models", "--json"]
@@ -1462,12 +1466,13 @@ enum ModelCatalog {
         else {
             return nil
         }
-        return mergeAtomicAndCached(
+        let entries = mergeAtomicAndCached(
             atomic: atomic,
             cached: await cachedTask,
             excluded: projection.excluded,
             speculative: projection.speculative
         )
+        return await addingOpenedCheckpoints(entries, paths: openedPaths, binary: binary)
     }
 
     /// Preserve the user-owned cache surface while atomic aliases drive
@@ -2674,6 +2679,29 @@ enum ModelCatalog {
         let check = try JSONDecoder().decode(HuggingFaceModelCheck.self, from: Data(result.stdout.utf8))
         guard check.schema == 1 else { throw CocoaError(.coderReadCorrupt) }
         return check
+    }
+
+    static func inspectLocalCheckpoints(paths: [String], binary: URL) async throws -> [LocalCheckpointCheck] {
+        guard !paths.isEmpty, paths.count <= OpenedCheckpoints.limit else { throw LocalCheckpointError.limit }
+        let args = ["models", "--json"] + paths.flatMap { ["--inspect-local", $0] }
+        let result = await runRapidMlxResult(binary: binary, args: args)
+        try Task.checkCancellation()
+        guard result.succeeded else { throw LocalCheckpointError.unavailable }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let envelope = try? decoder.decode(LocalCheckpointEnvelope.self, from: Data(result.stdout.utf8)),
+              envelope.schema == 1, envelope.localCheckpoints.count == paths.count,
+              zip(envelope.localCheckpoints, paths).allSatisfy({ $0.requestedPath == $1 }),
+              envelope.localCheckpoints.allSatisfy({ !$0.ready || $0.certified }) else {
+            throw LocalCheckpointError.unavailable
+        }
+        return envelope.localCheckpoints
+    }
+
+    private static func addingOpenedCheckpoints(_ entries: [ModelEntry], paths: [String], binary: URL) async -> [ModelEntry] {
+        guard !paths.isEmpty,
+              let checks = try? await inspectLocalCheckpoints(paths: paths, binary: binary) else { return entries }
+        return OpenedCheckpoints.merging(entries, checks: checks)
     }
 
     static func _testingRunRapidMlx(binary: URL, args: [String]) async -> String {

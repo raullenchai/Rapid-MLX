@@ -2,6 +2,176 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Existing checkpoints" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "现有检查点"
+          }
+        }
+      }
+    },
+    "Open existing checkpoint…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开现有检查点…"
+          }
+        }
+      }
+    },
+    "Checking checkpoint…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查检查点…"
+          }
+        }
+      }
+    },
+    "Use a supported chat checkpoint where it is. Downloads keep their current location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "直接使用原位置的受支持聊天检查点。下载位置保持不变。"
+          }
+        }
+      }
+    },
+    "Remove reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除引用"
+          }
+        }
+      }
+    },
+    "Removing a reference leaves the checkpoint files unchanged. Only available, supported checkpoints appear in the model list." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除引用不会更改检查点文件。模型列表仅显示可用且受支持的检查点。"
+          }
+        }
+      }
+    },
+    "Open existing checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开现有检查点"
+          }
+        }
+      }
+    },
+    "Choose a complete chat checkpoint directory. Files stay in their current location." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择完整的聊天检查点目录。文件将保留在原位置。"
+          }
+        }
+      }
+    },
+    "Open checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开检查点"
+          }
+        }
+      }
+    },
+    "Remove an existing checkpoint reference before adding another." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先移除一个现有检查点引用，再添加其他引用。"
+          }
+        }
+      }
+    },
+    "The engine could not inspect this directory. Update the engine and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎无法检查此目录。请更新引擎后重试。"
+          }
+        }
+      }
+    },
+    "Choose an existing checkpoint directory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请选择现有的检查点目录。"
+          }
+        }
+      }
+    },
+    "This checkpoint contains links outside the selected directory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点包含指向所选目录之外的链接。"
+          }
+        }
+      }
+    },
+    "This directory is missing complete MLX checkpoint weights." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此目录缺少完整的 MLX 检查点权重。"
+          }
+        }
+      }
+    },
+    "This checkpoint needs a tokenizer vocabulary and chat template." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点需要分词器词表和聊天模板。"
+          }
+        }
+      }
+    },
+    "This checkpoint is not a supported chat model for this engine and Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此检查点不是当前引擎和 Mac 支持的聊天模型。"
+          }
+        }
+      }
+    },
+    "The checkpoint metadata or runtime could not be verified. Check the files and engine installation." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证检查点元数据或运行环境。请检查文件及引擎安装。"
+          }
+        }
+      }
+    },
     "Sampled RAM: %g GB" : {
       "localizations" : {
         "zh-Hans" : {
