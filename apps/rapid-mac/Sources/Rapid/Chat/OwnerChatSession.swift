@@ -76,6 +76,7 @@ actor OwnerChatSession {
                 throw ChatOwnerTurnRejection(message: String(localized: "Update the chat owner to use folder chat."))
             }
         }
+        try checkPreparation()
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
         else { conversation = try await client.createConversation(workspace: workspace.path) }
@@ -96,6 +97,7 @@ actor OwnerChatSession {
             try checkPreparation()
         }
         if localSearch != nil || object["local_search"] != nil { try await client.setFolderScope(conversationID: id, scope: localSearch) }
+        try checkPreparation()
         let turnID = UUID().uuidString.lowercased()
         let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, actionTools: localSearch == nil, approvals: .default, inferenceAPIKey: target.bearer, localSearch: localSearch)
         reducer = ChatTurnReducer(turnID: turnID); unavailable = [:]; state = .streaming; publish()

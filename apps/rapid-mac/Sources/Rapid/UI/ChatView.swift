@@ -946,11 +946,14 @@ struct ChatView: View {
                             Button { viewModel.removeFolderChatScope() } label: { Image(systemName: "xmark.circle.fill") }
                                 .buttonStyle(.plain).disabled(viewModel.isStreaming)
                                 .accessibilityLabel(String(localized: "Remove folder from this chat"))
+                                .accessibilityIdentifier("Chat.RemoveFolderScope")
                         }
                         Text(String(localized: "Uses indexed passages only. Tools are off. Cited passages are saved with this chat."))
                             .font(.rapid(.caption)).foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8).background(RapidTheme.hairline.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("Chat.FolderScope")
                 }
                 if attachmentDraft.hasAttachments {
@@ -2537,7 +2540,7 @@ private struct MessageRow: View {
         }
         .font(.rapid(.footnote))
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: message.ownerSource == nil ? .center : .leading)
     }
 }
 

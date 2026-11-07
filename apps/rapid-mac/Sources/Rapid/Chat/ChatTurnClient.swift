@@ -114,6 +114,11 @@ actor URLSessionChatTurnClient: ChatTurnClient {
     private struct FolderScopeBody: Encodable {
         let localSearch: FolderChatScope?
         enum CodingKeys: String, CodingKey { case localSearch = "local_search" }
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            if let localSearch { try container.encode(localSearch, forKey: .localSearch) }
+            else { try container.encodeNil(forKey: .localSearch) }
+        }
     }
 
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {

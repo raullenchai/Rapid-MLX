@@ -12,11 +12,21 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    private(set) var sourcePreviewCalls: [(String, String)] = []
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {
+        sourcePreviewCalls.append((conversationID, attachmentID))
+        return FolderSourcePreview(id: attachmentID, name: "policy.txt", text: "The refund window is 30 days.\nSaved evidence, not the current file.", truncated: false)
+    }
+    var capabilityGate: (@Sendable () async -> Void)?
+    var scopeGate: (@Sendable () async -> Void)?
+    func setFolderGate(capability: Bool, gate: @escaping @Sendable () async -> Void) {
+        if capability { capabilityGate = gate } else { scopeGate = gate }
+    }
     var folderChatSupported = false
     private(set) var folderScopes: [FolderChatScope?] = []
     func enableFolderChat() { folderChatSupported = true }
-    func supportsFolderChat() async throws -> Bool { folderChatSupported }
-    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { folderScopes.append(scope) }
+    func supportsFolderChat() async throws -> Bool { await capabilityGate?(); return folderChatSupported }
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { folderScopes.append(scope); await scopeGate?() }
     var distinctUploadIDs = false
     func enableDistinctUploadIDs() { distinctUploadIDs = true }
     var uploadError: ChatAttachmentUploadError?

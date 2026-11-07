@@ -651,4 +651,36 @@ does not prove every model statement is supported. Small models can contradict
 a retrieved fact even while emitting a citation; use a capable instruction-following
 model and verify answers against the quoted text. Treat source contents as
 untrusted, verify citations, and retain human review for consequential answers.
-Desktop folder selection and source previews remain separate work.
+### Desktop folder chat
+
+Folder chat currently requires **Settings → Experimental → Built-in Agent Harness
+(Experimental)**. This opt-in changes the engine for new chats; existing chats keep
+their engine. Local Search must also be enabled with a registered folder. Choosing
+**Ask this folder…** while the chat opt-in is off opens that Settings category; it
+does not enable the preference or send a question. An older chat owner without
+folder-chat capability is rejected before submission.
+
+In Search, choose **Ask this folder…** on one registered folder. This starts a new
+chat with a removable folder chip. Only that folder is searched: no global scope,
+new registration, automatic indexing or model download is implied. The chip states
+that cited passages are saved with the chat. New Chat clears the scope; switching
+back to the conversation restores its scope. Remove the chip to stop using it for
+later turns. Folder chat accepts text questions and disables web, file, terminal
+and delegation tools; attachments must be removed first.
+
+Each admitted answer saves its retrieved text before generation. Open the numbered
+source rows below the answer to read the saved passage and known page/line range.
+This preview does not open a model-supplied URL or the original file. Changing the
+index or original file cannot rewrite a saved answer's evidence. Source numbers
+are local to that answer. Reconnecting replays the same answer; a new question retrieves again and owns a
+separate source catalogue. The existing owner API also retrieves anew for an
+explicit regeneration. Desktop owner-backed regeneration remains unavailable;
+this feature does not change that existing restriction. Removing a
+folder registration does not erase excerpts already saved in chat history.
+
+Keyword-only retrieval, partial indexing and omitted oversized passages remain
+visible. No matches produces an abstention without inference; while indexing is
+in progress the reply explains that some files are not searchable yet. Missing
+folders, disabled or older services, incomplete full-text responses and context
+limits fail explicitly instead of sending an ordinary ungrounded request. Cited
+passages establish provenance, not model correctness; check the quoted text.
