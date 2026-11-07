@@ -852,6 +852,12 @@ class Runtime:
                 "在所选文件夹的已索引内容中没有找到匹配的片段，无法根据此文件夹回答这个问题。",
                 ABSTENTION,
             )
+            if metadata["indexing"]:
+                answer += _localized(
+                    human_text,
+                    "\n\n索引仍在建立中，部分文件尚未包含在搜索结果中。",
+                    "\n\nIndexing is still in progress; some files are not searchable yet.",
+                )
             await self._emit(
                 tid,
                 {
