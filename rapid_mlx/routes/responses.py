@@ -2745,6 +2745,9 @@ async def _stream_buffered_responses_response(
     metrics = (response.get("metrics") or {}).get("speculative_decoding")
     if isinstance(metrics, dict):
         terminal.spec_decode_metrics = metrics
+    reference = (response.get("metrics") or {}).get("execution_reference")
+    if isinstance(reference, dict):
+        terminal.execution_reference = reference
 
     class _ReplayEngine:
         tokenizer = None

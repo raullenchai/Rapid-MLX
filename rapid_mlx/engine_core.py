@@ -1504,6 +1504,10 @@ class EngineCore:
                 req_output.timing_metrics
                 or (buf.timing_metrics if buf is not None else None)
             ),
+            execution_reference=(
+                req_output.execution_reference
+                or (buf.execution_reference if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(

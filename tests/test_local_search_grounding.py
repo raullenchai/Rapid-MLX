@@ -137,6 +137,7 @@ def test_no_evidence_short_circuits_engine_and_has_standard_wire(stream, monkeyp
         data = response.json()
         assert data["choices"][0]["message"]["content"] == ABSTENTION
         assert data["usage"]["total_tokens"] == 0
+        assert "metrics" not in data  # No inference means no execution reference.
     else:
         assert response.text.endswith("data: [DONE]\n\n")
         events = [
@@ -156,6 +157,7 @@ def test_no_evidence_short_circuits_engine_and_has_standard_wire(stream, monkeyp
         )
         assert any(e.get("usage", {}).get("total_tokens") == 0 for e in events)
         assert all("local_search" not in e for e in events[1:])
+        assert all("metrics" not in e for e in events)
     assert data["local_search"]["status"] == "no_matches"
     assert data["local_search"]["sources"] == []
 

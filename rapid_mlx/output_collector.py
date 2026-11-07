@@ -189,6 +189,7 @@ class RequestOutputCollector:
             ),
             prompt_compression=(new.prompt_compression or existing.prompt_compression),
             timing_metrics=new.timing_metrics or existing.timing_metrics,
+            execution_reference=new.execution_reference or existing.execution_reference,
         )
 
     def clear(self) -> None:

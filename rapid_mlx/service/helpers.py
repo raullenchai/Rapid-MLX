@@ -2609,12 +2609,27 @@ def _build_response_metrics(
         if isinstance(metrics, (dict, SpeculativeDecodingMetrics))
         else None
     )
+    from ..api.models import ExecutionReferenceMetrics
+
+    reference = getattr(output, "execution_reference", None) if include_timing else None
+    execution = None
+    if isinstance(reference, (dict, ExecutionReferenceMetrics)):
+        try:
+            execution = ExecutionReferenceMetrics.model_validate(reference)
+        except (ValueError, TypeError):
+            pass  # Foreign/legacy metadata must not break a successful generation.
     compression = _build_prompt_compression(output)
-    if speculative is None and compression is None and not isinstance(timing, dict):
+    if (
+        speculative is None
+        and compression is None
+        and execution is None
+        and not isinstance(timing, dict)
+    ):
         return None
     return PerRequestMetrics(
         speculative_decoding=speculative,
         prompt_compression=compression,
+        execution_reference=execution,
         **(timing if isinstance(timing, dict) else {}),
     )
 
@@ -2691,6 +2706,7 @@ def _aggregate_generation_attempts(
     return replace(
         delivered,
         timing_metrics=None,
+        execution_reference=None,
         prompt_tokens=initial.prompt_tokens + delivered.prompt_tokens,
         completion_tokens=(initial.completion_tokens + delivered.completion_tokens),
         cached_tokens=(
