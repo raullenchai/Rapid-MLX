@@ -5703,7 +5703,12 @@ class Scheduler:
                 or getattr(self.config, "model_name", None),
             )
 
-        if execution_receipt is not None and self.spec_decode_runtime_method is None:
+        if (
+            execution_receipt is not None
+            and execution_state is None
+            and self.spec_decode_runtime_method is None
+        ):
+            # Reuse an MTP fallback observer even when installation rejected.
             # Observe after compiled/dense ordinary fast paths are installed;
             # metadata must not change their admission or bypass execution.
             execution_state = observe_plain_steps(

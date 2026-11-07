@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_terminal_metrics_preserve_execution_reference():
     from rapid_mlx.service.helpers import _build_response_metrics
@@ -470,3 +472,232 @@ def test_actual_mtp_installer_freezes_family_ceiling_after_bootstrap(monkeypatch
     assert reference["status"] == "known"
     assert reference["config_key"] == "mtp:embedded_head:k=2:ordinary"
     assert reference["observed_max_draft_tokens"] == 1
+
+
+@pytest.mark.parametrize("configured", ["mtp", "none"])
+def test_scheduler_rejected_mtp_installer_is_ordinary_not_mixed(
+    monkeypatch, configured
+):
+    """Exercise observer installation order through the actual scheduler seam."""
+    import pytest
+
+    pytest.importorskip("mlx.core")
+    import rapid_mlx.scheduler as module
+    from rapid_mlx.execution_reference import LoadReceipt, terminal_reference
+    from rapid_mlx.request import SamplingParams
+
+    request = SimpleNamespace()
+    gb = SimpleNamespace(uids=[7], _step=lambda: ([11], [0.0]))
+    bg = SimpleNamespace(_generation_batch=gb)
+    monkeypatch.setattr(module, "BatchGenerator", lambda **kwargs: bg)
+    monkeypatch.setattr(module, "make_sampler", lambda **kwargs: object())
+    monkeypatch.setattr(module, "_install_mtp_vendored", lambda *a, **kw: False)
+    monkeypatch.setattr(module, "_install_dense_sampler_fastpath", lambda bg: None)
+    monkeypatch.setattr(
+        "rapid_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
+        lambda: None,
+    )
+    compiled_calls = []
+
+    def compiled_install(generator, model, *, model_name):
+        compiled_calls.append(generator)
+        generator._generation_batch._step = lambda: ([99], [0.0])
+
+    monkeypatch.setattr(
+        "rapid_mlx.compiled_decode.install_compiled_decode", compiled_install
+    )
+    scheduler = module.Scheduler.__new__(module.Scheduler)
+    scheduler.model = object()
+    scheduler.tokenizer = object()
+    scheduler._get_stop_tokens = lambda: set()
+    scheduler.memory_aware_cache = None
+    scheduler.model_config = None
+    scheduler.requests = {"request": request}
+    scheduler.uid_to_request_id = {7: "request"}
+    scheduler.uid_to_request_processors = {}
+    scheduler._execution_load_receipt = LoadReceipt(
+        "mlx-community/Qwen3.5-35B-A3B-8bit"
+    )
+    scheduler.config = SimpleNamespace(
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefill_step_size=1,
+        spec_decode=configured,
+        enable_suffix_decoding=False,
+        kv_cache_quantization=False,
+    )
+    assert scheduler._create_batch_generator(SamplingParams(max_tokens=4)) is bg
+    assert scheduler.spec_decode_runtime_method is None
+    assert gb._step()[0] == ([99] if configured == "none" else [11])
+    assert len(compiled_calls) == (1 if configured == "none" else 0)
+    reference = terminal_reference(request, 1, runtime_method=None)
+    assert reference["status"] == "known"
+    assert reference["method"] == "none"
+    assert reference["config_key"] == "none"
+
+
+def test_reference_validator_requires_complete_known_and_explicit_mixed():
+    import pytest
+    from pydantic import ValidationError
+
+    from rapid_mlx.api.models import ExecutionReferenceMetrics
+
+    known = dict(
+        version=1,
+        status="known",
+        repo_id="mlx-community/Qwen3.5-35B-A3B-8bit",
+        method="mtp",
+        assistant_source="embedded_head",
+        backend="ordinary",
+        max_draft_tokens=2,
+        observed_max_draft_tokens=1,
+        config_key="mtp:embedded_head:k=2:ordinary",
+        completion_tokens=4,
+    )
+    assert ExecutionReferenceMetrics.model_validate(known).max_draft_tokens == 2
+    for invalid in (
+        {**known, "repo_id": None},
+        {**known, "config_key": None},
+        {**known, "method": "none", "config_key": "none"},
+        {**known, "status": "mixed"},
+    ):
+        with pytest.raises(ValidationError):
+            ExecutionReferenceMetrics.model_validate(invalid)
+
+
+def test_unsupported_lane_and_external_head_keep_partial_facts_unknown():
+    from rapid_mlx.execution_reference import (
+        LoadReceipt,
+        observe_mtp_steps,
+        observe_plain_steps,
+        terminal_reference,
+    )
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+
+    request = SimpleNamespace(_mtp_accept_counter=MTPAcceptCounter())
+    gb = SimpleNamespace(uids=[1], _step=lambda: ([4], [0.0]))
+    owners, mapping = {"r": request}, {1: "r"}
+    state = observe_plain_steps(
+        SimpleNamespace(_generation_batch=gb), owners, mapping, LoadReceipt()
+    )
+    gb._step()  # An installed but unqualified lane cannot attest plain decode.
+    assert (
+        terminal_reference(request, 1, runtime_method="suffix")["method"] == "unknown"
+    )
+    request = SimpleNamespace(_mtp_accept_counter=MTPAcceptCounter())
+    owners["r"] = request
+
+    def step():
+        request._mtp_accept_counter.record_verify(1, 0)
+        return [4], [0.0]
+
+    gb._step = observe_mtp_steps(
+        step,
+        gb,
+        owners,
+        mapping,
+        LoadReceipt("mlx-community/Qwen3.5-35B-A3B-8bit", "external_model"),
+        2,
+    )
+    gb._step()
+    ref = terminal_reference(request, 2, runtime_method="mtp")
+    assert ref["status"] == "unknown"
+    assert ref["assistant_source"] == "external_model"
+    assert ref["config_key"] is None
+    assert state["method"] == "unknown"
+
+
+def test_unreadable_catalog_and_file_source_do_not_attest(tmp_path, monkeypatch):
+    import rapid_mlx.execution_reference as module
+
+    selected = tmp_path / "config.json"
+    selected.write_text("{}")
+    assert module.freeze_load_receipt(str(selected)).repo_id is None
+    module.public_repositories.cache_clear()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(module.Path, "read_text", lambda *a, **kw: "not-json")
+            assert module.public_repositories() == frozenset()
+    finally:
+        module.public_repositories.cache_clear()
+    assert module.public_repositories()
+
+
+def test_actual_engine_start_freezes_selected_loader_and_head_before_serving(
+    monkeypatch,
+):
+    import asyncio
+
+    from rapid_mlx import engine_core
+    from rapid_mlx.engine import batched
+    from rapid_mlx.execution_reference import LoadReceipt
+    from rapid_mlx.runtime import cache
+    from rapid_mlx.utils import tokenizer
+
+    class ReachedServingBoundaryError(RuntimeError):
+        pass
+
+    source, head = "/selected/immutable-artifact", "/selected/immutable-artifact/mtp"
+    model = SimpleNamespace(_rapid_mlx_mtp_weights_container=head)
+    scheduler = SimpleNamespace()
+    receipt = LoadReceipt("mlx-community/Qwen3.5-35B-A3B-8bit", "embedded_head")
+    captured = []
+
+    def freeze(selected, *, head_container):
+        captured.append((selected, head_container))
+        return receipt
+
+    async def start(**kwargs):
+        assert scheduler._execution_load_receipt is receipt
+        raise ReachedServingBoundaryError()
+
+    monkeypatch.setattr(engine_core, "_init_mlx_step_thread", lambda: None)
+    monkeypatch.setattr(
+        tokenizer,
+        "load_model_with_fallback",
+        lambda *a, **kw: (model, object(), source),
+    )
+    monkeypatch.setattr(cache, "pin_prefix_cache_identity", lambda *a, **kw: None)
+    for name in (
+        "rapid_mlx.moe_fusion.fuse_gate_up",
+        "rapid_mlx.qwen35_moe_router.install_qwen35_moe_router",
+        "rapid_mlx.patches.moe_decode_fusion.install_moe_decode_fusion",
+        "rapid_mlx.kernels.lane_matmul.install_lane_matmul",
+        "rapid_mlx.gdn_in_proj_fusion.fuse_gdn_in_proj",
+        "rapid_mlx.qwen35_fused_gdn_decode.install_qwen35_fused_gdn_decode",
+    ):
+        monkeypatch.setattr(name, lambda *a, **kw: None)
+    monkeypatch.setattr("rapid_mlx.execution_reference.freeze_load_receipt", freeze)
+    monkeypatch.setattr(
+        engine_core,
+        "AsyncEngineCore",
+        lambda **kw: SimpleNamespace(
+            engine=SimpleNamespace(scheduler=scheduler, start=start)
+        ),
+    )
+    engine = object.__new__(batched.BatchedEngine)
+    engine._model_name = "mutable-alias-is-not-the-source"
+    engine._trust_remote_code = False
+    engine._scheduler_config = SimpleNamespace(spec_decode="none")
+    engine._model_load_executor = None
+    for name in (
+        "_profile_name",
+        "_stream_interval",
+        "_gpu_memory_utilization",
+        "_tool_logits_processor_factory",
+        "_force_hybrid",
+        "_no_hybrid",
+        "_force_spec_decode",
+        "_no_spec_decode",
+    ):
+        setattr(engine, name, None)
+    engine._install_resolved_metal_budget = lambda: None
+    engine._run_metal_admission_preflight = lambda: None
+    engine._bind_prompt_host_cache = lambda engine: None
+    try:
+        with pytest.raises(ReachedServingBoundaryError):
+            asyncio.run(engine._start_llm())
+        assert captured == [(source, head)]
+    finally:
+        if engine._model_load_executor is not None:
+            engine._model_load_executor.shutdown(wait=True)

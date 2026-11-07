@@ -1686,6 +1686,7 @@ def test_inject_mtp_support_attaches_four_surfaces():
     # (no sidecar download); production callers pass mtp_sidecar.
     injected = inject_mtp_support(model, allow_random_init=True)
     assert injected is True
+    assert model._rapid_mlx_mtp_weights_container is None
     assert validate_mtp_support(model) is True
     assert model.mtp_prompt_lookup_supported is True
     # ``mtp_prompt_lookup_supported`` alone was never enough: the admission
@@ -1909,6 +1910,9 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
             "false positive (expected_keys drift) or a _resolve_sidecar_file regression."
         )
         assert validate_mtp_support(model_b) is True
+        assert model_b._rapid_mlx_mtp_weights_container == str(
+            sidecar_path.parent.absolute()
+        )
 
         # The inject MUST have loaded the persisted weights byte-equally.
         loaded = dict(tree_flatten(model_b.mtp.parameters()))
