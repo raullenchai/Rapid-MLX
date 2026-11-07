@@ -60,6 +60,7 @@ from rapid_mlx.runtime.optional_runtime import (
 from rapid_mlx.runtime.optional_runtime import (
     handle_optional_runtime_missing as _handle_optional_runtime_missing,
 )
+from rapid_mlx.serve_process import serve_subcommand_index
 
 # Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
@@ -13247,20 +13248,8 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
             cmd = proc.info["cmdline"] or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if not any(
-            ("rapid-mlx" in c or "rapid_mlx" in c) and "serve" in cmd for c in cmd
-        ):
-            continue
-
-        # 0.9.0 dogfood: ``rapid-mlx serve`` runs under a ``caffeinate
-        # -is rapid-mlx serve ...`` wrapper on macOS to prevent sleep.
-        # The wrapper's argv carries the same ``rapid-mlx`` / ``serve``
-        # tokens as the real server, so the substring match above
-        # double-counts it as a second row (same port, different PID).
-        # The wrapper is never the actual server — its argv[0] basename
-        # is the only reliable way to filter it out without missing the
-        # case where caffeinate is launched via an absolute path.
-        if cmd and os.path.basename(cmd[0]) == "caffeinate":
+        serve_index = serve_subcommand_index(cmd)
+        if serve_index is None:
             continue
 
         # Extract model arg and --port flag. argparse accepts options
@@ -13286,7 +13275,7 @@ def _scan_running_servers() -> list[tuple[int, str, str, str]]:
         port = "8000"  # serve's default
         served = None  # --served-model-name value, if any (issue #2353)
         try:
-            i = cmd.index("serve") + 1
+            i = serve_index + 1
             # Pre-PR this loop ``break``ed on the first positional, so a
             # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
             # port="8000" because the positional model token came before

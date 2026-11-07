@@ -588,6 +588,8 @@ def test_discovery_matches_alias_and_checkpoint(monkeypatch, served_alias, rever
         ("tiny", "/models/tiny", True),
         ("/a/tiny", "/b/tiny", False),
         ("org-a/tiny", "org-b/tiny", False),
+        ("org-a/tiny", "/models/tiny", False),
+        ("/models/tiny", "org-a/tiny", False),
     ],
 )
 def test_discovery_local_model_identity(monkeypatch, requested, running, match):
@@ -921,3 +923,29 @@ def test_remote_url_has_no_local_server_and_bad_progress_payload(monkeypatch, ca
     )
     discovery.Progress().show("http://localhost:8462/v1", 0)
     assert "downloading or preparing" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_explicit_url_prefers_listener_then_argv_port(monkeypatch, reverse):
+    unknown = discovery.Server(1, None, "tiny")
+    argv = discovery.Server(2, 8003, "tiny")
+    listener = discovery.Server(3, 8003, "tiny", listening=True)
+    servers = [unknown, argv, listener]
+    monkeypatch.setattr(
+        discovery, "scan_servers", lambda: servers[::-1] if reverse else servers
+    )
+    assert discovery.server_for_url("http://localhost:8003/v1") == listener
+    servers.remove(listener)
+    assert discovery.server_for_url("http://localhost:8003/v1") == argv
+    servers.remove(argv)
+    assert discovery.server_for_url("http://localhost:8003/v1") == unknown
+    servers.append(discovery.Server(4, None, "other"))
+    assert discovery.server_for_url("http://localhost:8003/v1") is None
+
+
+def test_qualified_repo_matches_local_only_via_resolver(monkeypatch):
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases.resolve_model",
+        lambda value: "/models/tiny" if value == "org-a/tiny" else value,
+    )
+    assert discovery._same_model("org-a/tiny", "/models/tiny")

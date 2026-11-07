@@ -12,6 +12,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from rapid_mlx.serve_process import serve_subcommand_index
+
 
 @dataclass
 class Server:
@@ -60,13 +62,10 @@ def scan_servers() -> list[Server]:
     for proc in processes:
         try:
             cmd = proc.info["cmdline"] or []
-            if not cmd or os.path.basename(cmd[0]) == "caffeinate":
+            serve_index = serve_subcommand_index(cmd)
+            if serve_index is None:
                 continue
-            if "serve" not in cmd or not any(
-                "rapid-mlx" in c or "rapid_mlx" in c for c in cmd
-            ):
-                continue
-            tokens = cmd[cmd.index("serve") + 1 :]
+            tokens = cmd[serve_index + 1 :]
             port = None
             alias = None
             host = None
@@ -222,7 +221,10 @@ def _same_model(left: str, right: str) -> bool:
                 os.path.expanduser(b)
             )
         if a_local or b_local:
-            return os.path.basename(a.rstrip("/")) == os.path.basename(b.rstrip("/"))
+            local, name = (a, b) if a_local else (b, a)
+            # Qualified repository IDs retain their namespace. A local folder
+            # basename alone cannot establish checkpoint identity.
+            return "/" not in name and os.path.basename(local.rstrip("/")) == name
         return False
 
     return same_identity(left, right) or same_identity(resolved(left), resolved(right))
@@ -304,15 +306,17 @@ def server_for_url(base_url: str) -> Server | None:
     if not is_local_base_url(base_url):
         return None
     _, port = _parse_base_url(base_url)
-    return next(
-        (
-            s
-            for s in scan_servers()
-            if s.port == port
-            or (s.port is None and s.inspected and 8000 <= port <= 8009)
-        ),
-        None,
-    )
+    servers = scan_servers()
+    exact = [s for s in servers if s.port == port]
+    for server in exact:
+        if server.listening:
+            return server
+    if exact:
+        return exact[0]
+    unknown = [s for s in servers if s.port is None and s.inspected]
+    if 8000 <= port <= 8009 and len(unknown) == 1:
+        return unknown[0]
+    return None
 
 
 class Progress:
