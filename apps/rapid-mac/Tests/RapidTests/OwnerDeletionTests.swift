@@ -10,6 +10,10 @@ struct OwnerDeletionRealTests {
         let client = try URLSessionChatTurnClient(endpoint: endpoint, bearer: "owned-delete-test")
         guard case .object(let created) = try await client.createConversation(workspace: "/private/tmp"),
               case .string(let ownerID) = created["id"] else { Issue.record("Missing owned conversation"); return }
+        let attachment = try await client.uploadAttachment(conversationID: ownerID, name: "saved-passage.txt", data: Data("Owned saved passage".utf8))
+        #expect(try await client.sourcePreview(conversationID: ownerID, attachmentID: attachment).text == "Owned saved passage")
+        guard case .object(let other) = try await client.createConversation(workspace: "/private/tmp"), case .string(let otherID) = other["id"] else { throw ChatTurnClientError.invalidResponse }
+        let otherAttachment = try await client.uploadAttachment(conversationID: otherID, name: "other-passage.txt", data: Data("Unrelated saved passage".utf8))
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-delete-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -28,6 +32,9 @@ struct OwnerDeletionRealTests {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(removed, "Native deletion must revoke owner conversation access")
+        await #expect(throws: ChatTurnClientError.http(status: 404)) { _ = try await client.sourcePreview(conversationID: ownerID, attachmentID: attachment) }
+        #expect(try await client.sourcePreview(conversationID: otherID, attachmentID: otherAttachment).text == "Unrelated saved passage")
+        _ = try await client.conversation(id: otherID)
     }
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_DELETE_OWNER_URL"] != nil))
     func offlineNativeDeletionResumesAfterRelaunch() async throws {
@@ -552,5 +559,64 @@ struct OwnerDeletionInteractionTests {
         stage.pressEscape()
         #expect(model.ownerDeletions.intents.count == 1)
         #expect(!(await client.calls).contains("delete"))
+    }
+}
+
+
+/// Opt-in owned fixture: the driver launches two separate native test processes
+/// around an owner restart, with the same persisted native history/intent files.
+@Suite("Owner deletion restart real transport") @MainActor
+struct OwnerDeletionRestartRealTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_DELETE_RESTART_STAGE"] != nil))
+    func intentSurvivesNativeProcessAndOwnerCredentialRotation() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let stage = try #require(env["RAPID_DELETE_RESTART_STAGE"])
+        let directory = URL(fileURLWithPath: try #require(env["RAPID_DELETE_RESTART_DIR"]))
+        let endpoint = URL(string: try #require(env["RAPID_DELETE_RESTART_URL"]))!
+        let bearer = try #require(env["RAPID_DELETE_RESTART_BEARER"])
+        let client = try URLSessionChatTurnClient(endpoint: endpoint, bearer: bearer)
+        let file = directory.appendingPathComponent("conversations.json")
+        let receiptURL = directory.appendingPathComponent("native-restart-state.json")
+        if stage == "prepare" {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            guard case .object(let created) = try await client.createConversation(workspace: "/private/tmp"), case .string(let id) = created["id"] else { throw ChatTurnClientError.invalidResponse }
+            let attachment = try await client.uploadAttachment(conversationID: id, name: "saved.txt", data: Data("Saved across restart".utf8))
+            guard case .object(let other) = try await client.createConversation(workspace: "/private/tmp"), case .string(let otherID) = other["id"] else { throw ChatTurnClientError.invalidResponse }
+            let otherAttachment = try await client.uploadAttachment(conversationID: otherID, name: "other.txt", data: Data("Keep another conversation".utf8))
+            let store = try #require(try await client.ownerStoreUUID())
+            let row = ChatConversation(id: UUID(), title: "Restart fixture", messages: [ChatMessage(role: .user, content: "Fixture")], createdAt: Date(), updatedAt: Date(), backend: .ownerV1, ownerConversationID: id, ownerStoreUUID: store)
+            try JSONEncoder().encode([row]).write(to: file)
+            let model = ChatViewModel(ownerClientFactory: { throw URLError(.notConnectedToInternet) }, conversationStoreURL: file)
+            model.deleteConversation(row.id)
+            ConversationStore.flush()
+            #expect(model.conversations.isEmpty)
+            #expect(model.ownerDeletions.intents.count == 1)
+            #expect(try await client.sourcePreview(conversationID: id, attachmentID: attachment).text == "Saved across restart")
+            let receipt = ["conversation_id": id, "attachment_id": attachment, "store_uuid": store.uuidString, "other_id": otherID, "other_attachment_id": otherAttachment]
+            try JSONEncoder().encode(receipt).write(to: receiptURL)
+            let bytes = try String(contentsOf: OwnerConversationDeletion.companionURL(for: file), encoding: .utf8)
+            #expect(!bytes.contains(bearer))
+        } else {
+            #expect(stage == "finish")
+            let receipt = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: receiptURL))
+            #expect(try await client.ownerStoreUUID()?.uuidString == receipt["store_uuid"])
+            let rawPID = try #require(env["RAPID_DELETE_RESTART_PID"])
+            let pid = try #require(Int32(rawPID))
+            let started = try #require(ChatOwnerDiscovery.liveProcessStartTime(pid))
+            let epoch = try #require(env["RAPID_DELETE_RESTART_EPOCH"])
+            let root = directory.appendingPathComponent("discovery")
+            let run = root.appendingPathComponent("default/run")
+            try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let record: [String: Any] = ["format_version": 1, "wire_version": 1, "schema_version": 5, "owner_epoch": epoch, "store_uuid": receipt["store_uuid"]!.lowercased(), "pid": pid, "process_start_time": started, "endpoint": endpoint.absoluteString, "credential_file": "bearer-\(epoch)"]
+            try OwnerOnlyFile.writeAtomically(JSONSerialization.data(withJSONObject: record), to: run.appendingPathComponent("discovery.json"))
+            try OwnerOnlyFile.writeAtomically(Data(bearer.utf8), to: run.appendingPathComponent("bearer-\(epoch)"))
+            let model = ChatViewModel(ownerClientFactory: { try await ChatOwnerConnection.existingDeletionClient(environment: ["RAPID_MLX_CHAT_HOME": root.path]) }, conversationStoreURL: file)
+            #expect(model.conversations.isEmpty)
+            for _ in 0..<100 { if model.ownerDeletions.intents.isEmpty { break }; try await Task.sleep(for: .milliseconds(20)) }
+            #expect(model.ownerDeletions.intents.isEmpty)
+            await #expect(throws: ChatTurnClientError.http(status: 404)) { _ = try await client.sourcePreview(conversationID: receipt["conversation_id"]!, attachmentID: receipt["attachment_id"]!) }
+            await #expect(throws: ChatTurnClientError.http(status: 404)) { _ = try await client.conversation(id: receipt["conversation_id"]!) }
+            #expect(try await client.sourcePreview(conversationID: receipt["other_id"]!, attachmentID: receipt["other_attachment_id"]!).text == "Keep another conversation")
+        }
     }
 }
