@@ -647,6 +647,8 @@ or fall back to an ungrounded model answer.
 
 Grounded requests bypass the response cache so prior answers cannot outlive
 changes to the selected index. Source metadata records retrieval provenance; it
-does not prove every model statement is supported. Treat source contents as
+does not prove every model statement is supported. Small models can contradict
+a retrieved fact even while emitting a citation; use a capable instruction-following
+model and verify answers against the quoted text. Treat source contents as
 untrusted, verify citations, and retain human review for consequential answers.
 Desktop folder selection and source previews remain separate work.
