@@ -28,6 +28,29 @@ ServerAcceptingCallback = Callable[[], None]
 logger = logging.getLogger(__name__)
 
 
+class _SuccessfulProbeFilter(logging.Filter):
+    """Quiet routine probes; keep failures and DEBUG diagnostics visible."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name != "uvicorn.access"
+            or record.levelno != logging.INFO
+            or logging.getLogger("uvicorn.access").isEnabledFor(logging.DEBUG)
+            or record.msg != '%s - "%s %s HTTP/%s" %d'
+            or not isinstance(record.args, tuple)
+            or len(record.args) != 5
+        ):
+            return True
+        _, method, target, _, status = record.args
+        return not (
+            method in ("GET", "HEAD")
+            and isinstance(target, str)
+            and target.partition("?")[0] in ("/healthz", "/livez")
+            and isinstance(status, int)
+            and 200 <= status < 300
+        )
+
+
 def _port_is_in_use(host: str, port: int) -> bool:
     """Discriminate Uvicorn's bind exit from other startup failures."""
 
@@ -87,6 +110,17 @@ def suppress_next_lifespan_traceback(exc: BaseException) -> None:
 
 class AcceptingConnectionsServer(uvicorn.Server):
     """Run a callback after Uvicorn has created every configured listener."""
+
+    def run(self, sockets: list[socket.socket] | None = None) -> None:
+        # Install after Uvicorn configures logging, including in spawned workers.
+        # Scope the filter to serving so embedded callers retain their log setup.
+        access_logger = logging.getLogger("uvicorn.access")
+        probe_filter = _SuccessfulProbeFilter()
+        access_logger.addFilter(probe_filter)
+        try:
+            super().run(sockets=sockets)
+        finally:
+            access_logger.removeFilter(probe_filter)
 
     if hasattr(uvicorn.Server, "capture_signals"):
 
