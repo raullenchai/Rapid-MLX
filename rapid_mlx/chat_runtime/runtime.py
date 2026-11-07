@@ -626,7 +626,7 @@ class Runtime:
                 rows, current_id=current_id, attachments=manager.attachments
             )
             if request.local_search is not None:
-                await self._run_folder(request, rows, deps, model, usage)
+                await self._run_folder(request, rows, deps, model, usage, human_text)
                 return
             deps.context_budget = max(
                 128,
@@ -777,10 +777,16 @@ class Runtime:
                 error = error.error
             # Exception messages may contain credentials, prompts, or reasoning.
             logger.error("Chat generation failed: %s", type(error).__name__)
-            from .folder_chat import FolderChatError
+            from .folder_chat import CHINESE_ERRORS, FolderChatError
 
             fallback = (
-                error.message
+                _localized(
+                    human_text,
+                    CHINESE_ERRORS.get(
+                        error.code, CHINESE_ERRORS["local_search_unavailable"]
+                    ),
+                    error.message,
+                )
                 if isinstance(error, FolderChatError)
                 else _localized(
                     human_text,
@@ -812,7 +818,7 @@ class Runtime:
             self.actions.release_turn(tid)
             self._signals.setdefault(tid, asyncio.Event()).set()
 
-    async def _run_folder(self, request, rows, deps, model, usage):
+    async def _run_folder(self, request, rows, deps, model, usage, human_text):
         from rapid_mlx.local_search.grounding import ABSTENTION
 
         from .folder_chat import (
@@ -841,20 +847,23 @@ class Runtime:
         self._signals.setdefault(tid, asyncio.Event()).set()
         metadata = saved["metadata"]
         if metadata["status"] == "no_matches":
+            answer = _localized(
+                human_text,
+                "在所选文件夹的已索引内容中没有找到匹配的片段，无法根据此文件夹回答这个问题。",
+                ABSTENTION,
+            )
             await self._emit(
                 tid,
                 {
                     "type": "text.delta",
                     "part_id": "folder-no-matches",
-                    "text": ABSTENTION,
+                    "text": answer,
                 },
             )
             await self.store.finish_turn(
                 tid,
                 "completed",
-                messages=_durable_messages(
-                    [ModelResponse(parts=[TextPart(ABSTENTION)])]
-                ),
+                messages=_durable_messages([ModelResponse(parts=[TextPart(answer)])]),
                 usage=usage,
             )
             return

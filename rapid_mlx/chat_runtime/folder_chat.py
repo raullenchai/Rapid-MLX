@@ -113,3 +113,21 @@ def source_title(source: dict) -> str:
             )
             title += f" · {name} {locator}"
     return title
+
+
+# Owner-generated replies obey the same human-language policy as model replies.
+# The HTTP grounding adapter's English protocol/error copies stay unchanged.
+CHINESE_ERRORS = {
+    "local_search_unavailable": "文件夹搜索暂不可用。请检查所选文件夹和本地服务后重试。",
+    "local_search_unauthorized": "文件夹搜索需要授权。请重新连接本地服务。",
+    "local_search_disabled": "请启用本地搜索并选择已登记的文件夹。",
+    "folder_not_found": "所选文件夹不可用。请重新连接它或选择其他文件夹。",
+    "local_search_full_text_unsupported": "本地服务未返回匹配的完整片段。请更新服务后再使用文件夹对话。",
+    "unsupported_local_search_history": "请新建不含工具或附件的文件夹对话。",
+    "invalid_local_search_query": "请输入包含 1–8192 个字符的有效文本问题。",
+    "local_search_scope_mismatch": "搜索结果不属于所选文件夹。请重新连接本地服务后重试。",
+    "local_search_context_too_large": "此文件夹对话超出上下文限制。请新建文件夹对话或缩小问题范围。",
+    "local_search_token_count_unavailable": "无法验证文件夹上下文的大小。请更新或重新连接本地服务后重试。",
+    "local_search_tools_forbidden": "文件夹对话不允许使用工具。",
+    "local_search_empty_answer": "模型未返回回答。请缩小问题范围或换一个本地模型。",
+}

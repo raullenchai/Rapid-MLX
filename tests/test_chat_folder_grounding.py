@@ -12,6 +12,7 @@ from rapid_mlx.chat_runtime.model_client import ModelClients
 from rapid_mlx.chat_runtime.prompts import LANGUAGE_INSTRUCTIONS
 from rapid_mlx.chat_runtime.runtime import Runtime, TurnRequest
 from rapid_mlx.chat_runtime.store import Store
+from rapid_mlx.local_search.grounding import ABSTENTION
 from tests.test_local_search_grounding import hit
 
 
@@ -309,6 +310,102 @@ def test_scope_and_preview_follow_conversation_lifecycle(tmp_path):
             with pytest.raises(KeyError):
                 await store.set_folder_scope(identifier, {"folder_ids": ["selected"]})
         finally:
+            await store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "count,code",
+    [
+        (None, "local_search_token_count_unavailable"),
+        (1000000, "local_search_context_too_large"),
+    ],
+)
+def test_immutable_context_requires_exact_token_admission(tmp_path, count, code):
+    async def stream(messages, info):
+        raise AssertionError("Token admission must precede inference")
+        yield ""
+
+    async def scenario():
+        server = FolderServer()
+
+        def handler(request):
+            if request.url.path.endswith("count_tokens"):
+                return httpx.Response(
+                    404 if count is None else 200, json={"input_tokens": count}
+                )
+            return server(request)
+
+        store, runtime, request = await fixture(tmp_path, handler, stream)
+        try:
+            events = await collect(runtime, request)
+            assert events[-1]["event"]["error_code"] == code
+            assert len([e for e in events if e["event"]["type"] == "source"]) == 1
+        finally:
+            await runtime.close()
+            await store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "question,enabled,expected",
+    [
+        (
+            "能退款吗？",
+            True,
+            "在所选文件夹的已索引内容中没有找到匹配的片段，无法根据此文件夹回答这个问题。",
+        ),
+        (
+            "Can I return it?",
+            True,
+            ABSTENTION,
+        ),
+        ("能退款吗？", False, "请启用本地搜索并选择已登记的文件夹。"),
+        (
+            "Can I return it?",
+            False,
+            "Enable Local Search and choose a registered folder.",
+        ),
+    ],
+)
+def test_deterministic_replies_use_human_language_without_inference(
+    tmp_path, question, enabled, expected
+):
+    async def stream(messages, info):
+        raise AssertionError("Deterministic reply must not invoke model")
+        yield ""
+
+    async def scenario():
+        server = FolderServer([])
+        server.enabled = enabled
+
+        def handler(request):
+            if request.url.path.endswith("/search"):
+                assert json.loads(request.content)["query"] == question
+                server.calls.append(request)
+                return httpx.Response(200, json={"results": [], "mode": "keyword"})
+            return server(request)
+
+        store, runtime, request = await fixture(tmp_path, handler, stream)
+        request = request.model_copy(update={"text": question})
+        try:
+            events = await collect(runtime, request)
+            text = "".join(
+                e["event"]["text"] for e in events if e["event"]["type"] == "text.delta"
+            )
+            assert text == expected
+            assert (await store.get_turn(request.turn_id))["usage"] == {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "requests": 0,
+            }
+            rows = await store.branch_messages(request.branch_id)
+            assert rows[-1]["parts"] == [{"type": "text", "text": text}]
+            assert not any(r.url.path.endswith("count_tokens") for r in server.calls)
+        finally:
+            await runtime.close()
             await store.close()
 
     asyncio.run(scenario())
