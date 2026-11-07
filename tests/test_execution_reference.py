@@ -701,3 +701,15 @@ def test_actual_engine_start_freezes_selected_loader_and_head_before_serving(
     finally:
         if engine._model_load_executor is not None:
             engine._model_load_executor.shutdown(wait=True)
+
+
+def test_absent_load_receipt_leaves_existing_step_unchanged():
+    from rapid_mlx.execution_reference import observe_plain_steps
+
+    step = lambda: ([7], [0.0])
+    batch = SimpleNamespace(_step=step)
+    assert (
+        observe_plain_steps(SimpleNamespace(_generation_batch=batch), {}, {}, None)
+        is None
+    )
+    assert batch._step is step

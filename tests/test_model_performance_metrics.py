@@ -1088,3 +1088,28 @@ def test_unmeasured_request_omits_timing(first, arrival, tokens):
     request._arrival_monotonic = arrival
     request.output_token_ids = tokens
     assert ModelPerformanceLedger.timing_metrics_for_request(request, 16.0) is None
+
+
+def test_continuous_lane_cannot_reuse_ordinary_execution_reference():
+    from types import SimpleNamespace
+
+    from rapid_mlx.execution_reference import LoadReceipt, observe_plain_steps
+
+    scheduler = _scheduler()
+    request = _running_request(scheduler, "unsupported-continuous-reference")
+    batch = SimpleNamespace(uids=[1], _step=lambda: ([5], [0.0]))
+    state = observe_plain_steps(
+        SimpleNamespace(_generation_batch=batch),
+        {"request": request},
+        {1: "request"},
+        LoadReceipt("mlx-community/Qwen3.5-35B-A3B-8bit"),
+    )
+    state["method"] = "none"
+    batch._step()
+    scheduler.config.mtp_continuous_batching = True
+    outputs, _ = scheduler._process_batch_responses([_terminal_response()])
+    reference = outputs[0].execution_reference
+    assert reference["status"] == "unknown"
+    assert reference["method"] == "unknown"
+    assert reference["backend"] == "unknown"
+    assert reference["config_key"] is None
