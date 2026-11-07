@@ -2674,7 +2674,7 @@ PY
     wait_tree_text "Open checkpoint" "$OUT/checkpoint-picker-open.json"
     jq -e '.data.ui_elements[]? | select(.role == "AXButton" and (.title == "Cancel" or .description == "Cancel"))' \
         "$OUT/checkpoint-picker-open.json" >/dev/null || die "checkpoint picker did not offer Cancel"
-    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/checkpoint-picker-cancel.json"
+    press "$OUT/checkpoint-picker-open.json" CancelButton "$OUT/checkpoint-picker-cancel.json"
     wait_settings_stable "$OUT/checkpoint-picker-cancelled.json" \
         Settings.ModelManagement.OpenCheckpoint Settings.Models.ShowAllModelsToggle
     ! jq -e '.data.ui_elements[]? | select(.role == "AXButton" and (.title == "Open checkpoint" or .description == "Open checkpoint"))' \
