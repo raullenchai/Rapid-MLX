@@ -781,6 +781,7 @@ class Qwen3CoderToolParser(ToolParser):
         self.in_param_name: str | None = None
         self._legacy_raw_stream = False
         self._legacy_raw_param_count = 0
+        self._ambiguous_parameter_rejected = False
         # Undeclared-tool blocks (#4038). ``_undeclared_offset`` is how much
         # of the stream earlier dropped blocks consumed; the state machine
         # sees only the text after it. ``_undeclared_start`` is set while a
@@ -948,6 +949,11 @@ class Qwen3CoderToolParser(ToolParser):
         if not self._legacy_raw_stream and not pending_quote:
             return None
         result = self.extract_tool_calls(model_output, request=request)
+        if self._ambiguous_parameter_rejected:
+            # A header may already be on the wire. Do not close that pending
+            # call with arguments from a later accepted sibling: the filtered
+            # result's indices no longer identify the original raw calls.
+            return None
         if not result.tools_called or not result.tool_calls:
             return None
         if self.current_tool_index >= len(result.tool_calls):
@@ -1026,6 +1032,33 @@ class Qwen3CoderToolParser(ToolParser):
             or []
         )
         for p_name, p_value in parsed:
+            if (
+                param_config
+                and self.parameter_prefix in p_value
+                and self.parameter_end_token in p_value
+                and not (
+                    p_value.lstrip().startswith('"')
+                    and _is_complete_json_string(p_value)
+                )
+                and split_marked_parameters(
+                    f"<parameter={p_name}>{p_value}</parameter>",
+                    r"<parameter=([^>]+)>",
+                    self.parameter_end_token,
+                    valid_names=set(param_config),
+                    reject_undeclared_siblings=True,
+                )
+                is None
+            ):
+                # The safe scan preserves literal markers, but an undeclared
+                # sibling after a close is indistinguishable from bare payload.
+                # Quoted JSON strings are unambiguous and must remain intact.
+                # Reject before missing-close recovery can resurrect the call.
+                self._ambiguous_parameter_rejected = True
+                logger.warning(
+                    "qwen3_coder_xml: rejecting an ambiguous undeclared "
+                    "parameter; no rewritten arguments will be executed"
+                )
+                return None
             converted = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )
@@ -1268,6 +1301,7 @@ class Qwen3CoderToolParser(ToolParser):
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
+        self._ambiguous_parameter_rejected = False
         if self.tool_call_prefix not in model_output:
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
@@ -2235,11 +2269,14 @@ class Qwen3CoderToolParser(ToolParser):
                             tools = request.get("tools")
                         fc = tool_text[func_start : -len(self.function_end_token)]
                         parsed = self._parse_xml_function_call(fc, tools)
-                        args = parsed["arguments"] if parsed else "{}"
                         self.json_started = True
                         self.json_closed = True
                         self.in_function = False
                         self.accumulated_params = {}
+                        if parsed is None:
+                            # A rejected parse is not a valid no-argument call.
+                            return None
+                        args = parsed["arguments"]
                         self.prev_tool_call_arr.append(
                             {"name": self.current_function_name, "arguments": args}
                         )
