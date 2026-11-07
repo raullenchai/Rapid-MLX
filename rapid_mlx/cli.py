@@ -17218,7 +17218,7 @@ def main():
         # Discovery is a fail-silent hint, so it must not bypass the gate's
         # authoritative is_repo_cached check or confirmation thresholds.
         # Complete cached choices normally pass without downloading; the
-        # cold-cache starter (~3.1 GB) remains below the 10 GiB confirmation
+        # cold-cache starter (~1.6 GB) remains below the 10 GiB confirmation
         # threshold. A cache that changes after discovery is rechecked by the
         # existing gate, just as for an explicitly named model.
         # Non-interactive sessions keep the notice TTY-only and retain the

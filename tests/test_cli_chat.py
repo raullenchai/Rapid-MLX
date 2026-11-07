@@ -151,9 +151,9 @@ def test_chat_disable_prefix_cache_flag_is_registered():
     assert captured[0].disable_prefix_cache is True
 
 
-def test_chat_no_model_defaults_to_qwen35_4b(hub_online_env):
+def test_chat_no_model_defaults_to_first_run_starter(hub_online_env):
     """`rapid-mlx chat` (no model) on a COLD cache routes chat_command with
-    the first-run starter (qwen3.5-4b-4bit).
+    the first-run starter (lfm2.5-2.6b-4bit).
 
     Goes through the real ``cli.main()`` so a parser-wiring regression
     (e.g. dropping ``nargs='?'`` or changing the sentinel default) fails the
@@ -181,8 +181,8 @@ def test_chat_no_model_defaults_to_qwen35_4b(hub_online_env):
     # signals the starter plumbed through. The canonical alias is the one
     # we documented as the default; confirm via the round-trip name.
     assert (
-        args.model == "qwen3.5-4b-4bit"
-        or getattr(args, "_original_alias", None) == "qwen3.5-4b-4bit"
+        args.model == "lfm2.5-2.6b-4bit"
+        or getattr(args, "_original_alias", None) == "lfm2.5-2.6b-4bit"
     )
     assert args._model_was_explicit is False
 

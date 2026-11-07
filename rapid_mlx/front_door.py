@@ -3,7 +3,7 @@
 * **TTY (stdin AND stdout are terminals, TERM is not ``dumb``, no ``CI``):**
   one screen of at most ~20 rows: header (version · chip · RAM), a one-line
   product statement, the model Enter will chat with (on a cold cache the
-  ~3 GB "quick start" model on every Mac; a downloaded recipe pick for this
+  ~2 GB "quick start" model on every Mac; a downloaded recipe pick for this
   Mac wins when there is one) and, labelled separately, "Best for this Mac"
   (``rapid-mlx recipe``'s smart pick, key ``b``). ``c`` connects a detected
   coding agent; ``s`` starts a server; ``m`` picks another model;
@@ -87,7 +87,7 @@ class FrontDoorState:
     server: ServerInfo | None = None
     agent: str | None = None
     selected: str = ""
-    quick_start_size: str = "~3 GB"
+    quick_start_size: str = "~2 GB"
     local_default: str | None = None
     local_default_cataloged: bool = True
 
@@ -154,7 +154,7 @@ def _picks_for(ram_gb: float, cache_rows) -> list[dict]:
 
 
 def quick_start_size_label(cache_rows=None) -> str:
-    """``~3 GB``-style one-time download size of the quick-start model."""
+    """``~2 GB``-style one-time download size of the quick-start model."""
     try:
         from rapid_mlx.model_aliases import resolve_profile
         from rapid_mlx.model_sizes import size_bytes
@@ -164,7 +164,7 @@ def quick_start_size_label(cache_rows=None) -> str:
     except Exception:
         size = None
     if not size:
-        return "~3 GB"
+        return "~2 GB"
     return f"~{max(1, round(size / 1e9))} GB"
 
 
@@ -440,7 +440,7 @@ def render_picker(entries: Sequence[tuple[str, str]]) -> str:
 
 
 def render_non_tty(
-    version: str, ram_gb: float, picks: Sequence[dict], quick_size: str = "~3 GB"
+    version: str, ram_gb: float, picks: Sequence[dict], quick_size: str = "~2 GB"
 ) -> str:
     """Deterministic text for a bare invocation without a terminal."""
     quick = QUICK_START_MODEL
