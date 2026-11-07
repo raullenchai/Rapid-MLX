@@ -5140,3 +5140,65 @@ def test_start_llm_disk_stream_preserves_successful_loader_result(monkeypatch):
     finally:
         if engine._model_load_executor is not None:
             engine._model_load_executor.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("configured", ["mtp", "none"])
+def test_scheduler_rejected_mtp_installer_is_ordinary_not_mixed(
+    monkeypatch, configured
+):
+    """Exercise observer installation order through the actual scheduler seam."""
+    import pytest
+
+    pytest.importorskip("mlx.core")
+    import rapid_mlx.scheduler as module
+    from rapid_mlx.execution_reference import LoadReceipt, terminal_reference
+    from rapid_mlx.request import SamplingParams
+
+    request = SimpleNamespace()
+    gb = SimpleNamespace(uids=[7], _step=lambda: ([11], [0.0]))
+    bg = SimpleNamespace(_generation_batch=gb)
+    monkeypatch.setattr(module, "BatchGenerator", lambda **kwargs: bg)
+    monkeypatch.setattr(module, "make_sampler", lambda **kwargs: object())
+    monkeypatch.setattr(module, "_install_mtp_vendored", lambda *a, **kw: False)
+    monkeypatch.setattr(module, "_install_dense_sampler_fastpath", lambda bg: None)
+    monkeypatch.setattr(
+        "rapid_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
+        lambda: None,
+    )
+    compiled_calls = []
+
+    def compiled_install(generator, model, *, model_name):
+        compiled_calls.append(generator)
+        generator._generation_batch._step = lambda: ([99], [0.0])
+
+    monkeypatch.setattr(
+        "rapid_mlx.compiled_decode.install_compiled_decode", compiled_install
+    )
+    scheduler = module.Scheduler.__new__(module.Scheduler)
+    scheduler.model = object()
+    scheduler.tokenizer = object()
+    scheduler._get_stop_tokens = lambda: set()
+    scheduler.memory_aware_cache = None
+    scheduler.model_config = None
+    scheduler.requests = {"request": request}
+    scheduler.uid_to_request_id = {7: "request"}
+    scheduler.uid_to_request_processors = {}
+    scheduler._execution_load_receipt = LoadReceipt(
+        "mlx-community/Qwen3.5-35B-A3B-8bit"
+    )
+    scheduler.config = SimpleNamespace(
+        prefill_batch_size=1,
+        completion_batch_size=1,
+        prefill_step_size=1,
+        spec_decode=configured,
+        enable_suffix_decoding=False,
+        kv_cache_quantization=False,
+    )
+    assert scheduler._create_batch_generator(SamplingParams(max_tokens=4)) is bg
+    assert scheduler.spec_decode_runtime_method is None
+    assert gb._step()[0] == ([99] if configured == "none" else [11])
+    assert len(compiled_calls) == (1 if configured == "none" else 0)
+    reference = terminal_reference(request, 1, runtime_method=None)
+    assert reference["status"] == "known"
+    assert reference["method"] == "none"
+    assert reference["config_key"] == "none"
