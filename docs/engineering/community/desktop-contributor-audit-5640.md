@@ -39,3 +39,16 @@ in #5650 separately from collection-root selection, keeping discovery's complete
 containment, identity, and external-deletion safeguards. Engine/Vector: define
 process ownership and measurement semantics before promising a per-process or
 weights/prefix split. No delivery date or compatibility expansion is promised.
+
+## CI follow-up
+
+Desktop run `42336462092` compiled successfully but rejected five new strings
+without Simplified Chinese translations (ten assertions across two catalog
+guards). The catalog now translates the section title, three counters, and
+measurement explanation. `LocalizationTests|MetalMemory` passes all 35 tests.
+
+The same run observed the intended eight-node Metal section before the Model
+heading in Performance. The three Performance AX baselines now include that
+exact structure, including the unsupported-MTP state reached after the enabled
+state. No golden assertion was relaxed. Full GUI replay remains a CI check; the
+local worktree has no packaged Desktop app.
