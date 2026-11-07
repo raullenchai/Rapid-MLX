@@ -516,7 +516,7 @@ final class ChatViewModel {
             guard let self else { throw OwnerConversationDeletion.Failure.unavailable }
             if self.persistsConversations { try await ConversationStore.saveAuthority(self.conversations, to: self.conversationStoreURL) }
         }
-        Task { [weak self] in await self?.ownerDeletions.retry() }
+        ownerDeletions.scheduleRetry()
     }
 
     /// The folder file that sits beside whichever conversation store is in
@@ -1210,7 +1210,7 @@ final class ChatViewModel {
         saveDrafts()
         saveConversations()
         documentCache.remove(contentsOf: attachmentIDs)
-        Task { [weak self] in await self?.ownerDeletions.retry() }
+        ownerDeletions.scheduleRetry()
     }
 
     // MARK: - In-memory message storage
@@ -1611,13 +1611,14 @@ final class ChatViewModel {
     private func captureOwnerAuthority(localID: UUID, ownerID: String, store: UUID?, turn: String?) async throws {
         if let index = conversations.firstIndex(where: { $0.id == localID }) {
             if let old = conversations[index].ownerStoreUUID, old != store { throw OwnerConversationDeletion.Failure.identityChanged }
+            let newlyCreated = conversations[index].ownerConversationID == nil
             conversations[index].ownerConversationID = ownerID
-            conversations[index].ownerStoreUUID = store
+            if newlyCreated || conversations[index].ownerStoreUUID != nil { conversations[index].ownerStoreUUID = store }
             if let turn { conversations[index].ownerTurnID = turn }
             if persistsConversations { try await ConversationStore.saveAuthority(conversations, to: conversationStoreURL) }
         } else {
             try ownerDeletions.capture(localID: localID, conversationID: ownerID, storeUUID: store, turnID: turn)
-            await ownerDeletions.retry()
+            ownerDeletions.scheduleRetry()
         }
     }
 
@@ -1660,7 +1661,7 @@ final class ChatViewModel {
             let attachments = images + userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
-            await ownerDeletions.retry()
+            ownerDeletions.scheduleRetry()
             try await session.submit(text: text, target: target, attachments: attachments, localSearch: folderChatScope, onAuthority: { [weak self] id, store, turn in
                 try await self?.captureOwnerAuthority(localID: conversationID, ownerID: id, store: store, turn: turn)
             })

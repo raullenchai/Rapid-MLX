@@ -73,10 +73,14 @@ private actor DeletionFixtureClient: ChatTurnClient {
     var running = true
     var cancelledStillRunning = false
     var foreignTurn = false
+    var missingTurn = false
     var createGate: DeletionGate?
     var deleteGate: DeletionGate?
+    var identityGate: DeletionGate?
+    var deletedIDs: [String] = []
     init(store: UUID = UUID()) { self.store = store }
-    func gates(create: DeletionGate? = nil, delete: DeletionGate? = nil) { createGate = create; deleteGate = delete }
+    func setMissingTurn() { missingTurn = true }
+    func gates(create: DeletionGate? = nil, delete: DeletionGate? = nil, identity: DeletionGate? = nil) { createGate = create; deleteGate = delete; identityGate = identity }
     func createConversation(workspace: String) async throws -> ChatWireJSON {
         calls.append("create")
         await createGate?.wait()
@@ -88,15 +92,16 @@ private actor DeletionFixtureClient: ChatTurnClient {
     }
     func ownerStoreUUID() async throws -> UUID? {
         calls.append("identity")
+        if let gate = identityGate { identityGate = nil; await gate.wait() }
         if calls.filter({ $0 == "identity" }).count > 1, let replacement { return replacement }
         return store
     }
     func conversation(id: String) async throws -> ChatWireJSON { calls.append("inspect"); return .object(["id": .string(id), "title": .string("Owned fixture")]) }
-    func deleteConversation(id: String) async throws { calls.append("delete"); await deleteGate?.wait(); if let failure { throw ChatTurnClientError.http(status: failure) } }
-    func turn(turnID: String) async throws -> ChatWireJSON { calls.append("turn"); return receipt() }
+    func deleteConversation(id: String) async throws { calls.append("delete"); deletedIDs.append(id); await deleteGate?.wait(); if let failure { throw ChatTurnClientError.http(status: failure) } }
+    func turn(turnID: String) async throws -> ChatWireJSON { calls.append("turn"); if missingTurn { throw ChatTurnClientError.http(status: 404) }; return receipt() }
     func cancel(turnID: String) async throws -> ChatWireJSON { calls.append("cancel"); running = cancelledStillRunning; return receipt() }
     private func receipt() -> ChatWireJSON { .object(["conversation_id": .string(foreignTurn ? "foreign" : "owned"), "status": .string(running ? "running" : "cancelled")]) }
-    func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws { throw ChatTurnClientError.invalidResponse }
+    func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws { calls.append("submit"); throw ChatTurnClientError.invalidResponse }
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws { throw ChatTurnClientError.invalidResponse }
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String { throw ChatTurnClientError.invalidResponse }
     func respond(_ response: ChatPermissionResponse) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
@@ -276,6 +281,116 @@ struct OwnerDeletionTests {
         #expect(await recorder.ids.first?.2 == nil)
         #expect(!(await client.calls).contains("submit"))
         await session.close()
+    }
+
+    @Test func newIntentDuringCommitMustWaitForItsOwnBarrier() async throws {
+        let client = DeletionFixtureClient(), gate = DeletionGate()
+        let queue = OwnerConversationDeletion(url: nil, clientProvider: { client })
+        let first = intent(client.store, turn: nil)
+        try queue.enqueue(first)
+        queue.commitLocalRemoval = { await gate.wait() }
+        let retry = Task { await queue.retry() }
+        while !(await gate.entered) { await Task.yield() }
+        let second = OwnerDeletionIntent(id: UUID(), conversationID: "second", storeUUID: client.store, turnID: nil)
+        try queue.enqueue(second)
+        await gate.release(); await retry.value
+        #expect(await client.deletedIDs == ["owned"])
+        #expect(queue.intents == [second])
+    }
+
+    @Test func legacyConfirmationCannotBindAnotherIntentDuringSuspension() async throws {
+        let client = DeletionFixtureClient(), gate = DeletionGate()
+        let queue = OwnerConversationDeletion(url: nil, clientProvider: { client })
+        try queue.enqueue(intent(client.store, turn: nil))
+        let legacy = OwnerDeletionIntent(id: UUID(), conversationID: "legacy", storeUUID: nil, turnID: nil)
+        try queue.enqueue(legacy)
+        await queue.inspectLegacy()
+        let confirmation = try #require(queue.confirmation)
+        await client.gates(identity: gate)
+        let confirm = Task { await queue.confirmLegacy(confirmation) }
+        while !(await gate.entered) { await Task.yield() }
+        await queue.retry()
+        let other = OwnerDeletionIntent(id: UUID(), conversationID: "unconfirmed", storeUUID: nil, turnID: nil)
+        try queue.enqueue(other)
+        await gate.release(); await confirm.value
+        #expect(!(await client.deletedIDs).contains("unconfirmed"))
+        #expect(queue.intents.contains(other))
+    }
+
+    @Test func blockedDeletionMustNotDelayUnrelatedChatAdmission() async throws {
+        let client = DeletionFixtureClient(), gate = DeletionGate()
+        await client.gates(delete: gate)
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        await Task.yield() // Let the empty startup pass finish before adding work.
+        try model.ownerDeletions.enqueue(intent(client.store, turn: nil))
+        model.send("New unrelated question", alias: "fixture")
+        while !(await gate.entered) { await Task.yield() }
+        for _ in 0..<50 { if (await client.calls).contains("create") { break }; try await Task.sleep(for: .milliseconds(10)) }
+        #expect((await client.calls).contains("create"), "Deletion network delay must not block chat admission")
+        await gate.release()
+        await model._testingWaitForCurrentTurn()
+    }
+
+    @Test func ordinarySendMustNotPromoteLegacyDeletionAuthority() async throws {
+        let client = DeletionFixtureClient()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("conversations.json")
+        let row = ChatConversation(id: UUID(), title: "Legacy", messages: [ChatMessage(role: .user, content: "Old")], createdAt: Date(), updatedAt: Date(), backend: .ownerV1, ownerConversationID: "legacy")
+        try JSONEncoder().encode([row]).write(to: file)
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, conversationStoreURL: file)
+        model.selectConversation(row.id)
+        model.send("New question", alias: "fixture")
+        await model._testingWaitForCurrentTurn()
+        #expect((await client.calls).contains("identity"))
+        #expect(model.conversations.first?.ownerStoreUUID == nil)
+        #expect(ConversationStore.load(from: file).first?.ownerStoreUUID == nil)
+    }
+
+    @Test func missingKnownTurnStillDefersToAuthoritativeDelete() async throws {
+        let client = DeletionFixtureClient(); await client.setMissingTurn()
+        let queue = OwnerConversationDeletion(url: nil, clientProvider: { client })
+        try queue.enqueue(intent(client.store)); await queue.retry()
+        #expect(queue.intents.isEmpty)
+        #expect(await client.calls == ["identity", "turn", "identity", "delete"])
+    }
+
+    @Test func scheduledNewIntentGetsSeparateCommitWithoutUnboundedRetry() async throws {
+        let client = DeletionFixtureClient(), gate = DeletionGate()
+        let queue = OwnerConversationDeletion(url: nil, clientProvider: { client })
+        var commits = 0
+        queue.commitLocalRemoval = { commits += 1; if commits == 1 { await gate.wait() } }
+        try queue.enqueue(intent(client.store, turn: nil)); queue.scheduleRetry()
+        while !(await gate.entered) { await Task.yield() }
+        let second = OwnerDeletionIntent(id: UUID(), conversationID: "second", storeUUID: client.store, turnID: nil)
+        try queue.enqueue(second); queue.scheduleRetry()
+        await gate.release()
+        for _ in 0..<100 { if queue.intents.isEmpty { break }; try await Task.sleep(for: .milliseconds(10)) }
+        #expect(queue.intents.isEmpty)
+        #expect(commits == 2)
+        #expect(await client.deletedIDs == ["owned", "second"])
+    }
+
+    @Test func deletionRetryCannotLaunchMissingOwner() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        await #expect(throws: ChatOwnerConnectionError.ownerUnavailable) {
+            _ = try await ChatOwnerConnection.existingDeletionClient(environment: ["RAPID_MLX_CHAT_HOME": root.path])
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
+    @Test func lateLegacyCaptureDoesNotPromoteDeletionAuthority() throws {
+        let queue = OwnerConversationDeletion(url: nil, clientProvider: { throw URLError(.notConnectedToInternet) })
+        let value = intent(nil, turn: nil)
+        try queue.enqueue(value)
+        try queue.capture(localID: value.id, conversationID: "owned", storeUUID: UUID(), turnID: "new-turn")
+        #expect(queue.intents.first?.storeUUID == nil)
+        #expect(queue.intents.first?.turnID == "new-turn")
     }
 
     @Test func oldHistoryDecodesWithoutAuthorityIdentity() throws {

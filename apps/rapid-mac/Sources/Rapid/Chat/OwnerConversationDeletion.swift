@@ -24,6 +24,9 @@ final class OwnerConversationDeletion {
     private let url: URL?
     private let clientProvider: @Sendable () async throws -> any ChatTurnClient
     private var unreadable = false
+    var persistenceUnavailable: Bool { unreadable }
+    private var retryTask: Task<Void, Never>?
+    private var retryRequested = false
     var commitLocalRemoval: (@MainActor () async throws -> Void)?
 
     init(url: URL?, clientProvider: @escaping @Sendable () async throws -> any ChatTurnClient) {
@@ -59,16 +62,37 @@ final class OwnerConversationDeletion {
         var values = intents
         if let old = values[index].storeUUID, old != storeUUID { throw Failure.identityChanged }
         if let old = values[index].conversationID, old != conversationID { throw Failure.identityChanged }
+        let newlyCreated = values[index].conversationID == nil
         values[index].conversationID = conversationID
-        values[index].storeUUID = storeUUID
+        if newlyCreated || values[index].storeUUID != nil { values[index].storeUUID = storeUUID }
         if let turnID { values[index].turnID = turnID }
         try replace(values)
+    }
+
+    /// Deletion has its own lifetime; chat admission never awaits network cleanup.
+    /// Coalesce newly added work into one further pass, never an unbounded retry loop.
+    func scheduleRetry() {
+        retryRequested = true
+        guard !busy, retryTask == nil else { return }
+        retryTask = Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<2 {
+                self.retryRequested = false
+                await self.retry()
+                if !self.retryRequested { break }
+            }
+            self.retryTask = nil
+        }
     }
 
     func retry() async {
         guard !busy, !intents.isEmpty, !unreadable else { return }
         busy = true
-        defer { busy = false }
+        defer {
+            busy = false
+            if retryRequested && retryTask == nil { scheduleRetry() }
+        }
+        let eligible = intents
         notice = nil
         do { try await commitLocalRemoval?() }
         catch {
@@ -76,7 +100,7 @@ final class OwnerConversationDeletion {
             return
         }
         // One bounded pass per reconnect/relaunch/manual retry, no polling or owner launch.
-        for intent in intents {
+        for intent in eligible {
             guard let id = intent.conversationID else {
                 notice = String(localized: "Removed from history. Server deletion is pending because its conversation ID wasn't received.")
                 continue
@@ -133,16 +157,24 @@ final class OwnerConversationDeletion {
     }
 
     func confirmLegacy(_ value: Confirmation) async {
+        guard !busy, let original = intents.first(where: { $0.id == value.id && $0.storeUUID == nil }) else { return }
+        busy = true
         confirmation = nil
         do {
-            guard let index = intents.firstIndex(where: { $0.id == value.id && $0.storeUUID == nil }) else { return }
             let client = try await clientProvider()
-            guard try await client.ownerStoreUUID() == value.storeUUID else { throw Failure.identityChanged }
+            guard try await client.ownerStoreUUID() == value.storeUUID,
+                  let index = intents.firstIndex(where: { $0.id == value.id && $0.storeUUID == nil && $0.conversationID == original.conversationID }) else { throw Failure.identityChanged }
             var values = intents
             values[index].storeUUID = value.storeUUID
             try replace(values)
-            await retry()
-        } catch { notice = String(localized: "The connected server changed. Deletion remains pending.") }
+        } catch {
+            busy = false
+            notice = String(localized: "The connected server changed. Deletion remains pending.")
+            if retryRequested && retryTask == nil { scheduleRetry() }
+            return
+        }
+        busy = false
+        await retry()
     }
 
     private static func status(_ value: ChatWireJSON, conversationID: String) throws -> String {

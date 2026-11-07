@@ -72,18 +72,21 @@ enum ChatTurnClientError: Error, Equatable {
 actor URLSessionChatTurnClient: ChatTurnClient {
     private let endpoint: URL
     private let bearer: String
+    private let requestTimeout: TimeInterval
     private let session: URLSession
     private let redirectDelegate = ChatOwnerRedirectDelegate()
 
-    init(endpoint: URL, bearer: String, session: URLSession? = nil) throws {
+    init(endpoint: URL, bearer: String, session: URLSession? = nil, requestTimeout: TimeInterval = 180) throws {
         guard ["http", "https"].contains(endpoint.scheme?.lowercased()),
               endpoint.host != nil, endpoint.user == nil, endpoint.password == nil,
               endpoint.query == nil, endpoint.fragment == nil,
+              requestTimeout.isFinite, requestTimeout > 0,
               !bearer.isEmpty, !bearer.contains("\r"), !bearer.contains("\n") else {
             throw ChatTurnClientError.invalidEndpoint
         }
         self.endpoint = endpoint
         self.bearer = bearer
+        self.requestTimeout = requestTimeout
         if let session {
             self.session = session
         } else {
@@ -265,7 +268,7 @@ actor URLSessionChatTurnClient: ChatTurnClient {
             }
             url.appendPathComponent(component)
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 180)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: requestTimeout)
         request.httpMethod = method
         request.httpBody = body
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")

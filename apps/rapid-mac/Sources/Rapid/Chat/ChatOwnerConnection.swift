@@ -367,7 +367,7 @@ actor ChatOwnerConnection {
         let directory = try ChatOwnerDiscovery.profileDirectory(profile: "default", environment: environment)
         guard let discovery = try ChatOwnerDiscovery.read(profileDirectory: directory) else { throw ChatOwnerConnectionError.ownerUnavailable }
         try await ChatOwnerControlTransport().validate(discovery)
-        return try URLSessionChatTurnClient(endpoint: discovery.status.endpoint, bearer: discovery.bearer)
+        return try URLSessionChatTurnClient(endpoint: discovery.status.endpoint, bearer: discovery.bearer, requestTimeout: 5)
     }
 
     static func connectIfEnabled(
