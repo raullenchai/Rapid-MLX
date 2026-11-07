@@ -79,3 +79,55 @@ summary; add `--log-level INFO` (or set `RAPID_MLX_LOG_LEVEL`) to see them.
 With `--json`, stdout contains exactly one JSON document; progress goes to stderr.
 Results are stored under `$RAPID_MLX_HOME/benchmarks` when `RAPID_MLX_HOME` is
 set. Older results under `~/.rapid-mlx/benchmarks` remain readable.
+
+## Offline expectations in Desktop and the CLI
+
+The recommended model picker, Settings, `rapid-mlx models`, and the System
+section of `rapid-mlx doctor` use the bundled `decode_expectations.json` snapshot.
+The snapshot groups the exact model repository, chip generation and tier, and
+speculative method. MTP references additionally match the recorded draft depth
+and embedded head in the exact target repository on the ordinary serving lane.
+External-drafter, native/dedicated-backend, and unidentifiable configurations
+remain unavailable; their method name alone cannot prove the catalog default.
+A measured range requires at least three distinct submitted
+runs. Short and long cases are first reduced to one median per submission; the
+displayed range is the interquartile range of those medians. The sample count
+and sampled RAM span appear alongside it. Results outside that RAM span are not
+presented as measured expectations. “Smooth” (median at least 30 tok/s), “usable”
+(at least 10), and “tight” describe measured reference responsiveness only.
+
+An MTP-off measurement is never the expected range for an MTP-on default. When
+there are too few compatible samples, the expected range says **unavailable**;
+an explicitly labelled MTP-off reference can still help explain the hardware.
+Sparse samples, unknown hardware, unsupported configurations, and insufficient
+RAM retain honest gaps. Download bytes are not active weight bytes and cannot
+establish a theoretical decode ceiling: repositories can contain vision towers,
+draft assets, and non-weight data. The product therefore does not invent a
+numerical estimate or MTP speedup for those gaps. No model is loaded and no
+network request is made to show these references. Compact labels identify the
+method; picker/Settings help and structured CLI output preserve sample scope.
+
+After-chat within/below-range diagnosis is not implemented here. Existing usage
+chunks do not record the exact per-request speculative execution and model
+identity needed for a valid comparison; configured runtime metadata alone can
+be overridden by request fallbacks. Existing chat captions remain unchanged.
+
+Release maintainers refresh the bundled snapshot from a complete public
+`/api/benchmarks/atomic/contributions` export, following cursors until
+`complete` is true, then run:
+
+```bash
+python scripts/refresh_decode_expectations.py --input complete-export.json --refreshed-at YYYY-MM-DD
+pytest tests/test_decode_expectations.py
+```
+
+The generator emits aggregate fields only: no contributor identity, submission
+identifier, local path, or raw prompt enters the product bundle. Commit the
+snapshot with the release and regenerate the shared golden vectors when values
+change. The Desktop assembler copies that same physical Python-package file;
+there is no separately maintained Desktop dataset or runtime fetch.
+
+This is a partial implementation of chip-specific expectations. The current
+snapshot does **not** establish a measured default-MTP range for
+base-M4 9B or 27B. More matching default-configuration submissions are needed;
+these gaps are not evidence that the faster-chip measurements apply to base M4.

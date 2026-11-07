@@ -627,6 +627,7 @@ rapid_mlx = [
     "utils/kimi_tokenizer/LICENSE",
     "utils/kimi_tokenizer/PROVENANCE.md",
     "model_recommendations.json",
+    "decode_expectations.json",
     "audio/aliases.json",
     "catalog/schemas/*.json",
     # Telemetry v2 event registry -- the single source of truth the Python

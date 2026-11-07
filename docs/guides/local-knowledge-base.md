@@ -165,7 +165,7 @@ client = OpenAI(base_url=f"{BASE}/v1", api_key="not-needed")
 def retrieve(question, limit=3):
     r = requests.post(
         f"{BASE}/v1/local-search/search",
-        json={"query": question, "limit": limit, "kinds": ["text"]},
+        json={"query": question, "limit": limit, "kinds": ["text"], "include_text": True},
         timeout=60,
     )
     r.raise_for_status()
@@ -173,16 +173,14 @@ def retrieve(question, limit=3):
     for hit in r.json()["results"]:
         if not hit.get("content_indexed", True):
             continue  # matched by file name only; no readable text
-        # The snippet is a ~500-character excerpt of the matched chunk.
-        # Find it in the file and add the text around it. PDFs and Office
-        # files are not plain text, so they fall back to the snippet alone.
-        try:
-            source = Path(hit["path"]).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            source = ""
-        pos = source.find(hit["snippet"]) if hit["snippet"] else -1
-        text = source[max(0, pos - 400) : pos + 1100] if pos >= 0 else hit["snippet"]
-        passages.append((f"{Path(hit['path']).name}:{hit['line'] or 1}", text))
+        # Full indexed text works for plain text, PDF and Office documents;
+        # no source-file reads or format-specific re-extraction are needed.
+        text = hit["text"]
+        locator = (
+            f"page {hit['page']}" if hit["page"] is not None
+            else f"lines {hit['line']}-{hit['end_line']}"
+        )
+        passages.append((f"{Path(hit['path']).name}:{locator}", text))
     return passages
 
 
@@ -247,7 +245,7 @@ Sources: gift-cards.md:1, store-hours.txt:1, shipping.md:1
 
 The script searches for the top three passages, then puts them in a system prompt that asks the model to answer only from those passages and cite them. `reasoning_effort="none"` turns off thinking for fast, short answers. `model="default"` uses whichever chat model the server loaded.
 
-Search returns only a short snippet of the matched passage, so the script finds that snippet in the file and adds the surrounding text. This works for UTF-8 text files such as TXT and Markdown; for PDF and Office files the model sees only the snippet. See [the grounded-chat tracking issue](https://github.com/raullenchai/Rapid-MLX/issues/5575).
+Search returns the full matched stored passage when `include_text` is true, along with its inclusive end locator. This includes extracted PDF and Office text; the script does not reopen source files. Built-in grounded chat and Desktop chat integration remain separate work tracked in [#5575](https://github.com/raullenchai/Rapid-MLX/issues/5575).
 
 The plain chat endpoint does not look at your documents by itself. Asked directly in the sample check, the model gave a generic answer: “Most clothing and craft stores have a specific policy...”
 
@@ -319,7 +317,7 @@ Removing a folder deletes its index entries. It is not secure erasure: SQLite ca
 
 ## Limits
 
-- There is no built-in grounded chat yet ([tracking issue](https://github.com/raullenchai/Rapid-MLX/issues/5575)). Use the script or the chat app's document feature.
+- API clients can use the [opt-in folder-grounded chat request](local-search.md#ask-a-question-about-registered-folders). Desktop folder selection and source previews remain tracked in [issue 5575](https://github.com/raullenchai/Rapid-MLX/issues/5575); the script below remains available for custom retrieval.
 - Only one folder indexes at a time.
 - There is no OCR. Scanned PDFs need OCR first.
 - DOC, RTF, and Pages are unsupported. In a sample check, an RTF file appeared in status as `skip_reasons: {"Unsupported file type": 1}`.

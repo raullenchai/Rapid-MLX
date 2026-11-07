@@ -52,6 +52,136 @@
         }
       }
     },
+    "Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "质量 = 已发布基准，按行标注（准确率 / 代码 / 工具 / 指令）· 速度 = 在记录硬件上测得的参考基准 · 未测试 = 尚无兼容结果记录。"
+          }
+        }
+      }
+    },
+    "configuration unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无配置参考"
+          }
+        }
+      }
+    },
+    "Expected decode range unavailable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无预期生成速度范围"
+          }
+        }
+      }
+    },
+    "Expected decode unavailable: below catalog RAM requirement" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无预期生成速度：低于目录中的内存要求"
+          }
+        }
+      }
+    },
+    "MTP on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 已开启"
+          }
+        }
+      }
+    },
+    "MTP off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MTP 已关闭"
+          }
+        }
+      }
+    },
+    "smooth" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "流畅"
+          }
+        }
+      }
+    },
+    "usable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用"
+          }
+        }
+      }
+    },
+    "%@ tok/s measured · %@ · %@ (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实测 %@ 词元/秒 · %@ · %@（%@）"
+          }
+        }
+      }
+    },
+    "n=%d, %g–%g GB sampled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 次提交，采样内存 %g–%g GB"
+          }
+        }
+      }
+    },
+    "%@ · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@"
+          }
+        }
+      }
+    },
+    "; MTP-off reference %@ tok/s (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "；MTP 关闭时参考速度 %@ 词元/秒（%@）"
+          }
+        }
+      }
+    },
+    "%@ tok/s · %@ · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 词元/秒 · %@ · %@"
+          }
+        }
+      }
+    },
     "Search or paste a Hugging Face link" : {
       "localizations" : {
         "zh-Hans" : {
