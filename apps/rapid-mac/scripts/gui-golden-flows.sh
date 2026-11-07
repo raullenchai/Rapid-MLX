@@ -2663,6 +2663,28 @@ PY
     [[ "$(jq '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Recommended.primary" or .identifier == "Settings.ModelManagement.Recommended.alt")] | length' "$OUT/models-before.json")" -eq 2 ]] \
         || die "GUI recommendation section did not render exactly smart + fast cards"
     baseline settings-persistence.models-idle "$OUT/models-before.json"
+    # A real system dialog belongs in an AppKit application process. Running
+    # it inside Swift Testing's async-main helper can terminate that helper's
+    # CF main loop before the remaining test suite finishes.
+    local opened_key="rapid.models.openedCheckpoints" folder_key="rapid.models.folderOverride"
+    local opened_before folder_before
+    opened_before="$(defaults read "$BUNDLE_ID" "$opened_key" 2>/dev/null || true)"
+    folder_before="$(defaults read "$BUNDLE_ID" "$folder_key" 2>/dev/null || true)"
+    "$AX_DRIVER" click-center "$APP_PID" Settings.ModelManagement.OpenCheckpoint > "$OUT/checkpoint-picker-click.json"
+    wait_tree_text "Open checkpoint" "$OUT/checkpoint-picker-open.json"
+    jq -e '.data.ui_elements[]? | select(.role == "AXButton" and (.title == "Cancel" or .description == "Cancel"))' \
+        "$OUT/checkpoint-picker-open.json" >/dev/null || die "checkpoint picker did not offer Cancel"
+    "$AX_DRIVER" key "$APP_PID" escape > "$OUT/checkpoint-picker-cancel.json"
+    wait_settings_stable "$OUT/checkpoint-picker-cancelled.json" \
+        Settings.ModelManagement.OpenCheckpoint Settings.Models.ShowAllModelsToggle
+    ! jq -e '.data.ui_elements[]? | select(.role == "AXButton" and (.title == "Open checkpoint" or .description == "Open checkpoint"))' \
+        "$OUT/checkpoint-picker-cancelled.json" >/dev/null || die "checkpoint picker remained open after Cancel"
+    [[ "$(defaults read "$BUNDLE_ID" "$opened_key" 2>/dev/null || true)" == "$opened_before" ]] \
+        || die "cancelling checkpoint selection registered a reference"
+    [[ "$(defaults read "$BUNDLE_ID" "$folder_key" 2>/dev/null || true)" == "$folder_before" ]] \
+        || die "cancelling checkpoint selection changed the managed folder"
+    jq -se 'all(.[]; .event != "command" or .checkpoint_inspection != true)' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "cancelling checkpoint selection invoked checkpoint inspection"
     local preference_key="rapid.picker.show_all_models.v1"
     press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
     for _ in {1..20}; do

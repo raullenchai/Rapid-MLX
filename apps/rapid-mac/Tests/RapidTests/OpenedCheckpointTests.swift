@@ -32,7 +32,7 @@ struct OpenedCheckpointTests {
         GoldenStage(ScrollView { content }, size: size)
     }
 
-    func inspector(_ root: URL) throws -> URL {
+    func inspector(_ root: URL) async throws -> URL {
         let desktop = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         try Data(desktop.appendingPathComponent("scripts/fake-rapid-mlx.sh").path.utf8)
             .write(to: root.appendingPathComponent("fallback-path.txt"))
@@ -82,13 +82,8 @@ struct OpenedCheckpointTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         // Fail at the fixture boundary if its interpreter or executable is
         // unavailable, instead of hiding that launch error in catalog probes.
-        let ping = Process()
-        ping.executableURL = script
-        ping.arguments = ["--fixture-ping"]
-        ping.standardOutput = FileHandle.nullDevice
-        ping.standardError = FileHandle.nullDevice
-        try ping.run()
-        ping.waitUntilExit()
+        let ping = try await TestSubprocess.run(executableURL: script,
+            arguments: ["--fixture-ping"], timeout: 5)
         guard ping.terminationStatus == 0 else {
             throw NSError(domain: "OpenedCheckpointFixture", code: Int(ping.terminationStatus),
                 userInfo: [NSLocalizedDescriptionKey: "The checkpoint test fixture could not run using PATH python3."])
@@ -154,7 +149,7 @@ struct OpenedCheckpointTests {
 
     @Test func actualRunnerRejectsOldMalformedAndRetargetedResponses() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let checks = try await ModelCatalog.inspectLocalCheckpoints(paths: [OpenedCheckpoints.canonicalPath(root.path)!], binary: binary)
         #expect(checks[0].certified)
         let rejected = root.appendingPathComponent("reject")
@@ -177,7 +172,7 @@ struct OpenedCheckpointTests {
 
     @Test func catalogLoadRechecksReferencesAndFailsClosedOnMissingOrOldEngine() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let selected = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = OpenedCheckpoints.canonicalPath(selected.path)!
@@ -195,7 +190,7 @@ struct OpenedCheckpointTests {
     @Test(arguments: [520.0, 900.0]) func nativeOpenAndRemoveReference(width: Double) async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, name) = defaults(); defer { prefs.removePersistentDomain(forName: name) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let selected = root.appendingPathComponent("same name")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         try Data("external".utf8).write(to: selected.appendingPathComponent("weights-sentinel"))
@@ -226,7 +221,7 @@ struct OpenedCheckpointTests {
     @Test func nativePickerCancelDoesNotRegisterOrChangeDownloads() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, name) = defaults(); defer { prefs.removePersistentDomain(forName: name) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let stage = viewport(SettingsModelManagementPanel(checkpointDefaults: prefs, checkpointDirectory: { nil })
             .environment(ServerManager(testingState: .stopped, binaryPath: binary, sessionDefaults: prefs))
             .environment(DownloadManager(binaryPath: binary, binaryLocator: { binary })), size: CGSize(width: 900, height: 720))
@@ -236,37 +231,10 @@ struct OpenedCheckpointTests {
         #expect(ModelsFolderPreference.storedPath(defaults: prefs) == nil)
     }
 
-    @Test func actualNativeDirectoryPickerCancelDoesNotRegister() async throws {
-        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let (prefs, name) = defaults(); defer { prefs.removePersistentDomain(forName: name) }
-        let binary = try inspector(root)
-        let panel = NSOpenPanel()
-        let stage = viewport(SettingsModelManagementPanel(checkpointDefaults: prefs,
-            checkpointDirectory: { SettingsModelManagementPanel.selectExistingCheckpointDirectory(panel: panel) })
-            .environment(ServerManager(testingState: .stopped, binaryPath: binary, sessionDefaults: prefs))
-            .environment(DownloadManager(binaryPath: binary, binaryLocator: { binary })), size: CGSize(width: 900, height: 720))
-        let probe = CheckpointPanelProbe()
-        try await stage.waitForIdentifier("Settings.ModelManagement.OpenCheckpoint")
-        let cancel = Timer(timeInterval: 0.2, repeats: false) { _ in
-            MainActor.assumeIsolated {
-                probe.observed = true
-                #expect(panel.canChooseDirectories && !panel.canChooseFiles && !panel.canCreateDirectories)
-                #expect(!panel.allowsMultipleSelection)
-                panel.cancel(nil)
-            }
-        }
-        RunLoop.main.add(cancel, forMode: .modalPanel)
-        defer { cancel.invalidate() }
-        try stage.press("Settings.ModelManagement.OpenCheckpoint")
-        #expect(probe.observed)
-        #expect(OpenedCheckpoints.paths(defaults: prefs).isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("inspect-called").path))
-    }
-
     @Test func invalidPickedPathShowsReasonBeforeInspectOrRegistration() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let invalid = root.appendingPathComponent("bad\nname")
         try FileManager.default.createDirectory(at: invalid, withIntermediateDirectories: true)
         let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary })
@@ -284,7 +252,7 @@ struct OpenedCheckpointTests {
     @Test(arguments: [520.0, 900.0]) func rejectedDirectoryHasVisibleLocalRemedyAndNoRegistration(width: Double) async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, name) = defaults(); defer { prefs.removePersistentDomain(forName: name) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         let selected = root.appendingPathComponent("reject")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary })
@@ -307,7 +275,7 @@ struct OpenedCheckpointTests {
     @Test func closingPanelDoesNotPersistALateInspectionReply() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, name) = defaults(); defer { prefs.removePersistentDomain(forName: name) }
-        let binary = try inspector(root)
+        let binary = try await inspector(root)
         try Data("slow".utf8).write(to: root.appendingPathComponent("mode.txt"))
         var stage: GoldenStage? = viewport(SettingsModelManagementPanel(checkpointDefaults: prefs, checkpointDirectory: { root })
             .environment(ServerManager(testingState: .stopped, binaryPath: binary, sessionDefaults: prefs))
@@ -330,8 +298,4 @@ struct OpenedCheckpointTests {
         #expect(LocalCheckpointError.limit.localizedDescription.contains("reference"))
         #expect(LocalCheckpointError.unavailable.localizedDescription.contains("engine"))
     }
-}
-
-@MainActor private final class CheckpointPanelProbe {
-    var observed = false
 }

@@ -15,7 +15,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let picked = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: picked, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(picked.path))
@@ -39,7 +39,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let picked = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: picked, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(picked.path))
@@ -58,7 +58,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let first = root.appendingPathComponent("original")
         let other = root.appendingPathComponent("different")
         try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
@@ -79,7 +79,7 @@ struct OpenedCheckpointLaunchTests {
     @Test func customManagedInventoryIsAlsoUsedByInspection() async throws {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let custom = root.appendingPathComponent("custom-cache")
         let selected = custom.appendingPathComponent("snapshot")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
@@ -121,7 +121,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let selected = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(selected.path))
@@ -155,7 +155,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let selected = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(selected.path))
@@ -182,7 +182,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let selected = root.appendingPathComponent("picked 模型 ")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(selected.path))
@@ -206,7 +206,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let selected = root.appendingPathComponent("checkpoint")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(selected.path))
@@ -239,7 +239,7 @@ struct OpenedCheckpointLaunchTests {
         let fixture = OpenedCheckpointTests()
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
-        let binary = try fixture.inspector(root)
+        let binary = try await fixture.inspector(root)
         let selected = root.appendingPathComponent("resident 模型 ")
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         let canonical = try #require(OpenedCheckpoints.canonicalPath(selected.path))
