@@ -11720,7 +11720,7 @@ def models_command(args):
             ("Size", 10),
             ("Tools", tools_width),
             ("Reasoning", reasoning_width),
-            ("Spec-Decode", 10),
+            ("Spec-Decode", 11),
             ("Suffix Tier", 11),
             ("DFlash", 9),
             ("DDTree", 9),
@@ -11730,10 +11730,6 @@ def models_command(args):
         width = sum(w for _, w in cols) + len(cols) - 1
         sep = "  " + "─" * width
         header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
-        print(sep)
-        print(header)
-        print(sep)
-
         from rapid_mlx.decode_expectations import (
             detected_chip,
             expectation,
@@ -11751,6 +11747,9 @@ def models_command(args):
         print(
             "  Catalog defaults; measured interquartile ranges. Sample scope: rapid-mlx models --json"
         )
+        print(sep)
+        print(header)
+        print(sep)
         for alias in sorted(profiles.keys()):
             p = profiles[alias]
             tools = p.tool_call_parser or "—"
@@ -11798,7 +11797,7 @@ def models_command(args):
             row = (
                 f"  {alias:<{alias_width}} {size:<10} {tools:<{tools_width}} "
                 f"{reasoning:<{reasoning_width}} "
-                f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<{preset_width}} "
+                f"{spec:<11} {tier:<11} {dflash:<9} {ddtree:<9} {preset:<{preset_width}} "
                 f"{summary(expectation(alias, decode_chip, decode_ram, repo_id=p.hf_path), compact=True)}"
             )
             print(row)
