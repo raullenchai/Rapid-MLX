@@ -131,6 +131,23 @@ def test_evidence_is_frozen_before_answer_and_authenticated_preview(tmp_path):
                         headers=auth,
                     )
                 ).status_code == 404
+                conversation_route = (
+                    f"/v1/rapid/chat/conversations/{request.conversation_id}"
+                )
+                assert (await client.delete(conversation_route)).status_code == 401
+                assert (await client.get(route, headers=auth)).status_code == 200
+                assert (
+                    await client.delete(conversation_route, headers=auth)
+                ).status_code == 204
+                assert (await client.get(route, headers=auth)).status_code == 404
+                assert (
+                    await client.get(conversation_route, headers=auth)
+                ).status_code == 404
+                assert (
+                    await client.get(
+                        f"/v1/rapid/chat/conversations/{other['id']}", headers=auth
+                    )
+                ).status_code == 200
         finally:
             await runtime.close()
             await store.close()
