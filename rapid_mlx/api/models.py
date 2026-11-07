@@ -1567,12 +1567,51 @@ class StreamOptions(BaseModel):
         return v
 
 
+class LocalSearchGroundingRequest(BaseModel):
+    """Explicit registered-folder scope for text-only grounded chat."""
+
+    model_config = ConfigDict(extra="forbid")
+    folder_ids: list[StrictStr] = Field(min_length=1, max_length=16)
+    limit: StrictInt = Field(default=3, ge=1, le=10)
+
+    @field_validator("folder_ids")
+    @classmethod
+    def _registered_ids(cls, value: list[str]) -> list[str]:
+        if any(not item or "/" in item or "\\" in item for item in value):
+            raise ValueError("folder_ids must contain registered folder IDs, not paths")
+        if len(set(value)) != len(value):
+            raise ValueError("folder_ids must be unique")
+        return value
+
+
+class LocalSearchSource(BaseModel):
+    id: str
+    folder_id: str
+    title: str
+    text: str
+    line: int | None = None
+    end_line: int | None = None
+    page: int | None = None
+    end_page: int | None = None
+
+
+class LocalSearchGrounding(BaseModel):
+    mode: Literal["keyword", "hybrid"]
+    status: Literal["grounded", "no_matches"]
+    indexing: bool
+    truncated: bool = False
+    sources: list[LocalSearchSource]
+
+
 class ChatCompletionRequest(BaseModel):
     """Request for chat completion."""
 
     # Preserve the caller's declarations when tool_choice narrows prompt tools.
     # Passed separately to streaming processing because model_dump omits it.
     _tool_authorization_names: set[str] | None = PrivateAttr(default=None)
+    _local_search_metadata: LocalSearchGrounding | None = PrivateAttr(default=None)
+
+    local_search: LocalSearchGroundingRequest | None = None
 
     model: str = "default"
     # D-ANTHRO-VALIDATION F11 (Anthropic sibling fix on OpenAI surface):
@@ -2282,6 +2321,7 @@ class ChatCompletionResponse(BaseModel):
     metrics: PerRequestMetrics | None = None
     # Diagnostic-only extension: these are NEVER executable tool_calls.
     rejected_tool_calls: list[dict[str, str]] | None = None
+    local_search: LocalSearchGrounding | None = None
 
 
 # =============================================================================
@@ -3474,6 +3514,7 @@ class ChatCompletionChunk(BaseModel):
     metrics: PerRequestMetrics | None = None
     # Diagnostic-only extension: these are NEVER executable tool_calls.
     rejected_tool_calls: list[dict[str, str]] | None = None
+    local_search: LocalSearchGrounding | None = None
 
 
 # Supported output dimensions: a bounded range keeps a single request from

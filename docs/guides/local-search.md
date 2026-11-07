@@ -585,3 +585,67 @@ Local availability requires complete weights plus `tokenizer_config.json` and
 `processor_config.json`; without it the snapshot is reported as not downloaded,
 so indexing remains keyword-only until the required assets are present. Optional
 repository files do not affect availability.
+
+## Ask a question about registered folders
+
+The chat endpoint can retrieve supporting text before answering when the request
+explicitly selects registered folders. Start the server with
+`--enable-local-search`, register your folder, and use the returned folder ID:
+
+```sh
+curl -s http://127.0.0.1:8461/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Can I return yarn that has been wound into a ball?"}],"local_search":{"folder_ids":["YOUR_REGISTERED_FOLDER_ID"],"limit":3}}'
+```
+
+`local_search` is optional. Omit it or send `null` for ordinary chat. When present,
+`folder_ids` is required (1–16 unique IDs) and `limit` defaults to 3 (1–10).
+Paths and an implicit search across all folders are not accepted. This option
+uses only text already in the selected local index; it does not open files,
+register folders, or download models. Keyword retrieval works without an
+embedding model. Tools, tool history, multimodal messages, and non-text structured
+output cannot be combined with this initial question-answering mode; those
+combinations return an error before retrieval.
+
+An opted-in response adds a top-level `local_search` object:
+
+```json
+{
+  "mode": "keyword",
+  "status": "grounded",
+  "indexing": false,
+  "truncated": false,
+  "sources": [{
+    "id": "1",
+    "folder_id": "YOUR_REGISTERED_FOLDER_ID",
+    "title": "returns-policy.md",
+    "text": "Items wound into a ball cannot be returned.",
+    "line": 8,
+    "end_line": 8
+  }]
+}
+```
+
+The assistant is instructed to cite the request-local source IDs as `[1]`, `[2]`,
+and so on. Sources contain complete indexed chunks, safe file names, and known
+inclusive line/page locators; unknown locators are omitted. Sources are bounded
+to 16 KiB of added context, including the catalogue and grounding instructions.
+Whole chunks that do not fit are omitted and `truncated` becomes true. If no
+complete matching chunk fits, the request returns `local_search_context_too_large`
+instead of silently quoting a partial chunk. The normal model context limit still
+applies to the complete conversation.
+
+With `stream: true`, this metadata appears on the first ordinary assistant-role
+SSE chunk only. Content deltas, finish reasons, optional usage, and `[DONE]` retain
+the ordinary chat framing. With no usable matching evidence, `status` is
+`no_matches`, `sources` is empty, and the endpoint returns an explicit abstention
+without invoking the chat model (zero token usage). `indexing` indicates that a
+selected folder is queued or currently indexing. Disabled or unavailable local
+search and missing folder IDs return structured errors; they never widen scope
+or fall back to an ungrounded model answer.
+
+Grounded requests bypass the response cache so prior answers cannot outlive
+changes to the selected index. Source metadata records retrieval provenance; it
+does not prove every model statement is supported. Treat source contents as
+untrusted, verify citations, and retain human review for consequential answers.
+Desktop folder selection and source previews remain separate work.
