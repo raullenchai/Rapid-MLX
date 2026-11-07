@@ -1270,7 +1270,7 @@ async def test_engine_core_error_and_async_abort_contracts():
         (
             "rapid_mlx.routes.chat",
             "create_chat_completion",
-            lambda: (SimpleNamespace(model="gpt-5"), SimpleNamespace()),
+            lambda: ("chat-request", SimpleNamespace()),
             "_create_chat_completion_impl",
         ),
         (
@@ -1311,7 +1311,14 @@ async def test_route_wrappers_translate_owned_cancellation(
         monkeypatch.setattr(module, cancel_target, cancel)
 
     args = request_factory()
-    if args[0] == "completion-request":
+    if args[0] == "chat-request":
+        args = (
+            module.ChatCompletionRequest(
+                model="gpt-5", messages=[{"role": "user", "content": "hello"}]
+            ),
+            args[1],
+        )
+    elif args[0] == "completion-request":
         args = (module.CompletionRequest(model="gpt-5", prompt="hello"), args[1])
     with pytest.raises(RuntimeError, match="translated"):
         await getattr(module, entrypoint)(*args)

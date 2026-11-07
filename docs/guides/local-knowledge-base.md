@@ -317,7 +317,7 @@ Removing a folder deletes its index entries. It is not secure erasure: SQLite ca
 
 ## Limits
 
-- There is no built-in grounded chat yet ([tracking issue](https://github.com/raullenchai/Rapid-MLX/issues/5575)). Use the script or the chat app's document feature.
+- API clients can use the [opt-in folder-grounded chat request](local-search.md#ask-a-question-about-registered-folders). Desktop folder selection and source previews remain tracked in [issue 5575](https://github.com/raullenchai/Rapid-MLX/issues/5575); the script below remains available for custom retrieval.
 - Only one folder indexes at a time.
 - There is no OCR. Scanned PDFs need OCR first.
 - DOC, RTF, and Pages are unsupported. In a sample check, an RTF file appeared in status as `skip_reasons: {"Unsupported file type": 1}`.
