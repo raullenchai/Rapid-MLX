@@ -786,6 +786,33 @@
       "title": "PermissionResponse",
       "type": "object"
     },
+    "LocalSearchGroundingRequest": {
+      "additionalProperties": false,
+      "description": "Explicit registered-folder scope for text-only grounded chat.",
+      "properties": {
+        "folder_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Folder Ids",
+          "type": "array"
+        },
+        "limit": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "folder_ids"
+      ],
+      "title": "LocalSearchGroundingRequest",
+      "type": "object"
+    },
     "TurnRequest": {
       "additionalProperties": false,
       "properties": {
@@ -922,6 +949,17 @@
           ],
           "default": null,
           "title": "Inference Api Key"
+        },
+        "local_search": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalSearchGroundingRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
