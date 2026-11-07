@@ -2288,11 +2288,71 @@ class PromptCompressionMetrics(BaseModel):
     kept_tokens: int
 
 
+class ExecutionReferenceMetrics(BaseModel):
+    """Bounded facts frozen from one successful executing generation."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    version: Literal[1] = 1
+    status: Literal["known", "unknown", "mixed"]
+    repo_id: StrictStr | None = Field(default=None, max_length=256)
+    method: Literal["none", "mtp", "unknown", "mixed"]
+    assistant_source: Literal["embedded_head", "external_model", "unknown"] | None = (
+        None
+    )
+    backend: Literal["ordinary", "unknown", "mixed"]
+    max_draft_tokens: StrictInt | None = Field(default=None, ge=1, le=128)
+    observed_max_draft_tokens: StrictInt | None = Field(default=None, ge=1, le=128)
+    config_key: StrictStr | None = Field(default=None, max_length=96)
+    completion_tokens: StrictInt = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _consistent_reference(self):
+        from ..execution_reference import public_repositories
+
+        if self.repo_id is not None and self.repo_id not in public_repositories():
+            raise ValueError(
+                "execution repository is not in the bundled public catalog"
+            )
+        expected = None
+        if self.method == "none" and self.backend == "ordinary":
+            expected = "none"
+        elif (
+            self.method == "mtp"
+            and self.backend == "ordinary"
+            and self.assistant_source == "embedded_head"
+            and self.max_draft_tokens is not None
+        ):
+            expected = f"mtp:embedded_head:k={self.max_draft_tokens}:ordinary"
+        if self.config_key is not None and self.config_key != expected:
+            raise ValueError("execution configuration key does not match its facts")
+        if self.method != "mtp" and any(
+            value is not None
+            for value in (
+                self.assistant_source,
+                self.max_draft_tokens,
+                self.observed_max_draft_tokens,
+            )
+        ):
+            raise ValueError("non-MTP reference carries draft configuration")
+        if self.status == "known" and (
+            self.repo_id is None or expected is None or self.config_key != expected
+        ):
+            raise ValueError(
+                "known execution requires a public repository and configuration"
+            )
+        if (self.status == "mixed") != (self.method == "mixed"):
+            raise ValueError("mixed execution state must remain explicit")
+        return self
+
+
 class PerRequestMetrics(BaseModel):
     """Optional engine metrics carried only on a terminal response."""
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
     prompt_compression: PromptCompressionMetrics | None = None
+    execution_reference: ExecutionReferenceMetrics | None = None
     time_to_first_token_ms: float | None = Field(
         default=None, ge=0, allow_inf_nan=False
     )

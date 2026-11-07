@@ -7386,10 +7386,18 @@ async def _stream_buffered_chat_response(
         terminal.timing_metrics = (
             response.metrics.model_dump(
                 exclude_none=True,
-                exclude={"speculative_decoding", "prompt_compression"},
+                exclude={
+                    "speculative_decoding",
+                    "prompt_compression",
+                    "execution_reference",
+                },
             )
             or None
         )
+        if response.metrics.execution_reference is not None:
+            terminal.execution_reference = (
+                response.metrics.execution_reference.model_dump(exclude_none=True)
+            )
         if response.metrics.prompt_compression is not None:
             terminal.prompt_compression = (
                 response.metrics.prompt_compression.model_dump()

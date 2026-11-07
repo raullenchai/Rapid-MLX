@@ -2507,6 +2507,22 @@ class BatchedEngine(BaseEngine):
         )
         self._bind_prompt_host_cache(self._engine)
 
+        # Freeze a safe source mapping on this loaded scheduler before serving.
+        # Unsupported load lanes retain no execution reference.
+        if not getattr(self, "_enable_disk_stream", False):
+            from ..execution_reference import freeze_load_receipt
+
+            holder = getattr(self._model, "language_model", self._model)
+            receipt = freeze_load_receipt(
+                checkpoint_source,
+                head_container=getattr(
+                    holder, "_rapid_mlx_mtp_weights_container", None
+                ),
+            )
+            scheduler = getattr(self._engine.engine, "scheduler", None)
+            if scheduler is not None:
+                scheduler._execution_load_receipt = receipt
+
         # #2858 acceptance: a model must not report healthy while every
         # request deterministically 503s under the resolved cap. The
         # scheduler exists as of AsyncEngineCore construction, so run its
@@ -3502,6 +3518,7 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
             prompt_compression=getattr(output, "prompt_compression", None),
             timing_metrics=getattr(output, "timing_metrics", None),
+            execution_reference=getattr(output, "execution_reference", None),
         )
 
     async def stream_generate(
@@ -3656,6 +3673,7 @@ class BatchedEngine(BaseEngine):
                     matched_stop=getattr(output, "matched_stop", None),
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
+                    execution_reference=getattr(output, "execution_reference", None),
                 )
             return
 
@@ -3769,6 +3787,7 @@ class BatchedEngine(BaseEngine):
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     prompt_compression=getattr(output, "prompt_compression", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
+                    execution_reference=getattr(output, "execution_reference", None),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -4579,6 +4598,7 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics if finished else None,
+            execution_reference=source.execution_reference if finished else None,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -4600,6 +4620,7 @@ class BatchedEngine(BaseEngine):
             spec_decode_metrics=source.spec_decode_metrics,
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics,
+            execution_reference=source.execution_reference,
         )
 
     def _finalize_output_router(
@@ -4736,6 +4757,7 @@ class BatchedEngine(BaseEngine):
                         finished=True,
                         finish_reason=output.finish_reason,
                         timing_metrics=output.timing_metrics,
+                        execution_reference=output.execution_reference,
                     )
                 else:
                     routed_outputs.append(finalized)

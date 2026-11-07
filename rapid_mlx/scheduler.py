@@ -1568,6 +1568,7 @@ def _install_mtp_vendored(
     max_k: int = 3,
     disable_auto_k: bool = False,
     controller_key: str | None = None,
+    execution_receipt: Any = None,
 ) -> bool:
     """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
     ``GenerationBatch._step``.
@@ -2731,7 +2732,16 @@ def _install_mtp_vendored(
     # it matches baseline byte-for-byte). The state transfer to the
     # persistent gb happens via .extend(), after which our patched
     # _step takes over.
-    gb._step = _mtp_step
+    from .execution_reference import observe_mtp_steps
+
+    gb._step = observe_mtp_steps(
+        _mtp_step,
+        gb,
+        requests if requests is not None else {},
+        uid_to_request_id if uid_to_request_id is not None else {},
+        execution_receipt,
+        max_k,
+    )
     gb.next = _mtp_next
     if _orig_remove is not None:
         batch_gen.remove = _mtp_remove
@@ -5502,6 +5512,22 @@ class Scheduler:
             # mlx-lm < 0.31.3 — no `stream` kwarg; fall back to legacy path.
             bg = BatchGenerator(**bg_kwargs)
 
+        from .execution_reference import observe_plain_steps
+
+        execution_receipt = getattr(self, "_execution_load_receipt", None)
+        if getattr(self.config, "mtp_continuous_batching", False):
+            execution_receipt = None  # This first contract covers the ordinary lane.
+        execution_state = None
+        if (
+            execution_receipt is not None
+            and getattr(self.config, "spec_decode", "none") == "mtp"
+        ):
+            # Only fallback calls of the MTP wrapper count as ordinary work.
+            # Its bootstrap and adaptive K0 rounds do not call this step.
+            execution_state = observe_plain_steps(
+                bg, self.requests, self.uid_to_request_id, execution_receipt
+            )
+
         # ``--kv-cache-dtype int8/int4`` must reach the LIVE continuous-batching
         # KV cache, not just the retained prefix cache (#1197). Swap the
         # generator's plain ``BatchKVCache`` for packed ``QuantizedBatchKVCache``
@@ -5589,6 +5615,7 @@ class Scheduler:
                     requests=self.requests,
                     uid_to_request_id=self.uid_to_request_id,
                     uid_to_request_processors=self.uid_to_request_processors,
+                    execution_receipt=execution_receipt,
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
@@ -5676,6 +5703,14 @@ class Scheduler:
                 or getattr(self.config, "model_name", None),
             )
 
+        if execution_receipt is not None and self.spec_decode_runtime_method is None:
+            # Observe after compiled/dense ordinary fast paths are installed;
+            # metadata must not change their admission or bypass execution.
+            execution_state = observe_plain_steps(
+                bg, self.requests, self.uid_to_request_id, execution_receipt
+            )
+        if execution_state is not None:
+            execution_state["method"] = self.spec_decode_runtime_method or "none"
         return bg
 
     def _make_prompt_cache_save_callback(self):
@@ -11003,6 +11038,16 @@ class Scheduler:
                 if response.finish_reason in ("stop", "length"):
                     output.timing_metrics = self.performance.timing_metrics_for_request(
                         request, token_monotonic
+                    )
+                    from .execution_reference import terminal_reference
+
+                    runtime_method = getattr(self, "spec_decode_runtime_method", None)
+                    if getattr(self.config, "mtp_continuous_batching", False):
+                        runtime_method = "unknown"
+                    output.execution_reference = terminal_reference(
+                        request,
+                        request.num_output_tokens,
+                        runtime_method=runtime_method,
                     )
                 request_mtp_counter = getattr(request, "_mtp_accept_counter", None)
                 if request_mtp_counter is not None:
