@@ -110,12 +110,12 @@ AXApplication title="Rapid-MLX"
         AXGroup id="Settings.ModelManagement.Recommended.primary" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText desc="<size> memory · Not for coding · Expected decode range unavailable" help="Expected decode range unavailable" value=text enabled=true
           AXButton id="Settings.ModelManagement.Recommended.Download.<model>" desc="Download" enabled=true
         AXGroup id="Settings.ModelManagement.Recommended.alt" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXStaticText value=text enabled=true
+          AXStaticText desc="<size> memory · Basic chat · Expected decode range unavailable" help="Expected decode range unavailable" value=text enabled=true
           AXButton id="Settings.ModelManagement.Recommended.Download.<model>" desc="Download" enabled=true
         AXStaticText id="Settings.ModelManagement.VisibleCount" value=text enabled=true
         AXStaticText id="Settings.ModelManagement.MeterLegend" value=text enabled=true

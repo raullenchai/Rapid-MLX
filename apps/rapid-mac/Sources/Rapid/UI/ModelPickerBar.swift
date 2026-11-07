@@ -1016,7 +1016,7 @@ struct ModelPickerBar: View {
         // Tagline = "best pick / faster alternative" + the measured
         // capability and (where we have it) tok/s. Surfaced as the row's
         // NSMenuItem tooltip via ``.help(_)`` and its accessibility label.
-        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary)
+        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary, repoID: entry.hfRepo, hardware: hardware)
         // The tagline rides the row's native NSMenuItem tooltip via
         // ``.help(_)`` (below) — the reliable way to expose it inside the
         // open dropdown, since a SwiftUI ``.popover`` attached to a row
@@ -1044,7 +1044,7 @@ struct ModelPickerBar: View {
         // standard-benchmark meters live in "All models" (Settings), so
         // the recommendation never shows two conflicting sets of numbers
         // for the same model.
-        .help(entry.alias + "\n" + tagline)
+        .help(entry.alias + "\n" + tagline + "\n" + DecodeExpectations.summary(alias: entry.alias, repoID: entry.hfRepo, hardware: hardware))
         .accessibilityLabel(row.accessibilityLabel)
     }
 
@@ -1057,7 +1057,7 @@ struct ModelPickerBar: View {
 
     /// Tooltip / caption tagline for a recommended row: whether it's the
     /// best pick or the faster alternative, plus the measured capability
-    /// and (where a local measurement exists) decode tok/s. A pick with a
+    /// and a chip/configuration-specific decode reference when available. A pick with a
     /// ``caveat`` (e.g. a chat specialist) shows that word in place of the
     /// capability %. Pure so tests can pin the copy without a SwiftUI host.
     /// The one spelling of a recommendation's capability score, shared with
@@ -1066,20 +1066,15 @@ struct ModelPickerBar: View {
         String(localized: "\(pct)% capability")
     }
 
-    static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> String {
+    static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool, repoID: String? = nil, hardware: MacHardware = .detect()) -> String {
         let lead = isPrimary ? String(localized: "Best pick for your Mac") : String(localized: "Faster, lighter alternative")
         var parts = [lead]
         if let caveat = pick.caveat {
-            if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
-            }
             parts.append(caveat)
         } else {
             parts.append(capabilityText(pick.capabilityPct))
-            if let tps = pick.tokensPerSec {
-                parts.append("~\(Int(tps.rounded())) tok/s")
-            }
         }
+        parts.append(DecodeExpectations.summary(alias: pick.alias, repoID: repoID, hardware: hardware, compact: true))
         return parts.joined(separator: " · ")
     }
 

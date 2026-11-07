@@ -1677,6 +1677,17 @@ def section_system() -> Section:
             CheckStatus.OK,
             detail=f"chip={chip} ram_gb={ram_gb}",
         )
+        if ram_gb:
+            from rapid_mlx.decode_expectations import chip_name, expectation, summary
+            from rapid_mlx.model_aliases import resolve_profile
+            from rapid_mlx.recommendations import recommendation_tier
+
+            for pick in recommendation_tier(ram_gb, validate_catalog=False).picks:
+                s.add(
+                    f"{pick.alias}: {summary(expectation(pick.alias, chip_name(chip), ram_gb, repo_id=getattr(resolve_profile(pick.alias), 'hf_path', None)))}",
+                    CheckStatus.OK,
+                    detail="Offline decode reference; not an environment health test",
+                )
     elif platform.system() == "Darwin":
         s.add(
             "Non-Apple-Silicon Mac — MLX requires arm64",

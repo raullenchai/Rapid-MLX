@@ -11347,13 +11347,16 @@ def _available_models_json_payload() -> dict:
     image) exactly as the text sections are. Sizes are download bytes from the
     checked-in manifest (``None`` when unknown); no per-invocation HF I/O.
     """
+    from rapid_mlx.decode_expectations import detected_chip, expectation
     from rapid_mlx.model_aliases import (
         draft_only_conflict,
         list_builtin_aliases,
         list_profiles,
     )
     from rapid_mlx.model_sizes import size_bytes
+    from rapid_mlx.recommendations import physical_ram_gb
 
+    decode_chip, decode_ram = detected_chip(), physical_ram_gb()
     all_profiles = list_profiles()
     builtin_aliases = set(list_builtin_aliases())
 
@@ -11374,6 +11377,9 @@ def _available_models_json_payload() -> dict:
             default_steps = default_steps_for_model(p.hf_path)
         return {
             "alias": alias,
+            "expected_decode": expectation(
+                alias, decode_chip, decode_ram, repo_id=p.hf_path
+            ),
             "standalone": draft_only_conflict(p.hf_path) is None,
             "hf_path": p.hf_path,
             **({"revision": p.revision} if p.revision is not None else {}),
@@ -11697,26 +11703,53 @@ def models_command(args):
             12,
             max((len(p.reasoning_parser or "—") for p in profiles.values()), default=0),
         )
+        preset_width = max(
+            8,
+            max(
+                (
+                    len(f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}")
+                    if p.mtp_draft_model
+                    else len("MTP@native@99")
+                    for p in profiles.values()
+                ),
+                default=8,
+            ),
+        )
         cols = (
             ("Alias", alias_width),
             ("Size", 10),
             ("Tools", tools_width),
             ("Reasoning", reasoning_width),
-            ("Spec-Decode", 10),
+            ("Spec-Decode", 11),
             ("Suffix Tier", 11),
             ("DFlash", 9),
             ("DDTree", 9),
-            ("Preset", 8),
+            ("Preset", preset_width),
+            ("Default decode reference", 42),
         )
         width = sum(w for _, w in cols) + len(cols) - 1
         sep = "  " + "─" * width
         header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
-        print(sep)
-        print(header)
-        print(sep)
+        from rapid_mlx.decode_expectations import (
+            detected_chip,
+            expectation,
+            snapshot,
+            summary,
+        )
+        from rapid_mlx.recommendations import physical_ram_gb
 
         from .spec_decode.capability import assess_method
 
+        decode_chip, decode_ram = detected_chip(), physical_ram_gb()
+        print(
+            f"  Decode references: {decode_chip or 'unknown chip'} · {decode_ram:g} GB RAM · snapshot {snapshot()['refreshed_at']}"
+        )
+        print(
+            "  Catalog defaults; measured interquartile ranges. Sample scope: rapid-mlx models --json"
+        )
+        print(sep)
+        print(header)
+        print(sep)
         for alias in sorted(profiles.keys()):
             p = profiles[alias]
             tools = p.tool_call_parser or "—"
@@ -11764,7 +11797,8 @@ def models_command(args):
             row = (
                 f"  {alias:<{alias_width}} {size:<10} {tools:<{tools_width}} "
                 f"{reasoning:<{reasoning_width}} "
-                f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
+                f"{spec:<11} {tier:<11} {dflash:<9} {ddtree:<9} {preset:<{preset_width}} "
+                f"{summary(expectation(alias, decode_chip, decode_ram, repo_id=p.hf_path), compact=True)}"
             )
             print(row)
 

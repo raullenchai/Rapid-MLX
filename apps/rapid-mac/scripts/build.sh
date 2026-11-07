@@ -449,6 +449,14 @@ else
     exit 1
 fi
 
+DECODE_EXPECTATIONS_SRC="$ROOT/../../rapid_mlx/decode_expectations.json"
+if [[ -f "$DECODE_EXPECTATIONS_SRC" ]]; then
+    cp "$DECODE_EXPECTATIONS_SRC" "$CONTENTS/Resources/decode_expectations.json"
+else
+    echo "ERR: shared decode_expectations.json missing" >&2
+    exit 1
+fi
+
 # SwiftMath's upstream resource accessor looks beside `Contents/`, a location
 # that makes a strict app signature invalid. Our vendored resolver loads this
 # nested bundle through Bundle.main instead. Ship only the default font pair
