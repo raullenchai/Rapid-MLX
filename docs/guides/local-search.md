@@ -182,6 +182,26 @@ envelope. All field names are snake_case.
 | POST | `/v1/local-search/reindex` | `{"folder_id": null}` for all folders, or a folder id; status body, 202 |
 | POST | `/v1/local-search/search` | `{"query": "search text", "limit": 20, "folder_ids": null, "kinds": null}` → results, took_ms, mode |
 
+Search requests may set `"include_text": true` to add `text`, `end_line`,
+and `end_page` to every result, including grouped results. `text` is the entire
+matched stored chunk, not the 500-character snippet or the whole source file.
+No source re-extraction or reindex is needed for existing indexes. The default
+(omitted or false) preserves the existing result fields and snippet/highlight
+behavior.
+
+End locators are inclusive and refer to the full returned chunk: `end_line`
+counts LF-separated lines from the existing one-based `line` (CRLF counts once),
+using extracted text for HTML and DOCX. Page-based PDF, PPTX and XLSX chunks
+stay within a single page/slide/sheet, so `end_page` equals `page` and line fields
+are null. For indexed line-based text, page fields are null. Name-only files,
+images and video frames have no matched text chunk: all three opt-in fields are
+null. Snippet highlights remain relative to `snippet`, not `text`.
+
+For example, `{"query": "returns policy", "include_text": true, "limit": 3}`
+lets a retrieval client build context from `text` and cite the supplied locators
+without reopening files. This API does not automatically ground chat responses;
+chat and Desktop integration remain separate work in issue #5575.
+
 Status is shaped as:
 
 ```json

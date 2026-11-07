@@ -24,6 +24,10 @@ class ReindexRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=8192)
     limit: int = Field(default=20, ge=1, le=100)
+    include_text: bool = Field(
+        default=False,
+        description="Include the full matched text chunk and its inclusive end locator.",
+    )
     group_limit: int | None = Field(default=None, ge=1, le=50)
     folder_ids: list[str] | None = Field(default=None, max_length=1000)
     kinds: list[Literal["text", "image", "video"]] | None = None
@@ -136,7 +140,12 @@ async def search(body: SearchRequest, request: Request):
             await require_folder(service, folder_id)
     try:
         return await service.search(
-            body.query, body.limit, body.folder_ids, body.kinds, body.group_limit
+            body.query,
+            body.limit,
+            body.folder_ids,
+            body.kinds,
+            body.group_limit,
+            include_text=body.include_text,
         )
     except sqlite3.OperationalError:
         error("Query could not be processed", "invalid_query", "query")

@@ -957,6 +957,8 @@ class LocalSearch:
         folder_ids: list[str] | None,
         kinds: list[str] | None = None,
         group_limit: int | None = None,
+        *,
+        include_text: bool = False,
     ) -> dict:
         start = time.perf_counter()
         terms = query_terms(query)
@@ -1062,13 +1064,14 @@ class LocalSearch:
             if chunk_id in result_cache:
                 return {**result_cache[chunk_id], "score": score, "matched": matched}
             row = rows[chunk_id]
-            text, highlights = (
-                await asyncio.to_thread(
-                    snippet,
-                    await self.store.call("chunk_text", chunk_id),
-                    highlight_terms,
-                )
+            full_text = (
+                await self.store.call("chunk_text", chunk_id)
                 if row["kind"] == "text" and row["content_indexed"]
+                else None
+            )
+            text, highlights = (
+                await asyncio.to_thread(snippet, full_text, highlight_terms)
+                if full_text is not None
                 else ("", [])
             )
             locator = json.loads(row["locator"])
@@ -1091,6 +1094,22 @@ class LocalSearch:
                 "modified_at": row["mtime"],
                 "size": row["size"],
             }
+
+            if include_text:
+                line = locator.get("line")
+                result_cache[chunk_id].update(
+                    {
+                        "text": full_text,
+                        # Stored text is already stripped by chunking; counting
+                        # its newlines preserves the inclusive extracted extent.
+                        "end_line": line + full_text.count("\n")
+                        if line is not None and full_text is not None
+                        else None,
+                        "end_page": locator.get("page")
+                        if full_text is not None
+                        else None,
+                    }
+                )
 
             return result_cache[chunk_id]
 
