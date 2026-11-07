@@ -2,6 +2,7 @@
 """Bounded, explicitly scoped retrieval for opt-in chat; never opens source files."""
 
 import json
+from collections.abc import Collection
 from pathlib import PurePath
 from typing import NoReturn, cast
 
@@ -115,11 +116,30 @@ async def prepare_grounding(
             "local_search_unavailable",
             503,
         )
+    messages, metadata = build_grounding_context(
+        request.messages, result, folders, option.folder_ids
+    )
+    prepared = request.model_copy(update={"messages": messages})
+    prepared._local_search_metadata = metadata
+    return prepared
+
+
+def build_grounding_context(
+    messages: list[Message],
+    result: dict,
+    folders: list[dict],
+    folder_ids: Collection[str],
+) -> tuple[list[Message], LocalSearchGrounding]:
+    """Format admitted text-only search results without index or filesystem I/O.
+
+    The HTTP adapter validates message/query compatibility before retrieval;
+    the durable owner applies the same validation before invoking this builder.
+    """
     sources: list[LocalSearchSource] = []
     used = len((POLICY + CATALOGUE_PREFIX + "\n\n\n\nQuestion:\n").encode("utf-8")) + 2
     truncated = False
     for hit in result["results"]:
-        if hit.get("folder_id") not in option.folder_ids:
+        if hit.get("folder_id") not in folder_ids:
             error(
                 "Local search returned an unexpected folder scope",
                 "local_search_scope_mismatch",
@@ -160,7 +180,7 @@ async def prepare_grounding(
         truncated=truncated,
         sources=sources,
     )
-    messages = list(request.messages)
+    messages = list(messages)
     if sources:
         catalogue = json.dumps(
             [source.model_dump() for source in sources],
@@ -184,6 +204,4 @@ async def prepare_grounding(
                 + cast(str, question.content)
             }
         )
-    prepared = request.model_copy(update={"messages": messages})
-    prepared._local_search_metadata = metadata
-    return prepared
+    return messages, metadata

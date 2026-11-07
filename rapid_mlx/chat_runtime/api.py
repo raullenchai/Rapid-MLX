@@ -13,11 +13,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from rapid_mlx.api.models import LocalSearchGroundingRequest
 from rapid_mlx.middleware.body_depth import _replay_buffered, _replay_with_disconnect
 
 from .events import Envelope, PermissionResponse, json_schema
 from .file_extraction import MAX_INPUT_BYTES
 from .file_worker import run_worker
+from .folder_chat import FolderChatError
 from .owner import CAPABILITIES, ClientLeases
 from .runtime import ImageCapabilityError, Runtime, TurnRequest
 from .store import Conflict, Store
@@ -30,6 +32,11 @@ BODY_READ_TIMEOUT = 30
 
 def _authorized(authorization: str, token: str) -> bool:
     return secrets.compare_digest(authorization.encode(), f"Bearer {token}".encode())
+
+
+class FolderScopeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    local_search: LocalSearchGroundingRequest | None
 
 
 class ChatBodyLimitMiddleware:
@@ -182,6 +189,12 @@ def create_app(
             {"detail": {"code": error.code, "message": error.message}}, status_code=400
         )
 
+    @app.exception_handler(FolderChatError)
+    async def folder_chat_error(request, error):
+        return JSONResponse(
+            {"detail": {"code": error.code, "message": error.message}}, status_code=400
+        )
+
     @app.exception_handler(ValueError)
     async def invalid_value(request, error):
         return JSONResponse({"detail": "Invalid chat operation"}, status_code=400)
@@ -221,6 +234,21 @@ def create_app(
     @app.get(PREFIX + "/conversations/{conversation_id}")
     async def conversation(conversation_id: str, branch_id: str | None = None):
         return await store.get_conversation(conversation_id, branch_id)
+
+    @app.put(PREFIX + "/conversations/{conversation_id}/local-search")
+    async def folder_scope(conversation_id: str, body: FolderScopeInput):
+        await store.set_folder_scope(
+            conversation_id,
+            body.local_search.model_dump() if body.local_search is not None else None,
+        )
+        return await store.get_conversation(conversation_id)
+
+    @app.get(PREFIX + "/conversations/{conversation_id}/attachments/{attachment_id}")
+    async def preview_attachment(conversation_id: str, attachment_id: str):
+        try:
+            return await store.preview_attachment(conversation_id, attachment_id)
+        except ValueError:
+            raise HTTPException(415, "This source is not a text snapshot") from None
 
     @app.delete(PREFIX + "/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str):

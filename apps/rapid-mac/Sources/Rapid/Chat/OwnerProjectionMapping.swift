@@ -50,10 +50,13 @@ func ownerProjectionMessages(_ projection: ChatTurnProjection, assistantID: UUID
         rows.append(ChatMessage(id: rowID("permission:" + permission.opID), role: .tool, content: "Waiting for approval", status: .streaming, toolCallID: permission.opID, createdAt: createdAt))
     }
     for source in projection.sources {
+        let isFolderSource = source.sourceID.hasPrefix("local-search:" + projection.turnID + ":") && source.attachmentID != nil && source.url == nil
         let detail = source.url ?? source.attachmentID ?? ""
-        rows.append(ChatMessage(id: rowID("source:" + source.sourceID), role: .system, content: detail.isEmpty ? source.title : "\(source.title): \(detail)", wireVisibility: .transcriptOnly, createdAt: createdAt))
+        var row = ChatMessage(id: rowID("source:" + source.sourceID), role: .system, content: isFolderSource ? source.title : (detail.isEmpty ? source.title : "\(source.title): \(detail)"), wireVisibility: .transcriptOnly, createdAt: createdAt)
+        if isFolderSource { row.ownerSource = source }
+        rows.append(row)
     }
-    if let context = projection.context, context.compacted {
+    if let context = projection.context, context.compacted || (projection.sources.contains { $0.sourceID.hasPrefix("local-search:" + projection.turnID + ":") } && !context.notice.isEmpty) {
         rows.append(ChatMessage(id: rowID("context"), role: .system, content: context.notice.isEmpty ? "Context compacted." : context.notice, wireVisibility: .transcriptOnly, createdAt: createdAt))
     }
     return rows

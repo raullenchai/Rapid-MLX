@@ -8,6 +8,9 @@ typealias ChatTurnEventHandler = @Sendable (ChatWireEnvelope) async throws -> Vo
 protocol ChatTurnClient: Sendable {
     func createConversation(workspace: String) async throws -> ChatWireJSON
     func conversation(id: String) async throws -> ChatWireJSON
+    func supportsFolderChat() async throws -> Bool
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String
     func submit(_ request: ChatTurnRequest, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
     func stream(turnID: String, after: Int, onEvent: @escaping ChatTurnEventHandler) async throws
@@ -20,7 +23,18 @@ protocol ChatTurnClient: Sendable {
     func undo(conversationID: String, operationID: String) async throws -> ChatWireJSON
 }
 
+struct FolderSourcePreview: Decodable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let text: String
+    let truncated: Bool
+}
+
 extension ChatTurnClient {
+    func supportsFolderChat() async throws -> Bool { false }
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { throw ChatTurnClientError.invalidResponse }
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview { throw ChatTurnClientError.invalidResponse }
+
     func createConversation(workspace: String) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
     func conversation(id: String) async throws -> ChatWireJSON { throw ChatTurnClientError.invalidResponse }
 }
@@ -84,6 +98,32 @@ actor URLSessionChatTurnClient: ChatTurnClient {
 
     func conversation(id: String) async throws -> ChatWireJSON {
         try await json(["conversations", id])
+    }
+
+    func supportsFolderChat() async throws -> Bool {
+        let response: ChatWireJSON = try await json(["capabilities"])
+        guard case .object(let value) = response,
+              case .object(let capabilities) = value["capabilities"] else { return false }
+        return capabilities["grounded_folder_chat_v1"] == .bool(true)
+    }
+
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws {
+        let body = try JSONEncoder().encode(FolderScopeBody(localSearch: scope))
+        let _: ChatWireJSON = try await json(["conversations", conversationID, "local-search"], method: "PUT", body: body)
+    }
+    private struct FolderScopeBody: Encodable {
+        let localSearch: FolderChatScope?
+        enum CodingKeys: String, CodingKey { case localSearch = "local_search" }
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            if let localSearch { try container.encode(localSearch, forKey: .localSearch) }
+            else { try container.encodeNil(forKey: .localSearch) }
+        }
+    }
+
+    func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {
+        let value: ChatWireJSON = try await json(["conversations", conversationID, "attachments", attachmentID])
+        return try JSONDecoder().decode(FolderSourcePreview.self, from: JSONEncoder().encode(value))
     }
 
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String {

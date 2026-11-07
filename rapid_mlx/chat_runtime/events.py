@@ -197,7 +197,9 @@ def json_schema() -> dict:
 
     schema = Envelope.model_json_schema()
     schema["$defs"]["PermissionResponse"] = PermissionResponse.model_json_schema()
-    schema["$defs"]["TurnRequest"] = TurnRequest.model_json_schema(mode="validation")
+    request = TurnRequest.model_json_schema(mode="validation")
+    schema["$defs"].update(request.pop("$defs", {}))
+    schema["$defs"]["TurnRequest"] = request
     schema["x-turn-request"] = {"$ref": "#/$defs/TurnRequest"}
     schema["x-permission-response"] = {"$ref": "#/$defs/PermissionResponse"}
     return schema
