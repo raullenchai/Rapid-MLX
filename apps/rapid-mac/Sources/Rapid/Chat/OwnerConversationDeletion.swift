@@ -113,15 +113,14 @@ final class OwnerConversationDeletion {
                 let client = try await clientProvider()
                 guard try await client.ownerStoreUUID() == expected else { throw Failure.identityChanged }
                 if let turnID = intent.turnID {
-                    do {
-                        let turn = try await client.turn(turnID: turnID)
-                        let status = try Self.status(turn, conversationID: id)
-                        if status == "running" {
-                            let cancelled = try await client.cancel(turnID: turnID)
-                            guard try Self.status(cancelled, conversationID: id) != "running" else { throw Failure.stillRunning }
-                        }
-                    } catch ChatTurnClientError.http(status: 404) {
-                        // DELETE remains the authority for other active turns.
+                    let initial: ChatWireJSON?
+                    do { initial = try await client.turn(turnID: turnID) }
+                    catch ChatTurnClientError.http(status: 404) { initial = nil }
+                    if let initial, try Self.status(initial, conversationID: id, turnID: turnID) == "running" {
+                        // Cancel returns an acknowledgement, not a full terminal receipt.
+                        _ = try await client.cancel(turnID: turnID)
+                        let terminal = try await client.turn(turnID: turnID)
+                        guard try Self.status(terminal, conversationID: id, turnID: turnID) != "running" else { throw Failure.stillRunning }
                     }
                 }
                 guard try await client.ownerStoreUUID() == expected else { throw Failure.identityChanged }
@@ -177,8 +176,8 @@ final class OwnerConversationDeletion {
         await retry()
     }
 
-    private static func status(_ value: ChatWireJSON, conversationID: String) throws -> String {
-        guard case .object(let row) = value, row["conversation_id"] == .string(conversationID),
+    private static func status(_ value: ChatWireJSON, conversationID: String, turnID: String) throws -> String {
+        guard case .object(let row) = value, row["id"] == .string(turnID), row["conversation_id"] == .string(conversationID),
               case .string(let status) = row["status"], ["running", "completed", "cancelled", "error"].contains(status) else { throw Failure.invalidTurn }
         return status
     }
