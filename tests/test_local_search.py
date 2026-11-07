@@ -2764,7 +2764,8 @@ def test_active_delete_keeps_next_folder_job(tmp_path):
     asyncio.run(scenario())
 
 
-def test_replaced_folder_symlink_is_rejected(tmp_path):
+@pytest.mark.parametrize("include_text", [False, True])
+def test_replaced_folder_symlink_is_rejected(tmp_path, include_text):
     async def scenario():
         root = folder(tmp_path)
         (root / "a.txt").write_text("apple")
@@ -2774,7 +2775,9 @@ def test_replaced_folder_symlink_is_rejected(tmp_path):
         saved = tmp_path / "saved"
         root.rename(saved)
         root.symlink_to(saved, target_is_directory=True)
-        assert (await search.search("apple", 20, None))["results"] == []
+        assert (await search.search("apple", 20, None, include_text=include_text))[
+            "results"
+        ] == []
         await search.queue(fid)
         await search.wait_idle()
         assert search.store.folder(fid)["state"] in {"error", "missing"}
@@ -4750,6 +4753,17 @@ def test_office_text_and_persisted_locators(tmp_path, suffix):
             assert all(row["id"] in search.store.vectors for row in rows)
             result = (await search.search("apple", 20, None))["results"][0]
             assert result["page"] == pages[0]
+            assert "text" not in result
+            full = (await search.search("apple", 20, None, include_text=True))[
+                "results"
+            ][0]
+            assert full["text"] == units[0].text.strip()
+            assert full["end_page"] == pages[0]
+            assert full["end_line"] == (
+                full["line"] + full["text"].count("\n")
+                if full["line"] is not None
+                else None
+            )
         finally:
             await search.close()
 
@@ -6079,7 +6093,7 @@ def test_large_query_and_sql_error_envelope(tmp_path, monkeypatch):
                 )
                 assert response.status_code == 200
 
-            async def failed(*args):
+            async def failed(*args, **kwargs):
                 raise sqlite3.OperationalError("invalid expression")
 
             monkeypatch.setattr(app.state.local_search, "search", failed)
@@ -10197,3 +10211,192 @@ def test_index_real_darwin_tmp_symlink():
             assert store.path.is_file()
         finally:
             store.close()
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_search_full_chunk_opt_in_preserves_default_and_indexed_extent(
+    tmp_path, monkeypatch, newline
+):
+    async def scenario():
+        root = folder(tmp_path)
+        document = (
+            "\n \n  apple "
+            + "background " * 65
+            + "\nAnswer: wound yarn cannot be returned.\nlast line   \n"
+        )
+        document = document.replace("\n", newline)
+        path = root / "policy.txt"
+        path.write_text(document)
+        async with client_app(tmp_path, monkeypatch) as (client, app, fake):
+            await client.post("/v1/local-search/folders", json={"path": str(root)})
+            await app.state.local_search.wait_idle()
+            response = await client.post(
+                "/v1/local-search/search", json={"query": "apple", "include_text": True}
+            )
+            assert response.status_code == 200
+            hit = response.json()["results"][0]
+            assert hit["text"] == document.strip()
+            assert len(hit["text"]) > 500 and "cannot be returned" not in hit["snippet"]
+            assert hit["line"] == 3 and hit["end_line"] == 5
+            assert hit["page"] is None and hit["end_page"] is None
+            assert hit["snippet"][slice(*hit["highlights"][0])] == "apple"
+            for include in ({}, {"include_text": False}):
+                default = await client.post(
+                    "/v1/local-search/search", json={"query": "apple", **include}
+                )
+                original = default.json()["results"][0]
+                assert not {"text", "end_line", "end_page"}.intersection(original)
+                assert {
+                    k: v
+                    for k, v in hit.items()
+                    if k not in {"text", "end_line", "end_page"}
+                } == original
+
+    asyncio.run(scenario())
+
+
+def test_search_full_pdf_chunk_keeps_page_extent(tmp_path, monkeypatch):
+    async def scenario():
+        root = folder(tmp_path)
+        (root / "pages.pdf").write_bytes(small_pdf())
+        async with client_app(tmp_path, monkeypatch) as (client, app, fake):
+            await client.post("/v1/local-search/folders", json={"path": str(root)})
+            await app.state.local_search.wait_idle()
+            response = await client.post(
+                "/v1/local-search/search",
+                json={"query": "Second", "include_text": True},
+            )
+            hit = response.json()["results"][0]
+            assert hit["text"] == "Second"
+            assert hit["page"] == hit["end_page"] == 2
+            assert hit["line"] is None and hit["end_line"] is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_opt_in_text_absent_for_media_and_name_only_hits(
+    tmp_path, monkeypatch, grouped
+):
+    from PIL import Image
+
+    async def scenario():
+        root = folder(tmp_path)
+        (root / "policy.txt").write_text("apple returns policy")
+        (root / "apple.rtf").write_text("unindexed sensitive content")
+        Image.new("RGB", (8, 8), "red").save(root / "apple.png")
+        async with client_app(tmp_path, monkeypatch) as (client, app, fake):
+            await client.post("/v1/local-search/folders", json={"path": str(root)})
+            await app.state.local_search.wait_idle()
+            payload = {"query": "apple", "include_text": True}
+            if grouped:
+                payload["group_limit"] = 5
+            response = await client.post("/v1/local-search/search", json=payload)
+            assert response.status_code == 200
+            body = response.json()
+            hits = body["results"] + [
+                hit for group in body.get("groups", []) for hit in group["results"]
+            ]
+            assert {Path(hit["path"]).name for hit in hits} == {
+                "policy.txt",
+                "apple.rtf",
+                "apple.png",
+            }
+            for hit in hits:
+                if Path(hit["path"]).name == "policy.txt":
+                    assert hit["text"] == "apple returns policy"
+                    assert hit["line"] == hit["end_line"] == 1
+                else:
+                    assert hit["text"] is hit["end_line"] is hit["end_page"] is None
+
+    asyncio.run(scenario())
+
+
+def test_opt_in_chunk_extent_after_overlap_survives_existing_index_reopen(tmp_path):
+    async def scenario():
+        root = folder(tmp_path)
+        document = (
+            "\n  \n"
+            + "".join(f"Intro {n}: shipping policy background.\n" for n in range(100))
+            + "  apple final answer\nThe refund window is 30 days.\n  \n"
+        )
+        (root / "policy.txt").write_text(document)
+        search = engine(tmp_path)
+        try:
+            await search.add_folder(str(root))
+            await search.wait_idle()
+            assert len(search.store.rows()) > 1
+        finally:
+            await search.close()
+        reopened = engine(tmp_path)
+        try:
+            hit = (await reopened.search("apple", 1, None, include_text=True))[
+                "results"
+            ][0]
+            assert "apple final answer" in hit["text"] and "\n" in hit["text"]
+            position = document.index(hit["text"])
+            assert hit["line"] == document[:position].count("\n") + 1
+            assert (
+                hit["end_line"]
+                == document[: position + len(hit["text"])].count("\n") + 1
+            )
+            assert hit["text"] == hit["text"].strip()
+        finally:
+            await reopened.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid", [None, {}, [], "not a boolean"])
+def test_search_rejects_invalid_include_text(tmp_path, monkeypatch, invalid):
+    async def scenario():
+        async with client_app(tmp_path, monkeypatch) as (client, app, fake):
+            response = await client.post(
+                "/v1/local-search/search",
+                json={"query": "apple", "include_text": invalid},
+            )
+            assert response.status_code == 400
+            assert "include_text" in response.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_full_chunk_text_on_closest_fallback(tmp_path, monkeypatch, grouped):
+    async def scenario():
+        root = folder(tmp_path)
+        for n in range(4):
+            (root / f"file{n}.txt").write_text(f"apple policy {n}\nsecond line")
+        search = engine(tmp_path)
+        try:
+            await search.add_folder(str(root))
+            await search.wait_idle()
+            monkeypatch.setattr(
+                search.store._store,
+                "semantic_scores",
+                lambda _, rows: [(i, 0.1 + 0.01 * n) for n, i in enumerate(rows)],
+            )
+            monkeypatch.setattr(
+                search.store._store,
+                "semantic_background",
+                lambda _: dict.fromkeys(("text", "image", "video"), 1.0),
+            )
+            response = await search.search(
+                "unrelated question",
+                3,
+                None,
+                group_limit=1 if grouped else None,
+                include_text=True,
+            )
+            assert len(response["results"]) == 3
+            hits = response["results"] + [
+                hit for group in response.get("groups", []) for hit in group["results"]
+            ]
+            for hit in hits:
+                assert hit["matched"] == ["closest"]
+                assert hit["text"] == Path(hit["path"]).read_text()
+                assert hit["line"] == 1 and hit["end_line"] == 2
+        finally:
+            await search.close()
+
+    asyncio.run(scenario())
