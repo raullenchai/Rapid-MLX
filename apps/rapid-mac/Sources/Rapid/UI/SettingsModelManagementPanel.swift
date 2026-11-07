@@ -894,7 +894,9 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(Self.pickStatsLine(pick))
+                    Text(Self.pickStatsLine(pick, repoID: entry.hfRepo, hardware: hardware))
+                        .help(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
+                        .accessibilityValue(DecodeExpectations.summary(alias: pick.alias, repoID: entry.hfRepo, hardware: hardware))
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(2)
@@ -944,27 +946,19 @@ struct SettingsModelManagementPanel: View {
         .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(isPrimary ? "primary" : "alt")")
     }
 
-    /// Peak memory for an 8K prompt, capability, and measured speed.
-    /// Compact stats line under a recommended card's model name:
-    /// "7.6 GB memory · 86% capability · ~17 tok/s" (tok/s omitted when we have
-    /// no local measurement for that tier). When the pick carries a
-    /// ``caveat`` (e.g. a chat specialist), that word replaces the
-    /// capability % — "4.8 GB memory · ~117 tok/s · Chat only" — because the
-    /// blended score would understate conversation and overstate the rest.
-    static func pickStatsLine(_ pick: RAMBucketedDefault.Pick) -> String {
+    /// Working-set memory, capability or caveat, and a compact chip-specific
+    /// catalog-default decode reference. The card's help and accessibility
+    /// value carry the measured sample count and RAM scope; unavailable data
+    /// never inherits an unqualified speed from another Mac.
+    static func pickStatsLine(_ pick: RAMBucketedDefault.Pick, repoID: String? = nil, hardware: MacHardware = .detect()) -> String {
         let size = DownloadProgress.formatMemory(DownloadProgress.bytes(fromDouble: pick.footprintGB * Double(1 << 30)))
         var parts = [String(localized: "\(size) memory")]
         if let caveat = pick.caveat {
-            if let tps = pick.tokensPerSec {
-                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
-            }
             parts.append(caveat)
         } else {
             parts.append(String(localized: "\(pick.capabilityPct)% capability"))
-            if let tps = pick.tokensPerSec {
-                parts.append(String(localized: "~\(Int(tps.rounded())) tok/s"))
-            }
         }
+        parts.append(DecodeExpectations.summary(alias: pick.alias, repoID: repoID, hardware: hardware, compact: true))
         return parts.joined(separator: " · ")
     }
 
