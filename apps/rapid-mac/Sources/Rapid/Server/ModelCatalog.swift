@@ -2551,8 +2551,8 @@ enum ModelCatalog {
             // a race — the ``drainGroup.enter`` calls happened AFTER
             // ``task.run()``. A fast-exit child (``rapid-mlx ls``
             // <5 ms) would fire the termination handler BEFORE the
-            // drainers entered the group; ``drainGroup.wait`` with
-            // zero entries returns immediately, the continuation
+            // drainers entered the group; a group notification with
+            // zero entries fires immediately, the continuation
             // resumes with empty stdout, and the picker shows an
             // empty catalog.
             //
@@ -2584,15 +2584,16 @@ enum ModelCatalog {
             }
 
             task.terminationHandler = { _ in
-                drainGroup.wait()
-                processRegistry.remove(task)
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: RapidMlxResult(
-                        stdout: text,
-                        succeeded: task.terminationStatus == 0
-                    ))
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processRegistry.remove(task)
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        let text = String(data: stdoutBox.data, encoding: .utf8) ?? ""
+                        continuation.resume(returning: RapidMlxResult(
+                            stdout: text,
+                            succeeded: task.terminationStatus == 0
+                        ))
+                    }
                 }
             }
 
@@ -2607,21 +2608,25 @@ enum ModelCatalog {
             } catch {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
-                drainGroup.wait()
-                processRegistry.remove(task)
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                // A cooperative task must suspend while global pipe readers
+                // finish; synchronously waiting here can starve those readers.
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processRegistry.remove(task)
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                    }
                 }
                 return
             }
             guard launched else {
                 try? stdout.fileHandleForWriting.close()
                 try? stderr.fileHandleForWriting.close()
-                drainGroup.wait()
-                processBox.clear(task)
-                if resumedBox.tryConsume() {
-                    continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                drainGroup.notify(queue: .global(qos: .utility)) {
+                    processBox.clear(task)
+                    if resumedBox.tryConsume() {
+                        continuation.resume(returning: RapidMlxResult(stdout: "", succeeded: false))
+                    }
                 }
                 return
             }

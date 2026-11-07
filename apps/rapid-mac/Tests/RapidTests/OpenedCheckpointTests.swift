@@ -38,8 +38,9 @@ struct OpenedCheckpointTests {
             .write(to: root.appendingPathComponent("fallback-path.txt"))
         let script = root.appendingPathComponent("inspector.py")
         try Data(#"""
-        #!/usr/bin/python3
+        #!/usr/bin/env python3
         import json, os, pathlib, sys, time
+        if '--fixture-ping' in sys.argv: sys.exit(0)
         root=pathlib.Path(__file__).parent
         if len(sys.argv)>2 and sys.argv[1]=='serve' and not sys.argv[2].startswith('-'):
             (root/'served-model.json').write_text(json.dumps(sys.argv[2]))
@@ -79,6 +80,19 @@ struct OpenedCheckpointTests {
         print(json.dumps(dict(schema=1,local_checkpoints=rows)))
         """#.utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        // Fail at the fixture boundary if its interpreter or executable is
+        // unavailable, instead of hiding that launch error in catalog probes.
+        let ping = Process()
+        ping.executableURL = script
+        ping.arguments = ["--fixture-ping"]
+        ping.standardOutput = FileHandle.nullDevice
+        ping.standardError = FileHandle.nullDevice
+        try ping.run()
+        ping.waitUntilExit()
+        guard ping.terminationStatus == 0 else {
+            throw NSError(domain: "OpenedCheckpointFixture", code: Int(ping.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "The checkpoint test fixture could not run using PATH python3."])
+        }
         return script
     }
 
@@ -247,6 +261,24 @@ struct OpenedCheckpointTests {
         #expect(probe.observed)
         #expect(OpenedCheckpoints.paths(defaults: prefs).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("inspect-called").path))
+    }
+
+    @Test func invalidPickedPathShowsReasonBeforeInspectOrRegistration() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (prefs, domain) = defaults(); defer { prefs.removePersistentDomain(forName: domain) }
+        let binary = try inspector(root)
+        let invalid = root.appendingPathComponent("bad\nname")
+        try FileManager.default.createDirectory(at: invalid, withIntermediateDirectories: true)
+        let downloads = DownloadManager(binaryPath: binary, binaryLocator: { binary })
+        let stage = viewport(SettingsModelManagementPanel(checkpointDefaults: prefs, checkpointDirectory: { invalid })
+            .environment(ServerManager(testingState: .stopped, binaryPath: binary, sessionDefaults: prefs))
+            .environment(downloads), size: CGSize(width: 520, height: 720))
+        try await stage.waitForIdentifier("Settings.ModelManagement.OpenCheckpoint")
+        try stage.press("Settings.ModelManagement.OpenCheckpoint")
+        try await stage.waitForIdentifier("Settings.ModelManagement.DismissCheckpointError")
+        #expect(stage.treeText().contains(LocalCheckpointError.rejected("invalid_path").localizedDescription))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("inspect-called").path))
+        #expect(OpenedCheckpoints.paths(defaults: prefs).isEmpty && downloads.jobs.isEmpty)
     }
 
     @Test(arguments: [520.0, 900.0]) func rejectedDirectoryHasVisibleLocalRemedyAndNoRegistration(width: Double) async throws {

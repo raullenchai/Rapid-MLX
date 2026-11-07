@@ -267,7 +267,7 @@ struct ModelPickerBar: View {
         var seen = Set<String>()
         return resolved.compactMap { item in
             guard seen.insert(item.pick.alias.lowercased()).inserted,
-                  let entry = entries.first(where: { ModelReference.matches($0.alias, item.pick.alias) }) else {
+                  let entry = entries.first(where: { $0.alias.caseInsensitiveCompare(item.pick.alias) == .orderedSame }) else {
                 return nil
             }
             return (item.pick, entry, item.isPrimary)
@@ -1593,30 +1593,29 @@ struct ModelPickerBar: View {
     private var selectedAliasIsCached: Bool {
         catalog.first(where: { $0.alias == alias })?.cached ?? false
     }
-    private var selectedAliasUsesLocalFiles: Bool { alias.hasPrefix("/") }
 
     private var startButtonLabel: String {
         // Two-step: name one action at a time. Uncached ⇒ "Download" (fetch
         // only); once on disk the same button becomes "Start" (load). Matches
         // the readiness banner so both controls speak the same verb.
-        selectedAliasIsCached || selectedAliasUsesLocalFiles ? String(localized: "Start") : String(localized: "Download")
+        selectedAliasIsCached ? String(localized: "Start") : String(localized: "Download")
     }
 
     private var startButtonIcon: String {
-        selectedAliasIsCached || selectedAliasUsesLocalFiles ? "play.fill" : "icloud.and.arrow.down"
+        selectedAliasIsCached ? "play.fill" : "icloud.and.arrow.down"
     }
 
     /// Start-button fill. v0.6: the brand amber #EFA23A for a cached
     /// start (matches the New chat CTA); the uncached download click
     /// stays orange to flag "this will take a while."
     private var startButtonTint: Color {
-        selectedAliasIsCached || selectedAliasUsesLocalFiles ? RapidTheme.amber : .orange
+        selectedAliasIsCached ? RapidTheme.amber : .orange
     }
 
     /// Legible label colour for the Start fill: dark graphite on the
     /// light amber, white on the darker download-orange.
     private var startLabelColor: Color {
-        selectedAliasIsCached || selectedAliasUsesLocalFiles
+        selectedAliasIsCached
             ? Color(nsColor: NSColor(deviceWhite: 0.13, alpha: 1.0))
             : .white
     }
@@ -1629,7 +1628,6 @@ struct ModelPickerBar: View {
         if ModelPickerBar.isQuickstartInFlight(phase: quickstart?.phase) {
             return String(localized: "Quickstart download in progress")
         }
-        if selectedAliasUsesLocalFiles { return String(localized: "Check and start this local checkpoint.") }
         return selectedAliasIsCached
             ? String(localized: "Start the model (cached locally)")
             : String(localized: "Download the weights from Hugging Face. Start it once the download finishes. Can take several minutes on first run.")
@@ -1651,14 +1649,14 @@ struct ModelPickerBar: View {
     /// ``server.start(alias:)`` call fires either immediately (safe
     /// fit) or from the alert's "Start anyway" handler.
     private func handleStartTap() {
-        let trimmed = ModelReference.normalized(alias)
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Two-step: an uncached tap only DOWNLOADS. No .tooBig / memory guard
         // here — those belong to Start, once the weights are on disk and the
         // user asks to load them. The button flips to "Start" when the pull
         // lands (``selectedAliasIsCached``). Matches the readiness banner's
         // ``download`` action.
-        if !selectedAliasIsCached && !selectedAliasUsesLocalFiles {
+        if !selectedAliasIsCached {
             let entry = catalog.first(where: { $0.alias == trimmed })
             if !downloads.isDownloading(trimmed) {
                 _ = downloads.startDownload(alias: trimmed, hfPath: entry?.hfRepo, totalBytes: entry?.displayedModelSize?.byteCount)
@@ -1685,15 +1683,13 @@ struct ModelPickerBar: View {
                 generation: catalogGeneration
             )
         }
-        let requiresCheckpointInspection = server.isOpenedCheckpoint(trimmed)
         // Launch flags are applied inside ServerManager.start (one choke
         // point for every start path), RAM-gated to the recommended pick.
         Task {
             await server.start(
                 alias: trimmed,
                 hfPath: hfPath,
-                catalogEntryHint: catalogEntryHint,
-                requiresCheckpointInspection: requiresCheckpointInspection
+                catalogEntryHint: catalogEntryHint
             )
         }
     }
@@ -1801,7 +1797,7 @@ struct ModelPickerBar: View {
     /// Commit the typed alias. Shared by Return-in-field and the Use
     /// button so both paths behave identically.
     private func commitCustomAlias() {
-        let trimmed = ModelReference.normalized(customDraft)
+        let trimmed = customDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             onUserSelection(trimmed)
             alias = trimmed
@@ -1830,7 +1826,7 @@ struct ModelPickerBar: View {
         if ModelPickerBar.isQuickstartInFlight(phase: quickstart?.phase) {
             return false
         }
-        let trimmed = ModelReference.normalized(alias)
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty
     }
 

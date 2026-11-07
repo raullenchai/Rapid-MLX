@@ -16,6 +16,11 @@ struct OpenedCheckpointRealUserTests {
         let selected = URL(fileURLWithPath: path)
         let fixture = OpenedCheckpointTests()
         let (prefs, domain) = fixture.defaults(); defer { prefs.removePersistentDomain(forName: domain) }
+        // Catalog readers use standard defaults in production. Mirror only
+        // this process's isolated registration in the volatile argument domain;
+        // never write the user's persisted preferences.
+        let previousArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        defer { UserDefaults.standard.setVolatileDomain(previousArguments, forName: UserDefaults.argumentDomain) }
         let originalFolder = ModelsFolderPreference.storedPath(defaults: prefs)
         let weights = selected.appendingPathComponent("model.safetensors")
         let originalBytes = try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize
@@ -29,6 +34,9 @@ struct OpenedCheckpointRealUserTests {
         try settings.press("Settings.ModelManagement.OpenCheckpoint")
         try await settings.wait(for: "real checkpoint registered") { OpenedCheckpoints.paths(defaults: prefs) == [path] }
         try await settings.waitForIdentifierGone("Settings.ModelManagement.CheckingCheckpoint")
+        var arguments = previousArguments
+        arguments[OpenedCheckpoints.storageKey] = [path]
+        UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
         let entries = await ModelCatalog.load(binary: binary, openedPaths: OpenedCheckpoints.paths(defaults: prefs))
         let entry = try #require(entries.first { $0.alias == path })
         #expect(entry.cached && entry.isExternal && entry.hfRepo == nil)
@@ -63,14 +71,27 @@ struct OpenedCheckpointRealUserTests {
             let answer = model.messages.filter { $0.role == .assistant }.map(\.content).joined(separator: "\n")
             #expect(!answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(server.servingAlias == path)
+            #expect(ServerManager.lastServedAlias(defaults: prefs) == path)
+            #expect(SessionModelRestore.resolve(legacyLastAlias: ServerManager.lastServedAlias(defaults: prefs), dictationAlias: nil,
+                speechAlias: nil, catalog: entries).chatAlias == path)
             #expect(model.messages.last(where: { $0.role == .assistant })?.status == .complete)
+            try await chat.wait(for: "complete answer rendered in native transcript") {
+                chat.tree().contains { $0.text == answer }
+            }
             try chat.writeScreenshot(to: artifacts.appendingPathComponent("real-chat-900.png"))
             try JSONSerialization.data(withJSONObject: ["path": path, "answer": answer,
                 "external": entry.isExternal, "hf_repo_absent": entry.hfRepo == nil,
                 "download_jobs": downloads.jobs.count], options: [.prettyPrinted, .sortedKeys])
                 .write(to: artifacts.appendingPathComponent("native-answer.json"))
+            await model.regenerateLast(usingAlias: path)
+            await model._testingWaitForCurrentTurn()
+            #expect(model.lastError == nil)
+            #expect(server.servingAlias == path)
+            #expect(model.messages.last(where: { $0.role == .assistant })?.status == .complete)
             try settings.press("Settings.ModelManagement.RemoveCheckpoint.\(path)")
             try await settings.wait(for: "reference forgotten") { OpenedCheckpoints.paths(defaults: prefs).isEmpty }
+            arguments[OpenedCheckpoints.storageKey] = [String]()
+            UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
             #expect(FileManager.default.fileExists(atPath: weights.path))
             #expect(try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize == originalBytes)
             #expect(ModelsFolderPreference.storedPath(defaults: prefs) == originalFolder)
