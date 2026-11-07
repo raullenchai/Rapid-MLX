@@ -188,6 +188,29 @@ def test_inspection_never_executes_checkpoint_python(tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("name", ["ordinary-chat", "renamed", "tts"])
+def test_backbone_typed_dflash_is_not_a_standalone_chat_checkpoint(
+    tmp_path, monkeypatch, name
+):
+    monkeypatch.setattr(pf, "supported_model_types", lambda: frozenset({"qwen3"}))
+    monkeypatch.setattr(pf, "chat_model_types", lambda: frozenset({"qwen3"}))
+    base = {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}
+    ordinary = checkpoint(tmp_path / "ordinary", **base)
+    sidecar = checkpoint(
+        tmp_path / name,
+        **base,
+        dflash_config={
+            "mask_token_id": 151669,
+            "target_layer_ids": [1, 8, 15],
+            "num_target_layers": 32,
+        },
+    )
+    positive, negative = inspect_local_checkpoints([str(ordinary), str(sidecar)])
+    assert positive["ready"] is True
+    assert negative["ready"] is False
+    assert negative["reason"] == "unsupported_chat_model"
+
+
 def test_strict_inventory_error_is_not_an_empty_inventory(monkeypatch):
     def unavailable():
         raise OSError("inventory unavailable")

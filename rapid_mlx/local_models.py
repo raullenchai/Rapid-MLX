@@ -151,6 +151,11 @@ def _uncataloged_chat(
     if name_hints and segments[-1] in ("draft", "drafter"):
         return None
     config = inspection.config
+    # Sidecars can retain the ordinary backbone's model_type/architecture.
+    # The drafter loader normalizes these using this explicit metadata block;
+    # a declared sidecar is not a standalone chat checkpoint, whatever its name.
+    if config.get("dflash_config") is not None:
+        return None
     # Only text and vision loaders give a chat model; speech checkpoints with a
     # causal or conditional-generation head are never a chat default.
     model_type = config.get("model_type")

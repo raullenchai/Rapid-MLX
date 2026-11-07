@@ -3754,6 +3754,21 @@
        "type": null
       },
       {
+       "class": "argparse._AppendAction",
+       "completer": null,
+       "const": null,
+       "default": null,
+       "dest": "inspect_local",
+       "help": "Offline inspection of an existing chat checkpoint (requires --json; up to 32 directories). Does not import or download files.",
+       "metavar": "DIRECTORY",
+       "nargs": null,
+       "option_strings": [
+        "--inspect-local"
+       ],
+       "required": false,
+       "type": null
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -3822,6 +3837,7 @@
        "dests": [
         "help",
         "cached",
+        "inspect_local",
         "json",
         "search",
         "modality"
