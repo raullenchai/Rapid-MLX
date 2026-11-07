@@ -2233,6 +2233,14 @@ private struct MessageRow: View {
                     .font(.rapid(.caption))
                     .foregroundStyle(.tertiary)
             }
+            if let metrics = message.generationMetrics {
+                DisclosureGroup(String(localized: "Generation details")) {
+                    Text(metrics.detailText).font(.rapid(.caption)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .accessibilityIdentifier("Chat.GenerationDetails")
+                .font(.rapid(.caption)).foregroundStyle(.secondary)
+            }
             if showsAssistantActions {
                 assistantActions
             }

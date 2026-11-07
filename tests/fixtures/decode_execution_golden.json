@@ -1,0 +1,369 @@
+[
+  {
+    "name": "exact frozen host plain generation",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": true,
+    "rate": 40.0
+  },
+  {
+    "name": "missing host never uses desktop",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "RAM mismatch never nearest",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 68719476736
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "chip variant mismatch",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Max",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "unknown execution remains unknown",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "unknown",
+        "repo_id": null,
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "mixed execution never plain",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "mixed",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "mixed",
+        "backend": "mixed",
+        "config_key": null,
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "wrong configured K",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "mtp",
+        "backend": "ordinary",
+        "config_key": "mtp:embedded_head:k=5:ordinary",
+        "completion_tokens": 4,
+        "assistant_source": "embedded_head",
+        "max_draft_tokens": 3
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": false,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "private repo rejected",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "/private/models",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": false,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "unrecognized chip rejected",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "Apple M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": false,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "single token has no decode interval",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 1
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "missing server interval never client arithmetic",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "unrelated metadata dropped",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0,
+      "private_path": "/private/file",
+      "hostname": "private"
+    },
+    "valid": true,
+    "cohort": true,
+    "rate": 40.0
+  },
+  {
+    "name": "version default matches server schema",
+    "metrics": {
+      "execution_reference": {
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": true,
+    "rate": 40.0
+  },
+  {
+    "name": "unknown private inner execution_reference",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4,
+        "private_path": "/private/unsupported"
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": false,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "unknown private inner execution_host",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368,
+        "private_path": "/private/unsupported"
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": false,
+    "cohort": false,
+    "rate": null
+  },
+  {
+    "name": "missing TTFT has no comparative reference",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
+        "method": "none",
+        "backend": "ordinary",
+        "config_key": "none",
+        "completion_tokens": 4
+      },
+      "execution_host": {
+        "chip": "M2 Pro",
+        "memory_bytes": 34359738368
+      },
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  }
+]

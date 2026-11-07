@@ -35,6 +35,7 @@ FORMAT_VERSION = 1
 WIRE_VERSION = 1
 CAPABILITIES = {
     "grounded_folder_chat_v1": True,
+    "generation_metrics_v1": True,
     "streaming": True,
     "replay": True,
     "branches": True,

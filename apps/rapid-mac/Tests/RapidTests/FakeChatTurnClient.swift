@@ -12,6 +12,18 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    private var generationGate: (@Sendable () async -> Void)?
+    func setGenerationGate(_ value: @escaping @Sendable () async -> Void) { generationGate = value }
+    private var savedGeneration: GenerationMetrics?
+    private var generationMessageID = "final"
+    private(set) var generationReads = 0
+    func setGeneration(_ value: GenerationMetrics, messageID: String) { savedGeneration = value; generationMessageID = messageID }
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? {
+        generationReads += 1
+        await generationGate?()
+        return savedGeneration.map { SavedGenerationMetrics(turnID: turnID, messageID: generationMessageID, metrics: $0) }
+    }
+
     private(set) var sourcePreviewCalls: [(String, String)] = []
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview {
         sourcePreviewCalls.append((conversationID, attachmentID))

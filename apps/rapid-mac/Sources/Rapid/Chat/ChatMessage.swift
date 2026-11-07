@@ -349,6 +349,7 @@ struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable
 /// store for indexed mutation while a stream is in flight.
 struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     var ownerSource: ChatWireSource? = nil
+    var generationMetrics: GenerationMetrics? = nil
     enum Role: String, Codable, Sendable {
         case user
         case assistant
@@ -674,7 +675,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// for that one key and defers all other fields to the standard
     /// container shape.
     enum CodingKeys: String, CodingKey {
-        case id, role, content, imageAttachments, imageDeliveryStatus, ownerSource
+        case id, role, content, imageAttachments, imageDeliveryStatus, ownerSource, generationMetrics
         case fileAttachments, reasoning, status
         case errorMessage, failureKind, toolCalls, toolCallID
         case stats, reasoningTruncated, contentTruncated
@@ -708,6 +709,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(ownerSource, forKey: .ownerSource)
+        try c.encodeIfPresent(generationMetrics, forKey: .generationMetrics)
         try c.encode(id, forKey: .id)
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
@@ -738,6 +740,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.ownerSource = try c.decodeIfPresent(ChatWireSource.self, forKey: .ownerSource)
+        self.generationMetrics = try? c.decodeIfPresent(GenerationMetrics.self, forKey: .generationMetrics)
         self.id = try c.decode(UUID.self, forKey: .id)
         self.role = try c.decode(Role.self, forKey: .role)
         self.content = try c.decode(String.self, forKey: .content)

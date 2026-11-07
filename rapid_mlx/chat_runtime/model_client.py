@@ -4,10 +4,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from .execution_metrics import ExecutionChatModel
 from .loopback_transport import AsyncLoopbackTransport
 
 
@@ -38,7 +38,7 @@ class ModelClients:
             follow_redirects=False,
         )
         self._clients: dict[tuple[str, str], AsyncOpenAI] = {}
-        self._models: dict[tuple[str, str, str], OpenAIChatModel] = {}
+        self._models: dict[tuple[str, str, str], ExecutionChatModel] = {}
 
     def model(self, endpoint: str, model: str, credential: str | None = None):
         endpoint = inference_url(endpoint)
@@ -52,7 +52,7 @@ class ModelClients:
             )
         model_key = (*key, model)
         if model_key not in self._models:
-            self._models[model_key] = OpenAIChatModel(
+            self._models[model_key] = ExecutionChatModel(
                 model,
                 provider=OpenAIProvider(openai_client=self._clients[key]),
                 profile=OpenAIModelProfile(

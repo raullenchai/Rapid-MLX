@@ -7390,10 +7390,13 @@ async def _stream_buffered_chat_response(
                     "speculative_decoding",
                     "prompt_compression",
                     "execution_reference",
+                    "execution_host",
                 },
             )
             or None
         )
+        if response.metrics.execution_host is not None:
+            terminal.execution_host = response.metrics.execution_host.model_dump()
         if response.metrics.execution_reference is not None:
             terminal.execution_reference = (
                 response.metrics.execution_reference.model_dump(exclude_none=True)

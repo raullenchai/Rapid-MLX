@@ -11,6 +11,7 @@ protocol ChatTurnClient: Sendable {
     func ownerStoreUUID() async throws -> UUID?
     func deleteConversation(id: String) async throws
     func supportsFolderChat() async throws -> Bool
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics?
     func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview
     func uploadAttachment(conversationID: String, name: String, data: Data) async throws -> String
@@ -36,6 +37,7 @@ extension ChatTurnClient {
     func ownerStoreUUID() async throws -> UUID? { nil }
     func deleteConversation(id: String) async throws { throw ChatTurnClientError.invalidResponse }
     func supportsFolderChat() async throws -> Bool { false }
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? { nil }
     func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { throw ChatTurnClientError.invalidResponse }
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview { throw ChatTurnClientError.invalidResponse }
 
@@ -125,6 +127,18 @@ actor URLSessionChatTurnClient: ChatTurnClient {
         guard case .object(let value) = response,
               case .object(let capabilities) = value["capabilities"] else { return false }
         return capabilities["grounded_folder_chat_v1"] == .bool(true)
+    }
+
+    func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? {
+        let capabilities: ChatWireJSON = try await json(["capabilities"], timeout: 5)
+        guard case .object(let value) = capabilities, case .object(let fields) = value["capabilities"],
+              fields["generation_metrics_v1"] == .bool(true) else { return nil }
+        let response: ChatWireJSON = try await json(["conversations", conversationID, "turns", turnID, "execution-metrics"], timeout: 5)
+        guard case .object(let body) = response, let generation = body["generation"], generation != .null else { return nil }
+        let data = try JSONEncoder().encode(generation)
+        let saved = try JSONDecoder().decode(SavedGenerationMetrics.self, from: data)
+        guard saved.turnID == turnID else { throw ChatTurnClientError.invalidResponse }
+        return saved
     }
 
     func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws {
@@ -287,8 +301,9 @@ actor URLSessionChatTurnClient: ChatTurnClient {
         guard http.mimeType?.lowercased() == contentType else { throw ChatTurnClientError.invalidResponse }
     }
 
-    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil) async throws -> T {
-        let request = try makeRequest(path, method: method, body: body)
+    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil, timeout: TimeInterval = 180) async throws -> T {
+        var request = try makeRequest(path, method: method, body: body)
+        request.timeoutInterval = timeout
         let (data, response) = try await session.data(for: request, delegate: redirectDelegate)
         try validate(response, contentType: "application/json")
         return try JSONDecoder().decode(T.self, from: data)

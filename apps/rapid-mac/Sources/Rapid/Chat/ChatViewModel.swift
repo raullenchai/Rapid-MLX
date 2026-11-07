@@ -1676,7 +1676,7 @@ final class ChatViewModel {
                 guard !Task.isCancelled, epoch == conversationEpoch else { break }
                 guard let projection = snapshot.projection else { continue }
                 ownerApprovals = ownerProjectionApprovals(projection, unavailable: snapshot.unavailablePermissions)
-                var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt)
+                var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt, generation: snapshot.generation)
                 if case .failed(let message) = snapshot.state { rows[0].status = .failed; rows[0].errorMessage = message }
                 rows[0].parentID = placeholder.parentID
                 for i in rows.indices.dropFirst() { rows[i].parentID = rows[i - 1].id }
@@ -4088,6 +4088,7 @@ Your previous draft refused the question by claiming you lack real-time access o
         // both fields may stay nil — non-conforming servers and
         // mid-stream cancellations leave them empty and the
         // stats caption falls back to the char-count estimate.
+        var capturedGenerationMetrics: GenerationMetrics?
         var capturedPromptTokens: Int?
         var capturedCompletionTokens: Int?
         // The instant the first GENERATED token lands, on whichever channel
@@ -4144,6 +4145,8 @@ Your previous draft refused the question by claiming you lack real-time access o
                 case .toolCalls(let calls):
                     capturedCalls = calls
                     current.toolCalls = calls
+                case .executionMetrics(let metrics):
+                    capturedGenerationMetrics = metrics
                 case .usage(let prompt, let completion):
                     capturedPromptTokens = prompt
                     capturedCompletionTokens = completion
@@ -4384,6 +4387,12 @@ Your previous draft refused the question by claiming you lack real-time access o
         // Skipped only when the message ended up ``.failed`` (a
         // crashed mid-stream "produced" 1.7 s and 41 chars but
         // that's noise, not throughput).
+        if current.status == .complete {
+            current.generationMetrics = capturedGenerationMetrics.flatMap { value in
+                capturedCompletionTokens == value.executionReference.completionTokens ? value : nil
+            }
+            writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
+        }
         if current.status == .complete && !current.content.isEmpty {
             let elapsed = streamStart.duration(to: client.now()).seconds
             current.stats = MessageStats(

@@ -595,7 +595,17 @@ class Store(ActionLedger, Subruns):
 
         return await self.writer.call(replay)
 
-    def _finish(self, db, turn_id, outcome, parts, usage, error_code, messages):
+    def _finish(
+        self,
+        db,
+        turn_id,
+        outcome,
+        parts,
+        usage,
+        error_code,
+        messages,
+        execution_metrics=None,
+    ):
         turn = self._turn(db, turn_id)
         if turn["status"] != "running":
             row = db.execute(
@@ -661,6 +671,21 @@ class Store(ActionLedger, Subruns):
                 )
             final_id = head
             self._advance(db, turn["branch_id"], branch["revision"], head)
+        if outcome == "completed" and final_id and execution_metrics is not None:
+            from ..execution_metrics import GenerationMetrics
+
+            metrics = GenerationMetrics.model_validate(execution_metrics).model_dump(
+                exclude_none=True
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)",
+                (
+                    "execution_turn:" + turn_id,
+                    encode(
+                        {"turn_id": turn_id, "message_id": final_id, "metrics": metrics}
+                    ),
+                ),
+            )
         self._finish_subruns(db, turn_id, outcome)
         self._interrupt_operations(db, turn_id)
         usage = clean_usage(usage)
@@ -733,13 +758,45 @@ class Store(ActionLedger, Subruns):
         return await self.writer.call(save)
 
     async def finish_turn(
-        self, turn_id, outcome, parts=None, usage=None, error_code=None, messages=None
+        self,
+        turn_id,
+        outcome,
+        parts=None,
+        usage=None,
+        error_code=None,
+        messages=None,
+        execution_metrics=None,
     ):
         return await self.writer.call(
             lambda db: self._finish(
-                db, turn_id, outcome, parts or [], usage or {}, error_code, messages
+                db,
+                turn_id,
+                outcome,
+                parts or [],
+                usage or {},
+                error_code,
+                messages,
+                execution_metrics,
             )
         )
+
+    async def execution_metrics(self, conversation_id, turn_id):
+        def read(db):
+            self._live(db, conversation_id)
+            turn = self._turn(db, turn_id)
+            if turn["conversation_id"] != conversation_id:
+                raise ValueError("turn does not belong to conversation")
+            if turn["status"] != "completed":
+                return None
+            row = db.execute(
+                "SELECT value FROM metadata WHERE key=?", ("execution_turn:" + turn_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            saved = json.loads(row[0])
+            return saved if saved["message_id"] == turn["final_message_id"] else None
+
+        return await self.writer.call(read)
 
     async def recover_interrupted(self):
         def recover(db):
