@@ -88,10 +88,14 @@ struct OpenedCheckpointRealUserTests {
             #expect(model.lastError == nil)
             #expect(server.servingAlias == path)
             #expect(model.messages.last(where: { $0.role == .assistant })?.status == .complete)
+            // NSArgumentDomain shadows suite values too. Restore it before
+            // checking the real persisted remove action, not after the wait.
+            UserDefaults.standard.setVolatileDomain(previousArguments, forName: UserDefaults.argumentDomain)
+            #expect(prefs.persistentDomain(forName: domain)?[OpenedCheckpoints.storageKey] as? [String] == [path])
+            #expect(OpenedCheckpoints.paths(defaults: prefs) == [path])
             try settings.press("Settings.ModelManagement.RemoveCheckpoint.\(path)")
             try await settings.wait(for: "reference forgotten") { OpenedCheckpoints.paths(defaults: prefs).isEmpty }
-            arguments[OpenedCheckpoints.storageKey] = [String]()
-            UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+            #expect(prefs.persistentDomain(forName: domain)?[OpenedCheckpoints.storageKey] as? [String] == [])
             #expect(FileManager.default.fileExists(atPath: weights.path))
             #expect(try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize == originalBytes)
             #expect(ModelsFolderPreference.storedPath(defaults: prefs) == originalFolder)
