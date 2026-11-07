@@ -47,7 +47,7 @@ private final class MetalMemoryTestProtocol: URLProtocol, @unchecked Sendable {
         let status = scenario == "Bearer unauthorized" ? 401 : 200
         let body: String
         switch scenario {
-        case "Bearer complete": body = #"{"metal":{"active_memory_gb":1.25}}"#
+        case "Bearer complete", "Bearer unauthorized": body = #"{"metal":{"active_memory_gb":1.25}}"#
         case "Bearer malformed": body = "invalid json"
         default: body = "{}"
         }

@@ -50,5 +50,17 @@ measurement explanation. `LocalizationTests|MetalMemory` passes all 35 tests.
 The same run observed the intended eight-node Metal section before the Model
 heading in Performance. The three Performance AX baselines now include that
 exact structure, including the unsupported-MTP state reached after the enabled
-state. No golden assertion was relaxed. Full GUI replay remains a CI check; the
-local worktree has no packaged Desktop app.
+state. No golden assertion was relaxed. Actual GUI replay with the head's CI-built release app passed both
+`settings-persistence` and `settings-mtp` (enabled and unsupported states).
+A scratch-only status fixture also exercised the real app: stopped engine →
+three dashes; live engine → 1.25/0.50/2.75 GB; HTTP 503 → three dashes; restored
+endpoint → values again; terminated child → three dashes; restarted child →
+values again. This verifies presentation and session recovery without claiming
+a real Metal/model measurement or downloading model weights.
+
+Adversarial review identified a masked 401 regression in the test fixture. The
+unauthorized response now includes valid Metal data, so only HTTP-status
+rejection can make that case return nil. Negative control: temporarily replace
+`(200...299).contains(http.statusCode)` with `http.statusCode >= 100`;
+`fetchHandlesMissingUnsupportedAndFailedResponses` must fail its nil assertion.
+The mutation is restored before the positive suite.
