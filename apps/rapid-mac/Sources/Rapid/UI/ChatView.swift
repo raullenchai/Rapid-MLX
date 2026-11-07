@@ -1881,7 +1881,7 @@ private struct MessageRow: View {
                 HStack {
                     Text(message.ownerSource?.title ?? String(localized: "Saved passage")).font(.headline)
                     Spacer()
-                    Button(String(localized: "Done")) { sourcePresented = false }.keyboardShortcut(.cancelAction)
+                    Button(String(localized: "Done")) { sourcePresented = false }.buttonStyle(.rapidSecondary).keyboardShortcut(.cancelAction)
                 }
                 Text(String(localized: "Saved with this answer. The original file may have changed."))
                     .font(.rapid(.caption)).foregroundStyle(.secondary)
@@ -1892,6 +1892,7 @@ private struct MessageRow: View {
                 else { ProgressView() }
             }
             .padding(20).frame(minWidth: 480, idealWidth: 640, minHeight: 280, idealHeight: 440)
+            .background(RapidTheme.surfaceCanvas)
             .accessibilityIdentifier("Chat.SavedSourcePreview")
             .task {
                 guard let source = message.ownerSource else { return }

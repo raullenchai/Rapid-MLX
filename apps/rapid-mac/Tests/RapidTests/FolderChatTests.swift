@@ -139,3 +139,50 @@ struct FolderChatPreparationTests {
         await owner.close()
     }
 }
+
+/// Opt-in dogfood against an owned real inference/owner pair. The external
+/// runner holds the project's GPU lock and prohibits downloads for its lifetime.
+@Suite("Folder chat real local user path") @MainActor
+struct FolderChatRealUserTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_FOLDER_REAL_OWNER_URL"] != nil))
+    func composerToRealOwnerAndSavedPassage() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let ownerURLString = try #require(env["RAPID_FOLDER_REAL_OWNER_URL"])
+        let ownerURL = try #require(URL(string: ownerURLString))
+        let portString = try #require(env["RAPID_FOLDER_REAL_INFERENCE_PORT"])
+        let port = try #require(Int(portString))
+        let folderID = try #require(env["RAPID_FOLDER_REAL_FOLDER_ID"])
+        let directory = try #require(env["RAPID_FOLDER_REVIEW_DIR"])
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let client = try URLSessionChatTurnClient(endpoint: ownerURL, bearer: "owned-folder-test")
+        let server = ServerManager(testingState: .ready(alias: "default"), activePort: port, activeBearer: "owned-inference-test", sessionDefaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, ownerWorkspace: URL(fileURLWithPath: directory), server: server, persistsConversations: false)
+        model.startFolderChat(folderID: folderID, title: "Owned policy documents")
+        let stage = GoldenStage(ChatView(viewModel: model, server: server, alias: .constant("default"), readiness: .ready(alias: "default"))
+            .environment(DownloadManager()).environment(QuickstartCoordinator()), size: CGSize(width: 720, height: 680))
+        try await stage.waitForIdentifier(AutosizingTextView.composeAccessibilityIdentifier)
+        try stage.setValue("Can hand-dyed yarn wound into a ball be returned?", for: AutosizingTextView.composeAccessibilityIdentifier)
+        try stage.submitComposer()
+        await model._testingWaitForCurrentTurn()
+        #expect(model.lastError == nil)
+        let answer = model.messages.filter { $0.role == .assistant }.map(\.content).joined(separator: "\n")
+        #expect(answer.lowercased().contains("cannot") || answer.lowercased().contains("no"))
+        #expect(answer.contains("[1]"))
+        let source = try #require(model.messages.compactMap(\.ownerSource).first)
+        #expect(source.url == nil)
+        let sourceID = "Chat.SavedSource." + source.sourceID
+        try await stage.waitForIdentifier(sourceID)
+        try stage.writeScreenshot(to: URL(fileURLWithPath: directory).appendingPathComponent("real-folder-answer.png"))
+        try stage.press(sourceID)
+        try await stage.waitForIdentifier("Chat.SavedSourcePreview")
+        try await stage.waitForText("cannot be returned")
+        let saved = try await model.folderSourcePreview(source)
+        #expect(saved.text.contains("Supporting policy context."))
+        #expect(saved.text.contains("cannot be returned"))
+        stage.pressEscape()
+        try await stage.waitForIdentifierGone("Chat.SavedSourcePreview")
+        let receipt: [String: String] = ["answer": answer, "source_id": source.sourceID, "attachment_id": source.attachmentID ?? "", "saved_text": saved.text, "owner_conversation_id": model.conversations.first?.ownerConversationID ?? ""]
+        try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-native-receipt.json"))
+    }
+}
