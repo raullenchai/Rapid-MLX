@@ -279,3 +279,13 @@ def test_backend_owned_or_unqualified_presets_never_assume_ordinary_decode():
     assert "configuration unavailable" in de.summary(
         resolve("qwen3.8-flash-next-tensorfold", "M4", 4096)
     )
+
+
+def test_packaging_snapshot_requires_object(monkeypatch):
+    de.snapshot.cache_clear()
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", lambda *a, **k: "[]")
+        with pytest.raises(ValueError, match="JSON object"):
+            de.snapshot()
+    de.snapshot.cache_clear()
+    assert de.snapshot()["schema_version"] == 1

@@ -18,7 +18,12 @@ from typing import Any
 
 @lru_cache(maxsize=1)
 def snapshot() -> dict[str, Any]:
-    return json.loads(Path(__file__).with_name("decode_expectations.json").read_text())
+    payload: object = json.loads(
+        Path(__file__).with_name("decode_expectations.json").read_text()
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("decode expectation snapshot must be a JSON object")
+    return payload
 
 
 def chip_name(brand: str) -> str | None:
@@ -81,8 +86,12 @@ def expectation(
 
 def summary(value: dict[str, Any], *, compact: bool = False) -> str:
     """One display contract for models, doctor and cross-language vectors."""
-    method = {"mtp": "MTP on", "none": "MTP off"}.get(
-        value.get("method"), "configuration unavailable"
+    method = (
+        "MTP on"
+        if value.get("method") == "mtp"
+        else "MTP off"
+        if value.get("method") == "none"
+        else "configuration unavailable"
     )
     if value["status"] == "measured":
         feel = (
