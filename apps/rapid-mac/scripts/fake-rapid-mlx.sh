@@ -1467,6 +1467,7 @@ def main():
             "command",
             subcommand=args.subcommand,
             alias=args.alias,
+            checkpoint_inspection="--inspect-local" in sys.argv,
             pid=os.getpid(),
             do_not_track=os.environ.get("DO_NOT_TRACK"),
         )

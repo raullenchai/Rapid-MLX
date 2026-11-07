@@ -96,10 +96,10 @@ struct SessionModelRestore: Equatable, Sendable {
 
     private static func validated(_ raw: String?, in aliases: [String]) -> String? {
         guard let raw else { return nil }
-        let alias = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alias = ModelReference.normalized(raw)
         guard !alias.isEmpty else { return nil }
         return aliases.first {
-            $0.caseInsensitiveCompare(alias) == .orderedSame
+            ModelReference.matches($0, alias)
         }
     }
 }
