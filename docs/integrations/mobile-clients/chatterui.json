@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "Rapid-MLX (your Mac)",
+  "defaultValues": {
+    "endpoint": "http://192.0.2.10:8000/v1/chat/completions",
+    "modelEndpoint": "http://192.0.2.10:8000/v1/models",
+    "prefill": "", "firstMessage": "", "key": "", "model": ""
+  },
+  "features": {
+    "usePrefill": false, "useFirstMessage": false,
+    "useKey": true, "useModel": true, "multipleModels": false
+  },
+  "request": {
+    "requestType": "stream",
+    "samplerFields": [
+      {"externalName": "max_tokens", "samplerID": "genamt"},
+      {"externalName": "stream", "samplerID": "streaming"},
+      {"externalName": "temperature", "samplerID": "temp"},
+      {"externalName": "top_p", "samplerID": "top_p"}
+    ],
+    "completionType": {
+      "type": "chatCompletions", "userRole": "user", "systemRole": "system",
+      "assistantRole": "assistant", "contentName": "content",
+      "supportsImages": false, "supportsAudio": false
+    },
+    "authHeader": "Authorization", "authPrefix": "Bearer ",
+    "responseParsePattern": "choices.0.delta.content",
+    "useStop": true, "stopKey": "stop", "promptKey": "messages", "removeLength": true
+  },
+  "payload": {"type": "openai"},
+  "model": {
+    "useModelContextLength": false, "nameParser": "id",
+    "contextSizeParser": "", "modelListParser": "data"
+  },
+  "ui": {
+    "editableCompletionPath": true, "editableModelPath": true, "selectableModel": true
+  }
+}

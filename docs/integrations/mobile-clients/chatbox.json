@@ -1,0 +1,12 @@
+{
+  "id": "rapidmlx.com.local",
+  "name": "Rapid-MLX (your Mac)",
+  "type": "openai",
+  "iconUrl": "https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/docs/assets/logo.png",
+  "urls": {"website": "https://rapidmlx.com", "docs": "https://rapidmlx.com/docs/"},
+  "settings": {
+    "apiHost": "http://192.0.2.10:8000",
+    "apiPath": "/v1/chat/completions",
+    "models": [{"modelId": "rapid-local", "nickname": "Local model on my Mac", "type": "chat"}]
+  }
+}
