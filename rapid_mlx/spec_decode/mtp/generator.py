@@ -636,10 +636,23 @@ def mtp_generate_step(
         getattr(model, "mtp_head_prefill_capture", False)
         and os.environ.get("RAPID_MLX_MTP_LEGACY_HEAD_HISTORY") != "1"
     )
+    atomic_head_rollback = getattr(model, "mtp_head_atomic_rollback", False)
+    if atomic_head_rollback:
+        # The head journal is bounded by the injector's qualified depth, even
+        # for direct callers that bypass serving-route configuration clamps.
+        max_k = min(max_k, model.mtp_max_speculative_tokens)
     head_pending = None
     head_seed = None
 
     def _trim_head(n):
+        if getattr(model, "mtp_head_atomic_rollback", False):
+            from rapid_mlx.cache_rollback import trim_all
+
+            if not trim_all(mtp_cache, n):
+                raise RuntimeError(
+                    "MTP head cache cannot restore the committed boundary"
+                )
+            return
         for mc in mtp_cache:
             if mc.is_trimmable():
                 mc.trim(n)
@@ -1230,10 +1243,16 @@ def mtp_generate_step(
     def _next_depth() -> int:
         """Depth for the upcoming round."""
         if _request_depth is not None:
-            return _request_depth.pick_k()
-        if _select_k and _controller is not None:
-            return _controller.pick_k()
-        return max_k_effective
+            desired = _request_depth.pick_k()
+        elif _select_k and _controller is not None:
+            desired = _controller.pick_k()
+        else:
+            desired = max_k_effective
+        # A shared controller may retain a higher ceiling from another caller.
+        # Its choice cannot exceed this head's bounded rollback journal.
+        if getattr(model, "mtp_head_atomic_rollback", False):
+            desired = min(desired, max_k_effective)
+        return desired
 
     # next_k: the K the controller wants for the UPCOMING round. Determines
     # whether we generate a draft at end of the current round. Bootstrap

@@ -2830,3 +2830,224 @@ def test_real_metal_kernel_matches_stock_for_every_supported_threadgroup():
         else:
             supported.append(threadgroup_y)
     assert supported, "Metal rejected every fused GDN threadgroup candidate"
+
+
+@pytest.mark.parametrize(
+    "requested_k,refuse_trim,server_handoff,shared_controller",
+    [
+        (1, False, False, False),
+        (2, False, False, False),
+        (3, False, False, False),
+        (2, True, False, False),
+        (2, False, True, False),
+        (2, False, False, True),
+    ],
+)
+def test_qwen4_mtp_head_rejection_keeps_index_contents_aligned(
+    monkeypatch, request, requested_k, refuse_trim, server_handoff, shared_controller
+):
+    """A partial accept then full rejection must rewind both head owners."""
+    import importlib
+    from functools import wraps
+
+    import mlx.nn as nn
+    from mlx_lm.generate import generate_step
+
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.qwen4_exp_inject import inject_qwen4_exp_mtp_support
+
+    previous_stream = mx.default_stream(mx.default_device())
+    request.addfinalizer(lambda: mx.set_default_stream(previous_stream))
+    stream = mx.new_stream(mx.default_device())
+    mx.set_default_stream(stream)
+    monkeypatch.setattr(
+        importlib.import_module("mlx_lm.generate"), "generation_stream", stream
+    )
+    mx.random.seed(0)
+    args = _ple_args(tie_word_embeddings=True)
+    args.mtp_num_hidden_layers = 1
+    model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    prompt = mx.array([1, 2, 3], dtype=mx.uint32)
+    baseline = [int(token) for token, _ in generate_step(prompt, model, max_tokens=12)]
+    assert baseline == [3] * 12
+    monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
+    assert inject_qwen4_exp_mtp_support(model, allow_random_init=True)
+    inner = model.language_model
+    assert not getattr(inner, "mtp_head_prefill_capture", False)
+    heads = inner.make_mtp_cache()
+    kv, qsa = heads[0][0], heads[0][1]
+    assert qsa.max_drafts == inner.mtp_max_speculative_tokens
+    monkeypatch.setattr(type(inner), "make_mtp_cache", lambda self: heads)
+    original_forward = type(inner).mtp_forward
+    calls = 0
+
+    @wraps(original_forward)
+    def controlled_forward(self, *args, **kwargs):
+        nonlocal calls
+        output = original_forward(self, *args, **kwargs)
+        logits = output[0] if isinstance(output, tuple) else output
+        calls += 1
+        # The first call is prompt prefill. Preserve real forwards, including
+        # drafter-hidden cascade; control only which proposal is accepted.
+        token = 3 if calls == (1 if server_handoff else 2) else 4
+        changed = mx.where(
+            mx.arange(logits.shape[-1]) == token, mx.zeros_like(logits), -mx.inf
+        )
+        return (changed, output[1]) if isinstance(output, tuple) else changed
+
+    monkeypatch.setattr(type(inner), "mtp_forward", controlled_forward)
+    raw_history = []
+    transform = None
+    original_update = type(qsa).update
+
+    def record_update(self, raw, transform_group, *args, **kwargs):
+        nonlocal transform
+        if self is qsa:
+            raw_history.extend(mx.split(raw, raw.shape[1], axis=1))
+            transform = transform_group
+        return original_update(self, raw, transform_group, *args, **kwargs)
+
+    monkeypatch.setattr(type(qsa), "update", record_update)
+    original_trim = type(qsa).trim
+    trims = []
+
+    def check_trim(self, n):
+        result = original_trim(self, n)
+        if self is qsa:
+            assert result == n
+            del raw_history[-n:]
+            cold = QSAIndexCache(self.compress_ratio)
+            cold.update(mx.concatenate(raw_history, axis=1), transform)
+            mx.eval(self.state, cold.state)
+            assert self.offset == cold.offset == len(raw_history)
+            assert self._compressed_count == cold._compressed_count
+            np.testing.assert_allclose(np.array(self.raw_ring), np.array(cold.raw_ring))
+            count = cold._compressed_count
+            if count:
+                np.testing.assert_allclose(
+                    np.array(self.compressed_keys[:, :count]),
+                    np.array(cold.compressed_keys[:, :count]),
+                )
+            trims.append(n)
+        return result
+
+    monkeypatch.setattr(type(qsa), "trim", check_trim)
+    if shared_controller:
+        from rapid_mlx.spec_decode.mtp import generator as generator_module
+        from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import DepthController
+
+        controller = DepthController(max_k=3)
+        controller_choices = []
+
+        def choose_three():
+            controller_choices.append(3)
+            return 3
+
+        monkeypatch.setattr(controller, "pick_k", choose_three)
+        monkeypatch.setattr(
+            generator_module, "get_or_create_controller", lambda *a, **kw: controller
+        )
+    if server_handoff:
+        from types import SimpleNamespace
+
+        from rapid_mlx.scheduler import _install_mtp_vendored
+        from tests.test_mtp_cli_wiring import _make_batch_gen_with_gb
+
+        batch_gen, gb = _make_batch_gen_with_gb()
+        gb.uids = [41]
+        gb.tokens = [[1, 2, 3]]
+        gb.max_tokens = [12]
+        gb.prompt_cache = inner.make_cache()
+        logits = inner(prompt[None], cache=gb.prompt_cache)
+        mx.eval(logits)
+        gb._next_tokens = mx.array([3], dtype=mx.uint32)
+        last_logits = logits[0, -1]
+        gb._next_logprobs = [last_logits - mx.logsumexp(last_logits)]
+        request = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+        assert _install_mtp_vendored(
+            batch_gen,
+            model,
+            requests={"req-41": request},
+            uid_to_request_id={41: "req-41"},
+            max_k=requested_k,
+            disable_auto_k=True,
+        )
+        tokens = [gb._step()[0][0] for _ in range(12)]
+        assert gb.orig_step_calls == 0
+        generation = None
+    else:
+        generation = mtp_generate_step(
+            prompt,
+            inner,
+            max_tokens=12,
+            max_k=requested_k,
+            disable_auto_k=not shared_controller,
+            # Enter the sampled adaptive-controller path while retaining the
+            # tiny target's unique greedy oracle for this cache regression.
+            temp=1e-6 if shared_controller else 0.0,
+        )
+    if refuse_trim:
+        monkeypatch.setattr(type(qsa), "can_trim", lambda self, n: False)
+        with pytest.raises(RuntimeError, match="cannot restore the committed boundary"):
+            list(generation)
+        assert kv.offset == qsa.offset == 4
+        assert not trims
+        return
+    if generation is not None:
+        tokens = [int(token) for token, _, _ in generation]
+    assert tokens == baseline
+    assert len(trims) >= 3
+    assert max(trims) <= 2
+    if requested_k >= 2:
+        assert trims[:2] == [1, 2]
+    assert kv.offset == qsa.offset
+    if shared_controller:
+        assert len(controller_choices) >= 3
+
+
+def test_qwen4_mtp_index_journal_is_bounded_and_restores_across_groups():
+    from rapid_mlx.cache_rollback import trim_all
+    from rapid_mlx.models.qwen4_exp_cache import Qwen4MTPIndexCache
+
+    qsa = Qwen4MTPIndexCache(2)
+    raw = mx.arange(18, dtype=mx.float32).reshape(1, 9, 2)
+    transform = lambda group, start: group + start
+    qsa.update(raw[:, :7], transform)
+    assert len(qsa.rollback_state) == 3
+    # Two separate draft calls straddle a group. No full history is retained.
+    qsa.update(raw[:, 7:8], transform)
+    qsa.update(raw[:, 8:9], transform)
+    assert len(qsa.rollback_state) == 3
+    kv = KVCache()
+    keys = raw[:, None, :, :]
+    kv.update_and_fetch(keys, -keys)
+    pair = CacheList(kv, qsa)
+    assert not trim_all([pair], 3)
+    assert kv.offset == qsa.offset == 9
+    assert trim_all([pair], 2)
+    assert kv.offset == qsa.offset == 7
+    np.testing.assert_array_equal(np.array(kv.keys[:, :, :7]), np.array(keys[:, :, :7]))
+    np.testing.assert_array_equal(
+        np.array(kv.values[:, :, :7]), np.array(-keys[:, :, :7])
+    )
+    cold = QSAIndexCache(2)
+    cold.update(raw[:, :7], transform)
+    mx.eval(qsa.state, cold.state)
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.array(cold.raw_ring))
+    np.testing.assert_array_equal(
+        np.array(qsa.compressed_keys[:, :3]), np.array(cold.compressed_keys[:, :3])
+    )
+    # Replaying after a restore must leave its retained boundary immutable.
+    qsa.update(raw[:, 7:9], transform)
+    assert qsa.trim(2) == 2
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.array(cold.raw_ring))
+
+
+def test_qwen4_mtp_index_initial_boundary_is_reversible():
+    from rapid_mlx.models.qwen4_exp_cache import Qwen4MTPIndexCache
+
+    qsa = Qwen4MTPIndexCache(2)
+    qsa.update(mx.ones((1, 1, 2)), lambda group, _start: group)
+    assert qsa.trim(1) == 1
+    assert qsa.offset == 0
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.zeros((1, 2, 2)))
