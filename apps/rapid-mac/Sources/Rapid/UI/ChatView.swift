@@ -838,10 +838,45 @@ struct ChatView: View {
 
     // MARK: - Compose bar
 
+    private var ownerDeletionNotice: some View {
+        let deletion = viewModel.ownerDeletions
+        let count = deletion.intents.count
+        let message = (deletion.notice ?? String(localized: "Removed from history. Server deletion is pending."))
+            + (count > 1 ? "\n" + String.localizedStringWithFormat(String(localized: "%lld deletions pending."), count) : "")
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+            InlineNotice(message: message, tone: .info,
+                         actionTitle: String(localized: "Retry"), actionIdentifier: "Chat.OwnerDeletion.Retry",
+                         action: { Task { await deletion.retry() } })
+            if deletion.intents.contains(where: { $0.storeUUID == nil && $0.conversationID != nil }) {
+                Button(String(localized: "Review connected server")) { Task { await deletion.inspectLegacy() } }
+                    .buttonStyle(.link)
+                    .accessibilityIdentifier("Chat.OwnerDeletion.Review")
+            }
+        }
+        .disabled(deletion.busy)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Chat.OwnerDeletion.Pending")
+        .confirmationDialog(String(localized: "Delete from this chat server?"), isPresented: Binding(
+            get: { deletion.confirmation != nil }, set: { if !$0 { deletion.confirmation = nil } }
+        ), titleVisibility: .visible) {
+            if let confirmation = deletion.confirmation {
+                Button(String(localized: "Delete from server"), role: .destructive) { Task { await deletion.confirmLegacy(confirmation) } }
+            }
+            Button(String(localized: "Cancel"), role: .cancel) { deletion.confirmation = nil }
+        } message: {
+            if let confirmation = deletion.confirmation {
+                Text(confirmation.title + "\n" + String(localized: "Connected server storage:") + " " + confirmation.storeUUID.uuidString)
+            }
+        }
+    }
+
     private var composeBar: some View {
         let loadStatus = loadStatus
         let downloadJob = downloads.job(for: alias)
         return VStack(spacing: RapidTheme.Space.sm) {
+            if !viewModel.ownerDeletions.intents.isEmpty {
+                ownerDeletionNotice.frame(maxWidth: contentMaxWidth).frame(maxWidth: .infinity)
+            }
             // Exactly one notice slot. While the model is not ready the
             // readiness banner owns it — it already folds the failure
             // message in, so rendering the raw error underneath would be

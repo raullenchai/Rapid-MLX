@@ -362,6 +362,14 @@ actor ChatOwnerConnection {
         transport = ChatOwnerControlTransport(session: session)
     }
 
+    /// Deletion retry never launches an owner or inference process.
+    static func existingDeletionClient(environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> any ChatTurnClient {
+        let directory = try ChatOwnerDiscovery.profileDirectory(profile: "default", environment: environment)
+        guard let discovery = try ChatOwnerDiscovery.read(profileDirectory: directory) else { throw ChatOwnerConnectionError.ownerUnavailable }
+        try await ChatOwnerControlTransport().validate(discovery)
+        return try URLSessionChatTurnClient(endpoint: discovery.status.endpoint, bearer: discovery.bearer)
+    }
+
     static func connectIfEnabled(
         backend: ChatBackend,
         profile: String = "default",

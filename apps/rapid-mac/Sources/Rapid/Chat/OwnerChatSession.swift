@@ -62,7 +62,7 @@ actor OwnerChatSession {
     private func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
     private func publish() { let value = snapshot(); for observer in observers.values { observer.yield(value) } }
 
-    func submit(text: String, target: Target, attachments: [(name: String, data: Data)] = [], localSearch: FolderChatScope? = nil, onConversation: @Sendable (String) async -> Void = { _ in }) async throws {
+    func submit(text: String, target: Target, attachments: [(name: String, data: Data)] = [], localSearch: FolderChatScope? = nil, onConversation: @Sendable (String) async -> Void = { _ in }, onAuthority: @Sendable (String, UUID?, String?) async throws -> Void = { _, _, _ in }) async throws {
         guard task == nil, !preparing else { throw SessionError.busy }
         preparing = true
         stoppedWhilePreparing = false
@@ -77,12 +77,14 @@ actor OwnerChatSession {
             }
         }
         try checkPreparation()
+        let storeUUID = try await client.ownerStoreUUID()
+        try checkPreparation()
         let conversation: ChatWireJSON
         if let conversationID { conversation = try await client.conversation(id: conversationID) }
         else { conversation = try await client.createConversation(workspace: workspace.path) }
-        try checkPreparation()
         guard case .object(let object) = conversation, case .string(let id) = object["id"] else { throw SessionError.invalidConversation }
         conversationID = id
+        try await onAuthority(id, storeUUID, nil)
         await onConversation(id)
         try checkPreparation()
         guard case .string(let branch) = object["branch_id"],
@@ -100,6 +102,8 @@ actor OwnerChatSession {
         try checkPreparation()
         let turnID = UUID().uuidString.lowercased()
         let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, actionTools: localSearch == nil, approvals: .default, inferenceAPIKey: target.bearer, localSearch: localSearch)
+        try await onAuthority(id, storeUUID, turnID)
+        try checkPreparation()
         reducer = ChatTurnReducer(turnID: turnID); unavailable = [:]; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
