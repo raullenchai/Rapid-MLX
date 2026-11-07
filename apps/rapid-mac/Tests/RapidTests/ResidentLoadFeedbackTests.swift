@@ -361,6 +361,7 @@ struct ResidentLoadFeedbackTests {
 
         #expect(ok)
         #expect(defaults.string(forKey: SessionModelRestore.chatAliasStorageKey) == "qwen3.5-4b-4bit")
+        await server.stop()
     }
 
     /// The cross-talk regression from the earlier single-slot design (#1838
