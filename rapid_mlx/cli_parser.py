@@ -1349,6 +1349,16 @@ def _add_serve_parser(
             "reloads it. 0 disables primary idle unload (default: 0)."
         ),
     )
+    serve_parser.add_argument(
+        "--audio-lane-idle-ttl",
+        type=float,
+        default=0.0,
+        help=(
+            "Release idle STT, alignment and TTS lane models after this many "
+            "seconds, keeping audio routes online and reloading on demand. "
+            "0 disables audio idle unload (default: 0)."
+        ),
+    )
     # Paged cache options (experimental)
     serve_parser.add_argument(
         "--use-paged-cache",

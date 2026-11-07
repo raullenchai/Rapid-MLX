@@ -1209,10 +1209,30 @@ async def test_primary_replacement_keeps_new_worker_after_old_stop_failure(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
+@pytest.mark.parametrize("audio_idle_ttl", [0, 5])
+async def test_lifespan_binds_audio_worker_when_lane_is_enabled(
+    monkeypatch, audio_idle_ttl
+):
     import rapid_mlx._signal_observability as signal_observability
     import rapid_mlx.server as server
+    from rapid_mlx.routes import audio as audio_route
     from rapid_mlx.routes import video as video_route
+
+    timer_started = asyncio.Event()
+    timer_cancelled = asyncio.Event()
+    release_timer = asyncio.Event()
+    timer_drained = asyncio.Event()
+    stopped = []
+
+    async def idle_timer(ttl):
+        assert ttl == audio_idle_ttl
+        timer_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            timer_cancelled.set()
+            await release_timer.wait()
+            timer_drained.set()
 
     class _Engine:
         _loaded = True
@@ -1221,7 +1241,8 @@ async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
             pass
 
         async def stop(self) -> None:
-            pass
+            assert audio_idle_ttl == 0 or timer_drained.is_set()
+            stopped.append("engine")
 
     class _Residency:
         async def start(self) -> None:
@@ -1254,6 +1275,8 @@ async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
     monkeypatch.setattr(video_route, "start_video_jobs", lambda: None)
     monkeypatch.setattr(video_route, "shutdown_video_jobs", _shutdown_video_jobs)
     monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(server, "_audio_lane_idle_ttl", audio_idle_ttl)
+    monkeypatch.setattr(audio_route, "audio_lane_idle_loop", idle_timer)
     monkeypatch.setattr(server, "_residency_manager", _Residency())
     monkeypatch.setattr(server, "_mcp_manager", None)
     monkeypatch.setattr(server, "_gc_control", False)
@@ -1269,9 +1292,24 @@ async def test_lifespan_binds_audio_worker_when_lane_is_enabled(monkeypatch):
 
     lifespan = server.lifespan(server.app)
     await lifespan.__anext__()
-    with pytest.raises(StopAsyncIteration):
-        await lifespan.__anext__()
+    if audio_idle_ttl:
+        await asyncio.wait_for(timer_started.wait(), timeout=2)
+        shutdown = asyncio.create_task(lifespan.__anext__())
+        try:
+            await asyncio.wait_for(timer_cancelled.wait(), timeout=2)
+            assert not shutdown.done()
+            assert not stopped
+        finally:
+            release_timer.set()
+            with pytest.raises(StopAsyncIteration):
+                await shutdown
+        assert timer_drained.is_set()
+    else:
+        with pytest.raises(StopAsyncIteration):
+            await lifespan.__anext__()
+        assert not timer_started.is_set()
 
+    assert stopped == ["engine"]
     assert bound == [engine]
 
 

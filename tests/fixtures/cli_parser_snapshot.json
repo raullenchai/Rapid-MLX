@@ -5966,6 +5966,21 @@
        "type": "builtins.float"
       },
       {
+       "class": "argparse._StoreAction",
+       "completer": null,
+       "const": null,
+       "default": 0.0,
+       "dest": "audio_lane_idle_ttl",
+       "help": "Release idle STT, alignment and TTS lane models after this many seconds, keeping audio routes online and reloading on demand. 0 disables audio idle unload (default: 0).",
+       "metavar": null,
+       "nargs": null,
+       "option_strings": [
+        "--audio-lane-idle-ttl"
+       ],
+       "required": false,
+       "type": "builtins.float"
+      },
+      {
        "class": "argparse._StoreTrueAction",
        "completer": null,
        "const": true,
@@ -7187,6 +7202,7 @@
         "resident_model_idle_ttl",
         "lazy_load",
         "idle_unload_seconds",
+        "audio_lane_idle_ttl",
         "use_paged_cache",
         "paged_cache_block_size",
         "max_cache_blocks",

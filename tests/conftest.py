@@ -346,6 +346,7 @@ def _posthog_transport_guard_assertion():
 _SERVER_SERVE_CONFIG_GLOBALS = (
     "_alias_recommended_sampling",
     "_api_key",
+    "_audio_lane_idle_ttl",
     "_body_receive_timeout_seconds",
     "_context_length",
     "_default_frequency_penalty",

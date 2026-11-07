@@ -671,6 +671,7 @@ final class ServerManager {
             : .cancelled
     }
 
+    private(set) var audioIdleUnloadSupportedAtSpawn = false
     private(set) var idleUnloadSecondsAtSpawn: Int?
 
     private(set) var localSearchEnabledAtSpawn = false
@@ -3126,6 +3127,7 @@ final class ServerManager {
             localSearchEnabled: LocalSearchFeatureConfig.isEnabled()
         )
 
+        audioIdleUnloadSupportedAtSpawn = runtimeCapabilities.supportsAudioLaneIdleUnload
         idleUnloadSecondsAtSpawn = runtimeCapabilities.supportsPrimaryIdleUnload ? idleUnloadSeconds : nil
         configureIdleModelRelease(idleUnloadSeconds)
         localSearchEnabledAtSpawn = arguments.contains("--enable-local-search")
@@ -3558,7 +3560,8 @@ final class ServerManager {
         let native = nativeIdleUnloadSupported
         guard IdleModelReleasePreference.requiresProcessStop(
             nativeUnloadActive: native,
-            residentAudioLanes: audio.count
+            residentAudioLanes: audio.count,
+            nativeAudioUnloadActive: audioIdleUnloadSupportedAtSpawn
         ) else { return }
         let busy = residency.models.contains {
             $0.activeRequests > 0
@@ -3605,7 +3608,8 @@ final class ServerManager {
                   }),
                   IdleModelReleasePreference.requiresProcessStop(
                       nativeUnloadActive: native,
-                      residentAudioLanes: residency.audioLanes.filter { $0.state == "resident" }.count
+                      residentAudioLanes: residency.audioLanes.filter { $0.state == "resident" }.count,
+                      nativeAudioUnloadActive: audioIdleUnloadSupportedAtSpawn
                   ) else { return .busy }
         }
         guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
@@ -5174,6 +5178,9 @@ final class ServerManager {
         }
         if capabilities.supportsPrimaryIdleUnload, idleSetting > 0 {
             flags.append(contentsOf: ["--idle-unload-seconds", String(idleSetting)])
+        }
+        if capabilities.supportsAudioLaneIdleUnload, idleSetting > 0 {
+            flags.append(contentsOf: ["--audio-lane-idle-ttl", String(idleSetting)])
         }
         return flags
     }
