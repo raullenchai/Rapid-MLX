@@ -11487,6 +11487,34 @@ def models_command(args):
     ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
     the top-level ``rapid-mlx ls`` alias.
     """
+    if paths := getattr(args, "inspect_local", None):
+        from rapid_mlx.local_checkpoints import (
+            MAX_LOCAL_CHECKPOINTS,
+            inspect_local_checkpoints,
+        )
+
+        if (
+            not getattr(args, "json", False)
+            or getattr(args, "cached", False)
+            or getattr(args, "search", None)
+            or getattr(args, "modality", None)
+            or len(paths) > MAX_LOCAL_CHECKPOINTS
+        ):
+            print(
+                "models --inspect-local requires --json, accepts at most 32 directories, "
+                "and cannot be combined with --cached/--search/--modality",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        import json
+
+        print(
+            json.dumps(
+                {"schema": 1, "local_checkpoints": inspect_local_checkpoints(paths)}
+            )
+        )
+        return
+
     from rapid_mlx._version_check import print_staleness_warning_if_any
     from rapid_mlx.model_aliases import draft_only_conflict, list_profiles
     from rapid_mlx.model_sizes import format_size

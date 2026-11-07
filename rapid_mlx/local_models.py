@@ -131,7 +131,11 @@ def flush_serve_startup_notes(args: Any) -> None:
 
 
 def _uncataloged_chat(
-    repo: str, inspection: Inspection, supported: frozenset[str] | None
+    repo: str,
+    inspection: Inspection,
+    supported: frozenset[str] | None,
+    *,
+    name_hints: bool = True,
 ) -> bool | None:
     """``None`` when not a runnable chat model, else whether it is MLX-native."""
     from rapid_mlx.byom.alternatives import _mlx_bits
@@ -142,9 +146,9 @@ def _uncataloged_chat(
     # the publisher, so ``org/embedded-chat`` or a publisher named "...asr..."
     # is not excluded by accident.
     segments = re.split(r"[^a-z0-9]+", lowered.rsplit("/", 1)[-1])
-    if any(segment in _NON_CHAT_TOKENS for segment in segments):
+    if name_hints and any(segment in _NON_CHAT_TOKENS for segment in segments):
         return None
-    if segments[-1] in ("draft", "drafter"):
+    if name_hints and segments[-1] in ("draft", "drafter"):
         return None
     config = inspection.config
     # Only text and vision loaders give a chat model; speech checkpoints with a
@@ -183,6 +187,8 @@ def _judge_checkpoint(
     mtime: float,
     supported: frozenset[str] | None,
     ram_bytes: int | None,
+    checkpoint_directory: str | None = None,
+    rejection: list[str] | None = None,
 ) -> LocalModel | None:
     """The checkpoint as a runnable local chat model, or ``None``."""
     from rapid_mlx.byom.preflight import evaluate, inspect_local
@@ -193,28 +199,38 @@ def _judge_checkpoint(
     )
 
     collision = alias is None and cached_repository_collides(repo)
-    if not collision:
+    if not collision and checkpoint_directory is None:
         raise_if_draft_only_model(alias or repo)
     if alias is not None and not _is_chat_alias(alias):
         return None
     # Judge the exact checkpoint serve would load: a config, a chat template,
     # a tokenizer vocabulary and runtime weights must all be on disk.
-    directory = _checkpoint_dir(repo, external)
+    directory = checkpoint_directory or _checkpoint_dir(repo, external)
     inspection = inspect_local(directory) if directory else None
-    if (
-        directory is None
-        or inspection is None
-        or not inspection.config
-        or inspection.weight_bytes <= 0
-        or inspection.has_chat_template is not True
-        or not _has_tokenizer(inspection.files)
-        or _packed_quantization(inspection.config)
-    ):
+    reason = None
+    if directory is None or inspection is None or not inspection.config:
+        reason = "unreadable_metadata"
+    elif inspection.weight_bytes <= 0:
+        reason = "incomplete_checkpoint"
+    elif inspection.has_chat_template is not True:
+        reason = "missing_chat_template"
+    elif not _has_tokenizer(inspection.files):
+        reason = "missing_tokenizer"
+    elif _packed_quantization(inspection.config):
+        reason = "unsupported_quantization"
+    if reason is not None:
+        if rejection is not None:
+            rejection.append(reason)
         return None
+    assert inspection is not None
     mlx_native = True
     if alias is None:
-        native = _uncataloged_chat(repo, inspection, supported)
+        native = _uncataloged_chat(
+            repo, inspection, supported, name_hints=checkpoint_directory is None
+        )
         if native is None:
+            if rejection is not None:
+                rejection.append("unsupported_chat_model")
             return None
         mlx_native = native
     # Memory fit uses the preflight rule on this checkpoint's own weights, not
@@ -227,9 +243,11 @@ def _judge_checkpoint(
         ram_bytes=ram_bytes,
     )
     if verdict.failure is not None or verdict.fit == "no":
+        if rejection is not None:
+            rejection.append("unsupported_or_oversize")
         return None
     return LocalModel(
-        directory if collision else alias or repo,
+        directory if collision or checkpoint_directory is not None else alias or repo,
         repo,
         alias,
         external,
@@ -266,7 +284,9 @@ def catalog_model_ready(alias: str) -> bool:
         return False
 
 
-def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalModel]:
+def discover_runnable_chat_models(
+    ram_bytes: int | None = None, *, strict: bool = False
+) -> list[LocalModel]:
     """Read local metadata only; broken caches never interrupt the CLI."""
     try:
         from rapid_mlx.byom.preflight import physical_ram_bytes, supported_model_types
@@ -321,6 +341,8 @@ def discover_runnable_chat_models(ram_bytes: int | None = None) -> list[LocalMod
                 found.append(model)
         return found
     except Exception:
+        if strict:
+            raise
         log.debug("Could not discover local models", exc_info=True)
         return []
 
