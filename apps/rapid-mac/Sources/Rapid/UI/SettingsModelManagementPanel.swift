@@ -1032,7 +1032,7 @@ struct SettingsModelManagementPanel: View {
     /// misattributed those curated numbers as published benchmarks.)
     @ViewBuilder
     private var meterLegend: some View {
-        Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = measured tokens/sec on this class of Mac · Untested = no compatible result recorded yet.")
+        Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet.")
             .font(RapidFont.caption)
             .foregroundStyle(RapidTheme.textTertiary)
             .fixedSize(horizontal: false, vertical: true)

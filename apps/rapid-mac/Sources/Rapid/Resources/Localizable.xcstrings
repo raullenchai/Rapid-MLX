@@ -2,6 +2,16 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "质量 = 已发布基准，按行标注（准确率 / 代码 / 工具 / 指令）· 速度 = 在记录硬件上测得的参考基准 · 未测试 = 尚无兼容结果记录。"
+          }
+        }
+      }
+    },
     "configuration unavailable" : {
       "localizations" : {
         "zh-Hans" : {
