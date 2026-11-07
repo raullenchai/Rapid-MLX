@@ -2500,11 +2500,12 @@ class BatchedEngine(BaseEngine):
         # Create async engine and hand it the EXISTING model-load executor
         # so all subsequent MLX work (forward passes, cache materialization,
         # eval) runs on the same worker thread that owns the model weights.
-        self._engine = AsyncEngineCore(
+        loaded_engine = AsyncEngineCore(
             model=self._model,
             tokenizer=self._tokenizer,
             config=engine_config,
         )
+        self._engine = loaded_engine
         self._bind_prompt_host_cache(self._engine)
 
         # Freeze a safe source mapping on this loaded scheduler before serving.
@@ -2519,7 +2520,7 @@ class BatchedEngine(BaseEngine):
                     holder, "_rapid_mlx_mtp_weights_container", None
                 ),
             )
-            scheduler = getattr(self._engine.engine, "scheduler", None)
+            scheduler = getattr(loaded_engine.engine, "scheduler", None)
             if scheduler is not None:
                 scheduler._execution_load_receipt = receipt
 
