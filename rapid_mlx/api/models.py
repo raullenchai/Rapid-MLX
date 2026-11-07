@@ -2350,7 +2350,9 @@ class ExecutionReferenceMetrics(BaseModel):
 class ExecutionHostMetrics(BaseModel):
     """Non-identifying hardware frozen with one local inference result."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
     chip: StrictStr = Field(max_length=32)
     memory_bytes: StrictInt = Field(gt=0, le=1 << 44)
 

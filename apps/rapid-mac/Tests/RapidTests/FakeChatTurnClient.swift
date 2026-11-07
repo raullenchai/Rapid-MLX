@@ -20,8 +20,10 @@ actor FakeChatTurnClient: ChatTurnClient {
     func setGeneration(_ value: GenerationMetrics, messageID: String) { savedGeneration = value; generationMessageID = messageID }
     func generationMetrics(conversationID: String, turnID: String) async throws -> SavedGenerationMetrics? {
         generationReads += 1
+        let snapshot = savedGeneration
+        let messageID = generationMessageID
         await generationGate?()
-        return savedGeneration.map { SavedGenerationMetrics(turnID: turnID, messageID: generationMessageID, metrics: $0) }
+        return snapshot.map { SavedGenerationMetrics(turnID: turnID, messageID: messageID, metrics: $0) }
     }
 
     private(set) var sourcePreviewCalls: [(String, String)] = []

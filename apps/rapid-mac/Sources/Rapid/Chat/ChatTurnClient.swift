@@ -301,9 +301,9 @@ actor URLSessionChatTurnClient: ChatTurnClient {
         guard http.mimeType?.lowercased() == contentType else { throw ChatTurnClientError.invalidResponse }
     }
 
-    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil, timeout: TimeInterval = 180) async throws -> T {
+    private func json<T: Decodable>(_ path: [String], method: String = "GET", body: Data? = nil, timeout: TimeInterval? = nil) async throws -> T {
         var request = try makeRequest(path, method: method, body: body)
-        request.timeoutInterval = timeout
+        if let timeout { request.timeoutInterval = timeout }
         let (data, response) = try await session.data(for: request, delegate: redirectDelegate)
         try validate(response, contentType: "application/json")
         return try JSONDecoder().decode(T.self, from: data)

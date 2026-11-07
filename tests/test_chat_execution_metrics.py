@@ -167,6 +167,25 @@ async def test_owned_atomic_finish_replay_and_access_revocation(tmp_path):
             execution_metrics={"private": "not allowed"},
         )
     assert await store.execution_metrics(conversation["id"], request.turn_id) is None
+    from rapid_mlx.api.models import ExecutionHostMetrics, ExecutionReferenceMetrics
+    from rapid_mlx.chat_runtime.execution_metrics import GenerationMetrics
+
+    forged = GenerationMetrics.model_construct(
+        execution_reference=ExecutionReferenceMetrics.model_validate(
+            METRICS["execution_reference"]
+        ),
+        execution_host=ExecutionHostMetrics.model_construct(
+            chip="/private/forged", memory_bytes=True
+        ),
+    )
+    with pytest.raises(ValueError):
+        await store.finish_turn(
+            request.turn_id,
+            "completed",
+            parts=[{"type": "text", "text": "answer"}],
+            execution_metrics=forged,
+        )
+    assert await store.execution_metrics(conversation["id"], request.turn_id) is None
     await store.finish_turn(
         request.turn_id,
         "completed",

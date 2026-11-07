@@ -301,3 +301,29 @@ def test_incomplete_hardware_probe_never_publishes_partial_host(
         lambda *a, **k: SimpleNamespace(stdout=next(values)),
     )
     assert _process_host() is None
+
+
+def test_constructed_invalid_host_dto_is_revalidated_and_omitted():
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.service.helpers import _build_response_metrics
+
+    invalid = ExecutionHostMetrics.model_construct(
+        chip="/private/host-marker", memory_bytes=True
+    )
+    output = GenerationOutput(
+        "answer",
+        execution_reference={
+            "status": "unknown",
+            "method": "none",
+            "backend": "ordinary",
+            "config_key": "none",
+            "completion_tokens": 3,
+        },
+        execution_host=invalid,
+        timing_metrics={"mean_itl_ms": 25.0},
+    )
+    metrics = _build_response_metrics(output)
+    assert metrics.execution_host is None
+    assert metrics.execution_reference.completion_tokens == 3
+    assert metrics.mean_itl_ms == 25.0
+    assert "host-marker" not in metrics.model_dump_json(exclude_none=True)

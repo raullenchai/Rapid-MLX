@@ -133,7 +133,9 @@ struct GenerationMetricsTests {
                 }
                 let snapshot = await session.snapshot()
                 let projection = try #require(snapshot.projection)
-                let rows = ownerProjectionMessages(projection, assistantID: UUID(), createdAt: Date(), generation: snapshot.generation)
+                let reader = await session.completedGenerationReader()
+                let generation = await reader?.read()
+                let rows = ownerProjectionMessages(projection, assistantID: UUID(), createdAt: Date(), generation: generation)
                 let saved = rows.first?.generationMetrics
                 #expect((saved != nil) == (outcome == "completed" && messageID == "final"))
                 #expect(await client.generationReads == (outcome == "completed" ? 1 : 0))
@@ -143,15 +145,10 @@ struct GenerationMetricsTests {
         }
     }
 
-    @Test func staleMetricsReadCannotFinishANewerTurnAfterClose() async throws {
+    @Test func blockedOptionalReadCannotBlockNextSubmissionOrStop() async throws {
         actor Gate {
-            var first = true
             var continuation: CheckedContinuation<Void, Never>?
-            func wait() async {
-                guard first else { return }
-                first = false
-                await withCheckedContinuation { continuation = $0 }
-            }
+            func wait() async { await withCheckedContinuation { continuation = $0 } }
             func release() { continuation?.resume(); continuation = nil }
         }
         let gate = Gate()
@@ -163,24 +160,122 @@ struct GenerationMetricsTests {
         await client.setGenerationGate { await gate.wait() }
         let session = try await fixture.start(client)
         for _ in 0..<100 {
+            if await session.snapshot().state == .finished { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await session.snapshot().state == .finished)
+        let reader = try #require(await session.completedGenerationReader())
+        let reading = Task { await reader.read() }
+        for _ in 0..<100 {
             if await client.generationReads == 1 { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(await client.generationReads == 1)
-        await session.close()
+        try await session.stop()
+        #expect(!(await client.calls).contains { if case .cancel = $0 { return true }; return false })
         await client.setFrames([fixture.frame(#"{"type":"text.delta","part_id":"p","text":"new partial answer"}"#, 1)])
         try await session.submit(text: "New question", target: .init(url: URL(string: "http://localhost:8000")!, bearer: nil, model: "m"))
         for _ in 0..<100 {
             if await session.snapshot().projection?.parts.isEmpty == false { break }
             try await Task.sleep(for: .milliseconds(10))
         }
+        reading.cancel()
         await gate.release()
-        try await Task.sleep(for: .milliseconds(30))
+        #expect(await reading.value == nil)
+        #expect(!(await client.calls).contains { if case .cancel = $0 { return true }; return false })
         let snapshot = await session.snapshot()
         #expect(snapshot.projection?.terminal == nil)
         #expect(snapshot.state != .finished)
-        #expect(snapshot.generation == nil)
         await session.close()
+    }
+
+    @Test func completedComposerAdmitsNextTurnWhileOldMetricsAreBlocked() async throws {
+        actor Gate {
+            var first = true
+            var continuation: CheckedContinuation<Void, Never>?
+            func wait() async {
+                guard first else { return }; first = false
+                await withCheckedContinuation { continuation = $0 }
+            }
+            func release() { continuation?.resume(); continuation = nil }
+        }
+        let gate = Gate()
+        let fixture = OwnerChatSessionTests()
+        let client = try await fixture.fake([
+            fixture.frame(#"{"type":"text.delta","part_id":"p","text":"first answer"}"#, 1),
+            fixture.frame(#"{"type":"turn.terminal","outcome":"completed","final_message_id":"first-final"}"#, 2),
+        ])
+        let firstMetrics = try JSONDecoder().decode(GenerationMetrics.self, from: metricsData())
+        await client.setGeneration(firstMetrics, messageID: "first-final")
+        await client.setGenerationGate { await gate.wait() }
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.send("First question", alias: "local")
+        await model._testingWaitForCurrentTurn()
+        #expect(!model.isStreaming)
+        for _ in 0..<100 {
+            if await client.generationReads == 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await client.generationReads == 1)
+        let firstID = try #require(model.messages.last(where: { $0.role == .assistant })?.id)
+        var payload = try #require(JSONSerialization.jsonObject(with: metricsData()) as? [String: Any])
+        payload["mean_itl_ms"] = 50.0
+        let secondMetrics = try JSONDecoder().decode(GenerationMetrics.self, from: JSONSerialization.data(withJSONObject: payload))
+        await client.setGeneration(secondMetrics, messageID: "second-final")
+        await client.setFrames([
+            fixture.frame(#"{"type":"text.delta","part_id":"p","text":"second answer"}"#, 1),
+            fixture.frame(#"{"type":"turn.terminal","outcome":"completed","final_message_id":"second-final"}"#, 2),
+        ])
+        model.send("Second question", alias: "local")
+        await model._testingWaitForCurrentTurn()
+        for _ in 0..<100 {
+            if model.messages.last?.generationMetrics != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isStreaming)
+        #expect(model.messages.last?.content == "second answer")
+        #expect(model.messages.last?.generationMetrics?.decodeTokensPerSecond == 20)
+        #expect(model.messages.first(where: { $0.id == firstID })?.generationMetrics == nil)
+        await gate.release()
+        for _ in 0..<100 {
+            if model.messages.first(where: { $0.id == firstID })?.generationMetrics != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.messages.first(where: { $0.id == firstID })?.generationMetrics?.decodeTokensPerSecond == 40)
+        #expect(model.messages.last?.generationMetrics?.decodeTokensPerSecond == 20)
+        #expect(model.messages.last?.content == "second answer")
+    }
+
+    @Test(arguments: ["navigate", "delete", "replace", "stay"])
+    func lateGenerationTouchesOnlySurvivingCompletedRow(action: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("generation-history-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("history.json")
+        let user = ChatMessage(role: .user, content: "question")
+        var old = ChatMessage(role: .assistant, content: "old answer", status: .complete); old.parentID = user.id
+        var replacement = ChatMessage(role: .assistant, content: "regenerated answer", status: .complete); replacement.parentID = user.id
+        let conversationID = UUID()
+        let conversation = ChatConversation(id: conversationID, title: "question", messages: [user, replacement], branches: [old], activeLeafID: replacement.id, createdAt: Date(), updatedAt: Date(), backend: .ownerV1, ownerConversationID: "c")
+        ConversationStore.save([conversation], to: file)
+        ConversationStore.flush()
+        let model = ChatViewModel(conversationStoreURL: file)
+        model.selectConversation(conversationID)
+        if action == "navigate" { model.newConversation() }
+        if action == "delete" { model.deleteConversation(conversationID) }
+        if action == "replace" { #expect(model.deleteMessage(id: old.id)) }
+        let metrics = try JSONDecoder().decode(GenerationMetrics.self, from: metricsData())
+        let saved = SavedGenerationMetrics(turnID: "t", messageID: "m", metrics: metrics)
+        model.applyCompletedGeneration(saved, conversationID: conversationID, ownerConversationID: "different-owner", rowID: replacement.id)
+        #expect(model.messages.allSatisfy { $0.generationMetrics == nil })
+        model.applyCompletedGeneration(saved, conversationID: conversationID, ownerConversationID: "c", rowID: old.id)
+        #expect(model.messages.allSatisfy { $0.generationMetrics == nil })
+        ConversationStore.flush()
+        let stored = ConversationStore.load(from: file).first(where: { $0.id == conversationID })
+        if action == "delete" { #expect(stored == nil) }
+        else if action == "replace" { #expect(stored?.allMessages.contains(where: { $0.id == old.id }) == false) }
+        else { #expect(stored?.allMessages.first(where: { $0.id == old.id })?.generationMetrics == metrics) }
     }
 
     @Test func oldOwnerNeverReadsUnsupportedEndpointAndNewOwnerBindsTurn() async throws {
@@ -188,11 +283,16 @@ struct GenerationMetricsTests {
         GenerationMetricsProtocol.install(body: Data(#"{"capabilities":{}}"#.utf8))
         #expect(try await client.generationMetrics(conversationID: "c", turnID: "t") == nil)
         #expect(GenerationMetricsProtocol.paths() == ["/v1/rapid/chat/capabilities"])
+        #expect(GenerationMetricsProtocol.timeouts() == [5])
+        GenerationMetricsProtocol.install(body: Data("{}".utf8))
+        _ = try await client.conversation(id: "c")
+        #expect(GenerationMetricsProtocol.timeouts() == [180])
         let metrics = String(decoding: try metricsData(), as: UTF8.self)
         let body = Data("{\"generation\":{\"turn_id\":\"t\",\"message_id\":\"m\",\"metrics\":\(metrics)}}".utf8)
         GenerationMetricsProtocol.install(body: body, capability: true)
         #expect(try await client.generationMetrics(conversationID: "c", turnID: "t")?.messageID == "m")
         #expect(GenerationMetricsProtocol.paths().last == "/v1/rapid/chat/conversations/c/turns/t/execution-metrics")
+        #expect(GenerationMetricsProtocol.timeouts() == [5, 5])
         await #expect(throws: ChatTurnClientError.invalidResponse) {
             try await client.generationMetrics(conversationID: "c", turnID: "wrong")
         }
@@ -205,10 +305,12 @@ private final class GenerationMetricsProtocol: URLProtocol, @unchecked Sendable 
     nonisolated(unsafe) private static var stream = false
     nonisolated(unsafe) private static var capability = false
     nonisolated(unsafe) private static var recorded: [String] = []
+    nonisolated(unsafe) private static var requestTimeouts: [TimeInterval] = []
     static func install(body: Data, stream: Bool = false, capability: Bool = false) {
         lock.lock(); defer { lock.unlock() }
-        self.body = body; self.stream = stream; self.capability = capability; recorded = []
+        self.body = body; self.stream = stream; self.capability = capability; recorded = []; requestTimeouts = []
     }
+    static func timeouts() -> [TimeInterval] { lock.lock(); defer { lock.unlock() }; return requestTimeouts }
     static func paths() -> [String] { lock.lock(); defer { lock.unlock() }; return recorded }
     static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -220,6 +322,7 @@ private final class GenerationMetricsProtocol: URLProtocol, @unchecked Sendable 
     override func startLoading() {
         Self.lock.lock()
         Self.recorded.append(request.url!.path)
+        Self.requestTimeouts.append(request.timeoutInterval)
         let isStream = Self.stream
         let bytes = Self.capability && request.url!.path.hasSuffix("capabilities")
             ? Data(#"{"capabilities":{"generation_metrics_v1":true}}"#.utf8) : Self.body
@@ -259,6 +362,7 @@ struct GenerationMetricsRealUserTests {
             try await stage.wait(for: "real question admitted") { model.messages.contains { $0.role == .user && $0.content == question } }
             await model._testingWaitForCurrentTurn()
             #expect(model.lastError == nil)
+            try await stage.waitForIdentifier("Chat.GenerationDetails")
             let answer = try #require(model.messages.last(where: { $0.role == .assistant && !$0.content.isEmpty }))
             let metrics = try #require(answer.generationMetrics)
             #expect(metrics.executionReference.repoID == "mlx-community/Qwen3.5-4B-MLX-4bit")

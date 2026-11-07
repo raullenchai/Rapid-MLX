@@ -13,7 +13,9 @@ METRICS_KEY = "rapid_execution_metrics"
 
 
 class GenerationMetrics(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
     execution_reference: ExecutionReferenceMetrics
     execution_host: ExecutionHostMetrics | None = None
     time_to_first_token_ms: float | None = Field(

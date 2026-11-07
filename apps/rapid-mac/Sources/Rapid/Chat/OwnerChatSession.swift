@@ -13,13 +13,11 @@ actor OwnerChatSession {
         let projection: ChatTurnProjection?
         let state: State
         let unavailablePermissions: Set<String>
-        var generation: SavedGenerationMetrics? = nil
     }
     private enum Resume: Error { case gap }
     private let clientProvider: @Sendable () async throws -> any ChatTurnClient
     private var client: (any ChatTurnClient)?
     private var reducer: ChatTurnReducer?
-    private var generation: SavedGenerationMetrics?
     private var state: State = .idle
     private var unavailable: [String: Int] = [:]
     private var observers: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
@@ -52,7 +50,7 @@ actor OwnerChatSession {
         observers.removeAll()
     }
     func ownerConversationID() -> String? { conversationID }
-    func snapshot() -> Snapshot { var value = Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: Set((reducer?.projection.pendingPermissions ?? []).filter { unavailable[$0.opID] == $0.revision }.map(\.opID))); value.generation = generation; return value }
+    func snapshot() -> Snapshot { Snapshot(projection: reducer?.projection, state: state, unavailablePermissions: Set((reducer?.projection.pendingPermissions ?? []).filter { unavailable[$0.opID] == $0.revision }.map(\.opID))) }
     func snapshots() -> AsyncStream<Snapshot> {
         let id = UUID()
         return AsyncStream { continuation in
@@ -106,7 +104,6 @@ actor OwnerChatSession {
         let request = ChatTurnRequest(turnID: turnID, conversationID: id, branchID: branch, expectedRevision: revision, text: text, attachmentIDs: attachmentIDs, inferenceURL: target.url.absoluteString, model: target.model, actionTools: localSearch == nil, approvals: .default, inferenceAPIKey: target.bearer, localSearch: localSearch)
         try await onAuthority(id, storeUUID, turnID)
         try checkPreparation()
-        generation = nil
         reducer = ChatTurnReducer(turnID: turnID); unavailable = [:]; state = .streaming; publish()
         task = Task { await self.run(request, client: client) }
     }
@@ -171,16 +168,18 @@ actor OwnerChatSession {
                 state = .streaming; publish()
             }
         }
-        if let terminal = reducer?.projection.terminal {
-            if terminal.outcome == .completed, !Task.isCancelled {
-                let saved = try? await client.generationMetrics(conversationID: request.conversationID, turnID: request.turnID)
-                guard reducer?.projection.turnID == request.turnID else { return }
-                if !Task.isCancelled, saved?.turnID == request.turnID, saved?.messageID == terminal.finalMessageID { generation = saved }
-            }
-            state = .finished; publish()
-        }
+        if reducer?.projection.terminal != nil { state = .finished; publish() }
         task = nil
     }
+    /// Captured while the completed projection is current; reading never owns a turn.
+    func completedGenerationReader() -> CompletedGenerationReader? {
+        guard let client, let conversationID, let projection = reducer?.projection,
+              projection.terminal?.outcome == .completed,
+              let messageID = projection.terminal?.finalMessageID else { return nil }
+        return CompletedGenerationReader(client: client, conversationID: conversationID,
+                                         turnID: projection.turnID, messageID: messageID)
+    }
+
     private static func isPermanent(_ error: Error) -> Bool {
         if error is ChatOwnerTurnRejection { return true }
         if let error = error as? ChatTurnClientError {
@@ -230,5 +229,18 @@ actor OwnerChatSession {
     }
     private static func number(_ value: ChatWireJSON?) -> Double? {
         switch value { case .integer(let n): Double(n); case .number(let n): n; default: nil }
+    }
+}
+
+struct CompletedGenerationReader: Sendable {
+    let client: any ChatTurnClient
+    let conversationID: String
+    let turnID: String
+    let messageID: String
+    func read() async -> SavedGenerationMetrics? {
+        guard !Task.isCancelled,
+              let saved = try? await client.generationMetrics(conversationID: conversationID, turnID: turnID),
+              !Task.isCancelled, saved.turnID == turnID, saved.messageID == messageID else { return nil }
+        return saved
     }
 }

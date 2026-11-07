@@ -1672,18 +1672,23 @@ final class ChatViewModel {
                 conversations[index].ownerConversationID = await session.ownerConversationID()
                 saveConversations()
             }
+            var completedGeneration: (CompletedGenerationReader, UUID)?
             for await snapshot in snapshots {
                 guard !Task.isCancelled, epoch == conversationEpoch else { break }
                 guard let projection = snapshot.projection else { continue }
                 ownerApprovals = ownerProjectionApprovals(projection, unavailable: snapshot.unavailablePermissions)
-                var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt, generation: snapshot.generation)
+                var rows = ownerProjectionMessages(projection, assistantID: placeholder.id, createdAt: placeholder.createdAt)
                 if case .failed(let message) = snapshot.state { rows[0].status = .failed; rows[0].errorMessage = message }
                 rows[0].parentID = placeholder.parentID
                 for i in rows.indices.dropFirst() { rows[i].parentID = rows[i - 1].id }
                 guard let index = messages.firstIndex(where: { $0.id == placeholder.id }) else { break }
                 messages.replaceSubrange(index..<messages.count, with: rows)
                 treeShapeVersion += 1
-                if snapshot.state == .finished { break }
+                if snapshot.state == .finished {
+                    if let row = rows.last(where: { $0.role == .assistant && $0.status == .complete && !$0.content.isEmpty }),
+                       let reader = await session.completedGenerationReader() { completedGeneration = (reader, row.id) }
+                    break
+                }
                 if case .failed = snapshot.state { break }
             }
             guard epoch == conversationEpoch else { return }
@@ -1692,6 +1697,12 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+            if let (reader, rowID) = completedGeneration {
+                Task { [weak self] in
+                    guard let saved = await reader.read() else { return }
+                    self?.applyCompletedGeneration(saved, conversationID: conversationID, ownerConversationID: reader.conversationID, rowID: rowID)
+                }
+            }
         } catch {
             guard epoch == conversationEpoch else { return }
             if error is CancellationError {
@@ -1704,6 +1715,28 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+        }
+    }
+
+    /// Optional metadata updates one immutable row, never a live projection/tail.
+    func applyCompletedGeneration(_ saved: SavedGenerationMetrics, conversationID: UUID, ownerConversationID: String, rowID: UUID) {
+        guard let conversation = conversations.firstIndex(where: { $0.id == conversationID }),
+              conversations[conversation].ownerConversationID == ownerConversationID else { return }
+        if activeConversationID == conversationID {
+            if let row = messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                messages[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            } else if let row = branchedAway.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                branchedAway[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            }
+        } else {
+            if let row = conversations[conversation].messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].messages[row].generationMetrics = saved.metrics
+            } else if let row = conversations[conversation].branches.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].branches[row].generationMetrics = saved.metrics
+            } else { return }
+            saveConversations()
         }
     }
 
