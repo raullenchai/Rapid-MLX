@@ -79,6 +79,29 @@ struct OwnerDeletionRealTests {
         await #expect(throws: ChatTurnClientError.http(status: 404)) { _ = try await client.conversation(id: ownerID) }
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_DELETE_OWNER_PID"] != nil))
+    func existingOwnerDiscoveryAuthenticatesWithoutLaunchingAndCanDelete() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let endpoint = URL(string: env["RAPID_DELETE_OWNER_URL"]!)!
+        let direct = try URLSessionChatTurnClient(endpoint: endpoint, bearer: "owned-delete-test")
+        let store = try #require(try await direct.ownerStoreUUID())
+        let pid = try #require(Int32(env["RAPID_DELETE_OWNER_PID"]!))
+        let started = try #require(ChatOwnerDiscovery.liveProcessStartTime(pid))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let run = root.appendingPathComponent("default/run")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let epoch = "deade591-1710-4c58-9ead-8bcacb0485d3"
+        let record: [String: Any] = ["format_version": 1, "wire_version": 1, "schema_version": 5, "owner_epoch": epoch, "store_uuid": store.uuidString.lowercased(), "pid": pid, "process_start_time": started, "endpoint": endpoint.absoluteString, "credential_file": "bearer-\(epoch)"]
+        try OwnerOnlyFile.writeAtomically(JSONSerialization.data(withJSONObject: record), to: run.appendingPathComponent("discovery.json"))
+        try OwnerOnlyFile.writeAtomically(Data("owned-delete-test".utf8), to: run.appendingPathComponent("bearer-\(epoch)"))
+        let connected = try await ChatOwnerConnection.existingDeletionClient(environment: ["RAPID_MLX_CHAT_HOME": root.path])
+        #expect(try await connected.ownerStoreUUID() == store)
+        guard case .object(let row) = try await direct.createConversation(workspace: "/private/tmp"), case .string(let id) = row["id"] else { throw ChatTurnClientError.invalidResponse }
+        try await connected.deleteConversation(id: id)
+        await #expect(throws: ChatTurnClientError.http(status: 404)) { _ = try await direct.conversation(id: id) }
+    }
+
 }
 
 private actor DeletionGate {
@@ -103,11 +126,13 @@ private actor DeletionFixtureClient: ChatTurnClient {
     var postCancelFailure: Int?
     var foreignAfterCancel = false
     var malformedAfterCancel = false
+    var foreignConversationID: String?
     var createGate: DeletionGate?
     var deleteGate: DeletionGate?
     var identityGate: DeletionGate?
     var deletedIDs: [String] = []
     init(store: UUID = UUID()) { self.store = store }
+    func substituteConversationID(_ id: String) { foreignConversationID = id }
     func terminalFailure(status: Int? = nil, foreign: Bool = false, malformed: Bool = false) { postCancelFailure = status; foreignAfterCancel = foreign; malformedAfterCancel = malformed }
     func setMissingTurn() { missingTurn = true }
     func gates(create: DeletionGate? = nil, delete: DeletionGate? = nil, identity: DeletionGate? = nil) { createGate = create; deleteGate = delete; identityGate = identity }
@@ -126,7 +151,7 @@ private actor DeletionFixtureClient: ChatTurnClient {
         if calls.filter({ $0 == "identity" }).count > 1, let replacement { return replacement }
         return store
     }
-    func conversation(id: String) async throws -> ChatWireJSON { calls.append("inspect"); return .object(["id": .string(id), "title": .string("Owned fixture")]) }
+    func conversation(id: String) async throws -> ChatWireJSON { calls.append("inspect"); return .object(["id": .string(foreignConversationID ?? id), "title": .string("Owned fixture")]) }
     func deleteConversation(id: String) async throws { calls.append("delete"); deletedIDs.append(id); await deleteGate?.wait(); if let failure { throw ChatTurnClientError.http(status: failure) } }
     func turn(turnID: String) async throws -> ChatWireJSON { calls.append("turn"); if missingTurn { throw ChatTurnClientError.http(status: 404) }; if calls.contains("cancel") { if let status = postCancelFailure { throw ChatTurnClientError.http(status: status) }; if malformedAfterCancel { return .object([:]) } }; return receipt() }
     func cancel(turnID: String) async throws -> ChatWireJSON { calls.append("cancel"); running = cancelledStillRunning; if foreignAfterCancel { foreignTurn = true }; return .object(["turn_id": .string(turnID), "outcome": .string(running ? "running" : "cancelled")]) }
@@ -465,6 +490,32 @@ struct OwnerDeletionTests {
         #expect(model.conversations.isEmpty)
         #expect((await client.deletedIDs).contains("owned"))
         #expect(model.activeConversationID != id)
+    }
+
+    @Test func ownerResponseCannotRetargetExistingDeletionAuthority() async throws {
+        let client = DeletionFixtureClient()
+        await client.substituteConversationID("foreign")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("conversations.json")
+        let row = ChatConversation(id: UUID(), title: "Owned", messages: [ChatMessage(role: .user, content: "Old")], createdAt: Date(), updatedAt: Date(), backend: .ownerV1, ownerConversationID: "owned", ownerStoreUUID: client.store)
+        try JSONEncoder().encode([row]).write(to: file)
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, conversationStoreURL: file)
+        model.selectConversation(row.id)
+        model.send("New question", alias: "fixture")
+        await model._testingWaitForCurrentTurn()
+        #expect((await client.calls).contains("inspect"))
+        #expect(model.conversations.first?.ownerConversationID == "owned")
+        #expect(ConversationStore.load(from: file).first?.ownerConversationID == "owned")
+        #expect(!(await client.calls).contains("submit"))
+    }
+
+    @Test func olderTransportWithoutDeletionCannotReportSuccess() async throws {
+        let client = try await OwnerChatSessionTests().fake([])
+        await #expect(throws: ChatTurnClientError.invalidResponse) { try await client.deleteConversation(id: "owned") }
     }
 
     @Test func oldHistoryDecodesWithoutAuthorityIdentity() throws {

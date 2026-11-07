@@ -1610,6 +1610,7 @@ final class ChatViewModel {
 
     private func captureOwnerAuthority(localID: UUID, ownerID: String, store: UUID?, turn: String?) async throws {
         if let index = conversations.firstIndex(where: { $0.id == localID }) {
+            if let old = conversations[index].ownerConversationID, old != ownerID { throw OwnerConversationDeletion.Failure.identityChanged }
             if let old = conversations[index].ownerStoreUUID, old != store { throw OwnerConversationDeletion.Failure.identityChanged }
             let newlyCreated = conversations[index].ownerConversationID == nil
             conversations[index].ownerConversationID = ownerID
