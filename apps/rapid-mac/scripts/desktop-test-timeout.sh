@@ -45,6 +45,11 @@ if [[ -z "$WATCHDOG_BIN" ]] && swift build --product RapidDesktopTestWatchdogRun
 fi
 
 mkdir -p "$ARTIFACT_DIR"
+# A unique directory binds machine-readable completion to THIS invocation.
+# Earlier targeted-command summaries or another invocation's artifacts cannot
+# satisfy the full run. Retain this directory on any failure for diagnosis.
+RUN_ARTIFACT_DIR="$(mktemp -d "$ARTIFACT_DIR/run.XXXXXX")"
+EVENT_STREAM="$RUN_ARTIFACT_DIR/swift-testing-events.jsonl"
 
 # --- Launch `swift test` in the background, remember its PID ---------------
 # CI may run an expensive flow in its own visible step. Local/full runs
@@ -53,6 +58,7 @@ SWIFT_TEST_ARGS=(--no-parallel)
 if [[ -n "${RAPID_DESKTOP_TEST_SKIP:-}" ]]; then
     SWIFT_TEST_ARGS+=(--skip "$RAPID_DESKTOP_TEST_SKIP")
 fi
+SWIFT_TEST_ARGS+=(--event-stream-output-path "$EVENT_STREAM" --event-stream-version 0)
 swift test "${SWIFT_TEST_ARGS[@]}" &
 TEST_PID=$!
 
@@ -60,8 +66,8 @@ TEST_PID=$!
 hang_detected=0
 if [[ -n "$WATCHDOG_BIN" && -x "$WATCHDOG_BIN" ]]; then
     deadline_seconds=$(( DEADLINE_MINUTES * 60 ))
-    if "$WATCHDOG_BIN" "$TEST_PID" "$deadline_seconds" "$ARTIFACT_DIR" \
-        > "$ARTIFACT_DIR/watchdog.stdout" 2> "$ARTIFACT_DIR/watchdog.stderr"; then
+    if "$WATCHDOG_BIN" "$TEST_PID" "$deadline_seconds" "$RUN_ARTIFACT_DIR" \
+        > "$RUN_ARTIFACT_DIR/watchdog.stdout" 2> "$RUN_ARTIFACT_DIR/watchdog.stderr"; then
         # Watchdog exited 0 => the wrapped process exited before the deadline.
         :
     else
@@ -104,23 +110,30 @@ if [[ $hang_detected -eq 1 ]]; then
     done
     kill -9 "$TEST_PID" 2>/dev/null || true
     # Surface the artifact path the watchdog wrote.
-    if [[ -d "$ARTIFACT_DIR" ]]; then
-        echo "hang sample artifact(s) under: $ARTIFACT_DIR" >&2
-        ls -1 "$ARTIFACT_DIR" >&2 || true
+    if [[ -d "$RUN_ARTIFACT_DIR" ]]; then
+        echo "hang sample artifact(s) under: $RUN_ARTIFACT_DIR" >&2
+        ls -1 "$RUN_ARTIFACT_DIR" >&2 || true
     fi
     wait "$TEST_PID" 2>/dev/null || true
     exit 124   # matches timeout(1)'s kill exit code convention
 fi
 
-# Normal path: propagate the test process's own exit code.
+# Test failure/timeout status takes precedence over completion validation.
 set +e
 wait "$TEST_PID"
 TEST_EXIT=$?
 set -e
-# Avoid stale hang artifacts confusing the upload step on a healthy run.
-if [[ -d "$ARTIFACT_DIR" && -n "${ARTIFACT_DIR}" && "${ARTIFACT_DIR}" != "/" ]]; then
-    # Keep the dir (CI `if-no-files-found: ignore` needs a stable path) but
-    # clear it so an empty upload shows no false hang.
-    rm -rf -- "${ARTIFACT_DIR:?}"/* 2>/dev/null || true
+if [[ "$TEST_EXIT" -ne 0 ]]; then
+    echo "Desktop test evidence retained under: $RUN_ARTIFACT_DIR" >&2
+    exit "$TEST_EXIT"
 fi
-exit "$TEST_EXIT"
+# A test helper can exit(0) before Swift Testing's runner finishes. Check the
+# official structured lifecycle, not 'passed' text from XCTest or prior steps.
+if ! python3 "$ROOT/scripts/verify-test-completion.py" "$EVENT_STREAM"; then
+    echo "::error::Desktop test invocation exited zero without complete execution; evidence: $RUN_ARTIFACT_DIR" >&2
+    exit 1
+fi
+# Remove only this successful invocation's files. Never erase another run's
+# failure evidence merely because a later command happened to pass.
+rm -rf -- "$RUN_ARTIFACT_DIR"
+exit 0
