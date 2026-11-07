@@ -125,7 +125,7 @@ def test_no_evidence_short_circuits_engine_and_has_standard_wire(stream, monkeyp
     client = client_with(_CountingEngine(), search)
 
     def forbidden(*args, **kwargs):
-        pytest.fail("no-evidence must not acquire/wake the inference engine")
+        raise AssertionError("no-evidence must not acquire/wake the inference engine")
 
     monkeypatch.setattr("rapid_mlx.routes.chat.get_engine", forbidden)
     response = client.post(
