@@ -623,11 +623,13 @@ def test_unreadable_catalog_and_file_source_do_not_attest(tmp_path, monkeypatch)
     assert module.public_repositories()
 
 
+@pytest.mark.requires_mlx
 def test_actual_engine_start_freezes_selected_loader_and_head_before_serving(
     monkeypatch,
 ):
     import asyncio
 
+    pytest.importorskip("mlx.core")
     from rapid_mlx import engine_core
     from rapid_mlx.engine import batched
     from rapid_mlx.execution_reference import LoadReceipt
