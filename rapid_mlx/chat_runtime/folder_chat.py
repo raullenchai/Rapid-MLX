@@ -87,14 +87,25 @@ def prepared_context(messages, result, folders, scope):
     }
 
 
-def model_history(context: dict):
-    history = []
+def model_history(context: dict, owner_instructions: str):
+    # Some chat templates accept a system message only at index zero. Keep the
+    # owner policy and the exact frozen grounding policy together in that slot.
+    system = "\n\n".join(
+        [owner_instructions]
+        + [
+            message["content"]
+            for message in context["messages"]
+            if message["role"] == "system"
+        ]
+    )
+    history = [ModelRequest(parts=[SystemPromptPart(system)])]
     for message in context["messages"]:
+        if message["role"] == "system":
+            continue
         if message["role"] == "assistant":
             history.append(ModelResponse(parts=[TextPart(message["content"])]))
         else:
-            cls = SystemPromptPart if message["role"] == "system" else UserPromptPart
-            history.append(ModelRequest(parts=[cls(message["content"])]))
+            history.append(ModelRequest(parts=[UserPromptPart(message["content"])]))
     return history
 
 

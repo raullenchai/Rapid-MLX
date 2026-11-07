@@ -719,3 +719,78 @@ def test_folder_admission_rejects_unsupported_question_or_attachments(
             model="m",
             local_search={"folder_ids": ["selected"]},
         )
+
+
+def test_emitted_openai_request_has_one_leading_system_and_both_policies(tmp_path):
+    from rapid_mlx.local_search.grounding import POLICY
+
+    async def scenario():
+        server = FolderServer()
+        bodies = []
+        counts = []
+
+        def handler(request):
+            if request.url.path.endswith("/messages/count_tokens"):
+                counts.append(json.loads(request.content))
+            if not request.url.path.endswith("/chat/completions"):
+                return server(request)
+            body = json.loads(request.content)
+            bodies.append(body)
+            messages = body["messages"]
+            assert [m["role"] for m in messages].count("system") == 1
+            assert messages[0]["role"] == "system"
+            assert POLICY in messages[0]["content"]
+            assert LANGUAGE_INSTRUCTIONS in messages[0]["content"]
+            assert messages[0]["content"].count(POLICY) == 1
+            assert messages[0]["content"] == counts[-1]["system"]
+            assert body.get("tools") in (None, [])
+            chunk = {
+                "id": "fixture",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "local",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "Answer [1]"},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            first = "data: " + json.dumps(chunk) + "\n\n"
+            chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=(
+                    first + "data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n"
+                ).encode(),
+            )
+
+        async def unused(messages, info):
+            raise AssertionError("Must use actual OpenAI adapter")
+            yield ""
+
+        store, runtime, request = await fixture(tmp_path, handler, unused)
+        runtime.model_override = None
+        try:
+            events = await collect(runtime, request)
+            assert events[-1]["event"]["outcome"] == "completed"
+            # A second admitted question keeps prior answer history, without
+            # restoring or duplicating the prior turn's system/catalogue.
+            revision = (await store.get_conversation(request.conversation_id))[
+                "branches"
+            ][0]["revision"]
+            events = await collect(
+                runtime,
+                request.model_copy(
+                    update={"turn_id": "openai-second", "expected_revision": revision}
+                ),
+            )
+            assert events[-1]["event"]["outcome"] == "completed"
+            assert len(bodies) == 2
+        finally:
+            await runtime.close()
+            await store.close()
+
+    asyncio.run(scenario())

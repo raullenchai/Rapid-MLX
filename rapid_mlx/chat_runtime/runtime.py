@@ -240,7 +240,9 @@ class Runtime:
         self.web_tools = (web_tools or WebTools()) if web_enabled else None
         self.agent = chat_agent(chat_instructions)
         self.synthesis_agent = chat_agent(synthesis_instructions, tools=False)
-        self.folder_agent = chat_agent(synthesis_instructions, tools=False)
+        # Folder history composes owner and source policies into one leading
+        # system message; adding Agent instructions would create a second one.
+        self.folder_agent = chat_agent(None, tools=False)
         self._presentations: dict[str, ToolPresentation] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._signals: dict[str, asyncio.Event] = {}
@@ -917,7 +919,7 @@ class Runtime:
 
         deps.prepare_context = prepare
         deps.token_counter = counter
-        history = model_history(saved)
+        history = model_history(saved, build_instructions(deps, set(), synthesis=True))
         final, messages, consumed = await self._attempt(
             self.folder_agent,
             model,
