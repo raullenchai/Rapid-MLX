@@ -84,6 +84,10 @@ AXApplication title="Rapid-MLX"
           AXButton desc="All" enabled=true
           AXButton desc="Cached" enabled=true
           AXButton desc="Not cached" enabled=true
+        AXGroup id="Settings.ModelManagement.OpenedCheckpoints" enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="Settings.ModelManagement.OpenCheckpoint" desc="Open existing checkpoint…" enabled=true
+          AXStaticText value=text enabled=true
         AXHeading desc="Models folder" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText id="Settings.ModelManagement.FolderPath" value=text enabled=true

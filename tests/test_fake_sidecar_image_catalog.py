@@ -187,6 +187,19 @@ def run_fake(
     ).stdout
 
 
+@pytest.mark.parametrize("inspection", [False, True])
+def test_command_evidence_identifies_checkpoint_inspection(tmp_path, inspection):
+    events = tmp_path / "events.jsonl"
+    args = ["--json"]
+    if inspection:
+        args.extend(["--inspect-local", "/owned-checkpoint"])
+    run_fake("models", *args, settings={"FAKE_EVENT_LOG": str(events)})
+    records = [json.loads(line) for line in events.read_text().splitlines()]
+    command = next(record for record in records if record["event"] == "command")
+    assert command["subcommand"] == "models"
+    assert command["checkpoint_inspection"] is inspection
+
+
 @pytest.fixture(scope="module")
 def models_output() -> str:
     return run_fake("models")

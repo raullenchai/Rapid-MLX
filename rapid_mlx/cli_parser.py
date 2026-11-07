@@ -2432,6 +2432,12 @@ def _add_models_parser(
         "cache (alias, HF repo, size on disk, last modified).",
     )
     models_parser.add_argument(
+        "--inspect-local",
+        action="append",
+        metavar="DIRECTORY",
+        help="Offline inspection of an existing chat checkpoint (requires --json; up to 32 directories). Does not import or download files.",
+    )
+    models_parser.add_argument(
         "--json",
         action="store_true",
         default=False,

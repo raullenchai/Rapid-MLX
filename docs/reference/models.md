@@ -28,6 +28,45 @@ records serving evidence and why Unlimited-OCR-2 and LFM3 remain excluded.
 
 ## Text and vision
 
+### Open an existing checkpoint in Desktop
+
+In **Settings → Models**, choose **Open existing checkpoint…** to select one
+existing chat checkpoint directory directly. This is separate from **Models
+folder**, which controls managed downloads. Files stay in place: opening and
+removing a reference never copies or deletes checkpoint weights.
+
+The installed engine checks the directory offline using its existing completeness
+and chat compatibility rules. It needs complete MLX-compatible weights, supported
+architecture, tokenizer vocabulary and a chat template. GGUF and unsupported
+checkpoint formats are rejected. Inspection reads metadata and file information;
+it does not run checkpoint-provided Python or start inference.
+
+Up to 32 canonical directory references are retained. Paths with spaces work;
+different directories sharing a basename keep distinct launch identities, and
+their complete paths are shown. A checkpoint already discovered by the engine
+reuses its existing catalog entry and ownership. Newly opened external checkpoints
+are read-only in the model list. **Remove reference** only forgets that reference;
+an independently discovered model may remain visible.
+
+References are checked again when the catalog loads. A missing, incomplete or
+now-unsupported directory is not offered for chat and never falls back to a Hub
+download. Its reference can still be removed. New external directories with links
+escaping the selected directory are rejected; existing discovered checkpoints use
+the engine's established cache read boundaries. An older engine without inspection
+support reports an update requirement instead of adding an unverified model.
+
+For an offline command-line inspection, use:
+
+```bash
+rapid-mlx models --inspect-local "/path/to/checkpoint with spaces" --json
+```
+
+The opt-in result has `schema: 1` and a `local_checkpoints` array with one result
+per requested directory. A rejected result has `ready: false` and a typed `reason`.
+The flag may be repeated for up to 32 directories and requires `--json`; it cannot
+be combined with `--cached`, `--search` or `--modality`. Ordinary `models --json`
+and existing collection-root discovery retain their behavior.
+
 Run `rapid-mlx models` to browse current text and vision aliases. Start a recommended text model with `rapid-mlx chat` or `rapid-mlx serve <alias>`. For images in a request, follow the [multimodal guide](../guides/multimodal.md).
 
 ## DeepSeek V4.1 Flash 1017

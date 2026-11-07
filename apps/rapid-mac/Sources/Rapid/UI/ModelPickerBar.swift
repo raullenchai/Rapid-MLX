@@ -13,7 +13,7 @@ import SwiftUI
 /// action opens Settings > Model management.
 struct ModelPickerBar: View {
     nonisolated static func liveContextWindow(for alias: String, profile: ServerModelProfile?) -> Int? {
-        guard let profile, profile.id.caseInsensitiveCompare(alias) == .orderedSame else { return nil }
+        guard let profile, ModelReference.matches(profile.id, alias) else { return nil }
         return profile.contextWindow
     }
     @Bindable var server: ServerManager
@@ -844,8 +844,8 @@ struct ModelPickerBar: View {
 
     /// Keep the first row for an alias, after higher-priority sections claim it.
     static func uniqueSectionEntries(_ entries: [ModelEntry], excluding aliases: [String]) -> [ModelEntry] {
-        var seen = Set(aliases.map { $0.lowercased() })
-        return entries.filter { seen.insert($0.alias.lowercased()).inserted }
+        var seen = Set(aliases.map(ModelReference.key))
+        return entries.filter { seen.insert(ModelReference.key($0.alias)).inserted }
     }
 
     /// Order the "All models" list: downloaded (cached) aliases first,
@@ -1112,7 +1112,7 @@ struct ModelPickerBar: View {
     ) -> String {
         let validFallback = fallbackAlias.flatMap { fallback in
             catalog.first(where: {
-                $0.alias.caseInsensitiveCompare(fallback) == .orderedSame
+                ModelReference.matches($0.alias, fallback)
                     && ModelSelectionPurpose.chat.accepts($0)
             })?.alias
         }
@@ -1120,13 +1120,13 @@ struct ModelPickerBar: View {
             return validFallback ?? ""
         }
         if catalog.contains(where: {
-            $0.alias.caseInsensitiveCompare(currentAlias) == .orderedSame
+            ModelReference.matches($0.alias, currentAlias)
                 && ModelSelectionPurpose.chat.accepts($0)
         }) {
             return currentAlias
         }
         guard knownNonChatAliases.contains(where: {
-            $0.caseInsensitiveCompare(currentAlias) == .orderedSame
+            ModelReference.matches($0, currentAlias)
         }) else {
             return currentAlias
         }
