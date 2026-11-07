@@ -663,12 +663,13 @@ folder-chat capability is rejected before submission.
 In Search, choose **Ask this folder…** on one registered folder. This starts a new
 chat with a removable folder chip. Only that folder is searched: no global scope,
 new registration, automatic indexing or model download is implied. The chip states
-that cited passages are saved with the chat. New Chat clears the scope; switching
+that retrieved passages are saved with the chat. New Chat clears the scope; switching
 back to the conversation restores its scope. Remove the chip to stop using it for
 later turns. Folder chat accepts text questions and disables web, file, terminal
 and delegation tools; attachments must be removed first.
 
-Each admitted answer saves its retrieved text before generation. Open the numbered
+Each admitted answer saves its retrieved text before generation. The source rows
+list all retrieved passages, including passages the model did not cite. Open the numbered
 source rows below the answer to read the saved passage and known page/line range.
 This preview does not open a model-supplied URL or the original file. Changing the
 index or original file cannot rewrite a saved answer's evidence. Source numbers

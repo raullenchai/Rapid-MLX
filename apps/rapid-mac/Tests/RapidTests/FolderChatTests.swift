@@ -169,6 +169,7 @@ struct FolderChatRealUserTests {
         let answer = model.messages.filter { $0.role == .assistant }.map(\.content).joined(separator: "\n")
         #expect(answer.lowercased().contains("cannot") || answer.lowercased().contains("no"))
         #expect(answer.contains("[1]"))
+        try await stage.waitForText(answer)
         let source = try #require(model.messages.compactMap(\.ownerSource).first)
         #expect(source.url == nil)
         let sourceID = "Chat.SavedSource." + source.sourceID
@@ -184,5 +185,59 @@ struct FolderChatRealUserTests {
         try await stage.waitForIdentifierGone("Chat.SavedSourcePreview")
         let receipt: [String: String] = ["answer": answer, "source_id": source.sourceID, "attachment_id": source.attachmentID ?? "", "saved_text": saved.text, "owner_conversation_id": model.conversations.first?.ownerConversationID ?? ""]
         try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-native-receipt.json"))
+        var formats: [[String: String]] = []
+        for (question, expected, filename) in [
+            ("How many business days do orders take to ship?", "two", "shipping.pdf"),
+            ("Do office visits require an appointment?", "yes", "office-policy.docx")
+        ] {
+            let oldIDs = Set(model.messages.compactMap(\.ownerSource).map(\.sourceID))
+            try stage.setValue(question, for: AutosizingTextView.composeAccessibilityIdentifier)
+            try stage.submitComposer()
+            await model._testingWaitForCurrentTurn()
+            let response = try #require(model.messages.last(where: { $0.role == .assistant })?.content)
+            #expect(response.lowercased().contains(expected) || (expected == "two" && response.contains("2")))
+            try await stage.waitForText(response)
+            let document = try #require(model.messages.compactMap(\.ownerSource).first(where: { !oldIDs.contains($0.sourceID) && $0.title.contains(filename) }))
+            try stage.press("Chat.SavedSource." + document.sourceID)
+            try await stage.waitForIdentifier("Chat.SavedSourcePreview")
+            let preview = try await model.folderSourcePreview(document)
+            #expect(preview.text.contains(expected == "two" ? "two business days" : "appointment"))
+            formats.append(["question": question, "answer": response, "source_id": document.sourceID, "title": document.title, "saved_text": preview.text])
+            stage.pressEscape()
+            try await stage.waitForIdentifierGone("Chat.SavedSourcePreview")
+        }
+        let emptyFolderID = try #require(env["RAPID_FOLDER_REAL_EMPTY_FOLDER_ID"])
+        model.startFolderChat(folderID: emptyFolderID, title: "Owned empty folder")
+        try stage.setValue("zqxvjkplrnop", for: AutosizingTextView.composeAccessibilityIdentifier)
+        try stage.submitComposer()
+        await model._testingWaitForCurrentTurn()
+        #expect(model.messages.last(where: { $0.role == .assistant })?.content.contains("couldn't find supporting information") == true)
+        try JSONSerialization.data(withJSONObject: formats, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-format-receipts.json"))
+        try Data((model.conversations.first?.ownerConversationID ?? "").utf8).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-nohit-conversation.txt"))
+
+    }
+}
+
+@Suite("Folder search entry point") @MainActor
+struct FolderChatEntryPointTests {
+    @Test(arguments: [false, true]) func explicitSetupOrFolderSelection(enabled: Bool) async throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let status = try decoder.decode(LocalSearchStatus.self, from: Data(#"{"enabled":true,"model":{"id":"embedding","downloaded":true,"loaded":false},"folders":[{"id":"selected","path":"/owned/Policies","state":"idle","files_indexed":1,"files_skipped":0,"chunks":1}],"indexing":{"active":false,"files_done":1,"files_total":1},"totals":{"files":1,"chunks":1,"index_bytes":0}}"#.utf8))
+        let search = LocalSearchViewModel(fetchStatus: { _ in status })
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = enabled
+        let chat = ChatViewModel(chatBackendConfig: config, persistsConversations: false)
+        var settingsOpened = false
+        let stage = GoldenStage(LocalSearchView(server: ServerManager(testingState: .ready(alias: "local")), model: search, onStartModel: { false }, onAskFolder: { folder in
+            chat.startFolderChat(folderID: folder.id, title: LocalSearchPath.folderTitle(folder.path))
+        }, folderChatAvailable: chat.folderChatAvailable, onFolderChatSettings: { settingsOpened = true }).environment(DownloadManager()), size: CGSize(width: 720, height: 620))
+        try await stage.waitForIdentifier("LocalSearch.Folder.0.Ask")
+        try stage.press("LocalSearch.Folder.0.Ask")
+        #expect(settingsOpened == !enabled)
+        #expect(config.harnessEnabled == enabled)
+        #expect(chat.messages.isEmpty)
+        #expect(chat.folderChatScope?.folderIDs == (enabled ? ["selected"] : nil))
+        search.disappear()
     }
 }

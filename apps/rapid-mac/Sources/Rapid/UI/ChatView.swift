@@ -948,7 +948,7 @@ struct ChatView: View {
                                 .accessibilityLabel(String(localized: "Remove folder from this chat"))
                                 .accessibilityIdentifier("Chat.RemoveFolderScope")
                         }
-                        Text(String(localized: "Uses indexed passages only. Tools are off. Cited passages are saved with this chat."))
+                        Text(String(localized: "Uses indexed passages only. Tools are off. Retrieved passages are saved with this chat."))
                             .font(.rapid(.caption)).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

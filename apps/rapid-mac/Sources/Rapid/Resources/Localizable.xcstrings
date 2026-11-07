@@ -24289,12 +24289,12 @@
         }
       }
     },
-    "Ask using saved passages from this folder. Tools are off; cited passages are saved with the chat." : {
+    "Ask using saved passages from this folder. Tools are off; retrieved passages are saved with the chat." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用此文件夹已保存的片段提问。工具已关闭，引用的片段会随对话保存。"
+            "value" : "使用此文件夹已保存的片段提问。工具已关闭，检索到的片段会随对话保存。"
           }
         }
       }
@@ -24339,12 +24339,12 @@
         }
       }
     },
-    "Uses indexed passages only. Tools are off. Cited passages are saved with this chat." : {
+    "Uses indexed passages only. Tools are off. Retrieved passages are saved with this chat." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅使用已索引的片段。工具已关闭，引用的片段会随此对话保存。"
+            "value" : "仅使用已索引的片段。工具已关闭，检索到的片段会随此对话保存。"
           }
         }
       }
