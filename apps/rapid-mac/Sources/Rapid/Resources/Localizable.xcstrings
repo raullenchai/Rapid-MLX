@@ -2,6 +2,56 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Engine Metal memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引擎 Metal 内存"
+          }
+        }
+      }
+    },
+    "Active allocations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活跃分配"
+          }
+        }
+      }
+    },
+    "Allocator cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分配器缓存"
+          }
+        }
+      }
+    },
+    "Peak allocations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "峰值分配"
+          }
+        }
+      }
+    },
+    "Live counters for the inference engine, in decimal GB. These are not separate totals for model weights or the prefix cache, and should not be added to system memory use. A dash means the engine has no current measurement." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推理引擎的实时计数，单位为十进制 GB。这些数值不是模型权重或前缀缓存各自的总量，不应与系统内存用量相加。短横线表示引擎当前没有测量值。"
+          }
+        }
+      }
+    },
     "Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = reference benchmark on recorded hardware · Untested = no compatible result recorded yet." : {
       "localizations" : {
         "zh-Hans" : {

@@ -93,6 +93,7 @@ struct SettingsPerformancePanel: View {
                     subtitle: String(localized: "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts."),
                     emphasis: .page
                 )
+                MetalMemorySection()
                 modelSection
                 if let alias = targetAlias {
                     if needsReload { reloadBanner(alias: alias) }
