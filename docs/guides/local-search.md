@@ -679,12 +679,23 @@ explicit regeneration. Desktop owner-backed regeneration remains unavailable;
 this feature does not change that existing restriction. Removing a
 folder registration does not erase excerpts already saved in chat history.
 
-Current owner-backed Desktop deletion removes local history only; it does not
-call the owner DELETE endpoint or purge retained owner conversations, uploads or
-saved passages. Authoritative owner deletion rejects later conversation/preview
-access, but Desktop coordination, failure handling and retry are separate
-follow-up work tracked in [#5653](https://github.com/raullenchai/Rapid-MLX/issues/5653).
-Do not treat local sidebar removal as secure data erasure.
+Deleting an owner-backed conversation removes its local history immediately and
+records a deletion request before dropping its owner identifiers. Desktop verifies
+the original owner store, cancels its known active turn and waits for a terminal
+receipt before requesting owner deletion. Once confirmed, conversation and saved
+passage reads are unavailable. Original folder files and the search index are
+unaffected; retained owner database records and attachment bytes are not physically
+purged by this operation.
+
+If the owner is offline or a turn cannot be confirmed stopped, a small notice
+keeps deletion pending with **Retry**. Pending requests survive relaunch and retry
+when Desktop reconnects to the existing owner; retry does not start a model or an
+owner process. Older history without a recorded owner identity requires **Review
+connected owner** and explicit confirmation of its inspected title and store.
+Desktop never silently adopts a different store. If an earlier conversation
+creation response was lost before its identifier arrived, deletion stays pending;
+if another unknown owner turn is active, stop that turn before retrying. Local-only
+conversations retain their existing deletion behavior.
 
 Keyword-only retrieval, partial indexing and omitted oversized passages remain
 visible. No matches produces an abstention without inference; while indexing is

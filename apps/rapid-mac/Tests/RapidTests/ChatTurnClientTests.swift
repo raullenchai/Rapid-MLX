@@ -65,6 +65,28 @@ private final class OwnerStubProtocol: URLProtocol, @unchecked Sendable {
 
 @Suite("Owner turn URLSession contract", .serialized)
 struct ChatTurnClientTests {
+    @Test func deletionUsesAuthenticatedBodylessDELETEAndAccepts204() async throws {
+        let client = try makeClient([OwnerStubReply(status: 204, contentType: "text/plain", data: Data())])
+        try await client.deleteConversation(id: "owned")
+        let request = try #require(OwnerStubProtocol.state.requests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path.hasSuffix("/conversations/owned") == true)
+        #expect(request.httpBody == nil)
+        #expect(request.value(forHTTPHeaderField: "Authorization") != nil)
+    }
+
+    @Test(arguments: [401, 403, 404, 409, 500]) func deletionPropagatesAuthorityFailure(status: Int) async throws {
+        let client = try makeClient([OwnerStubReply(status: status)])
+        await #expect(throws: ChatTurnClientError.http(status: status)) { try await client.deleteConversation(id: "owned") }
+    }
+
+    @Test func identityComesFromAuthenticatedStoreUUID() async throws {
+        let id = UUID()
+        let client = try makeClient([OwnerStubReply(data: Data("{\"store_uuid\":\"\(id.uuidString)\"}".utf8))])
+        #expect(try await client.ownerStoreUUID() == id)
+        #expect(OwnerStubProtocol.state.requests.first?.url?.path.hasSuffix("/capabilities") == true)
+    }
+
     @Test func folderScopeClearEncodesExplicitNull() async throws {
         let client = try makeClient([OwnerStubReply()])
         try await client.setFolderScope(conversationID: "c", scope: nil)

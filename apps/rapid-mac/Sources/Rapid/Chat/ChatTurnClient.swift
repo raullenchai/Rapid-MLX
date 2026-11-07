@@ -8,6 +8,8 @@ typealias ChatTurnEventHandler = @Sendable (ChatWireEnvelope) async throws -> Vo
 protocol ChatTurnClient: Sendable {
     func createConversation(workspace: String) async throws -> ChatWireJSON
     func conversation(id: String) async throws -> ChatWireJSON
+    func ownerStoreUUID() async throws -> UUID?
+    func deleteConversation(id: String) async throws
     func supportsFolderChat() async throws -> Bool
     func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview
@@ -31,6 +33,8 @@ struct FolderSourcePreview: Decodable, Equatable, Sendable {
 }
 
 extension ChatTurnClient {
+    func ownerStoreUUID() async throws -> UUID? { nil }
+    func deleteConversation(id: String) async throws { throw ChatTurnClientError.invalidResponse }
     func supportsFolderChat() async throws -> Bool { false }
     func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { throw ChatTurnClientError.invalidResponse }
     func sourcePreview(conversationID: String, attachmentID: String) async throws -> FolderSourcePreview { throw ChatTurnClientError.invalidResponse }
@@ -68,18 +72,21 @@ enum ChatTurnClientError: Error, Equatable {
 actor URLSessionChatTurnClient: ChatTurnClient {
     private let endpoint: URL
     private let bearer: String
+    private let requestTimeout: TimeInterval
     private let session: URLSession
     private let redirectDelegate = ChatOwnerRedirectDelegate()
 
-    init(endpoint: URL, bearer: String, session: URLSession? = nil) throws {
+    init(endpoint: URL, bearer: String, session: URLSession? = nil, requestTimeout: TimeInterval = 180) throws {
         guard ["http", "https"].contains(endpoint.scheme?.lowercased()),
               endpoint.host != nil, endpoint.user == nil, endpoint.password == nil,
               endpoint.query == nil, endpoint.fragment == nil,
+              requestTimeout.isFinite, requestTimeout > 0,
               !bearer.isEmpty, !bearer.contains("\r"), !bearer.contains("\n") else {
             throw ChatTurnClientError.invalidEndpoint
         }
         self.endpoint = endpoint
         self.bearer = bearer
+        self.requestTimeout = requestTimeout
         if let session {
             self.session = session
         } else {
@@ -98,6 +105,19 @@ actor URLSessionChatTurnClient: ChatTurnClient {
 
     func conversation(id: String) async throws -> ChatWireJSON {
         try await json(["conversations", id])
+    }
+
+    func ownerStoreUUID() async throws -> UUID? {
+        let response: ChatWireJSON = try await json(["capabilities"])
+        guard case .object(let value) = response, case .string(let raw) = value["store_uuid"], let id = UUID(uuidString: raw) else { throw ChatTurnClientError.invalidResponse }
+        return id
+    }
+
+    func deleteConversation(id: String) async throws {
+        let request = try makeRequest(["conversations", id], method: "DELETE")
+        let (_, response) = try await session.data(for: request, delegate: redirectDelegate)
+        guard let http = response as? HTTPURLResponse else { throw ChatTurnClientError.invalidResponse }
+        guard http.statusCode == 204 else { throw ChatTurnClientError.http(status: http.statusCode) }
     }
 
     func supportsFolderChat() async throws -> Bool {
@@ -248,7 +268,7 @@ actor URLSessionChatTurnClient: ChatTurnClient {
             }
             url.appendPathComponent(component)
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 180)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: requestTimeout)
         request.httpMethod = method
         request.httpBody = body
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")

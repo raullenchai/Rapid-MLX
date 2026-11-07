@@ -2,6 +2,166 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "%lld deletions pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 项删除待处理。"
+          }
+        }
+      }
+    },
+    "Couldn't read pending server deletions. Local history was kept." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取待处理的对话服务器删除请求。已保留本地历史记录。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending because its conversation ID wasn't received." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。由于未收到对话标识，服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Removed from history. Confirm the connected server before deleting older history." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。删除旧历史记录前，请确认当前连接的对话服务器。"
+          }
+        }
+      }
+    },
+    "Removed from history. Reconnect the original chat server to finish deletion." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。请重新连接原对话服务器以完成删除。"
+          }
+        }
+      }
+    },
+    "Removed from history. A server turn is still active; stop it before retrying deletion." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端仍有正在运行的回合，请先停止再重试删除。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending. Reconnect and retry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端删除仍待处理，请重新连接后重试。"
+          }
+        }
+      }
+    },
+    "Couldn't inspect the connected server. Deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查当前连接的对话服务器。删除仍待处理。"
+          }
+        }
+      }
+    },
+    "The connected server changed. Deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接的对话服务器已更改。删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Couldn't save the server deletion request. Conversation was kept." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存服务器端删除请求。已保留对话。"
+          }
+        }
+      }
+    },
+    "Couldn't save local removal. Server deletion remains pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存本地移除结果。服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Removed from history. Server deletion is pending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已从本机移除。服务器端删除仍待处理。"
+          }
+        }
+      }
+    },
+    "Review connected server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检查连接的对话服务器"
+          }
+        }
+      }
+    },
+    "Delete from this chat server?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "要从此对话服务器删除吗？"
+          }
+        }
+      }
+    },
+    "Delete from server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从服务器端删除"
+          }
+        }
+      }
+    },
+    "Connected server storage:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接的服务器存储："
+          }
+        }
+      }
+    },
     "Engine Metal memory" : {
       "localizations" : {
         "zh-Hans" : {

@@ -156,6 +156,7 @@ final class ChatViewModel {
     /// inject a real URLSession or thread a mock through both layers.
     private var client: ChatStreamClient
     private let chatBackendConfig: ChatBackendConfig
+    let ownerDeletions: OwnerConversationDeletion
     private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
     private(set) var folderChatScope: FolderChatScope?
@@ -473,6 +474,7 @@ final class ChatViewModel {
         self.chatBackendConfig = chatBackendConfig ?? ChatBackendConfig()
         self.ownerClientFactory = ownerClientFactory
         self.ownerWorkspace = ownerWorkspace
+        self.ownerDeletions = OwnerConversationDeletion(url: persistsConversations ? OwnerConversationDeletion.companionURL(for: conversationStoreURL) : nil, clientProvider: ownerClientFactory ?? { try await ChatOwnerConnection.existingDeletionClient() })
         self.tools = tools
         self.toolDefaults = toolDefaults
         self.sampling = sampling
@@ -496,9 +498,10 @@ final class ChatViewModel {
         let loaded = persistsConversations
             ? ConversationStore.load(from: conversationStoreURL)
             : []
-        let repaired = Self.repairInterruptedStreams(loaded)
+        let deletionIDs = Set(ownerDeletions.intents.map(\.id))
+        let repaired = Self.repairInterruptedStreams(loaded.filter { !deletionIDs.contains($0.id) })
         self.conversations = repaired.conversations
-        if persistsConversations && repaired.changed {
+        if persistsConversations && (repaired.changed || repaired.conversations.count != loaded.count) {
             ConversationStore.save(repaired.conversations, to: conversationStoreURL)
         }
         self.folders = persistsConversations
@@ -509,6 +512,11 @@ final class ChatViewModel {
                 from: ConversationDraftStore.companionURL(forConversationStore: conversationStoreURL)
             ).pruned(keeping: Set(conversations.map(\.id)))
         }
+        ownerDeletions.commitLocalRemoval = { [weak self] in
+            guard let self else { throw OwnerConversationDeletion.Failure.unavailable }
+            if self.persistsConversations { try await ConversationStore.saveAuthority(self.conversations, to: self.conversationStoreURL) }
+        }
+        ownerDeletions.scheduleRetry()
     }
 
     /// The folder file that sits beside whichever conversation store is in
@@ -1159,6 +1167,14 @@ final class ChatViewModel {
 
     /// Deletes a conversation and all document extracts in its full branch tree.
     func deleteConversation(_ id: UUID) {
+        if let row = conversations.first(where: { $0.id == id }), row.backend == .ownerV1 {
+            do {
+                try ownerDeletions.enqueue(OwnerDeletionIntent(id: id, conversationID: row.ownerConversationID, storeUUID: row.ownerStoreUUID, turnID: row.ownerTurnID))
+            } catch {
+                lastError = String(localized: "Couldn't save the server deletion request. Conversation was kept.")
+                return
+            }
+        }
         if id == activeConversationID { discardOwnerSessions() }
         cancelTitleTask(for: id)
         var attachmentIDs: Set<UUID> = []
@@ -1194,6 +1210,7 @@ final class ChatViewModel {
         saveDrafts()
         saveConversations()
         documentCache.remove(contentsOf: attachmentIDs)
+        ownerDeletions.scheduleRetry()
     }
 
     // MARK: - In-memory message storage
@@ -1591,6 +1608,21 @@ final class ChatViewModel {
         }
     }
 
+    private func captureOwnerAuthority(localID: UUID, ownerID: String, store: UUID?, turn: String?) async throws {
+        if let index = conversations.firstIndex(where: { $0.id == localID }) {
+            if let old = conversations[index].ownerConversationID, old != ownerID { throw OwnerConversationDeletion.Failure.identityChanged }
+            if let old = conversations[index].ownerStoreUUID, old != store { throw OwnerConversationDeletion.Failure.identityChanged }
+            let newlyCreated = conversations[index].ownerConversationID == nil
+            conversations[index].ownerConversationID = ownerID
+            if newlyCreated || conversations[index].ownerStoreUUID != nil { conversations[index].ownerStoreUUID = store }
+            if let turn { conversations[index].ownerTurnID = turn }
+            if persistsConversations { try await ConversationStore.saveAuthority(conversations, to: conversationStoreURL) }
+        } else {
+            try ownerDeletions.capture(localID: localID, conversationID: ownerID, storeUUID: store, turnID: turn)
+            ownerDeletions.scheduleRetry()
+        }
+    }
+
     private func sendViaOwner(text: String, alias: String, placeholderIndex: Int, epoch: Int) async {
         chatBackendConfig.onDisabled = { [weak self] in
             guard let self else { return }
@@ -1630,13 +1662,10 @@ final class ChatViewModel {
             let attachments = images + userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
-            try await session.submit(text: text, target: target, attachments: attachments, localSearch: folderChatScope) { [weak self] id in
-                await MainActor.run {
-                    guard let self, let index = self.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
-                    self.conversations[index].ownerConversationID = id
-                    self.saveConversations()
-                }
-            }
+            ownerDeletions.scheduleRetry()
+            try await session.submit(text: text, target: target, attachments: attachments, localSearch: folderChatScope, onAuthority: { [weak self] id, store, turn in
+                try await self?.captureOwnerAuthority(localID: conversationID, ownerID: id, store: store, turn: turn)
+            })
             if Task.isCancelled { try? await session.stop() }
             let snapshots = await session.snapshots()
             if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
