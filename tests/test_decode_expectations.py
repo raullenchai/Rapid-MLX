@@ -148,6 +148,7 @@ def test_generator_distinct_submission_not_cases_config_and_privacy():
     assert baseline == {
         "chip": "M4",
         "method": "none",
+        "config_key": "none",
         "n": 3,
         "ram_min_gib": 32,
         "ram_max_gib": 32,
@@ -183,33 +184,41 @@ def test_generator_excludes_invalid_and_incompatible_runs():
     ]
 
 
-def test_shared_golden_vectors_offline():
+def test_shared_golden_vectors_offline(monkeypatch):
+    original_snapshot = de.snapshot()
     for vector in json.loads(
         (ROOT / "tests/fixtures/decode_expectations_golden.json").read_text()
     ):
-        assert (
-            de.summary(
-                resolve(
-                    vector["alias"],
-                    vector["chip"],
-                    vector["ram_gib"],
-                    repo_id=vector["repo_id"],
+        data = json.loads(json.dumps(original_snapshot))
+        if override := vector.get("cohort_config_key_override"):
+            for cohort in data["models"][vector["alias"]]["cohorts"]:
+                if cohort["method"] == "mtp":
+                    cohort["config_key"] = override
+        with monkeypatch.context() as patch:
+            patch.setattr(de, "snapshot", lambda snapshot_data=data: snapshot_data)
+            assert (
+                de.summary(
+                    resolve(
+                        vector["alias"],
+                        vector["chip"],
+                        vector["ram_gib"],
+                        repo_id=vector["repo_id"],
+                    )
                 )
+                == vector["summary"]
             )
-            == vector["summary"]
-        )
-        assert (
-            de.summary(
-                resolve(
-                    vector["alias"],
-                    vector["chip"],
-                    vector["ram_gib"],
-                    repo_id=vector["repo_id"],
-                ),
-                compact=True,
+            assert (
+                de.summary(
+                    resolve(
+                        vector["alias"],
+                        vector["chip"],
+                        vector["ram_gib"],
+                        repo_id=vector["repo_id"],
+                    ),
+                    compact=True,
+                )
+                == vector["compact"]
             )
-            == vector["compact"]
-        )
 
 
 def test_models_and_doctor_match_same_offline_resolver(monkeypatch, capsys):
@@ -289,3 +298,35 @@ def test_packaging_snapshot_requires_object(monkeypatch):
             de.snapshot()
     de.snapshot.cache_clear()
     assert de.snapshot()["schema_version"] == 1
+
+
+def test_mtp_group_requires_exact_embedded_head_k_and_ordinary_backend(monkeypatch):
+    def mtp(identifier, k=3, source="embedded_head", runtime=None):
+        row = run(identifier, repo="rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX", method="mtp")
+        row["execution"]["speculative_decoding"].update(
+            assistant_source=source, max_draft_tokens=k
+        )
+        if source == "external_model":
+            row["execution"]["speculative_decoding"]["draft_model_identity_digest"] = (
+                "sha256:unverified"
+            )
+        if runtime is not None:
+            row["execution"]["runtime"] = runtime
+        return row
+
+    correct = [mtp("correct-1"), mtp("correct-2")]
+    wrong = [
+        mtp("wrong-k", k=2),
+        mtp("wrong-drafter", source="external_model"),
+        mtp("native", runtime={"kind": "native_mtp"}),
+        mtp("invalid-k", k=True),
+    ]
+    result = build_snapshot(correct + wrong, "2026-11-07")
+    model = result["models"]["qwen3.8-27b-4bit"]
+    assert model["default_config_key"] == "mtp:embedded_head:k=3:ordinary"
+    assert len(model["cohorts"]) == 1 and model["cohorts"][0]["n"] == 2
+    monkeypatch.setattr(de, "snapshot", lambda: result)
+    assert resolve("qwen3.8-27b-4bit", "M4", 32)["status"] == "unavailable"
+    result = build_snapshot(correct + wrong + [mtp("correct-3")], "2026-11-07")
+    assert resolve("qwen3.8-27b-4bit", "M4", 32)["status"] == "measured"
+    assert result["models"]["qwen3.8-27b-4bit"]["cohorts"][0]["n"] == 3

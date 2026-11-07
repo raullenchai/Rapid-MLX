@@ -78,5 +78,31 @@
     "repo_id": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
     "summary": "Expected decode range unavailable \u00b7 configuration unavailable",
     "compact": "Expected decode range unavailable \u00b7 configuration unavailable"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "71\u201372 tok/s measured \u00b7 MTP on \u00b7 smooth (n=4, 96\u201396 GB sampled)",
+    "compact": "71\u201372 tok/s \u00b7 MTP on \u00b7 smooth"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "Expected decode range unavailable \u00b7 MTP on; MTP-off reference 36\u201337 tok/s (n=3, 96\u2013512 GB sampled)",
+    "compact": "Expected decode range unavailable \u00b7 MTP on",
+    "cohort_config_key_override": "mtp:embedded_head:k=2:ordinary"
+  },
+  {
+    "alias": "qwen3.8-27b-4bit",
+    "chip": "M3 Ultra",
+    "ram_gib": 96,
+    "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "summary": "Expected decode range unavailable \u00b7 MTP on; MTP-off reference 36\u201337 tok/s (n=3, 96\u2013512 GB sampled)",
+    "compact": "Expected decode range unavailable \u00b7 MTP on",
+    "cohort_config_key_override": "mtp:external_model:k=3:ordinary"
   }
 ]

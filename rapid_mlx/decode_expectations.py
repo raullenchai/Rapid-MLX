@@ -76,9 +76,20 @@ def expectation(
         and row["n"] >= 3
     ]
     for row in cohorts:
-        if row["method"] == model["default_method"]:
+        if (
+            row["method"] == model["default_method"]
+            and model["default_config_key"] is not None
+            and row["config_key"] == model["default_config_key"]
+        ):
             return {**result, **row, "status": "measured"}
-    baseline = next((row for row in cohorts if row["method"] == "none"), None)
+    baseline = next(
+        (
+            row
+            for row in cohorts
+            if row["method"] == "none" and row["config_key"] == "none"
+        ),
+        None,
+    )
     if baseline:
         result["baseline"] = baseline
     return result

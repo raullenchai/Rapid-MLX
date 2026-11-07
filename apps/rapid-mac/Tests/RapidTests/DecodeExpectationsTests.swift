@@ -11,9 +11,11 @@ struct DecodeExpectationsTests {
         let repoID: String?
         let summary: String
         let compact: String
+        let cohortConfigKeyOverride: String?
         enum CodingKeys: String, CodingKey {
             case alias, chip, summary, compact
             case ramGiB = "ram_gib", repoID = "repo_id"
+            case cohortConfigKeyOverride = "cohort_config_key_override"
         }
     }
 
@@ -26,9 +28,24 @@ struct DecodeExpectationsTests {
             .deletingLastPathComponent()
         let data = try Data(contentsOf: root.appendingPathComponent("tests/fixtures/decode_expectations_golden.json"))
         let rows = try JSONDecoder().decode([Golden].self, from: data)
+        let snapshotData = try Data(contentsOf: root.appendingPathComponent("rapid_mlx/decode_expectations.json"))
         for row in rows {
-            #expect(DecodeExpectations.summary(alias: row.alias, chip: row.chip, ramGiB: row.ramGiB, repoID: row.repoID, snapshot: snapshot) == row.summary)
-            #expect(DecodeExpectations.summary(alias: row.alias, chip: row.chip, ramGiB: row.ramGiB, repoID: row.repoID, snapshot: snapshot, compact: true) == row.compact)
+            var selected = snapshot
+            if let key = row.cohortConfigKeyOverride {
+                var payload = try #require(JSONSerialization.jsonObject(with: snapshotData) as? [String: Any])
+                var models = try #require(payload["models"] as? [String: Any])
+                var model = try #require(models[row.alias] as? [String: Any])
+                var cohorts = try #require(model["cohorts"] as? [[String: Any]])
+                for index in cohorts.indices where cohorts[index]["method"] as? String == "mtp" {
+                    cohorts[index]["config_key"] = key
+                }
+                model["cohorts"] = cohorts
+                models[row.alias] = model
+                payload["models"] = models
+                selected = try JSONDecoder().decode(DecodeExpectations.Snapshot.self, from: JSONSerialization.data(withJSONObject: payload))
+            }
+            #expect(DecodeExpectations.summary(alias: row.alias, chip: row.chip, ramGiB: row.ramGiB, repoID: row.repoID, snapshot: selected) == row.summary)
+            #expect(DecodeExpectations.summary(alias: row.alias, chip: row.chip, ramGiB: row.ramGiB, repoID: row.repoID, snapshot: selected, compact: true) == row.compact)
         }
     }
 

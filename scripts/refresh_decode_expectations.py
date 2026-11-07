@@ -38,9 +38,23 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
             or ram <= 0
         ):
             continue
-        method = run.get("execution", {}).get("speculative_decoding", {}).get("method")
-        if method not in ("none", "mtp"):
-            continue
+        execution = run.get("execution", {})
+        spec = execution.get("speculative_decoding", {})
+        method = spec.get("method")
+        if execution.get("runtime") is not None:
+            continue  # dedicated/native backend is not the ordinary serving lane
+        if spec == {"method": "none"}:
+            config_key = "none"
+        elif (
+            method == "mtp"
+            and spec.get("assistant_source") == "embedded_head"
+            and type(spec.get("max_draft_tokens")) is int
+            and spec["max_draft_tokens"] > 0
+            and set(spec) == {"method", "assistant_source", "max_draft_tokens"}
+        ):
+            config_key = f"mtp:embedded_head:k={spec['max_draft_tokens']}:ordinary"
+        else:
+            continue  # external drafter identity/backend cannot be proven here
         values = [
             case["decode_tps"]
             for case in run.get("cases", [])
@@ -52,7 +66,7 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
         identifier = run.get("submission_id")
         if not values or not identifier:
             continue
-        key = (run.get("model", {}).get("repo_id"), chip, method)
+        key = (run.get("model", {}).get("repo_id"), chip, method, config_key)
         groups[key][identifier] = (statistics.median(values), ram)
     policy = json.loads((ROOT / "rapid_mlx/model_recommendations.json").read_text())
     working_ram = {
@@ -65,28 +79,6 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
         if profile.get("modality", "text") not in ("text", "vision"):
             continue
         repo = profile["hf_path"]
-        cohorts = []
-        for (model, chip, method), observations in sorted(groups.items()):
-            if model != repo:
-                continue
-            values = sorted(v[0] for v in observations.values())
-            q = (
-                statistics.quantiles(values, n=4, method="inclusive")
-                if len(values) > 1
-                else values * 3
-            )
-            cohorts.append(
-                {
-                    "chip": chip,
-                    "method": method,
-                    "n": len(values),
-                    "ram_min_gib": min(v[1] for v in observations.values()),
-                    "ram_max_gib": max(v[1] for v in observations.values()),
-                    "lower": round(q[0], 2),
-                    "median": round(statistics.median(values), 2),
-                    "upper": round(q[2], 2),
-                }
-            )
         # A declared draft is not an automatic preset until qualified. Other
         # backend-owned presets need their own compatible execution cohort.
         default_method = "none"
@@ -104,9 +96,43 @@ def build_snapshot(runs: list[dict], refreshed_at: str) -> dict:
             )
         ):
             default_method = "mtp"
+        default_config_key = "none" if default_method == "none" else None
+        if (
+            default_method == "mtp"
+            and not profile.get("supports_native_mtp")
+            and profile.get("mtp_draft_model") == repo
+            and type(profile.get("mtp_speculative_tokens")) is int
+        ):
+            default_config_key = (
+                f"mtp:embedded_head:k={profile['mtp_speculative_tokens']}:ordinary"
+            )
+        cohorts = []
+        for (model, chip, method, config_key), observations in sorted(groups.items()):
+            if model != repo or (method == "mtp" and config_key != default_config_key):
+                continue
+            values = sorted(v[0] for v in observations.values())
+            q = (
+                statistics.quantiles(values, n=4, method="inclusive")
+                if len(values) > 1
+                else values * 3
+            )
+            cohorts.append(
+                {
+                    "chip": chip,
+                    "method": method,
+                    "config_key": config_key,
+                    "n": len(values),
+                    "ram_min_gib": min(v[1] for v in observations.values()),
+                    "ram_max_gib": max(v[1] for v in observations.values()),
+                    "lower": round(q[0], 2),
+                    "median": round(statistics.median(values), 2),
+                    "upper": round(q[2], 2),
+                }
+            )
         models[alias] = {
             "repo_id": repo,
             "default_method": default_method,
+            "default_config_key": default_config_key,
             "min_ram_gib": max(
                 profile.get("min_memory_gb", 0), working_ram.get(alias, 0)
             ),
@@ -135,7 +161,7 @@ def main() -> None:
     args.output.write_text(
         json.dumps(
             build_snapshot(json.loads(args.input.read_text()), args.refreshed_at),
-            indent=2,
+            separators=(",", ":"),
             sort_keys=True,
         )
         + "\n"

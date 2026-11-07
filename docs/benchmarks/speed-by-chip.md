@@ -85,7 +85,11 @@ set. Older results under `~/.rapid-mlx/benchmarks` remain readable.
 The recommended model picker, Settings, `rapid-mlx models`, and the System
 section of `rapid-mlx doctor` use the bundled `decode_expectations.json` snapshot.
 The snapshot groups the exact model repository, chip generation and tier, and
-speculative method. A measured range requires at least three distinct submitted
+speculative method. MTP references additionally match the recorded draft depth
+and embedded head in the exact target repository on the ordinary serving lane.
+External-drafter, native/dedicated-backend, and unidentifiable configurations
+remain unavailable; their method name alone cannot prove the catalog default.
+A measured range requires at least three distinct submitted
 runs. Short and long cases are first reduced to one median per submission; the
 displayed range is the interquartile range of those medians. The sample count
 and sampled RAM span appear alongside it. Results outside that RAM span are not

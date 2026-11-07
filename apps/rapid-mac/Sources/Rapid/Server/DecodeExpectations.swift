@@ -6,6 +6,7 @@ enum DecodeExpectations {
     struct Cohort: Decodable, Sendable {
         let chip: String
         let method: String
+        let configKey: String
         let n: Int
         let ramMinGiB: Double
         let ramMaxGiB: Double
@@ -14,16 +15,19 @@ enum DecodeExpectations {
         let upper: Double
         enum CodingKeys: String, CodingKey {
             case chip, method, n, lower, median, upper
+            case configKey = "config_key"
             case ramMinGiB = "ram_min_gib", ramMaxGiB = "ram_max_gib"
         }
     }
     struct Model: Decodable, Sendable {
         let repoID: String
+        let defaultConfigKey: String?
         let defaultMethod: String
         let minRAMGiB: Double
         let cohorts: [Cohort]
         enum CodingKeys: String, CodingKey {
             case defaultMethod = "default_method", minRAMGiB = "min_ram_gib"
+            case defaultConfigKey = "default_config_key"
             case repoID = "repo_id", cohorts
         }
     }
@@ -65,13 +69,13 @@ enum DecodeExpectations {
         let cohorts = model.cohorts.filter { $0.chip == chip && $0.n >= 3 && $0.ramMinGiB <= ramGiB && ramGiB <= $0.ramMaxGiB }
         func range(_ row: Cohort) -> String { String(format: "%.0f–%.0f", row.lower, row.upper) }
         func scope(_ row: Cohort) -> String { localized("n=%d, %g–%g GB sampled", row.n, row.ramMinGiB, row.ramMaxGiB) }
-        if let row = cohorts.first(where: { $0.method == model.defaultMethod }) {
+        if let row = cohorts.first(where: { $0.method == model.defaultMethod && model.defaultConfigKey != nil && $0.configKey == model.defaultConfigKey }) {
             let feel = localized(row.median >= 30 ? "smooth" : row.median >= 10 ? "usable" : "tight")
             if compact { return localized("%@ tok/s · %@ · %@", range(row), method, feel) }
             return localized("%@ tok/s measured · %@ · %@ (%@)", range(row), method, feel, scope(row))
         }
         var text = localized("%@ · %@", unavailable, method)
-        if !compact, let baseline = cohorts.first(where: { $0.method == "none" }) {
+        if !compact, let baseline = cohorts.first(where: { $0.method == "none" && $0.configKey == "none" }) {
             text += localized("; MTP-off reference %@ tok/s (%@)", range(baseline), scope(baseline))
         }
         return text
