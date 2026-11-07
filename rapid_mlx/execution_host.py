@@ -3,14 +3,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 import subprocess
+import threading
 from functools import lru_cache
 from typing import Any
 
 from .api.models import ExecutionHostMetrics
 from .decode_expectations import chip_name
+
+_host_lock = threading.Lock()
+_prepared_host: ExecutionHostMetrics | None = None
 
 
 @lru_cache(maxsize=1)
@@ -49,6 +54,18 @@ def _process_host() -> ExecutionHostMetrics | None:
         return None
 
 
+def _prepare_process_host() -> None:
+    global _prepared_host
+    # Serialize concurrent cache misses, including cached probe failures.
+    with _host_lock:
+        _prepared_host = _process_host()
+
+
+async def prepare_execution_host() -> None:
+    """Warm process facts off the serving loop before the text lane is ready."""
+    await asyncio.to_thread(_prepare_process_host)
+
+
 def capture_local_execution_host(output: Any) -> dict | None:
     """Called only at the supported local BatchedEngine output boundary.
 
@@ -63,5 +80,5 @@ def capture_local_execution_host(output: Any) -> dict | None:
         or reference.get("backend") != "ordinary"
     ):
         return None
-    host = _process_host()
+    host = _prepared_host
     return None if host is None else host.model_dump()

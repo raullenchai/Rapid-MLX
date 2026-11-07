@@ -1,16 +1,23 @@
 """Same-generation hardware, never client/current replay hardware."""
 
+import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from rapid_mlx.api.models import ExecutionHostMetrics
-from rapid_mlx.execution_host import _process_host, capture_local_execution_host
+from rapid_mlx.execution_host import (
+    _process_host,
+    capture_local_execution_host,
+    prepare_execution_host,
+)
 
 
 @pytest.fixture(autouse=True)
 def host_probe(monkeypatch):
     _process_host.cache_clear()
+    monkeypatch.setattr("rapid_mlx.execution_host._prepared_host", None)
     monkeypatch.setattr("rapid_mlx.execution_host.platform.system", lambda: "Darwin")
     monkeypatch.setattr("rapid_mlx.execution_host.platform.machine", lambda: "arm64")
     for key in ("MLX_HOSTFILE", "MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
@@ -19,7 +26,7 @@ def host_probe(monkeypatch):
     _process_host.cache_clear()
 
 
-def test_real_local_terminal_capture_is_once_per_process(monkeypatch):
+async def test_real_local_terminal_capture_is_once_per_process(monkeypatch):
     calls = []
 
     def probe(command, **kwargs):
@@ -32,6 +39,8 @@ def test_real_local_terminal_capture_is_once_per_process(monkeypatch):
     monkeypatch.setattr("rapid_mlx.execution_host.subprocess.run", probe)
     reference = {"status": "known", "backend": "ordinary"}
     output = SimpleNamespace(finished=True, execution_reference=reference)
+    assert capture_local_execution_host(output) is None
+    await asyncio.gather(prepare_execution_host(), prepare_execution_host())
     assert capture_local_execution_host(output) == {
         "chip": "M4 Pro",
         "memory_bytes": 32 << 30,
@@ -327,3 +336,80 @@ def test_constructed_invalid_host_dto_is_revalidated_and_omitted():
     assert metrics.execution_reference.completion_tokens == 3
     assert metrics.mean_itl_ms == 25.0
     assert "host-marker" not in metrics.model_dump_json(exclude_none=True)
+
+
+async def test_blocked_probe_keeps_loop_responsive_and_singleflight(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command[-1])
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(
+            stdout="Apple M4" if "brand" in command[-1] else str(32 << 30)
+        )
+
+    monkeypatch.setattr("rapid_mlx.execution_host.subprocess.run", probe)
+    tasks = [asyncio.create_task(prepare_execution_host()) for _ in range(3)]
+    output = SimpleNamespace(
+        finished=True, execution_reference={"status": "known", "backend": "ordinary"}
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.sleep(0)
+        assert capture_local_execution_host(output) is None
+        assert not any(task.done() for task in tasks)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert calls == ["machdep.cpu.brand_string", "hw.memsize"]
+    assert capture_local_execution_host(output)["chip"] == "M4"
+
+
+async def test_failed_warmup_is_cached_without_terminal_retry(monkeypatch):
+    calls = []
+
+    def failed(*args, **kwargs):
+        calls.append(1)
+        raise OSError("unavailable")
+
+    monkeypatch.setattr("rapid_mlx.execution_host.subprocess.run", failed)
+    await asyncio.gather(*(prepare_execution_host() for _ in range(3)))
+    output = SimpleNamespace(
+        finished=True, execution_reference={"status": "known", "backend": "ordinary"}
+    )
+    assert capture_local_execution_host(output) is None
+    await prepare_execution_host()
+    assert len(calls) == 1
+
+
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("mllm", [False, True])
+async def test_engine_start_prepares_host_only_for_supported_text_lane(monkeypatch, mllm):
+    from rapid_mlx.engine import batched
+
+    events = []
+
+    async def prepare():
+        events.append("host")
+        await asyncio.sleep(0)
+
+    async def load():
+        events.append("load")
+        assert not engine._loaded
+
+    monkeypatch.setattr(batched, "prepare_execution_host", prepare)
+    engine = object.__new__(batched.BatchedEngine)
+    engine._loaded = False
+    engine._is_mllm = mllm
+    engine._model_name = "fixture"
+    engine._guided_requests_lock = threading.Lock()
+    engine._validate_lane_capabilities = lambda: events.append("validate")
+    engine._start_llm = load
+    engine._start_mllm = load
+    await engine.start()
+    assert events == (["validate", "load"] if mllm else ["validate", "host", "load"])
+    assert engine._loaded and engine._guided_stopping is False
+    await engine.start()
+    assert events.count("load") == 1

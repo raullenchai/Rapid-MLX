@@ -37,7 +37,7 @@ from ..api.utils import (
     is_mllm_model,
     validate_serving_lane_reason,
 )
-from ..execution_host import capture_local_execution_host
+from ..execution_host import capture_local_execution_host, prepare_execution_host
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
 from ..prompt_token_reuse import (
@@ -1857,6 +1857,7 @@ class BatchedEngine(BaseEngine):
         if self._is_mllm:
             await self._start_mllm()
         else:
+            await prepare_execution_host()
             await self._start_llm()
 
         with self._guided_requests_lock:
