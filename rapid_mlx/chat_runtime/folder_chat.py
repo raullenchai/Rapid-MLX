@@ -110,7 +110,7 @@ def model_history(context: dict, owner_instructions: str):
 
 
 def source_title(source: dict) -> str:
-    title = source["title"]
+    title: str = source["title"]
     for first, last, name in (
         ("page", "end_page", "pages"),
         ("line", "end_line", "lines"),
