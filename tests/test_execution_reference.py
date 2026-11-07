@@ -713,3 +713,68 @@ def test_absent_load_receipt_leaves_existing_step_unchanged():
         is None
     )
     assert batch._step is step
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_call", [False, True])
+async def test_buffered_responses_replay_preserves_terminal_execution_metrics(
+    tool_call,
+):
+    import json
+
+    from rapid_mlx.routes.responses import _stream_buffered_responses_response
+
+    reference = dict(
+        version=1,
+        status="unknown",
+        method="none",
+        backend="ordinary",
+        config_key="none",
+        completion_tokens=2,
+    )
+    item = (
+        {
+            "type": "function_call",
+            "id": "fc_x",
+            "call_id": "call_x",
+            "name": "ping",
+            "arguments": "{}",
+            "status": "completed",
+        }
+        if tool_call
+        else {
+            "type": "message",
+            "id": "msg_x",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+        }
+    )
+    response = dict(
+        id="resp_reference",
+        object="response",
+        created_at=1,
+        status="completed",
+        model="test",
+        output=[item],
+        usage={"input_tokens": 3, "output_tokens": 2},
+        metrics={
+            "execution_reference": reference,
+            "time_to_first_token_ms": 10.0,
+            "mean_itl_ms": 20.0,
+        },
+    )
+    events = [
+        json.loads(event.splitlines()[1][6:])
+        async for event in _stream_buffered_responses_response(
+            json.dumps(response).encode()
+        )
+    ]
+    assert not any(event["type"] == "response.failed" for event in events)
+    terminal = events[-1]
+    assert terminal["type"] == "response.completed"
+    metrics = terminal["response"]["metrics"]
+    assert metrics["execution_reference"] == reference
+    assert metrics["time_to_first_token_ms"] == 10.0
+    assert metrics["mean_itl_ms"] == 20.0
+    assert terminal["response"]["usage"]["output_tokens"] == 2
