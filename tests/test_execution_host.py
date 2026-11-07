@@ -386,7 +386,9 @@ async def test_failed_warmup_is_cached_without_terminal_retry(monkeypatch):
 
 @pytest.mark.requires_mlx
 @pytest.mark.parametrize("mllm", [False, True])
-async def test_engine_start_prepares_host_only_for_supported_text_lane(monkeypatch, mllm):
+async def test_engine_start_prepares_host_only_for_supported_text_lane(
+    monkeypatch, mllm
+):
     from rapid_mlx.engine import batched
 
     events = []
