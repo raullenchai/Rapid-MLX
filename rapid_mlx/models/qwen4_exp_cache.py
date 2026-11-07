@@ -656,3 +656,67 @@ class QSAIndexCache(ArraysCache):
                         0, :count
                     ]
         return merged
+
+
+class Qwen4MTPIndexCache(QSAIndexCache):
+    """Keep two draft positions reversible without copying attention KV.
+
+    The head advances one token per draft call. Retain only the committed
+    boundary and two subsequent raw-ring snapshots; long prompt chunks use
+    the ordinary index path except for their bounded final two positions.
+    """
+
+    max_drafts = 2
+
+    def _boundary(self, raw_keys):
+        ring = self.raw_ring
+        if ring is None:
+            ring = mx.zeros(
+                (raw_keys.shape[0], self.compress_ratio, raw_keys.shape[-1]),
+                dtype=raw_keys.dtype,
+            )
+        snapshot = mx.contiguous(ring + mx.zeros_like(ring))
+        mx.eval(snapshot)
+        return (
+            list(self._offsets),
+            list(self._compressed_counts),
+            list(self._pending_left_padding),
+            snapshot,
+        )
+
+    def update(
+        self,
+        raw_keys,
+        transform_group,
+        transform_groups=None,
+        *,
+        record_rollback=False,
+    ):
+        # A chain-carry call can append the committed row and a new draft
+        # together. Keep the last two boundaries even for a multi-row call;
+        # a long prompt only records its bounded tail, not its whole history.
+        if raw_keys.shape[1] > self.max_drafts:
+            super().update(
+                raw_keys[:, : -self.max_drafts],
+                transform_group,
+                transform_groups,
+                record_rollback=False,
+            )
+            previous = [self._boundary(raw_keys)]
+            raw_keys = raw_keys[:, -self.max_drafts :]
+        else:
+            previous = self.rollback_state or [self._boundary(raw_keys)]
+        result = super().update(
+            raw_keys, transform_group, transform_groups, record_rollback=True
+        )
+        self.rollback_state = (previous + self.rollback_state)[-(self.max_drafts + 1) :]
+        return result
+
+    def restore_rollback(self, n_to_drop, verify_size):
+        history = self.rollback_state
+        super().restore_rollback(n_to_drop, verify_size)
+        # The restored boundary remains in the journal. Give live writes a
+        # separate ring so the next draft cannot overwrite that undo record.
+        self.raw_ring = mx.contiguous(self.raw_ring + mx.zeros_like(self.raw_ring))
+        mx.eval(self.raw_ring)
+        self.rollback_state = history[: verify_size - n_to_drop]
