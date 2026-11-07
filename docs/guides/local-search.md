@@ -679,6 +679,13 @@ explicit regeneration. Desktop owner-backed regeneration remains unavailable;
 this feature does not change that existing restriction. Removing a
 folder registration does not erase excerpts already saved in chat history.
 
+Current owner-backed Desktop deletion removes local history only; it does not
+call the owner DELETE endpoint or purge retained owner conversations, uploads or
+saved passages. Authoritative owner deletion rejects later conversation/preview
+access, but Desktop coordination, failure handling and retry are separate
+follow-up work tracked in [#5653](https://github.com/raullenchai/Rapid-MLX/issues/5653).
+Do not treat local sidebar removal as secure data erasure.
+
 Keyword-only retrieval, partial indexing and omitted oversized passages remain
 visible. No matches produces an abstention without inference; while indexing is
 in progress the reply explains that some files are not searchable yet. Missing

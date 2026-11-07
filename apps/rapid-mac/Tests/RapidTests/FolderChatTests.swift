@@ -246,3 +246,31 @@ struct FolderChatEntryPointTests {
         search.disappear()
     }
 }
+
+@Suite("Folder scope deletion lifecycle") @MainActor
+struct FolderChatDeletionTests {
+    @Test func deletingInactiveKeepsCurrentScopeAndActiveDeletionClearsIt() async throws {
+        let config = ChatBackendConfig(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        config.harnessEnabled = true
+        let client = try await ChatViewModelOwnerRoutingTests().fake()
+        await client.enableFolderChat()
+        let model = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { client }, persistsConversations: false)
+        model.startFolderChat(folderID: "first", title: "First folder")
+        let first = model.activeConversationID
+        model.send("First question", alias: "local")
+        await model._testingWaitForCurrentTurn()
+        model.startFolderChat(folderID: "second", title: "Second folder")
+        let second = model.activeConversationID
+        model.send("Second question", alias: "local")
+        await model._testingWaitForCurrentTurn()
+        model.deleteConversation(first)
+        #expect(model.activeConversationID == second)
+        #expect(model.folderChatScope?.folderIDs == ["second"])
+        #expect(model.folderChatTitle == "Second folder")
+        model.deleteConversation(second)
+        #expect(model.activeConversationID != second)
+        #expect(model.folderChatScope == nil)
+        #expect(model.folderChatTitle == nil)
+        #expect(model.messages.isEmpty)
+    }
+}

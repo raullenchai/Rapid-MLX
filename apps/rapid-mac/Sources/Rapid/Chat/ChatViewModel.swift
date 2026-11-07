@@ -1181,6 +1181,8 @@ final class ChatViewModel {
             treeShapeVersion += 1
             branchChoices.removeAll()
             conversationInstructions = ""
+            folderChatScope = nil
+            folderChatTitle = nil
             activeConversationID = UUID()
             isStreaming = false          // messages now empty → persistActive no-ops
             lastError = nil
