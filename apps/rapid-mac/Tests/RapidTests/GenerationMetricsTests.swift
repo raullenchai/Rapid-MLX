@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import SwiftUI
+import Observation
 @testable import Rapid
 
 @Suite("Frozen generation metrics", .serialized) @MainActor
@@ -356,8 +357,10 @@ struct GenerationMetricsRealUserTests {
             config.harnessEnabled = owner
             let ownerClient = try URLSessionChatTurnClient(endpoint: ownerURL, bearer: "owned-folder-test")
             let server = ServerManager(testingState: .ready(alias: "default"), activePort: port, activeBearer: "owned-inference-test", sessionDefaults: defaults)
-            let model = ChatViewModel(client: ChatStreamClient(baseURL: URL(string: "http://127.0.0.1:\(port)")!), chatBackendConfig: config, ownerClientFactory: { ownerClient }, toolDefaults: defaults, server: server, persistsConversations: false)
-            let stage = GoldenStage(ChatView(viewModel: model, server: server, alias: .constant("default"), readiness: .ready(alias: "default"))
+            let historyURL = URL(fileURLWithPath: directory).appendingPathComponent("history-\(owner ? "owner" : "direct").json")
+            let selection = GenerationPickerSelection()
+            let model = ChatViewModel(client: ChatStreamClient(baseURL: URL(string: "http://127.0.0.1:\(port)")!), chatBackendConfig: config, ownerClientFactory: { ownerClient }, toolDefaults: defaults, server: server, conversationStoreURL: historyURL)
+            let stage = GoldenStage(ChatView(viewModel: model, server: server, alias: Binding(get: { selection.alias }, set: { selection.alias = $0 }), readiness: .ready(alias: "default"))
                 .environment(DownloadManager()).environment(QuickstartCoordinator()), size: CGSize(width: 720, height: 680))
             let question = "What do trees need to grow? Answer in one concise sentence."
             try await stage.waitForIdentifier(AutosizingTextView.composeAccessibilityIdentifier)
@@ -376,11 +379,24 @@ struct GenerationMetricsRealUserTests {
             try await stage.waitForIdentifier("Chat.GenerationDetails")
             try stage.press("Chat.GenerationDetails")
             try await stage.waitForText("Execution host:")
+            selection.alias = "qwen3.5-4b-4bit"
+            try await stage.wait(for: "picker binding reflects a different selection") {
+                stage.value(of: "ModelPickerBar.ModelMenu") == "qwen3.5-4b-4bit"
+            }
+            #expect(model.messages.first(where: { $0.id == answer.id })?.generationMetrics == metrics)
+            ConversationStore.flush()
+            let stored = try #require(ConversationStore.load(from: historyURL).first(where: { $0.id == model.activeConversationID }))
+            #expect(stored.allMessages.first(where: { $0.id == answer.id })?.generationMetrics == metrics)
+            let restored = ChatViewModel(chatBackendConfig: config, ownerClientFactory: { ownerClient }, toolDefaults: defaults, server: server, conversationStoreURL: historyURL)
+            restored.selectConversation(model.activeConversationID)
+            #expect(restored.messages.first(where: { $0.id == answer.id })?.generationMetrics == metrics)
             try await Task.sleep(for: .milliseconds(350))
             try stage.writeScreenshot(to: URL(fileURLWithPath: directory).appendingPathComponent("real-generation-\(owner ? "owner" : "direct").png"))
             let serialized = try JSONSerialization.jsonObject(with: JSONEncoder().encode(metrics))
-            receipts.append(["lane": owner ? "owner" : "direct", "answer": answer.content, "metrics": serialized])
+            receipts.append(["lane": owner ? "owner" : "direct", "answer": answer.content, "metrics": serialized, "picker_selection_after": selection.alias, "picker_did_not_relabel_execution": true, "history_reload_preserved": true])
         }
         try JSONSerialization.data(withJSONObject: receipts, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: directory).appendingPathComponent("real-generation-receipts.json"))
     }
 }
+
+@MainActor @Observable private final class GenerationPickerSelection { var alias = "default" }
