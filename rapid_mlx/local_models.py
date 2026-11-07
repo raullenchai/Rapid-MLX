@@ -227,7 +227,7 @@ def _judge_checkpoint(
         if rejection is not None:
             rejection.append(reason)
         return None
-    assert inspection is not None
+    assert directory is not None and inspection is not None
     mlx_native = True
     if alias is None:
         native = _uncataloged_chat(

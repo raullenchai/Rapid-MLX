@@ -70,6 +70,21 @@ def inspect_local_checkpoints(paths: list[str]) -> list[dict]:
             if environment_error:
                 row["reason"] = environment_error
                 continue
+            # A mistaken collection/home-folder selection must not trigger a
+            # recursive tree audit. This names-only prefilter reads no linked
+            # metadata; the shared completeness gate below remains authoritative.
+            with os.scandir(directory) as entries:
+                looks_like_checkpoint = any(
+                    entry.name == "model.safetensors.index.json"
+                    or (
+                        entry.name.startswith("model")
+                        and entry.name.endswith(".safetensors")
+                    )
+                    for entry in entries
+                )
+            if not looks_like_checkpoint:
+                row["reason"] = "incomplete_checkpoint"
+                continue
             if directory not in known and not _external_model_tree_is_contained(
                 directory, [directory]
             ):
@@ -79,7 +94,7 @@ def inspect_local_checkpoints(paths: list[str]) -> list[dict]:
                 row["reason"] = "incomplete_checkpoint"
                 continue
             reasons: list[str] = []
-            model = _judge_checkpoint(
+            candidate = _judge_checkpoint(
                 directory,
                 None,
                 external=True,
@@ -89,17 +104,17 @@ def inspect_local_checkpoints(paths: list[str]) -> list[dict]:
                 checkpoint_directory=directory,
                 rejection=reasons,
             )
-            if model is None:
+            if candidate is None:
                 row["reason"] = reasons[0] if reasons else "inspection_failed"
                 continue
             row.update(
                 ready=True,
                 launch_path=directory,
                 known_model=known.get(directory),
-                size_bytes=model.size_bytes,
-                fit=model.fit,
-                mlx_native=model.mlx_native,
-                modified_epoch=model.mtime,
+                size_bytes=candidate.size_bytes,
+                fit=candidate.fit,
+                mlx_native=candidate.mlx_native,
+                modified_epoch=candidate.mtime,
             )
         except Exception:
             row["reason"] = "inspection_failed"

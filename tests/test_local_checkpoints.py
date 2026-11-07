@@ -75,6 +75,21 @@ def test_symlink_escape_is_rejected_before_metadata_read(tmp_path, monkeypatch):
     assert inspect_local_checkpoints([str(path)])[0]["reason"] == "unsafe_symlink"
 
 
+def test_collection_folder_is_rejected_without_recursive_audit(tmp_path, monkeypatch):
+    checkpoint(tmp_path / "collection" / "nested" / "checkpoint")
+
+    def no_walk(*args):
+        pytest.fail("An ordinary folder must not trigger recursive inspection")
+
+    monkeypatch.setattr(
+        "rapid_mlx.model_aliases._external_model_tree_is_contained", no_walk
+    )
+    assert (
+        inspect_local_checkpoints([str(tmp_path / "collection")])[0]["reason"]
+        == "incomplete_checkpoint"
+    )
+
+
 def test_existing_inventory_matches_exact_canonical_checkpoint_only(
     tmp_path, monkeypatch
 ):
@@ -95,6 +110,7 @@ def test_existing_inventory_matches_exact_canonical_checkpoint_only(
     "damage,reason",
     [
         ("missing_weights", "incomplete_checkpoint"),
+        ("missing_shard", "incomplete_checkpoint"),
         ("malformed_config", "unreadable_metadata"),
         ("template", "missing_chat_template"),
         ("tokenizer", "missing_tokenizer"),
@@ -109,6 +125,13 @@ def test_local_rejection_does_not_poison_mixed_batch(tmp_path, damage, reason):
     good = checkpoint(tmp_path / "good")
     if damage == "missing_weights":
         (bad / "model.safetensors").unlink()
+    if damage == "missing_shard":
+        (bad / "model.safetensors").unlink()
+        (bad / "model-00001-of-00002.safetensors").write_bytes(b"partial fixture")
+        (bad / "model.safetensors.index.json").write_text(
+            '{"weight_map":{"layer0":"model-00001-of-00002.safetensors",'
+            '"layer1":"model-00002-of-00002.safetensors"}}'
+        )
     if damage == "malformed_config":
         (bad / "config.json").write_text("{")
     if damage == "template":
