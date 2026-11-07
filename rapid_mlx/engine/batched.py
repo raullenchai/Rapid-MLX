@@ -1858,6 +1858,9 @@ class BatchedEngine(BaseEngine):
             await self._start_mllm()
         else:
             await prepare_execution_host()
+            # Another cold-start caller may finish while warmup yields.
+            if self._loaded:
+                return
             await self._start_llm()
 
         with self._guided_requests_lock:
