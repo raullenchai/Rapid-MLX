@@ -345,6 +345,7 @@ struct GenerationMetricsRealUserTests {
         let portString = try #require(env["RAPID_FOLDER_REAL_INFERENCE_PORT"])
         let port = try #require(Int(portString))
         let directory = try #require(env["RAPID_FOLDER_REVIEW_DIR"])
+        let expectedRepo = try #require(env["RAPID_GENERATION_REAL_REPO"])
         var receipts: [[String: Any]] = []
         for owner in [false, true] {
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
@@ -365,7 +366,7 @@ struct GenerationMetricsRealUserTests {
             try await stage.waitForIdentifier("Chat.GenerationDetails")
             let answer = try #require(model.messages.last(where: { $0.role == .assistant && !$0.content.isEmpty }))
             let metrics = try #require(answer.generationMetrics)
-            #expect(metrics.executionReference.repoID == "mlx-community/Qwen3.5-4B-MLX-4bit")
+            #expect(metrics.executionReference.repoID == expectedRepo)
             #expect(metrics.executionReference.status == "known")
             #expect(metrics.executionHost != nil)
             #expect(metrics.decodeTokensPerSecond != nil)
