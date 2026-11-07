@@ -198,7 +198,7 @@ struct ChatWireReasoningDelta: Codable, Equatable, Sendable {
     }
 }
 
-struct ChatWireSource: Codable, Equatable, Sendable {
+struct ChatWireSource: Codable, Equatable, Hashable, Sendable {
     let sourceID: String
     let callID: String
     let title: String
@@ -534,6 +534,23 @@ struct ChatPermissionResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// Explicit registered-folder scope; display name is local presentation only.
+struct FolderChatScope: Codable, Equatable, Sendable {
+    let folderIDs: [String]
+    let limit: Int
+    enum CodingKeys: String, CodingKey { case folderIDs = "folder_ids", limit }
+    init(folderIDs: [String], limit: Int = 3) { self.folderIDs = folderIDs; self.limit = limit }
+    init(from decoder: Decoder) throws {
+        try checkWireKeys(decoder, allowed: ["folder_ids", "limit"])
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        folderIDs = try c.decode([String].self, forKey: .folderIDs)
+        limit = try c.value(Int.self, forKey: .limit, default: 3)
+        guard (1...16).contains(folderIDs.count), Set(folderIDs).count == folderIDs.count,
+              folderIDs.allSatisfy({ !$0.isEmpty && !$0.contains("/") && !$0.contains("\\") }), (1...10).contains(limit)
+        else { throw ChatWireError.invalidField("local_search") }
+    }
+}
+
 struct ChatTurnRequest: Codable, Equatable, Sendable {
     enum Surface: String, Codable, Sendable {
         case desktop = "desktop"
@@ -567,6 +584,7 @@ struct ChatTurnRequest: Codable, Equatable, Sendable {
     let contextTokens: Int
     let mode: Mode
     let inferenceAPIKey: String?
+    let localSearch: FolderChatScope?
 
     private enum CodingKeys: String, CodingKey {
         case v = "v"
@@ -588,6 +606,7 @@ struct ChatTurnRequest: Codable, Equatable, Sendable {
         case contextTokens = "context_tokens"
         case mode = "mode"
         case inferenceAPIKey = "inference_api_key"
+        case localSearch = "local_search"
     }
 
     init(
@@ -609,7 +628,8 @@ struct ChatTurnRequest: Codable, Equatable, Sendable {
         maxTokens: Int = 32768,
         contextTokens: Int = 32768,
         mode: Mode = .append,
-        inferenceAPIKey: String? = nil
+        inferenceAPIKey: String? = nil,
+        localSearch: FolderChatScope? = nil
     ) {
         self.v = v
         self.turnID = turnID
@@ -630,10 +650,11 @@ struct ChatTurnRequest: Codable, Equatable, Sendable {
         self.contextTokens = contextTokens
         self.mode = mode
         self.inferenceAPIKey = inferenceAPIKey
+        self.localSearch = localSearch
     }
 
     init(from decoder: Decoder) throws {
-        try checkWireKeys(decoder, allowed: ["v", "turn_id", "conversation_id", "workspace", "branch_id", "expected_revision", "text", "attachment_ids", "inference_url", "model", "surface", "thinking", "action_tools", "approvals", "temperature", "max_tokens", "context_tokens", "mode", "inference_api_key"])
+        try checkWireKeys(decoder, allowed: ["v", "turn_id", "conversation_id", "workspace", "branch_id", "expected_revision", "text", "attachment_ids", "inference_url", "model", "surface", "thinking", "action_tools", "approvals", "temperature", "max_tokens", "context_tokens", "mode", "inference_api_key", "local_search"])
         let c = try decoder.container(keyedBy: CodingKeys.self)
         v = try c.value(Int.self, forKey: .v, default: 1)
         guard v == 1 else { throw ChatWireError.invalidField("v") }
@@ -664,6 +685,7 @@ struct ChatTurnRequest: Codable, Equatable, Sendable {
         guard contextTokens >= 512, contextTokens <= 131072 else { throw ChatWireError.invalidField("context_tokens") }
         mode = try c.value(Mode.self, forKey: .mode, default: .append)
         inferenceAPIKey = try c.decodeIfPresent(String.self, forKey: .inferenceAPIKey)
+        localSearch = try c.decodeIfPresent(FolderChatScope.self, forKey: .localSearch)
     }
 }
 

@@ -24278,6 +24278,126 @@
           }
         }
       }
+    },
+    "Ask this folder…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "询问此文件夹…"
+          }
+        }
+      }
+    },
+    "Ask using saved passages from this folder. Tools are off; cited passages are saved with the chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用此文件夹已保存的片段提问。工具已关闭，引用的片段会随对话保存。"
+          }
+        }
+      }
+    },
+    "Enable Built-in Agent Harness (Experimental) in Settings to use folder chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在设置中启用“内置智能体框架（实验性）”，以使用文件夹对话。"
+          }
+        }
+      }
+    },
+    "Update the chat owner to use folder chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请更新对话服务以使用文件夹对话。"
+          }
+        }
+      }
+    },
+    "Folder chat uses saved folder passages. Remove attachments before sending." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件夹对话使用已保存的文件夹片段。请先移除附件再发送。"
+          }
+        }
+      }
+    },
+    "Remove folder from this chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此对话移除文件夹"
+          }
+        }
+      }
+    },
+    "Uses indexed passages only. Tools are off. Cited passages are saved with this chat." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅使用已索引的片段。工具已关闭，引用的片段会随此对话保存。"
+          }
+        }
+      }
+    },
+    "Saved passage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存的片段"
+          }
+        }
+      }
+    },
+    "Saved with this answer. The original file may have changed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "随此回答保存。原文件可能已经更改。"
+          }
+        }
+      }
+    },
+    "Preview shortened." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "预览已缩短。"
+          }
+        }
+      }
+    },
+    "Could not open this saved passage. Reconnect to the chat owner and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法打开此已保存的片段。请重新连接对话服务后重试。"
+          }
+        }
+      }
+    },
+    "Open the passage saved with this answer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开随此回答保存的片段"
+          }
+        }
+      }
     }
   }
 }

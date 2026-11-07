@@ -158,6 +158,37 @@ final class ChatViewModel {
     private let chatBackendConfig: ChatBackendConfig
     private let ownerWorkspace: URL
     private let ownerClientFactory: (@Sendable () async throws -> any ChatTurnClient)?
+    private(set) var folderChatScope: FolderChatScope?
+    private(set) var folderChatTitle: String?
+    var folderChatAvailable: Bool { chatBackendConfig.harnessEnabled }
+
+    func folderSourcePreview(_ source: ChatWireSource) async throws -> FolderSourcePreview {
+        guard let id = conversations.first(where: { $0.id == activeConversationID })?.ownerConversationID,
+              let attachmentID = source.attachmentID, source.url == nil,
+              source.sourceID.hasPrefix("local-search:") else { throw ChatTurnClientError.invalidResponse }
+        if let ownerClientFactory { return try await ownerClientFactory().sourcePreview(conversationID: id, attachmentID: attachmentID) }
+        guard let connection = try await ChatOwnerConnection.connectIfEnabled(backend: .ownerV1) else { throw ChatOwnerConnectionError.ownerUnavailable }
+        do {
+            let client = try await connection.reconnect()
+            let preview = try await client.sourcePreview(conversationID: id, attachmentID: attachmentID)
+            await connection.close()
+            return preview
+        } catch { await connection.close(); throw error }
+    }
+
+    func startFolderChat(folderID: String, title: String) {
+        guard folderChatAvailable else { return }
+        newConversation()
+        folderChatScope = FolderChatScope(folderIDs: [folderID])
+        folderChatTitle = title
+    }
+    func removeFolderChatScope() {
+        guard !isStreaming else { return }
+        folderChatScope = nil
+        folderChatTitle = nil
+        persistActive(touching: false)
+    }
+
     private var ownerSessions: [UUID: OwnerChatSession] = [:]
     private var ownerConnections: [UUID: ChatOwnerConnection] = [:]
     struct OwnerApproval {
@@ -556,6 +587,8 @@ final class ChatViewModel {
                 touching: touching,
                 at: now
             ) { conversation in
+                conversation.folderChatScope = folderChatScope
+                conversation.folderChatTitle = folderChatTitle
                 conversation.messages = messages
                 conversation.branches = branchedAway
                 conversation.activeLeafID = leaf
@@ -591,7 +624,8 @@ final class ChatViewModel {
                     createdAt: now,
                     updatedAt: now,
                     customInstructions: Self.normalizedInstruction(conversationInstructions),
-                    backend: chatBackendConfig.chatBackend == .ownerV1 ? .ownerV1 : nil
+                    backend: chatBackendConfig.chatBackend == .ownerV1 ? .ownerV1 : nil,
+                    folderChatScope: folderChatScope, folderChatTitle: folderChatTitle
                 ),
                 at: 0
             )
@@ -1115,6 +1149,8 @@ final class ChatViewModel {
         branchChoices = conv.branchChoices
         adoptTree(conv.allMessages, activeLeafID: conv.activeLeafID ?? conv.messages.last?.id)
         conversationInstructions = conv.customInstructions ?? ""
+        folderChatScope = conv.folderChatScope
+        folderChatTitle = conv.folderChatTitle
         activeConversationID = id
         lastError = nil
         lastFailureKind = nil
@@ -1308,6 +1344,8 @@ final class ChatViewModel {
         treeShapeVersion += 1
         branchChoices.removeAll()
         conversationInstructions = ""
+        folderChatScope = nil
+        folderChatTitle = nil
         activeConversationID = UUID()
         lastError = nil
         lastFailureKind = nil
@@ -1400,6 +1438,10 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
+        if folderChatScope != nil && (!imageAttachments.isEmpty || !fileAttachments.isEmpty) {
+            lastError = String(localized: "Folder chat uses saved folder passages. Remove attachments before sending.")
+            return
+        }
         if isOwnerBackedChat && !chatBackendConfig.harnessEnabled {
             lastError = "Turn on the experimental harness in Settings to continue this chat."
             return
@@ -1586,7 +1628,7 @@ final class ChatViewModel {
             let attachments = images + userFiles.map { file in
                 (name: file.kind == .txt || file.kind == .csv ? file.filename : file.filename + ".txt", data: Data(file.extractedText.utf8))
             }
-            try await session.submit(text: text, target: target, attachments: attachments) { [weak self] id in
+            try await session.submit(text: text, target: target, attachments: attachments, localSearch: folderChatScope) { [weak self] id in
                 await MainActor.run {
                     guard let self, let index = self.conversations.firstIndex(where: { $0.id == conversationID }) else { return }
                     self.conversations[index].ownerConversationID = id

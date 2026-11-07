@@ -12,6 +12,11 @@ actor FakeChatTurnClient: ChatTurnClient {
         case context(ChatTurnRequest), compact(ChatTurnRequest, String), undo(String, String)
     }
 
+    var folderChatSupported = false
+    private(set) var folderScopes: [FolderChatScope?] = []
+    func enableFolderChat() { folderChatSupported = true }
+    func supportsFolderChat() async throws -> Bool { folderChatSupported }
+    func setFolderScope(conversationID: String, scope: FolderChatScope?) async throws { folderScopes.append(scope) }
     var distinctUploadIDs = false
     func enableDistinctUploadIDs() { distinctUploadIDs = true }
     var uploadError: ChatAttachmentUploadError?

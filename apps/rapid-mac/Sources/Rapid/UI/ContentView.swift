@@ -1373,6 +1373,12 @@ struct ContentView: View {
                 }, onOpenSettings: {
                     settingsRouter.requestedCategory = .app
                     openWindow(id: "settings")
+                }, onAskFolder: { folder in
+                    chat.startFolderChat(folderID: folder.id, title: LocalSearchPath.folderTitle(folder.path))
+                    section = .chat
+                }, folderChatAvailable: chat.folderChatAvailable, onFolderChatSettings: {
+                    settingsRouter.requestedCategory = .experimentalFeatures
+                    openWindow(id: "settings")
                 })
             } else {
                 mainArea

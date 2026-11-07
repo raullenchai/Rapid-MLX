@@ -615,6 +615,7 @@ struct ChatView: View {
                         toolResults: toolResults,
                         ownerApprovals: viewModel.ownerApprovals,
                         onOwnerApproval: { viewModel.resolveOwnerPermission(opID: $0, allow: $1) },
+                        onFolderSource: { try await viewModel.folderSourcePreview($0) },
                         assistantHasContent: message.role == .assistant
                             ? !message.content.isEmpty
                             : nil,
@@ -938,6 +939,20 @@ struct ChatView: View {
                     .padding(.horizontal, RapidTheme.Space.xs)
                     .transition(.opacity)
                 }
+                if let title = viewModel.folderChatTitle {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Label(title, systemImage: "folder").lineLimit(1)
+                            Button { viewModel.removeFolderChatScope() } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).disabled(viewModel.isStreaming)
+                                .accessibilityLabel(String(localized: "Remove folder from this chat"))
+                        }
+                        Text(String(localized: "Uses indexed passages only. Tools are off. Cited passages are saved with this chat."))
+                            .font(.rapid(.caption)).foregroundStyle(.secondary)
+                    }
+                    .padding(8).background(RapidTheme.hairline.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("Chat.FolderScope")
+                }
                 if attachmentDraft.hasAttachments {
                     attachmentStrip
                 }
@@ -1030,7 +1045,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(
-                viewModel.isStreaming || attachmentDraft.isImportingFiles
+                viewModel.isStreaming || attachmentDraft.isImportingFiles || viewModel.folderChatScope != nil
             )
             .help("Add photos or files")
             .accessibilityLabel("Add attachments")
@@ -1799,6 +1814,11 @@ private struct MessageRow: View {
     var toolResults: [String: ChatMessage] = [:]
     var ownerApprovals: [String: ChatViewModel.OwnerApproval] = [:]
     var onOwnerApproval: (String, Bool) -> Void = { _, _ in }
+    var onFolderSource: (ChatWireSource) async throws -> FolderSourcePreview = { _ in throw ChatTurnClientError.invalidResponse }
+    @State private var sourcePresented = false
+    @State private var sourcePreview: FolderSourcePreview?
+    @State private var sourceError: String?
+
     /// The authoritative body is deliberately not part of `message` while it
     /// streams. This one-bit projection changes only when content first lands.
     var assistantHasContent: Bool? = nil
@@ -1852,6 +1872,29 @@ private struct MessageRow: View {
         }
         .sheet(isPresented: $selectTextPresented) {
             SelectTextSheet(text: SelectTextSheet.selectableText(for: selectableText))
+        }
+        .sheet(isPresented: $sourcePresented) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(message.ownerSource?.title ?? String(localized: "Saved passage")).font(.headline)
+                    Spacer()
+                    Button(String(localized: "Done")) { sourcePresented = false }.keyboardShortcut(.cancelAction)
+                }
+                Text(String(localized: "Saved with this answer. The original file may have changed."))
+                    .font(.rapid(.caption)).foregroundStyle(.secondary)
+                if let sourcePreview {
+                    ScrollView { Text(sourcePreview.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    if sourcePreview.truncated { Text(String(localized: "Preview shortened.")).font(.rapid(.caption)) }
+                } else if let sourceError { Text(sourceError).textSelection(.enabled) }
+                else { ProgressView() }
+            }
+            .padding(20).frame(minWidth: 480, idealWidth: 640, minHeight: 280, idealHeight: 440)
+            .accessibilityIdentifier("Chat.SavedSourcePreview")
+            .task {
+                guard let source = message.ownerSource else { return }
+                do { sourcePreview = try await onFolderSource(source) }
+                catch { sourceError = String(localized: "Could not open this saved passage. Reconnect to the chat owner and try again.") }
+            }
         }
     }
 
@@ -2479,10 +2522,22 @@ private struct MessageRow: View {
     // MARK: System
 
     private var systemNote: some View {
-        Text(message.content)
-            .font(.rapid(.footnote))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .center)
+        Group {
+            if let source = message.ownerSource {
+                Button {
+                    sourcePreview = nil; sourceError = nil; sourcePresented = true
+                } label: {
+                    Label("[\(source.sourceID.split(separator: ":").last.map(String.init) ?? "?")] \(source.title)", systemImage: "doc.text.magnifyingglass")
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "Open the passage saved with this answer"))
+                .accessibilityIdentifier("Chat.SavedSource.\(source.sourceID)")
+            } else { Text(message.content) }
+        }
+        .font(.rapid(.footnote))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
