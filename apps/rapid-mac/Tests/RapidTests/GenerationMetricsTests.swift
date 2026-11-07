@@ -282,6 +282,17 @@ struct GenerationMetricsTests {
         else { #expect(stored?.allMessages.first(where: { $0.id == old.id })?.generationMetrics == metrics) }
     }
 
+    @Test(arguments: [5.0, 2.0]) func configuredControlTimeoutSurvivesOptionalJSONOverride(timeout: Double) async throws {
+        let client = try URLSessionChatTurnClient(endpoint: URL(string: "http://localhost:18001")!, bearer: "test-only", session: GenerationMetricsProtocol.session(), requestTimeout: timeout)
+        let metrics = String(decoding: try metricsData(), as: UTF8.self)
+        let body = Data("{\"generation\":{\"turn_id\":\"t\",\"message_id\":\"m\",\"metrics\":\(metrics)}}".utf8)
+        GenerationMetricsProtocol.install(body: body, capability: true)
+        #expect(try await client.ownerStoreUUID() == UUID(uuidString: "11111111-1111-1111-1111-111111111111"))
+        #expect(try await client.generationMetrics(conversationID: "c", turnID: "t")?.messageID == "m")
+        #expect(GenerationMetricsProtocol.paths() == ["/v1/rapid/chat/capabilities", "/v1/rapid/chat/capabilities", "/v1/rapid/chat/conversations/c/turns/t/execution-metrics"])
+        #expect(GenerationMetricsProtocol.timeouts() == [timeout, 5, 5])
+    }
+
     @Test func oldOwnerNeverReadsUnsupportedEndpointAndNewOwnerBindsTurn() async throws {
         let client = try URLSessionChatTurnClient(endpoint: URL(string: "http://localhost:18001")!, bearer: "test-only", session: GenerationMetricsProtocol.session())
         GenerationMetricsProtocol.install(body: Data(#"{"capabilities":{}}"#.utf8))
@@ -329,7 +340,7 @@ private final class GenerationMetricsProtocol: URLProtocol, @unchecked Sendable 
         Self.requestTimeouts.append(request.timeoutInterval)
         let isStream = Self.stream
         let bytes = Self.capability && request.url!.path.hasSuffix("capabilities")
-            ? Data(#"{"capabilities":{"generation_metrics_v1":true}}"#.utf8) : Self.body
+            ? Data(#"{"store_uuid":"11111111-1111-1111-1111-111111111111","capabilities":{"generation_metrics_v1":true}}"#.utf8) : Self.body
         Self.lock.unlock()
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": isStream ? "text/event-stream" : "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
