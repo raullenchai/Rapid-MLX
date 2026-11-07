@@ -133,3 +133,14 @@ configuration. Current upstream docs also direct custom endpoints to YAML.
 Atlas/Echo follow-up: current Hermes qualification, models.dev v2 migration and
 upstream acceptance remain outstanding. Work branch: `echo/pr-revival-20261106`.
 No PR in this table was newly accepted as a result of these tests.
+
+## Submitted follow-ups
+
+- [OpenCode reopen request and verified config](https://github.com/anomalyco/opencode/pull/39255#issuecomment-6700322817).
+- [Hermes supplemental smoke and version caveat](https://github.com/NousResearch/hermes-agent/pull/136903#issuecomment-6700318965).
+- [LiteLLM existing comment updated in place](https://github.com/BerriAI/litellm/pull/24325#issuecomment-6696580771).
+- [models.dev v2/local-provider scope follow-up](https://github.com/anomalyco/models.dev/pull/1361#issuecomment-6700323051).
+
+Hermes remains open; the three other PRs remain closed pending maintainer action.
+No new duplicate PR was created. The models.dev migration is not yet implemented;
+the scope question is not an acceptance or a validation result.
