@@ -2,6 +2,136 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "Sampled RAM: %g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "样本内存：%g GB"
+          }
+        }
+      }
+    },
+    "Executed model: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行模型：%@"
+          }
+        }
+      }
+    },
+    "Multiple execution methods" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用了多种执行方式"
+          }
+        }
+      }
+    },
+    "MTP on (up to %d draft tokens)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已开启 MTP（最多 %d 个草稿词元）"
+          }
+        }
+      }
+    },
+    "Execution configuration: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行配置：%@"
+          }
+        }
+      }
+    },
+    "Generation details" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成详情"
+          }
+        }
+      }
+    },
+    "Server decode: %.1f tok/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器生成速度：%.1f 词元/秒"
+          }
+        }
+      }
+    },
+    "Server time to first token: %.0f ms" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "服务器首词元时间：%.0f 毫秒"
+          }
+        }
+      }
+    },
+    "Execution host: %@ · %g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行主机：%@ · %g GB"
+          }
+        }
+      }
+    },
+    "Measured reference: %.0f–%.0f tok/s · n=%d" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实测参考：%.0f–%.0f 词元/秒 · 样本数=%d"
+          }
+        }
+      }
+    },
+    "Sampled RAM: %g–%g GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "样本内存：%g–%g GB"
+          }
+        }
+      }
+    },
+    "Reference shows the middle 50% of submitted measurements, not a performance guarantee." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "参考范围为提交测量的中间 50%，并非性能保证。"
+          }
+        }
+      }
+    },
+    "No matching measured reference for this execution." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无与本次执行匹配的实测参考。"
+          }
+        }
+      }
+    },
     "%lld deletions pending." : {
       "localizations" : {
         "zh-Hans" : {

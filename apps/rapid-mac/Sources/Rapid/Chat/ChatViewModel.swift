@@ -1672,6 +1672,7 @@ final class ChatViewModel {
                 conversations[index].ownerConversationID = await session.ownerConversationID()
                 saveConversations()
             }
+            var completedGeneration: (CompletedGenerationReader, UUID)?
             for await snapshot in snapshots {
                 guard !Task.isCancelled, epoch == conversationEpoch else { break }
                 guard let projection = snapshot.projection else { continue }
@@ -1683,7 +1684,11 @@ final class ChatViewModel {
                 guard let index = messages.firstIndex(where: { $0.id == placeholder.id }) else { break }
                 messages.replaceSubrange(index..<messages.count, with: rows)
                 treeShapeVersion += 1
-                if snapshot.state == .finished { break }
+                if snapshot.state == .finished {
+                    if let row = rows.last(where: { $0.role == .assistant && $0.status == .complete && !$0.content.isEmpty }),
+                       let reader = await session.completedGenerationReader() { completedGeneration = (reader, row.id) }
+                    break
+                }
                 if case .failed = snapshot.state { break }
             }
             guard epoch == conversationEpoch else { return }
@@ -1692,6 +1697,12 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+            if let (reader, rowID) = completedGeneration {
+                Task { [weak self] in
+                    guard let saved = await reader.read() else { return }
+                    self?.applyCompletedGeneration(saved, conversationID: conversationID, ownerConversationID: reader.conversationID, rowID: rowID)
+                }
+            }
         } catch {
             guard epoch == conversationEpoch else { return }
             if error is CancellationError {
@@ -1704,6 +1715,28 @@ final class ChatViewModel {
             }
             isStreaming = false
             persistActive()
+        }
+    }
+
+    /// Optional metadata updates one immutable row, never a live projection/tail.
+    func applyCompletedGeneration(_ saved: SavedGenerationMetrics, conversationID: UUID, ownerConversationID: String, rowID: UUID) {
+        guard let conversation = conversations.firstIndex(where: { $0.id == conversationID }),
+              conversations[conversation].ownerConversationID == ownerConversationID else { return }
+        if activeConversationID == conversationID {
+            if let row = messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                messages[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            } else if let row = branchedAway.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                branchedAway[row].generationMetrics = saved.metrics
+                persistActive(touching: false)
+            }
+        } else {
+            if let row = conversations[conversation].messages.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].messages[row].generationMetrics = saved.metrics
+            } else if let row = conversations[conversation].branches.firstIndex(where: { $0.id == rowID && $0.role == .assistant && $0.status == .complete }) {
+                conversations[conversation].branches[row].generationMetrics = saved.metrics
+            } else { return }
+            saveConversations()
         }
     }
 
@@ -4088,6 +4121,7 @@ Your previous draft refused the question by claiming you lack real-time access o
         // both fields may stay nil — non-conforming servers and
         // mid-stream cancellations leave them empty and the
         // stats caption falls back to the char-count estimate.
+        var capturedGenerationMetrics: GenerationMetrics?
         var capturedPromptTokens: Int?
         var capturedCompletionTokens: Int?
         // The instant the first GENERATED token lands, on whichever channel
@@ -4144,6 +4178,8 @@ Your previous draft refused the question by claiming you lack real-time access o
                 case .toolCalls(let calls):
                     capturedCalls = calls
                     current.toolCalls = calls
+                case .executionMetrics(let metrics):
+                    capturedGenerationMetrics = metrics
                 case .usage(let prompt, let completion):
                     capturedPromptTokens = prompt
                     capturedCompletionTokens = completion
@@ -4384,6 +4420,12 @@ Your previous draft refused the question by claiming you lack real-time access o
         // Skipped only when the message ended up ``.failed`` (a
         // crashed mid-stream "produced" 1.7 s and 41 chars but
         // that's noise, not throughput).
+        if current.status == .complete {
+            current.generationMetrics = capturedGenerationMetrics.flatMap { value in
+                capturedCompletionTokens == value.executionReference.completionTokens ? value : nil
+            }
+            writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
+        }
         if current.status == .complete && !current.content.isEmpty {
             let elapsed = streamStart.duration(to: client.now()).seconds
             current.stats = MessageStats(

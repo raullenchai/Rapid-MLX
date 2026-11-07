@@ -41,6 +41,7 @@ from .context import (
     context_event,
 )
 from .events import Envelope
+from .execution_metrics import final_generation_metrics
 from .history import _project_messages
 from .model_client import ModelClients, inference_url
 from .presentation import ToolPresentation
@@ -765,6 +766,7 @@ class Runtime:
                     "completed",
                     messages=_durable_messages(new_messages),
                     usage=combined_usage(),
+                    execution_metrics=final_generation_metrics(new_messages),
                 )
         except asyncio.CancelledError:
             await self.delegation.cancel_turn(tid)
@@ -943,7 +945,11 @@ class Runtime:
             )
         await self._emit(tid, {"type": "usage", **usage})
         await self.store.finish_turn(
-            tid, "completed", messages=_durable_messages(messages), usage=usage
+            tid,
+            "completed",
+            messages=_durable_messages(messages),
+            usage=usage,
+            execution_metrics=final_generation_metrics(messages),
         )
 
     async def _attempt(self, agent, model, history, deps, settings, attempt):

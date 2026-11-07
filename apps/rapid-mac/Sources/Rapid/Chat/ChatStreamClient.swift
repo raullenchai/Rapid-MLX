@@ -102,6 +102,7 @@ struct ChatStreamClient {
         /// don't honour the option simply never emit this event —
         /// the caller falls back to the v0.4.12 char-count estimate.
         case usage(promptTokens: Int, completionTokens: Int)
+        case executionMetrics(GenerationMetrics)
         /// Server reported ``finish_reason`` and the stream ended cleanly.
         case finished(reason: String?)
     }
@@ -689,6 +690,10 @@ struct ChatStreamClient {
                     ))
                 }
             }
+            if !sawTerminalEvent, chunk.choices.contains(where: { $0.finish_reason != nil }), let metrics = chunk.metrics {
+                await coalescer.flush(onEvent: onEvent)
+                await MainActor.run { onEvent(.executionMetrics(metrics)) }
+            }
             for choice in chunk.choices {
                 if let delta = choice.delta {
                     let generated = !(delta.reasoning_content ?? "").isEmpty
@@ -1117,6 +1122,14 @@ enum Wire {
         /// the field ``nil`` everywhere, which the caller handles
         /// gracefully (falls back to the char-count estimate).
         let usage: Usage?
+        let metrics: GenerationMetrics?
+        enum CodingKeys: String, CodingKey { case choices, usage, metrics }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            choices = try c.decode([Choice].self, forKey: .choices)
+            usage = try c.decodeIfPresent(Usage.self, forKey: .usage)
+            metrics = try? c.decodeIfPresent(GenerationMetrics.self, forKey: .metrics)
+        }
     }
 
     struct Choice: Decodable {

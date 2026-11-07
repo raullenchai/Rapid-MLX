@@ -1281,6 +1281,7 @@ class TestGenerationOutputFieldOrder:
             "prompt_parse_context",
             # Execution evidence is optional and preserves every prior slot.
             "execution_reference",
+            "execution_host",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "

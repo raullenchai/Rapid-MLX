@@ -37,6 +37,7 @@ from ..api.utils import (
     is_mllm_model,
     validate_serving_lane_reason,
 )
+from ..execution_host import capture_local_execution_host, prepare_execution_host
 from ..output_router import Channel, OutputRouter
 from ..prompt_host_cache import PromptHostCache
 from ..prompt_token_reuse import (
@@ -1856,6 +1857,10 @@ class BatchedEngine(BaseEngine):
         if self._is_mllm:
             await self._start_mllm()
         else:
+            await prepare_execution_host()
+            # Another cold-start caller may finish while warmup yields.
+            if self._loaded:
+                return
             await self._start_llm()
 
         with self._guided_requests_lock:
@@ -3520,6 +3525,7 @@ class BatchedEngine(BaseEngine):
             prompt_compression=getattr(output, "prompt_compression", None),
             timing_metrics=getattr(output, "timing_metrics", None),
             execution_reference=getattr(output, "execution_reference", None),
+            execution_host=capture_local_execution_host(output),
         )
 
     async def stream_generate(
@@ -3675,6 +3681,7 @@ class BatchedEngine(BaseEngine):
                     spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
                     execution_reference=getattr(output, "execution_reference", None),
+                    execution_host=capture_local_execution_host(output),
                 )
             return
 
@@ -3789,6 +3796,7 @@ class BatchedEngine(BaseEngine):
                     prompt_compression=getattr(output, "prompt_compression", None),
                     timing_metrics=getattr(output, "timing_metrics", None),
                     execution_reference=getattr(output, "execution_reference", None),
+                    execution_host=capture_local_execution_host(output),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -4600,6 +4608,7 @@ class BatchedEngine(BaseEngine):
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics if finished else None,
             execution_reference=source.execution_reference if finished else None,
+            execution_host=source.execution_host if finished else None,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -4622,6 +4631,7 @@ class BatchedEngine(BaseEngine):
             prompt_compression=source.prompt_compression,
             timing_metrics=source.timing_metrics,
             execution_reference=source.execution_reference,
+            execution_host=source.execution_host,
         )
 
     def _finalize_output_router(
@@ -4759,6 +4769,7 @@ class BatchedEngine(BaseEngine):
                         finish_reason=output.finish_reason,
                         timing_metrics=output.timing_metrics,
                         execution_reference=output.execution_reference,
+                        execution_host=output.execution_host,
                     )
                 else:
                     routed_outputs.append(finalized)

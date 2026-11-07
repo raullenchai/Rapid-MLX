@@ -250,6 +250,12 @@ def create_app(
         except ValueError:
             raise HTTPException(415, "This source is not a text snapshot") from None
 
+    @app.get(
+        PREFIX + "/conversations/{conversation_id}/turns/{turn_id}/execution-metrics"
+    )
+    async def execution_metrics(conversation_id: str, turn_id: str):
+        return {"generation": await store.execution_metrics(conversation_id, turn_id)}
+
     @app.delete(PREFIX + "/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str):
         await store.delete_conversation(conversation_id)

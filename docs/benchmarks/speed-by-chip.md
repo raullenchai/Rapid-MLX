@@ -107,10 +107,44 @@ numerical estimate or MTP speedup for those gaps. No model is loaded and no
 network request is made to show these references. Compact labels identify the
 method; picker/Settings help and structured CLI output preserve sample scope.
 
-After-chat within/below-range diagnosis is not implemented here. Existing usage
-chunks do not record the exact per-request speculative execution and model
-identity needed for a valid comparison; configured runtime metadata alone can
-be overridden by request fallbacks. Existing chat captions remain unchanged.
+### Details after a chat response
+
+Desktop's **Generation details** disclosure preserves the selected successful
+model response's server decode timing and execution facts with that answer.
+It uses the executed public repository and configuration, together with the
+inference host's chip variant and RAM frozen in the same terminal response.
+Changing the picker or viewing history on another Mac does not relabel a saved
+result. A loopback URL or tunnel does not establish which machine ran inference.
+
+A matching measured reference is informational: it shows the middle 50% of
+compatible submissions and their sample count/RAM span. It is not a prediction
+interval or a diagnosis that a slower response is broken. Unknown/mixed
+execution, missing host facts, unsupported configurations and unmatched
+chip/RAM scopes show no matching reference. Older servers remain usable and
+simply omit these optional details. No model downloads or leaderboard requests
+are needed to display them.
+
+The displayed server decode rate is `1000 / mean_itl_ms`, when there are at
+least two generated tokens and a valid frozen interval. This measures the
+intervals between engine-generated tokens, including reasoning/stop tokens;
+it is distinct from visible characters, client wall time and time to first
+token. Owner tool/retry/subagent totals remain separate from the selected final
+model generation. Failed/cancelled/partial responses and no-evidence folder
+abstentions do not acquire a successful generation record.
+
+API clients can read optional `metrics.execution_host` (`chip`, `memory_bytes`)
+alongside terminal `metrics.execution_reference` and timing. Supported local
+execution captures hardware once per process; unsupported/distributed/unknown
+execution and failed probes omit it. Cached replay preserves the original host
+or its absence. Owner clients first require `generation_metrics_v1` from the
+authenticated capabilities response, then read
+`GET /v1/rapid/chat/conversations/{conversation_id}/turns/{turn_id}/execution-metrics`.
+The bounded `generation` object is null when unavailable; otherwise it contains
+`turn_id`, the successful final `message_id`, and the same generation `metrics`.
+It is saved atomically with successful completion and cannot be read after
+owner conversation deletion. The existing strict event/source wire remains
+unchanged. Arbitrary provider metadata and private local model paths are not
+part of this record.
 
 Release maintainers refresh the bundled snapshot from a complete public
 `/api/benchmarks/atomic/contributions` export, following cursors until

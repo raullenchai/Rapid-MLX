@@ -171,6 +171,15 @@ actor OwnerChatSession {
         if reducer?.projection.terminal != nil { state = .finished; publish() }
         task = nil
     }
+    /// Captured while the completed projection is current; reading never owns a turn.
+    func completedGenerationReader() -> CompletedGenerationReader? {
+        guard let client, let conversationID, let projection = reducer?.projection,
+              projection.terminal?.outcome == .completed,
+              let messageID = projection.terminal?.finalMessageID else { return nil }
+        return CompletedGenerationReader(client: client, conversationID: conversationID,
+                                         turnID: projection.turnID, messageID: messageID)
+    }
+
     private static func isPermanent(_ error: Error) -> Bool {
         if error is ChatOwnerTurnRejection { return true }
         if let error = error as? ChatTurnClientError {
@@ -220,5 +229,18 @@ actor OwnerChatSession {
     }
     private static func number(_ value: ChatWireJSON?) -> Double? {
         switch value { case .integer(let n): Double(n); case .number(let n): n; default: nil }
+    }
+}
+
+struct CompletedGenerationReader: Sendable {
+    let client: any ChatTurnClient
+    let conversationID: String
+    let turnID: String
+    let messageID: String
+    func read() async -> SavedGenerationMetrics? {
+        guard !Task.isCancelled,
+              let saved = try? await client.generationMetrics(conversationID: conversationID, turnID: turnID),
+              !Task.isCancelled, saved.turnID == turnID, saved.messageID == messageID else { return nil }
+        return saved
     }
 }

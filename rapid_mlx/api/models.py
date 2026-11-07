@@ -2347,12 +2347,32 @@ class ExecutionReferenceMetrics(BaseModel):
         return self
 
 
+class ExecutionHostMetrics(BaseModel):
+    """Non-identifying hardware frozen with one local inference result."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+    chip: StrictStr = Field(max_length=32)
+    memory_bytes: StrictInt = Field(gt=0, le=1 << 44)
+
+    @field_validator("chip")
+    @classmethod
+    def _normalized_chip(cls, value):
+        from ..decode_expectations import chip_name
+
+        if chip_name(value) != value:
+            raise ValueError("execution chip must be an exact normalized Apple variant")
+        return value
+
+
 class PerRequestMetrics(BaseModel):
     """Optional engine metrics carried only on a terminal response."""
 
     speculative_decoding: SpeculativeDecodingMetrics | None = None
     prompt_compression: PromptCompressionMetrics | None = None
     execution_reference: ExecutionReferenceMetrics | None = None
+    execution_host: ExecutionHostMetrics | None = None
     time_to_first_token_ms: float | None = Field(
         default=None, ge=0, allow_inf_nan=False
     )
