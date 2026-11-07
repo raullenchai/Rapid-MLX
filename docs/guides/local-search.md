@@ -603,8 +603,9 @@ curl -s http://127.0.0.1:8461/v1/chat/completions \
 Paths and an implicit search across all folders are not accepted. This option
 uses only text already in the selected local index; it does not open files,
 register folders, or download models. Keyword retrieval works without an
-embedding model. Tools, tool history, multimodal messages, and non-text structured
-output cannot be combined with this initial question-answering mode; those
+embedding model. This initial mode requires string-valued content in every message. Text-only
+content-part arrays are also rejected. Tools, tool history, multimodal
+messages, and non-text structured output cannot be combined with this initial question-answering mode; those
 combinations return an error before retrieval.
 
 An opted-in response adds a top-level `local_search` object:
