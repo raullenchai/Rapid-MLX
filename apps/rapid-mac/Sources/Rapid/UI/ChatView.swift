@@ -1881,7 +1881,10 @@ private struct MessageRow: View {
                 HStack {
                     Text(message.ownerSource?.title ?? String(localized: "Saved passage")).font(.headline)
                     Spacer()
-                    Button(String(localized: "Done")) { sourcePresented = false }.buttonStyle(.rapidSecondary).keyboardShortcut(.cancelAction)
+                    Button(String(localized: "Done")) { sourcePresented = false }
+                        .buttonStyle(.rapidSecondary)
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("chat.sourcePreview.done")
                 }
                 Text(String(localized: "Saved with this answer. The original file may have changed."))
                     .font(.rapid(.caption)).foregroundStyle(.secondary)
