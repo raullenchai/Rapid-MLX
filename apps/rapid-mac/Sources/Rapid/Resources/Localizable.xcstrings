@@ -32,12 +32,12 @@
         }
       }
     },
-    "MTP on (K=%d)" : {
+    "MTP on (up to %d draft tokens)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已开启 MTP（K=%d）"
+            "value" : "已开启 MTP（最多 %d 个草稿词元）"
           }
         }
       }

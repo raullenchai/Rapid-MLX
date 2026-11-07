@@ -22,6 +22,9 @@ struct GenerationMetricsTests {
             guard let metrics else { continue }
             #expect((metrics.cohort() != nil) == (row["cohort"] as? Bool))
             #expect(metrics.decodeTokensPerSecond == (row["rate"] as? Double))
+            if metrics.executionReference.status == "known", metrics.executionReference.method == "mtp" {
+                #expect(metrics.detailText.contains("up to \(metrics.executionReference.maxDraftTokens!) draft tokens"))
+            }
             let saved = String(decoding: try JSONEncoder().encode(metrics), as: UTF8.self)
             #expect(!saved.contains("private_path") && !saved.contains("hostname"))
         }

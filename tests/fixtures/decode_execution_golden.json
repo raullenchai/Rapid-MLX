@@ -365,5 +365,83 @@
     "valid": true,
     "cohort": false,
     "rate": 40.0
+  },
+  {
+    "name": "embedded MTP matches configured K not observed depth",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+        "method": "mtp",
+        "backend": "ordinary",
+        "config_key": "mtp:embedded_head:k=3:ordinary",
+        "completion_tokens": 4,
+        "assistant_source": "embedded_head",
+        "max_draft_tokens": 3,
+        "observed_max_draft_tokens": 1
+      },
+      "execution_host": {
+        "chip": "M3 Ultra",
+        "memory_bytes": 103079215104
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": true,
+    "rate": 40.0
+  },
+  {
+    "name": "valid different configured K cannot reuse cohort",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "known",
+        "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+        "method": "mtp",
+        "backend": "ordinary",
+        "config_key": "mtp:embedded_head:k=2:ordinary",
+        "completion_tokens": 4,
+        "assistant_source": "embedded_head",
+        "max_draft_tokens": 2,
+        "observed_max_draft_tokens": 1
+      },
+      "execution_host": {
+        "chip": "M3 Ultra",
+        "memory_bytes": 103079215104
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
+  },
+  {
+    "name": "unknown external drafter cannot reuse embedded cohort",
+    "metrics": {
+      "execution_reference": {
+        "version": 1,
+        "status": "unknown",
+        "repo_id": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+        "method": "mtp",
+        "backend": "ordinary",
+        "config_key": null,
+        "completion_tokens": 4,
+        "assistant_source": "external_model",
+        "max_draft_tokens": 3,
+        "observed_max_draft_tokens": 1
+      },
+      "execution_host": {
+        "chip": "M3 Ultra",
+        "memory_bytes": 103079215104
+      },
+      "time_to_first_token_ms": 100.0,
+      "mean_itl_ms": 25.0
+    },
+    "valid": true,
+    "cohort": false,
+    "rate": 40.0
   }
 ]

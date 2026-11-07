@@ -126,7 +126,7 @@ struct GenerationMetrics: Codable, Equatable, Hashable, Sendable {
         if executionReference.status == "mixed" { configuration = String(localized: "Multiple execution methods") }
         else if executionReference.status == "known" && executionReference.method == "none" { configuration = String(localized: "MTP off") }
         else if executionReference.status == "known", executionReference.method == "mtp", let depth = executionReference.maxDraftTokens {
-            configuration = String(format: String(localized: "MTP on (K=%d)"), depth)
+            configuration = String(format: String(localized: "MTP on (up to %d draft tokens)"), depth)
         } else { configuration = String(localized: "configuration unavailable") }
         lines.append(String(format: String(localized: "Execution configuration: %@"), configuration))
         return lines.joined(separator: "\n")
