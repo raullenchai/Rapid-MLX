@@ -520,11 +520,7 @@ struct ModelPickerBar: View {
                     .font(RapidFont.secondary)
                     .foregroundStyle(aliasTextStyle)
                     .lineLimit(1)
-                    // Middle truncation keeps both ends of a long alias
-                    // legible — the family prefix AND the quant suffix,
-                    // which is what users disambiguate on. Tail truncation
-                    // eats the quant.
-                    .truncationMode(.middle)
+                    .truncationMode(ModelDisplayName.repositoryName(for: alias) == nil ? .middle : .tail)
                 // A fixed gap, not a Spacer: with the chip no longer
                 // `fixedSize`, a Spacer would make it greedy and swallow
                 // the composer row's free space.
@@ -625,7 +621,16 @@ struct ModelPickerBar: View {
 
     /// What the composer chip shows. A real alias, or an instruction.
     private var pickerLabel: String {
-        ModelDisplayName.configValue(alias: alias).map { ModelDisplayName.name(for: $0) } ?? String(localized: "Choose a model")
+        guard let selectedAlias = ModelDisplayName.configValue(alias: alias) else {
+            return String(localized: "Choose a model")
+        }
+        // Loaded models can precede the catalog refresh. Include their full
+        // identities so two orgs remain distinguishable during that window.
+        let loadedAliases = server.residency.models.filter(\.isHoldingMemory).flatMap {
+            [$0.id, $0.modelPath] + $0.aliases
+        }
+        let aliases = catalog.map(\.alias) + loadedAliases + [server.servingAlias].compactMap { $0 }
+        return ModelDisplayName.compactName(for: selectedAlias, among: aliases)
     }
 
     /// True when the chip is showing the instruction rather than a model.
@@ -2220,7 +2225,8 @@ struct ModelInfoPopover: View {
                 Text(repo)
                     .font(.rapid(.callout).monospaced())
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
+                    .help(repo)
                     .textSelection(.enabled)
                 Spacer()
                 Link(destination: URL(string: "https://huggingface.co/\(repo)")!) {

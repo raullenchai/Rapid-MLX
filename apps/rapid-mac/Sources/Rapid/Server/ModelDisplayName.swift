@@ -1,6 +1,25 @@
 import Foundation
 
 extension ModelDisplayName {
+    /// Raw Hugging Face identities have exactly two components. Local paths,
+    /// URLs and catalog aliases must keep their existing presentation.
+    nonisolated static func repositoryName(for alias: String) -> String? {
+        let parts = alias.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }),
+              !alias.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(parts[1])
+    }
+
+    /// Compact labels omit the org unless another listed repository has the
+    /// same name. Keep the full string here; the view owns tail truncation.
+    nonisolated static func compactName(for alias: String, among aliases: [String] = []) -> String {
+        // A curated name (speech, image, catalog) wins over the raw repo ID.
+        let display = name(for: alias)
+        guard display == alias, let shortName = repositoryName(for: alias) else { return display }
+        let collides = aliases.contains { $0 != alias && repositoryName(for: $0) == shortName }
+        return collides ? alias : shortName
+    }
+
     nonisolated static let imageNames: [String: String] = [
         "flux2-klein-4b": "FLUX.2 Klein · 4B",
         "flux2-klein-4b-bf16": "FLUX.2 Klein · 4B · BF16",

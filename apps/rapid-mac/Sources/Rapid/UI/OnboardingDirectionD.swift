@@ -643,7 +643,8 @@ struct OnboardingCompactSubjectBand: View {
                 .scaledSystemFont(13, design: .monospaced)
                 .foregroundStyle(RapidTheme.bandInk)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(ModelDisplayName.repositoryName(for: identity) == nil ? .middle : .tail)
+                .help(identity)
             if let fileLine {
                 Text(fileLine)
                     .scaledSystemFont(10, design: .monospaced)
