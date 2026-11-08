@@ -100,6 +100,7 @@ def _harness(legacy=False, fused=False):
         "_trim_head",
         "_flush_head",
         "_head_offset",
+        "_append_head_history",
         "_replay_parked_head",
         "_finish_head",
         "_park_head",
@@ -1009,6 +1010,28 @@ def test_parked_replay_failure_keeps_cache_and_queue_consistent():
     env["_replay_parked_head"]()
     assert [tok for _, tok in cache.rows] == [0, 1, 2]
     assert env["parked_head_rows"] == []
+
+
+def test_pending_head_failure_does_not_duplicate_history():
+    env, cache, _, _ = _harness()
+    pending = (np.full((1, 2, 1), 7.0), np.array([4, 5]))
+    env["head_pending"] = pending
+    forward = env["model"].mtp_forward
+
+    def write_then_fail(hidden, ids, caches, return_hidden=False):
+        forward(hidden, ids, caches, return_hidden)
+        raise RuntimeError("head forward failed")
+
+    env["model"].mtp_forward = write_then_fail
+    with pytest.raises(RuntimeError, match="head forward failed"):
+        env["_flush_head"]()
+    assert cache.offset == 0
+    assert env["head_pending"] is pending
+
+    env["model"].mtp_forward = forward
+    env["_flush_head"]()
+    assert [tok for _, tok in cache.rows] == [4, 5]
+    assert env["head_pending"] is None
 
 
 def test_probe_reset_allocation_failure_preserves_history():

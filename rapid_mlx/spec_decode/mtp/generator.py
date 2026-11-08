@@ -662,6 +662,18 @@ def mtp_generate_step(
     def _head_offset():
         return max((getattr(c, "offset", 0) for c in mtp_cache), default=0)
 
+    def _append_head_history(h, ids):
+        """Write one history segment, undoing a partial write if it raises."""
+        before = _head_offset()
+        try:
+            model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+            quantize_cache_fn(mtp_cache)
+        except BaseException:
+            advanced = _head_offset() - before
+            if advanced > 0:
+                _trim_head(advanced)
+            raise
+
     def _replay_parked_head():
         """Build deferred KV updates at their original forward widths."""
         # Dequeue each row only after its forward lands, so a failure leaves the
@@ -669,17 +681,7 @@ def mtp_generate_step(
         if parked_head_rows:
             with mx.stream(generation_stream):
                 while parked_head_rows:
-                    h, ids = parked_head_rows[0]
-                    before = _head_offset()
-                    try:
-                        model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
-                        quantize_cache_fn(mtp_cache)
-                    except BaseException:
-                        # Undo this row's partial write; the row stays queued.
-                        advanced = _head_offset() - before
-                        if advanced > 0:
-                            _trim_head(advanced)
-                        raise
+                    _append_head_history(*parked_head_rows[0])
                     parked_head_rows.pop(0)
 
     def _flush_head():
@@ -691,8 +693,8 @@ def mtp_generate_step(
             if head_pending is not None:
                 h, ids = head_pending
                 if ids.size:
-                    model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
-                    quantize_cache_fn(mtp_cache)
+                    # head_pending is cleared only after its write lands.
+                    _append_head_history(h, ids)
                     has_rows = True
                 head_pending = None
             if has_rows:
