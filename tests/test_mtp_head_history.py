@@ -99,6 +99,7 @@ def _harness(legacy=False, fused=False):
     names = {
         "_trim_head",
         "_flush_head",
+        "_head_offset",
         "_replay_parked_head",
         "_finish_head",
         "_park_head",
@@ -981,6 +982,33 @@ def test_probe_reset_only_for_private_ev_park(greedy, server, selected):
     assert env["parked_head_rows"] == ([] if reset else [pending])
     assert env["head_pending"] is (None if reset else pending)
     assert original.rows == [(1, 2)]
+
+
+def test_parked_replay_failure_keeps_cache_and_queue_consistent():
+    env, cache, _, _ = _harness()
+    rows = [(np.full((1, 1, 1), float(i)), np.array([i])) for i in range(3)]
+    env["parked_head_rows"] = list(rows)
+    forward = env["model"].mtp_forward
+    calls = []
+
+    def flaky(hidden, ids, caches, return_hidden=False):
+        calls.append(int(ids[0, 0]))
+        if len(calls) == 2:
+            # Write the row, then fail: the partial write must be undone.
+            forward(hidden, ids, caches, return_hidden)
+            raise RuntimeError("head forward failed")
+        return forward(hidden, ids, caches, return_hidden)
+
+    env["model"].mtp_forward = flaky
+    with pytest.raises(RuntimeError, match="head forward failed"):
+        env["_replay_parked_head"]()
+    assert cache.offset == 1
+    assert env["parked_head_rows"] == rows[1:]
+
+    env["model"].mtp_forward = forward
+    env["_replay_parked_head"]()
+    assert [tok for _, tok in cache.rows] == [0, 1, 2]
+    assert env["parked_head_rows"] == []
 
 
 def test_probe_reset_allocation_failure_preserves_history():

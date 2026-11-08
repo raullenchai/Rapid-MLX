@@ -659,14 +659,28 @@ def mtp_generate_step(
             if mc.is_trimmable():
                 mc.trim(n)
 
+    def _head_offset():
+        return max((getattr(c, "offset", 0) for c in mtp_cache), default=0)
+
     def _replay_parked_head():
         """Build deferred KV updates at their original forward widths."""
+        # Dequeue each row only after its forward lands, so a failure leaves the
+        # cache plus the remaining queue equal to the committed history.
         if parked_head_rows:
             with mx.stream(generation_stream):
-                for h, ids in parked_head_rows:
-                    model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
-                    quantize_cache_fn(mtp_cache)
-            parked_head_rows.clear()
+                while parked_head_rows:
+                    h, ids = parked_head_rows[0]
+                    before = _head_offset()
+                    try:
+                        model.mtp_forward(h, ids.reshape(1, -1), mtp_cache)
+                        quantize_cache_fn(mtp_cache)
+                    except BaseException:
+                        # Undo this row's partial write; the row stays queued.
+                        advanced = _head_offset() - before
+                        if advanced > 0:
+                            _trim_head(advanced)
+                        raise
+                    parked_head_rows.pop(0)
 
     def _flush_head():
         """Settle deferred history when lookup or a caller-owned cache needs it."""
