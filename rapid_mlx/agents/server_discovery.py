@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from .chat_models import NonChatModelError, non_chat_kind, preferred_model
-
 from rapid_mlx.serve_process import serve_subcommand_index
+
+from .chat_models import NonChatModelError, non_chat_kind, preferred_model
 
 
 @dataclass
