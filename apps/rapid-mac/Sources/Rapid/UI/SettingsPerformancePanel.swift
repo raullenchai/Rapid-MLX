@@ -26,6 +26,7 @@ struct SettingsPerformancePanel: View {
     @State private var isReloading: Bool = false
     @State private var catalog: [ModelEntry] = []
     @State private var discoveryFailure: CachedModelDiscoveryFailure?
+    @State private var catalogRefreshID = UUID()
     @State private var selectedAlias: String?
     @State private var applyError: String?
 
@@ -161,11 +162,14 @@ struct SettingsPerformancePanel: View {
 
     private func refreshCatalog() async {
         guard let binary = server.binaryPath else { return }
+        let refreshID = UUID()
+        catalogRefreshID = refreshID
         let generation = downloads.cacheGeneration
-        let entries = await ModelCatalogCache.shared.entries(binary: binary, generation: generation)
-        guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
-        discoveryFailure = await ModelCatalogCache.shared.discoveryFailure
-        catalog = entries
+        let result = await ModelCatalogCache.shared.discoveryResult(binary: binary, generation: generation)
+        guard !Task.isCancelled, catalogRefreshID == refreshID,
+              generation == downloads.cacheGeneration else { return }
+        discoveryFailure = result.failure
+        catalog = result.entries
     }
 
     // MARK: - Sections

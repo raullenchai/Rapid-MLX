@@ -183,12 +183,12 @@ struct ModelSurfaceRedesignTests {
         ))
         #expect(catalogProbe.lowerBound < criticalSection.lowerBound,
                 "catalog capability must resolve before the spawn critical section")
-        #expect(cache.contains("let entry = startLoad("))
+        #expect(cache.contains("entry = startLoad("))
         #expect(cache.contains("await finish(entry)"),
                 "a completed load must publish only its captured in-flight identity")
         #expect(cache.components(
             separatedBy: "if let inFlight,\n           inFlight.matches("
-        ).count == 3, "both cached and authoritative reads may join only matching loads")
+        ).count == 2, "cached and authoritative reads share the input-matched join path")
     }
 
     // MARK: - ModelBrandStyle.displayFamily

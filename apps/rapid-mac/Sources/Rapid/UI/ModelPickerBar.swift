@@ -2119,10 +2119,10 @@ struct ModelPickerBar: View {
             }
         }
         // Route the catalog read through the shared cache (#1470) so re-entering
-        // settings does not re-spawn the lister subprocess. Keep the ``loaded``
-        // name so the phantom-alias filter below (``entries``) is unchanged.
+        // settings does not re-spawn the lister subprocess. Entries and failure
+        // must come from the same read, even if another surface retries.
         let generation = downloads.cacheGeneration
-        let loaded = await ModelCatalogCache.shared.entries(
+        let result = await ModelCatalogCache.shared.discoveryResult(
             binary: binary,
             generation: generation
         )
@@ -2136,10 +2136,10 @@ struct ModelPickerBar: View {
         // produce a missing row — never a selectable fake model, and
         // never a placeholder word promoted into ``alias`` by
         // ``recommendedDefault`` below.
-        let entries = ModelSelectionPurpose.chat.entries(in: loaded).filter {
+        let entries = ModelSelectionPurpose.chat.entries(in: result.entries).filter {
             !ModelDisplayName.isUnresolved($0.alias)
         }
-        discoveryFailure = await ModelCatalogCache.shared.discoveryFailure
+        discoveryFailure = result.failure
         self.catalog = entries
         catalogGeneration = generation
         let normalized = Self.normalizedChatSelection(

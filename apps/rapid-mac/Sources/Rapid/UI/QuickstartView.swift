@@ -1445,17 +1445,17 @@ struct QuickstartView: View {
     /// Test seam: override the pre-flight free-bytes probe so the
     /// unit / integration test suite can drive the low-disk-warning
     /// transition without touching real free space. Defaults to the
-    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper, run by the
-    /// timed background task below.
+    /// production ``DiskSpaceProbe.freeBytesForHFCache`` helper. Both the
+    /// display sample and each download action run it in a bounded worker.
     ///
     /// Returns the free bytes the caller should compare against
     /// ``DiskSpaceProbe.quickstartRequiredBytes``. ``nil`` means "probe
     /// failed / no signal" and degrades to ``Decision.ok`` (no warning).
-    var freeBytesProbe: (() -> Int64?)? = nil
+    var freeBytesProbe: (@Sendable () -> Int64?)? = nil
+    @State private var downloadPreflightTask: Task<Void, Never>?
     @State private var measuredFreeBytes: Int64?
     private func availableFreeBytes() -> Int64? {
-        if let freeBytesProbe { return freeBytesProbe() }
-        return measuredFreeBytes
+        measuredFreeBytes
     }
 
     var body: some View {
@@ -1470,10 +1470,8 @@ struct QuickstartView: View {
             content
         }
             .task {
-                guard freeBytesProbe == nil else { return }
-                measuredFreeBytes = try? await DiscoveryDeadline.run {
-                    DiskSpaceProbe.freeBytesForHFCache()
-                }
+                let probe = freeBytesProbe ?? { DiskSpaceProbe.freeBytesForHFCache() }
+                measuredFreeBytes = try? await DiscoveryDeadline.run { probe() }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RapidTheme.canvas)
@@ -1560,6 +1558,8 @@ struct QuickstartView: View {
                 foregroundMemoryRefreshTask = nil
             }
             .onDisappear {
+                downloadPreflightTask?.cancel()
+                downloadPreflightTask = nil
                 foregroundMemoryRefreshTask?.cancel()
                 foregroundMemoryRefreshTask = nil
             }
@@ -4720,13 +4720,39 @@ struct QuickstartView: View {
             startCachedModel(cached)
             return
         }
-        QuickstartView.applyPreflightDecision(
+        downloadPreflightTask?.cancel()
+        downloadPreflightTask = Task { @MainActor in
+            await Self.preflightDownload(
+                coordinator: coordinator,
+                probe: freeBytesProbe ?? { DiskSpaceProbe.freeBytesForHFCache() },
+                onKickoff: { kickoffDownload() }
+            )
+        }
+    }
+
+    /// Each action measures current capacity off the main actor. Unknown results
+    /// retain the existing warn-only policy; no cached display value is evidence
+    /// that a fresh probe completed. Cancellation must never start a download.
+    @MainActor
+    static func preflightDownload(
+        coordinator: QuickstartCoordinator,
+        timeout: TimeInterval = 10,
+        probe: @escaping @Sendable () -> Int64?,
+        onKickoff: () -> Void
+    ) async {
+        let selection = coordinator.selection
+        let phase = coordinator.phase
+        let stage = coordinator.stage
+        let step2Stage = coordinator.step2Stage
+        let freeBytes = try? await DiscoveryDeadline.run(seconds: timeout) { probe() }
+        guard !Task.isCancelled, coordinator.selection == selection,
+              coordinator.phase == phase, coordinator.stage == stage,
+              coordinator.step2Stage == step2Stage else { return }
+        applyPreflightDecision(
             decision: DiskSpaceProbe.decide(
-                freeBytes: availableFreeBytes(),
-                requiredBytes: Self.requiredDiskBytes(for: coordinator.selection)
+                freeBytes: freeBytes, requiredBytes: requiredDiskBytes(for: selection)
             ),
-            coordinator: coordinator,
-            onKickoff: { kickoffDownload() }
+            coordinator: coordinator, onKickoff: onKickoff
         )
     }
 

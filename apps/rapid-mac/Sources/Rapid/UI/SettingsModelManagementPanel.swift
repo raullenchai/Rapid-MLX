@@ -55,6 +55,7 @@ struct SettingsModelManagementPanel: View {
     @State private var diskOverview = ModelManagementDiskOverviewState()
     @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
     @State private var discoveryFailure: CachedModelDiscoveryFailure?
+    @State private var catalogRefreshID = UUID()
     @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
     @State private var lastError: String?
@@ -1854,6 +1855,8 @@ struct SettingsModelManagementPanel: View {
 
     private func refreshCatalog() async {
         guard let binary = server.binaryPath else { loading = false; return }
+        let refreshID = UUID()
+        catalogRefreshID = refreshID
         loading = true
         let generation = downloads.cacheGeneration
         let paths = openedCheckpointPaths
@@ -1868,7 +1871,7 @@ struct SettingsModelManagementPanel: View {
             async let audio = ModelCatalog.audioEntries(binary: binary, hubCacheOverride: override)
             return await chat + image + audio
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, catalogRefreshID == refreshID else { return }
         guard generation == downloads.cacheGeneration else {
             await refreshCatalog()
             return

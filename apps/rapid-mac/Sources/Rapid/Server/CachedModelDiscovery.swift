@@ -66,7 +66,7 @@ private final class DiscoveryRace<Value: Sendable>: @unchecked Sendable {
     }
 }
 
-struct CachedModelDiscoveryFailure: Sendable, Equatable {
+struct CachedModelDiscoveryFailure: Error, Sendable, Equatable {
     let volumeName: String?
     var message: String {
         if let volumeName {
@@ -156,7 +156,7 @@ enum CachedModelDiscovery {
                     ModelEntry(alias: $0.alias, hfRepo: $0.hfRepo, sizeOnDisk: nil,
                                cached: false, downloadSizeBytes: $0.downloadBytes)
                 },
-                failure: CachedModelDiscoveryFailure(volumeName: volume)
+                failure: (error as? CachedModelDiscoveryFailure) ?? CachedModelDiscoveryFailure(volumeName: volume)
             )
         }
     }

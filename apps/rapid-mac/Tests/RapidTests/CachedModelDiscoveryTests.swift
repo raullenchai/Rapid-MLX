@@ -21,6 +21,98 @@ struct CachedModelDiscoveryTests {
         func release() { continuation?.resume(); continuation = nil }
     }
 
+    private actor ControlledProvider {
+        var calls = 0
+        private var pending: [Int: CheckedContinuation<[ModelEntry], Error>] = [:]
+        func load() async throws -> [ModelEntry] {
+            calls += 1
+            let call = calls
+            return try await withCheckedThrowingContinuation { pending[call] = $0 }
+        }
+        func succeed(_ call: Int, alias: String) {
+            pending.removeValue(forKey: call)?.resume(returning: [
+                ModelEntry(alias: alias, hfRepo: nil, sizeOnDisk: nil, cached: true)
+            ])
+        }
+        func fail(_ call: Int) {
+            pending.removeValue(forKey: call)?.resume(throwing: CocoaError(.fileReadNoPermission))
+        }
+    }
+
+    @Test("Retry during discovery redirects an existing waiter to the new result", arguments: [false, true])
+    func retryDuringInflightDiscovery(fresh: Bool) async {
+        let provider = ControlledProvider()
+        let cache = ModelCatalogCache(loader: { _, _ in try await provider.load() },
+                                      discoveryTimeout: 5, requestedOverride: { nil })
+        let waiter = Task {
+            if fresh { return await cache.freshEntries(binary: binary, generation: 0) }
+            return await cache.entries(binary: binary, generation: 0)
+        }
+        while await provider.calls < 1 { await Task.yield() }
+        await cache.invalidate()
+        let retry = Task { await cache.discoveryResult(binary: binary, generation: 0) }
+        while await provider.calls < 2 { await Task.yield() }
+        await provider.succeed(2, alias: "retry-model")
+        let replacement = await retry.value
+        #expect(replacement.failure == nil)
+        #expect(replacement.entries.first?.alias == "retry-model")
+        #expect(await waiter.value == replacement.entries)
+        // The cancelled worker ignores cancellation and fails after Retry won.
+        await provider.fail(1)
+        let final = await cache.discoveryResult(binary: binary, generation: 0)
+        #expect(final.failure == nil)
+        #expect(final.entries == replacement.entries)
+        #expect(await cache.discoveryFailure == nil)
+        #expect(await provider.calls == 2)
+    }
+
+    @Test("A different-generation replacement cannot be overwritten by an old waiter")
+    func generationReplacementRejectsOldWaiter() async {
+        let provider = ControlledProvider()
+        let cache = ModelCatalogCache(loader: { _, _ in try await provider.load() },
+                                      discoveryTimeout: 5, requestedOverride: { nil })
+        let old = Task { await cache.discoveryResult(binary: binary, generation: 0) }
+        while await provider.calls < 1 { await Task.yield() }
+        let replacement = Task { await cache.discoveryResult(binary: binary, generation: 1) }
+        while await provider.calls < 2 { await Task.yield() }
+        await provider.succeed(2, alias: "new-generation")
+        let current = await replacement.value
+        let discarded = await old.value
+        #expect(discarded.failure != nil)
+        #expect(discarded.entries.isEmpty)
+        await provider.succeed(1, alias: "obsolete")
+        #expect(await cache.entries(binary: binary, generation: 1) == current.entries)
+        #expect(await cache.discoveryFailure == nil)
+        #expect(await provider.calls == 2)
+    }
+
+    @Test("A failed read retains its failure after a successful Retry clears shared state")
+    func failureStaysWithRead() async {
+        let provider = ControlledProvider()
+        let cache = ModelCatalogCache(loader: { _, _ in try await provider.load() },
+                                      volumeResolver: { _ in "Models SSD" }, requestedOverride: { nil })
+        let read = Task { await cache.discoveryResult(binary: binary, generation: 0) }
+        while await provider.calls < 1 { await Task.yield() }
+        await provider.fail(1)
+        let failed = await read.value
+        await cache.invalidate()
+        let retry = Task { await cache.discoveryResult(binary: binary, generation: 0) }
+        while await provider.calls < 2 { await Task.yield() }
+        await provider.succeed(2, alias: "recovered")
+        let recovered = await retry.value
+        #expect(recovered.failure == nil)
+        #expect(await cache.discoveryFailure == nil)
+        #expect(failed.failure != nil)
+        #expect(failed.entries.contains { $0.alias == QuickstartCoordinator.defaultChoice.alias })
+        if let failure = failed.failure {
+            // ContentView wraps startup maintenance and the cache in another
+            // deadline. That wrapper must preserve this read's permission copy.
+            let forwarded = await CachedModelDiscovery.discover(cacheURL: nil) { throw failure }
+            #expect(forwarded.failure == failure)
+            #expect(forwarded.failure?.volumeName == "Models SSD")
+        }
+    }
+
     @Test("Unanswered permission prompt settles, offers starter, and Retry recovers")
     func timeoutAndRetry() async {
         let provider = Provider()

@@ -71,6 +71,7 @@ actor ModelCatalogCache {
 
     private struct Snapshot {
         let entries: [ModelEntry]
+        let failure: CachedModelDiscoveryFailure?
         let generation: UInt
         let fetchedAt: Date
         /// The override in force when this was captured. Pointing the models
@@ -186,6 +187,14 @@ actor ModelCatalogCache {
     /// real load, joining an in-flight one with matching inputs rather than
     /// starting a second.
     func entries(binary: URL, generation: UInt) async -> [ModelEntry] {
+        await discoveryResult(binary: binary, generation: generation).entries
+    }
+
+    /// Keep failure provenance attached to the entries across actor hops.
+    /// Presentation may use fallback rows; lifecycle decisions must check failure.
+    func discoveryResult(
+        binary: URL, generation: UInt, fresh: Bool = false
+    ) async -> CachedModelDiscoveryResult {
         let override = requestedOverride()
         let overridePath = override?.path
         let binaryPath = binary.path
@@ -196,78 +205,56 @@ actor ModelCatalogCache {
                overridePath: overridePath
            ) {
             if Date().timeIntervalSince(snapshot.fetchedAt) < cacheTTL {
-                return snapshot.entries
+                return CachedModelDiscoveryResult(entries: snapshot.entries, failure: snapshot.failure)
             }
-            // Same inputs, past the TTL backstop: serve the stale entries now
-            // and revalidate in the background (deduplicated via inFlight), so
-            // a passive out-of-band change is picked up without a spinner.
-            let stale = snapshot.entries
-            if inFlight == nil {
-                startLoad(
-                    binary: binary, override: override, binaryPath: binaryPath,
-                    generation: generation, overridePath: overridePath
-                )
+            if !fresh {
+                // Presentation can serve stale rows with their original failure.
+                if inFlight == nil {
+                    startLoad(
+                        binary: binary, override: override, binaryPath: binaryPath,
+                        generation: generation, overridePath: overridePath
+                    )
+                }
+                return CachedModelDiscoveryResult(entries: snapshot.entries, failure: snapshot.failure)
             }
-            return stale
         }
 
+        let entry: InFlight
         if let inFlight,
            inFlight.matches(
                binaryPath: binaryPath, generation: generation,
                overridePath: overridePath
            ) {
-            let loaded = await inFlight.task.value
-            // Publish the synchronous mirror before returning to callers that
-            // immediately start a model from this catalog result.
-            await finish(inFlight)
-            return loaded.entries
+            entry = inFlight
+        } else {
+            entry = startLoad(
+                binary: binary, override: override, binaryPath: binaryPath,
+                generation: generation, overridePath: overridePath
+            )
         }
-        let entry = startLoad(
-            binary: binary, override: override, binaryPath: binaryPath,
-            generation: generation, overridePath: overridePath
-        )
         let loaded = await entry.task.value
         await finish(entry)
-        return loaded.entries
+        guard entry.id == nextInFlightID else {
+            // Retry/invalidation can cancel a load while existing readers await
+            // it. Join its replacement, even if finish already published it.
+            // A different input owner must not be replaced by this old reader.
+            if requestedOverride()?.path == overridePath,
+               inFlight.map({ $0.matches(binaryPath: binaryPath, generation: generation,
+                                         overridePath: overridePath) }) ?? true,
+               snapshot.map({ snapshotMatchesInputs($0, binaryPath: binaryPath,
+                                                     generation: generation,
+                                                     overridePath: overridePath) }) ?? true {
+                return await discoveryResult(binary: binary, generation: generation, fresh: fresh)
+            }
+            return CachedModelDiscoveryResult(entries: [], failure: CachedModelDiscoveryFailure(volumeName: nil))
+        }
+        return loaded
     }
 
-    /// An authoritative catalog read for lifecycle decisions that must not use
-    /// the stale-while-revalidate presentation path.
-    ///
-    /// Model start uses lane/capability metadata to choose a process mode and
-    /// persist lane-owned state. A five-minute-old row is fine for keeping a
-    /// picker responsive, but it is not evidence for those mutations. Join a
-    /// matching refresh when one exists; otherwise start one and await it.
+    /// Lifecycle decisions never consume presentation fallback rows.
     func freshEntries(binary: URL, generation: UInt) async -> [ModelEntry] {
-        let override = requestedOverride()
-        let overridePath = override?.path
-        let binaryPath = binary.path
-
-        if let snapshot,
-           snapshotMatchesInputs(
-               snapshot, binaryPath: binaryPath, generation: generation,
-               overridePath: overridePath
-           ),
-           Date().timeIntervalSince(snapshot.fetchedAt) < cacheTTL {
-            return discoveryFailure == nil ? snapshot.entries : []
-        }
-
-        if let inFlight,
-           inFlight.matches(
-               binaryPath: binaryPath, generation: generation,
-               overridePath: overridePath
-           ) {
-            let loaded = await inFlight.task.value
-            await finish(inFlight)
-            return loaded.failure == nil ? loaded.entries : []
-        }
-        let entry = startLoad(
-            binary: binary, override: override, binaryPath: binaryPath,
-            generation: generation, overridePath: overridePath
-        )
-        let loaded = await entry.task.value
-        await finish(entry)
-        return loaded.failure == nil ? loaded.entries : []
+        let result = await discoveryResult(binary: binary, generation: generation, fresh: true)
+        return result.failure == nil ? result.entries : []
     }
 
     /// Start (and register) a load, replacing any in-flight one with different
@@ -290,6 +277,7 @@ actor ModelCatalogCache {
                 try await loader(binary, validatedOverride)
             }
         }
+        inFlight?.task.cancel()
         nextInFlightID &+= 1
         let entry = InFlight(
             id: nextInFlightID, binaryPath: binaryPath, generation: generation,
@@ -308,6 +296,7 @@ actor ModelCatalogCache {
         guard let current = inFlight, current.id == entry.id else { return }
         snapshot = Snapshot(
             entries: loaded.entries,
+            failure: loaded.failure,
             generation: entry.generation,
             fetchedAt: Date(),
             overridePath: entry.overridePath,
@@ -322,6 +311,7 @@ actor ModelCatalogCache {
     /// want the next read to be authoritative without waiting on the
     /// generation counter to propagate.
     func invalidate() {
+        nextInFlightID &+= 1
         inFlight?.task.cancel()
         discoveryFailure = nil
         snapshot = nil

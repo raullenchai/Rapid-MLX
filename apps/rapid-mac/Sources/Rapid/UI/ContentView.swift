@@ -204,6 +204,7 @@ struct ContentView: View {
     /// are different sentences and different next steps.
     @State private var catalogLoaded: Bool = false
     @State private var catalogDiscoveryFailure: CachedModelDiscoveryFailure?
+    @State private var catalogRefreshID = UUID()
     /// Cache generation represented by ``catalogEntries``.
     @State private var catalogGeneration: UInt = 0
     /// FU-1: persisted opt-out for the launch-time auto-start path.
@@ -1190,6 +1191,8 @@ struct ContentView: View {
 
     private func refreshCatalogSnapshot() async {
         guard let binary = server.binaryPath else { return }
+        let refreshID = UUID()
+        catalogRefreshID = refreshID
         let generation = downloads.cacheGeneration
         let discovery = await CachedModelDiscovery.discover(
             cacheURL: BundledModel.userHFCacheURL(
@@ -1200,23 +1203,29 @@ struct ContentView: View {
             // Keep healthy-path ordering: installed Quickstart weights must
             // have their cache links before the inventory is captured.
             await Self.ensureStartupModelLinks(generation: generation)
-            return await ModelCatalogCache.shared.entries(binary: binary, generation: generation)
+            let result = await ModelCatalogCache.shared.discoveryResult(binary: binary, generation: generation)
+            if let failure = result.failure { throw failure }
+            return result.entries
         }
         var loaded = discovery.entries
-        guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
+        var failure = discovery.failure
+        guard !Task.isCancelled, catalogRefreshID == refreshID,
+              generation == downloads.cacheGeneration else { return }
         if loaded.isEmpty,
            case .pendingCatalog = restoredChatAlias,
            !catalogRestoreRetryAttempted {
             catalogRestoreRetryAttempted = true
             await ModelCatalogCache.shared.invalidate()
-            loaded = await ModelCatalogCache.shared.entries(
+            let retried = await ModelCatalogCache.shared.discoveryResult(
                 binary: binary,
                 generation: generation
             )
-            guard !Task.isCancelled, generation == downloads.cacheGeneration else { return }
+            loaded = retried.entries
+            failure = retried.failure
+            guard !Task.isCancelled, catalogRefreshID == refreshID,
+                  generation == downloads.cacheGeneration else { return }
         }
-        let cacheFailure = await ModelCatalogCache.shared.discoveryFailure
-        catalogDiscoveryFailure = discovery.failure ?? cacheFailure
+        catalogDiscoveryFailure = failure
         catalogEntries = loaded
         catalogGeneration = generation
         catalogLoaded = true
