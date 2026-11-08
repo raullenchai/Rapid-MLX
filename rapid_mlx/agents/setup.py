@@ -16,6 +16,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from rapid_mlx.agents.chat_models import (
+    NonChatModelError,
+    non_chat_kind,
+    preferred_model,
+)
 from rapid_mlx.agents.config_merge import (
     deep_merge,
     is_id_list,
@@ -56,6 +61,10 @@ class ModelNotAdvertisedError(RuntimeError):
 
 class ServerLoadingError(RuntimeError):
     """The startup health probe returned HTTP 503 while loading."""
+
+
+class ServerAuthenticationError(RuntimeError):
+    """The endpoint rejected the caller's credentials."""
 
 
 @dataclass(frozen=True)
@@ -721,15 +730,13 @@ def verify_server(
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read())
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise ValueError("invalid /v1/models response: expected a data list")
     except urllib.error.HTTPError as exc:
         if track_failure:
             track_agent_configure_failed("server_not_ready", agent)
         if checking_health and exc.code == 503:
             raise ServerLoadingError(f"health returned HTTP 503 at {root}") from exc
         if exc.code in (401, 403):
-            raise RuntimeError(
+            raise ServerAuthenticationError(
                 f"server authentication failed at {root}: HTTP {exc.code}; "
                 "check RAPID_MLX_API_KEY"
             ) from exc
@@ -750,26 +757,48 @@ def verify_server(
             track_agent_configure_failed("server_not_ready", agent)
         raise RuntimeError(f"server is not ready at {root}: {exc}") from exc
     models = payload.get("data", []) if isinstance(payload, dict) else []
-    ids = [
-        item["id"]
+    if not isinstance(models, list):
+        models = []
+    models = [
+        item
         for item in models
         if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
     ]
-    if not ids:
+    if not models:
         if track_failure:
             track_agent_configure_failed("server_no_models", agent)
         raise ServerNoModelsError(f"server at {root} reported no models")
+    chat_models = [item for item in models if not non_chat_kind(item)]
+    if not chat_models:
+        if track_failure:
+            track_agent_configure_failed("model_not_advertised", agent)
+        raise NonChatModelError(base_url, preferred_model(models), agent=agent)
+    ids = [item["id"] for item in models]
     if expected_model != "default" and expected_model not in ids:
         if track_failure:
             track_agent_configure_failed("model_not_advertised", agent)
         raise ModelNotAdvertisedError(
             f"server does not advertise model {expected_model!r} (found: {', '.join(ids)})"
         )
-    return (
-        expected_model
-        if expected_model != "default" and expected_model in ids
-        else ids[0]
-    )
+    if expected_model == "default":
+        # Prefer a public short alias, just as setup's metadata detector does.
+        selected = next(
+            (
+                item
+                for item in chat_models
+                if "/" not in item["id"] and item["id"] != "default"
+            ),
+            chat_models[0],
+        )
+    else:
+        selected = next(item for item in models if item["id"] == expected_model)
+    if non_chat_kind(selected):
+        if track_failure:
+            track_agent_configure_failed("model_not_advertised", agent)
+        raise NonChatModelError(base_url, selected, agent=agent)
+    selected_id = selected["id"]
+    assert isinstance(selected_id, str)  # Model entries were validated above.
+    return selected_id
 
 
 def wait_for_server(
@@ -781,23 +810,71 @@ def wait_for_server(
     endpoint: Endpoint | None = None,
 ) -> str:
     """Allow live local startup to finish; bound other verification failures."""
-    from .server_discovery import Progress, pid_alive, server_for_url
+    from .server_discovery import (
+        Progress,
+        non_chat_server,
+        pid_alive,
+        requires_missing_key,
+        server_for_url,
+    )
 
     deadline = time.monotonic() + timeout
     grace = time.monotonic() + min(2.0, timeout)
     server = endpoint.server if endpoint is not None else None
+    if endpoint is not None:
+        endpoint.agent = agent
     progress = Progress()
+    reselection_error: RuntimeError | None = None
+
+    def retry_selection(exc: RuntimeError) -> None:
+        nonlocal reselection_error
+        reselection_error = exc
+        if time.monotonic() >= deadline:
+            track_agent_configure_failed(
+                "model_not_advertised"
+                if isinstance(exc, NonChatModelError)
+                else "server_not_ready",
+                agent,
+            )
+            raise exc
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
     while True:
+        if reselection_error is not None and time.monotonic() >= deadline:
+            retry_selection(reselection_error)
         if endpoint is not None:
             endpoint.refresh()
             base_url = endpoint.base_url
             server = endpoint.server
+            if reselection_error is not None and time.monotonic() >= deadline:
+                retry_selection(reselection_error)
+            if server is None and (
+                (
+                    any(s.port == 8000 for s in endpoint.skipped_auth)
+                    and requires_missing_key(8000)
+                )
+                or (
+                    8000 in endpoint.skipped_non_chat
+                    and non_chat_server(8000, endpoint.model) is not None
+                )
+            ):
+                raise ServerNotRunningError("no accessible server is running")
         if server is not None and not pid_alive(server.pid):
             track_agent_configure_failed("server_not_ready", agent)
             raise RuntimeError(
                 f"server at {base_url} exited during startup; check the serve output"
             )
         try:
+            if endpoint is not None and endpoint.verified_non_chat:
+                from rapid_mlx.connect import _parse_base_url
+
+                port = _parse_base_url(base_url)[1]
+                owner = server or server_for_url(base_url)
+                if (
+                    owner is not None
+                    and endpoint.verified_non_chat.get(port) == owner.pid
+                ):
+                    raise endpoint.skipped_non_chat[port]
             return verify_server(
                 base_url,
                 expected_model,
@@ -810,6 +887,38 @@ def wait_for_server(
                 track_failure=False,
             )
         except RuntimeError as exc:
+            if isinstance(exc, NonChatModelError):
+                if endpoint is not None and endpoint.follow:
+                    if exc.port not in endpoint.skipped_non_chat:
+                        print(f"  {exc.skip_hint}")
+                    endpoint.skipped_non_chat[exc.port] = exc
+                    owner = server or server_for_url(base_url)
+                    if owner is not None:
+                        endpoint.verified_non_chat[exc.port] = owner.pid
+                    endpoint.server = None
+                    retry_selection(exc)
+                    continue
+                track_agent_configure_failed("model_not_advertised", agent)
+                raise
+            if (
+                isinstance(exc, ServerAuthenticationError)
+                and endpoint is not None
+                and endpoint.follow
+                and not os.environ.get("RAPID_MLX_API_KEY")
+            ):
+                # A starting process may only begin enforcing auth after the
+                # first discovery probe. Re-run selection rather than pinning it.
+                from rapid_mlx.connect import _parse_base_url
+
+                from .server_discovery import Server, skipped_auth_hint
+
+                skipped = server or Server(0, _parse_base_url(base_url)[1], "(unknown)")
+                if not any(s.port == skipped.port for s in endpoint.skipped_auth):
+                    endpoint.skipped_auth.append(skipped)
+                    print(skipped_auth_hint(skipped, agent))
+                endpoint.server = None
+                retry_selection(exc)
+                continue
             # Healthy servers advertising the wrong/no model are real failures,
             # independent of how long downloading/loading took.
             if isinstance(exc, (ModelNotAdvertisedError, ServerNoModelsError)):
@@ -832,10 +941,27 @@ def wait_for_server(
                 # over, so a long load cannot consume it before the first one.
                 deadline = time.monotonic() + timeout
             elif isinstance(exc, ServerNotRunningError) and time.monotonic() >= grace:
+                if (
+                    isinstance(reselection_error, NonChatModelError)
+                    and non_chat_server(reselection_error.port, expected_model) is None
+                ):
+                    track_agent_configure_failed("model_not_advertised", agent)
+                    raise reselection_error from exc
                 raise
             elif not is_local_base_url(base_url) or time.monotonic() >= deadline:
+                if (
+                    isinstance(reselection_error, NonChatModelError)
+                    and non_chat_server(reselection_error.port, expected_model) is None
+                ):
+                    track_agent_configure_failed("model_not_advertised", agent)
+                    raise reselection_error from exc
                 track_agent_configure_failed("server_not_ready", agent)
-                raise RuntimeError(
+                error_type = (
+                    ServerAuthenticationError
+                    if isinstance(exc, ServerAuthenticationError)
+                    else RuntimeError
+                )
+                raise error_type(
                     f"server did not become ready at {base_url}: {exc}"
                 ) from exc
             time.sleep(0.25)

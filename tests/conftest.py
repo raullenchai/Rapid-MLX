@@ -1627,3 +1627,31 @@ def agent_discovery_defaults(request, monkeypatch):
         server_discovery, "_default_endpoint_ready", lambda: (False, False)
     )
     return scan_servers
+
+
+@pytest.fixture
+def agent_setup_host(tmp_path, monkeypatch, agent_discovery_defaults):
+    """A cold-cache, 16 GB host with no Desktop, credentials or HTTP server.
+
+    Opt in per setup test module so memory/cache/discovery tests elsewhere
+    retain their own contracts. Tests can override each boundary explicitly;
+    return urlopen for the one real, test-owned HTTP server.
+    """
+    import urllib.request
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    monkeypatch.setattr("rapid_mlx.recommendations.physical_ram_gb", lambda: 16.0)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _repo: False)
+    monkeypatch.setattr(
+        "rapid_mlx.model_metadata.read_model_metadata", lambda _model: None
+    )
+    real_urlopen = urllib.request.urlopen
+
+    def refused(*_args, **_kwargs):
+        raise ConnectionRefusedError()
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    return real_urlopen

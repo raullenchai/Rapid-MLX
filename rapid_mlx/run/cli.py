@@ -227,7 +227,11 @@ def start_command(args) -> int:
 
 
 def _select_model(
-    *, explicit: str | None, profile: AgentProfile | None, no_download: bool
+    *,
+    explicit: str | None,
+    profile: AgentProfile | None,
+    no_download: bool,
+    quiet: bool = False,
 ) -> str | None:
     """Pick the model to serve, applying the documented selection order.
 
@@ -259,7 +263,8 @@ def _select_model(
 
     candidates = list(profile.recommended_models)
     if not candidates:
-        print("  This agent profile has no recommended models; pass --model.")
+        if not quiet:
+            print("  This agent profile has no recommended models; pass --model.")
         return None
 
     # Match local-model discovery when the physical RAM probe fails.
@@ -271,7 +276,8 @@ def _select_model(
             return alias
 
     if no_download:
-        _print_nothing_cached(candidates, ram_gb)
+        if not quiet:
+            _print_nothing_cached(candidates, ram_gb)
         return None
 
     # Nothing cached: first recommended model with a known fit.
@@ -280,7 +286,8 @@ def _select_model(
             continue
         return alias
 
-    _print_nothing_fits(candidates, ram_gb)
+    if not quiet:
+        _print_nothing_fits(candidates, ram_gb)
     return None
 
 
@@ -618,6 +625,25 @@ def _reuse_or_refuse(
         return 1
 
     hf_id = _hf_id(resolved_model)
+    if profile is not None:
+        from rapid_mlx.agents.chat_models import (
+            NonChatModelError,
+            non_chat_kind,
+            preferred_model,
+        )
+
+        matching = [
+            m for m in models if m.get("id") in {resolved_model, served_model, hf_id}
+        ]
+        # Keep aliases visible when the entire server is non-chat.
+        entries = models
+        if matching and any(not non_chat_kind(m) for m in models):
+            entries = matching
+        if entries and all(non_chat_kind(m) for m in entries):
+            print(
+                f"  {NonChatModelError(api_base_url, preferred_model(entries), agent=profile.name)}"
+            )
+            return 1
     if served.intersection({resolved_model, served_model, hf_id}):
         if args.dry_run:
             print(

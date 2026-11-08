@@ -15839,18 +15839,11 @@ def agents_command(args):
             endpoint = None
             try:
                 endpoint = (
-                    resolve_endpoint(requested_model)
+                    resolve_endpoint(requested_model, agent=profile.name)
                     if args.base_url is None and getattr(args, "port", None) is None
                     else Endpoint(base_url)
                 )
                 base_url = profile.normalize_base_url(endpoint.base_url)
-                if model_id == "default":
-                    # A server that is already up names its model up front, as
-                    # before; a starting one is resolved by the readiness wait
-                    # below. The context budget is read once the server is ready.
-                    detected_model, _detected_ctx = _detect_running_model(base_url)
-                    if detected_model:
-                        model_id = detected_model
                 advertised = wait_for_server(
                     base_url, model_id, agent=profile.name, endpoint=endpoint
                 )
@@ -15888,12 +15881,26 @@ def agents_command(args):
                     )
                     sys.exit(1)
             except RuntimeError as exc:
+                from rapid_mlx.agents.chat_models import NonChatModelError
+                from rapid_mlx.agents.setup import ServerAuthenticationError
+
+                if isinstance(exc, NonChatModelError):
+                    print(f"\n  {profile.display_name} setup failed: {exc.message}")
+                    print(f"  {exc.recovery_hint(agent_version=args.agent_version)}\n")
+                    sys.exit(1)
+
                 if endpoint is not None:
                     base_url = profile.normalize_base_url(endpoint.base_url)
                 print(f"\n  {profile.display_name} setup failed: {exc}")
-                print(
-                    f"  Retry: {_agent_setup_retry_command(args, profile.name, base_url)}\n"
-                )
+                retry = _agent_setup_retry_command(args, profile.name, base_url)
+                if isinstance(exc, ServerAuthenticationError):
+                    print(
+                        "  Copy the API key from Rapid-MLX Desktop's "
+                        "Agent > Connection details > API key."
+                    )
+                    api_key_env = "RAPID_MLX_API_KEY"
+                    retry = f"{api_key_env}=<key> {retry}"
+                print(f"  Retry: {retry}\n")
                 sys.exit(1)
             if not offline:
                 if model_id == "default":

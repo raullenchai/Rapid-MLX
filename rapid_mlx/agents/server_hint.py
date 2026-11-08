@@ -50,10 +50,13 @@ def start_server_command(profile: Any, base_url: str, model_id: str) -> str:
 
     if model_id and model_id != "default":
         model = model_id
-    elif getattr(profile, "recommended_models", None):
-        model = profile.recommended_models[0]
     else:
-        model = "<model>"
+        from rapid_mlx.run.cli import _select_model
+
+        model = (
+            _select_model(explicit=None, profile=profile, no_download=False, quiet=True)
+            or "<model>"
+        )
     parts = ["rapid-mlx", "serve", model if model == "<model>" else shlex.quote(model)]
     try:
         host, port = _parse_base_url(base_url)
